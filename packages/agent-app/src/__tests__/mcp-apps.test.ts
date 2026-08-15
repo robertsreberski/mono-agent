@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readdir, rm, stat, utimes } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +17,7 @@ import type {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createMcpAppService } from "../mcp-apps.js";
+import { replyArtifactStorageBudgetFor } from "../reply-artifacts.js";
 
 const tempDirs: string[] = [];
 const stream: AgentMessageStream = { async append() {} };
@@ -96,6 +97,25 @@ async function hostFor(
     context: {},
   } as never);
   return extension.runtimeOptions?.mcpApps as RuntimeMcpAppHost;
+}
+
+async function padJsonFileToLimit(path: string, maxBytes: number): Promise<void> {
+  const value = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  let low = 0;
+  let high = maxBytes;
+  let best = "";
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const serialized = `${JSON.stringify({ ...value, padding: "x".repeat(middle) })}\n`;
+    if (Buffer.byteLength(serialized, "utf8") <= maxBytes) {
+      best = serialized;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  if (best.length === 0) throw new Error("Test manifest could not be padded to its byte boundary.");
+  await writeFile(path, best, "utf8");
 }
 
 describe("MCP Apps registry", () => {
@@ -302,6 +322,97 @@ describe("MCP Apps registry", () => {
     await service.dispose();
   });
 
+  it("turns only a delivery-binding overflow into a bounded failure and preserves text plus good apps", async () => {
+    const artifactDir = await tempDir();
+    const service = createMcpAppService({ artifactDir });
+    const badConnection = connection("connection-binding-bad");
+    const goodConnection = connection("connection-binding-good");
+    const host = await hostFor(service, "run-binding", "origin");
+    const bad = await host.register(registration(badConnection, {
+      toolCallId: "call-binding-bad",
+      resourceUri: "ui://widgets/bad",
+    }));
+    const good = await host.register(registration(goodConnection, {
+      toolCallId: "call-binding-good",
+      resourceUri: "ui://widgets/good",
+    }));
+    const badApp = bad.part as AgentReplyMcpAppPart;
+    const goodApp = good.part as AgentReplyMcpAppPart;
+    await padJsonFileToLimit(
+      join(artifactDir, "mcp-apps", badApp.invocationId, "manifest.json"),
+      64 * 1024,
+    );
+
+    const response = await service.wrapResponder(responder("run-binding")).respond({
+      conversationId: "delivery",
+      text: "show apps",
+      abortSignal: new AbortController().signal,
+    }, stream);
+
+    expect(response.text).toBe("Tool completed");
+    expect(response.parts).toEqual([
+      expect.objectContaining({
+        type: "failure",
+        code: "app_resource_invalid",
+        relatedPartId: badApp.id,
+        message: "The MCP App could not be finalized for delivery.",
+      }),
+      expect.objectContaining({ type: "mcp_app", id: goodApp.id }),
+    ]);
+    expect(Buffer.byteLength(JSON.stringify(response.parts?.[0]), "utf8")).toBeLessThan(1_024);
+    expect(JSON.stringify(response.parts)).not.toContain("padding");
+    await expect(access(join(artifactDir, "mcp-apps", badApp.invocationId))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(join(artifactDir, "mcp-apps", goodApp.invocationId, "manifest.json")))
+      .resolves.toBeUndefined();
+    expect(badConnection.close).toHaveBeenCalledOnce();
+    expect(goodConnection.close).not.toHaveBeenCalled();
+    await service.dispose();
+    expect(goodConnection.close).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed with an explicit part when aggregate reply-artifact storage is full", async () => {
+    const artifactDir = await tempDir();
+    const storageBudget = replyArtifactStorageBudgetFor(artifactDir, 128);
+    const service = createMcpAppService({ artifactDir, storageBudget });
+    const live = connection("connection-storage-full");
+    const host = await hostFor(service, "run-storage-full", "conversation");
+
+    const registered = await host.register(registration(live));
+
+    expect(registered).toMatchObject({
+      retainConnection: false,
+      part: {
+        type: "failure",
+        code: "app_resource_invalid",
+        message: "Reply artifact storage is full; this MCP App was not retained.",
+      },
+    });
+    expect(live.close).not.toHaveBeenCalled();
+    expect((await readdir(join(artifactDir, "mcp-apps"))).filter((entry) => /^[0-9a-f]{8}-/u.test(entry)))
+      .toEqual([]);
+    await service.dispose();
+  });
+
+  it("normalizes and safely bounds app display text without bidi controls or split code points", async () => {
+    const artifactDir = await tempDir();
+    const service = createMcpAppService({ artifactDir });
+    const live = connection("connection-display");
+    const host = await hostFor(service, "run-display", "conversation");
+
+    const registered = await host.register(registration(live, {
+      title: `Cafe\u0301\u202e\u2066-${"😀".repeat(80)}`,
+      description: "Harmless description",
+    }));
+    const app = registered.part as AgentReplyMcpAppPart;
+
+    expect(app.title?.startsWith("Café-")).toBe(true);
+    expect(app.title).not.toMatch(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u);
+    expect(app.title).not.toContain("�");
+    expect(Buffer.byteLength(app.title!, "utf8")).toBeLessThanOrEqual(240);
+    expect(app.description).toBe("Harmless description");
+    await service.dispose();
+  });
+
   it("publishes atomically while cleanup runs and removes only stale staging directories", async () => {
     const artifactDir = await tempDir();
     const entered = deferred();
@@ -353,6 +464,43 @@ describe("MCP Apps registry", () => {
     await expect(access(join(root, ".staging", stale))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(access(join(root, ".staging", recent))).resolves.toBeUndefined();
     await service.dispose();
+  });
+
+  it("does not expire committed current-run app state before responder finalization", async () => {
+    const artifactDir = await tempDir();
+    let clock = new Date("2026-08-15T12:00:00.000Z");
+    const storageBudget = replyArtifactStorageBudgetFor(artifactDir);
+    const publishingService = createMcpAppService({
+      artifactDir,
+      storageBudget,
+      retentionDays: 1,
+      now: () => clock,
+    });
+    const cleanupService = createMcpAppService({
+      artifactDir,
+      storageBudget,
+      retentionDays: 1,
+      now: () => clock,
+    });
+    const live = connection("connection-current-run");
+    const host = await hostFor(publishingService, "run-current", "conversation");
+    const app = (await host.register(registration(live))).part as AgentReplyMcpAppPart;
+    const directory = join(artifactDir, "mcp-apps", app.invocationId);
+
+    clock = new Date("2026-08-17T12:00:00.000Z");
+    await cleanupService.cleanupExpired();
+    await expect(access(directory)).resolves.toBeUndefined();
+
+    const response = await publishingService.wrapResponder(responder("run-current")).respond({
+      conversationId: "conversation",
+      text: "show app",
+      abortSignal: new AbortController().signal,
+    }, stream);
+    expect(response.parts).toEqual([expect.objectContaining({ type: "mcp_app", id: app.id })]);
+    await cleanupService.cleanupExpired();
+    await expect(access(directory)).rejects.toMatchObject({ code: "ENOENT" });
+    await publishingService.dispose();
+    await cleanupService.dispose();
   });
 
   it("bounds retained connections with LRU eviction and treats load as a touch", async () => {

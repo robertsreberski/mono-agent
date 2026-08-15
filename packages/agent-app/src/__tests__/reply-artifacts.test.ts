@@ -1,4 +1,16 @@
-import { access, mkdir, mkdtemp, readdir, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import {
+  access,
+  link,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +29,7 @@ import {
   isPublishReplyFileToolAllowed,
   PUBLISH_REPLY_FILE_TOOL_NAME,
   REPLY_ARTIFACT_MCP_SERVER_NAME,
+  replyArtifactStorageBudgetFor,
   type ReplyArtifactService,
 } from "../reply-artifacts.js";
 
@@ -82,6 +95,25 @@ async function collect(body: AsyncIterable<Uint8Array>): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+async function padJsonFileToLimit(path: string, maxBytes: number): Promise<void> {
+  const value = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  let low = 0;
+  let high = maxBytes;
+  let best = "";
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const serialized = `${JSON.stringify({ ...value, padding: "x".repeat(middle) })}\n`;
+    if (Buffer.byteLength(serialized, "utf8") <= maxBytes) {
+      best = serialized;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  if (best.length === 0) throw new Error("Test manifest could not be padded to its byte boundary.");
+  await writeFile(path, best, "utf8");
+}
+
 describe("reply artifact policy", () => {
   it("honors canonical, MCP-prefixed, wildcard, and denial spellings", () => {
     expect(isPublishReplyFileToolAllowed({ allowedTools: ["*"] })).toBe(true);
@@ -143,6 +175,244 @@ describe("reply artifact publication", () => {
     });
     expect(opened).toBeDefined();
     expect(await collect(opened!.body)).toEqual(Buffer.from("first"));
+  });
+
+  it("allows ordinary workspace and exact current-run output files while excluding every private namespace", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    const artifactDir = join(workspace, "runtime-records");
+    const currentRunOutput = join(artifactDir, "outbound", "run-scope");
+    const otherRunOutput = join(artifactDir, "outbound", "run-other");
+    const memoryRoot = join(workspace, "knowledge-store");
+    const stateRoot = join(workspace, "runtime-state");
+    const nestedPrivateRoot = join(currentRunOutput, "nested-private");
+    await Promise.all([
+      mkdir(join(workspace, "exports"), { recursive: true }),
+      mkdir(currentRunOutput, { recursive: true }),
+      mkdir(otherRunOutput, { recursive: true }),
+      mkdir(memoryRoot, { recursive: true }),
+      mkdir(stateRoot, { recursive: true }),
+      mkdir(nestedPrivateRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(workspace, "exports", "ordinary.txt"), "ordinary-public"),
+      writeFile(join(currentRunOutput, "current.txt"), "current-run-public"),
+      writeFile(join(otherRunOutput, "other.txt"), "other-run-private"),
+      writeFile(join(memoryRoot, "harmless-name.txt"), "memory-private"),
+      writeFile(join(stateRoot, "harmless-name.txt"), "state-private"),
+      writeFile(join(nestedPrivateRoot, "harmless-name.txt"), "nested-private"),
+      writeFile(join(artifactDir, "run-private.events.jsonl"), "transcript-private"),
+    ]);
+    const service = createReplyArtifactService({
+      artifactDir,
+      workspace,
+      privateRoots: [memoryRoot, stateRoot, nestedPrivateRoot],
+    });
+    const publisher = await openPublisher(service, "run-scope", "origin-conversation");
+    const failures: unknown[] = [];
+    try {
+      const ordinary = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: "exports/ordinary.txt" },
+      });
+      const outbound = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: join(currentRunOutput, "current.txt") },
+      });
+      expect(ordinary).toMatchObject({ structuredContent: { published: true } });
+      expect(outbound).toMatchObject({ structuredContent: { published: true } });
+
+      const firstArtifactId = (ordinary.structuredContent as { attachmentId: string }).attachmentId;
+      for (const path of [
+        join(otherRunOutput, "other.txt"),
+        join(memoryRoot, "harmless-name.txt"),
+        join(stateRoot, "harmless-name.txt"),
+        join(nestedPrivateRoot, "harmless-name.txt"),
+        join(artifactDir, "run-private.events.jsonl"),
+        join(artifactDir, "reply-files", firstArtifactId, "content"),
+      ]) {
+        failures.push(await publisher.client.callTool({
+          name: PUBLISH_REPLY_FILE_TOOL_NAME,
+          arguments: { path },
+        }));
+      }
+    } finally {
+      await publisher.close();
+    }
+
+    expect(failures).toHaveLength(6);
+    expect(failures).toEqual(failures.map(() => expect.objectContaining({
+      isError: true,
+      structuredContent: { published: false, code: "artifact_publish_failed" },
+    })));
+    const serializedFailures = JSON.stringify(failures);
+    for (const secret of [
+      "other-run-private",
+      "memory-private",
+      "state-private",
+      "nested-private",
+      "transcript-private",
+      artifactDir,
+    ]) expect(serializedFailures).not.toContain(secret);
+
+    const response = await service.wrapResponder(responder("run-scope")).respond({
+      conversationId: "delivery-conversation",
+      text: "publish",
+      abortSignal: new AbortController().signal,
+    }, stream);
+    expect(response.text).toBe("Done");
+    expect(response.parts?.filter((part) => part.type === "attachment")).toHaveLength(2);
+    expect(response.parts?.filter((part) => part.type === "failure")).toHaveLength(6);
+  });
+
+  it("rejects hidden, credential, key-store, state-database, and Unicode-disguised names at any depth", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    await mkdir(join(workspace, "nested", ".hidden"), { recursive: true });
+    const blocked = [
+      ".env",
+      ".ENV.local",
+      "．ｅｎｖ",
+      "nested/.hidden/value.txt",
+      "nested/mono-agent.config.json",
+      "nested/MCP.JSON",
+      "nested/auth.json",
+      "nested/provider-credentials.toml",
+      "nested/ＳＥＣＲＥＴＳ.yaml",
+      "nested/To\u200Dken.json",
+      "nested/npmrc",
+      "nested/id_ED25519",
+      "nested/server.PEM",
+      "nested/private.KEY",
+      "nested/client.CRT",
+      "nested/store.P12",
+      "nested/vault.JKS",
+      "nested/key-store.json",
+      "nested/trust‍store.txt",
+      "nested/OAuth2.json",
+      "nested/cacerts",
+      "nested/KUBECONFIG",
+      "nested/memory.SQLite",
+      "nested/passwords.KDBX",
+    ] as const;
+    for (const path of blocked) await writeFile(join(workspace, path), `private:${path}`);
+    const allowed = ["nested/re\u0301sume\u0301.txt", "nested/authors-notes.txt", "nested/tokenizer.txt"] as const;
+    for (const path of allowed) await writeFile(join(workspace, path), `public:${path}`);
+
+    const service = createReplyArtifactService({ artifactDir: join(root, "artifacts"), workspace });
+    const publisher = await openPublisher(service, "run-names", "conversation");
+    const blockedResults: unknown[] = [];
+    const allowedResults: unknown[] = [];
+    try {
+      for (const path of blocked) {
+        blockedResults.push(await publisher.client.callTool({ name: PUBLISH_REPLY_FILE_TOOL_NAME, arguments: { path } }));
+      }
+    } finally {
+      await publisher.close();
+    }
+    const allowedPublisher = await openPublisher(service, "run-harmless-names", "conversation");
+    try {
+      for (const path of allowed) {
+        allowedResults.push(await allowedPublisher.client.callTool({ name: PUBLISH_REPLY_FILE_TOOL_NAME, arguments: { path } }));
+      }
+    } finally {
+      await allowedPublisher.close();
+    }
+
+    expect(blockedResults).toEqual(blockedResults.map(() => expect.objectContaining({
+      isError: true,
+      structuredContent: { published: false, code: "artifact_publish_failed" },
+    })));
+    for (const result of allowedResults) expect(result).toMatchObject({
+      structuredContent: { published: true },
+    });
+    const serialized = JSON.stringify(blockedResults);
+    expect(Buffer.byteLength(serialized, "utf8")).toBeLessThan(32 * 1024);
+    expect(serialized).not.toContain("private:");
+    expect(serialized).not.toContain(workspace);
+  });
+
+  it("rejects hardlink aliases and a hardlink swapped in after canonical authorization", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    const privateRoot = join(root, "private-root");
+    await mkdir(workspace);
+    await mkdir(privateRoot);
+    const privateFile = join(privateRoot, "payload.txt");
+    const alias = join(workspace, "ordinary-report.txt");
+    await writeFile(privateFile, "hardlink-private-sentinel");
+    await link(privateFile, alias);
+    const directService = createReplyArtifactService({ artifactDir: join(root, "artifacts-direct"), workspace });
+    const directPublisher = await openPublisher(directService, "run-hardlink", "conversation");
+    try {
+      const result = await directPublisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: alias },
+      });
+      expect(result).toMatchObject({ isError: true, structuredContent: { code: "artifact_publish_failed" } });
+      expect(JSON.stringify(result)).not.toContain("hardlink-private-sentinel");
+      expect(JSON.stringify(result)).not.toContain(privateRoot);
+    } finally {
+      await directPublisher.close();
+    }
+
+    const swapped = join(workspace, "swapped-report.txt");
+    await writeFile(swapped, "initial-public");
+    const swapService = createReplyArtifactService({
+      artifactDir: join(root, "artifacts-swap"),
+      workspace,
+      beforeSourceOpen: async () => {
+        await rm(swapped);
+        await link(privateFile, swapped);
+      },
+    });
+    const swapPublisher = await openPublisher(swapService, "run-hardlink-swap", "conversation");
+    try {
+      const result = await swapPublisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: swapped },
+      });
+      expect(result).toMatchObject({ isError: true, structuredContent: { code: "artifact_publish_failed" } });
+      expect(JSON.stringify(result)).not.toContain("hardlink-private-sentinel");
+      expect(JSON.stringify(result)).not.toContain(privateRoot);
+    } finally {
+      await swapPublisher.close();
+    }
+  });
+
+  it("normalizes harmless display names, strips bidi controls, and truncates only at Unicode code-point boundaries", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    await writeFile(join(workspace, "one.txt"), "one");
+    await writeFile(join(workspace, "two.txt"), "two");
+    const service = createReplyArtifactService({ artifactDir: join(root, "artifacts"), workspace });
+    const publisher = await openPublisher(service, "run-display", "conversation");
+    try {
+      await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: "one.txt", name: `Cafe\u0301\u202e\u2066-${"😀".repeat(80)}.txt` },
+      });
+      await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: "two.txt", name: "quarterly report.txt" },
+      });
+    } finally {
+      await publisher.close();
+    }
+    const response = await service.wrapResponder(responder("run-display")).respond({
+      conversationId: "conversation",
+      text: "publish",
+      abortSignal: new AbortController().signal,
+    }, stream);
+    const attachments = response.parts?.filter(
+      (part): part is AgentReplyAttachmentPart => part.type === "attachment",
+    ) ?? [];
+    expect(attachments[0]?.name.startsWith("Café-")).toBe(true);
+    expect(attachments[0]?.name).not.toMatch(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u);
+    expect(attachments[0]?.name).not.toContain("�");
+    expect(Buffer.byteLength(attachments[0]!.name, "utf8")).toBeLessThanOrEqual(240);
+    expect(attachments[1]?.name).toBe("quarterly report.txt");
   });
 
   it("records traversal, symlink, oversized, and missing-file failures without losing successful parts", async () => {
@@ -214,6 +484,57 @@ describe("reply artifact publication", () => {
     expect(response.parts).toEqual([
       expect.objectContaining({ type: "failure", code: "artifact_publish_failed" }),
     ]);
+  });
+
+  it("turns only a delivery-binding overflow into a bounded failure and preserves text plus good files", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    const artifactDir = join(root, "artifacts");
+    await mkdir(workspace);
+    await writeFile(join(workspace, "bad.txt"), "bad-content");
+    await writeFile(join(workspace, "good.txt"), "good-content");
+    const service = createReplyArtifactService({ artifactDir, workspace });
+    const publisher = await openPublisher(service, "run-binding", "origin");
+    let badId = "";
+    let goodId = "";
+    try {
+      const bad = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: "bad.txt" },
+      });
+      const good = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: "good.txt" },
+      });
+      badId = (bad.structuredContent as { attachmentId: string }).attachmentId;
+      goodId = (good.structuredContent as { attachmentId: string }).attachmentId;
+    } finally {
+      await publisher.close();
+    }
+    await padJsonFileToLimit(join(artifactDir, "reply-files", badId, "metadata.json"), 16 * 1024);
+
+    const response = await service.wrapResponder(responder("run-binding")).respond({
+      conversationId: "delivery",
+      text: "publish",
+      abortSignal: new AbortController().signal,
+    }, stream);
+
+    expect(response.text).toBe("Done");
+    expect(response.parts).toEqual([
+      expect.objectContaining({
+        type: "failure",
+        code: "artifact_publish_failed",
+        relatedPartId: badId,
+        message: "The generated file could not be finalized for delivery.",
+      }),
+      expect.objectContaining({ type: "attachment", id: goodId }),
+    ]);
+    expect(Buffer.byteLength(JSON.stringify(response.parts?.[0]), "utf8")).toBeLessThan(1_024);
+    expect(JSON.stringify(response.parts)).not.toContain("padding");
+    await expect(access(join(artifactDir, "reply-files", badId))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(join(artifactDir, "reply-files", goodId, "metadata.json"))).resolves.toBeUndefined();
+    expect((await readdir(join(artifactDir, "reply-files", goodId))).some((name) => name.endsWith(".partial")))
+      .toBe(false);
   });
 
   it("fails closed for expired, missing, and integrity-mismatched references", async () => {
@@ -331,6 +652,185 @@ describe("reply artifact publication", () => {
     await service.cleanupExpired();
     await expect(access(join(artifactRoot, ".staging", stale))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(access(join(artifactRoot, ".staging", recent))).resolves.toBeUndefined();
+  });
+
+  it("serializes aggregate admission across service instances without deleting another active staging directory", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    const artifactDir = join(root, "artifacts");
+    await mkdir(workspace);
+    await writeFile(join(workspace, "first.txt"), "12345678");
+    await writeFile(join(workspace, "second.txt"), "x");
+    const entered = deferred();
+    const release = deferred();
+    let commits = 0;
+    const storageBudget = replyArtifactStorageBudgetFor(artifactDir, (16 * 1024) + 8);
+    const firstService = createReplyArtifactService({
+      artifactDir,
+      workspace,
+      storageBudget,
+      stagingGraceMs: 1,
+      now: () => new Date(Date.now() + 60_000),
+      beforePublicationCommit: async () => {
+        commits += 1;
+        if (commits !== 1) return;
+        entered.resolve();
+        await release.promise;
+      },
+    });
+    const secondService = createReplyArtifactService({
+      artifactDir,
+      workspace,
+      storageBudget,
+      stagingGraceMs: 1,
+      now: () => new Date(Date.now() + 60_000),
+    });
+    const firstPublisher = await openPublisher(firstService, "run-cap-first", "conversation");
+    const secondPublisher = await openPublisher(secondService, "run-cap-second", "conversation");
+    const firstPublishing = firstPublisher.client.callTool({
+      name: PUBLISH_REPLY_FILE_TOOL_NAME,
+      arguments: { path: "first.txt" },
+    });
+    await entered.promise;
+    const staged = await readdir(join(artifactDir, "reply-files", ".staging"));
+    expect(staged).toHaveLength(1);
+    await secondService.cleanupExpired();
+    await expect(access(join(artifactDir, "reply-files", ".staging", staged[0]!))).resolves.toBeUndefined();
+
+    const rejected = await secondPublisher.client.callTool({
+      name: PUBLISH_REPLY_FILE_TOOL_NAME,
+      arguments: { path: "second.txt" },
+    });
+    expect(rejected).toMatchObject({
+      isError: true,
+      structuredContent: { published: false, code: "artifact_publish_failed" },
+      content: [{ text: "Reply artifact storage is full; this file was not published." }],
+    });
+    release.resolve();
+    const accepted = await firstPublishing;
+    await firstPublisher.close();
+    await secondPublisher.close();
+    expect(accepted).toMatchObject({ structuredContent: { published: true } });
+    const acceptedId = (accepted.structuredContent as { attachmentId: string }).attachmentId;
+    await expect(access(join(artifactDir, "reply-files", acceptedId, "content"))).resolves.toBeUndefined();
+  });
+
+  it("does not expire committed current-run content before responder finalization", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    const artifactDir = join(root, "artifacts");
+    await mkdir(workspace);
+    await writeFile(join(workspace, "report.txt"), "current-run");
+    let clock = new Date("2026-08-15T12:00:00.000Z");
+    const storageBudget = replyArtifactStorageBudgetFor(artifactDir);
+    const publishingService = createReplyArtifactService({
+      artifactDir,
+      workspace,
+      storageBudget,
+      retentionDays: 1,
+      now: () => clock,
+    });
+    const cleanupService = createReplyArtifactService({
+      artifactDir,
+      workspace,
+      storageBudget,
+      retentionDays: 1,
+      now: () => clock,
+    });
+    const publisher = await openPublisher(publishingService, "run-current", "conversation");
+    let artifactId = "";
+    try {
+      const result = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: "report.txt" },
+      });
+      artifactId = (result.structuredContent as { attachmentId: string }).attachmentId;
+    } finally {
+      await publisher.close();
+    }
+    const directory = join(artifactDir, "reply-files", artifactId);
+    clock = new Date("2026-08-17T12:00:00.000Z");
+    await cleanupService.cleanupExpired();
+    await expect(access(directory)).resolves.toBeUndefined();
+
+    const response = await publishingService.wrapResponder(responder("run-current")).respond({
+      conversationId: "conversation",
+      text: "publish",
+      abortSignal: new AbortController().signal,
+    }, stream);
+    expect(response.parts).toEqual([expect.objectContaining({ type: "attachment", id: artifactId })]);
+    await cleanupService.cleanupExpired();
+    await expect(access(directory)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("inventories both durable namespaces after restart and fails closed without evicting stored content", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    const artifactDir = join(root, "artifacts");
+    const replySeed = join(artifactDir, "reply-files", "restart-seed", "content");
+    const appSeed = join(artifactDir, "mcp-apps", "restart-seed", "resource.html");
+    await mkdir(workspace);
+    await mkdir(join(replySeed, ".."), { recursive: true });
+    await mkdir(join(appSeed, ".."), { recursive: true });
+    await writeFile(replySeed, "r".repeat(1_024));
+    await writeFile(appSeed, "a".repeat(1_024));
+    await writeFile(join(workspace, "new.txt"), "x");
+    const storageBudget = replyArtifactStorageBudgetFor(artifactDir, (16 * 1024) + 1_024);
+    const service = createReplyArtifactService({ artifactDir, workspace, storageBudget });
+    const publisher = await openPublisher(service, "run-restart-inventory", "conversation");
+    try {
+      const result = await publisher.client.callTool({
+        name: PUBLISH_REPLY_FILE_TOOL_NAME,
+        arguments: { path: "new.txt" },
+      });
+      expect(result).toMatchObject({
+        isError: true,
+        content: [{ text: "Reply artifact storage is full; this file was not published." }],
+      });
+    } finally {
+      await publisher.close();
+    }
+    await expect(access(replySeed)).resolves.toBeUndefined();
+    await expect(access(appSeed)).resolves.toBeUndefined();
+  });
+
+  it("does not expire an authorized stream until its pinned body finishes", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    const artifactDir = join(root, "artifacts");
+    await mkdir(workspace);
+    await writeFile(join(workspace, "report.txt"), "authorized-stream");
+    let clock = new Date("2026-08-15T12:00:00.000Z");
+    const service = createReplyArtifactService({
+      artifactDir,
+      workspace,
+      retentionDays: 1,
+      now: () => clock,
+    });
+    const publisher = await openPublisher(service, "run-stream", "conversation");
+    try {
+      await publisher.client.callTool({ name: PUBLISH_REPLY_FILE_TOOL_NAME, arguments: { path: "report.txt" } });
+    } finally {
+      await publisher.close();
+    }
+    const wrapped = service.wrapResponder(responder("run-stream"));
+    const response = await wrapped.respond({
+      conversationId: "conversation",
+      text: "publish",
+      abortSignal: new AbortController().signal,
+    }, stream);
+    const attachment = response.parts?.[0] as AgentReplyAttachmentPart;
+    const opened = await wrapped.openReplyArtifact?.({
+      conversationId: "conversation",
+      reference: attachment.reference,
+    });
+    clock = new Date("2026-08-17T12:00:00.000Z");
+    await service.cleanupExpired();
+    const directory = join(artifactDir, "reply-files", attachment.reference.id);
+    await expect(access(directory)).resolves.toBeUndefined();
+    expect(await collect(opened!.body)).toEqual(Buffer.from("authorized-stream"));
+    await service.cleanupExpired();
+    await expect(access(directory)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("rejects a swapped directory component before any adversarial bytes are copied", async () => {

@@ -5,6 +5,7 @@ import {
   fstat,
   openSync,
   read as readFd,
+  type Dirent,
   type Stats,
 } from "node:fs";
 import {
@@ -65,6 +66,56 @@ const DEFAULT_RETENTION_DAYS = 30;
 const READ_CHUNK_BYTES = 64 * 1024;
 const STAGING_NAMESPACE = ".staging";
 const DEFAULT_STAGING_GRACE_MS = 10 * 60 * 1000;
+export const DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES = 256 * 1024 * 1024;
+const REPLY_ARTIFACT_STORAGE_NAMESPACES = ["reply-files", "mcp-apps"] as const;
+const BIDI_CONTROL = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu;
+const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
+const SENSITIVE_FILE_EXTENSIONS = [
+  ".cer",
+  ".crt",
+  ".csr",
+  ".db",
+  ".db-shm",
+  ".db-wal",
+  ".der",
+  ".env",
+  ".jks",
+  ".kdb",
+  ".kdbx",
+  ".key",
+  ".keystore",
+  ".mobileprovision",
+  ".ovpn",
+  ".p12",
+  ".p8",
+  ".pem",
+  ".pfx",
+  ".pkcs12",
+  ".pkcs8",
+  ".ppk",
+  ".sqlite",
+  ".sqlite3",
+] as const;
+const SENSITIVE_NAME_SEGMENTS = new Set([
+  "apikey",
+  "auth",
+  "authorization",
+  "cert",
+  "certificate",
+  "certificates",
+  "credential",
+  "credentials",
+  "keystore",
+  "keyring",
+  "oauth",
+  "oauth1",
+  "oauth2",
+  "secret",
+  "secrets",
+  "token",
+  "tokens",
+  "truststore",
+]);
 // Darwin's O_NOFOLLOW_ANY rejects symlinks in every path component. Node does
 // not currently expose the constant, so use the stable fcntl.h value only on
 // Darwin and retain post-open identity verification everywhere else.
@@ -96,11 +147,15 @@ interface ReplyArtifactManifest {
 export interface ReplyArtifactServiceOptions {
   readonly artifactDir: string;
   readonly workspace: string;
+  /** Resolved state, memory, credential, config, and other private roots. */
+  readonly privateRoots?: readonly string[];
   readonly retentionDays?: number;
   readonly maxFileBytes?: number;
   readonly now?: () => Date;
   /** Shared with other reply-part producers in the app composition root. */
   readonly replyPartBudget?: ReplyPartBudget;
+  /** Shared aggregate durable-storage admission across rich-part producers. */
+  readonly storageBudget?: ReplyArtifactStorageBudget;
   /** @internal deterministic cleanup/concurrency test seam. */
   readonly stagingGraceMs?: number;
   /** @internal runs after canonicalization and before the source fd is opened. */
@@ -116,6 +171,115 @@ export interface ReplyArtifactService {
   cleanupExpired(): Promise<void>;
 }
 
+type ReplyArtifactStorageNamespace = (typeof REPLY_ARTIFACT_STORAGE_NAMESPACES)[number];
+
+export interface ReplyArtifactStorageReservation {
+  release(): Promise<void>;
+}
+
+export interface ReplyArtifactStorageProtection {
+  release(): Promise<void>;
+}
+
+export interface ReplyArtifactStorageBudget {
+  readonly maxBytes: number;
+  reserve(maximumBytes: number): Promise<ReplyArtifactStorageReservation | undefined>;
+  protect(namespace: ReplyArtifactStorageNamespace, id: string): Promise<ReplyArtifactStorageProtection>;
+  runExclusive<T>(
+    operation: (isProtected: (namespace: ReplyArtifactStorageNamespace, id: string) => boolean) => Promise<T>,
+  ): Promise<T>;
+}
+
+interface ReplyArtifactStorageState {
+  readonly artifactDir: string;
+  readonly maxBytes: number;
+  readonly protections: Map<string, number>;
+  reservedBytes: number;
+  gate: Promise<void>;
+}
+
+const replyArtifactStorageStates = new Map<string, ReplyArtifactStorageState>();
+
+/**
+ * One process-wide coordinator per artifact root. Every admission re-inventories
+ * both durable rich-reply namespaces, so a fresh process accounts for content
+ * left by a previous one before accepting any new bytes.
+ */
+export function replyArtifactStorageBudgetFor(
+  artifactDir: string,
+  maxBytes = DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
+): ReplyArtifactStorageBudget {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new RangeError("reply artifact storage maxBytes must be a positive safe integer.");
+  }
+  const canonicalArtifactDir = resolve(artifactDir);
+  const stateKey = `${canonicalArtifactDir}\0${String(maxBytes)}`;
+  const state = replyArtifactStorageStates.get(stateKey) ?? {
+    artifactDir: canonicalArtifactDir,
+    maxBytes,
+    protections: new Map<string, number>(),
+    reservedBytes: 0,
+    gate: Promise.resolve(),
+  };
+  replyArtifactStorageStates.set(stateKey, state);
+  return {
+    maxBytes,
+    async reserve(maximumBytes) {
+      if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) {
+        throw new RangeError("reply artifact storage reservation must be a non-negative safe integer.");
+      }
+      return await runStorageExclusive(state, async () => {
+        const storedBytes = await inventoryReplyArtifactBytes(state.artifactDir);
+        if (
+          maximumBytes > state.maxBytes
+          || storedBytes > state.maxBytes - state.reservedBytes - maximumBytes
+        ) return undefined;
+        state.reservedBytes += maximumBytes;
+        let released = false;
+        return {
+          release: async () => {
+            if (released) return;
+            released = true;
+            await runStorageExclusive(state, async () => {
+              state.reservedBytes = Math.max(0, state.reservedBytes - maximumBytes);
+            });
+          },
+        };
+      });
+    },
+    async protect(namespace, id) {
+      const key = storageProtectionKey(namespace, id);
+      await runStorageExclusive(state, async () => {
+        state.protections.set(key, (state.protections.get(key) ?? 0) + 1);
+      });
+      let released = false;
+      return {
+        release: async () => {
+          if (released) return;
+          released = true;
+          await runStorageExclusive(state, async () => {
+            const count = state.protections.get(key) ?? 0;
+            if (count <= 1) state.protections.delete(key);
+            else state.protections.set(key, count - 1);
+          });
+        },
+      };
+    },
+    async runExclusive(operation) {
+      return await runStorageExclusive(state, async () => await operation(
+        (namespace, id) => state.protections.has(storageProtectionKey(namespace, id)),
+      ));
+    },
+  };
+}
+
+export class ReplyArtifactStorageFullError extends Error {
+  constructor() {
+    super("The aggregate reply artifact storage ceiling was reached.");
+    this.name = "ReplyArtifactStorageFullError";
+  }
+}
+
 /** Resolve the same policy aliases accepted by other app-owned MCP tools. */
 export function isPublishReplyFileToolAllowed(policy: ReplyArtifactPolicy | undefined): boolean {
   const allowed = policy?.allowedTools ?? [];
@@ -129,18 +293,26 @@ export function isPublishReplyFileToolAllowed(policy: ReplyArtifactPolicy | unde
  * metadata and opaque ids; bytes stay below the private artifact root.
  */
 export function createReplyArtifactService(options: ReplyArtifactServiceOptions): ReplyArtifactService {
-  const root = resolve(options.artifactDir, "reply-files");
+  const artifactDir = resolve(options.artifactDir);
+  const root = resolve(artifactDir, "reply-files");
   const stagingRoot = join(root, STAGING_NAMESPACE);
   const workspace = resolve(options.workspace);
+  const outboundRoot = resolve(artifactDir, "outbound");
+  const privateRoots = [
+    artifactDir,
+    resolve(workspace, ".mono-agent"),
+    ...(options.privateRoots ?? []).map((path) => resolve(path)),
+  ];
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_AGENT_ATTACHMENT_MAX_BYTES;
   const retentionDays = options.retentionDays ?? DEFAULT_RETENTION_DAYS;
   const stagingGraceMs = options.stagingGraceMs ?? DEFAULT_STAGING_GRACE_MS;
   const now = options.now ?? (() => new Date());
   const budget = options.replyPartBudget ?? createReplyPartBudget();
+  const storage = options.storageBudget ?? replyArtifactStorageBudgetFor(artifactDir);
   const partsByRun = new Map<string, AgentReplyPart[]>();
   const partsByIdentityByRun = new Map<string, Map<string, AgentReplyPart>>();
   const artifactIdsByRun = new Map<string, Set<string>>();
-  const activeStagingIds = new Set<string>();
+  const artifactProtectionsByRun = new Map<string, Map<string, ReplyArtifactStorageProtection>>();
   const responseContext = new AsyncLocalStorage<{ readonly runIds: Set<string> }>();
   const runOwners = new Map<string, { readonly runIds: Set<string> } | undefined>();
 
@@ -186,20 +358,26 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
   }, input: PublishInput): Promise<AgentReplyAttachmentPart | AgentReplyPartFailure> => {
     let claimedIdentity: string | undefined;
     try {
-      const source = await openAuthorizedSource(input.path, workspace, [
-        resolve(options.artifactDir, "outbound", binding.runId),
-      ], options.beforeSourceOpen);
+      const source = await openAuthorizedSource(
+        input.path,
+        workspace,
+        runOutboundRoot(outboundRoot, binding.runId),
+        privateRoots,
+        options.beforeSourceOpen,
+      );
       try {
         const sourceStat = await source.stat();
         if (!sourceStat.isFile()) throw new CodedError("artifact_publish_failed", "Only regular files can be published.");
         if (sourceStat.size > maxFileBytes) {
           throw new CodedError("artifact_too_large", `Generated files may not exceed ${maxFileBytes} bytes.`);
         }
+        const storageReservation = await storage.reserve(sourceStat.size + MAX_MANIFEST_BYTES);
+        if (storageReservation === undefined) throw new ReplyArtifactStorageFullError();
         const id = randomUUID();
         const directory = join(root, id);
         const stagingDirectory = join(stagingRoot, id);
         const contentPath = join(stagingDirectory, "content");
-        activeStagingIds.add(id);
+        const storageProtection = await storage.protect("reply-files", id);
         let published = false;
         try {
           await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
@@ -225,6 +403,10 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
             await target.close();
           }
           if (copied !== sourceStat.size) {
+            throw new CodedError("artifact_publish_failed", "The generated file changed while it was being published.");
+          }
+          const finalSourceStat = await source.verify();
+          if (!sameSourceSnapshot(sourceStat, finalSourceStat)) {
             throw new CodedError("artifact_publish_failed", "The generated file changed while it was being published.");
           }
           const createdAt = now();
@@ -256,11 +438,16 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
           const ids = artifactIdsByRun.get(binding.runId) ?? new Set<string>();
           ids.add(id);
           artifactIdsByRun.set(binding.runId, ids);
+          const protections = artifactProtectionsByRun.get(binding.runId)
+            ?? new Map<string, ReplyArtifactStorageProtection>();
+          protections.set(id, storageProtection);
+          artifactProtectionsByRun.set(binding.runId, protections);
           published = true;
           return part;
         } finally {
           if (!published) await rm(stagingDirectory, { recursive: true, force: true }).catch(() => undefined);
-          activeStagingIds.delete(id);
+          if (!published) await storageProtection.release();
+          await storageReservation.release();
         }
       } finally {
         await source.close();
@@ -276,11 +463,14 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
         mediaType: input.mediaType,
         code,
       })}`;
+      const storageFull = error instanceof ReplyArtifactStorageFullError;
       const failure: AgentReplyPartFailure = {
         type: "failure",
         id: stablePartId("reply-file-failure", failureIdentity),
         code,
-        message: code === "artifact_too_large"
+        message: storageFull
+          ? "Reply artifact storage is full; this file was not published."
+          : code === "artifact_too_large"
           ? errorMessage(error)
           : "The generated file could not be published safely.",
       };
@@ -349,60 +539,76 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
   };
 
   async function open(request: AgentReplyArtifactOpenRequest): Promise<AgentReplyArtifactStream> {
-    const manifest = await readManifest(root, request.reference.id);
-    if (
-      request.conversationId !== manifest.conversationId
-      && request.conversationId !== manifest.deliveryConversationId
-    ) {
-      throw new CodedError("artifact_forbidden", "The artifact does not belong to this conversation.");
-    }
-    if (Date.parse(manifest.expiresAt) <= now().getTime()) {
-      throw new CodedError("artifact_expired", "The generated file has expired.");
-    }
-    if (request.expectedIntegrityId !== undefined && request.expectedIntegrityId !== manifest.integrityId) {
-      throw new CodedError("artifact_integrity_failed", "The message integrity id does not match the artifact.");
-    }
-    const contentPath = join(root, manifest.id, "content");
-    const handle = await openFile(contentPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const protection = await storage.protect("reply-files", request.reference.id);
     try {
-      const fileStat = await handle.stat();
-      if (!fileStat.isFile() || fileStat.size !== manifest.sizeBytes || fileStat.size > maxFileBytes) {
-        throw new CodedError("artifact_integrity_failed", "The generated file size no longer matches its manifest.");
+      const manifest = await readManifest(root, request.reference.id);
+      if (
+        request.conversationId !== manifest.conversationId
+        && request.conversationId !== manifest.deliveryConversationId
+      ) {
+        throw new CodedError("artifact_forbidden", "The artifact does not belong to this conversation.");
       }
-      const actualIntegrity = await hashHandle(handle, fileStat.size);
-      if (actualIntegrity !== manifest.integrityId) {
-        throw new CodedError("artifact_integrity_failed", "The generated file failed its integrity check.");
+      if (Date.parse(manifest.expiresAt) <= now().getTime()) {
+        throw new CodedError("artifact_expired", "The generated file has expired.");
       }
-      const attachment = attachmentPart(manifest, manifest.id);
-      return { attachment, body: streamHandle(handle, fileStat.size) };
+      if (request.expectedIntegrityId !== undefined && request.expectedIntegrityId !== manifest.integrityId) {
+        throw new CodedError("artifact_integrity_failed", "The message integrity id does not match the artifact.");
+      }
+      const contentPath = join(root, manifest.id, "content");
+      const handle = await openFile(contentPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try {
+        const fileStat = await handle.stat();
+        if (!fileStat.isFile() || fileStat.size !== manifest.sizeBytes || fileStat.size > maxFileBytes) {
+          throw new CodedError("artifact_integrity_failed", "The generated file size no longer matches its manifest.");
+        }
+        const actualIntegrity = await hashHandle(handle, fileStat.size);
+        if (actualIntegrity !== manifest.integrityId) {
+          throw new CodedError("artifact_integrity_failed", "The generated file failed its integrity check.");
+        }
+        const attachment = attachmentPart(manifest, manifest.id);
+        return {
+          attachment,
+          body: streamHandle(handle, fileStat.size, async () => await protection.release()),
+        };
+      } catch (error) {
+        await handle.close().catch(() => undefined);
+        throw error;
+      }
     } catch (error) {
-      await handle.close().catch(() => undefined);
+      await protection.release();
       throw error;
     }
   }
 
   async function cleanupExpired(): Promise<void> {
-    let entries: string[];
-    try {
-      entries = await readdir(root);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw error;
-    }
-    const cutoff = now().getTime();
-    await Promise.all(entries.filter((entry) => ARTIFACT_ID.test(entry)).map(async (entry) => {
+    await storage.runExclusive(async (isProtected) => {
+      let entries: string[];
       try {
-        const manifest = await readManifest(root, entry);
-        if (Date.parse(manifest.expiresAt) <= cutoff) {
-          await rm(join(root, entry), { recursive: true, force: true });
-        }
-      } catch {
-        // Partial/corrupt publications are never served. Remove only directories
-        // whose names were minted by this service.
-        await rm(join(root, entry), { recursive: true, force: true }).catch(() => undefined);
+        entries = await readdir(root);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw error;
       }
-    }));
-    await cleanupStaging(stagingRoot, cutoff - stagingGraceMs, activeStagingIds);
+      const cutoff = now().getTime();
+      await Promise.all(entries.filter((entry) => ARTIFACT_ID.test(entry)).map(async (entry) => {
+        if (isProtected("reply-files", entry)) return;
+        try {
+          const manifest = await readManifest(root, entry);
+          if (Date.parse(manifest.expiresAt) <= cutoff) {
+            await rm(join(root, entry), { recursive: true, force: true });
+          }
+        } catch {
+          // Partial/corrupt publications are never served. Remove only directories
+          // whose names were minted by this service.
+          await rm(join(root, entry), { recursive: true, force: true }).catch(() => undefined);
+        }
+      }));
+      await cleanupStaging(
+        stagingRoot,
+        cutoff - stagingGraceMs,
+        (id) => isProtected("reply-files", id),
+      );
+    });
   }
 
   function wrapResponder(responder: AgentResponder): AgentResponder {
@@ -420,13 +626,13 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
           if (runId === undefined || (context.runIds.size > 0 && !context.runIds.has(runId))) return response;
           const published = partsByRun.get(runId) ?? [];
           if (published.length === 0) {
-            retainRun(runId);
+            await retainRun(runId);
             retainedRunId = runId;
             return response;
           }
-          await bindDeliveryConversation(root, published, request.conversationId);
-          const parts = mergeReplyParts(response.parts, published);
-          retainRun(runId);
+          const finalized = await finalizeDeliveryParts({ runId, conversationId: request.conversationId }, published);
+          const parts = mergeReplyParts(response.parts, finalized);
+          await retainRun(runId);
           retainedRunId = runId;
           return { ...response, parts };
         } finally {
@@ -439,17 +645,20 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
     };
   }
 
-  function retainRun(runId: string): void {
+  async function retainRun(runId: string): Promise<void> {
+    const protections = [...(artifactProtectionsByRun.get(runId)?.values() ?? [])];
     partsByRun.delete(runId);
     partsByIdentityByRun.delete(runId);
     artifactIdsByRun.delete(runId);
+    artifactProtectionsByRun.delete(runId);
     runOwners.delete(runId);
     budget.release(runId);
+    await Promise.all(protections.map(async (protection) => await protection.release()));
   }
 
   async function discardRun(runId: string): Promise<void> {
     const ids = [...(artifactIdsByRun.get(runId) ?? [])];
-    retainRun(runId);
+    await retainRun(runId);
     await Promise.all(ids.map(async (id) => {
       await rm(join(root, id), { recursive: true, force: true }).catch(() => undefined);
     }));
@@ -466,6 +675,70 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
       else partsByRun.set(runId, parts);
     }
     budget.unclaim(runId, identity);
+  }
+
+  async function finalizeDeliveryParts(
+    binding: { readonly runId: string; readonly conversationId: string },
+    parts: readonly AgentReplyPart[],
+  ): Promise<readonly AgentReplyPart[]> {
+    const finalized: AgentReplyPart[] = [];
+    for (const part of parts) {
+      if (part.type !== "attachment") {
+        finalized.push(part);
+        continue;
+      }
+      const protection = await storage.protect("reply-files", part.reference.id);
+      try {
+        await bindDeliveryConversation(root, part, binding.conversationId, storage);
+        finalized.push(part);
+      } catch {
+        const failure = replaceAttachmentWithDeliveryFailure(binding.runId, part);
+        artifactIdsByRun.get(binding.runId)?.delete(part.reference.id);
+        await rm(join(root, part.reference.id), { recursive: true, force: true }).catch(() => undefined);
+        finalized.push(failure);
+      } finally {
+        await protection.release();
+      }
+    }
+    return finalized;
+  }
+
+  function replaceAttachmentWithDeliveryFailure(
+    runId: string,
+    part: AgentReplyAttachmentPart,
+  ): AgentReplyPartFailure {
+    const failureIdentity = `attachment-delivery-failure:${part.reference.id}`;
+    const failure: AgentReplyPartFailure = {
+      type: "failure",
+      id: stablePartId("reply-file-delivery-failure", failureIdentity),
+      code: "artifact_publish_failed",
+      message: "The generated file could not be finalized for delivery.",
+      relatedPartId: part.id,
+    };
+    replaceRecordedPart(runId, part, failureIdentity, failure);
+    return failure;
+  }
+
+  function replaceRecordedPart(
+    runId: string,
+    replaced: AgentReplyPart,
+    replacementIdentity: string,
+    replacement: AgentReplyPart,
+  ): void {
+    const byIdentity = partsByIdentityByRun.get(runId) ?? new Map<string, AgentReplyPart>();
+    const oldIdentity = [...byIdentity].find(([, part]) => part === replaced)?.[0];
+    if (oldIdentity !== undefined) {
+      byIdentity.delete(oldIdentity);
+      budget.unclaim(runId, oldIdentity);
+    }
+    if (budget.claim(runId, replacementIdentity) === "accepted") {
+      byIdentity.set(replacementIdentity, replacement);
+    }
+    const current = partsByRun.get(runId) ?? [];
+    const index = current.indexOf(replaced);
+    if (index >= 0) current[index] = replacement;
+    partsByRun.set(runId, current);
+    partsByIdentityByRun.set(runId, byIdentity);
   }
 
   return { createExtension, wrapResponder, open, cleanupExpired };
@@ -518,19 +791,37 @@ function createPublishServer(
 async function openAuthorizedSource(
   pathInput: string,
   workspace: string,
-  extraRoots: readonly string[],
+  currentRunOutboundRoot: string | undefined,
+  privateRoots: readonly string[],
   beforeOpen?: () => void | Promise<void>,
 ): Promise<AuthorizedSource> {
   if (pathInput.includes("\0")) throw new CodedError("artifact_publish_failed", "Invalid generated file path.");
   const candidate = resolve(isAbsolute(pathInput) ? pathInput : join(workspace, pathInput));
-  const roots = [workspace, ...extraRoots].map((root) => resolve(root));
-  if (!roots.some((root) => isPathInside(root, candidate))) {
+  const outboundCandidate = currentRunOutboundRoot !== undefined
+    && isPathInside(currentRunOutboundRoot, candidate);
+  const authorizationRoot = outboundCandidate ? currentRunOutboundRoot : workspace;
+  if (!isPathInside(authorizationRoot, candidate)) {
     throw new CodedError("artifact_publish_failed", "Generated file path is outside the authorized roots.");
   }
+  assertSafePublicationComponents(authorizationRoot, candidate);
+  if (isBlockedByPrivateRoot(candidate, privateRoots, outboundCandidate ? authorizationRoot : undefined)) {
+    throw new CodedError("artifact_publish_failed", "Generated file path is private.");
+  }
   const canonical = await realpath(candidate);
-  const canonicalRoots = await Promise.all(roots.map(async (root) => await realpath(root).catch(() => root)));
-  if (!canonicalRoots.some((root) => isPathInside(root, canonical))) {
+  const canonicalAuthorizationRoot = await realpath(authorizationRoot).catch(() => authorizationRoot);
+  const canonicalPrivateRoots = await Promise.all(
+    privateRoots.map(async (root) => await realpath(root).catch(() => root)),
+  );
+  if (!isPathInside(canonicalAuthorizationRoot, canonical)) {
     throw new CodedError("artifact_publish_failed", "Generated file path resolves outside the authorized roots.");
+  }
+  assertSafePublicationComponents(canonicalAuthorizationRoot, canonical);
+  if (isBlockedByPrivateRoot(
+    canonical,
+    canonicalPrivateRoots,
+    outboundCandidate ? canonicalAuthorizationRoot : undefined,
+  )) {
+    throw new CodedError("artifact_publish_failed", "Generated file path resolves into private state.");
   }
   await beforeOpen?.();
   // Darwin rejects combining O_NOFOLLOW and O_NOFOLLOW_ANY; the latter is the
@@ -542,10 +833,10 @@ async function openAuthorizedSource(
   // even though the kernel accepts it. Use the raw numeric flag through the
   // synchronous open syscall (the only synchronous operation is opening one
   // already-resolved path), then keep all copying on the owned descriptor.
-  const handle: AuthorizedSource = process.platform === "darwin"
+  const handle: Omit<AuthorizedSource, "verify"> = process.platform === "darwin"
     ? sourceFromFd(openSync(canonical, flags))
     : await openFile(canonical, flags);
-  try {
+  const verify = async (): Promise<Stats> => {
     const [opened, currentPath, currentCanonical] = await Promise.all([
       handle.stat(),
       lstat(canonical),
@@ -553,14 +844,26 @@ async function openAuthorizedSource(
     ]);
     if (
       !opened.isFile()
+      || opened.nlink !== 1
       || !currentPath.isFile()
+      || currentPath.isSymbolicLink()
+      || currentPath.nlink !== 1
       || currentCanonical !== canonical
       || opened.dev !== currentPath.dev
       || opened.ino !== currentPath.ino
     ) {
       throw new CodedError("artifact_publish_failed", "The generated file path changed during authorization.");
     }
-    return handle;
+    return opened;
+  };
+  try {
+    await verify();
+    return {
+      stat: async () => await handle.stat(),
+      read: async (buffer, offset, length, position) => await handle.read(buffer, offset, length, position),
+      verify,
+      close: async () => await handle.close(),
+    };
   } catch (error) {
     await handle.close().catch(() => undefined);
     throw error;
@@ -575,10 +878,11 @@ interface AuthorizedSource {
     length: number,
     position: number,
   ): Promise<{ readonly bytesRead: number }>;
+  verify(): Promise<Stats>;
   close(): Promise<void>;
 }
 
-function sourceFromFd(fd: number): AuthorizedSource {
+function sourceFromFd(fd: number): Omit<AuthorizedSource, "verify"> {
   let closed = false;
   return {
     stat: async () => await new Promise<Stats>((resolveStat, reject) => {
@@ -605,15 +909,106 @@ function isPathInside(root: string, candidate: string): boolean {
   return path === "" || (!path.startsWith(`..${sep}`) && path !== ".." && !isAbsolute(path));
 }
 
+function runOutboundRoot(outboundRoot: string, runId: string): string | undefined {
+  if (
+    runId.length === 0
+    || runId.includes("\0")
+    || runId.includes("/")
+    || runId.includes("\\")
+    || runId === "."
+    || runId === ".."
+  ) return undefined;
+  const candidate = resolve(outboundRoot, runId);
+  return isPathInside(outboundRoot, candidate) && candidate !== outboundRoot ? candidate : undefined;
+}
+
+function isBlockedByPrivateRoot(
+  candidate: string,
+  privateRoots: readonly string[],
+  outboundExceptionRoot: string | undefined,
+): boolean {
+  return privateRoots.some((privateRoot) => {
+    if (!isPathInside(privateRoot, candidate)) return false;
+    return outboundExceptionRoot === undefined || !isPathInside(privateRoot, outboundExceptionRoot);
+  });
+}
+
+function assertSafePublicationComponents(root: string, candidate: string): void {
+  const path = relative(root, candidate);
+  for (const component of path.split(/[\\/]/u).filter((value) => value.length > 0)) {
+    if (isSensitivePublicationComponent(component)) {
+      throw new CodedError("artifact_publish_failed", "Generated file path contains a private component.");
+    }
+  }
+}
+
+function isSensitivePublicationComponent(component: string): boolean {
+  const skeleton = wellFormed(component)
+    .normalize("NFKD")
+    .replace(/\p{Mark}/gu, "")
+    .replace(DEFAULT_IGNORABLE, "")
+    .toLowerCase();
+  if (skeleton.startsWith(".")) return true;
+  if (/^id_[a-z0-9]/u.test(skeleton)) return true;
+  if (SENSITIVE_FILE_EXTENSIONS.some((extension) => skeleton.endsWith(extension))) return true;
+  if (/^(?:authorized_keys|cacerts|kubeconfig|known_hosts|netrc|npmrc)$/u.test(skeleton)) return true;
+  if (/^mono-agent(?:[._-][a-z0-9-]+)*[._-]config(?:[._-]|$)/u.test(skeleton)) return true;
+  if (/^mcp(?:[._-](?:config|servers?|auth|credentials?))?\.(?:json|jsonc|ya?ml|toml)$/u.test(skeleton)) {
+    return true;
+  }
+  const segments = skeleton.split(/[^a-z0-9]+/u).filter((value) => value.length > 0);
+  if (segments.some((segment) => SENSITIVE_NAME_SEGMENTS.has(segment))) return true;
+  const joined = segments.join("");
+  return joined.includes("apikey")
+    || joined.includes("clientsecret")
+    || joined.includes("keystore")
+    || joined.includes("keyring")
+    || joined.includes("privatekey")
+    || joined.includes("serviceaccount")
+    || joined.includes("applicationdefaultcredentials")
+    || joined.includes("truststore");
+}
+
 function sanitizeDisplayName(input: string, fallbackId: string): string {
-  let name = basename(input).normalize("NFC")
+  let name = wellFormed(basename(input)).normalize("NFC")
+    .replace(BIDI_CONTROL, "")
     .replace(/[\u0000-\u001f\u007f]/gu, "_")
     .replace(/[\\/:]/gu, "_")
     .trim()
     .replace(/^\.+$/u, "");
   if (name.length === 0) name = `attachment-${fallbackId.slice(0, 8)}`;
-  while (Buffer.byteLength(name, "utf8") > MAX_DISPLAY_NAME_BYTES) name = name.slice(0, -1);
-  return name;
+  return truncateUtf8ByCodePoint(name, MAX_DISPLAY_NAME_BYTES);
+}
+
+function wellFormed(input: string): string {
+  let output = "";
+  for (const codePoint of input) {
+    const unit = codePoint.charCodeAt(0);
+    output += codePoint.length === 1 && unit >= 0xd800 && unit <= 0xdfff ? "\ufffd" : codePoint;
+  }
+  return output;
+}
+
+function truncateUtf8ByCodePoint(input: string, maxBytes: number): string {
+  let output = "";
+  let bytes = 0;
+  for (const codePoint of input) {
+    const codePointBytes = Buffer.byteLength(codePoint, "utf8");
+    if (bytes + codePointBytes > maxBytes) break;
+    output += codePoint;
+    bytes += codePointBytes;
+  }
+  return output;
+}
+
+function sameSourceSnapshot(before: Stats, after: Stats): boolean {
+  return before.dev === after.dev
+    && before.ino === after.ino
+    && before.nlink === 1
+    && after.nlink === 1
+    && before.size === after.size
+    && before.mtimeMs === after.mtimeMs
+    && before.ctimeMs === after.ctimeMs;
 }
 
 function normalizeMediaType(input: string | undefined, path: string): string {
@@ -656,7 +1051,7 @@ function stablePartId(prefix: string, identity: string): string {
 async function cleanupStaging(
   stagingRoot: string,
   staleBeforeMs: number,
-  activeIds: ReadonlySet<string>,
+  isProtected: (id: string) => boolean,
 ): Promise<void> {
   let entries: string[];
   try {
@@ -665,7 +1060,7 @@ async function cleanupStaging(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
-  await Promise.all(entries.filter((entry) => ARTIFACT_ID.test(entry) && !activeIds.has(entry)).map(async (entry) => {
+  await Promise.all(entries.filter((entry) => ARTIFACT_ID.test(entry) && !isProtected(entry)).map(async (entry) => {
     const path = join(stagingRoot, entry);
     try {
       const entryStat = await lstat(path);
@@ -679,25 +1074,33 @@ async function cleanupStaging(
 
 async function bindDeliveryConversation(
   root: string,
-  parts: readonly AgentReplyPart[],
+  part: AgentReplyAttachmentPart,
   conversationId: string,
+  storage: ReplyArtifactStorageBudget,
 ): Promise<void> {
-  await Promise.all(parts.filter((part): part is AgentReplyAttachmentPart => part.type === "attachment").map(async (part) => {
-    const manifest = await readManifest(root, part.reference.id);
-    if (manifest.deliveryConversationId === conversationId) return;
-    const directory = join(root, manifest.id);
-    const temp = join(directory, `metadata.${randomUUID()}.partial`);
-    const manifestJson = serializeBoundedJsonLine(
-      { ...manifest, deliveryConversationId: conversationId },
-      MAX_MANIFEST_BYTES,
-    );
+  const manifest = await readManifest(root, part.reference.id);
+  if (manifest.deliveryConversationId === conversationId) return;
+  const directory = join(root, manifest.id);
+  const temp = join(directory, `metadata.${randomUUID()}.partial`);
+  const manifestJson = serializeBoundedJsonLine(
+    { ...manifest, deliveryConversationId: conversationId },
+    MAX_MANIFEST_BYTES,
+  );
+  const reservation = await storage.reserve(Buffer.byteLength(manifestJson, "utf8"));
+  if (reservation === undefined) throw new ReplyArtifactStorageFullError();
+  let committed = false;
+  try {
     await writeFile(temp, manifestJson, {
       encoding: "utf8",
       mode: 0o600,
       flag: "wx",
     });
     await rename(temp, join(directory, "metadata.json"));
-  }));
+    committed = true;
+  } finally {
+    if (!committed) await rm(temp, { force: true }).catch(() => undefined);
+    await reservation.release();
+  }
 }
 
 async function readManifest(root: string, id: string): Promise<ReplyArtifactManifest> {
@@ -765,7 +1168,11 @@ async function hashHandle(handle: Awaited<ReturnType<typeof openFile>>, size: nu
   return `sha256:${hash.digest("hex")}`;
 }
 
-async function* streamHandle(handle: Awaited<ReturnType<typeof openFile>>, size: number): AsyncGenerator<Uint8Array> {
+async function* streamHandle(
+  handle: Awaited<ReturnType<typeof openFile>>,
+  size: number,
+  releaseProtection: () => Promise<void>,
+): AsyncGenerator<Uint8Array> {
   const buffer = Buffer.allocUnsafe(READ_CHUNK_BYTES);
   let offset = 0;
   try {
@@ -777,6 +1184,7 @@ async function* streamHandle(handle: Awaited<ReturnType<typeof openFile>>, size:
     }
   } finally {
     await handle.close().catch(() => undefined);
+    await releaseProtection().catch(() => undefined);
   }
 }
 
@@ -786,6 +1194,62 @@ function errorMessage(error: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function storageProtectionKey(namespace: ReplyArtifactStorageNamespace, id: string): string {
+  return `${namespace}:${id}`;
+}
+
+async function runStorageExclusive<T>(
+  state: ReplyArtifactStorageState,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = state.gate;
+  let release!: () => void;
+  state.gate = new Promise<void>((resolveGate) => { release = resolveGate; });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
+
+async function inventoryReplyArtifactBytes(artifactDir: string): Promise<number> {
+  let total = 0;
+  for (const namespace of REPLY_ARTIFACT_STORAGE_NAMESPACES) {
+    total = addStorageBytes(total, await inventoryTreeBytes(join(artifactDir, namespace)));
+  }
+  return total;
+}
+
+async function inventoryTreeBytes(root: string): Promise<number> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+  let total = 0;
+  for (const entry of entries) {
+    const path = join(root, entry.name);
+    let entryStat: Stats;
+    try {
+      entryStat = await lstat(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    total = entryStat.isDirectory() && !entryStat.isSymbolicLink()
+      ? addStorageBytes(total, await inventoryTreeBytes(path))
+      : addStorageBytes(total, entryStat.size);
+  }
+  return total;
+}
+
+function addStorageBytes(left: number, right: number): number {
+  return left > Number.MAX_SAFE_INTEGER - right ? Number.MAX_SAFE_INTEGER : left + right;
 }
 
 function isLoopbackHost(host: string | undefined): boolean {

@@ -32,6 +32,7 @@ import {
   createReplyArtifactService,
   isPublishReplyFileToolAllowed,
   PUBLISH_REPLY_FILE_TOOL_NAME,
+  replyArtifactStorageBudgetFor,
 } from "./reply-artifacts.js";
 import { createMcpAppService } from "./mcp-apps.js";
 import { createReplyPartBudget } from "./reply-part-budget.js";
@@ -53,6 +54,7 @@ import {
   runtimeRouteSupportsMcpApps,
 } from "./app-controller-utils.js";
 import type { ChannelId, MonoAgentAppLogger } from "./channels.js";
+import { loadContinuationSettings } from "./continuation-config.js";
 import type { InteractionBridgeHandle } from "./interaction-bridge.js";
 import type { ContinuationServiceHandle } from "./continuation-service.js";
 import type { MemoryRetrievalService } from "./memory-retrieval.js";
@@ -145,17 +147,40 @@ export async function buildResponder(
   const adapterSendTools = await controller.adapterSendToolsRuntimeOptions(coreConfig);
   const historyToolSupport = historyToolRouteSupport(coreConfig);
   const replyPartBudget = createReplyPartBudget();
+  const replyArtifactStorage = replyArtifactStorageBudgetFor(coreConfig.artifacts.dir);
+  const continuationStateDir = (await loadContinuationSettings({
+    cwd: controller.cwd,
+    configPath: controller.configReadPath,
+    env: controller.env,
+  })).stateDir;
+  const replyArtifactPrivateRoots = [
+    resolve(controller.cwd, ".mono-agent"),
+    controller.configPath,
+    controller.configReadPath,
+    coreConfig.context.identityPath,
+    coreConfig.context.soulPath,
+    coreConfig.context.skillsRoot,
+    coreConfig.memory?.path,
+    coreConfig.tools.mcpConfigPath,
+    coreConfig.providers?.piAuthPath,
+    coreConfig.providers?.piNative?.piSessionsRoot,
+    coreConfig.traceability.registryDir,
+    continuationStateDir,
+  ].filter((path): path is string => path !== undefined);
   const replyArtifacts = createReplyArtifactService({
     artifactDir: coreConfig.artifacts.dir,
     workspace: coreConfig.runtime.workspace,
+    privateRoots: replyArtifactPrivateRoots,
     retentionDays: coreConfig.artifacts.retention.maxAgeDays,
     replyPartBudget,
+    storageBudget: replyArtifactStorage,
   });
   const mcpApps = runtimeRouteSupportsMcpApps(coreConfig)
     ? createMcpAppService({
         artifactDir: coreConfig.artifacts.dir,
         retentionDays: coreConfig.artifacts.retention.maxAgeDays,
         replyPartBudget,
+        storageBudget: replyArtifactStorage,
       })
     : undefined;
   const replyArtifactsExtension = isPublishReplyFileToolAllowed(coreConfig.tools)

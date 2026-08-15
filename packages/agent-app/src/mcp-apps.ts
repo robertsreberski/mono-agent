@@ -27,6 +27,12 @@ import {
   mergeReplyParts,
   type ReplyPartBudget,
 } from "./reply-part-budget.js";
+import {
+  ReplyArtifactStorageFullError,
+  replyArtifactStorageBudgetFor,
+  type ReplyArtifactStorageBudget,
+  type ReplyArtifactStorageProtection,
+} from "./reply-artifacts.js";
 
 const APP_ID = /^[0-9a-f]{8}-[0-9a-f-]{27,35}$/u;
 const MAX_HTML_BYTES = 2 * 1024 * 1024;
@@ -45,6 +51,7 @@ const DEFAULT_BRIDGE_RATE_LIMIT = 60;
 const DEFAULT_BRIDGE_RATE_WINDOW_MS = 60 * 1000;
 const DEFAULT_AUDIT_MAX_BYTES = 256 * 1024;
 const DEFAULT_AUDIT_RETAINED_FILES = 2;
+const BIDI_CONTROL = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu;
 
 interface McpAppManifest {
   readonly schema: 1;
@@ -90,6 +97,7 @@ export interface McpAppServiceOptions {
   readonly retentionDays?: number;
   readonly now?: () => Date;
   readonly replyPartBudget?: ReplyPartBudget;
+  readonly storageBudget?: ReplyArtifactStorageBudget;
   readonly maxRetainedConnections?: number;
   readonly connectionIdleMs?: number;
   readonly bridgeRateLimit?: number;
@@ -125,10 +133,11 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
   const auditRetainedFiles = options.auditRetainedFiles ?? DEFAULT_AUDIT_RETAINED_FILES;
   const now = options.now ?? (() => new Date());
   const budget = options.replyPartBudget ?? createReplyPartBudget();
+  const storage = options.storageBudget ?? replyArtifactStorageBudgetFor(options.artifactDir);
   const partsByRun = new Map<string, AgentReplyPart[]>();
   const partsByIdentityByRun = new Map<string, Map<string, AgentReplyPart>>();
   const invocationIdsByRun = new Map<string, Set<string>>();
-  const activeStagingIds = new Set<string>();
+  const invocationProtectionsByRun = new Map<string, Map<string, ReplyArtifactStorageProtection>>();
   const liveByInvocation = new Map<string, LiveInvocation>();
   const connections = new Map<string, RetainedConnection>();
   const responseContext = new AsyncLocalStorage<{ readonly runIds: Set<string> }>();
@@ -237,7 +246,8 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
       toolInput: boundedJsonValue(registration.toolInput, MAX_STATE_VALUE_BYTES),
       toolResult: boundedJsonValue(registration.toolResult, MAX_STATE_VALUE_BYTES),
     };
-    activeStagingIds.add(invocationId);
+    const storageProtection = await storage.protect("mcp-apps", invocationId);
+    let persisted = false;
     try {
       await writeAppAtomically(
         root,
@@ -245,19 +255,27 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
         manifest,
         resource.html,
         state,
+        storage,
         options.beforePublicationCommit,
       );
-    } catch {
+      persisted = true;
+    } catch (error) {
       budget.unclaim(runId, identity);
-      return fail("The MCP App resource could not be persisted safely.");
+      return fail(error instanceof ReplyArtifactStorageFullError
+        ? "Reply artifact storage is full; this MCP App was not retained."
+        : "The MCP App resource could not be persisted safely.");
     } finally {
-      activeStagingIds.delete(invocationId);
+      if (!persisted) await storageProtection.release();
     }
     const part = partFromManifest(manifest);
     acceptClaimedPart(runId, identity, part);
     const invocationIds = invocationIdsByRun.get(runId) ?? new Set<string>();
     invocationIds.add(invocationId);
     invocationIdsByRun.set(runId, invocationIds);
+    const protections = invocationProtectionsByRun.get(runId)
+      ?? new Map<string, ReplyArtifactStorageProtection>();
+    protections.set(invocationId, storageProtection);
+    invocationProtectionsByRun.set(runId, protections);
     liveByInvocation.set(invocationId, {
       connectionId: registration.connection.connectionId,
       appVisibleTools: new Set(manifest.appVisibleTools),
@@ -313,129 +331,146 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
   }
 
   async function load(request: AgentMcpAppLoadRequest): Promise<AgentMcpAppResource> {
-    await evictIdleConnections();
-    const manifest = await readManifest(root, request.invocationId);
-    authorizeApp(manifest, request);
-    if (Date.parse(manifest.expiresAt) <= now().getTime()) {
-      throw new CodedError("app_expired", "The MCP App has expired.");
+    const protection = await storage.protect("mcp-apps", request.invocationId);
+    try {
+      await evictIdleConnections();
+      const manifest = await readManifest(root, request.invocationId);
+      authorizeApp(manifest, request);
+      if (Date.parse(manifest.expiresAt) <= now().getTime()) {
+        throw new CodedError("app_expired", "The MCP App has expired.");
+      }
+      const directory = join(root, manifest.invocationId);
+      const [html, state] = await Promise.all([
+        readBoundedText(join(directory, "resource.html"), MAX_HTML_BYTES),
+        readBoundedJson<McpAppState>(join(directory, "state.json"), MAX_STATE_BYTES),
+      ]);
+      const live = liveByInvocation.get(manifest.invocationId);
+      const retained = live === undefined ? undefined : connections.get(live.connectionId);
+      const connected = retained?.connection.connectionId === manifest.connectionId;
+      if (connected) touchConnection(manifest.connectionId);
+      return {
+        app: partFromManifest(manifest),
+        html,
+        toolInput: state.toolInput,
+        toolResult: state.toolResult,
+        ...(manifest.resourceMetadata === undefined ? {} : { resourceMetadata: manifest.resourceMetadata }),
+        connected,
+      };
+    } finally {
+      await protection.release();
     }
-    const directory = join(root, manifest.invocationId);
-    const [html, state] = await Promise.all([
-      readBoundedText(join(directory, "resource.html"), MAX_HTML_BYTES),
-      readBoundedJson<McpAppState>(join(directory, "state.json"), MAX_STATE_BYTES),
-    ]);
-    const live = liveByInvocation.get(manifest.invocationId);
-    const retained = live === undefined ? undefined : connections.get(live.connectionId);
-    const connected = retained?.connection.connectionId === manifest.connectionId;
-    if (connected) touchConnection(manifest.connectionId);
-    return {
-      app: partFromManifest(manifest),
-      html,
-      toolInput: state.toolInput,
-      toolResult: state.toolResult,
-      ...(manifest.resourceMetadata === undefined ? {} : { resourceMetadata: manifest.resourceMetadata }),
-      connected,
-    };
   }
 
   async function request(input: AgentMcpAppHostRequest): Promise<unknown> {
-    await evictIdleConnections();
-    const manifest = await readManifest(root, input.invocationId);
-    authorizeApp(manifest, input);
-    if (Date.parse(manifest.expiresAt) <= now().getTime()) {
-      throw new CodedError("app_expired", "The MCP App has expired.");
-    }
-    if (serializedBytes(input.params) > MAX_BRIDGE_REQUEST_BYTES) {
-      throw new CodedError("app_request_too_large", "The MCP App bridge request is too large.");
-    }
-    const live = liveByInvocation.get(manifest.invocationId);
-    const retained = live === undefined ? undefined : connections.get(live.connectionId);
-    if (
-      live === undefined
-      || retained === undefined
-      || retained.connection.connectionId !== manifest.connectionId
-    ) {
-      throw new CodedError("app_connection_closed", "The originating MCP connection is no longer available.");
-    }
-    consumeBridgeRate(manifest.connectionId);
-    touchConnection(manifest.connectionId);
-    if (input.method === "tools/call") {
+    const protection = await storage.protect("mcp-apps", input.invocationId);
+    try {
+      await evictIdleConnections();
+      const manifest = await readManifest(root, input.invocationId);
+      authorizeApp(manifest, input);
+      if (Date.parse(manifest.expiresAt) <= now().getTime()) {
+        throw new CodedError("app_expired", "The MCP App has expired.");
+      }
+      if (serializedBytes(input.params) > MAX_BRIDGE_REQUEST_BYTES) {
+        throw new CodedError("app_request_too_large", "The MCP App bridge request is too large.");
+      }
+      const live = liveByInvocation.get(manifest.invocationId);
+      const retained = live === undefined ? undefined : connections.get(live.connectionId);
+      if (
+        live === undefined
+        || retained === undefined
+        || retained.connection.connectionId !== manifest.connectionId
+      ) {
+        throw new CodedError("app_connection_closed", "The originating MCP connection is no longer available.");
+      }
+      consumeBridgeRate(manifest.connectionId);
+      touchConnection(manifest.connectionId);
+      if (input.method === "tools/call") {
+        requireConfirmation(input);
+        const params = record(input.params);
+        const name = typeof params?.name === "string" ? params.name : undefined;
+        if (name === undefined || !live.appVisibleTools.has(name)) {
+          throw new CodedError("app_tool_forbidden", "The MCP App requested a tool that is not visible to apps.");
+        }
+        await appendAudit(manifest, input.method, { name, phase: "confirmed" });
+        try {
+          const result = await retained.connection.callTool(name, params?.arguments ?? {});
+          touchConnection(manifest.connectionId);
+          await appendAudit(manifest, input.method, { name, phase: "completed" });
+          return boundedJsonValue(result, MAX_BRIDGE_RESULT_BYTES);
+        } catch {
+          await closeConnection(manifest.connectionId);
+          throw new CodedError("app_connection_closed", "The originating MCP connection closed during the tool call.");
+        }
+      }
+      if (input.method === "resources/read") {
+        const params = record(input.params);
+        const uri = typeof params?.uri === "string" ? params.uri : undefined;
+        if (uri === undefined || Buffer.byteLength(uri, "utf8") > 4_096) {
+          throw new CodedError("app_resource_invalid", "The MCP App requested an invalid resource URI.");
+        }
+        if (!live.appVisibleResources.has(uri)) {
+          throw new CodedError(
+            "app_resource_forbidden",
+            "The MCP App requested a resource that was not declared for this app invocation.",
+          );
+        }
+        await appendAudit(manifest, input.method, { uri: boundedText(uri, 512), phase: "requested" });
+        try {
+          const result = await retained.connection.readResource(uri);
+          touchConnection(manifest.connectionId);
+          return boundedJsonValue(result, MAX_BRIDGE_RESULT_BYTES);
+        } catch {
+          await closeConnection(manifest.connectionId);
+          throw new CodedError("app_connection_closed", "The originating MCP connection closed during resource access.");
+        }
+      }
+      if (input.method === "ui/open-link") {
+        requireConfirmation(input);
+        const params = record(input.params);
+        const url = typeof params?.url === "string" ? safeExternalUrl(params.url) : undefined;
+        if (url === undefined) throw new CodedError("app_open_link_forbidden", "Only HTTP(S) links can be opened.");
+        await appendAudit(manifest, input.method, { url, phase: "confirmed" });
+        return { allowed: true, url };
+      }
       requireConfirmation(input);
-      const params = record(input.params);
-      const name = typeof params?.name === "string" ? params.name : undefined;
-      if (name === undefined || !live.appVisibleTools.has(name)) {
-        throw new CodedError("app_tool_forbidden", "The MCP App requested a tool that is not visible to apps.");
-      }
-      await appendAudit(manifest, input.method, { name, phase: "confirmed" });
-      try {
-        const result = await retained.connection.callTool(name, params?.arguments ?? {});
-        touchConnection(manifest.connectionId);
-        await appendAudit(manifest, input.method, { name, phase: "completed" });
-        return boundedJsonValue(result, MAX_BRIDGE_RESULT_BYTES);
-      } catch {
-        await closeConnection(manifest.connectionId);
-        throw new CodedError("app_connection_closed", "The originating MCP connection closed during the tool call.");
-      }
+      await appendAudit(manifest, input.method, { phase: "rejected" });
+      return {
+        accepted: false,
+        reason: "Model-context updates require a new user-authorized turn and are not applied to a completed run.",
+      };
+    } finally {
+      await protection.release();
     }
-    if (input.method === "resources/read") {
-      const params = record(input.params);
-      const uri = typeof params?.uri === "string" ? params.uri : undefined;
-      if (uri === undefined || Buffer.byteLength(uri, "utf8") > 4_096) {
-        throw new CodedError("app_resource_invalid", "The MCP App requested an invalid resource URI.");
-      }
-      if (!live.appVisibleResources.has(uri)) {
-        throw new CodedError(
-          "app_resource_forbidden",
-          "The MCP App requested a resource that was not declared for this app invocation.",
-        );
-      }
-      await appendAudit(manifest, input.method, { uri: boundedText(uri, 512), phase: "requested" });
-      try {
-        const result = await retained.connection.readResource(uri);
-        touchConnection(manifest.connectionId);
-        return boundedJsonValue(result, MAX_BRIDGE_RESULT_BYTES);
-      } catch {
-        await closeConnection(manifest.connectionId);
-        throw new CodedError("app_connection_closed", "The originating MCP connection closed during resource access.");
-      }
-    }
-    if (input.method === "ui/open-link") {
-      requireConfirmation(input);
-      const params = record(input.params);
-      const url = typeof params?.url === "string" ? safeExternalUrl(params.url) : undefined;
-      if (url === undefined) throw new CodedError("app_open_link_forbidden", "Only HTTP(S) links can be opened.");
-      await appendAudit(manifest, input.method, { url, phase: "confirmed" });
-      return { allowed: true, url };
-    }
-    requireConfirmation(input);
-    await appendAudit(manifest, input.method, { phase: "rejected" });
-    return {
-      accepted: false,
-      reason: "Model-context updates require a new user-authorized turn and are not applied to a completed run.",
-    };
   }
 
   async function cleanupExpired(): Promise<void> {
-    let entries: string[];
-    try {
-      entries = await readdir(root);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw error;
-    }
-    const cutoff = now().getTime();
-    for (const entry of entries.filter((value) => APP_ID.test(value))) {
+    await storage.runExclusive(async (isProtected) => {
+      let entries: string[];
       try {
-        const manifest = await readManifest(root, entry);
-        if (Date.parse(manifest.expiresAt) > cutoff) continue;
-        await dropInvocation(entry);
-        await rm(join(root, entry), { recursive: true, force: true });
-      } catch {
-        await dropInvocation(entry);
-        await rm(join(root, entry), { recursive: true, force: true }).catch(() => undefined);
+        entries = await readdir(root);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw error;
       }
-    }
-    await cleanupStaging(stagingRoot, cutoff - stagingGraceMs, activeStagingIds);
+      const cutoff = now().getTime();
+      for (const entry of entries.filter((value) => APP_ID.test(value))) {
+        if (isProtected("mcp-apps", entry)) continue;
+        try {
+          const manifest = await readManifest(root, entry);
+          if (Date.parse(manifest.expiresAt) > cutoff) continue;
+          await dropInvocation(entry);
+          await rm(join(root, entry), { recursive: true, force: true });
+        } catch {
+          await dropInvocation(entry);
+          await rm(join(root, entry), { recursive: true, force: true }).catch(() => undefined);
+        }
+      }
+      await cleanupStaging(
+        stagingRoot,
+        cutoff - stagingGraceMs,
+        (id) => isProtected("mcp-apps", id),
+      );
+    });
     await evictIdleConnections();
   }
 
@@ -552,8 +587,15 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
         })}\n`;
       }
       const directory = join(root, manifest.invocationId);
-      await rotateAuditFiles(directory, Buffer.byteLength(line, "utf8"), auditMaxBytes, auditRetainedFiles);
-      await appendFile(join(directory, "audit.jsonl"), line, { encoding: "utf8", mode: 0o600 });
+      const incomingBytes = Buffer.byteLength(line, "utf8");
+      const reservation = await storage.reserve(incomingBytes);
+      if (reservation === undefined) return;
+      try {
+        await rotateAuditFiles(directory, incomingBytes, auditMaxBytes, auditRetainedFiles);
+        await appendFile(join(directory, "audit.jsonl"), line, { encoding: "utf8", mode: 0o600 });
+      } finally {
+        await reservation.release();
+      }
     });
     auditQueues.set(manifest.invocationId, next);
     try {
@@ -570,10 +612,14 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
     if (idleTimer !== undefined) clearTimeout(idleTimer);
     idleTimer = undefined;
     await Promise.allSettled([...connections.keys()].map(async (id) => await closeConnection(id)));
+    await Promise.allSettled([...invocationProtectionsByRun.values()].flatMap((protections) => (
+      [...protections.values()].map(async (protection) => await protection.release())
+    )));
     liveByInvocation.clear();
     partsByRun.clear();
     partsByIdentityByRun.clear();
     invocationIdsByRun.clear();
+    invocationProtectionsByRun.clear();
     runOwners.clear();
     bridgeRates.clear();
     auditQueues.clear();
@@ -595,13 +641,13 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
           if (runId === undefined || (context.runIds.size > 0 && !context.runIds.has(runId))) return response;
           const parts = partsByRun.get(runId) ?? [];
           if (parts.length === 0) {
-            retainRun(runId);
+            await retainRun(runId);
             retainedRunId = runId;
             return response;
           }
-          await bindDeliveryConversation(root, parts, request.conversationId);
-          const merged = mergeReplyParts(response.parts, parts);
-          retainRun(runId);
+          const finalized = await finalizeDeliveryParts(runId, parts, request.conversationId);
+          const merged = mergeReplyParts(response.parts, finalized);
+          await retainRun(runId);
           retainedRunId = runId;
           return { ...response, parts: merged };
         } finally {
@@ -624,17 +670,75 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
     } as AgentResponder;
   }
 
-  function retainRun(runId: string): void {
+  async function retainRun(runId: string): Promise<void> {
+    const protections = [...(invocationProtectionsByRun.get(runId)?.values() ?? [])];
     partsByRun.delete(runId);
     partsByIdentityByRun.delete(runId);
     invocationIdsByRun.delete(runId);
+    invocationProtectionsByRun.delete(runId);
     runOwners.delete(runId);
     budget.release(runId);
+    await Promise.all(protections.map(async (protection) => await protection.release()));
+  }
+
+  async function finalizeDeliveryParts(
+    runId: string,
+    parts: readonly AgentReplyPart[],
+    conversationId: string,
+  ): Promise<readonly AgentReplyPart[]> {
+    const finalized: AgentReplyPart[] = [];
+    for (const part of parts) {
+      if (part.type !== "mcp_app") {
+        finalized.push(part);
+        continue;
+      }
+      const protection = await storage.protect("mcp-apps", part.invocationId);
+      try {
+        await bindDeliveryConversation(root, part, conversationId, storage);
+        finalized.push(part);
+      } catch {
+        const failure = replaceAppWithDeliveryFailure(runId, part);
+        invocationIdsByRun.get(runId)?.delete(part.invocationId);
+        await dropInvocation(part.invocationId);
+        await rm(join(root, part.invocationId), { recursive: true, force: true }).catch(() => undefined);
+        finalized.push(failure);
+      } finally {
+        await protection.release();
+      }
+    }
+    return finalized;
+  }
+
+  function replaceAppWithDeliveryFailure(
+    runId: string,
+    part: AgentReplyMcpAppPart,
+  ): AgentReplyPartFailure {
+    const failureIdentity = `mcp-app-delivery-failure:${part.invocationId}`;
+    const failure: AgentReplyPartFailure = {
+      type: "failure",
+      id: stablePartId("mcp-app-delivery-failure", failureIdentity),
+      code: "app_resource_invalid",
+      message: "The MCP App could not be finalized for delivery.",
+      relatedPartId: part.id,
+    };
+    const byIdentity = partsByIdentityByRun.get(runId) ?? new Map<string, AgentReplyPart>();
+    const oldIdentity = [...byIdentity].find(([, current]) => current === part)?.[0];
+    if (oldIdentity !== undefined) {
+      byIdentity.delete(oldIdentity);
+      budget.unclaim(runId, oldIdentity);
+    }
+    if (budget.claim(runId, failureIdentity) === "accepted") byIdentity.set(failureIdentity, failure);
+    const current = partsByRun.get(runId) ?? [];
+    const index = current.indexOf(part);
+    if (index >= 0) current[index] = failure;
+    partsByRun.set(runId, current);
+    partsByIdentityByRun.set(runId, byIdentity);
+    return failure;
   }
 
   async function discardRun(runId: string): Promise<void> {
     const invocationIds = [...(invocationIdsByRun.get(runId) ?? [])];
-    retainRun(runId);
+    await retainRun(runId);
     await Promise.all(invocationIds.map(async (invocationId) => {
       await dropInvocation(invocationId);
       await rm(join(root, invocationId), { recursive: true, force: true }).catch(() => undefined);
@@ -668,24 +772,35 @@ async function writeAppAtomically(
   manifest: McpAppManifest,
   html: string,
   state: McpAppState,
+  storage: ReplyArtifactStorageBudget,
   beforeCommit?: () => void | Promise<void>,
 ): Promise<void> {
   const directory = join(root, manifest.invocationId);
   const stagingDirectory = join(stagingRoot, manifest.invocationId);
   const stateJson = serializeBoundedJsonLine(state, MAX_STATE_BYTES);
   const manifestJson = serializeBoundedJsonLine(manifest, MAX_MANIFEST_BYTES);
-  await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
-  await mkdir(stagingDirectory, { mode: 0o700 });
-  let complete = false;
+  const reservation = await storage.reserve(
+    Buffer.byteLength(html, "utf8")
+      + Buffer.byteLength(stateJson, "utf8")
+      + Buffer.byteLength(manifestJson, "utf8"),
+  );
+  if (reservation === undefined) throw new ReplyArtifactStorageFullError();
   try {
-    await writeFile(join(stagingDirectory, "resource.html"), html, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await writeFile(join(stagingDirectory, "state.json"), stateJson, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await writeFile(join(stagingDirectory, "manifest.json"), manifestJson, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await beforeCommit?.();
-    await rename(stagingDirectory, directory);
-    complete = true;
+    await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
+    await mkdir(stagingDirectory, { mode: 0o700 });
+    let complete = false;
+    try {
+      await writeFile(join(stagingDirectory, "resource.html"), html, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      await writeFile(join(stagingDirectory, "state.json"), stateJson, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      await writeFile(join(stagingDirectory, "manifest.json"), manifestJson, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      await beforeCommit?.();
+      await rename(stagingDirectory, directory);
+      complete = true;
+    } finally {
+      if (!complete) await rm(stagingDirectory, { recursive: true, force: true }).catch(() => undefined);
+    }
   } finally {
-    if (!complete) await rm(stagingDirectory, { recursive: true, force: true }).catch(() => undefined);
+    await reservation.release();
   }
 }
 
@@ -755,22 +870,35 @@ function authorizeApp(manifest: McpAppManifest, request: AgentMcpAppLoadRequest)
   }
 }
 
-async function bindDeliveryConversation(root: string, parts: readonly AgentReplyPart[], conversationId: string): Promise<void> {
-  await Promise.all(parts.filter((part): part is AgentReplyMcpAppPart => part.type === "mcp_app").map(async (part) => {
-    const manifest = await readManifest(root, part.invocationId);
-    const directory = join(root, manifest.invocationId);
-    const temp = join(directory, `manifest.${randomUUID()}.partial`);
-    const manifestJson = serializeBoundedJsonLine(
-      { ...manifest, deliveryConversationId: conversationId },
-      MAX_MANIFEST_BYTES,
-    );
+async function bindDeliveryConversation(
+  root: string,
+  part: AgentReplyMcpAppPart,
+  conversationId: string,
+  storage: ReplyArtifactStorageBudget,
+): Promise<void> {
+  const manifest = await readManifest(root, part.invocationId);
+  if (manifest.deliveryConversationId === conversationId) return;
+  const directory = join(root, manifest.invocationId);
+  const temp = join(directory, `manifest.${randomUUID()}.partial`);
+  const manifestJson = serializeBoundedJsonLine(
+    { ...manifest, deliveryConversationId: conversationId },
+    MAX_MANIFEST_BYTES,
+  );
+  const reservation = await storage.reserve(Buffer.byteLength(manifestJson, "utf8"));
+  if (reservation === undefined) throw new ReplyArtifactStorageFullError();
+  let committed = false;
+  try {
     await writeFile(temp, manifestJson, {
       encoding: "utf8",
       mode: 0o600,
       flag: "wx",
     });
     await rename(temp, join(directory, "manifest.json"));
-  }));
+    committed = true;
+  } finally {
+    if (!committed) await rm(temp, { force: true }).catch(() => undefined);
+    await reservation.release();
+  }
 }
 
 function requireConfirmation(input: AgentMcpAppHostRequest): void {
@@ -815,7 +943,7 @@ function stablePartId(prefix: string, identity: string): string {
 async function cleanupStaging(
   stagingRoot: string,
   staleBeforeMs: number,
-  activeIds: ReadonlySet<string>,
+  isProtected: (id: string) => boolean,
 ): Promise<void> {
   let entries: string[];
   try {
@@ -824,7 +952,7 @@ async function cleanupStaging(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
-  await Promise.all(entries.filter((entry) => APP_ID.test(entry) && !activeIds.has(entry)).map(async (entry) => {
+  await Promise.all(entries.filter((entry) => APP_ID.test(entry) && !isProtected(entry)).map(async (entry) => {
     const path = join(stagingRoot, entry);
     try {
       const entryStat = await lstat(path);
@@ -872,9 +1000,28 @@ function record(value: unknown): Record<string, unknown> | undefined {
 }
 
 function boundedText(value: string, maxBytes: number): string {
-  let text = value.replace(/[\u0000-\u001f\u007f]/gu, " ").trim();
-  while (Buffer.byteLength(text, "utf8") > maxBytes) text = text.slice(0, -1);
-  return text;
+  const text = wellFormed(value).normalize("NFC")
+    .replace(BIDI_CONTROL, "")
+    .replace(/[\u0000-\u001f\u007f]/gu, " ")
+    .trim();
+  let bounded = "";
+  let bytes = 0;
+  for (const codePoint of text) {
+    const codePointBytes = Buffer.byteLength(codePoint, "utf8");
+    if (bytes + codePointBytes > maxBytes) break;
+    bounded += codePoint;
+    bytes += codePointBytes;
+  }
+  return bounded;
+}
+
+function wellFormed(input: string): string {
+  let output = "";
+  for (const codePoint of input) {
+    const unit = codePoint.charCodeAt(0);
+    output += codePoint.length === 1 && unit >= 0xd800 && unit <= 0xdfff ? "\ufffd" : codePoint;
+  }
+  return output;
 }
 
 function serializedBytes(value: unknown): number {

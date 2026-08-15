@@ -656,17 +656,36 @@ await app.stop();
 
 The configured responder adds a request-scoped `PublishReplyFile` MCP tool when
 the tool policy and runtime route can carry it. The tool copies one generated
-workspace/run-output file into owner-private artifact storage, hashes it, and
-returns only an opaque reference. Files are limited to 20 MiB, and files plus
-MCP Apps share one 20-part run budget. Retried identities are deduplicated;
-terminal failure, cancellation, or missing run metadata removes uncommitted
-state. The sealed local self-configuration override excludes this publisher.
+ordinary-workspace file or one file from the exact current run's outbound root
+into owner-private artifact storage, hashes it, and returns only an opaque
+reference. The ordinary workspace grant never includes configured artifact,
+state, memory, trace, session, config, identity, skill, MCP, or provider-auth
+roots. Hidden path components, mono-agent/MCP/auth/credential/secret/token
+files, npmrc, private keys, certificates, key stores, state databases, and
+Unicode-disguised variants are rejected at every depth, including under the
+run-output exception. Publication rejects traversal, symlinks, multiply linked
+inodes, directory swaps, and source changes detected through the pinned file
+descriptor. Display names are NFC-normalized, stripped of Unicode bidi
+controls, and bounded at UTF-8/code-point boundaries; errors expose neither
+source paths nor bytes.
+
+Files are limited to 20 MiB, and files plus MCP Apps share one 20-part run
+budget. Their two durable namespaces also share a fixed 256 MiB aggregate
+file-byte ceiling. Admission is serialized, re-inventories both namespaces
+after restart, accounts for staging and audit writes, and fails only the new
+part explicitly when full; it does not evict active staging, current-run, or
+authorized in-flight content. Retried identities are deduplicated. A manifest
+that cannot accept its delivery-conversation binding becomes one bounded failed
+part while answer text and other valid parts survive. Terminal failure,
+cancellation, or missing run metadata removes uncommitted state. The sealed
+local self-configuration override excludes this publisher.
 
 Pi-native routes can retain MCP App resources negotiated at either supported
 ext-apps revision. The whole primary/fallback route must support the bridge;
 otherwise neither the runtime extension nor operator capability is exposed.
-Stored resources follow `artifacts.retention.maxAgeDays`; live connections are
-separately bounded by an eight-entry LRU and ten-minute idle timeout. See
+Stored resources follow `artifacts.retention.maxAgeDays` within that aggregate
+ceiling; live connections are separately bounded by an eight-entry LRU and
+ten-minute idle timeout. See
 [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
 for native channel behavior, fallbacks, browser security, and limits.
 
