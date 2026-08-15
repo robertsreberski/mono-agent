@@ -4,6 +4,8 @@
 
 // @ts-check
 
+import { types as nodeUtilTypes } from "node:util";
+
 const FAILURE_KINDS = new Set([
   "provider_unavailable", "provider_unavailable_exhausted", "provider_auth", "skipped_capability_mismatch",
   "context_limit", "usage_limit", "process_death", "runtime_error", "cancelled", "cancelled_user",
@@ -315,9 +317,18 @@ function failureOutranksAbort(value) {
 
 /** @param {AbortSignal} signal */
 function cancellationFailureKind(signal) {
-  return record(signal.reason) && signal.reason.channelUserCancel === true
-    ? "cancelled_user"
-    : "cancelled";
+  const reason = signal.reason;
+  if (typeof reason !== "object" || reason === null || nodeUtilTypes.isProxy(reason)) {
+    return "cancelled";
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(reason, "channelUserCancel");
+    return descriptor !== undefined && "value" in descriptor && descriptor.value === true
+      ? "cancelled_user"
+      : "cancelled";
+  } catch {
+    return "cancelled";
+  }
 }
 
 /** @param {any} value */

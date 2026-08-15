@@ -17,6 +17,15 @@ function crossPackageChannelUserCancelReason(channel) {
   });
 }
 
+function accessorChannelUserCancelReason(onRead) {
+  return Object.defineProperty(new Error("Accessor must not run."), "channelUserCancel", {
+    get() {
+      onRead();
+      return true;
+    },
+  });
+}
+
 describe("managed tool lifecycle classification", () => {
   it.each([
     [{ result: { details: { outcome: { status: "ok" } } } }, { state: "success" }],
@@ -351,6 +360,24 @@ describe("tool lifecycle persistence gate", () => {
       expected: { state: "cancelled", failureKind: "cancelled", detailCode: "cancelled" },
     },
     {
+      name: "does not treat a matching class name as host provenance",
+      abortReason: Object.assign(new Error("Cancelled by user."), { name: "ChannelUserCancelReason" }),
+      lifecycle: { state: "cancelled" },
+      expected: { state: "cancelled", failureKind: "cancelled", detailCode: "cancelled" },
+    },
+    {
+      name: "does not treat an inherited structured brand as trusted provenance",
+      abortReason: Object.create({ channelUserCancel: true }),
+      lifecycle: { state: "cancelled" },
+      expected: { state: "cancelled", failureKind: "cancelled", detailCode: "cancelled" },
+    },
+    {
+      name: "does not treat a brand-shaped non-boolean value as trusted provenance",
+      abortReason: { channelUserCancel: "true", channel: "Web" },
+      lifecycle: { state: "cancelled" },
+      expected: { state: "cancelled", failureKind: "cancelled", detailCode: "cancelled" },
+    },
+    {
       name: "maps a trusted signal hint without a failure kind to process death",
       abortReason: "late cancellation",
       lifecycle: { state: "signal", detail_code: "SIGTERM" },
@@ -389,5 +416,83 @@ describe("tool lifecycle persistence gate", () => {
       phase: "result",
       ...expected,
     }]);
+  });
+
+  it("does not invoke a cancellation-brand accessor", async () => {
+    let accessorReads = 0;
+    const abort = new AbortController();
+    abort.abort(accessorChannelUserCancelReason(() => { accessorReads += 1; }));
+    const persisted = [];
+    const gate = createToolLifecycleEventGate({
+      abortSignal: abort.signal,
+      sink: async (event) => {
+        persisted.push(event);
+        return { persistence: "persisted", recordId: "result-record", sequence: 2 };
+      },
+    });
+    gate.emit({
+      type: "user",
+      message: { content: [{
+        type: "tool_result",
+        tool_use_id: "call-accessor-reason",
+        content: "cancelled",
+        is_error: true,
+        tool_lifecycle: toolLifecycleMetadata({ state: "cancelled" }),
+      }] },
+    });
+    await gate.flush();
+
+    expect(persisted).toMatchObject([{
+      phase: "result",
+      state: "cancelled",
+      failureKind: "cancelled",
+    }]);
+    expect(accessorReads).toBe(0);
+  });
+
+  it("rejects live and revoked Proxy cancellation brands without invoking traps", async () => {
+    let proxyTraps = 0;
+    const proxy = new Proxy(crossPackageChannelUserCancelReason("Web"), {
+      get() {
+        proxyTraps += 1;
+        return true;
+      },
+      getOwnPropertyDescriptor() {
+        proxyTraps += 1;
+        return { configurable: true, enumerable: true, value: true };
+      },
+    });
+    const revoked = Proxy.revocable(crossPackageChannelUserCancelReason("ACP"), {});
+    revoked.revoke();
+
+    for (const [index, reason] of [proxy, revoked.proxy].entries()) {
+      const abort = new AbortController();
+      abort.abort(reason);
+      const persisted = [];
+      const gate = createToolLifecycleEventGate({
+        abortSignal: abort.signal,
+        sink: async (event) => {
+          persisted.push(event);
+          return { persistence: "persisted", recordId: `result-record-${String(index)}`, sequence: 2 };
+        },
+      });
+      gate.emit({
+        type: "user",
+        message: { content: [{
+          type: "tool_result",
+          tool_use_id: `call-proxy-reason-${String(index)}`,
+          content: "cancelled",
+          is_error: true,
+          tool_lifecycle: toolLifecycleMetadata({ state: "cancelled" }),
+        }] },
+      });
+      await gate.flush();
+      expect(persisted).toMatchObject([{
+        phase: "result",
+        state: "cancelled",
+        failureKind: "cancelled",
+      }]);
+    }
+    expect(proxyTraps).toBe(0);
   });
 });

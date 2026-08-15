@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import {
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
+  createChannelUserCancelReason,
+  isChannelUserCancelReason,
   toolNameLeaf,
   type AgentAttachment,
   type AgentStreamWireFrame,
@@ -649,6 +651,7 @@ export class WebService {
     const active = this.activeTurns.get(threadId);
     const stored = this.store.activeTurn(threadId);
     if (stored === undefined) throw new WebConsoleError("no_active_turn", "This conversation has no active turn.", 409);
+    const reason = createChannelUserCancelReason("Web");
     const liveInputs = [...this.activeLiveInputs.entries()]
       .filter(([, input]) => input.threadId === threadId);
     const cancelledInputs = this.store.cancelLiveInputs(threadId);
@@ -656,13 +659,13 @@ export class WebService {
       this.emit("message.changed", threadId, { messageId: message.id, updatedAt: message.updatedAt });
     }
     for (const [, input] of liveInputs) {
-      input.controller.abort(new WebTurnCancellation("user", "Live input cancelled from the web console."));
+      input.controller.abort(reason);
     }
     if (active !== undefined) {
-      void active.client.cancel(stored.conversationId).catch((error: unknown) => {
+      await active.client.cancel(stored.conversationId).catch((error: unknown) => {
         this.options.logger?.debug?.("Web turn cancel request failed.", { error: errorMessage(error) });
       });
-      active.controller.abort(new WebTurnCancellation("user", "Cancelled from the web console."));
+      active.controller.abort(reason);
     }
     const thread = this.store.getThread(threadId);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
@@ -850,7 +853,8 @@ export class WebService {
       } catch (flushError) {
         failure = flushError;
       }
-      const cancelled = controller.signal.reason instanceof WebTurnCancellation
+      const cancelled = isChannelUserCancelReason(controller.signal.reason)
+        || controller.signal.reason instanceof WebTurnCancellation
         || (error as { cancelled?: unknown }).cancelled === true;
       const code = errorCode(failure);
       const detail = this.store.failTurn(started.turnId, {

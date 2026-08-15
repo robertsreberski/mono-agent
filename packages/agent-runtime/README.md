@@ -114,10 +114,11 @@ provider failure win over a later outer abort. For a failed result with an
 aborted outer signal, cancellation wins over a provider bridge's otherwise
 generic `error` / `runtime_error` fallback. Whenever that outer abort determines
 the result—including when the bridge supplied a trusted `cancelled` hint—the
-failure kind comes only from host abort provenance: the cross-package structural
-brand `channelUserCancel === true` maps to `cancelled_user`; every unbranded
-reason maps to generic `cancelled`. Error prose, channel names, reason `kind` or
-`code` strings, and raw provider result data never select host provenance.
+failure kind comes only from host abort provenance: the cross-package own
+data-property brand `channelUserCancel === true` maps to `cancelled_user`; every
+unbranded reason maps to generic `cancelled`. Accessors, Proxies, inherited or
+brand-shaped impostors, error prose, class/channel names, reason `kind` or `code`
+strings, and raw provider result data never select host provenance.
 Without an outer abort, a trusted `cancelled` hint retains a known cancellation
 failure kind and otherwise falls back to `cancelled`.
 

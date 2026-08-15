@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { delimiter, isAbsolute } from "node:path";
 import process from "node:process";
 import { Readable, Writable } from "node:stream";
+import { types as nodeUtilTypes } from "node:util";
 
 import {
   PROTOCOL_VERSION,
@@ -17,12 +18,13 @@ import {
   type SessionUpdate,
   type ToolKind,
 } from "@agentclientprotocol/sdk";
-import type {
-  AgentStreamEvent,
-  AgentToolEnvironment,
-  ChannelAskAnswer,
-  ChannelAskQuestion,
-  ChannelAskSnapshot,
+import {
+  createChannelUserCancelReason,
+  type AgentStreamEvent,
+  type AgentToolEnvironment,
+  type ChannelAskAnswer,
+  type ChannelAskQuestion,
+  type ChannelAskSnapshot,
 } from "@mono-agent/agent-contracts";
 import {
   OperatorClient,
@@ -57,6 +59,7 @@ const FORWARDED_TOOL_ENVIRONMENT_KEYS = [
 
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const BRIDGE_ERROR_CODE = -32000;
+const ACP_REQUEST_CANCELLED_CODE = -32800;
 const MAX_TOOL_CONTENT_CHARS = 64 * 1024;
 const ASK_DISCOVERY_TIMEOUT_MS = 2_000;
 const ASK_DISCOVERY_INTERVAL_MS = 25;
@@ -83,6 +86,7 @@ interface BridgeTarget {
 interface ActiveTurn {
   readonly controller: AbortController;
   readonly client: OperatorClient;
+  userCancellation?: Promise<void>;
 }
 
 export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number> {
@@ -175,8 +179,7 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
     if (!sessions.has(params.sessionId)) return;
     const active = activeTurns.get(params.sessionId);
     if (active === undefined) return;
-    active.controller.abort(new Error("ACP client cancelled the session."));
-    await active.client.cancel(params.sessionId).catch(() => undefined);
+    await cancelActiveTurnAsUser(active, params.sessionId);
   });
 
   const stream = ndJsonStream(
@@ -185,9 +188,8 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
   );
   const connection = app.connect(stream);
   await connection.closed;
-  for (const [sessionId, active] of activeTurns) {
+  for (const active of activeTurns.values()) {
     active.controller.abort(new Error("ACP connection closed."));
-    await active.client.cancel(sessionId).catch(() => undefined);
   }
   return 0;
 }
@@ -218,23 +220,26 @@ async function runPrompt(
   const target = await requestTarget(options.resolveTarget, context.signal);
   await requireSessionAuthorization(target, params.sessionId, options.sourceId);
   const controller = new AbortController();
-  const signal = AbortSignal.any([context.signal, controller.signal]);
-  const active = { controller, client: target.client };
+  const signal = controller.signal;
+  const active: ActiveTurn = { controller, client: target.client };
   options.activeTurns.set(params.sessionId, active);
   let publishedText = "";
   let interactionStopReason: "refusal" | "cancelled" | undefined;
   const toolNames = new Map<string, string>();
   const messageId = `mono-agent:${String(context.requestId)}`;
   const cancelOperator = (): void => {
-    controller.abort(new Error("ACP prompt request was cancelled."));
-    void target.client.cancel(params.sessionId).catch(() => undefined);
+    if (isAcpRequestCancellation(context.signal.reason)) {
+      void cancelActiveTurnAsUser(active, params.sessionId);
+      return;
+    }
+    controller.abort(context.signal.reason ?? new Error("ACP prompt request ended before completion."));
   };
-  context.signal.addEventListener("abort", cancelOperator, { once: true });
+  if (context.signal.aborted) cancelOperator();
+  else context.signal.addEventListener("abort", cancelOperator, { once: true });
 
   const publishText = async (next: string): Promise<void> => {
     if (next === publishedText) return;
     if (!next.startsWith(publishedText)) {
-      await target.client.cancel(params.sessionId).catch(() => undefined);
       controller.abort(new Error("Operator rewrote already-published assistant output."));
       throw bridgeError(
         "non_prefix_rewrite",
@@ -298,14 +303,12 @@ async function runPrompt(
                 clientSupportsFormElicitation: options.clientSupportsFormElicitation(),
               });
             } catch (error) {
-              await target.client.cancel(params.sessionId).catch(() => undefined);
               controller.abort(new Error("AskUser ACP interaction failed."));
               throw error;
             }
             if (action !== "accept") {
               interactionStopReason = action === "decline" ? "refusal" : "cancelled";
-              await target.client.cancel(params.sessionId).catch(() => undefined);
-              controller.abort(new Error(`ACP client ${action}d AskUser.`));
+              await cancelActiveTurnAsUser(active, params.sessionId);
             }
           }
         }
@@ -330,6 +333,33 @@ async function runPrompt(
   }
 }
 
+async function cancelActiveTurnAsUser(active: ActiveTurn, sessionId: string): Promise<void> {
+  // The operator cancel route owns explicit user provenance. Await it before
+  // tearing down the turn stream, whose close path intentionally stays generic.
+  if (active.controller.signal.aborted) return;
+  active.userCancellation ??= active.client.cancel(sessionId)
+    .catch(() => undefined)
+    .then(() => {
+      active.controller.abort(createChannelUserCancelReason("ACP"));
+    });
+  await active.userCancellation;
+}
+
+function isAcpRequestCancellation(reason: unknown): boolean {
+  if (typeof reason !== "object" || reason === null || nodeUtilTypes.isProxy(reason)) {
+    return false;
+  }
+  try {
+    const code = Object.getOwnPropertyDescriptor(reason, "code");
+    return Object.getPrototypeOf(reason) === RequestError.prototype
+      && code !== undefined
+      && "value" in code
+      && code.value === ACP_REQUEST_CANCELLED_CODE;
+  } catch {
+    return false;
+  }
+}
+
 interface AskFormField {
   readonly question: ChannelAskQuestion;
   readonly answerKey: string;
@@ -348,7 +378,6 @@ async function handleAskUser(
   },
 ): Promise<CreateElicitationResponse["action"]> {
   if (!options.clientSupportsFormElicitation || !options.target.info.supportsAskUser) {
-    await options.target.client.cancel(options.sessionId).catch(() => undefined);
     throw bridgeError(
       "interaction_required",
       "mono-agent requested AskUser, but this ACP client/source pair does not support form elicitation.",
@@ -357,14 +386,12 @@ async function handleAskUser(
 
   const ask = await waitForPendingAsk(options.target.client, options.sessionId, options.signal);
   if (ask === undefined) {
-    await options.target.client.cancel(options.sessionId).catch(() => undefined);
     throw bridgeError(
       "interaction_unavailable",
       "mono-agent requested AskUser, but its pending interaction was not available.",
     );
   }
   if (containsSensitiveAsk(ask)) {
-    await options.target.client.cancel(options.sessionId).catch(() => undefined);
     throw bridgeError(
       "sensitive_elicitation_unsupported",
       "mono-agent AskUser requested potentially sensitive input; the ACP form bridge refuses secret collection.",

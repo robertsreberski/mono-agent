@@ -4,7 +4,10 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_AGENT_ATTACHMENT_MAX_BYTES } from "@mono-agent/agent-contracts";
+import {
+  DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
+  isChannelUserCancelReason,
+} from "@mono-agent/agent-contracts";
 
 import { WebService, WeightedTurnBudget } from "../service.js";
 import { fakeDiscoveredAgent, operatorFetch, temporaryRoot } from "./helpers.js";
@@ -1031,14 +1034,25 @@ describe("WebService", () => {
   });
 
   it("cancels an active upstream turn and persists the cancelled state", async () => {
+    let cancelSettled = false;
+    let turnAbortReason: unknown;
+    let turnAbortedAfterCancel = false;
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.endsWith("/v1/info")) return operatorFetch()(input, init);
-      if (url.endsWith("/cancel")) return Response.json({ cancelled: true }, { status: 202 });
+      if (url.endsWith("/cancel")) {
+        await Promise.resolve();
+        cancelSettled = true;
+        return Response.json({ cancelled: true }, { status: 202 });
+      }
       if (url.endsWith("/v1/turns")) {
         if (init?.signal?.aborted === true) throw init.signal.reason;
         return new Promise<Response>((_resolvePromise, reject) => {
-          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+          init?.signal?.addEventListener("abort", () => {
+            turnAbortReason = init.signal?.reason;
+            turnAbortedAfterCancel = cancelSettled;
+            reject(init.signal?.reason);
+          }, { once: true });
         });
       }
       return new Response(null, { status: 404 });
@@ -1049,7 +1063,38 @@ describe("WebService", () => {
     await service.cancelTurn(thread.id);
     await waitFor(() => service.store.getThread(thread.id)?.runState.status === "cancelled");
     expect(service.thread(thread.id).messages.at(-1)?.status).toBe("cancelled");
+    expect(isChannelUserCancelReason(turnAbortReason)).toBe(true);
+    expect(turnAbortedAfterCancel).toBe(true);
     await service.stop();
+  });
+
+  it("keeps web-service shutdown cancellation unbranded", async () => {
+    let turnAbortReason: unknown;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return operatorFetch()(input, init);
+      if (url.endsWith("/v1/turns")) {
+        if (init?.signal?.aborted === true) {
+          turnAbortReason = init.signal.reason;
+          throw init.signal.reason;
+        }
+        return new Promise<Response>((_resolvePromise, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            turnAbortReason = init.signal?.reason;
+            reject(init.signal?.reason);
+          }, { once: true });
+        });
+      }
+      return new Response(null, { status: 404 });
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "wait" });
+
+    await service.stop();
+
+    expect(turnAbortReason).toMatchObject({ name: "WebTurnCancellation", kind: "shutdown" });
+    expect(isChannelUserCancelReason(turnAbortReason)).toBe(false);
   });
 
   it("keeps thread selection read-only and validates advertised model/effort semantics", async () => {

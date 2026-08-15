@@ -1,3 +1,5 @@
+import { types as nodeUtilTypes } from "node:util";
+
 export type AgentRequestMetadata = Record<string, unknown>;
 export type AgentResponseMetadata = Record<string, unknown>;
 export type {
@@ -704,14 +706,7 @@ export function createChannelUserCancelReason(channel: string): ChannelUserCance
 export function isChannelUserCancelReason(
   reason: unknown,
 ): reason is ChannelUserCancelReason {
-  if (reason instanceof ChannelUserCancelReason) {
-    return true;
-  }
-  return (
-    typeof reason === "object" &&
-    reason !== null &&
-    (reason as { channelUserCancel?: unknown }).channelUserCancel === true
-  );
+  return hasOwnTrueDataProperty(reason, "channelUserCancel");
 }
 
 export class AgentResponseCancelledError extends Error {
@@ -738,14 +733,20 @@ export class AgentResponseCancelledError extends Error {
 export function isAgentResponseCancelledError(
   error: unknown,
 ): error is AgentResponseCancelledError {
-  if (error instanceof AgentResponseCancelledError) {
-    return true;
+  return hasOwnTrueDataProperty(error, "agentResponseCancelled");
+}
+
+/** Read one exact cross-package brand without invoking accessors or Proxy traps. */
+function hasOwnTrueDataProperty(value: unknown, key: string): boolean {
+  if (typeof value !== "object" || value === null || nodeUtilTypes.isProxy(value)) {
+    return false;
   }
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as { agentResponseCancelled?: unknown }).agentResponseCancelled === true
-  );
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor !== undefined && "value" in descriptor && descriptor.value === true;
+  } catch {
+    return false;
+  }
 }
 
 export { CodedError, isCodedError } from "./coded-error.js";
