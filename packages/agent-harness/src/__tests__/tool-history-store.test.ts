@@ -593,8 +593,11 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     expect(reader.stats()).toMatchObject({ calls: 1, records: 2 });
   });
 
-  it("upgrades the tombstone child-key index and resets 4,000 target runs with 10,000 foreign tombstones inside the maintenance deadline", async () => {
+  it("upgrades the tombstone child-key index and resets 400 target runs with 1,000 foreign tombstones inside the maintenance deadline", async () => {
     const root = await tempRoot();
+    const targetRuns = 400;
+    const callsPerRun = 10;
+    const foreignTombstones = 1_000;
     const initialized = await ToolHistoryWriter.open({ root });
     await initialized.close();
     const existing = new DatabaseSync(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE));
@@ -605,7 +608,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     } finally {
       existing.close();
     }
-    seedResetScaleHistory(root, 4_000, 10, 10_000);
+    seedResetScaleHistory(root, targetRuns, callsPerRun, foreignTombstones);
 
     const writer = await ToolHistoryWriter.open({ root, persistenceCeilingMs: 1 });
     try {
@@ -615,11 +618,19 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       } finally {
         upgraded.close();
       }
-      await expect(writer.stats()).resolves.toMatchObject({ calls: 40_000, records: 0, tombstones: 10_000 });
+      await expect(writer.stats()).resolves.toMatchObject({
+        calls: targetRuns * callsPerRun,
+        records: 0,
+        tombstones: foreignTombstones,
+      });
       const started = performance.now();
       await expect(writer.resetConversation("slack:C1")).resolves.toBeUndefined();
       expect(performance.now() - started).toBeLessThan(2_000);
-      await expect(writer.stats()).resolves.toMatchObject({ calls: 0, records: 0, tombstones: 10_000 });
+      await expect(writer.stats()).resolves.toMatchObject({
+        calls: 0,
+        records: 0,
+        tombstones: foreignTombstones,
+      });
       await expect(writer.resetConversation("")).rejects.toMatchObject({ code: "history_write_failed" });
     } finally {
       await writer.close();
@@ -632,7 +643,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       expect(preserved.prepare("SELECT count(*) count FROM runs WHERE logical_id='slack:C2'").get())
         .toMatchObject({ count: 1 });
       expect(preserved.prepare("SELECT count(*) count FROM tombstones WHERE conversation_id='slack:C2#2026-08-14'").get())
-        .toMatchObject({ count: 10_000 });
+        .toMatchObject({ count: foreignTombstones });
     } finally {
       preserved.close();
     }

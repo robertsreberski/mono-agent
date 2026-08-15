@@ -1,7 +1,8 @@
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { ToolHistoryWriter, ToolHistoryWriterHandle } from "@mono-agent/agent-harness";
+import { ToolHistoryWriter, type ToolHistoryWriterHandle } from "@mono-agent/agent-harness";
 import { describe, expect, it, vi } from "vitest";
 
 import { lazyConfiguredToolHistory } from "../configured-agent.js";
@@ -103,6 +104,125 @@ describe("configured tool-history acquisition", () => {
     ]);
     expect(warnings.join(" ")).not.toContain("transient private acquisition detail");
     await history.release?.();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes one fresh acquisition attempt per explicit reset after an outage while preserving turn latches", async () => {
+    const base = await mkdtemp(join(tmpdir(), "configured-tool-history-reset-"));
+    const root = join(base, "history");
+    const initialized = await ToolHistoryWriter.open({ root });
+    await initialized.close();
+
+    const persist = vi.fn(async () => ({ persistence: "persisted" as const }));
+    const finishRun = vi.fn(async () => undefined);
+    const resetConversation = vi.fn(async () => undefined);
+    const release = vi.fn(async () => undefined);
+    const handle: ToolHistoryWriterHandle = {
+      writer: { persist, finishRun, resetConversation } as unknown as ToolHistoryWriter,
+      release,
+    };
+    const acquisitionError = Object.assign(new Error("private outage detail"), {
+      code: "history_writer_in_use",
+    });
+    const pending: Array<{
+      readonly resolve: (handle: ToolHistoryWriterHandle) => void;
+      readonly reject: (error: unknown) => void;
+    }> = [];
+    let activeAttempts = 0;
+    let maxActiveAttempts = 0;
+    const acquireWriter = vi.fn((): Promise<ToolHistoryWriterHandle> => {
+      activeAttempts += 1;
+      maxActiveAttempts = Math.max(maxActiveAttempts, activeAttempts);
+      return new Promise<ToolHistoryWriterHandle>((resolve, reject) => {
+        pending.push({
+          resolve: (resolvedHandle) => {
+            activeAttempts -= 1;
+            resolve(resolvedHandle);
+          },
+          reject: (error) => {
+            activeAttempts -= 1;
+            reject(error);
+          },
+        });
+      });
+    });
+    const warnings: string[] = [];
+    const history = lazyConfiguredToolHistory({
+      root,
+      artifactRoot: join(base, "artifacts"),
+      rollover: "daily",
+      onWarning: (message) => warnings.push(message),
+      acquireWriter: acquireWriter as never,
+    });
+    const outageBinding = {
+      conversationId: "chat:42#2026-08-14",
+      logicalConversationId: "chat:42",
+      runId: "outage-run",
+      isolated: false,
+    };
+    const outageSink = history.writer.createSink(outageBinding);
+    const event = {
+      phase: "invocation" as const,
+      toolCallId: "outage-call",
+      toolName: "Read",
+      arguments: { path: "README.md" },
+    };
+
+    try {
+      const initialWrite = outageSink(event);
+      await vi.waitFor(() => expect(acquireWriter).toHaveBeenCalledTimes(1));
+      pending[0]!.reject(acquisitionError);
+      await expect(initialWrite).rejects.toMatchObject({ code: "history_writer_in_use" });
+
+      const firstReset = history.writer.resetConversation("chat:42");
+      const secondReset = history.writer.resetConversation("chat:42");
+      const firstResetResult = expect(firstReset).rejects.toMatchObject({ code: "history_writer_in_use" });
+      const secondResetResult = expect(secondReset).rejects.toMatchObject({ code: "history_writer_in_use" });
+
+      await vi.waitFor(() => expect(acquireWriter).toHaveBeenCalledTimes(2));
+      expect(activeAttempts).toBe(1);
+      pending[1]!.reject(acquisitionError);
+      await firstResetResult;
+
+      await vi.waitFor(() => expect(acquireWriter).toHaveBeenCalledTimes(3));
+      expect(activeAttempts).toBe(1);
+      pending[2]!.reject(acquisitionError);
+      await secondResetResult;
+
+      expect(maxActiveAttempts).toBe(1);
+      expect(resetConversation).not.toHaveBeenCalled();
+      await expect(outageSink({ ...event, toolCallId: "cached-failure-call" }))
+        .rejects.toMatchObject({ code: "history_writer_in_use" });
+      expect(acquireWriter).toHaveBeenCalledTimes(3);
+
+      const recoveredBinding = { ...outageBinding, runId: "recovered-run" };
+      const recoveredSink = history.writer.createSink(recoveredBinding);
+      const recoveredFallbackSink = history.writer.createSink(recoveredBinding);
+      const recoveredWrite = recoveredSink({ ...event, toolCallId: "recovered-call" });
+      const recoveredFallbackWrite = recoveredFallbackSink({
+        ...event,
+        toolCallId: "recovered-fallback-call",
+      });
+      await vi.waitFor(() => expect(acquireWriter).toHaveBeenCalledTimes(4));
+      expect(activeAttempts).toBe(1);
+      pending[3]!.resolve(handle);
+      await expect(recoveredWrite).resolves.toEqual({ persistence: "persisted" });
+      await expect(recoveredFallbackWrite).resolves.toEqual({ persistence: "persisted" });
+      await expect(history.writer.resetConversation("chat:42")).resolves.toBeUndefined();
+
+      expect(acquireWriter).toHaveBeenCalledTimes(4);
+      expect(maxActiveAttempts).toBe(1);
+      expect(persist).toHaveBeenCalledTimes(2);
+      expect(resetConversation).toHaveBeenCalledTimes(1);
+      expect(warnings).toEqual([
+        "Tool history writer acquisition failed (history_writer_in_use); the next turn will retry.",
+        "Tool history writer acquisition recovered; lifecycle persistence resumed.",
+      ]);
+      expect(warnings.join(" ")).not.toContain("private outage detail");
+    } finally {
+      await history.release?.();
+      await rm(base, { recursive: true, force: true });
+    }
     expect(release).toHaveBeenCalledTimes(1);
   });
 });

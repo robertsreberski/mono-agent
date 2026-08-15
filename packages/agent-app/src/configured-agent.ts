@@ -948,6 +948,7 @@ export function lazyConfiguredToolHistory(
   let latestTurnGeneration = 0;
   let failedThroughGeneration: number | undefined;
   const turnGenerations = new Map<string, number>();
+  let resetTail: Promise<void> = Promise.resolve();
   let acquisitionOutage = false;
   const reader = new ToolHistoryReader(options.root);
   const warn = (message: string): void => {
@@ -1011,8 +1012,22 @@ export function lazyConfiguredToolHistory(
       }
     },
     async resetConversation(logicalConversationId) {
-      if (!await reader.exists()) return;
-      await (await acquire(latestTurnGeneration)).writer.resetConversation(logicalConversationId);
+      const reset = resetTail.then(async () => {
+        if (!await reader.exists()) return;
+        // An explicit reset is a fresh retry boundary after an outage. Wait for
+        // any attempt it observed to settle before assigning that boundary so a
+        // concurrent failure cannot latch the reset's generation. The single
+        // tail keeps concurrent resets from opening overlapping writers.
+        const observedHandle = handlePromise;
+        if (observedHandle !== undefined) await observedHandle.catch(() => undefined);
+        const resetGeneration = ++latestTurnGeneration;
+        await (await acquire(resetGeneration)).writer.resetConversation(logicalConversationId);
+      });
+      resetTail = reset.then(
+        () => undefined,
+        () => undefined,
+      );
+      await reset;
     },
   };
   return {
