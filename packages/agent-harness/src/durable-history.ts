@@ -138,6 +138,7 @@ interface ActiveMarker {
 interface DirtyFence {
   readonly path: string;
   readonly conversationKey: string;
+  readonly logicalConversationKey?: string;
   readonly epoch: string;
   readonly providerSessionId?: string;
   readonly revision: number;
@@ -292,6 +293,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (conversationId === logicalId) continue;
         await this.resetPhysicalConversation(conversationId, heldLogical);
       }
+      await this.resetDirtyFencesForLogicalConversation(logicalId);
     } finally {
       try {
         if (heldExact !== undefined) {
@@ -301,6 +303,33 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         await heldLogical.release();
       }
     }
+  }
+
+  private async resetDirtyFencesForLogicalConversation(logicalConversationId: string): Promise<void> {
+    const locksIdentity = await this.ensureLocksRoot();
+    const logicalConversationKey = historyKey(logicalConversationId);
+    const fences = await this.scanDirtyFences(locksIdentity, false);
+    const matching: Array<{ readonly fence: DirtyFence; readonly providerSessionId: string }> = [];
+    for (const fence of fences) {
+      if (
+        fence.conversationKey !== logicalConversationKey
+        && fence.logicalConversationKey !== logicalConversationKey
+      ) continue;
+      const providerSessionId = fence.providerSessionId
+        ?? (fence.conversationKey === logicalConversationKey
+          ? deriveProviderSessionId(logicalConversationId, fence.epoch)
+          : undefined);
+      if (providerSessionId === undefined) continue;
+      matching.push({ fence, providerSessionId });
+    }
+    // Every fence remains a crash-recovery journal until all matching provider
+    // retirements succeed. A failure therefore leaves the reset retryable and
+    // does not partially unlink its dirty-only membership evidence.
+    await this.retireProviderSessionIds(matching.map((entry) => entry.providerSessionId));
+    for (const { fence } of matching) {
+      await rm(fence.path);
+    }
+    if (matching.length > 0) await fsyncDirectory(join(this.root, LOCKS_DIRECTORY), locksIdentity);
   }
 
   private async resetPhysicalConversation(
@@ -423,6 +452,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         await this.reserveDirtyFenceCapacity(conversationKey, rootIdentity, locksIdentity);
         fence = await this.publishDirtyFence({
           conversationKey,
+          logicalConversationKey: historyKey(logicalConversationIdForFence(normalizedId)),
           epoch,
           providerSessionId,
           revision,
@@ -782,6 +812,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const current = await readDirtyFence(fence.path);
       if (
         current.conversationKey !== fence.conversationKey
+        || current.logicalConversationKey !== fence.logicalConversationKey
         || current.epoch !== fence.epoch
         || current.providerSessionId !== fence.providerSessionId
         || current.revision !== fence.revision
@@ -802,6 +833,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (isErrno(statError, "ENOENT")) {
           await this.publishDirtyFence({
             conversationKey: fence.conversationKey,
+            ...(fence.logicalConversationKey === undefined
+              ? {}
+              : { logicalConversationKey: fence.logicalConversationKey }),
             epoch: fence.epoch,
             ...(fence.providerSessionId === undefined ? {} : { providerSessionId: fence.providerSessionId }),
             revision: fence.revision,
@@ -1509,6 +1543,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const providerSessionId = deriveProviderSessionId(record.conversationId, record.providerSession.epoch);
     return await this.publishDirtyFence({
       conversationKey,
+      logicalConversationKey: historyKey(logicalConversationIdForFence(record.conversationId)),
       epoch: record.providerSession.epoch,
       providerSessionId,
       revision: record.providerSession.revision ?? 0,
@@ -1800,6 +1835,9 @@ function serializeDirtyFence(value: Omit<DirtyFence, "path" | "mtimeMs">): Buffe
   if (!/^[a-f0-9]{64}$/u.test(value.conversationKey)) {
     throw new Error("History dirty fence has an invalid conversation key.");
   }
+  if (value.logicalConversationKey !== undefined && !/^[a-f0-9]{64}$/u.test(value.logicalConversationKey)) {
+    throw new Error("History dirty fence has an invalid logical conversation key.");
+  }
   if (!/^[a-f0-9]{64}$/u.test(value.epoch)) {
     throw new Error("History dirty fence has an invalid provider epoch.");
   }
@@ -1813,8 +1851,13 @@ function serializeDirtyFence(value: Omit<DirtyFence, "path" | "mtimeMs">): Buffe
     throw new Error("History dirty fence has an invalid run digest.");
   }
   const bytes = Buffer.from(`${JSON.stringify({
-    version: value.providerSessionId === undefined ? 1 : 2,
+    version: value.logicalConversationKey !== undefined
+      ? 3
+      : value.providerSessionId === undefined ? 1 : 2,
     conversationKey: value.conversationKey,
+    ...(value.logicalConversationKey === undefined
+      ? {}
+      : { logicalConversationKey: value.logicalConversationKey }),
     epoch: value.epoch,
     ...(value.providerSessionId === undefined ? {} : { providerSessionId: value.providerSessionId }),
     revision: value.revision,
@@ -2326,9 +2369,16 @@ async function readDirtyFence(path: string): Promise<DirtyFence> {
       && keys === "conversationKey,epoch,providerSessionId,revision,runIdDigest,version"
       && typeof value.providerSessionId === "string"
       && /^[a-f0-9]{64}$/u.test(value.providerSessionId);
+    const logical = isRecord(value)
+      && value.version === 3
+      && keys === "conversationKey,epoch,logicalConversationKey,providerSessionId,revision,runIdDigest,version"
+      && typeof value.logicalConversationKey === "string"
+      && /^[a-f0-9]{64}$/u.test(value.logicalConversationKey)
+      && typeof value.providerSessionId === "string"
+      && /^[a-f0-9]{64}$/u.test(value.providerSessionId);
     if (
       !isRecord(value)
-      || (!legacy && !current)
+      || (!legacy && !current && !logical)
       || typeof value.conversationKey !== "string"
       || !/^[a-f0-9]{64}$/u.test(value.conversationKey)
       || typeof value.epoch !== "string"
@@ -2343,8 +2393,9 @@ async function readDirtyFence(path: string): Promise<DirtyFence> {
     return {
       path,
       conversationKey: value.conversationKey,
+      ...(logical ? { logicalConversationKey: value.logicalConversationKey as string } : {}),
       epoch: value.epoch,
-      ...(current ? { providerSessionId: value.providerSessionId as string } : {}),
+      ...(current || logical ? { providerSessionId: value.providerSessionId as string } : {}),
       revision: value.revision as number,
       runIdDigest: value.runIdDigest,
     };

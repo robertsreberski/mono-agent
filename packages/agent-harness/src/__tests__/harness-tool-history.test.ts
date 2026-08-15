@@ -274,6 +274,49 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     });
   });
 
+  it("waits for an active run finalizer before releasing the tool-history writer", async () => {
+    const { identityPath, root } = await fixture();
+    let markRuntimeStarted!: () => void;
+    const runtimeStarted = new Promise<void>((resolve) => { markRuntimeStarted = resolve; });
+    let finishRuntime!: () => void;
+    const runtimeFinished = new Promise<void>((resolve) => { finishRuntime = resolve; });
+    const lifecycle: string[] = [];
+    const runtime = {
+      async run(): Promise<RuntimeResult> {
+        markRuntimeStarted();
+        await runtimeFinished;
+        return { text: "answer" };
+      },
+    };
+    const harness = createAgentHarness({
+      identityPath,
+      runtime,
+      model,
+      createRunId: () => "dispose-race-run",
+      toolHistory: {
+        reader: new ToolHistoryReader(root),
+        logicalConversationId: (conversationId) => toolHistoryLogicalConversationId(conversationId, "daily"),
+        writer: {
+          createSink: () => async () => ({ persistence: "persisted" }),
+          async finishRun() { lifecycle.push("finish"); },
+          async resetConversation() {},
+        },
+        async release() { lifecycle.push("release"); },
+      },
+    });
+
+    const running = harness.run(request("chat:42#2026-08-14"));
+    await runtimeStarted;
+    const disposing = harness.dispose?.();
+    await Promise.resolve();
+    expect(lifecycle).toEqual([]);
+
+    finishRuntime();
+    await expect(running).resolves.toMatchObject({ text: "answer" });
+    await disposing;
+    expect(lifecycle).toEqual(["finish", "release"]);
+  });
+
   it("releases the live mailbox and warm session when an injected run finalizer throws", async () => {
     const { identityPath, root } = await fixture();
     const calls: RuntimeRunOptions[] = [];

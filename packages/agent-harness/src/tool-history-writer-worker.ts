@@ -196,19 +196,20 @@ parentPort.on("message", (request: WorkerRequest) => {
           const binding = bindingOf(value.binding);
           const status = typeof value.status === "string" ? value.status : "interrupted";
           const state = terminalStateForRunStatus(status);
-          closeDangling(
-            database,
-            binding,
-            state,
-            normalizeFailureKind(state, typeof value.failureKind === "string" ? value.failureKind : undefined) ?? "runtime_error",
-            `run_${boundedCode(status)}`,
-            false,
-          );
-          transaction(database, () => {
+          lifecycleTransaction(database, () => {
+            validateExistingRunBinding(database, binding);
+            closeDanglingInTransaction(
+              database,
+              binding,
+              state,
+              normalizeFailureKind(state, typeof value.failureKind === "string" ? value.failureKind : undefined) ?? "runtime_error",
+              `run_${boundedCode(status)}`,
+              false,
+            );
             database.prepare(`UPDATE runs SET status=?, terminal_at_ms=? WHERE conversation_id=? AND run_id=?`)
               .run(status, Date.now(), binding.conversationId, binding.runId);
             clearIncident(database, "write_failures", finishRunIncidentKey(binding));
-          });
+          }, () => applyRetention(database, retention));
           respond(request.id, null);
           break;
         }
@@ -234,6 +235,7 @@ parentPort.on("message", (request: WorkerRequest) => {
           break;
         case "close":
           closeDangling(database, undefined, "interrupted", "cancelled_shutdown", "writer_shutdown", false);
+          applyRetention(database, retention);
           closed = true;
           database.close();
           owner.release();
@@ -501,32 +503,43 @@ function closeDangling(
   recovered: boolean,
 ): void {
   transaction(database, () => {
-    const clauses = ["end_seq IS NULL"];
-    const values: string[] = [];
-    if (binding !== undefined) {
-      clauses.push("conversation_id=?", "run_id=?");
-      values.push(binding.conversationId, binding.runId);
-    }
-    const rows = database.prepare(`
-      SELECT conversation_id,run_id,tool_call_id FROM tool_calls WHERE ${clauses.join(" AND ")}
-      ORDER BY conversation_id,run_id,start_seq,tool_call_id
-    `).all(...values) as Record<string, unknown>[];
-    for (const row of rows) {
-      const rowBinding = runBinding(database, stringField(row, "conversation_id"), stringField(row, "run_id"));
-      const toolCallId = stringField(row, "tool_call_id");
-      const bounded = boundedPayload({ state, reason: detailCode }, RESULT_MAX_BYTES);
-      const sequence = takeSequence(database, rowBinding);
-      const recordId = toolHistoryRecordId(rowBinding.conversationId, rowBinding.runId, toolCallId, "result");
-      const now = Date.now();
-      insertRecord(database, { recordId, binding: rowBinding, toolCallId, phase: "result", sequence, bounded });
-      database.prepare(`
-        UPDATE tool_calls SET end_seq=?,state=?,failure_kind=?,detail_code=?,ended_at_ms=?,recovered=?,synthetic_result=1
-        WHERE conversation_id=? AND run_id=? AND tool_call_id=? AND end_seq IS NULL
-      `).run(sequence, state, failureKind, detailCode, now, recovered ? 1 : 0, rowBinding.conversationId, rowBinding.runId, toolCallId);
-      resolveLifecycleIncidents(database, rowBinding, toolCallId, "result");
-      if (recovered) incrementStat(database, "recovered_calls", 1, `${rowBinding.runId}:${toolCallId}`);
-    }
+    closeDanglingInTransaction(database, binding, state, failureKind, detailCode, recovered);
   });
+}
+
+function closeDanglingInTransaction(
+  database: DatabaseSync,
+  binding: ToolHistoryRunBinding | undefined,
+  state: RuntimeToolLifecycleTerminalState,
+  failureKind: string,
+  detailCode: string,
+  recovered: boolean,
+): void {
+  const clauses = ["end_seq IS NULL"];
+  const values: string[] = [];
+  if (binding !== undefined) {
+    clauses.push("conversation_id=?", "run_id=?");
+    values.push(binding.conversationId, binding.runId);
+  }
+  const rows = database.prepare(`
+    SELECT conversation_id,run_id,tool_call_id FROM tool_calls WHERE ${clauses.join(" AND ")}
+    ORDER BY conversation_id,run_id,start_seq,tool_call_id
+  `).all(...values) as Record<string, unknown>[];
+  for (const row of rows) {
+    const rowBinding = runBinding(database, stringField(row, "conversation_id"), stringField(row, "run_id"));
+    const toolCallId = stringField(row, "tool_call_id");
+    const bounded = boundedPayload({ state, reason: detailCode }, RESULT_MAX_BYTES);
+    const sequence = takeSequence(database, rowBinding);
+    const recordId = toolHistoryRecordId(rowBinding.conversationId, rowBinding.runId, toolCallId, "result");
+    const now = Date.now();
+    insertRecord(database, { recordId, binding: rowBinding, toolCallId, phase: "result", sequence, bounded });
+    database.prepare(`
+      UPDATE tool_calls SET end_seq=?,state=?,failure_kind=?,detail_code=?,ended_at_ms=?,recovered=?,synthetic_result=1
+      WHERE conversation_id=? AND run_id=? AND tool_call_id=? AND end_seq IS NULL
+    `).run(sequence, state, failureKind, detailCode, now, recovered ? 1 : 0, rowBinding.conversationId, rowBinding.runId, toolCallId);
+    resolveLifecycleIncidents(database, rowBinding, toolCallId, "result");
+    if (recovered) incrementStat(database, "recovered_calls", 1, `${rowBinding.runId}:${toolCallId}`);
+  }
 }
 
 function resetLogicalConversation(database: DatabaseSync, logicalConversationId: string): void {
@@ -561,8 +574,13 @@ function ensureRun(database: DatabaseSync, binding: ToolHistoryRunBinding): void
     VALUES (?,?,?,?, 'running',1,?)
     ON CONFLICT(conversation_id,run_id) DO NOTHING
   `).run(binding.conversationId, binding.logicalConversationId, binding.runId, binding.isolated ? 1 : 0, Date.now());
+  validateExistingRunBinding(database, binding);
+}
+
+function validateExistingRunBinding(database: DatabaseSync, binding: ToolHistoryRunBinding): void {
   const row = database.prepare("SELECT logical_id,isolated FROM runs WHERE conversation_id=? AND run_id=?")
-    .get(binding.conversationId, binding.runId) as Record<string, unknown>;
+    .get(binding.conversationId, binding.runId) as Record<string, unknown> | undefined;
+  if (row === undefined) return;
   if (row.logical_id !== binding.logicalConversationId || Number(row.isolated) !== (binding.isolated ? 1 : 0)) {
     throw new RunBindingConflictError(runBindingIncidentKey(binding), `${binding.runId}:binding`);
   }

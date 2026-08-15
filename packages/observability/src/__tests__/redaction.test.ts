@@ -5,6 +5,7 @@ import {
   inspectFilesystemRedactionWorkForTest,
   redactJsonValue,
   sanitizeVisibleText,
+  truncateVisibleText,
   truncateString,
 } from "../redaction.js";
 
@@ -270,7 +271,7 @@ describe("redactJsonValue", () => {
       ) as Record<string, unknown>;
 
     expect(redacted).toEqual({
-      note: "credential: [redacted]",
+      note: "[diagnostic omitted because it contained private host data]",
       nested: ["again [redacted]"],
       apiKey: "[redacted]",
       "evidence-[redacted]": "key-value-survives",
@@ -333,6 +334,18 @@ describe("redactJsonValue", () => {
     expect(sanitizeVisibleText(value, options)).toBe(options.omission);
   });
 
+  it.each([
+    "credential=fixture",
+    "credentials: fixture",
+    "service_credential=fixture",
+    "service.credentials: fixture",
+  ])("omits exact or delimited credential assignment %s", (value) => {
+    const options = { omission: "[credential assignment omitted]" } as const;
+
+    expect(containsVisibleSensitiveText(value, options)).toBe(true);
+    expect(sanitizeVisibleText(value, options)).toBe(options.omission);
+  });
+
   it("bounds a 64 KiB contiguous-uppercase credential assignment", () => {
     const retainedStringBytes = 64 * 1_024;
     const credentialSuffix = "TOKEN=fixture";
@@ -357,6 +370,10 @@ describe("redactJsonValue", () => {
     "input_tokens=100",
     "token_count=2",
     "apiKeyCount=3",
+    "credentialType=oauth",
+    "credentialsMetadata=public-schema",
+    "credential_count=2",
+    "mycredential=public-label",
   ])("preserves non-credential assignment or URL %s", (value) => {
     expect(containsVisibleSensitiveText(value)).toBe(false);
     expect(sanitizeVisibleText(value)).toBe(value);
@@ -673,6 +690,36 @@ describe("redactJsonValue", () => {
       expect(containsVisibleSensitiveText(value, options), value).toBe(false);
       expect(sanitizeVisibleText(value, options)).toBe(value);
     }
+  });
+
+  it("preserves serialized already-redacted credential fields across repeated sanitization", () => {
+    const serialized = JSON.stringify({
+      token: "[redacted]",
+      credential: "[redacted]",
+      safe: "visible",
+    });
+    const unsafe = JSON.stringify({ token: "[redacted]", credential: "still-secret" });
+    const nonJsonCommaTail = "credential=[redacted],fixture-secret-tail";
+    const nonJsonClosingTail = 'credential="[redacted]"}fixture-secret-tail';
+
+    expect(containsVisibleSensitiveText(serialized)).toBe(false);
+    expect(sanitizeVisibleText(serialized)).toBe(serialized);
+    expect(sanitizeVisibleText(sanitizeVisibleText(serialized))).toBe(serialized);
+    expect(containsVisibleSensitiveText(unsafe)).toBe(true);
+    expect(sanitizeVisibleText(nonJsonCommaTail)).not.toBe(nonJsonCommaTail);
+    expect(sanitizeVisibleText(nonJsonClosingTail)).not.toBe(nonJsonClosingTail);
+  });
+});
+
+describe("truncateVisibleText", () => {
+  it.each([0, 1, 2, 3, 4, 8, 13])("keeps a truncation marker within a %i-byte ceiling", (maxBytes) => {
+    const truncated = truncateVisibleText("value requiring truncation", maxBytes);
+
+    expect(new TextEncoder().encode(truncated).length).toBeLessThanOrEqual(maxBytes);
+  });
+
+  it("preserves short benign text below the boundary", () => {
+    expect(truncateVisibleText("safe", 4)).toBe("safe");
   });
 });
 

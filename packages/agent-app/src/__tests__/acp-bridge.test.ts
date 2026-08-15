@@ -704,6 +704,32 @@ describe("ACP bridge", () => {
     }
   });
 
+  it("preserves pending user-cancel provenance when ACP connection shutdown races settlement", async () => {
+    let releaseCancellation!: () => void;
+    const cancellationReleased = new Promise<void>((resolve) => { releaseCancellation = resolve; });
+    const fixture = await startCancellationOperatorFixture({
+      beforeCancelSettlement: async () => await cancellationReleased,
+    });
+    const { bridge, promptRequestId } = await startActivePromptBridge(fixture.baseUrl);
+    await fixture.turnStarted;
+
+    let closing: Promise<void> | undefined;
+    try {
+      bridge.send({ jsonrpc: "2.0", method: "$/cancel_request", params: { requestId: promptRequestId } });
+      await fixture.cancelStarted;
+      closing = bridge.close();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(fixture.events()).toEqual(["turn_started", "cancel_started"]);
+    } finally {
+      releaseCancellation();
+    }
+    const [reason] = await Promise.all([fixture.firstCancellation, closing]);
+    expect(isChannelUserCancelReason(reason)).toBe(true);
+    expect(reason).toMatchObject({ channel: "TUI" });
+    expect(fixture.cancelRequests()).toBe(1);
+    expect(fixture.events()).toEqual(["turn_started", "cancel_started", "cancel_settled"]);
+  });
+
   it("keeps ACP connection loss as generic stream cancellation", async () => {
     const fixture = await startCancellationOperatorFixture();
     const { bridge } = await startActivePromptBridge(fixture.baseUrl);

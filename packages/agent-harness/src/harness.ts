@@ -89,6 +89,9 @@ export class MonoAgentHarness implements AgentHarness {
   private readonly maxPendingRuns: number | undefined;
   private pendingRuns = 0;
   private supportsResumeCache: boolean | undefined;
+  private activeRuns = 0;
+  private readonly activeRunWaiters: Array<() => void> = [];
+  private disposePromise: Promise<void> | undefined;
 
   constructor(options: AgentHarnessOptions) {
     validateOptions(options);
@@ -182,6 +185,25 @@ export class MonoAgentHarness implements AgentHarness {
   }
 
   async run(request: AgentHarnessRequest, lifecycle?: LiveSessionRunLifecycle): Promise<AgentHarnessResponse> {
+    // Preserve the harness's established fresh-run-after-dispose contract, but
+    // do not admit a new direct run into the writer-release window.
+    const disposal = this.disposePromise;
+    if (disposal !== undefined) await disposal;
+    this.activeRuns += 1;
+    try {
+      return await this.runActive(request, lifecycle);
+    } finally {
+      this.activeRuns -= 1;
+      if (this.activeRuns === 0) {
+        for (const resolve of this.activeRunWaiters.splice(0)) resolve();
+      }
+    }
+  }
+
+  private async runActive(
+    request: AgentHarnessRequest,
+    lifecycle?: LiveSessionRunLifecycle,
+  ): Promise<AgentHarnessResponse> {
     validateRequest(request);
     const runId = this.options.createRunId?.() ?? createDefaultRunId();
     const runSource = runSourceFromRequest(request);
@@ -918,7 +940,17 @@ export class MonoAgentHarness implements AgentHarness {
     }
   }
 
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
+    if (this.disposePromise !== undefined) return this.disposePromise;
+    const operation = this.disposeActiveResources();
+    const wrapped = operation.finally(() => {
+      if (this.disposePromise === wrapped) this.disposePromise = undefined;
+    });
+    this.disposePromise = wrapped;
+    return wrapped;
+  }
+
+  private async disposeActiveResources(): Promise<void> {
     // Reject any in-flight/queued turns first so callers stop waiting, then
     // retire sessions. Only this harness's tracked sessions are retired (the
     // store's onEvict disposes each provider session individually).
@@ -928,6 +960,9 @@ export class MonoAgentHarness implements AgentHarness {
     this.activeLiveInputs.clear();
     await this.liveSessionManager?.dispose();
     await this.sessionStore?.disposeAll();
+    if (this.activeRuns > 0) {
+      await new Promise<void>((resolve) => this.activeRunWaiters.push(resolve));
+    }
     await this.options.toolHistory?.release?.();
   }
 

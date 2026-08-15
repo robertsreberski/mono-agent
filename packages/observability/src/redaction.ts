@@ -312,34 +312,63 @@ function defineEnumerableOwnProperty(
 
 /** Match RunHistory's stable model-text truncation contract. */
 export function truncateVisibleText(value: string, maxBytes: number): string {
+  const limit = Number.isFinite(maxBytes)
+    ? Math.max(0, Math.floor(maxBytes))
+    : maxBytes === Number.POSITIVE_INFINITY ? Number.MAX_SAFE_INTEGER : 0;
   const encoded = TEXT_ENCODER.encode(value);
-  if (encoded.length <= maxBytes) return value;
+  if (encoded.length <= limit) return value;
   const suffix = "…[truncated]";
   const suffixBytes = TEXT_ENCODER.encode(suffix).length;
-  let end = Math.max(0, maxBytes - suffixBytes);
+  if (suffixBytes > limit) return limit >= 3 ? "…" : "";
+  let end = Math.max(0, limit - suffixBytes);
   while (end > 0 && (encoded[end]! & 0b1100_0000) === 0b1000_0000) end -= 1;
   return `${TEXT_DECODER.decode(encoded.subarray(0, end))}${suffix}`;
 }
 
 function containsCredentialAssignment(text: string): boolean {
   const assignment = /(?:^|(?<=[^a-z0-9_.-]))(["'`]?)([a-z0-9_.-]+(?:[ \t]+[a-z0-9_.-]+){0,5})\1\s*[:=]\s*/giu;
+  let serializedJson: boolean | undefined;
   for (const match of text.matchAll(assignment)) {
     const key = match[2];
     if (key === undefined || !isCredentialKey(key)) continue;
     const value = text.slice((match.index ?? 0) + match[0].length).trimStart();
-    if (isExactRedactedSentinel(value)) continue;
+    const boundary = redactedSentinelBoundary(value);
+    if (boundary === "exact") continue;
+    if (boundary === "serialized-delimiter") {
+      serializedJson ??= isSerializedJson(text);
+      if (serializedJson) continue;
+    }
     return true;
   }
   return false;
 }
 
-function isExactRedactedSentinel(value: string): boolean {
-  const trimmed = value.trim();
-  if (/^\[redacted\]$/u.test(trimmed)) return true;
-  const quote = trimmed[0];
-  return (quote === '"' || quote === "'" || quote === "`")
-    && trimmed.at(-1) === quote
-    && /^\[redacted\]$/u.test(trimmed.slice(1, -1));
+function redactedSentinelBoundary(value: string): "exact" | "serialized-delimiter" | undefined {
+  const trimmed = value.trimStart();
+  let remainder: string;
+  if (trimmed.startsWith("[redacted]")) {
+    remainder = trimmed.slice("[redacted]".length);
+  } else {
+    const quote = trimmed[0];
+    if (quote !== '"' && quote !== "'" && quote !== "`") return undefined;
+    const sentinel = `${quote}[redacted]${quote}`;
+    if (!trimmed.startsWith(sentinel)) return undefined;
+    remainder = trimmed.slice(sentinel.length);
+  }
+  const trailing = remainder.trimStart();
+  if (trailing.length === 0) return "exact";
+  return trailing[0] === "," || trailing[0] === "}" || trailing[0] === "]"
+    ? "serialized-delimiter"
+    : undefined;
+}
+
+function isSerializedJson(value: string): boolean {
+  try {
+    JSON.parse(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isCredentialKey(key: string): boolean {
@@ -349,6 +378,10 @@ function isCredentialKey(key: string): boolean {
     || normalized.endsWith("token")
     || normalized.endsWith("secret")
     || normalized.endsWith("password")
+    || normalized === "credential"
+    || normalized === "credentials"
+    || normalized.endsWith("_credential")
+    || normalized.endsWith("_credentials")
     || normalized === "authorization"
     || normalized.endsWith("_authorization")
     || normalized.endsWith("cookie")

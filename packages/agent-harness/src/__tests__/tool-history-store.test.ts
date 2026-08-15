@@ -1113,6 +1113,35 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     }
   });
 
+  it("reassembles complete bounded invocation and result JSON for the cold projection", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    const run = binding("projection-complete-json");
+    await writer.persist(run, {
+      phase: "invocation",
+      toolCallId: "large-projection-call",
+      toolName: "Read",
+      arguments: { body: "a".repeat(3_000), tail: "invocation-tail" },
+    });
+    await writer.persist(run, {
+      phase: "result",
+      toolCallId: "large-projection-call",
+      state: "success",
+      content: { body: "b".repeat(6_000), tail: "result-tail" },
+    });
+    await writer.close();
+
+    const reader = new ToolHistoryReader(root);
+    const [projected] = reader.latestProjection("slack:C1", "slack:C1#2026-08-15", "current-run");
+    expect(projected?.invocation.nextOffset).toBeUndefined();
+    expect(projected?.result?.nextOffset).toBeUndefined();
+    expect(JSON.parse(projected?.invocation.chunk ?? "null")).toMatchObject({ tail: "invocation-tail" });
+    expect(JSON.parse(projected?.result?.chunk ?? "null")).toMatchObject({ tail: "result-tail" });
+    const projection = buildToolHistoryProjection(reader, "slack:C1", "slack:C1#2026-08-15", "current-run");
+    expect(projection?.text).toContain("invocation-tail");
+    expect(projection?.text).toContain("result-tail");
+  });
+
   it("retains the newest fitting projection suffix in chronological order within the UTF-8 byte ceiling", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });
@@ -2014,6 +2043,47 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     expect(result.stdout).toContain("ACQUIRED");
     expect(new ToolHistoryReader(root).stats()).toMatchObject({ calls: 0, records: 0 });
   }, 10_000);
+
+  it("rejects a changed finish binding before closing dangling calls", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    const run = binding("finish-binding-conflict");
+    await writer.persist(run, {
+      phase: "invocation", toolCallId: "dangling-binding-call", toolName: "Read", arguments: {},
+    });
+
+    await expect(writer.finishRun({
+      ...run,
+      logicalConversationId: "slack:other",
+      isolated: true,
+    }, "failed")).rejects.toMatchObject({ code: "history_idempotency_conflict" });
+    await expect(writer.stats()).resolves.toMatchObject({ dangling: 1, idempotencyConflicts: 1 });
+
+    await writer.finishRun(run, "failed");
+    await expect(writer.stats()).resolves.toMatchObject({ dangling: 0, idempotencyConflicts: 0 });
+    await writer.close();
+  });
+
+  it("applies retention to calls finalized by finishRun and graceful close", async () => {
+    const retention = { maxCompletedCalls: 0, maxBytes: 1024 * 1024, maxTombstones: 10 } as const;
+    const finishRoot = await tempRoot();
+    const finishWriter = await ToolHistoryWriter.open({ root: finishRoot, retention });
+    const finishRun = binding("finish-retention");
+    await finishWriter.persist(finishRun, {
+      phase: "invocation", toolCallId: "finish-retained-call", toolName: "Read", arguments: {},
+    });
+    await finishWriter.finishRun(finishRun, "failed");
+    await expect(finishWriter.stats()).resolves.toMatchObject({ calls: 0, records: 0, tombstones: 2 });
+    await finishWriter.close();
+
+    const closeRoot = await tempRoot();
+    const closeWriter = await ToolHistoryWriter.open({ root: closeRoot, retention });
+    await closeWriter.persist(binding("close-retention"), {
+      phase: "invocation", toolCallId: "close-retained-call", toolName: "Read", arguments: {},
+    });
+    await closeWriter.close();
+    expect(new ToolHistoryReader(closeRoot).stats()).toMatchObject({ calls: 0, records: 0, tombstones: 2 });
+  });
 
   it("keeps persist, finishRun, and close referenced until graceful ownership release settles", async () => {
     const root = await tempRoot();

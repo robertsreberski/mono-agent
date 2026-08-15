@@ -94,6 +94,58 @@ describe("DurableConversationHistoryStore", () => {
     await expect(store.load("chat:99#2026-08-14")).resolves.toEqual([{ role: "assistant", content: "foreign" }]);
   });
 
+  it("retires dirty-only rollover provider sessions during logical reset without touching another logical session", async () => {
+    const dir = await tempDir();
+    const root = join(dir, "history");
+    const retired: string[] = [];
+    const store = createDurableHistoryStore({
+      root,
+      retireProviderSession: async (providerSessionId) => {
+        retired.push(providerSessionId);
+      },
+    });
+    const foreign = await store.beginProviderSessionTurn("chat:99#2026-08-14", "aborted-foreign-run");
+    const matching = await store.beginProviderSessionTurn("chat:42#2026-08-14", "aborted-matching-run");
+    await matching.abort();
+
+    try {
+      expect(await historyRecords(root)).toEqual(new Map());
+      await store.resetLogicalConversation("chat:42");
+
+      expect(retired).toContain(matching.providerSessionId);
+      expect(retired).not.toContain(foreign.providerSessionId);
+      expect(await dirtyFenceKeys(root)).toEqual([historyKeyForTest("chat:99#2026-08-14")]);
+    } finally {
+      await foreign.abort();
+    }
+  });
+
+  it("keeps a dirty-only logical-reset fence when provider retirement fails", async () => {
+    const dir = await tempDir();
+    const root = join(dir, "history");
+    const retired: string[] = [];
+    let failRetirement = true;
+    const store = createDurableHistoryStore({
+      root,
+      retireProviderSession: async (providerSessionId) => {
+        retired.push(providerSessionId);
+        if (failRetirement) throw new Error("injected logical retirement failure");
+      },
+    });
+    const turn = await store.beginProviderSessionTurn("chat:42#2026-08-14", "dirty-run");
+    await turn.abort();
+
+    await expect(store.resetLogicalConversation("chat:42"))
+      .rejects.toThrow("injected logical retirement failure");
+    expect(await dirtyFenceKeys(root)).toEqual([historyKeyForTest("chat:42#2026-08-14")]);
+
+    failRetirement = false;
+    retired.length = 0;
+    await store.resetLogicalConversation("chat:42");
+    expect(retired).toEqual([turn.providerSessionId]);
+    expect(await dirtyFenceKeys(root)).toEqual([]);
+  });
+
   it("resets a date-shaped logical id and exactly one rollover generation without touching lookalikes", async () => {
     const dir = await tempDir();
     const store = createDurableHistoryStore({ root: join(dir, "history") });

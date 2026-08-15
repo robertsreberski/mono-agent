@@ -182,6 +182,29 @@ describe("TurnPresenter", () => {
     expect(text).not.toContain("failed-history-secret");
   });
 
+  it("escapes terminal and bidi controls in untrusted history identifiers", async () => {
+    const { presenter, rendered } = setup();
+    await presenter.event({ type: "tool_call_started", id: "hostile-history-tool", name: "Read" });
+    await presenter.event({
+      type: "tool_call_completed",
+      id: "hostile-history-tool",
+      name: "Read",
+      content: "bounded result",
+      history: {
+        recordId: "sth1_safe\u001b[31m",
+        persistence: "failed",
+        errorCode: "history\u202eclosed",
+        untrusted: true,
+      },
+    });
+
+    const text = rendered();
+    expect(text).toContain("record sth1_safe\\u001b[31m");
+    expect(text).toContain("history\\u202eclosed");
+    expect(text).not.toContain("\u001b");
+    expect(text).not.toContain("\u202e");
+  });
+
   it("expands thinking on demand with the full text", async () => {
     const { presenter, transcript, rendered } = setup();
     await presenter.event({ type: "assistant_thought", text: "secret reasoning here" });

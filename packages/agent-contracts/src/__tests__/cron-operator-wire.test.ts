@@ -41,6 +41,41 @@ describe("cron operator wire contract", () => {
     }))).toThrowError(/invalid cron operator/iu);
   });
 
+  it("accepts bounded canonical tool-history metadata on cron detail events and rejects malformed metadata", () => {
+    const history = {
+      recordId: "sth1_record",
+      sequence: 2,
+      persistence: "persisted",
+      terminalState: "success",
+      truncated: false,
+      originalBytes: 10,
+      retainedBytes: 10,
+      artifactReferences: [{ id: "stha1_artifact", available: true }],
+      untrusted: true,
+    } as const;
+    const events = [
+      { type: "tool_call_started", id: "call-1", name: "Read", history: { ...history, sequence: 1 } },
+      { type: "tool_call_completed", id: "call-1", name: "Read", content: "ok", history },
+    ];
+
+    expect(parseCronOperatorRunDetail(summary({
+      projection: "detail",
+      eventCount: events.length,
+      events,
+      eventsIncluded: events.length,
+    })).events).toEqual(events);
+    expect(() => parseCronOperatorRunDetail(summary({
+      projection: "detail",
+      events: [{ ...events[1], history: { ...history, untrusted: false } }],
+      eventsIncluded: 1,
+    }))).toThrowError(/invalid cron operator/iu);
+    expect(() => parseCronOperatorRunDetail(summary({
+      projection: "detail",
+      events: [{ type: "tool_call_progress", id: "call-1", history }],
+      eventsIncluded: 1,
+    }))).toThrowError(/invalid cron operator/iu);
+  });
+
   it("enforces collection and UTF-8 field ceilings at the parser boundary", () => {
     expect(() => parseCronOperatorRunPage({
       runs: Array.from({ length: MAX_CRON_OPERATOR_RUN_PAGE + 1 }, () => summary()),

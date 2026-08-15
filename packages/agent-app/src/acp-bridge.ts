@@ -188,9 +188,14 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
   );
   const connection = app.connect(stream);
   await connection.closed;
-  for (const active of activeTurns.values()) {
-    active.controller.abort(new Error("ACP connection closed."));
-  }
+  await Promise.allSettled([...activeTurns.values()].map(async (active) => {
+    // A user cancel already accepted by this connection owns provenance even
+    // when transport shutdown wins the race to connection.closed.
+    await active.userCancellation;
+    if (!active.controller.signal.aborted) {
+      active.controller.abort(new Error("ACP connection closed."));
+    }
+  }));
   return 0;
 }
 

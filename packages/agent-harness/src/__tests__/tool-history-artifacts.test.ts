@@ -34,6 +34,18 @@ describe("canonicalToolArtifactRoot", () => {
       .toBe(join(await realpath(target), "future", "tool-output"));
   });
 
+  it.skipIf(process.platform === "win32")("rejects a missing root below a dangling symlink ancestor", async () => {
+    const root = await tempRoot();
+    const safeFuture = join(root, "ordinary-missing", "future", "tool-output");
+    const dangling = join(root, "dangling");
+    await symlink(join(root, "missing-target"), dangling, "dir");
+
+    expect(canonicalToolArtifactRoot(safeFuture))
+      .toBe(join(await realpath(root), "ordinary-missing", "future", "tool-output"));
+    expect(capturedError(() => canonicalToolArtifactRoot(join(dangling, "future", "tool-output"))))
+      .toMatchObject({ code: "ENOENT" });
+  });
+
   it.skipIf(process.platform === "win32")("rejects regular-file, file-symlink, dangling, and cyclic roots", async () => {
     const root = await tempRoot();
     const file = join(root, "artifact-file");

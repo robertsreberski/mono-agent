@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -84,6 +84,28 @@ describe("sessionToolHistorySection", () => {
     });
     expect(section.details.join("\n")).not.toContain(configuredHistory);
     expect(section.details.join("\n")).not.toContain("private-content-must-not-escape");
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a symlinked history root that writer startup would reject", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    await writer.close();
+    const alias = `${root}-alias`;
+    await symlink(root, alias, "dir");
+
+    try {
+      const real = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+      const linked = await sessionToolHistorySection({ historyRoot: alias, requestScopedToolSupported: true });
+
+      expect(real.status, real.details.join("\n")).toBe("ok");
+      expect(linked.status).toBe("error");
+      expect(linked.details).toEqual([
+        "Session tool history could not be inspected (HISTORY_ROOT_INSECURE).",
+      ]);
+      expect(linked.details.join("\n")).not.toContain("Tool history: 0 calls");
+    } finally {
+      await rm(alias, { force: true });
+    }
   });
 
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(

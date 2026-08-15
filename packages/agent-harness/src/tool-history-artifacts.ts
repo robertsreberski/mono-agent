@@ -12,13 +12,18 @@ export function canonicalToolArtifactRoot(path: string): string {
       let existing = dirname(normalized);
       for (;;) {
         try {
-          return resolve(canonicalAccessibleDirectory(existing), relative(existing, normalized));
+          lstatSync(existing);
         } catch (parentError) {
           if ((parentError as NodeJS.ErrnoException).code !== "ENOENT") throw parentError;
           const parent = dirname(existing);
           if (parent === existing) return normalized;
           existing = parent;
+          continue;
         }
+        // An existing ancestor may itself be a dangling symlink. Keep the
+        // realpath failure authoritative instead of climbing past that link
+        // and accepting a merely lexical containment boundary.
+        return resolve(canonicalAccessibleDirectory(existing), relative(existing, normalized));
       }
     }
     throw error;

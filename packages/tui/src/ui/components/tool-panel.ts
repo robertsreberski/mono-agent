@@ -3,6 +3,7 @@ import type { Component } from "@earendil-works/pi-tui";
 import type { SessionToolHistoryEventMetadata } from "@mono-agent/agent-contracts";
 
 import { formatDurationMs, lastLines, previewValue } from "../format.js";
+import { escapeTerminalControls } from "../terminal-text.js";
 import { styles } from "../theme.js";
 
 export type ToolPanelState = "pending" | "success" | "error";
@@ -136,11 +137,13 @@ export class ToolPanel implements Component {
 
 function historySummary(history: SessionToolHistoryEventMetadata | undefined): string | undefined {
   if (history === undefined) return undefined;
-  const record = history.recordId === undefined ? undefined : `record ${history.recordId}`;
+  const record = history.recordId === undefined
+    ? undefined
+    : `record ${escapeTerminalControls(history.recordId)}`;
   const trust = "untrusted historical data";
   if (history.persistence === "failed") {
     return [
-      `history not persisted${history.errorCode === undefined ? "" : ` (${history.errorCode})`}`,
+      `history not persisted${history.errorCode === undefined ? "" : ` (${escapeTerminalControls(history.errorCode)})`}`,
       record,
       trust,
     ].filter((part): part is string => part !== undefined).join(" · ");

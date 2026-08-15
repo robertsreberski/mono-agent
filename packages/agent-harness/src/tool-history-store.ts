@@ -387,6 +387,9 @@ export class ToolHistoryWriter {
   async finishRun(binding: ToolHistoryRunBinding, status: string, failureKind?: string): Promise<void> {
     await this.request("finish_run", { binding, status, failureKind }, this.persistenceCeilingMs).catch((error) => {
       this.warnOnce("run_finalize_failed", `Tool history run finalization failed: ${reasonOf(error)}`);
+      if (error instanceof ToolHistoryWriterError && error.code === "history_idempotency_conflict") {
+        throw error;
+      }
       this.postBestEffort("write_failure", {
         binding,
         phase: "finish_run",
@@ -584,28 +587,40 @@ export class ToolHistoryReader {
       }
       return calls.map((call) => ({
         call,
-        invocation: this.getFromDatabase(database, {
+        invocation: this.completeRecordFromDatabase(database, {
           logicalConversationId,
           currentConversationId,
           currentRunId,
           recordId: call.recordId,
-          chunkBytes: 2 * 1024,
         }),
         ...(call.resultRecordId === undefined
           ? {}
           : {
-            result: this.getFromDatabase(database, {
+            result: this.completeRecordFromDatabase(database, {
               logicalConversationId,
               currentConversationId,
               currentRunId,
               recordId: call.resultRecordId,
-              chunkBytes: 4 * 1024,
             }),
           }),
       }));
     } finally {
       database.close();
     }
+  }
+
+  private completeRecordFromDatabase(
+    database: DatabaseSync,
+    input: Omit<ToolHistoryGetInput, "chunkBytes" | "chunkOffset">,
+  ): ToolHistoryGetResult {
+    const first = this.getFromDatabase(database, { ...input, chunkBytes: 8 * 1024 });
+    if (first.record === undefined) return first;
+    // getFromDatabase already parsed the complete retention-bounded payload.
+    // Serialize that one snapshot instead of presenting a prefix as complete
+    // or issuing multiple reads that could observe different writer commits.
+    const chunk = JSON.stringify(first.record.payload) ?? "null";
+    const { nextOffset: _nextOffset, ...complete } = first;
+    return { ...complete, chunk };
   }
 
   stats(): ToolHistoryStats | undefined {

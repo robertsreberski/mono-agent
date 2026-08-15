@@ -46,6 +46,20 @@ async function inspectSessionToolHistorySection(
     if (next === "error" || next === "waiting" && status === "ok") status = next;
   };
 
+  const historyRootInfo = await optionalLstat(options.historyRoot);
+  const historyRootErrorCode = historyRootInfo === undefined
+    ? undefined
+    : !historyRootInfo.isDirectory() || historyRootInfo.isSymbolicLink()
+      ? "HISTORY_ROOT_INSECURE"
+      : !ownerOnly(historyRootInfo, 0o700) ? "EACCES" : undefined;
+  if (historyRootErrorCode !== undefined) {
+    const error = new Error(
+      "Session history root must be a real current-user directory with mode 0700.",
+    ) as NodeJS.ErrnoException;
+    error.code = historyRootErrorCode;
+    throw error;
+  }
+
   const messageUsage = await topLevelMessageHistoryUsage(options.historyRoot).catch(() => undefined);
   if (messageUsage === undefined) {
     worsen("error", "Message-history bytes could not be inspected.");
