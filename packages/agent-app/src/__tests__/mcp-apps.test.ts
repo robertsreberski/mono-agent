@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,8 +16,14 @@ import type {
 } from "@mono-agent/runtime-adapter";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createMcpAppService } from "../mcp-apps.js";
-import { replyArtifactStorageBudgetFor } from "../reply-artifacts.js";
+import {
+  createMcpAppService,
+  DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
+} from "../mcp-apps.js";
+import {
+  DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
+  replyArtifactStorageBudgetFor,
+} from "../reply-artifacts.js";
 
 const tempDirs: string[] = [];
 const stream: AgentMessageStream = { async append() {} };
@@ -116,6 +122,32 @@ async function padJsonFileToLimit(path: string, maxBytes: number): Promise<void>
   }
   if (best.length === 0) throw new Error("Test manifest could not be padded to its byte boundary.");
   await writeFile(path, best, "utf8");
+}
+
+async function treeFileBytes(root: string): Promise<number> {
+  const entries = await readdir(root, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+  let total = 0;
+  for (const entry of entries) {
+    const path = join(root, entry.name);
+    total += entry.isDirectory() && !entry.isSymbolicLink()
+      ? await treeFileBytes(path)
+      : (await stat(path)).size;
+  }
+  return total;
+}
+
+function fileSystemError(code: "EACCES" | "EPERM"): NodeJS.ErrnoException {
+  return Object.assign(new Error(`injected ${code}`), { code });
+}
+
+async function auditContents(directory: string): Promise<string> {
+  return (await Promise.all((await readdir(directory))
+    .filter((name) => /^audit(?:\.[1-9][0-9]*)?\.jsonl$/u.test(name))
+    .map(async (name) => await readFile(join(directory, name), "utf8"))))
+    .join("\n");
 }
 
 describe("MCP Apps registry", () => {
@@ -469,7 +501,10 @@ describe("MCP Apps registry", () => {
   it("does not expire committed current-run app state before responder finalization", async () => {
     const artifactDir = await tempDir();
     let clock = new Date("2026-08-15T12:00:00.000Z");
-    const storageBudget = replyArtifactStorageBudgetFor(artifactDir);
+    const storageBudget = replyArtifactStorageBudgetFor(
+      artifactDir,
+      DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES - DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
+    );
     const publishingService = createMcpAppService({
       artifactDir,
       storageBudget,
@@ -589,18 +624,698 @@ describe("MCP Apps registry", () => {
       confirmed: true,
     })).rejects.toMatchObject({ code: "app_rate_limited" });
 
-    const directory = join(artifactDir, "mcp-apps", app.invocationId);
-    const auditFiles = (await readdir(directory)).filter((name) => /^audit(?:\.\d+)?\.jsonl$/u.test(name));
-    expect(auditFiles.length).toBeGreaterThan(1);
-    expect(auditFiles.length).toBeLessThanOrEqual(3);
-    for (const file of auditFiles) expect((await stat(join(directory, file))).size).toBeLessThanOrEqual(1_024);
-
     time = new Date(time.getTime() + 1_000);
     await expect(service.request({
       ...identity,
       method: "resources/read",
       params: { uri: app.resourceUri },
     })).resolves.toMatchObject({ contents: [{ uri: app.resourceUri }] });
+    for (let index = 0; index < 2; index += 1) {
+      await service.request({
+        ...identity,
+        method: "ui/open-link",
+        params: { url: `https://example.com/next-${String(index)}` },
+        confirmed: true,
+      });
+    }
+
+    const directory = join(artifactDir, "mcp-apps", app.invocationId);
+    const auditFiles = (await readdir(directory)).filter((name) => /^audit(?:\.\d+)?\.jsonl$/u.test(name));
+    expect(auditFiles.length).toBeGreaterThan(1);
+    expect(auditFiles.length).toBeLessThanOrEqual(3);
+    for (const file of auditFiles) expect((await stat(join(directory, file))).size).toBeLessThanOrEqual(1_024);
+
+    await service.dispose();
+  });
+
+  it("keeps audited tool actions usable and physically bounded after model-visible storage is full", async () => {
+    const artifactDir = await tempDir();
+    const contentStorageMaxBytes = 8 * 1024;
+    const auditMaxBytes = 1_024;
+    const auditRetainedFiles = 2;
+    const auditStorageMaxBytes = auditMaxBytes * (auditRetainedFiles + 1);
+    const storageBudget = replyArtifactStorageBudgetFor(artifactDir, contentStorageMaxBytes);
+    const service = createMcpAppService({
+      artifactDir,
+      storageBudget,
+      auditMaxBytes,
+      auditRetainedFiles,
+      auditStorageMaxBytes,
+    });
+    const live = connection("connection-audit-reserve");
+    const host = await hostFor(service, "run-audit-reserve", "conversation");
+    const registered = await host.register(registration(live));
+    expect(registered).toMatchObject({ retainConnection: true, part: { type: "mcp_app" } });
+    const app = registered.part as AgentReplyMcpAppPart;
+    const bytesBeforeFill = await treeFileBytes(artifactDir);
+    expect(bytesBeforeFill).toBeGreaterThan(0);
+    expect(bytesBeforeFill).toBeLessThan(contentStorageMaxBytes);
+    const fillerDirectory = join(artifactDir, "reply-files", "model-visible-fill");
+    await mkdir(fillerDirectory, { recursive: true });
+    await writeFile(
+      join(fillerDirectory, "content"),
+      Buffer.alloc(contentStorageMaxBytes - bytesBeforeFill, 0x78),
+    );
+    expect(await treeFileBytes(artifactDir)).toBe(contentStorageMaxBytes);
+    await expect(storageBudget.reserve(1)).resolves.toBeUndefined();
+
+    const identity = {
+      conversationId: "conversation",
+      invocationId: app.invocationId,
+      connectionId: app.connectionId,
+    };
+    for (let index = 0; index < 6; index += 1) {
+      await expect(service.request({
+        ...identity,
+        method: "tools/call",
+        params: { name: "refresh_chart", arguments: { index } },
+        confirmed: true,
+      })).resolves.toMatchObject({ ok: true, name: "refresh_chart" });
+    }
+    expect(live.callTool).toHaveBeenCalledTimes(6);
+    await expect(storageBudget.reserve(1)).resolves.toBeUndefined();
+
+    const directory = join(artifactDir, "mcp-apps", app.invocationId);
+    const auditFiles = (await readdir(directory)).filter((name) => /^audit(?:\.[1-9][0-9]*)?\.jsonl$/u.test(name));
+    expect(auditFiles.length).toBeGreaterThan(1);
+    expect(auditFiles.length).toBeLessThanOrEqual(auditRetainedFiles + 1);
+    let auditBytes = 0;
+    const records: Array<{ readonly details?: { readonly phase?: string } }> = [];
+    for (const file of auditFiles) {
+      const filePath = join(directory, file);
+      const fileBytes = (await stat(filePath)).size;
+      auditBytes += fileBytes;
+      expect(fileBytes).toBeLessThanOrEqual(auditMaxBytes);
+      records.push(...(await readFile(filePath, "utf8")).trim().split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { details?: { phase?: string } }));
+    }
+    expect(auditBytes).toBeLessThanOrEqual(auditStorageMaxBytes);
+    expect(records.some((record) => record.details?.phase === "confirmed")).toBe(true);
+    expect(records.some((record) => record.details?.phase === "completed")).toBe(true);
+    expect(await treeFileBytes(artifactDir)).toBeLessThanOrEqual(
+      contentStorageMaxBytes + auditStorageMaxBytes,
+    );
+    await service.dispose();
+  });
+
+  it("reclaims the oldest cross-app audit files without starving active app actions", async () => {
+    const artifactDir = await tempDir();
+    const auditMaxBytes = 1_024;
+    const auditRetainedFiles = 2;
+    const auditStorageMaxBytes = 4 * auditMaxBytes;
+    const service = createMcpAppService({
+      artifactDir,
+      auditMaxBytes,
+      auditRetainedFiles,
+      auditStorageMaxBytes,
+    });
+    const apps = await Promise.all(["a", "b", "c"].map(async (suffix) => {
+      const live = connection(`connection-audit-${suffix}`);
+      const host = await hostFor(service, `run-audit-${suffix}`, "conversation");
+      const registered = await host.register(registration(live, {
+        toolCallId: `call-audit-${suffix}`,
+        resourceUri: `ui://widgets/audit-${suffix}`,
+      }));
+      return { live, app: registered.part as AgentReplyMcpAppPart };
+    }));
+
+    const rounds = 20;
+    for (let index = 0; index < rounds; index += 1) {
+      for (const { app } of apps) {
+        await expect(service.request({
+          conversationId: "conversation",
+          invocationId: app.invocationId,
+          connectionId: app.connectionId,
+          method: "tools/call",
+          params: { name: "refresh_chart", arguments: { index } },
+          confirmed: true,
+        })).resolves.toMatchObject({ ok: true, name: "refresh_chart" });
+      }
+    }
+    for (const { live } of apps) expect(live.callTool).toHaveBeenCalledTimes(rounds);
+
+    let totalAuditBytes = 0;
+    let retainedRecordCount = 0;
+    for (const { app } of apps) {
+      const directory = join(artifactDir, "mcp-apps", app.invocationId);
+      const auditFiles = (await readdir(directory))
+        .filter((name) => /^audit(?:\.[1-9][0-9]*)?\.jsonl$/u.test(name));
+      expect(auditFiles.length).toBeLessThanOrEqual(auditRetainedFiles + 1);
+      const records: Array<{
+        readonly invocationId?: string;
+        readonly details?: { readonly phase?: string };
+      }> = [];
+      for (const file of auditFiles) {
+        const filePath = join(directory, file);
+        const fileBytes = (await stat(filePath)).size;
+        totalAuditBytes += fileBytes;
+        expect(fileBytes).toBeLessThanOrEqual(auditMaxBytes);
+        records.push(...(await readFile(filePath, "utf8")).trim().split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as {
+            invocationId?: string;
+            details?: { phase?: string };
+          }));
+      }
+      retainedRecordCount += records.length;
+      expect(records.some((record) => (
+        record.invocationId === app.invocationId && record.details?.phase === "confirmed"
+      ))).toBe(true);
+      expect(records.some((record) => (
+        record.invocationId === app.invocationId && record.details?.phase === "completed"
+      ))).toBe(true);
+    }
+    expect(retainedRecordCount).toBeLessThan(apps.length * rounds * 2);
+    expect(totalAuditBytes).toBeLessThanOrEqual(auditStorageMaxBytes);
+    await service.dispose();
+  });
+
+  it("reclaims noisy-app history before erasing a quiet app audit trail", async () => {
+    const artifactDir = await tempDir();
+    const auditMaxBytes = 1_024;
+    const auditRetainedFiles = 2;
+    const auditStorageMaxBytes = auditMaxBytes * (auditRetainedFiles + 1);
+    const service = createMcpAppService({
+      artifactDir,
+      auditMaxBytes,
+      auditRetainedFiles,
+      auditStorageMaxBytes,
+    });
+    const quietLive = connection("connection-audit-quiet");
+    const quietHost = await hostFor(service, "run-audit-quiet", "conversation");
+    const quietApp = (await quietHost.register(registration(quietLive, {
+      toolCallId: "call-audit-quiet",
+      resourceUri: "ui://widgets/audit-quiet",
+    }))).part as AgentReplyMcpAppPart;
+    const noisyLive = connection("connection-audit-noisy");
+    const noisyHost = await hostFor(service, "run-audit-noisy", "conversation");
+    const noisyApp = (await noisyHost.register(registration(noisyLive, {
+      toolCallId: "call-audit-noisy",
+      resourceUri: "ui://widgets/audit-noisy",
+    }))).part as AgentReplyMcpAppPart;
+    const requestTool = async (app: AgentReplyMcpAppPart, index: number) => await service.request({
+      conversationId: "conversation",
+      invocationId: app.invocationId,
+      connectionId: app.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart", arguments: { index } },
+      confirmed: true,
+    });
+
+    for (let index = 0; index < 3; index += 1) await requestTool(quietApp, index);
+    for (let index = 0; index < 20; index += 1) await requestTool(noisyApp, index);
+    expect(quietLive.callTool).toHaveBeenCalledTimes(3);
+    expect(noisyLive.callTool).toHaveBeenCalledTimes(20);
+
+    let aggregateAuditBytes = 0;
+    for (const app of [quietApp, noisyApp]) {
+      const directory = join(artifactDir, "mcp-apps", app.invocationId);
+      const files = (await readdir(directory))
+        .filter((name) => /^audit(?:\.[1-9][0-9]*)?\.jsonl$/u.test(name));
+      expect(files.length).toBeLessThanOrEqual(auditRetainedFiles + 1);
+      for (const file of files) {
+        const bytes = (await stat(join(directory, file))).size;
+        aggregateAuditBytes += bytes;
+        expect(bytes).toBeLessThanOrEqual(auditMaxBytes);
+      }
+    }
+    const quietDirectory = join(artifactDir, "mcp-apps", quietApp.invocationId);
+    const quietRecords = (await Promise.all((await readdir(quietDirectory))
+      .filter((name) => /^audit(?:\.[1-9][0-9]*)?\.jsonl$/u.test(name))
+      .map(async (name) => await readFile(join(quietDirectory, name), "utf8"))))
+      .flatMap((contents) => contents.trim().split("\n").filter(Boolean));
+    expect(quietRecords).toHaveLength(6);
+    expect(quietRecords.filter((line) => line.includes('"phase":"confirmed"'))).toHaveLength(3);
+    expect(quietRecords.filter((line) => line.includes('"phase":"completed"'))).toHaveLength(3);
+    expect(aggregateAuditBytes).toBeLessThanOrEqual(auditStorageMaxBytes);
+    await expect(requestTool(quietApp, 999)).resolves.toMatchObject({ ok: true });
+    await service.dispose();
+  });
+
+  it("initializes a many-directory audit inventory once and never rescans foreign owners on append", async () => {
+    const artifactDir = await tempDir();
+    const auditRoot = join(artifactDir, "mcp-apps");
+    const readdirCounts = new Map<string, number>();
+    const service = createMcpAppService({
+      artifactDir,
+      beforeAuditStorageOperation(operation, path) {
+        if (operation === "readdir") readdirCounts.set(path, (readdirCounts.get(path) ?? 0) + 1);
+      },
+    });
+    const live = connection("connection-audit-inventory");
+    const host = await hostFor(service, "run-audit-inventory", "conversation");
+    const app = (await host.register(registration(live))).part as AgentReplyMcpAppPart;
+    const foreignDirectories = Array.from({ length: 500 }, (_, index) => join(
+      auditRoot,
+      `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+    ));
+    await Promise.all(foreignDirectories.map(async (directory) => {
+      await mkdir(directory);
+      await writeFile(join(directory, "audit.1.jsonl"), "{}\n");
+    }));
+
+    const identity = {
+      conversationId: "conversation",
+      invocationId: app.invocationId,
+      connectionId: app.connectionId,
+    };
+    await service.request({
+      ...identity,
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    });
+    const targetDirectory = join(auditRoot, app.invocationId);
+    expect(readdirCounts.get(auditRoot)).toBe(1);
+    expect(foreignDirectories.every((directory) => readdirCounts.get(directory) === 1)).toBe(true);
+    const foreignReadsAfterInitialization = foreignDirectories
+      .reduce((total, directory) => total + (readdirCounts.get(directory) ?? 0), 0);
+    const targetReadsAfterInitialization = readdirCounts.get(targetDirectory) ?? 0;
+
+    for (let index = 0; index < 20; index += 1) {
+      await service.request({
+        ...identity,
+        method: "ui/open-link",
+        params: { url: `https://example.com/${String(index)}` },
+        confirmed: true,
+      });
+    }
+    expect(readdirCounts.get(auditRoot)).toBe(1);
+    expect(foreignDirectories
+      .reduce((total, directory) => total + (readdirCounts.get(directory) ?? 0), 0))
+      .toBe(foreignReadsAfterInitialization);
+    expect((readdirCounts.get(targetDirectory) ?? 0) - targetReadsAfterInitialization).toBe(20);
+    await service.dispose();
+  });
+
+  it("never reclaims another app's active confirmation while its tool call is in flight", async () => {
+    const artifactDir = await tempDir();
+    const clock = new Date("2026-08-15T12:00:00.000Z");
+    const service = createMcpAppService({
+      artifactDir,
+      now: () => clock,
+      auditMaxBytes: 1_024,
+      auditRetainedFiles: 2,
+      auditStorageMaxBytes: 4_096,
+    });
+    const entered = deferred();
+    const release = deferred();
+    const activeLive = connection("connection-audit-active-a");
+    activeLive.callTool.mockImplementationOnce(async (name: string, args: unknown) => {
+      entered.resolve();
+      await release.promise;
+      return { name, args, ok: true };
+    });
+    const activeHost = await hostFor(service, "run-audit-active-a", "conversation");
+    const activeApp = (await activeHost.register(registration(activeLive, {
+      toolCallId: "call-audit-active-a",
+      resourceUri: "ui://widgets/audit-active-a",
+    }))).part as AgentReplyMcpAppPart;
+    const pressureLive = connection("connection-audit-active-b");
+    const pressureHost = await hostFor(service, "run-audit-active-b", "conversation");
+    const pressureApp = (await pressureHost.register(registration(pressureLive, {
+      toolCallId: "call-audit-active-b",
+      resourceUri: "ui://widgets/audit-active-b",
+    }))).part as AgentReplyMcpAppPart;
+    const activeDirectory = join(artifactDir, "mcp-apps", activeApp.invocationId);
+    const pressureDirectory = join(artifactDir, "mcp-apps", pressureApp.invocationId);
+    await Promise.all([
+      writeFile(join(activeDirectory, "audit.jsonl"), `${"a".repeat(799)}\n`),
+      writeFile(join(activeDirectory, "audit.1.jsonl"), `${"h".repeat(899)}\n`),
+      writeFile(join(activeDirectory, "audit.2.jsonl"), `${"i".repeat(899)}\n`),
+      writeFile(join(pressureDirectory, "audit.jsonl"), `${"b".repeat(1_019)}\n`),
+      writeFile(join(pressureDirectory, "audit.1.jsonl"), `${"j".repeat(199)}\n`),
+    ]);
+    const future = new Date("2035-01-01T00:00:00.000Z");
+    await Promise.all([
+      utimes(join(activeDirectory, "audit.1.jsonl"), future, future),
+      utimes(join(activeDirectory, "audit.2.jsonl"), future, future),
+    ]);
+
+    const activeRequest = service.request({
+      conversationId: "conversation",
+      invocationId: activeApp.invocationId,
+      connectionId: activeApp.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart", arguments: { owner: "a" } },
+      confirmed: true,
+    });
+    await entered.promise;
+    expect(await readFile(join(activeDirectory, "audit.jsonl"), "utf8"))
+      .toContain('"phase":"confirmed"');
+
+    await expect(service.request({
+      conversationId: "conversation",
+      invocationId: pressureApp.invocationId,
+      connectionId: pressureApp.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart", arguments: { owner: "b" } },
+      confirmed: true,
+    })).resolves.toMatchObject({ ok: true });
+    expect(pressureLive.callTool).toHaveBeenCalledTimes(1);
+    expect(await readFile(join(activeDirectory, "audit.jsonl"), "utf8"))
+      .toContain('"phase":"confirmed"');
+
+    release.resolve();
+    await expect(activeRequest).resolves.toMatchObject({ ok: true });
+    const records = await auditContents(activeDirectory);
+    expect(records).toContain('"phase":"confirmed"');
+    expect(records).toContain('"phase":"completed"');
+    await service.dispose();
+  });
+
+  it.each(["readdir", "lstat"] as const)(
+    "isolates a foreign %s failure while the poisoned owner still fails closed as a target",
+    async (failedOperation) => {
+    const artifactDir = await tempDir();
+    let poisonedDirectory = "";
+    const service = createMcpAppService({
+      artifactDir,
+      auditMaxBytes: 1_024,
+      auditRetainedFiles: 1,
+      auditStorageMaxBytes: 4_096,
+      beforeAuditStorageOperation(operation, path) {
+        if (
+          operation === failedOperation
+          && (path === poisonedDirectory || path.startsWith(`${poisonedDirectory}/`))
+        ) throw fileSystemError("EACCES");
+      },
+    });
+    const poisonedLive = connection("connection-audit-read-poison");
+    const poisonedHost = await hostFor(service, "run-audit-read-poison", "conversation");
+    const poisonedApp = (await poisonedHost.register(registration(poisonedLive, {
+      toolCallId: "call-audit-read-poison",
+      resourceUri: "ui://widgets/audit-read-poison",
+    }))).part as AgentReplyMcpAppPart;
+    poisonedDirectory = join(artifactDir, "mcp-apps", poisonedApp.invocationId);
+    await writeFile(join(poisonedDirectory, "audit.1.jsonl"), "foreign history\n");
+    const healthyLive = connection("connection-audit-read-healthy");
+    const healthyHost = await hostFor(service, "run-audit-read-healthy", "conversation");
+    const healthyApp = (await healthyHost.register(registration(healthyLive, {
+      toolCallId: "call-audit-read-healthy",
+      resourceUri: "ui://widgets/audit-read-healthy",
+    }))).part as AgentReplyMcpAppPart;
+
+    await expect(service.request({
+      conversationId: "conversation",
+      invocationId: healthyApp.invocationId,
+      connectionId: healthyApp.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    })).resolves.toMatchObject({ ok: true });
+    expect(healthyLive.callTool).toHaveBeenCalledTimes(1);
+
+    await expect(service.request({
+      conversationId: "conversation",
+      invocationId: poisonedApp.invocationId,
+      connectionId: poisonedApp.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    })).rejects.toMatchObject({ code: "app_audit_failed" });
+    expect(poisonedLive.callTool).not.toHaveBeenCalled();
+    await service.dispose();
+    },
+  );
+
+  it("skips a foreign removal failure and reclaims another safe history candidate", async () => {
+    const artifactDir = await tempDir();
+    let failedRemovalPath = "";
+    const service = createMcpAppService({
+      artifactDir,
+      auditMaxBytes: 1_024,
+      auditRetainedFiles: 1,
+      auditStorageMaxBytes: 3_072,
+      beforeAuditStorageOperation(operation, path) {
+        if (operation === "remove" && path === failedRemovalPath) throw fileSystemError("EPERM");
+      },
+    });
+    const failedLive = connection("connection-audit-remove-failed");
+    const failedHost = await hostFor(service, "run-audit-remove-failed", "conversation");
+    const failedApp = (await failedHost.register(registration(failedLive, {
+      toolCallId: "call-audit-remove-failed",
+      resourceUri: "ui://widgets/audit-remove-failed",
+    }))).part as AgentReplyMcpAppPart;
+    const fallbackLive = connection("connection-audit-remove-fallback");
+    const fallbackHost = await hostFor(service, "run-audit-remove-fallback", "conversation");
+    const fallbackApp = (await fallbackHost.register(registration(fallbackLive, {
+      toolCallId: "call-audit-remove-fallback",
+      resourceUri: "ui://widgets/audit-remove-fallback",
+    }))).part as AgentReplyMcpAppPart;
+    const healthyLive = connection("connection-audit-remove-healthy");
+    const healthyHost = await hostFor(service, "run-audit-remove-healthy", "conversation");
+    const healthyApp = (await healthyHost.register(registration(healthyLive, {
+      toolCallId: "call-audit-remove-healthy",
+      resourceUri: "ui://widgets/audit-remove-healthy",
+    }))).part as AgentReplyMcpAppPart;
+    const failedDirectory = join(artifactDir, "mcp-apps", failedApp.invocationId);
+    const fallbackDirectory = join(artifactDir, "mcp-apps", fallbackApp.invocationId);
+    failedRemovalPath = join(failedDirectory, "audit.1.jsonl");
+    const fallbackHistoryPath = join(fallbackDirectory, "audit.1.jsonl");
+    await Promise.all([
+      writeFile(join(failedDirectory, "audit.jsonl"), Buffer.alloc(900, 0x61)),
+      writeFile(failedRemovalPath, Buffer.alloc(900, 0x62)),
+      writeFile(join(fallbackDirectory, "audit.jsonl"), Buffer.alloc(600, 0x63)),
+      writeFile(fallbackHistoryPath, Buffer.alloc(600, 0x64)),
+    ]);
+
+    await expect(service.request({
+      conversationId: "conversation",
+      invocationId: healthyApp.invocationId,
+      connectionId: healthyApp.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    })).resolves.toMatchObject({ ok: true });
+    expect(healthyLive.callTool).toHaveBeenCalledTimes(1);
+    await expect(access(failedRemovalPath)).resolves.toBeUndefined();
+    await expect(access(fallbackHistoryPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await service.dispose();
+  });
+
+  it("fails closed for unsafe owned audit storage without coupling a healthy app", async () => {
+    const artifactDir = await tempDir();
+    const service = createMcpAppService({ artifactDir });
+    const poisonedLive = connection("connection-audit-failure");
+    const poisonedHost = await hostFor(service, "run-audit-failure", "conversation");
+    const poisonedRegistered = await poisonedHost.register(registration(poisonedLive));
+    const poisonedApp = poisonedRegistered.part as AgentReplyMcpAppPart;
+    const healthyLive = connection("connection-audit-healthy");
+    const healthyHost = await hostFor(service, "run-audit-healthy", "conversation");
+    const healthyRegistered = await healthyHost.register(registration(healthyLive, {
+      toolCallId: "call-audit-healthy",
+      resourceUri: "ui://widgets/audit-healthy",
+    }));
+    const healthyApp = healthyRegistered.part as AgentReplyMcpAppPart;
+    await mkdir(join(artifactDir, "mcp-apps", poisonedApp.invocationId, "audit.jsonl"));
+
+    await expect(service.request({
+      conversationId: "conversation",
+      invocationId: poisonedApp.invocationId,
+      connectionId: poisonedApp.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart", arguments: { range: "week" } },
+      confirmed: true,
+    })).rejects.toMatchObject({ code: "app_audit_failed" });
+    expect(poisonedLive.callTool).not.toHaveBeenCalled();
+
+    await expect(service.request({
+      conversationId: "conversation",
+      invocationId: healthyApp.invocationId,
+      connectionId: healthyApp.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart", arguments: { range: "month" } },
+      confirmed: true,
+    })).resolves.toMatchObject({ ok: true, name: "refresh_chart" });
+    expect(healthyLive.callTool).toHaveBeenCalledTimes(1);
+    const healthyAudit = await readFile(
+      join(artifactDir, "mcp-apps", healthyApp.invocationId, "audit.jsonl"),
+      "utf8",
+    );
+    expect(healthyAudit).toContain('"phase":"confirmed"');
+    expect(healthyAudit).toContain('"phase":"completed"');
+    await service.dispose();
+  });
+
+  it("uses the injected aggregate ceiling and never reclaims foreign active files to exceed it", async () => {
+    const artifactDir = await tempDir();
+    const service = createMcpAppService({
+      artifactDir,
+      auditMaxBytes: 1_024,
+      auditRetainedFiles: 1,
+      auditStorageMaxBytes: 2_048,
+    });
+    const owners = await Promise.all(["one", "two"].map(async (suffix) => {
+      const live = connection(`connection-audit-ceiling-${suffix}`);
+      const host = await hostFor(service, `run-audit-ceiling-${suffix}`, "conversation");
+      const app = (await host.register(registration(live, {
+        toolCallId: `call-audit-ceiling-${suffix}`,
+        resourceUri: `ui://widgets/audit-ceiling-${suffix}`,
+      }))).part as AgentReplyMcpAppPart;
+      return { live, app };
+    }));
+    await Promise.all(owners.map(async ({ app }, index) => await writeFile(
+      join(artifactDir, "mcp-apps", app.invocationId, "audit.jsonl"),
+      Buffer.alloc(1_024, 0x61 + index),
+    )));
+    const targetLive = connection("connection-audit-ceiling-target");
+    const targetHost = await hostFor(service, "run-audit-ceiling-target", "conversation");
+    const targetApp = (await targetHost.register(registration(targetLive, {
+      toolCallId: "call-audit-ceiling-target",
+      resourceUri: "ui://widgets/audit-ceiling-target",
+    }))).part as AgentReplyMcpAppPart;
+
+    await expect(service.request({
+      conversationId: "conversation",
+      invocationId: targetApp.invocationId,
+      connectionId: targetApp.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    })).rejects.toMatchObject({ code: "app_audit_failed" });
+    expect(targetLive.callTool).not.toHaveBeenCalled();
+    for (const { app } of owners) {
+      await expect(stat(join(artifactDir, "mcp-apps", app.invocationId, "audit.jsonl")))
+        .resolves.toMatchObject({ size: 1_024 });
+    }
+    await service.dispose();
+  });
+
+  it("requires one audit option set for every service sharing an artifact root", async () => {
+    const artifactDir = await tempDir();
+    const first = createMcpAppService({
+      artifactDir,
+      auditMaxBytes: 1_024,
+      auditRetainedFiles: 1,
+      auditStorageMaxBytes: 4_096,
+    });
+    const matching = createMcpAppService({
+      artifactDir,
+      auditMaxBytes: 1_024,
+      auditRetainedFiles: 1,
+      auditStorageMaxBytes: 4_096,
+    });
+    expect(() => createMcpAppService({
+      artifactDir,
+      auditMaxBytes: 1_024,
+      auditRetainedFiles: 1,
+      auditStorageMaxBytes: 5_120,
+    })).toThrow(/must agree for one artifact root/iu);
+    await Promise.all([first.dispose(), matching.dispose()]);
+  });
+
+  it("refuses a symlink audit target without writing through it or poisoning a healthy owner", async () => {
+    const artifactDir = await tempDir();
+    const service = createMcpAppService({ artifactDir });
+    const poisonedLive = connection("connection-audit-symlink");
+    const poisonedHost = await hostFor(service, "run-audit-symlink", "conversation");
+    const poisonedApp = (await poisonedHost.register(registration(poisonedLive))).part as AgentReplyMcpAppPart;
+    const sentinelPath = join(artifactDir, "audit-symlink-sentinel");
+    await writeFile(sentinelPath, "unchanged");
+    await symlink(sentinelPath, join(artifactDir, "mcp-apps", poisonedApp.invocationId, "audit.jsonl"));
+
+    await expect(service.request({
+      conversationId: "conversation",
+      invocationId: poisonedApp.invocationId,
+      connectionId: poisonedApp.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    })).rejects.toMatchObject({ code: "app_audit_failed" });
+    expect(poisonedLive.callTool).not.toHaveBeenCalled();
+    await expect(readFile(sentinelPath, "utf8")).resolves.toBe("unchanged");
+
+    const healthyLive = connection("connection-audit-symlink-healthy");
+    const healthyHost = await hostFor(service, "run-audit-symlink-healthy", "conversation");
+    const healthyApp = (await healthyHost.register(registration(healthyLive, {
+      toolCallId: "call-audit-symlink-healthy",
+      resourceUri: "ui://widgets/audit-symlink-healthy",
+    }))).part as AgentReplyMcpAppPart;
+    await expect(service.request({
+      conversationId: "conversation",
+      invocationId: healthyApp.invocationId,
+      connectionId: healthyApp.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    })).resolves.toMatchObject({ ok: true });
+    await service.dispose();
+  });
+
+  it("keeps all model-filled tool, argument, resource, and URL content out of audit records", async () => {
+    const artifactDir = await tempDir();
+    const service = createMcpAppService({ artifactDir });
+    const live = connection("connection-audit-model-content");
+    const resourceUri = "ui://widgets/model-secret-resource";
+    const toolName = "model_secret_tool";
+    const host = await hostFor(service, "run-audit-model-content", "conversation");
+    const app = (await host.register(registration(live, {
+      resourceUri,
+      appVisibleTools: [toolName],
+    }))).part as AgentReplyMcpAppPart;
+    const identity = {
+      conversationId: "conversation",
+      invocationId: app.invocationId,
+      connectionId: app.connectionId,
+    };
+    await service.request({
+      ...identity,
+      method: "tools/call",
+      params: { name: toolName, arguments: { prompt: "model-secret-argument" } },
+      confirmed: true,
+    });
+    await service.request({
+      ...identity,
+      method: "resources/read",
+      params: { uri: resourceUri },
+    });
+    await service.request({
+      ...identity,
+      method: "ui/open-link",
+      params: { url: "https://example.com/model-secret-url" },
+      confirmed: true,
+    });
+
+    const audit = await auditContents(join(artifactDir, "mcp-apps", app.invocationId));
+    expect(audit).not.toContain(toolName);
+    expect(audit).not.toContain("model-secret-argument");
+    expect(audit).not.toContain(resourceUri);
+    expect(audit).not.toContain("model-secret-url");
+    expect(audit).toContain('"phase":"confirmed"');
+    expect(audit).toContain('"phase":"completed"');
+    expect(audit).toContain('"phase":"requested"');
+    await service.dispose();
+  });
+
+  it("reports a non-retryable incomplete audit when completion persistence fails after execution", async () => {
+    const artifactDir = await tempDir();
+    const service = createMcpAppService({ artifactDir });
+    const live = connection("connection-audit-incomplete");
+    const host = await hostFor(service, "run-audit-incomplete", "conversation");
+    const app = (await host.register(registration(live))).part as AgentReplyMcpAppPart;
+    const directory = join(artifactDir, "mcp-apps", app.invocationId);
+    live.callTool.mockImplementationOnce(async (name: string, args: unknown) => {
+      await mkdir(join(directory, "audit.1.jsonl"));
+      return { name, args, ok: true };
+    });
+
+    await expect(service.request({
+      conversationId: "conversation",
+      invocationId: app.invocationId,
+      connectionId: app.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart", arguments: { irreversible: true } },
+      confirmed: true,
+    })).rejects.toMatchObject({
+      code: "app_audit_incomplete",
+      message: expect.stringContaining("do not retry automatically"),
+    });
+    expect(live.callTool).toHaveBeenCalledTimes(1);
+    const audit = await readFile(join(directory, "audit.jsonl"), "utf8");
+    expect(audit).toContain('"phase":"confirmed"');
+    expect(audit).not.toContain('"phase":"completed"');
     await service.dispose();
   });
 

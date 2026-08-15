@@ -30,11 +30,15 @@ import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "./run
 import { createSessionHistoryRuntimeExtension, isSessionHistoryToolAllowed } from "./session-history.js";
 import {
   createReplyArtifactService,
+  DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
   isPublishReplyFileToolAllowed,
   PUBLISH_REPLY_FILE_TOOL_NAME,
   replyArtifactStorageBudgetFor,
 } from "./reply-artifacts.js";
-import { createMcpAppService } from "./mcp-apps.js";
+import {
+  createMcpAppService,
+  DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
+} from "./mcp-apps.js";
 import { createReplyPartBudget } from "./reply-part-budget.js";
 import {
   createRequestModelOverrideRuntimeExtension,
@@ -118,6 +122,12 @@ export interface ResponderControllerPort {
  */
 const SELF_BOUNDED_CHANNEL_ID = "tui";
 
+/** @internal deterministic composition contract used by focused tests. */
+export function replyArtifactStorageMaxBytesForMcpApps(mcpAppsEnabled: boolean): number {
+  return DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES
+    - (mcpAppsEnabled ? DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES : 0);
+}
+
 /** The rollover policy this channel's responder runs under. */
 export function sessionRolloverForChannel(
   channelId: ChannelId | undefined,
@@ -148,7 +158,11 @@ export async function buildResponder(
   const adapterSendTools = await controller.adapterSendToolsRuntimeOptions(coreConfig);
   const historyToolSupport = historyToolRouteSupport(coreConfig);
   const replyPartBudget = createReplyPartBudget();
-  const replyArtifactStorage = replyArtifactStorageBudgetFor(coreConfig.artifacts.dir);
+  const mcpAppsEnabled = runtimeRouteSupportsMcpApps(coreConfig);
+  const replyArtifactStorage = replyArtifactStorageBudgetFor(
+    coreConfig.artifacts.dir,
+    replyArtifactStorageMaxBytesForMcpApps(mcpAppsEnabled),
+  );
   const artifactDerivedRoots = agentArtifactDerivedRoots(coreConfig.artifacts.dir);
   const continuationStateDir = (await loadContinuationSettings({
     cwd: controller.cwd,
@@ -178,7 +192,7 @@ export async function buildResponder(
     replyPartBudget,
     storageBudget: replyArtifactStorage,
   });
-  const mcpApps = runtimeRouteSupportsMcpApps(coreConfig)
+  const mcpApps = mcpAppsEnabled
     ? createMcpAppService({
         artifactDir: coreConfig.artifacts.dir,
         retentionDays: coreConfig.artifacts.retention.maxAgeDays,

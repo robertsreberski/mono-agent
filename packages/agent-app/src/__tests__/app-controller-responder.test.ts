@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -8,8 +8,14 @@ import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapt
 import { afterEach, describe, expect, it } from "vitest";
 
 import { loadAppCoreConfig } from "../app-config.js";
-import { buildResponder, type ResponderControllerPort } from "../app-controller-responder.js";
 import {
+  buildResponder,
+  replyArtifactStorageMaxBytesForMcpApps,
+  type ResponderControllerPort,
+} from "../app-controller-responder.js";
+import { DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES } from "../mcp-apps.js";
+import {
+  DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
   PUBLISH_REPLY_FILE_TOOL_NAME,
   REPLY_ARTIFACT_MCP_SERVER_NAME,
 } from "../reply-artifacts.js";
@@ -22,6 +28,13 @@ afterEach(async () => {
 });
 
 describe("reply artifact responder composition", () => {
+  it("does not reserve MCP App audit storage when MCP Apps are disabled", () => {
+    expect(replyArtifactStorageMaxBytesForMcpApps(false)).toBe(DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES);
+    expect(replyArtifactStorageMaxBytesForMcpApps(true)).toBe(
+      DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES - DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
+    );
+  });
+
   it("refuses every configured host-private root, including relocated durable history", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "agent-app-responder-private-roots-"));
     tempDirs.push(workspace);
@@ -40,6 +53,8 @@ describe("reply artifact responder composition", () => {
     const traceRegistryDir = join(workspace, "host-h");
     const continuationStateDir = join(workspace, "host-i");
     const historyCandidate = join(historyRoot, "host-data.txt");
+    const authorizedFilePath = join(workspace, "exports", "ordinary-report.txt");
+    const authorizedFileContents = "composition-authorized-public-content";
     const candidates = [
       { label: "artifact root", path: join(artifactDir, "host-data.txt") },
       { label: "derived attachments", path: join(artifactDir, "attachments", "host-data.txt") },
@@ -58,7 +73,7 @@ describe("reply artifact responder composition", () => {
       { label: "trace registry", path: join(traceRegistryDir, "host-data.txt") },
       { label: "continuation state", path: join(continuationStateDir, "host-data.txt") },
     ] as const;
-    await Promise.all([...new Set(candidates.map(({ path }) => dirname(path)))]
+    await Promise.all([...new Set([...candidates.map(({ path }) => dirname(path)), dirname(authorizedFilePath)])]
       .map(async (dir) => await mkdir(dir, { recursive: true })));
     await chmod(historyRoot, 0o700);
 
@@ -103,11 +118,13 @@ describe("reply artifact responder composition", () => {
       writeFile(join(artifactDir, "outbound", "not-current", "host-data.txt"), privateSentinel),
       writeFile(historyCandidate, privateSentinel),
       writeFile(join(workspace, ".mono-agent", "host-data.txt"), privateSentinel),
+      writeFile(authorizedFilePath, authorizedFileContents),
     ]);
 
     const coreConfig = await loadAppCoreConfig({ cwd: workspace, configPath: configReadPath, env: {} });
     expect(coreConfig.artifacts.dir).toBe(artifactDir);
     const publicationResults: Array<{ readonly label: string; readonly result: unknown }> = [];
+    let authorizedPublicationResult: unknown;
     const runtime = {
       async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
         const servers = options.mcpServers as Readonly<Record<string, { readonly url: string }>> | undefined;
@@ -125,6 +142,10 @@ describe("reply artifact responder composition", () => {
               }),
             });
           }
+          authorizedPublicationResult = await client.callTool({
+            name: PUBLISH_REPLY_FILE_TOOL_NAME,
+            arguments: { path: authorizedFilePath },
+          });
         } finally {
           await client.close().catch(() => undefined);
           // The history store permits only its own inventory. Remove this
@@ -184,11 +205,36 @@ describe("reply artifact responder composition", () => {
         structuredContent: { published: false, code: "artifact_publish_failed" },
       });
     }
-    expect(response.parts).toHaveLength(candidates.length);
-    expect(response.parts?.every((part) => part.type === "failure" && part.code === "artifact_publish_failed"))
-      .toBe(true);
-    const serializedFailures = JSON.stringify({ publicationResults, parts: response.parts });
-    expect(serializedFailures).not.toContain(privateSentinel);
-    for (const candidate of candidates) expect(serializedFailures).not.toContain(candidate.path);
+    const failures = response.parts?.filter((part) => part.type === "failure") ?? [];
+    expect(failures).toHaveLength(candidates.length);
+    expect(failures.every((part) => part.code === "artifact_publish_failed")).toBe(true);
+    expect(authorizedPublicationResult).toMatchObject({
+      structuredContent: {
+        published: true,
+        attachmentId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f-]{27,35}$/u),
+      },
+    });
+    const attachmentId = (authorizedPublicationResult as {
+      structuredContent: { attachmentId: string };
+    }).structuredContent.attachmentId;
+    expect(response.parts).toHaveLength(candidates.length + 1);
+    expect(response.parts?.filter((part) => part.type === "attachment")).toEqual([
+      expect.objectContaining({
+        type: "attachment",
+        id: attachmentId,
+        reference: { scheme: "mono-agent-artifact", id: attachmentId },
+      }),
+    ]);
+    await expect(readFile(join(artifactDir, "reply-files", attachmentId, "content"), "utf8"))
+      .resolves.toBe(authorizedFileContents);
+    const serializedOutbound = JSON.stringify({
+      publicationResults,
+      authorizedPublicationResult,
+      parts: response.parts,
+    });
+    expect(serializedOutbound).not.toContain(privateSentinel);
+    expect(serializedOutbound).not.toContain(authorizedFileContents);
+    expect(serializedOutbound).not.toContain(authorizedFilePath);
+    for (const candidate of candidates) expect(serializedOutbound).not.toContain(candidate.path);
   });
 });

@@ -635,6 +635,14 @@ describe("web HTTP server", () => {
         },
         onMcpAppRequest(_url, body) {
           bridgeBodies.push(body);
+          if ((body.params as { readonly name?: unknown } | undefined)?.name === "audit_incomplete") {
+            return Response.json({
+              error: {
+                code: "app_audit_incomplete",
+                message: "The MCP App tool ran; do not retry automatically.",
+              },
+            }, { status: 409 });
+          }
           return { ok: true };
         },
       }),
@@ -706,6 +714,18 @@ describe("web HTTP server", () => {
       params: { name: "refresh_chart" },
       confirmed: true,
     }]);
+    const incomplete = await fetch(bridgeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({ method: "tools/call", params: { name: "audit_incomplete" }, confirmed: true }),
+    });
+    expect(incomplete.status).toBe(409);
+    await expect(incomplete.json()).resolves.toMatchObject({
+      error: {
+        code: "app_audit_incomplete",
+        message: expect.stringContaining("do not retry automatically"),
+      },
+    });
 
     const crossOrigin = await fetch(bridgeUrl, {
       method: "POST",

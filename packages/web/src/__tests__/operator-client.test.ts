@@ -466,7 +466,23 @@ describe("OperatorClient", () => {
             },
           });
         }
-        if (url.endsWith("/requests")) return Response.json({ result: { refreshed: true } });
+        if (url.endsWith("/requests")) {
+          const body = JSON.parse(String(init?.body)) as { params?: { name?: string } };
+          if (body.params?.name === "audit_incomplete") {
+            return Response.json({
+              error: {
+                code: "app_audit_incomplete",
+                message: "The tool ran; do not retry automatically.",
+              },
+            }, { status: 409 });
+          }
+          if (body.params?.name === "audit_failed") {
+            return Response.json({
+              error: { code: "app_audit_failed", message: "The action was not recorded." },
+            }, { status: 507 });
+          }
+          return Response.json({ result: { refreshed: true } });
+        }
         return Response.json({
           app: {
             type: "mcp_app",
@@ -504,6 +520,24 @@ describe("OperatorClient", () => {
       params: { name: "refresh_chart" },
       confirmed: true,
     })).resolves.toEqual({ refreshed: true });
+    await expect(client.mcpAppRequest("web:thread/one", {
+      invocationId: "invocation-1",
+      connectionId: "connection-1",
+      method: "tools/call",
+      params: { name: "audit_incomplete" },
+      confirmed: true,
+    })).rejects.toMatchObject({
+      code: "app_audit_incomplete",
+      status: 409,
+      message: expect.stringContaining("do not retry automatically"),
+    });
+    await expect(client.mcpAppRequest("web:thread/one", {
+      invocationId: "invocation-1",
+      connectionId: "connection-1",
+      method: "tools/call",
+      params: { name: "audit_failed" },
+      confirmed: true,
+    })).rejects.toMatchObject({ code: "app_audit_failed", status: 507 });
 
     expect(requests[0]?.init?.headers).toMatchObject({
       authorization: "Bearer secret",

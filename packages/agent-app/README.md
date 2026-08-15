@@ -673,15 +673,31 @@ controls, and bounded at UTF-8/code-point boundaries; errors expose neither
 source paths nor bytes.
 
 Files are limited to 20 MiB, and files plus MCP Apps share one 20-part run
-budget. Their two durable namespaces also share a fixed 256 MiB aggregate
-file-byte ceiling. Admission is serialized, re-inventories both namespaces
-after restart, accounts for staging and audit writes, and fails only the new
-part explicitly when full; it does not evict active staging, current-run, or
-authorized in-flight content. Retried identities are deduplicated. A manifest
+budget. Their durable payloads and MCP audit files stay within a fixed 256 MiB
+aggregate file-byte ceiling: configured composition reserves 1 MiB for
+independently admitted audit files, leaving 255 MiB to the model-fillable shared
+budget.
+Admission is serialized, re-inventories both payload namespaces after restart,
+and fails only the new part explicitly when full; it does not evict active
+staging, current-run, or authorized in-flight content. Retried identities are
+deduplicated. A manifest
 that cannot accept its delivery-conversation binding becomes one bounded failed
 part while answer text and other valid parts survive. Terminal failure,
 cancellation, or missing run metadata removes uncommitted state. The sealed
 local self-configuration override excludes this publisher.
+
+Audit storage performs one root inventory for a process/root lifecycle, then
+maintains exact owner byte counts under a global append gate. Only rotated
+history is reclaimable; every owner's active `audit.jsonl` remains protected,
+including while a confirmed tool call is in flight. Foreign read or reclamation
+failures are conservatively isolated, while an unsafe target file, symlink, or
+directory fails that owner closed. Audit records contain host identity, method,
+timestamp, and phase only—not model-filled tool names, arguments, resource URIs,
+URLs, or results. A failed pre-execution confirmation record returns
+`app_audit_failed` and refuses the tool call. A failed completion record after a
+successful tool call remains `app_audit_incomplete` through operator and web
+transport: the side effect may have occurred and must not be retried
+automatically.
 
 Pi-native routes can retain MCP App resources negotiated at either supported
 ext-apps revision. The whole primary/fallback route must support the bridge;

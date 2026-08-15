@@ -1253,11 +1253,13 @@ function sendMcpAppError(res: Response, error: unknown): void {
   const code = codeOf(error);
   const status = code === "app_forbidden" || code === "app_missing" || code === "app_expired"
     ? 404
-    : code === "app_request_too_large" ? 413
+      : code === "app_request_too_large" ? 413
       : code === "app_tool_forbidden" || code === "app_resource_forbidden" || code === "app_open_link_forbidden" ? 403
         : code === "app_confirmation_required" ? 409
+          : code === "app_audit_incomplete" ? 409
           : code === "app_rate_limited" ? 429
           : code === "app_connection_closed" ? 410
+            : code === "app_audit_failed" ? 507
             : 500;
   setPrivateMcpAppHeaders(res);
   sendJsonError(res, status, error);

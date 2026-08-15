@@ -45,6 +45,10 @@ const MAX_ERROR_BODY_BYTES = 64 * 1024;
 const MAX_NDJSON_FRAME_BYTES = 8 * 1024 * 1024;
 const MAX_MCP_APP_RESOURCE_BYTES = 4 * 1024 * 1024;
 const MAX_MCP_APP_RESULT_BYTES = 1024 * 1024;
+const PRESERVED_MCP_APP_OPERATOR_ERRORS = new Map<string, number>([
+  ["app_audit_incomplete", 409],
+  ["app_audit_failed", 507],
+]);
 const CANCEL_TIMEOUT_MS = 2_000;
 const HISTORY_APPEND_TIMEOUT_MS = 5_000;
 const MAX_SKILL_ITEMS = 256;
@@ -507,6 +511,7 @@ export class OperatorClient {
           ...(request.confirmed === undefined ? {} : { confirmed: request.confirmed }),
         }),
       },
+      PRESERVED_MCP_APP_OPERATOR_ERRORS,
     );
     let parsed: unknown;
     try {
@@ -563,7 +568,11 @@ export class OperatorClient {
     return parseCronMutation(parsed);
   }
 
-  private async request(url: string, init: RequestInit): Promise<Response> {
+  private async request(
+    url: string,
+    init: RequestInit,
+    preservedErrors?: ReadonlyMap<string, number>,
+  ): Promise<Response> {
     let response: Response;
     try {
       response = await this.fetchImpl(url, { ...init, redirect: "error" });
@@ -573,6 +582,12 @@ export class OperatorClient {
     }
     if (!response.ok && !response.headers.get("content-type")?.includes("application/x-ndjson")) {
       const detail = await readBodyPrefix(response, MAX_ERROR_BODY_BYTES).catch(() => "");
+      const preserved = preservedErrors === undefined
+        ? undefined
+        : preservedOperatorError(detail, response.status, preservedErrors);
+      if (preserved !== undefined) {
+        throw new WebConsoleError(preserved.code, preserved.message, response.status);
+      }
       throw new WebConsoleError(
         response.status === 401 ? "agent_unauthorized" : "agent_http_error",
         `Agent responded ${response.status}${detail.length === 0 ? "." : `: ${detail.slice(0, 300)}`}`,
@@ -581,6 +596,26 @@ export class OperatorClient {
     }
     return response;
   }
+}
+
+function preservedOperatorError(
+  body: string,
+  status: number,
+  expected: ReadonlyMap<string, number>,
+): { readonly code: string; readonly message: string } | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body) as unknown;
+  } catch {
+    return undefined;
+  }
+  const error = record(record(parsed)?.error);
+  const code = typeof error?.code === "string" ? error.code : undefined;
+  if (code === undefined || expected.get(code) !== status) return undefined;
+  const message = typeof error?.message === "string" && error.message.length <= 1_024
+    ? error.message
+    : "The MCP App audit operation failed.";
+  return { code, message };
 }
 
 function invalidCronResponse(): never {

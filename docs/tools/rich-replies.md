@@ -32,6 +32,8 @@ the descriptor into an owner-private staging directory. It hashes while
 copying, writes the manifest, then atomically renames the whole finished
 directory into the live namespace. The reply contains only the sanitized name,
 media type, byte count, SHA-256 integrity id, expiry, and an opaque id.
+Host-private roots are refused even when they are located inside the configured
+workspace.
 
 The default per-file limit is 20 MiB. Files and apps share one limit of 20 rich
 parts per run. A retry with the same integrity identity reuses the first part;
@@ -118,9 +120,29 @@ reports `connected: false` and cannot call tools or read resources.
 
 Bridge requests are limited to 64 KiB, results to 1 MiB, and each connection to
 60 requests per minute. Each app keeps a rotating owner-private audit log with
-a 256 KiB file ceiling and two retained rotations. Stable errors distinguish
-oversize, rate-limited, forbidden, confirmation-required, expired, and closed
-connection outcomes.
+a 256 KiB file ceiling and two retained rotations. Durable rich-reply payloads
+and audit files stay within a 256 MiB aggregate ceiling; configured composition
+reserves 1 MiB for independently admitted audit records and uses fair-share,
+oldest-segment reclamation when that reserve fills. One bounded inventory per
+artifact-root lifecycle restores accounting after a restart; later appends
+update exact in-memory ownership under one process-wide gate instead of
+rescanning every invocation. Reclamation can remove only rotated history. An
+owner's active `audit.jsonl`, including an in-flight confirmation, is never a
+candidate. A foreign owner that cannot be inspected or reclaimed is isolated
+and conservatively charged; the affected owner fails closed without disabling a
+healthy app that still fits the reserve. Audit entries contain only host-owned
+identity, method, timestamp, and phase fields—never model-filled tool names,
+arguments, resource URIs, URLs, or tool results.
+
+Filling the model-visible budget fails only the new rich-reply part without
+evicting retained content or blocking a later audited bridge action. Stable
+errors distinguish oversize, rate-limited, forbidden, confirmation-required,
+audit-failed, audit-incomplete, expired, and closed connection outcomes. Failure
+to persist the pre-action confirmation returns `app_audit_failed` and refuses
+execution. If a tool runs but its completion record fails, the operator and web
+transports preserve `app_audit_incomplete` as a conflict outcome rather than a
+generic gateway failure. The side effect may have happened, so callers must not
+retry automatically.
 
 The operator producer continues to cap each NDJSON frame at 256 KiB. The web
 consumer accepts up to the legacy 8 MiB boundary so a new console remains

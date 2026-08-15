@@ -78,6 +78,17 @@
   state; stale staging cleanup cannot collect an active publication. Retained
   MCP connections are LRU/idle bounded and closed on eviction, bridge requests
   are rate-limited, and per-app audit logs rotate within fixed bounds.
+- Publication refuses host-private roots even when they sit inside the
+  workspace. Reply files, MCP App payloads, and the independently admitted MCP
+  audit reserve stay within one 256 MiB aggregate storage ceiling. When the
+  model-fillable publication budget is full, only the new rich part fails
+  safely and retained content is not evicted.
+- MCP App audit admission inventories each artifact root once per lifecycle,
+  maintains exact gated byte accounting thereafter, and reclaims only rotated
+  history—never another invocation's active confirmation. Foreign storage
+  faults are isolated, model-filled values never enter audit records, and an
+  unrecorded post-tool completion remains the non-retryable
+  `app_audit_incomplete` outcome through operator and web transport.
 
 ### Operator compatibility
 

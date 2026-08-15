@@ -58,7 +58,11 @@ export function operatorFetch(options: {
   readonly onVerbatim?: (conversationId: string, body: Record<string, unknown>) => void | Promise<void>;
   readonly onReplyArtifact?: (url: string, init?: RequestInit) => Response | Promise<Response>;
   readonly onMcpAppResource?: (url: string, init?: RequestInit) => Record<string, unknown>;
-  readonly onMcpAppRequest?: (url: string, body: Record<string, unknown>, init?: RequestInit) => unknown;
+  readonly onMcpAppRequest?: (
+    url: string,
+    body: Record<string, unknown>,
+    init?: RequestInit,
+  ) => unknown | Response;
 } = {}): typeof fetch {
   return (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -147,7 +151,8 @@ export function operatorFetch(options: {
     }
     if (url.includes("/mcp-apps/") && url.endsWith("/requests")) {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      return Response.json({ result: options.onMcpAppRequest?.(url, body, init) ?? null });
+      const result = options.onMcpAppRequest?.(url, body, init) ?? null;
+      return result instanceof Response ? result : Response.json({ result });
     }
     if (url.includes("/mcp-apps/")) {
       const resource = options.onMcpAppResource?.(url, init);

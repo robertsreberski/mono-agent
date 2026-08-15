@@ -1210,6 +1210,16 @@ describe("startTuiAdapter", () => {
         if (request.method === "tools/call" && request.confirmed !== true) {
           throw new CodedError("app_confirmation_required", "confirmation required");
         }
+        const requestedTool = (request.params as { readonly name?: unknown } | undefined)?.name;
+        if (requestedTool === "audit_incomplete") {
+          throw new CodedError(
+            "app_audit_incomplete",
+            "The MCP App tool ran, but completion could not be recorded safely; do not retry automatically.",
+          );
+        }
+        if (requestedTool === "audit_failed") {
+          throw new CodedError("app_audit_failed", "The MCP App action could not be recorded safely.");
+        }
         if (request.method === "resources/read") {
           throw new CodedError("app_resource_forbidden", "resource forbidden");
         }
@@ -1280,6 +1290,36 @@ describe("startTuiAdapter", () => {
       connectionId: "connection-1",
       method: "tools/call",
       confirmed: true,
+    });
+
+    const incomplete = await fetch(bridgeRoute, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-mono-agent-mcp-connection-id": "connection-1",
+      },
+      body: JSON.stringify({ method: "tools/call", params: { name: "audit_incomplete" }, confirmed: true }),
+    });
+    expect(incomplete.status).toBe(409);
+    await expect(incomplete.json()).resolves.toMatchObject({
+      error: {
+        code: "app_audit_incomplete",
+        message: expect.stringContaining("do not retry automatically"),
+      },
+    });
+    const auditFailed = await fetch(bridgeRoute, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-mono-agent-mcp-connection-id": "connection-1",
+      },
+      body: JSON.stringify({ method: "tools/call", params: { name: "audit_failed" }, confirmed: true }),
+    });
+    expect(auditFailed.status).toBe(507);
+    await expect(auditFailed.json()).resolves.toMatchObject({
+      error: { code: "app_audit_failed" },
     });
 
     const forbiddenResource = await fetch(bridgeRoute, {
