@@ -4,11 +4,13 @@ export type AgentRequestMetadata = Record<string, unknown>;
 export type AgentResponseMetadata = Record<string, unknown>;
 export {
   PROCESS_JOB_ERROR_CODES,
+  PROCESS_JOB_PUBLIC_ERROR_MESSAGES,
   PROCESS_JOB_STATES,
   isProcessJobErrorCode,
   isProcessJobState,
   parseProcessJobProjection,
   parseProcessJobProjections,
+  processJobPublicError,
 } from "./process-jobs.js";
 export type {
   ProcessJobErrorCode,

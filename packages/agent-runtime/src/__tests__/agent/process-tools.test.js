@@ -120,6 +120,36 @@ describe("Exec", () => {
     expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
+  it("returns only a stable public code and generic message when background admission fails", async () => {
+    const workspace = tempWorkspace();
+    const cleanup = vi.fn(async () => {});
+    const privateText = `arbitrary-admission-secret at ${resolve(workspace, "private", "state.json")}`;
+    const failure = Object.assign(new Error(privateText), { code: "process_job_store_error" });
+    const sandbox = {
+      ...passthroughSandbox,
+      async prepareCommand({ command }) {
+        return { ...command, args: command.args ?? [], cleanup };
+      },
+    };
+
+    const result = await execToolRun({
+      executable: process.execPath,
+      args: ["--eval", "process.stdout.write('must-not-run')"],
+      background: true,
+    }, {
+      ctx: { workspace, sandbox },
+      processJobsController: { start: vi.fn(async () => { throw failure; }) },
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      text: "Error: Process-job storage failed.",
+      outcome: { code: "process_job_store_error" },
+    });
+    expect(JSON.stringify(result)).not.toContain("arbitrary-admission-secret");
+    expect(JSON.stringify(result)).not.toContain(workspace);
+  });
+
   it("does not clean underneath a launched handle when the controller result is invalid", async () => {
     const workspace = tempWorkspace();
     const cleanup = vi.fn(async () => {});

@@ -5,10 +5,11 @@ import { basename, dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { isDeepStrictEqual } from "node:util";
 
-import type {
-  ProcessJobErrorCode,
-  ProcessJobProjection,
-  ProcessJobState,
+import {
+  processJobPublicError,
+  type ProcessJobErrorCode,
+  type ProcessJobProjection,
+  type ProcessJobState,
 } from "@mono-agent/agent-contracts";
 import type {
   ProcessJobProcessHandle,
@@ -35,6 +36,8 @@ import {
   loadOrCreateProcessJobSecret,
   openProcessJobStore,
   prepareProcessJobStateDirectory,
+  PROCESS_JOB_CONVERSATION_BUSY_ATTEMPTS,
+  PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS,
   PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS,
   PROCESS_JOB_ENV_KEYS_CAPS,
   projectProcessJob,
@@ -140,8 +143,8 @@ export interface ProcessJobsServiceHandle {
 export class ProcessJobServiceError extends Error {
   readonly code: ProcessJobErrorCode;
 
-  constructor(code: ProcessJobErrorCode, message: string) {
-    super(message);
+  constructor(code: ProcessJobErrorCode, _message?: string) {
+    super(processJobPublicError(code).message);
     this.name = "ProcessJobServiceError";
     this.code = code;
   }
@@ -388,7 +391,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       if (isTerminalProcessJobState(record.state) && record.wake.state === "pending") {
         const destinationUnavailableExhausted = (record.wake.destinationUnavailableAttempts ?? 0)
           >= PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS;
-        if (!destinationUnavailableExhausted && (record.wake.attempts === 0
+        const conversationBusyExhausted = isConversationBusyExhausted(record, this.now());
+        if (!destinationUnavailableExhausted && !conversationBusyExhausted && (record.wake.attempts === 0
           || (record.wake.retrySafe === true && record.wake.attempts < MAX_WAKE_ATTEMPTS))) {
           this.scheduleWake(record.jobId);
         } else {
@@ -399,12 +403,15 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
                 >= PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS;
               const safeRetryExhausted = current.wake.retrySafe === true
                 && current.wake.attempts >= MAX_WAKE_ATTEMPTS;
+              const busyExhausted = isConversationBusyExhausted(current, this.now());
               current.wake.state = "failed";
               current.wake.retrySafe = false;
               recordWakeFailure(
                 current,
                 unavailableExhausted
                   ? "The destination channel remained unavailable through its bounded pre-dispatch retry window."
+                  : busyExhausted
+                    ? "The originating conversation remained busy through its bounded deferral window."
                   : safeRetryExhausted
                     ? "Process-job wake delivery exhausted its safe retry budget."
                     : "A prior wake attempt ended ambiguously; it was not replayed to avoid duplicate delivery.",
@@ -479,6 +486,27 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       });
       this.scheduleSurfaceUpdate(record.jobId);
     }
+    const pending = records
+      .filter((record) => record.wake.state === "pending")
+      .sort((left, right) => left.admittedAt.localeCompare(right.admittedAt)
+        || left.jobId.localeCompare(right.jobId));
+    const overflow = pending.slice(pendingWakeCap(this.settings));
+    if (overflow.length > 0) {
+      this.options.logger?.warn?.("Process-job recovery failed excess pending wake obligations.", {
+        failedWakes: overflow.length,
+        pendingWakeCap: pendingWakeCap(this.settings),
+      });
+      const overflowIds = new Set(overflow.map((record) => record.jobId));
+      await this.storeMutate("recover.bound_pending_wakes", (draft) => {
+        for (const jobId of overflowIds) {
+          const current = draft.get(jobId);
+          if (current?.wake.state !== "pending") continue;
+          current.wake.state = "failed";
+          current.wake.retrySafe = false;
+          recordWakeFailure(current, "Process-job pending-wake capacity was exceeded during recovery.");
+        }
+      });
+    }
   }
 
   private async start(
@@ -547,6 +575,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             lastAttemptAt: null,
             retrySafe: false,
             destinationUnavailableAttempts: 0,
+            conversationBusyAttempts: 0,
+            conversationBusySinceAt: null,
           },
           lastError: null,
         };
@@ -568,7 +598,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       return result;
     } catch (error) {
       if (!handedOff) await pending.cleanup().catch(() => undefined);
-      throw error;
+      if (error instanceof ProcessJobServiceError) throw error;
+      throw new ProcessJobServiceError("process_job_store_error");
     }
   }
 
@@ -1076,6 +1107,14 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         && result.retryable === true
         && result.ambiguous !== true;
       const retryablePreDispatchRefusal = conversationBusy || destinationUnavailable;
+      const busyObservedAt = this.now();
+      const nextConversationBusyAttempts = (record.wake.conversationBusyAttempts ?? 0)
+        + (conversationBusy ? 1 : 0);
+      const conversationBusySinceAt = record.wake.conversationBusySinceAt ?? busyObservedAt.toISOString();
+      const conversationBusyExhausted = conversationBusy
+        && (nextConversationBusyAttempts >= PROCESS_JOB_CONVERSATION_BUSY_ATTEMPTS
+          || Date.parse(conversationBusySinceAt) + PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS
+            <= busyObservedAt.getTime());
       const nextDestinationUnavailableAttempts = (record.wake.destinationUnavailableAttempts ?? 0)
         + (destinationUnavailable ? 1 : 0);
       const destinationUnavailableExhausted = destinationUnavailable
@@ -1090,17 +1129,30 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           const current = records.get(jobId);
           if (current?.wake.state !== "pending") return;
           if (result.delivered) {
+            clearConversationBusyDeferral(current);
             current.wake.state = "delivered";
             current.wake.retrySafe = false;
           } else if (conversationBusy) {
-            // Busy admission is budget-free: no chat mutation or model turn
-            // happened, so restore the exact delivery-attempt contract.
+            // Busy admission does not spend the external delivery-attempt
+            // budget, but it has its own durable attempt and age bound.
             current.wake.attempts = previousDelivery?.attempts ?? current.wake.attempts;
             current.wake.lastAttemptAt = previousDelivery === undefined
               ? current.wake.lastAttemptAt
               : previousDelivery.lastAttemptAt;
-            current.wake.retrySafe = true;
+            current.wake.conversationBusyAttempts = nextConversationBusyAttempts;
+            current.wake.conversationBusySinceAt = conversationBusySinceAt;
+            if (conversationBusyExhausted) {
+              current.wake.state = "failed";
+              current.wake.retrySafe = false;
+              recordWakeFailure(
+                current,
+                "The originating conversation remained busy through its bounded deferral window.",
+              );
+            } else {
+              current.wake.retrySafe = true;
+            }
           } else if (destinationUnavailable) {
+            clearConversationBusyDeferral(current);
             // Destination absence is also pre-dispatch, but unlike conversation
             // capacity it has its own durable bound so disabled channels cannot
             // retain terminal records and artifacts forever.
@@ -1122,11 +1174,13 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
               current.wake.retrySafe = true;
             }
           } else if (safeRetry) {
+            clearConversationBusyDeferral(current);
             // This receipt proves no native delivery was accepted. Preserve
             // that fact so shutdown/restart can safely resume the same stable
             // delivery key without confusing it with an ambiguous attempt.
             current.wake.retrySafe = true;
           } else {
+            clearConversationBusyDeferral(current);
             current.wake.state = "failed";
             current.wake.retrySafe = false;
             const reason = result.reason ?? "Process-job wake was not delivered.";
@@ -1141,12 +1195,14 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       });
       await this.updateSurfaceById(jobId);
       const wakeSettled = result.delivered
+        || conversationBusyExhausted
         || destinationUnavailableExhausted
         || (!retryablePreDispatchRefusal && !safeRetry);
       if (wakeSettled) {
         await this.withLock(async () => await this.storeApplyRetention("wake.retention"));
       }
-      if (conversationBusy || (destinationUnavailable && !destinationUnavailableExhausted)) {
+      if ((conversationBusy && !conversationBusyExhausted)
+        || (destinationUnavailable && !destinationUnavailableExhausted)) {
         this.wakeRearmPending.add(jobId);
         return;
       }
@@ -1276,12 +1332,14 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     try {
       await this.cleanupPending(jobId);
     } catch (error) {
-      const message = safeAmbientError(error, "Queued process-job sandbox cleanup failed.");
-      this.options.logger?.warn?.("Queued process-job sandbox cleanup failed.", { jobId, reason: message });
+      this.options.logger?.warn?.("Queued process-job sandbox cleanup failed.", {
+        jobId,
+        reason: safeAmbientError(error, "Queued process-job sandbox cleanup failed."),
+      });
       await this.storeMutate("cleanup.record_failure", (records) => {
         const record = records.get(jobId);
         if (record !== undefined && isTerminalProcessJobState(record.state)) {
-          record.lastError = { code: "process_job_store_error", message: boundedSummary(message) };
+          record.lastError = processJobPublicError("process_job_store_error");
         }
       }).catch(() => undefined);
     }
@@ -1662,6 +1720,13 @@ function enforceAdmission(
   normalizedReplyTarget: string,
   settings: ProcessJobsSettings,
 ): void {
+  const outstandingWakes = [...records.values()].filter((record) => record.wake.state === "pending").length;
+  if (outstandingWakes >= pendingWakeCap(settings)) {
+    throw new ProcessJobServiceError(
+      "process_job_capacity",
+      "Process-job pending-wake capacity is full until an earlier result settles.",
+    );
+  }
   const nonterminal = [...records.values()].filter((record) => !isTerminalProcessJobState(record.state));
   if (nonterminal.filter((record) => record.origin.normalizedReplyTarget === normalizedReplyTarget).length >= settings.maxActivePerConversation) {
     throw new ProcessJobServiceError(
@@ -1674,6 +1739,10 @@ function enforceAdmission(
   if (running >= settings.maxConcurrent && queued >= settings.maxQueued) {
     throw new ProcessJobServiceError("process_job_queue_full", "Process-job queue is full.");
   }
+}
+
+function pendingWakeCap(settings: ProcessJobsSettings): number {
+  return settings.retention.maxRecords + settings.maxConcurrent + settings.maxQueued;
 }
 
 function boundedNewestRecords(
@@ -1710,32 +1779,38 @@ function transitionTerminal(
   }
   record.lastError = code === undefined || message === undefined
     ? null
-    : { code, message: boundedSummary(message) };
+    : processJobPublicError(code);
   record.wake.state = "pending";
   record.wake.retrySafe = false;
 }
 
-function recordWakeFailure(record: DurableProcessJobRecord, reason: string): void {
-  const wakeReason = boundedSummary(redactOutput(reason, processOutputSecrets(undefined)));
-  if (record.lastError === null) {
-    record.lastError = { code: "process_job_wake_failed", message: wakeReason };
-    return;
-  }
-  record.lastError = {
-    code: record.lastError.code,
-    message: boundedSummary(`${record.lastError.message} Wake delivery also failed: ${wakeReason}`),
-  };
+function isConversationBusyExhausted(record: DurableProcessJobRecord, now: Date): boolean {
+  const attempts = record.wake.conversationBusyAttempts ?? 0;
+  if (attempts >= PROCESS_JOB_CONVERSATION_BUSY_ATTEMPTS) return true;
+  const since = record.wake.conversationBusySinceAt;
+  return typeof since === "string"
+    && Date.parse(since) + PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS <= now.getTime();
 }
 
-function appendOperationalFailure(record: DurableProcessJobRecord, reason: string): void {
+function clearConversationBusyDeferral(record: DurableProcessJobRecord): void {
+  record.wake.conversationBusyAttempts = 0;
+  record.wake.conversationBusySinceAt = null;
+}
+
+function recordWakeFailure(record: DurableProcessJobRecord, _reason: string): void {
   if (record.lastError === null) {
-    record.lastError = { code: "process_job_store_error", message: boundedSummary(reason) };
+    record.lastError = processJobPublicError("process_job_wake_failed");
     return;
   }
-  record.lastError = {
-    code: record.lastError.code,
-    message: boundedSummary(`${record.lastError.message} ${reason}`),
-  };
+  record.lastError = processJobPublicError(record.lastError.code);
+}
+
+function appendOperationalFailure(record: DurableProcessJobRecord, _reason: string): void {
+  if (record.lastError === null) {
+    record.lastError = processJobPublicError("process_job_store_error");
+    return;
+  }
+  record.lastError = processJobPublicError(record.lastError.code);
 }
 
 function terminalFromResult(
@@ -2077,19 +2152,10 @@ async function isAllowedSandboxSettingsDirectory(directory: string): Promise<boo
   return false;
 }
 
-function safeError(error: unknown, fallback: string): string {
-  try {
-    const message = error instanceof Error ? error.message : String(error);
-    return message.length === 0 ? fallback : message;
-  } catch {
-    return fallback;
-  }
+function safeProcessError(_error: unknown, fallback: string, _secrets: readonly string[]): string {
+  return boundedSummary(fallback);
 }
 
-function safeProcessError(error: unknown, fallback: string, secrets: readonly string[]): string {
-  return boundedSummary(redactOutput(safeError(error, fallback), secrets));
-}
-
-function safeAmbientError(error: unknown, fallback: string): string {
-  return safeProcessError(error, fallback, processOutputSecrets(undefined));
+function safeAmbientError(_error: unknown, fallback: string): string {
+  return boundedSummary(fallback);
 }

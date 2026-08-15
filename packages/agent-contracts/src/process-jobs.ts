@@ -41,6 +41,36 @@ export const PROCESS_JOB_ERROR_CODES = [
 
 export type ProcessJobErrorCode = (typeof PROCESS_JOB_ERROR_CODES)[number];
 
+/** Stable secret-free messages paired with public process-job error codes. */
+export const PROCESS_JOB_PUBLIC_ERROR_MESSAGES: Readonly<Record<ProcessJobErrorCode, string>> = Object.freeze({
+  background_unsupported: "Background process jobs are unsupported for this tool call.",
+  background_unsupported_channel: "Background process jobs are unsupported for this channel.",
+  process_job_disabled: "Process jobs are disabled.",
+  process_job_controller_unavailable: "The process-job controller is unavailable.",
+  process_job_platform_unsupported: "Process jobs are unsupported on this platform.",
+  process_job_not_found: "The process job was not found.",
+  process_job_conflict: "The process job is no longer in the required state.",
+  process_job_capacity: "Process-job capacity is full.",
+  process_job_conversation_capacity: "This conversation reached its process-job capacity.",
+  process_job_queue_full: "The process-job queue is full.",
+  process_job_queue_expired: "The process job expired before launch.",
+  process_job_chain_depth_exceeded: "The process-job chain-depth limit was reached.",
+  process_job_spawn_failed: "The process job could not be launched.",
+  process_job_failed: "The process job failed.",
+  process_job_timeout: "The process job exceeded its runtime limit.",
+  process_job_cancelled: "The process job was cancelled.",
+  process_job_agent_restarted: "The process job was interrupted by an agent restart.",
+  process_job_store_error: "Process-job storage failed.",
+  process_job_wake_failed: "Process-job wake delivery failed.",
+  process_job_response_too_large: "The process-job response exceeded its size limit.",
+  process_job_invalid: "The process-job request is invalid.",
+});
+
+/** Construct one stable public failure without retaining ambient exception text. */
+export function processJobPublicError(code: ProcessJobErrorCode): ProcessJobProjectionError {
+  return { code, message: PROCESS_JOB_PUBLIC_ERROR_MESSAGES[code] };
+}
+
 export type ProcessJobWakeState = "pending" | "delivered" | "failed";
 
 export interface ProcessJobProjectionOrigin {
@@ -176,7 +206,11 @@ export function parseProcessJobProjection(value: unknown): ProcessJobProjection 
     || value.output.stdoutBytes + value.output.stderrBytes > value.limits.maxOutputBytes) {
     throw invalid("output limits");
   }
-  return value as unknown as ProcessJobProjection;
+  const parsed = value as unknown as ProcessJobProjection;
+  return parsed.lastError === null
+    || parsed.lastError.message === PROCESS_JOB_PUBLIC_ERROR_MESSAGES[parsed.lastError.code]
+    ? parsed
+    : { ...parsed, lastError: processJobPublicError(parsed.lastError.code) };
 }
 
 /** Strictly parse a bounded operator list response. */

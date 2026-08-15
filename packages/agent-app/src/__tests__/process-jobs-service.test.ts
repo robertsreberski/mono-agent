@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
-import type { ProcessJobProjection } from "@mono-agent/agent-contracts";
+import { processJobPublicError, type ProcessJobProjection } from "@mono-agent/agent-contracts";
 import type {
   ProcessJobProcessHandle,
   ProcessJobProcessResult,
@@ -24,6 +24,8 @@ import {
   isTerminalProcessJobState,
   openProcessJobStore,
   PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS,
+  PROCESS_JOB_CONVERSATION_BUSY_ATTEMPTS,
+  PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS,
   PROCESS_JOB_HEALTH_FILE,
   PROCESS_JOB_MANIFEST_FILE,
   PROCESS_JOB_ORPHAN_RECONCILIATION_INTERVAL,
@@ -233,7 +235,65 @@ describe("process job service", () => {
       .rejects.toMatchObject({ code: "process_job_spawn_failed" });
     const projection = await service.get(jobId);
     expect(projection?.state).toBe("spawn_failed");
-    expect(projection?.lastError?.message).not.toContain("boun");
+    expect(projection?.lastError).toEqual(processJobPublicError("process_job_spawn_failed"));
+  });
+
+  it("returns a generic admission failure without exposing arbitrary store text or absolute paths", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const privateText = `arbitrary-admission-secret at ${join(fixture.cwd, "private", "record.json")}`;
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async ensureArtifacts() {
+        throw new Error(privateText);
+      },
+    };
+    const warn = vi.fn();
+    const cleanup = vi.fn(async () => undefined);
+    const service = await startService(fixture, { store, logger: { warn } });
+
+    await expect(service.controller(ORIGIN, 0).start(
+      requestOf(handleOf(deferred<ProcessJobProcessResult>()), cleanup),
+    )).rejects.toEqual(expect.objectContaining(processJobPublicError("process_job_store_error")));
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("arbitrary-admission-secret");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(fixture.cwd);
+  });
+
+  it("keeps artifact and cleanup exceptions out of durable, projected, and wake failure surfaces", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const artifactPrivate = `arbitrary-artifact-secret at ${join(fixture.cwd, "artifacts", "private.log")}`;
+    const cleanupPrivate = `arbitrary-cleanup-secret at ${join(fixture.cwd, "sandbox", "settings.json")}`;
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async writeArtifact(jobId, stream, contents) {
+        if (stream === "stderr") throw new Error(artifactPrivate);
+        await baseStore.writeArtifact(jobId, stream, contents);
+      },
+    };
+    const completion = deferred<ProcessJobProcessResult>();
+    const cleanup = vi.fn(async () => { throw new Error(cleanupPrivate); });
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const warn = vi.fn();
+    const service = await startService(fixture, { store, wake, logger: { warn } });
+    await service.activateWakes();
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion), cleanup));
+    completion.resolve(processResult({ stdout: "kept stdout\n", stderr: "kept stderr\n" }));
+
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "delivered");
+    const durable = await baseStore.get(started.jobId);
+    const projection = await service.get(started.jobId);
+    const wakeInput = wake.mock.calls[0]?.[0];
+    const publicFailure = processJobPublicError("process_job_store_error");
+    expect(durable?.lastError).toEqual(publicFailure);
+    expect(projection?.lastError).toEqual(publicFailure);
+    expect(wakeInput?.projection.lastError).toEqual(publicFailure);
+    for (const value of [durable, projection, wakeInput, warn.mock.calls]) {
+      expect(JSON.stringify(value)).not.toContain("arbitrary-artifact-secret");
+      expect(JSON.stringify(value)).not.toContain("arbitrary-cleanup-secret");
+      expect(JSON.stringify(value)).not.toContain(fixture.cwd);
+    }
   });
 
   it("creates the web card before returning and advances the same card through terminal wake settlement", async () => {
@@ -440,7 +500,8 @@ describe("process job service", () => {
     }));
     await waitFor(async () => (await service.get(started.jobId))?.state === "timed_out");
     expect(cleanup).not.toHaveBeenCalled();
-    expect((await service.get(started.jobId))?.lastError?.message).toContain("cleanup was withheld");
+    expect((await service.get(started.jobId))?.lastError)
+      .toEqual(processJobPublicError("process_job_timeout"));
   });
 
   it("surfaces a terminal degraded overlay when completion persistence fails and recovers it on restart", async () => {
@@ -474,10 +535,7 @@ describe("process job service", () => {
       state: "failed",
       wake: { state: "failed", attempts: 0 },
       output: { preview: expect.stringContaining("completed but not committed") },
-      lastError: {
-        code: "process_job_store_error",
-        message: expect.stringContaining("restart recovery will reconcile"),
-      },
+      lastError: processJobPublicError("process_job_store_error"),
     });
     expect(await baseStore.get(started.jobId)).toMatchObject({ state: "running", completedAt: null });
     expect(wake).not.toHaveBeenCalled();
@@ -625,10 +683,7 @@ describe("process job service", () => {
         stderrRef: null,
         truncated: true,
       },
-      lastError: {
-        code: "process_job_store_error",
-        message: expect.stringContaining("artifact publication failed"),
-      },
+      lastError: processJobPublicError("process_job_store_error"),
     });
     expect(wake).toHaveBeenCalledOnce();
   });
@@ -652,10 +707,7 @@ describe("process job service", () => {
       state: "failed",
       exitCode: 9,
       wake: { state: "failed", attempts: 1 },
-      lastError: {
-        code: "process_job_failed",
-        message: expect.stringContaining("Wake delivery also failed: Slack is unavailable."),
-      },
+      lastError: processJobPublicError("process_job_failed"),
     });
   });
 
@@ -719,7 +771,7 @@ describe("process job service", () => {
     });
   });
 
-  it("does not charge conversation-busy admission and preserves the pending wake across restart", async () => {
+  it("does not charge a transient conversation-busy refusal and preserves its durable bound across restart", async () => {
     const fixture = await createFixture();
     const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
     const jobId = "abababab-1111-4111-8111-111111111111";
@@ -747,6 +799,7 @@ describe("process job service", () => {
       store,
       wake: busyWake,
       wakeBusyRearmMs: 60_000,
+      now: () => new Date("2026-08-14T10:00:04.000Z"),
     });
     await first.activateWakes();
     await waitFor(() => busyWake.mock.calls.length === 1);
@@ -758,16 +811,182 @@ describe("process job service", () => {
         retrySafe: true,
         lastAttemptAt: null,
         destinationUnavailableAttempts: 0,
+        conversationBusyAttempts: 1,
+        conversationBusySinceAt: "2026-08-14T10:00:04.000Z",
       },
     });
     await first.stop();
 
     const deliveredWake = vi.fn(async () => ({ delivered: true as const }));
-    const restarted = await startService(fixture, { store, wake: deliveredWake });
+    const restarted = await startService(fixture, {
+      store,
+      wake: deliveredWake,
+      now: () => new Date("2026-08-14T10:00:05.000Z"),
+    });
     await restarted.activateWakes();
     await waitFor(async () => (await restarted.get(jobId))?.wake.state === "delivered");
     expect(deliveredWake).toHaveBeenCalledOnce();
     expect(await restarted.get(jobId)).toMatchObject({ wake: { attempts: 1, state: "delivered" } });
+  });
+
+  it("bounds permanent conversation-busy wakes, timers, records, and artifacts across restart", async () => {
+    const fixture = await createFixture({
+      maxConcurrent: 1,
+      maxQueued: 2,
+      retention: { ...PROCESS_JOBS_DEFAULTS.retention, maxRecords: 1 },
+    });
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const pendingWakeCap = fixture.settings.retention.maxRecords
+      + fixture.settings.maxConcurrent
+      + fixture.settings.maxQueued;
+    const jobIds = Array.from({ length: pendingWakeCap }, (_, index) =>
+      `bcbcbcbc-${String(index).padStart(4, "0")}-4bcb-8bcb-${String(index + 1).padStart(12, "0")}`);
+    for (const [index, jobId] of jobIds.entries()) {
+      const admittedAt = new Date(Date.parse("2026-08-14T10:00:00.000Z") + index).toISOString();
+      await store.ensureArtifacts(jobId);
+      await store.writeArtifact(jobId, "stdout", `retained-${String(index)}`);
+      await store.mutate((records) => records.set(jobId, durableRecord(jobId, {
+        state: "succeeded",
+        admittedAt,
+        completedAt: new Date(Date.parse(admittedAt) + 1).toISOString(),
+        exitCode: 0,
+        durationMs: 1,
+        wake: {
+          state: "pending",
+          attempts: 0,
+          deliveryKey: `process-job:${jobId}`,
+          lastAttemptAt: null,
+          retrySafe: false,
+          destinationUnavailableAttempts: 0,
+        },
+        lastError: null,
+      })));
+    }
+    const busyResult = {
+      delivered: false as const,
+      code: "conversation_busy",
+      reason: "arbitrary-busy-secret should never become durable",
+      retryable: true,
+    };
+    const firstWake = vi.fn(async (_input: ProcessJobWakeInput) => busyResult);
+    const first = await startService(fixture, {
+      store,
+      wake: firstWake,
+      wakeBusyRearmMs: 60_000,
+    });
+    await first.activateWakes();
+    await waitFor(() => firstWake.mock.calls.length === pendingWakeCap);
+    await waitFor(async () => (await store.list()).every((record) =>
+      record.wake.conversationBusyAttempts === 1));
+
+    const firstPort = first as unknown as {
+      wakeRearmTimers: Map<string, ReturnType<typeof setTimeout>>;
+    };
+    await waitFor(() => firstPort.wakeRearmTimers.size === pendingWakeCap);
+    expect(firstPort.wakeRearmTimers.size).toBeLessThanOrEqual(pendingWakeCap);
+    expect(await store.list()).toHaveLength(pendingWakeCap);
+    expect(await readdir(store.artifactsDir)).toHaveLength(pendingWakeCap);
+
+    const refusedCleanup = vi.fn(async () => undefined);
+    await expect(first.controller(ORIGIN, 0).start(
+      requestOf(handleOf(deferred<ProcessJobProcessResult>()), refusedCleanup),
+    )).rejects.toMatchObject({ code: "process_job_capacity" });
+    expect(refusedCleanup).toHaveBeenCalledOnce();
+    expect(await readdir(store.artifactsDir)).toHaveLength(pendingWakeCap);
+    await first.stop();
+
+    const restartedWake = vi.fn(async (_input: ProcessJobWakeInput) => busyResult);
+    const restarted = await startService(fixture, {
+      store,
+      wake: restartedWake,
+      wakeBusyRearmMs: 0,
+    });
+    await restarted.activateWakes();
+    await waitFor(async () => (await store.list()).every((record) => record.wake.state === "failed"));
+    await waitFor(async () => (await store.list()).length <= fixture.settings.retention.maxRecords);
+
+    expect(restartedWake).toHaveBeenCalledTimes(
+      pendingWakeCap * (PROCESS_JOB_CONVERSATION_BUSY_ATTEMPTS - 1),
+    );
+    expect(await store.list()).toHaveLength(1);
+    expect((await store.list())[0]?.lastError)
+      .toEqual(processJobPublicError("process_job_wake_failed"));
+    expect(JSON.stringify(await store.list())).not.toContain("arbitrary-busy-secret");
+    expect((await readdir(store.artifactsDir)).length).toBeLessThanOrEqual(1);
+    const restartedPort = restarted as unknown as {
+      wakeRearmTimers: Map<string, ReturnType<typeof setTimeout>>;
+      wakeTasks: Map<string, Promise<void>>;
+    };
+    expect(restartedPort.wakeRearmTimers).toHaveLength(0);
+    expect(restartedPort.wakeTasks).toHaveLength(0);
+
+    const laterCompletion = deferred<ProcessJobProcessResult>();
+    await expect(restarted.controller(ORIGIN, 0).start(requestOf(handleOf(laterCompletion))))
+      .resolves.toMatchObject({ state: "running" });
+    laterCompletion.resolve(processResult());
+  });
+
+  it("expires a persisted conversation-busy deferral by durable age without another delivery", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "bdbdbdbd-1111-4111-8111-111111111111";
+    const busySince = "2026-08-14T10:00:00.000Z";
+    await store.mutate((records) => records.set(jobId, durableRecord(jobId, {
+      state: "succeeded",
+      completedAt: "2026-08-14T10:00:01.000Z",
+      exitCode: 0,
+      durationMs: 1,
+      stdoutRef: null,
+      stderrRef: null,
+      wake: {
+        state: "pending",
+        attempts: 0,
+        deliveryKey: `process-job:${jobId}`,
+        lastAttemptAt: null,
+        retrySafe: true,
+        destinationUnavailableAttempts: 0,
+        conversationBusyAttempts: 1,
+        conversationBusySinceAt: busySince,
+      },
+      lastError: null,
+    })));
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const service = await startService(fixture, {
+      store,
+      wake,
+      now: () => new Date(Date.parse(busySince) + PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS),
+    });
+
+    await service.activateWakes();
+    expect(wake).not.toHaveBeenCalled();
+    expect(await service.get(jobId)).toMatchObject({
+      wake: { state: "failed", attempts: 0 },
+      lastError: processJobPublicError("process_job_wake_failed"),
+    });
+  });
+
+  it("reads legacy raw failure text but projects, wakes, and rewrites only the stable public error", async () => {
+    const fixture = await createFixture();
+    await seedRetainedProcessJobStore(fixture, 1, { pendingWakes: true });
+    const jobId = processJobScaleId(0);
+    const recordPath = join(fixture.settings.stateDir, "records-v1", `${jobId}.json`);
+    const legacy = JSON.parse(await readFile(recordPath, "utf8")) as DurableProcessJobRecord;
+    const privateText = `legacy-arbitrary-secret at ${join(fixture.cwd, "private", "legacy.json")}`;
+    legacy.lastError = { code: "process_job_store_error", message: privateText };
+    await writeFile(recordPath, `${JSON.stringify(legacy)}\n`, { mode: 0o600 });
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    expect((await store.get(jobId))?.lastError?.message).toBe(privateText);
+
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const service = await startService(fixture, { store, wake });
+    await service.activateWakes();
+    await waitFor(async () => (await service.get(jobId))?.wake.state === "delivered");
+
+    const wakeInput = wake.mock.calls[0]?.[0];
+    expect(wakeInput?.projection.lastError).toEqual(processJobPublicError("process_job_store_error"));
+    expect(wakeInput?.prompt).not.toContain("legacy-arbitrary-secret");
+    expect(wakeInput?.prompt).not.toContain(fixture.cwd);
+    expect((await store.get(jobId))?.lastError).toEqual(processJobPublicError("process_job_store_error"));
   });
 
   it("recovers one completion wake after its destination channel returns without duplicate delivery", async () => {
@@ -943,7 +1162,7 @@ describe("process job service", () => {
         attempts: 0,
         lastAttemptAt: null,
       },
-      lastError: { message: expect.stringContaining("3 pre-dispatch checks") },
+      lastError: processJobPublicError("process_job_wake_failed"),
     });
     const durable = await store.get(jobId);
     expect(durable?.wake.destinationUnavailableAttempts).toBe(3);
@@ -1376,11 +1595,19 @@ describe("process job service", () => {
   });
 
   it("keeps a newly admitted live job visible at the saturated fallback boundary after completion storage fails", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture({
+      maxConcurrent: PROCESS_JOBS_CAPS.maxConcurrent,
+      maxQueued: PROCESS_JOBS_CAPS.maxQueued,
+      retention: {
+        ...PROCESS_JOBS_DEFAULTS.retention,
+        maxRecords: PROCESS_JOBS_CAPS.retention.maxRecords,
+        maxAgeMs: PROCESS_JOBS_CAPS.retention.maxAgeMs,
+      },
+    });
     const recordCeiling = PROCESS_JOBS_CAPS.retention.maxRecords
       + PROCESS_JOBS_CAPS.maxQueued
       + PROCESS_JOBS_CAPS.maxConcurrent;
-    await seedRetainedProcessJobStore(fixture, recordCeiling, { pendingWakes: true });
+    await seedRetainedProcessJobStore(fixture, recordCeiling - 1, { pendingWakes: true });
     const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
     let failNextMutation = false;
     let poisonReads = false;
@@ -1415,7 +1642,7 @@ describe("process job service", () => {
       surfaceUpdate,
       onHealthChange: (health) => { healthChanges.push(health); },
     });
-    expect(await baseStore.list()).toHaveLength(recordCeiling);
+    expect(await baseStore.list()).toHaveLength(recordCeiling - 1);
 
     const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
     try {
@@ -1425,7 +1652,7 @@ describe("process job service", () => {
       };
       expect(snapshotPort.recordSnapshot).toHaveLength(recordCeiling);
       expect(snapshotPort.recordSnapshot.get(started.jobId)).toMatchObject({ state: "running" });
-      expect(snapshotPort.recordSnapshot.has(processJobScaleId(0))).toBe(false);
+      expect(snapshotPort.recordSnapshot.has(processJobScaleId(0))).toBe(true);
       expect(snapshotPort.terminalSnapshotIds).toHaveLength(recordCeiling - 1);
       expect(new Set(snapshotPort.terminalSnapshotIds)).toEqual(new Set(
         [...snapshotPort.recordSnapshot.values()]
@@ -1684,10 +1911,7 @@ describe("process job service", () => {
     expect(await service.get(started.jobId)).toMatchObject({
       state: "interrupted",
       output: { preview: expect.stringContaining("output before shutdown") },
-      lastError: {
-        code: "process_job_agent_restarted",
-        message: expect.stringContaining("Sandbox cleanup also failed: shutdown cleanup failed"),
-      },
+      lastError: processJobPublicError("process_job_agent_restarted"),
     });
   });
 
@@ -1738,10 +1962,7 @@ describe("process job service", () => {
     expect(await service.get(retryId)).toMatchObject({ wake: { state: "delivered", attempts: 2 } });
     expect(await service.get(ambiguousId)).toMatchObject({
       wake: { state: "failed", attempts: 1 },
-      lastError: {
-        code: "process_job_wake_failed",
-        message: expect.stringContaining("ambiguously"),
-      },
+      lastError: processJobPublicError("process_job_wake_failed"),
     });
   });
 
@@ -1796,7 +2017,8 @@ describe("process job service", () => {
 
     expect(signals).toEqual([[-4321, "SIGTERM"], [-4321, "SIGKILL"]]);
     expect(await pathExists(settingsPath)).toBe(true);
-    expect((await service.get(jobId))?.lastError?.message).toContain("descendants may remain");
+    expect((await service.get(jobId))?.lastError)
+      .toEqual(processJobPublicError("process_job_agent_restarted"));
     await rm(settingsDirectory, { recursive: true, force: true });
   });
 
@@ -1824,7 +2046,7 @@ describe("process job service", () => {
     await expect(lstat(settingsDirectory)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await service.get(jobId)).toMatchObject({
       state: "interrupted",
-      lastError: { message: expect.stringContaining("target was ever released") },
+      lastError: processJobPublicError("process_job_agent_restarted"),
     });
   });
 
@@ -1853,7 +2075,8 @@ describe("process job service", () => {
     const service = await startService(fixture, { store });
 
     expect(await readFile(protectedPath, "utf8")).toBe("must stay\n");
-    expect((await service.get(jobId))?.lastError?.message).toContain("could not be removed");
+    expect((await service.get(jobId))?.lastError)
+      .toEqual(processJobPublicError("process_job_agent_restarted"));
   });
 
   it("never signals a reused/missing leader and honestly warns that descendants may remain", async () => {
@@ -1873,7 +2096,8 @@ describe("process job service", () => {
     await service.activateWakes();
     await waitFor(async () => wake.mock.calls.length === 1);
     expect(signalProcess).not.toHaveBeenCalled();
-    expect((await service.get(jobId))?.lastError?.message).toContain("descendants may remain");
+    expect((await service.get(jobId))?.lastError)
+      .toEqual(processJobPublicError("process_job_agent_restarted"));
     expect(wake).toHaveBeenCalledOnce();
   });
 
@@ -1897,7 +2121,8 @@ describe("process job service", () => {
     });
 
     expect(signalProcess).not.toHaveBeenCalled();
-    expect((await baseStore.get(jobId))?.lastError?.message).toContain("cleanup was withheld");
+    expect((await baseStore.get(jobId))?.lastError)
+      .toEqual(processJobPublicError("process_job_agent_restarted"));
   });
 
   it("does not SIGKILL a PGID whose leader vanished during the recovery grace window", async () => {
@@ -1921,7 +2146,8 @@ describe("process job service", () => {
 
     expect(signals).toEqual([[-4321, "SIGTERM"]]);
     expect(await pathExists(settingsPath)).toBe(true);
-    expect((await service.get(jobId))?.lastError?.message).toContain("descendants may remain");
+    expect((await service.get(jobId))?.lastError)
+      .toEqual(processJobPublicError("process_job_agent_restarted"));
     await rm(settingsDirectory, { recursive: true, force: true });
   });
 

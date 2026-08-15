@@ -15,6 +15,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
   isProcessJobErrorCode,
   isProcessJobState,
+  processJobPublicError,
   type ProcessJobErrorCode,
   type ProcessJobProjection,
   type ProcessJobState,
@@ -44,6 +45,8 @@ export const PROCESS_JOB_ROLLBACK_GUARD_CONTENT =
   "This state directory uses mono-agent process-job records v1. Older runtimes must not open it.\n";
 export const PROCESS_JOB_ORPHAN_RECONCILIATION_INTERVAL = 64;
 export const PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS = 3;
+export const PROCESS_JOB_CONVERSATION_BUSY_ATTEMPTS = 3;
+export const PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS = 5 * 60 * 1_000;
 
 const MAX_RECORD_BYTES = 128 * 1024;
 const MAX_TRANSACTION_BYTES = 256 * 1024;
@@ -112,6 +115,10 @@ export interface DurableProcessJobRecord {
     retrySafe?: boolean;
     /** Optional in pre-integration record v1; omission means zero for older branch records. */
     destinationUnavailableAttempts?: number;
+    /** Optional in older record v1; counts durable pre-dispatch busy refusals. */
+    conversationBusyAttempts?: number;
+    /** Optional in older record v1; first durable busy refusal, null before one occurs. */
+    conversationBusySinceAt?: string | null;
   };
   lastError: { readonly code: ProcessJobErrorCode; readonly message: string } | null;
 }
@@ -677,7 +684,7 @@ export function projectProcessJob(record: DurableProcessJobRecord): ProcessJobPr
     signal: record.signal,
     durationMs: record.durationMs,
     cancelRequested: record.cancelRequested,
-    lastError: record.lastError,
+    lastError: record.lastError === null ? null : processJobPublicError(record.lastError.code),
   };
 }
 
@@ -708,10 +715,11 @@ async function persistDiff(
     const previous = before.get(jobId);
     if (previous !== undefined && isDeepStrictEqual(previous, record)) continue;
     try {
+      const publicRecord = publicDurableRecord(record);
       assertJobId(jobId);
-      assertDurableRecord(record);
-      if (record.jobId !== jobId) throw new Error("Process-job record key does not match its job id.");
-      assertBoundedJson(join(recordsDir, `${jobId}.json`), record, MAX_RECORD_BYTES);
+      assertDurableRecord(publicRecord);
+      if (publicRecord.jobId !== jobId) throw new Error("Process-job record key does not match its job id.");
+      assertBoundedJson(join(recordsDir, `${jobId}.json`), publicRecord, MAX_RECORD_BYTES);
       incrementWork(workCounter, "mutationRecordsValidated");
     } catch (error) {
       const reason = error instanceof Error ? ` ${error.message}` : "";
@@ -720,7 +728,7 @@ async function persistDiff(
         { cause: error },
       );
     }
-    changes.push({ write: structuredClone(record), delete: null, countDelta: previous === undefined ? 1 : 0 });
+    changes.push({ write: publicDurableRecord(record), delete: null, countDelta: previous === undefined ? 1 : 0 });
   }
   for (const jobId of after.deletedKeys()) changes.push({ write: null, delete: jobId, countDelta: -1 });
   let durableCount = before.size;
@@ -1081,7 +1089,9 @@ function validDurableLifecycle(value: Record<string, unknown>): boolean {
       || wake.attempts !== 0
       || wake.lastAttemptAt !== null
       || wake.retrySafe === true
-      || (wake.destinationUnavailableAttempts ?? 0) !== 0) return false;
+      || (wake.destinationUnavailableAttempts ?? 0) !== 0
+      || (wake.conversationBusyAttempts ?? 0) !== 0
+      || (wake.conversationBusySinceAt !== undefined && wake.conversationBusySinceAt !== null)) return false;
   }
   return true;
 }
@@ -1164,6 +1174,12 @@ function validWake(value: unknown): boolean {
       ...(Object.prototype.hasOwnProperty.call(value, "destinationUnavailableAttempts")
         ? ["destinationUnavailableAttempts"]
         : []),
+      ...(Object.prototype.hasOwnProperty.call(value, "conversationBusyAttempts")
+        ? ["conversationBusyAttempts"]
+        : []),
+      ...(Object.prototype.hasOwnProperty.call(value, "conversationBusySinceAt")
+        ? ["conversationBusySinceAt"]
+        : []),
     ])
     && (value.state === "pending" || value.state === "delivered" || value.state === "failed")
     && nonNegativeInteger(value.attempts)
@@ -1172,7 +1188,19 @@ function validWake(value: unknown): boolean {
     && (value.retrySafe === undefined || typeof value.retrySafe === "boolean")
     && (value.destinationUnavailableAttempts === undefined
       || (nonNegativeInteger(value.destinationUnavailableAttempts)
-        && Number(value.destinationUnavailableAttempts) <= PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS));
+        && Number(value.destinationUnavailableAttempts) <= PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS))
+    && (value.conversationBusyAttempts === undefined
+      || (nonNegativeInteger(value.conversationBusyAttempts)
+        && Number(value.conversationBusyAttempts) <= PROCESS_JOB_CONVERSATION_BUSY_ATTEMPTS))
+    && (value.conversationBusySinceAt === undefined || nullableIso(value.conversationBusySinceAt))
+    && ((Number(value.conversationBusyAttempts ?? 0) === 0)
+      === (value.conversationBusySinceAt === undefined || value.conversationBusySinceAt === null));
+}
+
+function publicDurableRecord(record: DurableProcessJobRecord): DurableProcessJobRecord {
+  const owned = structuredClone(record);
+  if (owned.lastError !== null) owned.lastError = processJobPublicError(owned.lastError.code);
+  return owned;
 }
 
 function validLastError(value: unknown): boolean {

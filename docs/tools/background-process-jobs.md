@@ -70,6 +70,17 @@ at admission. The runtime deadline starts when the detached launch gate is
 spawned immediately before ownership is persisted, so waiting in a busy queue
 does not consume the runtime budget.
 
+Every eligible Pi-native turn that receives the background controller also
+receives a host-internal, fail-closed native sandbox protection for the job
+store. This applies even when the ordinary configured sandbox is absent or
+off: model `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, and `Exec` access
+cannot read, replace, rename, or use the protected directory as a workdir.
+With the default path, `.mono-agent/` is the protected host-private container.
+For a custom nested `stateDir`, its immediate containing directory becomes
+host-private and unavailable to model tools; use a dedicated container. A
+`stateDir` directly under the agent root protects only that directory so the
+workspace itself remains usable.
+
 ## Availability and origins
 
 The host injects the controller only when all of these are true at call time:
@@ -153,9 +164,11 @@ could duplicate a real first delivery.
 
 A Slack or Telegram conversation that is already at its pre-turn admission cap
 does not spend that three-attempt budget. The wake stays durably pending and is
-re-armed on a separate, longer timer; a restart can deliver it later. Once a
-turn is admitted, any ambiguous failure is nonretryable and exactly-once wins
-over automatic replay.
+re-armed on a separate, longer timer; a restart can deliver it later. Busy
+deferral is itself bounded at three refusals or five minutes from its first
+durable refusal. Exhaustion settles the wake as `failed` and immediately runs
+retention. Once a turn is admitted, any ambiguous failure is nonretryable and
+exactly-once wins over automatic replay.
 
 An absent or disabled destination channel is also a proven pre-dispatch refusal,
 but it has a separate durable bound of three checks. Those checks do not change
@@ -164,6 +177,14 @@ If the channel returns before exhaustion, delivery continues normally; otherwise
 the wake settles as `failed` so retention can reclaim its record and artifacts.
 Conversation-cap busy admission remains distinct and does not spend this
 absent-channel bound.
+
+Admission counts every `pending` wake obligation, including a queued or running
+job whose terminal wake is not due yet. It rejects `process_job_capacity` at
+`retention.maxRecords + maxConcurrent + maxQueued` obligations (1,012 by
+default; compiled maximum 10,096). This bounds the number of separate busy-wake
+rearm timers without silently evicting an obligation. Recovery keeps the oldest
+obligations when repairing legacy overflow and records explicit failed-wake
+outcomes for the excess before ordinary retention can reclaim them.
 
 Pending-wake records and their referenced artifacts remain live and are exempt
 from age, count, and artifact-byte pruning until delivery settles. Other
@@ -180,6 +201,12 @@ environment key names; raw argv and environment values are never projected to
 operator clients. Distinctive effective environment values and values from
 sensitive environment names are also scrubbed from previews and artifacts,
 including a retained secret prefix at the process-runner truncation boundary.
+Public `lastError` values and immediate background-tool failures use one stable
+generic message per error code. Ambient spawn, artifact, cleanup, and store
+exception text—including absolute paths—never enters a durable public error,
+operator projection, wake prompt, or model tool result. Older v1 records with
+free-form error text remain readable; projection replaces that text and the
+next mutation rewrites it to the stable public form.
 Environment-key inventories are bounded independently, and the exact serialized
 record size is checked before a recovery transaction marker is published. A
 legacy transaction that can never fit or validate is moved intact into the

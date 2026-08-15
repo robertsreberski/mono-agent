@@ -5,6 +5,7 @@ import {
   isProcessJobState,
   parseProcessJobProjection,
   parseProcessJobProjections,
+  processJobPublicError,
   type ProcessJobProjection,
 } from "../process-jobs.js";
 
@@ -119,5 +120,23 @@ describe("process-job contracts", () => {
     expect(isProcessJobState("active")).toBe(false);
     expect(isProcessJobErrorCode("background_unsupported_channel")).toBe(true);
     expect(isProcessJobErrorCode("unknown")).toBe(false);
+  });
+
+  it("maps every public error code to one stable generic message", () => {
+    expect(processJobPublicError("process_job_store_error")).toEqual({
+      code: "process_job_store_error",
+      message: "Process-job storage failed.",
+    });
+    expect(processJobPublicError("process_job_spawn_failed")).toEqual({
+      code: "process_job_spawn_failed",
+      message: "The process job could not be launched.",
+    });
+    const raw: any = projection();
+    raw.lastError = {
+      code: "process_job_store_error",
+      message: "arbitrary-secret at /private/absolute/path",
+    };
+    expect(parseProcessJobProjection(raw).lastError)
+      .toEqual(processJobPublicError("process_job_store_error"));
   });
 });
