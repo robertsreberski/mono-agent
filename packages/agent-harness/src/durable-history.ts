@@ -33,7 +33,9 @@ const TOOL_HISTORY_DIRECTORY = "tool-history";
 const TOOL_HISTORY_OWNER_FILE = "tool-lifecycles-owner.sqlite";
 const ROOT_LOCK_FILE = "root.sqlite";
 const CONVERSATION_LOCK_SHARDS = 16;
+const LOGICAL_SESSION_LOCK_SHARDS = 16;
 const CONVERSATION_SHARD_LOCK_PATTERN = /^conversation-shard-([a-f0-9]{2})\.sqlite$/u;
+const LOGICAL_SESSION_SHARD_LOCK_PATTERN = /^logical-session-shard-([a-f0-9]{2})\.sqlite$/u;
 const TEMP_FILE_PATTERN = /^\.([a-f0-9]{64})\.([0-9]+)\.[a-f0-9]{24}\.tmp$/u;
 const HISTORY_FILE_PATTERN = /^[a-f0-9]{64}\.history\.json$/u;
 const LEGACY_CONVERSATION_LOCK_PATTERN = /^[a-f0-9]{64}\.sqlite$/u;
@@ -48,6 +50,7 @@ const MAX_RUN_ID_BYTES = 4 * 1024;
 // same owner process. Module-level queues serialize both same-conversation
 // read/modify/write work and root-wide retention accounting across instances.
 const PROCESS_APPEND_QUEUES = new Map<string, Promise<void>>();
+const PROCESS_LOGICAL_SESSION_QUEUES = new Map<string, Promise<void>>();
 const PROCESS_ROOT_QUEUES = new Map<string, Promise<void>>();
 const PROCESS_POST_COMMIT_FAILURES = new Map<string, { count: number; lastError?: string }>();
 
@@ -140,6 +143,12 @@ interface DirtyFence {
 
 interface HeldConversation {
   readonly marker: ActiveMarker;
+  readonly rootIdentity: DirectoryIdentity;
+  release(): Promise<void>;
+}
+
+interface HeldLogicalConversation {
+  readonly logicalConversationId: string;
   readonly rootIdentity: DirectoryIdentity;
   release(): Promise<void>;
 }
@@ -239,15 +248,43 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
 
   async reset(conversationId: string): Promise<void> {
     const normalizedId = normalizeConversationId(conversationId);
-    const held = await this.acquireConversation(normalizedId);
+    await this.resetPhysicalConversation(normalizedId);
+  }
+
+  async resetLogicalConversation(logicalConversationId: string): Promise<void> {
+    const logicalId = normalizeConversationId(logicalConversationId);
+    const heldLogical = await this.acquireLogicalConversation(logicalId);
+    try {
+      const rootIdentity = heldLogical.rootIdentity;
+      const entries = await this.scanCommittedEntries(rootIdentity, true);
+      const conversationIds: string[] = [];
+      for (const entry of entries) {
+        const record = await this.readCommittedEntryRecord(entry, rootIdentity);
+        if (belongsToLogicalConversation(record.conversationId, logicalId)) {
+          conversationIds.push(record.conversationId);
+        }
+      }
+      for (const conversationId of conversationIds.sort()) {
+        await this.resetPhysicalConversation(conversationId, heldLogical);
+      }
+    } finally {
+      await heldLogical.release();
+    }
+  }
+
+  private async resetPhysicalConversation(
+    conversationId: string,
+    logicalFence?: HeldLogicalConversation,
+  ): Promise<void> {
+    const held = await this.acquireConversation(conversationId, logicalFence);
     const rootIdentity = held.rootIdentity;
     let prepared: PreparedHistoryAppend;
     try {
-      const existing = await this.readRecord(normalizedId, rootIdentity);
+      const existing = await this.readRecord(conversationId, rootIdentity);
       const retirementFence = await this.prepareProviderRetirement(existing, rootIdentity);
       prepared = await this.prepareRecord({
         version: STORE_VERSION,
-        conversationId: normalizedId,
+        conversationId,
         messages: [],
         providerSession: { epoch: createProviderSessionEpoch(), revision: 0 },
       }, held, rootIdentity, undefined, retirementFence);
@@ -260,22 +297,6 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     } catch (error) {
       await prepared.abort().catch(() => undefined);
       throw error;
-    }
-  }
-
-  async resetLogicalConversation(logicalConversationId: string): Promise<void> {
-    const logicalId = normalizeConversationId(logicalConversationId);
-    const rootIdentity = await this.ensureRoot();
-    const entries = await this.scanCommittedEntries(rootIdentity, true);
-    const conversationIds: string[] = [];
-    for (const entry of entries) {
-      const record = await this.readCommittedEntryRecord(entry, rootIdentity);
-      if (belongsToLogicalConversation(record.conversationId, logicalId)) {
-        conversationIds.push(record.conversationId);
-      }
-    }
-    for (const conversationId of conversationIds.sort()) {
-      await this.reset(conversationId);
     }
   }
 
@@ -968,14 +989,22 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
 
   private async acquireConversation(
     conversationId: string,
+    logicalFence?: HeldLogicalConversation,
   ): Promise<HeldConversation> {
+    const expectedLogicalId = logicalConversationIdForFence(conversationId);
+    if (logicalFence !== undefined && logicalFence.logicalConversationId !== expectedLogicalId) {
+      throw new Error("Physical conversation does not belong to the held logical-session fence.");
+    }
+    const heldLogical = logicalFence ?? await this.acquireLogicalConversation(expectedLogicalId);
+    const ownsLogicalFence = logicalFence === undefined;
     const conversationKey = historyKey(conversationId);
-    const releaseProcess = await acquireQueue(PROCESS_APPEND_QUEUES, this.queueKey(conversationId));
+    let releaseProcess: (() => void) | undefined;
     let shardLock: CrossProcessLock | undefined;
     let legacyLock: CrossProcessLock | undefined;
     let marker: ActiveMarker | undefined;
     let rootIdentity: DirectoryIdentity | undefined;
     try {
+      releaseProcess = await acquireQueue(PROCESS_APPEND_QUEUES, this.queueKey(conversationId));
       rootIdentity = await this.ensureRoot();
       const locksIdentity = await this.ensureLocksRoot();
       shardLock = await acquireCrossProcessLock(
@@ -1010,7 +1039,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             try {
               await shardLock?.release();
             } finally {
-              releaseProcess();
+              releaseProcess?.();
+              if (ownsLogicalFence) await heldLogical.release();
             }
           }
         },
@@ -1028,6 +1058,41 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       }
       await legacyLock?.release().catch(() => undefined);
       await shardLock?.release().catch(() => undefined);
+      releaseProcess?.();
+      if (ownsLogicalFence) await heldLogical.release().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async acquireLogicalConversation(
+    logicalConversationId: string,
+  ): Promise<HeldLogicalConversation> {
+    const releaseProcess = await acquireQueue(
+      PROCESS_LOGICAL_SESSION_QUEUES,
+      `${this.root}\0${historyKey(logicalConversationId)}`,
+    );
+    try {
+      const rootIdentity = await this.ensureRoot();
+      const locksIdentity = await this.ensureLocksRoot();
+      const lock = await acquireCrossProcessLock(
+        join(this.root, LOCKS_DIRECTORY, logicalSessionShardLockName(historyKey(logicalConversationId))),
+        locksIdentity,
+      );
+      let released = false;
+      return {
+        logicalConversationId,
+        rootIdentity,
+        release: async (): Promise<void> => {
+          if (released) return;
+          released = true;
+          try {
+            await lock.release();
+          } finally {
+            releaseProcess();
+          }
+        },
+      };
+    } catch (error) {
       releaseProcess();
       throw error;
     }
@@ -1106,6 +1171,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         || name === TOOL_HISTORY_OWNER_FILE
         || LEGACY_CONVERSATION_LOCK_PATTERN.test(name)
         || isConversationShardLockName(name)
+        || isLogicalSessionShardLockName(name)
       ) {
         const path = join(locksRoot, name);
         assertSecureHistoryFile(await lstat(path), path);
@@ -1163,6 +1229,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         || name === TOOL_HISTORY_OWNER_FILE
         || LEGACY_CONVERSATION_LOCK_PATTERN.test(name)
         || isConversationShardLockName(name)
+        || isLogicalSessionShardLockName(name)
         || ACTIVE_MARKER_PATTERN.test(name)
       ) {
         assertSecureHistoryFile(await lstat(path), path);
@@ -1501,6 +1568,11 @@ function belongsToLogicalConversation(conversationId: string, logicalConversatio
     || new RegExp(`^${escapeRegExp(logicalConversationId)}#\\d{4}-\\d{2}-\\d{2}$`, "u").test(conversationId);
 }
 
+function logicalConversationIdForFence(conversationId: string): string {
+  const logicalId = conversationId.replace(/#\d{4}-\d{2}-\d{2}$/u, "");
+  return logicalId.length === 0 ? conversationId : logicalId;
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
@@ -1524,9 +1596,19 @@ function conversationShardLockName(conversationKey: string): string {
   return `conversation-shard-${shard.toString(16).padStart(2, "0")}.sqlite`;
 }
 
+function logicalSessionShardLockName(logicalConversationKey: string): string {
+  const shard = Number.parseInt(logicalConversationKey.slice(0, 8), 16) % LOGICAL_SESSION_LOCK_SHARDS;
+  return `logical-session-shard-${shard.toString(16).padStart(2, "0")}.sqlite`;
+}
+
 function isConversationShardLockName(name: string): boolean {
   const match = CONVERSATION_SHARD_LOCK_PATTERN.exec(name);
   return match !== null && Number.parseInt(match[1] as string, 16) < CONVERSATION_LOCK_SHARDS;
+}
+
+function isLogicalSessionShardLockName(name: string): boolean {
+  const match = LOGICAL_SESSION_SHARD_LOCK_PATTERN.exec(name);
+  return match !== null && Number.parseInt(match[1] as string, 16) < LOGICAL_SESSION_LOCK_SHARDS;
 }
 
 function createProviderSessionEpoch(): string {
@@ -1946,6 +2028,10 @@ async function createAndVerifyLocksRoot(root: string): Promise<DirectoryIdentity
   const identity = await createAndVerifyRoot(root);
   for (let shard = 0; shard < CONVERSATION_LOCK_SHARDS; shard += 1) {
     const name = `conversation-shard-${shard.toString(16).padStart(2, "0")}.sqlite`;
+    await ensureOwnerOnlyLockFile(join(root, name), identity, false);
+  }
+  for (let shard = 0; shard < LOGICAL_SESSION_LOCK_SHARDS; shard += 1) {
+    const name = `logical-session-shard-${shard.toString(16).padStart(2, "0")}.sqlite`;
     await ensureOwnerOnlyLockFile(join(root, name), identity, false);
   }
   // One directory sync publishes the complete fixed table atomically enough

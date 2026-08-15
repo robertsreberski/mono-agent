@@ -265,6 +265,7 @@ function recordInvocation(database: DatabaseSync, payload: LifecyclePayload): Ru
   const toolCallId = normalizeId(event.toolCallId, "toolCallId");
   const toolName = normalizeId(event.toolName, "toolName");
   const bounded = boundedPayload(event.arguments ?? null, ARGUMENT_MAX_BYTES);
+  let terminalPayloadReplaced = false;
   return lifecycleTransaction(database, () => {
     ensureRun(database, binding);
     const recordId = toolHistoryRecordId(binding.conversationId, binding.runId, toolCallId, "invocation");
@@ -273,12 +274,40 @@ function recordInvocation(database: DatabaseSync, payload: LifecyclePayload): Ru
     }
     const existing = database.prepare(`
       SELECT tr.record_id, tr.seq, tr.payload_sha256, tr.truncated, tr.original_bytes, tr.retained_bytes,
-             c.tool_name
+             c.tool_name, c.synthetic_start
       FROM tool_records tr JOIN tool_calls c
         ON c.conversation_id=tr.conversation_id AND c.run_id=tr.run_id AND c.tool_call_id=tr.tool_call_id
       WHERE tr.conversation_id=? AND tr.run_id=? AND tr.tool_call_id=? AND tr.phase='invocation'
     `).get(binding.conversationId, binding.runId, toolCallId) as Record<string, unknown> | undefined;
     if (existing !== undefined) {
+      if (
+        Number(existing.synthetic_start) === 1
+        && (existing.tool_name === "unknown_tool" || existing.tool_name === toolName)
+      ) {
+        // A result-first lifecycle already owns the canonical invocation id and
+        // sequence. Replace only its synthetic start metadata; the terminal
+        // result row and call classification remain untouched.
+        database.prepare(`
+          UPDATE tool_records
+          SET payload_json=?,payload_sha256=?,search_text=?,original_bytes=?,retained_bytes=?,truncated=?
+          WHERE record_id=?
+        `).run(
+          bounded.json,
+          bounded.sha256,
+          bounded.searchText,
+          bounded.originalBytes,
+          bounded.retainedBytes,
+          bounded.truncated ? 1 : 0,
+          recordId,
+        );
+        database.prepare(`
+          UPDATE tool_calls SET tool_name=?,synthetic_start=0
+          WHERE conversation_id=? AND run_id=? AND tool_call_id=?
+        `).run(toolName, binding.conversationId, binding.runId, toolCallId);
+        resolveLifecycleIncidents(database, binding, toolCallId, "invocation");
+        terminalPayloadReplaced = true;
+        return persistence(recordId, Number(existing.seq), bounded);
+      }
       if (
         existing.payload_sha256 !== bounded.sha256
         || existing.tool_name !== toolName
@@ -314,6 +343,10 @@ function recordInvocation(database: DatabaseSync, payload: LifecyclePayload): Ru
     });
     resolveLifecycleIncidents(database, binding, toolCallId, "invocation");
     return persistence(recordId, sequence, bounded);
+  }, () => {
+    // Result-first calls are already terminal, so replacing their small
+    // synthetic start can cross the retained-payload ceiling immediately.
+    if (terminalPayloadReplaced) applyRetention(database, retention);
   });
 }
 

@@ -1,6 +1,6 @@
-import { ToolHistoryWriter } from "../../../dist/index.js";
-
-const [root, ceilingText, mode] = process.argv.slice(2);
+const [sourceModuleUrl, root, ceilingText, mode] = process.argv.slice(2);
+const { ToolHistoryWriter } = await import(sourceModuleUrl);
+console.log("SOURCE_ENTRY_LOADED");
 const keepAlive = mode === "hold" ? setInterval(() => {}, 1_000) : undefined;
 const binding = {
   conversationId: "slack:C1#2026-08-14",

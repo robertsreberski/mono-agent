@@ -93,6 +93,52 @@ describe("DurableConversationHistoryStore", () => {
     await expect(store.load("chat:99#2026-08-14")).resolves.toEqual([{ role: "assistant", content: "foreign" }]);
   });
 
+  it("holds one cross-process logical-session fence across bucket discovery and every reset", async () => {
+    const dir = await tempDir();
+    const root = join(dir, "history");
+    const store = createDurableHistoryStore({ root });
+    await store.append("chat:42#2026-08-13", [{ role: "assistant", content: "old day" }]);
+    const unseen = await store.prepareAppend("chat:42#2026-08-14", [
+      { role: "assistant", content: "committed while reset waits" },
+    ]);
+    await compileDurableHistoryFixture(dir);
+    const workerPath = join(dir, "logical-reset-worker.mjs");
+    await writeFile(workerPath, [
+      'import { createDurableHistoryStore } from "./durable-history.mjs";',
+      "const store = createDurableHistoryStore({ root: process.argv[2] });",
+      'process.stdout.write("RESET_STARTING\\n");',
+      'await store.resetLogicalConversation("chat:42");',
+      'process.stdout.write("RESET_FINISHED\\n");',
+    ].join("\n"));
+
+    const child = spawn(process.execPath, [workerPath, root], { stdio: ["ignore", "pipe", "pipe"] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
+    child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+    let resetSettled = false;
+    const exited = once(child, "exit").then(([code]) => {
+      resetSettled = true;
+      return code as number | null;
+    });
+    const [firstChunk] = await once(child.stdout, "data") as [Buffer];
+    expect(firstChunk.toString("utf8")).toContain("RESET_STARTING");
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+    expect(resetSettled).toBe(false);
+
+    try {
+      await unseen.commit();
+      const code = await exited;
+      expect(code, Buffer.concat(stderr).toString("utf8")).toBe(0);
+      expect(Buffer.concat(stdout).toString("utf8")).toContain("RESET_FINISHED");
+      await expect(store.load("chat:42#2026-08-13")).resolves.toEqual([]);
+      await expect(store.load("chat:42#2026-08-14")).resolves.toEqual([]);
+    } finally {
+      await unseen.abort().catch(() => undefined);
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  }, 20_000);
+
   it("persists normalized exact conversation ids across store recreation in owner-only files", async () => {
     const dir = await tempDir();
     const root = join(dir, ".mono-agent", "history");
@@ -672,9 +718,11 @@ describe("DurableConversationHistoryStore", () => {
     const initialSqliteLocks = (await readdir(locksRoot))
       .filter((name) => name.endsWith(".sqlite"))
       .sort();
-    expect(initialSqliteLocks).toHaveLength(17);
+    expect(initialSqliteLocks).toHaveLength(33);
     expect(initialSqliteLocks).toContain("root.sqlite");
     expect(initialSqliteLocks.filter((name) => /^conversation-shard-[a-f0-9]{2}\.sqlite$/u.test(name)))
+      .toHaveLength(16);
+    expect(initialSqliteLocks.filter((name) => /^logical-session-shard-[a-f0-9]{2}\.sqlite$/u.test(name)))
       .toHaveLength(16);
     expect(initialSqliteLocks.some((name) => /^[a-f0-9]{64}\.sqlite$/u.test(name))).toBe(false);
 

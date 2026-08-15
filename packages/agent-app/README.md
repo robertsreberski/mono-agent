@@ -503,10 +503,13 @@ runs persist but search excludes them unless explicitly requested.
 tool/state/run/time filters and a query-bound opaque cursor.
 `{ "action": "get", "recordId": "..." }` (or `toolCallId`) returns bounded
 chunks up to 8 KiB, with tombstones when retention removed known records.
-Current-run and unrelated-conversation records are identically unavailable,
-daily rollover buckets remain one logical scope, nested history-tool result
+Only the exact physical `(conversationId, runId)` for the active turn is
+unavailable; an older rollover bucket that reused the same opaque run id remains
+readable. Unrelated-conversation records stay unavailable, daily rollover
+buckets remain one logical scope, nested history-tool result
 bodies are omitted, and every response is labelled untrusted. Cold context
-reseed receives a bounded neutralized text projection; warm provider resume
+reseed receives the newest fitting chronological suffix in a neutralized UTF-8
+projection capped at 64 KiB including its truncation marker; warm provider resume
 continues natively and receives no replay. A zero-byte fresh sidecar is absent
 for automatic projection; another corrupt/unsafe projection emits a structured
 warning and continues the turn, while explicit SessionHistory reads fail closed.
@@ -525,6 +528,9 @@ Telegram `/new` clears message records and tool records across the same logical
 session, including prior daily rollover buckets that canonical replay,
 SessionHistory, and cold projection can expose. A custom history store used with
 daily rollover must implement logical-session reset or the reset fails closed.
+The durable store holds one cross-process logical-session fence across discovery
+and every bucket reset, and appends take that same fence before their physical
+bucket lock.
 `restart --clear-sessions` purges all provider transcripts, message history, and
 tool history while reporting message/tool counts and bytes separately. Doctor
 audits schema, ownership, journal/integrity state, recovery, quota, and distinct

@@ -290,6 +290,11 @@ toolPolicyToRuntimeOptions
 
 With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation. Confirmed warm runs pass `sessionId`/`sessionKeepAlive` and send only the current user message. A cold history-coordinated Pi reopen supplies canonical history as structured leading runtime messages, outside the system prompt; Pi seeds those messages when its durable JSONL is missing and skips them when the JSONL truly resumes. Stateless/fresh runs and the one stale-session retry keep the ordinary prompt-history replay path. Rotated provider session ids are tracked, `dispose()` retires this harness's live sessions, and history is appended after every successful turn.
 
+Daily-rollover reset holds one fixed-table, cross-process logical-session fence
+from bucket discovery through every physical bucket reset. Appends take the same
+fence before their physical-conversation lock, so reset cannot miss a newly
+created bucket or leave a post-reset append in a bucket it already cleared.
+
 ### Canonical tool lifecycle sidecar
 
 The default durable harness stores managed-tool evidence separately under
@@ -332,7 +337,9 @@ terminal classification, duration, or artifact identity is rejected. Startup
 closes a dangling invocation as `interrupted` with `process_death`, never reruns
 it, and never duplicates a completed phase. A real result observed after a
 synthetic finalization/recovery result supersedes that result in place while
-preserving its stable record id and sequence. Results cover `success`,
+preserving its stable record id and sequence. A real invocation observed after a
+result-first synthetic start likewise replaces only that start in place, keeping
+the already-terminal result. Results cover `success`,
 `rejected`, `error`, `exit_nonzero`, `timeout`, `signal`, `cancelled`, and
 `interrupted` using the observability failure-kind taxonomy.
 
@@ -350,8 +357,9 @@ lifetime. Retention independently bounds completed calls (100,000), age (365
 days), retained payload (256 MiB), tombstones (10,000), and tombstone age (30
 days). Isolated/proactive runs persist but are excluded from default reads.
 
-Cold reseed inserts at most 32 newest completed records as bounded neutralized
-text before the current user message. Fresh/stateless runs place it in the
+Cold reseed inserts the newest fitting suffix of at most 32 completed records as
+chronological, neutralized text before the current user message. The projection,
+including its truncation marker, never exceeds 64 KiB of UTF-8. Fresh/stateless runs place it in the
 history prompt section; a history-coordinated Pi reopen carries it as a prior
 structured message so create-on-miss seeds it and a true native resume skips it
 with the other prior messages. It uses an assistant role when canonical history

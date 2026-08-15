@@ -3,10 +3,11 @@ import { once } from "node:events";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { createDurableHistoryStore } from "../durable-history.js";
 import {
@@ -28,6 +29,37 @@ import { buildToolHistoryProjection } from "../tool-history-projection.js";
 const tempDirs: string[] = [];
 const children = new Set<ChildProcess>();
 const childBuffers = new WeakMap<ChildProcess, { stdout: Buffer[]; stderr: Buffer[] }>();
+let sourceFixtureRoot = "";
+let sourceFixtureModuleUrl = "";
+
+beforeAll(async () => {
+  sourceFixtureRoot = await mkdtemp(join(tmpdir(), "tool-history-source-fixture-"));
+  const compilerOptions = { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } as const;
+  const fixtureScope = join(sourceFixtureRoot, "node_modules", "@mono-agent");
+  await mkdir(fixtureScope, { recursive: true, mode: 0o700 });
+  await Promise.all([
+    symlink(fileURLToPath(new URL("../../../observability", import.meta.url)), join(fixtureScope, "observability"), "dir"),
+    symlink(fileURLToPath(new URL("../../../runtime-adapter", import.meta.url)), join(fixtureScope, "runtime-adapter"), "dir"),
+  ]);
+  const sourceNames = [
+    "history-process-liveness",
+    "tool-history-artifacts",
+    "tool-history-store",
+    "tool-history-worker-queue",
+    "tool-history-writer-worker",
+  ] as const;
+  await Promise.all(sourceNames.map(async (name) => {
+    const source = await readFile(new URL(`../${name}.ts`, import.meta.url), "utf8");
+    const compiled = transpileModule(source, { compilerOptions }).outputText;
+    await writeFile(join(sourceFixtureRoot, `${name}.js`), compiled);
+  }));
+  await writeFile(join(sourceFixtureRoot, "package.json"), '{"type":"module"}\n');
+  sourceFixtureModuleUrl = pathToFileURL(join(sourceFixtureRoot, "tool-history-store.js")).href;
+});
+
+afterAll(async () => {
+  if (sourceFixtureRoot !== "") await rm(sourceFixtureRoot, { recursive: true, force: true });
+});
 
 async function tempRoot(): Promise<string> {
   const base = await mkdtemp(join(tmpdir(), "tool-history-test-"));
@@ -155,6 +187,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     const reader = new ToolHistoryReader(root);
     const page = reader.search({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "run-current",
       limit: 10,
     });
@@ -163,6 +196,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     expect(page.items.every((item) => item.untrusted)).toBe(true);
     const invocation = reader.get({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "run-current",
       recordId: invocations[0]!.recordId!,
     });
@@ -174,6 +208,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     });
     expect(reader.search({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "run-current",
       query: "needle-3",
       tools: ["Read"],
@@ -183,6 +218,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     await unlink(artifact);
     expect(reader.get({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "run-current",
       recordId: results[0]!.recordId!,
     }).record?.artifactReferences).toEqual([
@@ -190,6 +226,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     ]);
     expect(reader.get({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "run-current",
       recordId: results[1]!.recordId!,
     }).record?.artifactReferences).toEqual([
@@ -291,6 +328,125 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     }
   });
 
+  it("replaces a result-first synthetic invocation in place when the real invocation arrives", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    const run = binding("result-first-run");
+    const result = await writer.persist(run, {
+      phase: "result",
+      toolCallId: "result-first-call",
+      state: "success",
+      content: { answer: "terminal result survives" },
+    });
+    const expectedInvocationId = toolHistoryRecordId(
+      run.conversationId,
+      run.runId,
+      "result-first-call",
+      "invocation",
+    );
+    const invocation = await writer.persist(run, {
+      phase: "invocation",
+      toolCallId: "result-first-call",
+      toolName: "Read",
+      arguments: { path: "/Users/example/work/repo/input.ts", query: "real-arguments" },
+    });
+    const duplicate = await writer.persist(run, {
+      phase: "invocation",
+      toolCallId: "result-first-call",
+      toolName: "Read",
+      arguments: { path: "/Users/example/work/repo/input.ts", query: "real-arguments" },
+    });
+    expect(invocation).toMatchObject({
+      persistence: "persisted",
+      recordId: expectedInvocationId,
+      sequence: 1,
+    });
+    expect(duplicate).toMatchObject({ recordId: expectedInvocationId, sequence: 1 });
+    expect(result).toMatchObject({ persistence: "persisted", sequence: 2 });
+    expect(await writer.stats()).toMatchObject({ orphanResults: 0, idempotencyConflicts: 0 });
+    await writer.close();
+
+    const reader = new ToolHistoryReader(root);
+    const page = reader.search({
+      logicalConversationId: run.logicalConversationId,
+      currentConversationId: "slack:C1#2026-08-15",
+      currentRunId: "current-run",
+    });
+    expect(page.items).toMatchObject([{
+      recordId: expectedInvocationId,
+      resultRecordId: result.recordId,
+      state: "success",
+      startSequence: 1,
+      endSequence: 2,
+    }]);
+    const storedInvocation = reader.get({
+      logicalConversationId: run.logicalConversationId,
+      currentConversationId: "slack:C1#2026-08-15",
+      currentRunId: "current-run",
+      recordId: expectedInvocationId,
+    });
+    const storedResult = reader.get({
+      logicalConversationId: run.logicalConversationId,
+      currentConversationId: "slack:C1#2026-08-15",
+      currentRunId: "current-run",
+      recordId: result.recordId!,
+    });
+    expect(storedInvocation.record).toMatchObject({
+      sequence: 1,
+      payload: { path: "[host-path]/repo/input.ts", query: "real-arguments" },
+    });
+    expect(storedInvocation.chunk).not.toContain("result_observed_before_invocation");
+    expect(storedResult.record).toMatchObject({
+      sequence: 2,
+      state: "success",
+      payload: { answer: "terminal result survives" },
+    });
+    const databaseBytes = await readFile(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE));
+    expect(databaseBytes.includes(Buffer.from("/Users/example"))).toBe(false);
+  });
+
+  it("reapplies byte retention after a result-first synthetic invocation grows in place", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({
+      root,
+      retention: { maxBytes: 700 },
+    });
+    const run = binding("result-first-retention");
+    const result = await writer.persist(run, {
+      phase: "result",
+      toolCallId: "result-first-retention-call",
+      state: "success",
+      content: "r".repeat(200),
+    });
+    await expect(writer.stats()).resolves.toMatchObject({ calls: 1 });
+
+    const invocation = await writer.persist(run, {
+      phase: "invocation",
+      toolCallId: "result-first-retention-call",
+      toolName: "Read",
+      arguments: { payload: "i".repeat(1_000) },
+    });
+    expect(invocation).toMatchObject({ persistence: "persisted", sequence: 1 });
+    await expect(writer.stats()).resolves.toMatchObject({
+      calls: 0,
+      records: 0,
+      retainedBytes: 0,
+      tombstones: 2,
+    });
+    await writer.close();
+
+    const scope = {
+      logicalConversationId: run.logicalConversationId,
+      currentConversationId: "slack:C1#2026-08-15",
+      currentRunId: "current-run",
+    } as const;
+    const reader = new ToolHistoryReader(root);
+    expect(reader.get({ ...scope, recordId: invocation.recordId! }))
+      .toMatchObject({ tombstone: { reason: "bytes" }, untrusted: true });
+    expect(reader.get({ ...scope, recordId: result.recordId! }))
+      .toMatchObject({ tombstone: { reason: "bytes" }, untrusted: true });
+  });
+
   it("securely bounds multi-MiB payload preprocessing inside the persistence ceiling", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root, persistenceCeilingMs: 250 });
@@ -313,6 +469,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     const reader = new ToolHistoryReader(root);
     const visible = JSON.stringify(reader.get({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "current",
       recordId: persisted.recordId!,
       chunkBytes: 8 * 1024,
@@ -430,6 +587,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     }
     expect(new ToolHistoryReader(root).get({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "current",
       toolCallId: "artifact-call",
     }).record?.artifactReferences).toEqual([
@@ -476,14 +634,15 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     }
 
     const reader = new ToolHistoryReader(root);
-    const search = reader.search({ logicalConversationId: "slack:C1", currentRunId: "current", limit: 10 });
+    const search = reader.search({ logicalConversationId: "slack:C1", currentConversationId: "slack:C1#2026-08-14", currentRunId: "current", limit: 10 });
     const fetched = recordIds.map((recordId) => reader.get({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "current",
       recordId,
       chunkBytes: 8 * 1024,
     }));
-    const projection = buildToolHistoryProjection(reader, "slack:C1", "current");
+    const projection = buildToolHistoryProjection(reader, "slack:C1", "slack:C1#2026-08-14", "current");
     const visible = JSON.stringify({ search, fetched, projection });
 
     expect(search.items.map((item) => item.toolName).sort()).toEqual(["Bash", "Edit", "Glob", "Grep", "Read", "Write"]);
@@ -542,6 +701,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     const reader = new ToolHistoryReader(root);
     const search = reader.search({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "current",
       query: "needle",
     });
@@ -552,6 +712,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     for (let pageCount = 0; pageCount < 100; pageCount += 1) {
       const page = reader.get({
         logicalConversationId: "slack:C1",
+        currentConversationId: "slack:C1#2026-08-14",
         currentRunId: "current",
         recordId: invocation.recordId!,
         chunkOffset,
@@ -564,7 +725,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       chunkOffset = page.nextOffset;
     }
     const pagedPayload = JSON.parse(pagedJson) as { readonly nested: Record<string, unknown> };
-    const projection = buildToolHistoryProjection(reader, "slack:C1", "current");
+    const projection = buildToolHistoryProjection(reader, "slack:C1", "slack:C1#2026-08-14", "current");
     const visible = JSON.stringify({ search, pagedPayload, projection });
     const hostPathEntries = Object.entries(pagedPayload.nested)
       .filter(([key]) => key.startsWith(safeOpaqueKey));
@@ -683,14 +844,15 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     await writer.close();
 
     const reader = new ToolHistoryReader(root);
-    const search = reader.search({ logicalConversationId: "slack:C1", currentRunId: "current" });
+    const search = reader.search({ logicalConversationId: "slack:C1", currentConversationId: "slack:C1#2026-08-14", currentRunId: "current" });
     const fetched = [invocation.recordId!, result.recordId!].map((recordId) => reader.get({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "current",
       recordId,
       chunkBytes: 8 * 1024,
     }));
-    const projection = buildToolHistoryProjection(reader, "slack:C1", "current");
+    const projection = buildToolHistoryProjection(reader, "slack:C1", "slack:C1#2026-08-14", "current");
     const visible = JSON.stringify({ search, fetched, projection });
     for (const entry of cases) {
       expect(visible, entry.raw).toContain(entry.expected);
@@ -728,23 +890,80 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     await writer.close();
 
     const reader = new ToolHistoryReader(root);
-    const page = reader.search({ logicalConversationId: "slack:C1", currentRunId: "current-run" });
+    const page = reader.search({ logicalConversationId: "slack:C1", currentConversationId: "slack:C1#2026-08-14", currentRunId: "current-run" });
     expect(page.items.map((item) => item.runId)).toEqual(["old-run"]);
     expect(JSON.stringify(page)).not.toContain(leakedPath);
     const fetched = reader.get({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "current-run",
       toolCallId: "old-run-call",
     });
     expect(JSON.stringify(fetched)).not.toContain(leakedPath);
     expect(fetched.chunk).toContain("output");
     expect(fetched.chunk).toContain("[private-path]");
-    const projection = buildToolHistoryProjection(reader, "slack:C1", "current-run");
+    const projection = buildToolHistoryProjection(reader, "slack:C1", "slack:C1#2026-08-14", "current-run");
     expect(projection?.recordCount).toBe(1);
     expect(projection?.text).not.toContain(leakedPath);
     expect(projection?.text).not.toContain("current-only");
     expect(projection?.text).toContain("output");
     expect(projection?.text).toContain("[private-path]");
+  });
+
+  it("excludes only the exact physical current run when daily buckets reuse a run id", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    const reusedRunId = "reused-run-id";
+    const oldRun = binding(reusedRunId, "slack:C1#2026-08-13");
+    const currentRun = binding(reusedRunId, "slack:C1#2026-08-14");
+    const oldInvocation = await writer.persist(oldRun, {
+      phase: "invocation",
+      toolCallId: "old-bucket-call",
+      toolName: "Read",
+      arguments: { marker: "older-completed-call" },
+    });
+    await writer.persist(oldRun, {
+      phase: "result",
+      toolCallId: "old-bucket-call",
+      state: "success",
+      content: "old bucket result",
+    });
+    const currentInvocation = await writer.persist(currentRun, {
+      phase: "invocation",
+      toolCallId: "current-bucket-call",
+      toolName: "Read",
+      arguments: { marker: "current-call-must-stay-hidden" },
+    });
+    await writer.persist(currentRun, {
+      phase: "result",
+      toolCallId: "current-bucket-call",
+      state: "success",
+      content: "current bucket result",
+    });
+    await writer.close();
+
+    const reader = new ToolHistoryReader(root);
+    const scope = {
+      logicalConversationId: "slack:C1",
+      currentConversationId: currentRun.conversationId,
+      currentRunId: reusedRunId,
+    } as const;
+    expect(reader.search(scope).items).toMatchObject([{
+      conversationId: oldRun.conversationId,
+      runId: reusedRunId,
+      toolCallId: "old-bucket-call",
+    }]);
+    expect(reader.get({ ...scope, recordId: oldInvocation.recordId! }).record).toMatchObject({
+      conversationId: oldRun.conversationId,
+      payload: { marker: "older-completed-call" },
+    });
+    expect(reader.get({ ...scope, recordId: currentInvocation.recordId! })).toEqual({ untrusted: true });
+    const projected = reader.latestProjection(
+      scope.logicalConversationId,
+      scope.currentConversationId,
+      scope.currentRunId,
+    );
+    expect(projected.map(({ call }) => call.toolCallId)).toEqual(["old-bucket-call"]);
   });
 
   it("uses one read-only SQLite open for a full cold projection", async () => {
@@ -763,12 +982,54 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
     const close = vi.spyOn(DatabaseSync.prototype, "close");
     try {
-      expect(new ToolHistoryReader(root).latestProjection("slack:C1", "current", 12)).toHaveLength(12);
+      expect(new ToolHistoryReader(root).latestProjection("slack:C1", "slack:C1#2026-08-14", "current", 12)).toHaveLength(12);
       expect(close).toHaveBeenCalledTimes(1);
     } finally {
       close.mockRestore();
     }
   });
+
+  it("retains the newest fitting projection suffix in chronological order within the UTF-8 byte ceiling", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    const payload = "&😀\"".repeat(1_500);
+    for (let index = 0; index < 32; index += 1) {
+      const suffix = String(index).padStart(2, "0");
+      const run = binding(`projection-bounded-${suffix}`);
+      await writer.persist(run, {
+        phase: "invocation",
+        toolCallId: `call-${suffix}`,
+        toolName: "Read",
+        arguments: { label: `record-${suffix}`, payload },
+      });
+      await writer.persist(run, {
+        phase: "result",
+        toolCallId: `call-${suffix}`,
+        state: "success",
+        content: { label: `record-${suffix}`, payload },
+      });
+    }
+    await writer.close();
+
+    const projection = buildToolHistoryProjection(
+      new ToolHistoryReader(root),
+      "slack:C1",
+      "slack:C1#2026-08-15",
+      "current-run",
+    );
+    expect(projection).toBeDefined();
+    expect(Buffer.byteLength(projection!.text, "utf8")).toBeLessThanOrEqual(64 * 1024);
+    expect(projection!.text).toContain('<projection_truncated reason="byte_limit" />');
+    expect(projection!.recordCount).toBeGreaterThan(0);
+    expect(projection!.recordCount).toBeLessThan(32);
+    const retainedRuns = [...projection!.text.matchAll(/run="projection-bounded-(\d{2})"/gu)]
+      .map((match) => Number(match[1]));
+    expect(retainedRuns).toEqual(
+      Array.from({ length: projection!.recordCount }, (_, offset) => 32 - projection!.recordCount + offset),
+    );
+    expect(projection!.text).toContain('run="projection-bounded-31"');
+    expect(projection!.text).not.toContain('run="projection-bounded-00"');
+  }, 20_000);
 
   it("resets the logical rollover session across search, get, and cold projection without harming isolation", async () => {
     const root = await tempRoot();
@@ -802,20 +1063,21 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       });
 
       const reader = new ToolHistoryReader(root);
-      const before = reader.search({ logicalConversationId: "slack:C1", currentRunId: "run-current" });
+      const before = reader.search({ logicalConversationId: "slack:C1", currentConversationId: "slack:C1#2026-08-14", currentRunId: "run-current" });
       expect(before.items.map((item) => item.toolCallId).sort()).toEqual(["kept", "orphan"]);
-      expect(reader.latestProjection("slack:C1", "run-current")).toHaveLength(2);
+      expect(reader.latestProjection("slack:C1", "slack:C1#2026-08-14", "run-current")).toHaveLength(2);
       const recordIds = before.items.flatMap((item) => [item.recordId, item.resultRecordId].filter(
         (recordId): recordId is string => recordId !== undefined,
       ));
 
       await writer.resetConversation("slack:C1");
-      expect(reader.search({ logicalConversationId: "slack:C1", currentRunId: "run-current" }).items)
+      expect(reader.search({ logicalConversationId: "slack:C1", currentConversationId: "slack:C1#2026-08-14", currentRunId: "run-current" }).items)
         .toEqual([]);
-      expect(reader.latestProjection("slack:C1", "run-current")).toEqual([]);
+      expect(reader.latestProjection("slack:C1", "slack:C1#2026-08-14", "run-current")).toEqual([]);
       for (const recordId of recordIds) {
         expect(reader.get({
           logicalConversationId: "slack:C1",
+          currentConversationId: "slack:C1#2026-08-14",
           currentRunId: "run-current",
           recordId,
         })).toEqual({ untrusted: true });
@@ -825,9 +1087,9 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     }
 
     const reader = new ToolHistoryReader(root);
-    expect(reader.search({ logicalConversationId: "slack:C1", currentRunId: "run-current" }).items)
+    expect(reader.search({ logicalConversationId: "slack:C1", currentConversationId: "slack:C1#2026-08-14", currentRunId: "run-current" }).items)
       .toEqual([]);
-    expect(reader.search({ logicalConversationId: "slack:C2", currentRunId: "run-current" }).items)
+    expect(reader.search({ logicalConversationId: "slack:C2", currentConversationId: "slack:C2#2026-08-14", currentRunId: "run-current" }).items)
       .toMatchObject([{ toolCallId: "foreign" }]);
     expect(reader.stats()).toMatchObject({ calls: 1, records: 2 });
   });
@@ -909,6 +1171,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
     expect(new ToolHistoryReader(root).search({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "current",
     }).items).toMatchObject([{ toolName: "Read", state: "success" }]);
     expect(new ToolHistoryReader(root).stats()).toMatchObject({ idempotencyConflicts: 0 });
@@ -1132,6 +1395,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       });
       expect(new ToolHistoryReader(root).search({
         logicalConversationId: "slack:C1",
+        currentConversationId: "slack:C1#2026-08-14",
         currentRunId: "current",
         runIds: [recoveredRun.runId],
       }).items).toMatchObject([{
@@ -1174,6 +1438,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     const reader = new ToolHistoryReader(root);
     expect(reader.search({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "current",
       runIds: [recoveredRun.runId],
     }).items).toMatchObject([{
@@ -1184,6 +1449,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     }]);
     expect(reader.get({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "current",
       recordId: toolHistoryRecordId(
         recoveredRun.conversationId,
@@ -1215,9 +1481,9 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       await writer.close();
     }
     const reader = new ToolHistoryReader(root);
-    expect(reader.search({ logicalConversationId: "slack:C1", currentRunId: "current" }).items.map((item) => item.runId))
+    expect(reader.search({ logicalConversationId: "slack:C1", currentConversationId: "slack:C1#2026-08-14", currentRunId: "current" }).items.map((item) => item.runId))
       .toEqual(["normal"]);
-    expect(reader.search({ logicalConversationId: "slack:C1", currentRunId: "current", includeIsolated: true }).items.map((item) => item.runId).sort())
+    expect(reader.search({ logicalConversationId: "slack:C1", currentConversationId: "slack:C1#2026-08-14", currentRunId: "current", includeIsolated: true }).items.map((item) => item.runId).sort())
       .toEqual(["normal", "proactive"]);
   });
 
@@ -1250,11 +1516,13 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     expect(stats?.bytes).toBeGreaterThan(stats?.retainedBytes ?? 0);
     expect(reader.get({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "current",
       recordId: firstId[0]!,
     })).toMatchObject({ tombstone: { reason: expect.stringMatching(/count|bytes/u) }, untrusted: true });
     expect(reader.get({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "current",
       toolCallId: "call-0",
     })).toMatchObject({ tombstone: { reason: expect.stringMatching(/count|bytes/u) }, untrusted: true });
@@ -1381,6 +1649,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     do {
       const page = reader.search({
         logicalConversationId: "slack:C1",
+        currentConversationId: "slack:C1#2026-08-14",
         currentRunId: "current",
         limit: 1,
         ...(before === undefined ? {} : { before }),
@@ -1415,6 +1684,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     do {
       const page = reader.search({
         logicalConversationId: "slack:C1",
+        currentConversationId: "slack:C1#2026-08-14",
         currentRunId: "current",
         limit: 1,
         ...(before === undefined ? {} : { before }),
@@ -1440,6 +1710,7 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     await chmod(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE), 0o644);
     expect(() => new ToolHistoryReader(root).search({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "current",
     })).toThrow(/mode 0600/iu);
   });
@@ -1506,6 +1777,7 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     }
     expect(new ToolHistoryReader(root).get({
       logicalConversationId: run.logicalConversationId,
+      currentConversationId: run.conversationId,
       currentRunId: "current",
       recordId: resultId,
     }).record).toMatchObject({
@@ -1613,6 +1885,7 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     const result = await childResult(startChild(root, 2_000, "open-only"));
 
     expect(result.code, JSON.stringify(result)).toBe(0);
+    expect(result.stdout).toContain("SOURCE_ENTRY_LOADED");
     expect(result.stdout).toContain("STARTING");
     expect(result.stdout).toContain("ACQUIRED");
     expect(new ToolHistoryReader(root).stats()).toMatchObject({ calls: 0, records: 0 });
@@ -1637,6 +1910,7 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     const reader = new ToolHistoryReader(root);
     const graceful = reader.search({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "after-graceful-close",
     }).items.find((item) => item.toolCallId === "graceful-close-call");
     expect(graceful).toMatchObject({ state: "interrupted", recovered: false });
@@ -1724,6 +1998,7 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     await writer.close();
     const page = new ToolHistoryReader(root).search({
       logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "after-restart",
     });
     expect(page.items).toMatchObject([{
@@ -1855,7 +2130,15 @@ function startChild(
   mode: "close" | "hold" | "open-only" | "settle" = "close",
 ): ChildProcess {
   const fixture = fileURLToPath(new URL("./fixtures/tool-history-child.mjs", import.meta.url));
-  const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", fixture, root, String(ceilingMs), mode], {
+  if (sourceFixtureModuleUrl === "") throw new Error("Tool history source fixture was not compiled.");
+  const child = spawn(process.execPath, [
+    "--disable-warning=ExperimentalWarning",
+    fixture,
+    sourceFixtureModuleUrl,
+    root,
+    String(ceilingMs),
+    mode,
+  ], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const buffers = { stdout: [] as Buffer[], stderr: [] as Buffer[] };

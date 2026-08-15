@@ -65,6 +65,7 @@ type SessionHistoryToolPolicy = Pick<ToolPolicyInput, "allowedTools" | "disallow
 
 export interface SessionHistoryBinding {
   readonly reader: ToolHistoryReader;
+  readonly conversationId: string;
   readonly logicalConversationId: string;
   readonly runId: string;
 }
@@ -109,6 +110,7 @@ export function createSessionHistoryRuntimeExtension(
     startingMessage: "Session history is starting",
     createServer: ({ request, runId }) => createSessionHistoryServer({
       reader,
+      conversationId: request.conversationId,
       logicalConversationId: toolHistoryLogicalConversationId(request.conversationId, options.rollover),
       runId,
     }),
@@ -170,6 +172,7 @@ function searchRecords(binding: SessionHistoryBinding, input: SessionHistoryInpu
     ) return toolError("search", "invalid_cursor", "The continuation cursor is unavailable or expired.");
     const anchor = binding.reader.get({
       logicalConversationId: binding.logicalConversationId,
+      currentConversationId: binding.conversationId,
       currentRunId: binding.runId,
       recordId: cursor.anchorRecordId,
       ...(input.includeIsolated === undefined ? {} : { includeIsolated: input.includeIsolated }),
@@ -193,6 +196,7 @@ function searchRecords(binding: SessionHistoryBinding, input: SessionHistoryInpu
   }
   const searchInput: ToolHistorySearchInput = {
     logicalConversationId: binding.logicalConversationId,
+    currentConversationId: binding.conversationId,
     currentRunId: binding.runId,
     ...(query === undefined ? {} : { query }),
     ...(tools.length === 0 ? {} : { tools }),
@@ -266,6 +270,7 @@ function getRecord(binding: SessionHistoryBinding, input: SessionHistoryInput) {
   if (!boundedId(recordId ?? toolCallId!)) return toolError("get", "invalid_record", "The requested record is unavailable.");
   let result = binding.reader.get({
     logicalConversationId: binding.logicalConversationId,
+    currentConversationId: binding.conversationId,
     currentRunId: binding.runId,
     ...(recordId === undefined ? {} : { recordId }),
     ...(toolCallId === undefined ? {} : { toolCallId }),
@@ -352,14 +357,21 @@ function searchDigest(binding: SessionHistoryBinding, input: {
   readonly limit: number;
 }): string {
   return requestScopedCursorDigest([
-    "search", binding.logicalConversationId, binding.runId, input.query,
+    "search", binding.logicalConversationId, binding.conversationId, binding.runId, input.query,
     input.tools.join("\u001f"), input.states?.join("\u001f"), input.runIds.join("\u001f"),
     input.fromMs, input.toMs, input.includeIsolated === true, input.limit,
   ]);
 }
 
 function getDigest(binding: SessionHistoryBinding, recordId: string, includeIsolated: boolean): string {
-  return requestScopedCursorDigest(["get", binding.logicalConversationId, binding.runId, recordId, includeIsolated]);
+  return requestScopedCursorDigest([
+    "get",
+    binding.logicalConversationId,
+    binding.conversationId,
+    binding.runId,
+    recordId,
+    includeIsolated,
+  ]);
 }
 
 function boundedStringList(values: readonly string[] | undefined, _name: string): readonly string[] | undefined {

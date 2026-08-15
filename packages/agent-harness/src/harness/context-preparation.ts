@@ -71,6 +71,7 @@ export async function prepareHarnessContext(
         toolProjection = buildToolHistoryProjection(
           options.toolHistory.reader,
           options.toolHistory.logicalConversationId(request.conversationId),
+          request.conversationId,
           contextOptions.turnId,
         );
       } catch (error) {

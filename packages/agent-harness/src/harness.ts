@@ -145,7 +145,11 @@ export class MonoAgentHarness implements AgentHarness {
     const normalized = conversationId.trim();
     const historyStore = this.options.historyStore;
     const logicalConversationId = this.options.toolHistory?.logicalConversationId(normalized) ?? normalized;
-    if (historyStore !== undefined && historyStore.reset === undefined) {
+    if (
+      historyStore !== undefined
+      && logicalConversationId === normalized
+      && historyStore.reset === undefined
+    ) {
       throw new Error("The configured conversation history store does not support session reset.");
     }
     if (
@@ -523,6 +527,7 @@ export class MonoAgentHarness implements AgentHarness {
       // evict/dispose any returned provider session (mirrors the empty-turn
       // retirement below), and return a cancelled failure instead.
       if (request.abortSignal.aborted) {
+        toolHistoryStatus = "cancelled";
         await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
           request.conversationId,
           sessionRecord,
@@ -612,6 +617,7 @@ export class MonoAgentHarness implements AgentHarness {
       // history/memory persistence starts, because those durable writes cannot be
       // rolled back safely.
       if (request.abortSignal.aborted) {
+        toolHistoryStatus = "cancelled";
         if (!isolated) {
           await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
             request.conversationId,
@@ -725,6 +731,7 @@ export class MonoAgentHarness implements AgentHarness {
       // Preparation above can perform bounded durable I/O. Cancellation still
       // wins until the synchronous commit marker below.
       if (request.abortSignal.aborted) {
+        toolHistoryStatus = "cancelled";
         if (!isolated) {
           await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
             request.conversationId,

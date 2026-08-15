@@ -170,6 +170,7 @@ describe("SessionHistory request handler", () => {
     }
     const requestBinding = {
       reader: new ToolHistoryReader(root),
+      conversationId: "chat:42#2026-08-14",
       logicalConversationId: "chat:42",
       runId: "current-run",
     };
@@ -226,6 +227,7 @@ describe("SessionHistory request handler", () => {
 
     const requestBinding = {
       reader: new ToolHistoryReader(root),
+      conversationId: "chat:42#2026-08-14",
       logicalConversationId: "chat:42",
       runId: "current-run",
     };
@@ -280,6 +282,12 @@ describe("SessionHistory request handler", () => {
     const writer = await ToolHistoryWriter.open({ root });
     const first = await writeCall(writer, binding("prior-a"), "prior-a", { toolName: "Read" });
     const second = await writeCall(writer, binding("prior-b"), "prior-b", { toolName: "Bash", state: "error" });
+    const reusedPrior = await writeCall(
+      writer,
+      binding("current-run", "chat:42#2026-08-13"),
+      "reused-prior",
+      { toolName: "Glob" },
+    );
     const current = await writeCall(writer, binding("current-run", "chat:42#2026-08-14"), "current");
     const foreign = await writeCall(writer, binding("foreign-run", "chat:99#2026-08-13", "chat:99"), "foreign");
     await writeCall(writer, binding("isolated-run", "chat:42#2026-08-13", "chat:42", true), "isolated");
@@ -287,6 +295,7 @@ describe("SessionHistory request handler", () => {
 
     const requestBinding = {
       reader: new ToolHistoryReader(root),
+      conversationId: "chat:42#2026-08-14",
       logicalConversationId: "chat:42",
       runId: "current-run",
     };
@@ -326,6 +335,11 @@ describe("SessionHistory request handler", () => {
     }))).toMatchObject({ error: { code: "invalid_cursor" }, untrusted: true });
     expect(body(handleSessionHistoryRequest(requestBinding, { action: "get", recordId: current.invocationId })))
       .toMatchObject({ error: { code: "record_unavailable" }, untrusted: true });
+    expect(body(handleSessionHistoryRequest(requestBinding, { action: "get", recordId: reusedPrior.invocationId })))
+      .toMatchObject({ record: { toolCallId: "reused-prior", runId: "current-run" }, untrusted: true });
+    expect(body<{ readonly items: ReadonlyArray<{ readonly toolCallId: string }> }>(
+      handleSessionHistoryRequest(requestBinding, { action: "search", runIds: ["current-run"] }),
+    ).items.map((item) => item.toolCallId)).toEqual(["reused-prior"]);
     expect(body(handleSessionHistoryRequest(requestBinding, { action: "get", recordId: foreign.invocationId })))
       .toMatchObject({ error: { code: "record_unavailable" }, untrusted: true });
     expect(body<{ readonly items: ReadonlyArray<{ readonly toolCallId: string }> }>(
@@ -347,7 +361,7 @@ describe("SessionHistory request handler", () => {
       content: "instructions that must not recurse",
     });
     await writer.close();
-    const requestBinding = { reader: new ToolHistoryReader(root), logicalConversationId: "chat:42", runId: "current-run" };
+    const requestBinding = { reader: new ToolHistoryReader(root), conversationId: "chat:42#2026-08-14", logicalConversationId: "chat:42", runId: "current-run" };
 
     const first = body<{
       readonly record: { readonly chunk: string; readonly nextCursor?: string };
@@ -392,6 +406,7 @@ describe("SessionHistory request handler", () => {
     await writer.close();
     const requestBinding = {
       reader: new ToolHistoryReader(root),
+      conversationId: "chat:42#2026-08-14",
       logicalConversationId: "chat:42",
       runId: "current-run",
     };

@@ -58,7 +58,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     database.close();
 
     const reader = new ToolHistoryReader(root);
-    expect(() => reader.search({ logicalConversationId: "chat:42", currentRunId: "current" }))
+    expect(() => reader.search({ logicalConversationId: "chat:42", currentConversationId: "chat:42#2026-08-14", currentRunId: "current" }))
       .toThrow(/schema is unsupported/iu);
     const prompts: string[] = [];
     const runtime = {
@@ -107,7 +107,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     await chmod(databasePath, 0o600);
 
     const reader = new ToolHistoryReader(root);
-    expect(() => reader.search({ logicalConversationId: "chat:42", currentRunId: "before-startup" }))
+    expect(() => reader.search({ logicalConversationId: "chat:42", currentConversationId: "chat:42#2026-08-14", currentRunId: "before-startup" }))
       .toThrow();
     let writerPromise: Promise<ToolHistoryWriter> | undefined;
     const acquire = (): Promise<ToolHistoryWriter> => {
@@ -165,7 +165,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     await expect(harness.run(request("chat:42#2026-08-14"))).resolves.toMatchObject({ text: "answer-2" });
     expect(prompts[0]).not.toContain("history-after-lazy-recovery");
     expect(prompts[1]).toContain("history-after-lazy-recovery");
-    expect(reader.search({ logicalConversationId: "chat:42", currentRunId: "lazy-run-2" }).items)
+    expect(reader.search({ logicalConversationId: "chat:42", currentConversationId: "chat:42#2026-08-14", currentRunId: "lazy-run-2" }).items)
       .toMatchObject([{ toolCallId: "recovered-call", recovered: false }]);
     await harness.dispose?.();
   });
@@ -206,11 +206,72 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     expect(response.failure?.kind).toBe("cancelled");
     expect(await historyStore.load("chat:42#2026-08-14")).toEqual([]);
     await harness.dispose?.();
-    expect(reader.search({ logicalConversationId: "chat:42", currentRunId: "later-run" }).items).toMatchObject([{
+    expect(reader.search({ logicalConversationId: "chat:42", currentConversationId: "chat:42#2026-08-14", currentRunId: "later-run" }).items).toMatchObject([{
       runId: "cancelled-run",
       toolCallId: "cancelled-call",
       state: "cancelled",
     }]);
+  });
+
+  it("persists cancelled terminal metadata when a success-shaped provider return loses the cancellation race", async () => {
+    const { identityPath, root } = await fixture();
+    const writer = await ToolHistoryWriter.open({ root });
+    const reader = new ToolHistoryReader(root);
+    const abort = new AbortController();
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        await options.toolLifecycleSink?.({
+          phase: "invocation",
+          toolCallId: "success-race-call",
+          toolName: "Bash",
+          arguments: { command: "long-running" },
+        });
+        abort.abort();
+        return { text: "must not commit", providerSessionId: "provider-cancelled-race" };
+      },
+    };
+    const harness = createAgentHarness({
+      identityPath,
+      runtime,
+      model,
+      createRunId: () => "success-race-run",
+      toolHistory: {
+        writer,
+        reader,
+        logicalConversationId: (conversationId) => toolHistoryLogicalConversationId(conversationId, "daily"),
+        release: async () => await writer.close(),
+      },
+    });
+
+    const response = await harness.run(request("chat:42#2026-08-14", abort.signal));
+    expect(response.failure?.kind).toBe("cancelled");
+    await harness.dispose?.();
+
+    const page = reader.search({
+      logicalConversationId: "chat:42",
+      currentConversationId: "chat:42#2026-08-15",
+      currentRunId: "later-run",
+    });
+    expect(page.items).toMatchObject([{
+      runId: "success-race-run",
+      toolCallId: "success-race-call",
+      state: "cancelled",
+    }]);
+    const resultRecordId = page.items[0]?.resultRecordId;
+    if (resultRecordId === undefined) throw new Error("Cancelled tool result was not persisted.");
+    const result = reader.get({
+      logicalConversationId: "chat:42",
+      currentConversationId: "chat:42#2026-08-15",
+      currentRunId: "later-run",
+      recordId: resultRecordId,
+    });
+    expect(result.record).toMatchObject({
+      phase: "result",
+      state: "cancelled",
+      failureKind: "cancelled",
+      detailCode: "run_cancelled",
+      payload: { state: "cancelled", reason: "run_cancelled" },
+    });
   });
 
   it("releases the live mailbox and warm session when an injected run finalizer throws", async () => {
@@ -500,13 +561,13 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       ...request("chat:42#2026-08-14"),
       metadata: { cron: { jobId: "nightly", expression: "0 3 * * *" } },
     });
-    expect(reader.search({ logicalConversationId: "chat:42", currentRunId: "later" }).items.map((item) => item.toolCallId)).toEqual(["kept"]);
-    expect(reader.search({ logicalConversationId: "chat:42", currentRunId: "later", includeIsolated: true }).items.map((item) => item.toolCallId).sort())
+    expect(reader.search({ logicalConversationId: "chat:42", currentConversationId: "chat:42#2026-08-14", currentRunId: "later" }).items.map((item) => item.toolCallId)).toEqual(["kept"]);
+    expect(reader.search({ logicalConversationId: "chat:42", currentConversationId: "chat:42#2026-08-14", currentRunId: "later", includeIsolated: true }).items.map((item) => item.toolCallId).sort())
       .toEqual(["isolated", "kept"]);
     await harness.resetConversation?.("chat:42#2026-08-14");
-    expect(reader.search({ logicalConversationId: "chat:42", currentRunId: "later", includeIsolated: true }).items.map((item) => item.toolCallId))
+    expect(reader.search({ logicalConversationId: "chat:42", currentConversationId: "chat:42#2026-08-14", currentRunId: "later", includeIsolated: true }).items.map((item) => item.toolCallId))
       .toEqual([]);
-    expect(reader.latestProjection("chat:42", "later")).toEqual([]);
+    expect(reader.latestProjection("chat:42", "chat:42#2026-08-14", "later")).toEqual([]);
     expect(await historyStore.load("chat:42#2026-08-13")).toEqual([]);
     expect(await historyStore.load("chat:42#2026-08-14")).toEqual([]);
     expect(await historyStore.load("chat:99#2026-08-14")).toEqual([{ role: "assistant", content: "foreign-message" }]);

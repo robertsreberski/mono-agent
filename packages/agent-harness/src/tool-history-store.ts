@@ -86,6 +86,7 @@ export interface ToolHistoryRecordProjection {
 
 export interface ToolHistorySearchInput {
   readonly logicalConversationId: string;
+  readonly currentConversationId: string;
   readonly currentRunId: string;
   readonly query?: string;
   readonly tools?: readonly string[];
@@ -140,6 +141,7 @@ export interface ToolHistoryProjectionItem {
 
 export interface ToolHistoryGetInput {
   readonly logicalConversationId: string;
+  readonly currentConversationId: string;
   readonly currentRunId: string;
   readonly recordId?: string;
   readonly toolCallId?: string;
@@ -550,6 +552,7 @@ export class ToolHistoryReader {
 
   latestProjection(
     logicalConversationId: string,
+    currentConversationId: string,
     currentRunId: string,
     limit = 32,
   ): readonly ToolHistoryProjectionItem[] {
@@ -563,6 +566,7 @@ export class ToolHistoryReader {
       while (calls.length < Math.min(32, limit)) {
         const page = this.searchFromDatabase(database, {
           logicalConversationId,
+          currentConversationId,
           currentRunId,
           limit: Math.min(10, Math.min(32, limit) - calls.length),
           ...(before === undefined ? {} : { before }),
@@ -575,6 +579,7 @@ export class ToolHistoryReader {
         call,
         invocation: this.getFromDatabase(database, {
           logicalConversationId,
+          currentConversationId,
           currentRunId,
           recordId: call.recordId,
           chunkBytes: 2 * 1024,
@@ -584,6 +589,7 @@ export class ToolHistoryReader {
           : {
             result: this.getFromDatabase(database, {
               logicalConversationId,
+              currentConversationId,
               currentRunId,
               recordId: call.resultRecordId,
               chunkBytes: 4 * 1024,
@@ -610,9 +616,14 @@ export class ToolHistoryReader {
     input: ToolHistorySearchInput,
   ): ToolHistorySearchPage {
     const limit = Math.min(10, Math.max(1, input.limit ?? 5));
-    const clauses = ["r.logical_id = ?", "c.run_id <> ?", "c.end_seq IS NOT NULL"];
+    const clauses = [
+      "r.logical_id = ?",
+      "NOT (c.conversation_id = ? AND c.run_id = ?)",
+      "c.end_seq IS NOT NULL",
+    ];
     const values: (string | number)[] = [
       normalizeId(input.logicalConversationId, "logicalConversationId"),
+      normalizeId(input.currentConversationId, "currentConversationId"),
       normalizeId(input.currentRunId, "currentRunId"),
     ];
     if (input.includeIsolated !== true) clauses.push("r.isolated = 0");
@@ -675,6 +686,7 @@ export class ToolHistoryReader {
     input: ToolHistoryGetInput,
   ): ToolHistoryGetResult {
     const logicalId = normalizeId(input.logicalConversationId, "logicalConversationId");
+    const currentConversationId = normalizeId(input.currentConversationId, "currentConversationId");
     const currentRunId = normalizeId(input.currentRunId, "currentRunId");
     const includeIsolated = input.includeIsolated === true ? 1 : 0;
     let row: Record<string, unknown> | undefined;
@@ -686,9 +698,10 @@ export class ToolHistoryReader {
         FROM tool_records tr
         JOIN tool_calls c ON c.conversation_id=tr.conversation_id AND c.run_id=tr.run_id AND c.tool_call_id=tr.tool_call_id
         JOIN runs r ON r.conversation_id=c.conversation_id AND r.run_id=c.run_id
-        WHERE tr.record_id=? AND r.logical_id=? AND tr.run_id<>? AND c.end_seq IS NOT NULL
+        WHERE tr.record_id=? AND r.logical_id=?
+          AND NOT (tr.conversation_id=? AND tr.run_id=?) AND c.end_seq IS NOT NULL
           AND (?=1 OR r.isolated=0)
-      `).get(input.recordId, logicalId, currentRunId, includeIsolated) as Record<string, unknown> | undefined;
+      `).get(input.recordId, logicalId, currentConversationId, currentRunId, includeIsolated) as Record<string, unknown> | undefined;
     } else if (input.toolCallId !== undefined) {
       row = database.prepare(`
         SELECT tr.*, c.tool_name, c.state, c.failure_kind, c.detail_code,
@@ -697,29 +710,32 @@ export class ToolHistoryReader {
         FROM tool_records tr
         JOIN tool_calls c ON c.conversation_id=tr.conversation_id AND c.run_id=tr.run_id AND c.tool_call_id=tr.tool_call_id
         JOIN runs r ON r.conversation_id=c.conversation_id AND r.run_id=c.run_id
-        WHERE tr.tool_call_id=? AND r.logical_id=? AND tr.run_id<>? AND c.end_seq IS NOT NULL
+        WHERE tr.tool_call_id=? AND r.logical_id=?
+          AND NOT (tr.conversation_id=? AND tr.run_id=?) AND c.end_seq IS NOT NULL
           AND (?=1 OR r.isolated=0)
         ORDER BY r.started_at_ms DESC, tr.run_id DESC, tr.seq DESC, tr.record_id DESC LIMIT 1
-      `).get(input.toolCallId, logicalId, currentRunId, includeIsolated) as Record<string, unknown> | undefined;
+      `).get(input.toolCallId, logicalId, currentConversationId, currentRunId, includeIsolated) as Record<string, unknown> | undefined;
     }
     if (row === undefined && (input.recordId !== undefined || input.toolCallId !== undefined)) {
       const tombstone = input.recordId !== undefined
         ? database.prepare(`
           SELECT t.record_id, t.reason, t.removed_at_ms
           FROM tombstones t JOIN runs r ON r.conversation_id=t.conversation_id AND r.run_id=t.run_id
-          WHERE t.record_id=? AND r.logical_id=? AND t.run_id<>?
+          WHERE t.record_id=? AND r.logical_id=?
+            AND NOT (t.conversation_id=? AND t.run_id=?)
             AND (?=1 OR r.isolated=0)
-        `).get(input.recordId, logicalId, currentRunId, includeIsolated) as Record<string, unknown> | undefined
+        `).get(input.recordId, logicalId, currentConversationId, currentRunId, includeIsolated) as Record<string, unknown> | undefined
         : input.toolCallId === undefined
           ? undefined
           : database.prepare(`
           SELECT t.record_id, t.reason, t.removed_at_ms
           FROM tombstones t JOIN runs r ON r.conversation_id=t.conversation_id AND r.run_id=t.run_id
-          WHERE t.tool_call_id=? AND r.logical_id=? AND t.run_id<>?
+          WHERE t.tool_call_id=? AND r.logical_id=?
+            AND NOT (t.conversation_id=? AND t.run_id=?)
             AND (?=1 OR r.isolated=0)
           ORDER BY r.started_at_ms DESC, t.run_id DESC,
             CASE t.phase WHEN 'result' THEN 1 ELSE 0 END DESC, t.record_id DESC LIMIT 1
-          `).get(input.toolCallId, logicalId, currentRunId, includeIsolated) as Record<string, unknown> | undefined;
+          `).get(input.toolCallId, logicalId, currentConversationId, currentRunId, includeIsolated) as Record<string, unknown> | undefined;
       if (tombstone !== undefined) {
         return {
           tombstone: {

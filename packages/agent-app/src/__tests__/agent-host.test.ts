@@ -1082,6 +1082,7 @@ describe("agent host composition helpers", () => {
       ]);
       expect(new ToolHistoryReader(historyRoot).search({
         logicalConversationId: "custom-store",
+        currentConversationId: "custom-store",
         currentRunId: "later-run",
       }).items).toEqual([
         expect.objectContaining({

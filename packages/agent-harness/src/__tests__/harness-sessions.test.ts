@@ -37,6 +37,23 @@ async function identityFixture(): Promise<string> {
   return identityPath;
 }
 
+function toolHistoryStatusSpy(
+  identityPath: string,
+  statuses: Array<{ readonly status: string; readonly failureKind?: string }>,
+) {
+  return {
+    reader: new ToolHistoryReader(join(identityPath, "..", "tool-history-status")),
+    logicalConversationId: (conversationId: string) => toolHistoryLogicalConversationId(conversationId, "daily"),
+    writer: {
+      createSink: () => async () => ({ persistence: "persisted" as const }),
+      async finishRun(_binding: unknown, status: string, failureKind?: string) {
+        statuses.push({ status, ...(failureKind === undefined ? {} : { failureKind }) });
+      },
+      async resetConversation() {},
+    },
+  };
+}
+
 interface FakeRuntimeCall {
   readonly prompt: string;
   readonly options: RuntimeRunOptions;
@@ -1036,6 +1053,50 @@ describe("AgentHarness continuous sessions", () => {
     await expect(historyStore.load("telegram:42#2026-08-14")).resolves.toHaveLength(2);
   });
 
+  it("accepts a rollover store that supports logical reset without a physical reset method", async () => {
+    const identityPath = await identityFixture();
+    const backingStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const logicalResets: string[] = [];
+    const historyStore: ConversationHistoryStore = {
+      load: (conversationId) => backingStore.load(conversationId),
+      append: (conversationId, messages) => backingStore.append(conversationId, messages),
+      async resetLogicalConversation(logicalConversationId) {
+        logicalResets.push(logicalConversationId);
+        await backingStore.reset(`${logicalConversationId}#2026-08-13`);
+        await backingStore.reset(`${logicalConversationId}#2026-08-14`);
+      },
+    };
+    await backingStore.append("telegram:42#2026-08-13", [{ role: "assistant", content: "old bucket" }]);
+    const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-logical-reset" }));
+    const toolResets: string[] = [];
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      historyStore,
+      session,
+      toolHistory: {
+        reader: new ToolHistoryReader(join(identityPath, "..", "history")),
+        logicalConversationId: (conversationId) => toolHistoryLogicalConversationId(conversationId, "daily"),
+        writer: {
+          createSink: () => async () => ({ persistence: "persisted" }),
+          async finishRun() {},
+          async resetConversation(logicalConversationId) { toolResets.push(logicalConversationId); },
+        },
+      },
+    });
+    await harness.run(request("telegram:42#2026-08-14", "current bucket"));
+
+    await expect(harness.resetConversation?.("telegram:42#2026-08-14")).resolves.toBeUndefined();
+
+    expect(logicalResets).toEqual(["telegram:42"]);
+    expect(toolResets).toEqual(["telegram:42"]);
+    expect(fake.disposedSessions).toContain("ps-logical-reset");
+    await expect(historyStore.load("telegram:42#2026-08-13")).resolves.toEqual([]);
+    await expect(historyStore.load("telegram:42#2026-08-14")).resolves.toEqual([]);
+  });
+
   it("a concurrent second run goes fresh instead of resuming a busy session", async () => {
     const identityPath = await identityFixture();
     const historyStore = await primedHistoryStore("conv-1");
@@ -1226,6 +1287,7 @@ describe("AgentHarness continuous sessions", () => {
     const history = createSpyHistoryStore();
     const memory = createSpyMemoryStore();
     const controller = new AbortController();
+    const toolHistoryStatuses: Array<{ readonly status: string; readonly failureKind?: string }> = [];
     // The runtime ignores the abort and returns a success-shaped result, but the
     // live-session cancel signal landed mid-turn — request.abortSignal is aborted
     // by the time runRuntime() resolves. This is the TOCTOU race F3 guards.
@@ -1242,6 +1304,7 @@ describe("AgentHarness continuous sessions", () => {
       historyStore: history.store,
       memory: memory.store,
       memoryWriteMode: "capture",
+      toolHistory: toolHistoryStatusSpy(identityPath, toolHistoryStatuses),
     });
 
     const response = await harness.run({ conversationId: "conv-1", userMessage: "hello", abortSignal: controller.signal });
@@ -1254,6 +1317,7 @@ describe("AgentHarness continuous sessions", () => {
     // No memory written for the cancelled turn.
     expect(memory.hostSummaryCalls()).toBe(0);
     expect(memory.captureCalls()).toBe(0);
+    expect(toolHistoryStatuses).toEqual([{ status: "cancelled", failureKind: "cancelled" }]);
     // The returned provider session was invalidated, so the next message replays
     // history into a fresh session rather than resuming a cancelled-turn session.
     expect(fake.invalidatedSessions).toContain("ps-x");
@@ -1297,6 +1361,7 @@ describe("AgentHarness continuous sessions", () => {
     const history = createSpyHistoryStore();
     const memory = createSpyMemoryStore();
     const controller = new AbortController();
+    const toolHistoryStatuses: Array<{ readonly status: string; readonly failureKind?: string }> = [];
     // The runtime returns success cleanly (no abort during the run). The abort
     // is injected LATER, inside recorder.prepareFinish() — simulating a live-session
     // cancel landing during the post-runtime commit path (after the line-221
@@ -1345,6 +1410,7 @@ describe("AgentHarness continuous sessions", () => {
       memory: memory.store,
       memoryWriteMode: "capture",
       recorderFactory,
+      toolHistory: toolHistoryStatusSpy(identityPath, toolHistoryStatuses),
     });
 
     const response = await harness.run({ conversationId: "conv-1", userMessage: "hello", abortSignal: controller.signal });
@@ -1357,9 +1423,49 @@ describe("AgentHarness continuous sessions", () => {
     // No memory written for the cancelled turn.
     expect(memory.hostSummaryCalls()).toBe(0);
     expect(memory.captureCalls()).toBe(0);
+    expect(toolHistoryStatuses).toEqual([{ status: "cancelled", failureKind: "cancelled" }]);
     // The provider session returned by the (successful) run was invalidated, so the
     // next turn replays history into a fresh session.
     expect(fake.invalidatedSessions).toContain("ps-x");
+  });
+
+  it("marks tool history cancelled when abort lands during durable history preparation", async () => {
+    const identityPath = await identityFixture();
+    const controller = new AbortController();
+    const toolHistoryStatuses: Array<{ readonly status: string; readonly failureKind?: string }> = [];
+    let commits = 0;
+    let aborts = 0;
+    const historyStore: ConversationHistoryStore = {
+      async load() { return []; },
+      async append() { throw new Error("prepared append should own publication"); },
+      async prepareAppend() {
+        controller.abort(new Error("cancelled during history preparation"));
+        return {
+          async commit() { commits += 1; },
+          async abort() { aborts += 1; },
+        };
+      },
+    };
+    const fake = createSessionFakeRuntime(async () => ({ text: "done", providerSessionId: "ps-history-prepare" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      historyStore,
+      toolHistory: toolHistoryStatusSpy(identityPath, toolHistoryStatuses),
+    });
+
+    const response = await harness.run({
+      conversationId: "conv-history-prepare",
+      userMessage: "hello",
+      abortSignal: controller.signal,
+    });
+
+    expect(response.failure?.kind).toBe("cancelled");
+    expect(commits).toBe(0);
+    expect(aborts).toBe(1);
+    expect(toolHistoryStatuses).toEqual([{ status: "cancelled", failureKind: "cancelled" }]);
   });
 
   it("rejects the caller and persists nothing when cancel() lands during prepareFinish() on a continuous harness (R9 e2e)", async () => {
