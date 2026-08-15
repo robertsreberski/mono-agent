@@ -64,6 +64,17 @@ describe("process-job contracts", () => {
     expect(parseProcessJobProjections([value])).toEqual([value]);
   });
 
+  it("accepts the configured retention plus transient active-record boundary", () => {
+    const value = projection();
+    const atCap = Array.from({ length: 10_096 }, (_, index) => ({
+      ...value,
+      jobId: `pj_${String(index)}`,
+    }));
+
+    expect(parseProcessJobProjections(atCap)).toHaveLength(10_096);
+    expect(() => parseProcessJobProjections([...atCap, value])).toThrow(TypeError);
+  });
+
   it.each([
     ["top level", (value: any) => { value.extra = true; }],
     ["origin", (value: any) => { value.origin.replyTarget = "secret"; }],

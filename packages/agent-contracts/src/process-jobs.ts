@@ -144,6 +144,11 @@ const PROJECTION_KEYS = [
   "lastError",
 ] as const;
 
+// The host can transiently retain its 10,000 terminal-record maximum alongside
+// all 32 running and 64 queued records. The separate byte bound still governs
+// serialized operator responses.
+const MAX_PROCESS_JOB_PROJECTION_LIST_ITEMS = 10_096;
+
 /** Strictly parse one projection, rejecting unknown keys at every depth. */
 export function parseProcessJobProjection(value: unknown): ProcessJobProjection {
   if (!isRecord(value) || !hasExactlyKeys(value, PROJECTION_KEYS)) {
@@ -176,7 +181,7 @@ export function parseProcessJobProjection(value: unknown): ProcessJobProjection 
 
 /** Strictly parse a bounded operator list response. */
 export function parseProcessJobProjections(value: unknown): readonly ProcessJobProjection[] {
-  if (!Array.isArray(value) || value.length > 10_000) {
+  if (!Array.isArray(value) || value.length > MAX_PROCESS_JOB_PROJECTION_LIST_ITEMS) {
     throw new TypeError("Process-job projection list is invalid.");
   }
   return value.map((entry) => parseProcessJobProjection(entry));

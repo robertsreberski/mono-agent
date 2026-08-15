@@ -432,7 +432,7 @@ describe("process-job request availability", () => {
     }
   });
 
-  it("resolves only the exact wake delivery while unrelated same-conversation turns resolve none", async () => {
+  it("resolves only the exact wake delivery identity while unrelated requests resolve none", async () => {
     const deliveryKey = "process-job:exact-parent";
     let release!: () => void;
     let registered!: () => void;
@@ -449,19 +449,15 @@ describe("process-job request availability", () => {
     await registeredPromise;
 
     expect(processJobWakeContextForRequest({
-      conversationId: "slack:C1:1.1",
       metadata: { [PROCESS_JOB_WAKE_DELIVERY_METADATA]: deliveryKey },
     })).toEqual({
       kind: "resolved",
       context: { jobId: "exact-parent", chainDepth: 3 },
     });
     expect(processJobWakeContextForRequest({
-      conversationId: "slack:C1:1.1",
       metadata: { source: "slack", interactive: true },
     })).toEqual({ kind: "none" });
-    expect(processJobWakeContextForRequest({
-      conversationId: "slack:C1:1.1",
-    })).toEqual({ kind: "none" });
+    expect(processJobWakeContextForRequest({})).toEqual({ kind: "none" });
 
     release();
     await flight;

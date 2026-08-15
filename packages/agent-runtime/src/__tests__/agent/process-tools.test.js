@@ -611,6 +611,25 @@ describe("Exec", () => {
     expect(kill).toHaveBeenCalledWith(-4321, "SIGTERM");
   });
 
+  it("restores the explicit single-PID fallback for a live Node REPL child", () => {
+    if (process.platform === "win32") return;
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid) => {
+      if (pid < 0) throw Object.assign(new Error("group unavailable"), { code: "ESRCH" });
+      return true;
+    });
+
+    killProcessGroup(
+      { pid: 4321, exitCode: null, signalCode: null },
+      "SIGTERM",
+      { fallbackToChildPid: true },
+    );
+
+    expect(kill.mock.calls).toEqual([
+      [-4321, "SIGTERM"],
+      [4321, "SIGTERM"],
+    ]);
+  });
+
   it("preserves foreground behavior with an injected controller and narrows explicit background limits", async () => {
     const workspace = tempWorkspace();
     const controller = { start: vi.fn(async (request) => ({ jobId: "pj_limits", state: "queued", startedAt: null })) };

@@ -116,7 +116,7 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
 
 /** Resolve only an association previously issued by the app-owned responder seam. */
 export function processJobWakeContextForRequest(
-  request: Pick<AgentRequestBase, "conversationId" | "metadata">,
+  request: Pick<AgentRequestBase, "metadata">,
 ): ProcessJobWakeContextResolution {
   const bindings = request.metadata === undefined
     ? []

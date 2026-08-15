@@ -740,10 +740,8 @@ export class WebService {
         processJob: input.processJob,
         ...(input.text === undefined ? {} : { responseText: input.text }),
       });
-      const message = completed.thread.id === input.threadId
-        ? this.store.getThreadDetail(input.threadId)?.messages.find((candidate) =>
-            candidate.parts.some((part) => part.type === "process-job" && part.job.jobId === input.processJob.jobId))
-        : undefined;
+      const message = this.store.getThreadDetail(input.threadId)?.messages.find((candidate) =>
+        candidate.parts.some((part) => part.type === "process-job" && part.job.jobId === input.processJob.jobId));
       if (!completed.duplicate && message !== undefined) {
         this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
       }

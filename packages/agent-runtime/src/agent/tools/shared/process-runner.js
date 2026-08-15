@@ -634,12 +634,18 @@ function exactProcessEnv(values = {}) {
 /**
  * @param {import("node:child_process").ChildProcess} child
  * @param {NodeJS.Signals} signal
+ * @param {{fallbackToChildPid?: boolean}} [options]
  */
-export function killProcessGroup(child, signal) {
+export function killProcessGroup(child, signal, { fallbackToChildPid = false } = {}) {
   if (!child?.pid) return;
   try {
     process.kill(process.platform === "win32" ? child.pid : -child.pid, signal);
-  } catch { /* already gone or no longer safely attributable */ }
+  } catch {
+    // Node REPL owns an exact, still-live ChildProcess and opts into the
+    // legacy single-PID fallback. Attested process jobs never use this helper.
+    if (!fallbackToChildPid || process.platform === "win32" || processLeaderExited(child)) return;
+    try { process.kill(child.pid, signal); } catch { /* already gone */ }
+  }
 }
 
 function processLeaderExited(child) {
