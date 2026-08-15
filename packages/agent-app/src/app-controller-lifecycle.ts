@@ -91,23 +91,26 @@ export async function startChannelIfConfigured(controller: LifecycleControllerPo
   }
   const inFlight = controller.startsInFlight.get(id);
   if (inFlight !== undefined) {
-    return await inFlight;
-  }
-
-  const start = (async (): Promise<ChannelStatus> => {
-    const status = await controller.startChannel(driver, reason);
+    const status = await inFlight;
     await controller.refreshTraceSource(reason);
     return status;
-  })();
+  }
+
+  const start = controller.startChannel(driver, reason);
   controller.startsInFlight.set(id, start);
+  let status: ChannelStatus;
   try {
-    return await start;
+    status = await start;
   } finally {
-    // A superseded start must never clear a newer generation's flight.
+    // Teardown joins only channel ownership/publication. A trace or memory
+    // refresh may be unbounded and must not remain reachable through this map.
+    // Identity-check so a superseded flight cannot clear a newer generation.
     if (controller.startsInFlight.get(id) === start) {
       controller.startsInFlight.delete(id);
     }
   }
+  await controller.refreshTraceSource(reason);
+  return status;
 }
 
 export async function stop(controller: LifecycleControllerPort): Promise<void> {

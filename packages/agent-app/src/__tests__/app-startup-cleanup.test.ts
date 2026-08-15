@@ -261,6 +261,84 @@ describe("mono-agent app startup rollback", () => {
     expect(controller?.startsInFlight.has(slowId)).toBe(false);
     expect(controller?.channelStartGenerations.has(slowId)).toBe(false);
   });
+
+  it("returns channel start after refresh but never joins a blocked refresh during stop", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "mono-agent-channel-refresh-stop-"));
+    temporaryDirectories.push(cwd);
+    const configPath = join(cwd, "mono-agent.config.json");
+    await writeFile(join(cwd, "IDENTITY.md"), "# Channel refresh stop test\n");
+    await writeFile(configPath, `${JSON.stringify({
+      runtime: {
+        model: "pi:openai-codex:gpt-5.5",
+        retry: { primaryAttempts: 1, backoffMs: 0, maxBackoffMs: 0 },
+        workspace: ".",
+      },
+      context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
+      tools: { allowedTools: [], disallowedTools: [] },
+      artifacts: { dir: "./artifacts" },
+      traceability: { globalDiscovery: false },
+      processJobs: { enabled: false },
+    }, null, 2)}\n`);
+
+    const channelId = "refresh-stop" as never;
+    let listenerActive = false;
+    const channelStop = vi.fn(async () => { listenerActive = false; });
+    const responderDispose = vi.fn(async () => undefined);
+    const driver: ChannelDriver = {
+      id: channelId,
+      label: "Refresh stop",
+      loadConfig: async () => ({ enabled: true }),
+      isConfigError: () => false,
+      async start(input) {
+        (input.responder as { dispose?: () => Promise<void> }).dispose = responderDispose;
+        listenerActive = true;
+        return { summary: { transport: "refresh-stop" }, stop: channelStop };
+      },
+    };
+    const controller = new MonoAgentAppController({
+      cwd,
+      configPath,
+      configReadPath: configPath,
+      env: {},
+      drivers: [driver],
+      trustedRuntimeReadRoots: [],
+    });
+    const refreshEntered = deferred<void>();
+    const releaseRefresh = deferred<void>();
+    const refreshTraceSource = vi.spyOn(controller, "refreshTraceSource").mockImplementation(async () => {
+      refreshEntered.resolve();
+      await releaseRefresh.promise;
+    });
+    let startSettled = false;
+    const starting = controller.startChannelIfConfigured(channelId, "blocked-refresh").then((status) => {
+      startSettled = true;
+      return status;
+    });
+
+    await refreshEntered.promise;
+    await Promise.resolve();
+    expect(startSettled).toBe(false);
+    expect(controller.startsInFlight.has(channelId)).toBe(false);
+    expect(listenerActive).toBe(true);
+
+    let stopSettled = false;
+    const stopping = controller.stop().then(() => { stopSettled = true; });
+    try {
+      await waitFor(() => stopSettled);
+      expect(startSettled).toBe(false);
+      expect(channelStop).toHaveBeenCalledOnce();
+      expect(responderDispose).toHaveBeenCalledOnce();
+      expect(listenerActive).toBe(false);
+      expect(controller.running.has(channelId)).toBe(false);
+    } finally {
+      releaseRefresh.resolve();
+    }
+
+    const [status] = await Promise.all([starting, stopping.then(() => undefined)]);
+    expect(status.kind).toBe("running");
+    expect(startSettled).toBe(true);
+    expect(refreshTraceSource).toHaveBeenCalledOnce();
+  });
 });
 
 function deferred<T>(): { readonly promise: Promise<T>; resolve(value?: T): void } {

@@ -388,10 +388,12 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   async activateWakes(): Promise<void> {
     if (this.stopping || this.stopped) return;
     this.wakesActive = false;
+    let failedWakeJobIds: readonly string[];
     try {
-      await this.withLock(async () => {
-        if (this.stopping || this.stopped) return;
+      failedWakeJobIds = await this.withLock(async () => {
+        if (this.stopping || this.stopped) return [];
         const wakeJobIds: string[] = [];
+        const failedJobIds: string[] = [];
         for (const record of await this.storeList("activate_wakes")) {
           if (isTerminalProcessJobState(record.state) && record.wake.state === "pending") {
             const destinationUnavailableExhausted = (record.wake.destinationUnavailableAttempts ?? 0)
@@ -401,6 +403,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
               || (record.wake.retrySafe === true && record.wake.attempts < MAX_WAKE_ATTEMPTS))) {
               wakeJobIds.push(record.jobId);
             } else {
+              let failed = false;
               await this.storeMutate("activate_wakes.fail", (records) => {
                 const current = records.get(record.jobId);
                 if (current?.wake.state === "pending") {
@@ -421,23 +424,32 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
                           ? "Process-job wake delivery exhausted its safe retry budget."
                           : "A prior wake attempt ended ambiguously; it was not replayed to avoid duplicate delivery.",
                   );
+                  failed = true;
                 }
               });
-              await this.updateSurfaceById(record.jobId);
-              await this.storeApplyRetention("activate_wakes.retention");
+              if (failed) failedJobIds.push(record.jobId);
             }
           }
         }
-        if (this.stopping || this.stopped) return;
+        if (this.stopping || this.stopped) return [];
         // Terminal transitions use this same mutation tail. Once this flag is
         // published, every completion either appeared in the snapshot above or
         // will observe active wakes while it still owns the serialized mutation.
         this.wakesActive = true;
         for (const jobId of wakeJobIds) this.scheduleWake(jobId);
+        return failedJobIds;
       });
     } catch (error) {
       this.wakesActive = false;
       throw error;
+    }
+    // Adapter publication and retention can be slow or externally blocked.
+    // The snapshot-to-activation transition above is complete, so keep this I/O
+    // outside the service mutation tail and never roll active wakes back after
+    // concurrent completions may already have observed them.
+    for (const jobId of failedWakeJobIds) await this.updateSurfaceById(jobId);
+    if (failedWakeJobIds.length > 0 && !this.stopping && !this.stopped) {
+      await this.storeApplyRetention("activate_wakes.retention");
     }
   }
 

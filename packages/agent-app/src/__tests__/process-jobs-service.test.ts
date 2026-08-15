@@ -2140,6 +2140,62 @@ describe("process job service", () => {
     expect(wake.mock.calls[0]?.[0].projection.jobId).toBe(started.jobId);
   });
 
+  it("keeps completion and stop outside a blocked exhausted-wake surface update", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const exhaustedJobId = "56565656-5656-4565-8565-565656565656";
+    await store.ensureArtifacts(exhaustedJobId);
+    await store.mutate((records) => records.set(exhaustedJobId, durableRecord(exhaustedJobId, {
+      state: "succeeded",
+      completedAt: "2026-08-14T10:00:02.000Z",
+      wake: {
+        state: "pending",
+        attempts: 1,
+        deliveryKey: `process-job:${exhaustedJobId}`,
+        lastAttemptAt: "2026-08-14T10:00:03.000Z",
+        retrySafe: false,
+      },
+      lastError: null,
+    })));
+    const surfaceEntered = deferred<void>();
+    const releaseSurface = deferred<void>();
+    const surfaceUpdate = vi.fn(async (projection: ProcessJobProjection) => {
+      if (projection.jobId === exhaustedJobId) {
+        surfaceEntered.resolve();
+        await releaseSurface.promise;
+      }
+    });
+    const completion = deferred<ProcessJobProcessResult>();
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const service = await startService(fixture, { store, surfaceUpdate, wake });
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    let activationSettled = false;
+    const activation = service.activateWakes().finally(() => { activationSettled = true; });
+
+    await surfaceEntered.promise;
+    expect(activationSettled).toBe(false);
+    let stopping: Promise<void> | undefined;
+    try {
+      completion.resolve(processResult());
+      await waitFor(async () => (await service.get(started.jobId))?.wake.state === "delivered");
+
+      let stopSettled = false;
+      stopping = service.stop().then(() => { stopSettled = true; });
+      await waitFor(() => stopSettled);
+
+      expect(wake).toHaveBeenCalledOnce();
+      expect(activationSettled).toBe(false);
+      expect((await service.get(exhaustedJobId))?.wake.state).toBe("failed");
+    } finally {
+      releaseSurface.resolve();
+    }
+
+    await Promise.all([activation, stopping ?? Promise.resolve()]);
+    expect(activationSettled).toBe(true);
+    expect(surfaceUpdate.mock.calls.filter(([projection]) =>
+      projection.jobId === exhaustedJobId)).toHaveLength(1);
+  });
+
   it("retains terminal output and reports sandbox cleanup failure during shutdown", async () => {
     const fixture = await createFixture();
     const completion = deferred<ProcessJobProcessResult>();
