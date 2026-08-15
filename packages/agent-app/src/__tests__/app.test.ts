@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -165,6 +165,31 @@ const unavailableSandboxEngine: SandboxEngine = {
 };
 
 describe("startMonoAgentApp", () => {
+  it("continues startup with a visible degradation when the opt-in process-job store cannot open", async () => {
+    await writeConfig({ ...baseConfig(), processJobs: { enabled: true } });
+    const stateDir = join(await realpath(dir), ".mono-agent", "process-jobs");
+    await mkdir(join(dir, ".mono-agent"), { recursive: true, mode: 0o700 });
+    await writeFile(join(dir, ".mono-agent", "process-jobs"), "not a directory\n", { mode: 0o600 });
+    const error = vi.fn();
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [], logger: { error } });
+    try {
+      const controller = app as MonoAgentAppController;
+      expect(controller.processJobsService).toBeUndefined();
+      expect(controller.processJobsDegradation).toMatchObject({
+        stateDir,
+        reason: expect.stringContaining("not a real directory"),
+      });
+      expect(error).toHaveBeenCalledWith(
+        "Process-job controller failed to start; the agent is continuing without background jobs.",
+        expect.objectContaining({ stateDir }),
+      );
+      await expect(app.listProcessJobs?.()).resolves.toEqual([]);
+    } finally {
+      await app.stop();
+    }
+  });
+
   it("reads an immutable config source while advertising the canonical config path", async () => {
     const canonicalConfigPath = await writeConfig({
       ...baseConfig(),

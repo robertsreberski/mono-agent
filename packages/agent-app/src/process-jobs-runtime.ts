@@ -2,7 +2,7 @@ import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness"
 import type { MonoAgentConfig } from "@mono-agent/config";
 
 import type { ChannelId } from "./channels.js";
-import { currentProcessJobWakeContext } from "./process-jobs-context.js";
+import { processJobWakeContextForRequest } from "./process-jobs-context.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import {
   isProcessJobOriginRecord,
@@ -23,7 +23,7 @@ export function createProcessJobsRuntimeExtension(
 ): RuntimeOptionsExtension {
   return async (input) => {
     const origin = processJobOriginForRequest(input, options.channelId);
-    const wake = currentProcessJobWakeContext();
+    const wake = processJobWakeContextForRequest(input.request);
     const chainDepth = wake?.chainDepth ?? 0;
     if (origin === undefined
       || chainDepth >= options.service.settings.maxChainDepth

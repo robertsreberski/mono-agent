@@ -20,6 +20,7 @@ export interface ProcessJobsControllerPort {
   readonly stopped: boolean;
   processJobsService: ProcessJobsServiceHandle | undefined;
   processJobsServiceStart: Promise<ProcessJobsServiceHandle | undefined> | undefined;
+  processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
   observabilityContext(): Promise<{ readonly sourceId?: string }>;
 }
 
@@ -31,7 +32,10 @@ export function ensureProcessJobsService(
       cwd: controller.cwd,
       configPath: controller.configReadPath,
     });
-    if (!settings.enabled) return undefined;
+    if (!settings.enabled) {
+      controller.processJobsDegradation = undefined;
+      return undefined;
+    }
     try {
       const sourceId = (await controller.observabilityContext()).sourceId;
       const service = await openProcessJobsService({
@@ -64,15 +68,19 @@ export function ensureProcessJobsService(
         ...(controller.logger === undefined ? {} : { logger: controller.logger }),
       });
       controller.processJobsService = service;
+      controller.processJobsDegradation = undefined;
       controller.logger?.info?.("Process-job controller started.", { stateDir: settings.stateDir });
       return service;
     } catch (error) {
       if (error instanceof ProcessJobServiceError && error.code === "process_job_platform_unsupported") {
+        controller.processJobsDegradation = undefined;
         controller.logger?.warn?.("Process-job controller is unavailable on this platform.", { reason: error.message });
         return undefined;
       }
-      controller.logger?.error?.("Process-job controller failed to start.", { reason: reasonOf(error) });
-      throw error;
+      const degradation = { stateDir: settings.stateDir, reason: reasonOf(error) };
+      controller.processJobsDegradation = degradation;
+      controller.logger?.error?.("Process-job controller failed to start; the agent is continuing without background jobs.", degradation);
+      return undefined;
     }
   })();
   return controller.processJobsServiceStart;
@@ -110,6 +118,7 @@ export async function stopProcessJobsService(controller: ProcessJobsControllerPo
   const service = controller.processJobsService;
   controller.processJobsService = undefined;
   controller.processJobsServiceStart = undefined;
+  controller.processJobsDegradation = undefined;
   try {
     await service?.stop();
   } catch (error) {

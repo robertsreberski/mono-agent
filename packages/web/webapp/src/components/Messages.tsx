@@ -914,6 +914,8 @@ const TERMINAL_PROCESS_JOB_STATES = new Set<ProcessJobState>([
   "queue_expired",
   "interrupted",
 ]);
+const PROCESS_JOB_POLL_INITIAL_MS = 1_000;
+const PROCESS_JOB_POLL_MAX_MS = 10_000;
 
 function processJobThreadId(job: ProcessJobProjection): string | undefined {
   const base = job.origin.conversationId.split("#", 1)[0];
@@ -942,6 +944,7 @@ function ProcessJobPart({ data }: DataMessagePartProps) {
   const [live, setLive] = useState(initial);
   const [now, setNow] = useState(() => Date.now());
   const threadId = initial === undefined ? undefined : processJobThreadId(initial);
+  const jobId = initial?.jobId;
   const terminal = live === undefined || TERMINAL_PROCESS_JOB_STATES.has(live.state);
 
   useEffect(() => {
@@ -949,25 +952,30 @@ function ProcessJobPart({ data }: DataMessagePartProps) {
   }, [initial]);
 
   useEffect(() => {
-    if (terminal || threadId === undefined || initial === undefined) return;
+    if (terminal || threadId === undefined || jobId === undefined) return;
     const controller = new AbortController();
+    let timer: number | undefined;
+    let delayMs = PROCESS_JOB_POLL_INITIAL_MS;
     const refresh = async () => {
       setNow(Date.now());
       try {
-        const jobs = await api.threadJobs(threadId, controller.signal);
-        const next = jobs.find((job) => job.jobId === initial.jobId);
-        if (next !== undefined) setLive(next);
+        const next = await api.threadJob(threadId, jobId, controller.signal);
+        if (controller.signal.aborted) return;
+        setLive(next);
+        if (TERMINAL_PROCESS_JOB_STATES.has(next.state)) return;
       } catch {
         // The retained card remains authoritative while its owner is offline.
       }
+      if (controller.signal.aborted) return;
+      timer = window.setTimeout(() => void refresh(), delayMs);
+      delayMs = Math.min(PROCESS_JOB_POLL_MAX_MS, delayMs * 2);
     };
-    const timer = window.setInterval(() => void refresh(), 1_000);
     void refresh();
     return () => {
       controller.abort();
-      window.clearInterval(timer);
+      if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [initial, terminal, threadId]);
+  }, [jobId, terminal, threadId]);
 
   const outputRefs = useMemo(
     () => live === undefined

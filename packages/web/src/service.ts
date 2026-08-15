@@ -776,6 +776,26 @@ export class WebService {
     return jobs.filter((job) => job.origin.conversationId.split("#", 1)[0] === conversationId);
   }
 
+  /** Proxy one authenticated retained card to its exact agent/thread owner. */
+  async threadJob(threadId: string, jobId: string): Promise<ProcessJobProjection> {
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    if (!this.store.processJobCardBelongsToThread(thread.sourceId, threadId, jobId)) {
+      throw new WebConsoleError("process_job_not_found", "Process job was not found for this conversation.", 404);
+    }
+    const connection = this.connections.get(thread.sourceId);
+    if (connection === undefined || connection.info.supportsJobs !== true) {
+      throw new WebConsoleError("process_jobs_unavailable", "Process jobs are unavailable for this agent.", 409);
+    }
+    const job = await connection.client.getJob(jobId, AbortSignal.timeout(INFO_TIMEOUT_MS));
+    if (job.jobId !== jobId
+      || job.origin.channel !== "web"
+      || job.origin.conversationId.split("#", 1)[0] !== `web:${threadId}`) {
+      throw new WebConsoleError("process_job_not_found", "Process job was not found for this conversation.", 404);
+    }
+    return job;
+  }
+
   async startTurn(threadId: string, input: StartWebTurnInput): Promise<{ readonly thread: WebThread; readonly turn: WebThread["runState"] }> {
     const text = input.text ?? "";
     const operatorText = input.quote === undefined ? text : formatQuotedTurn(input.quote.text, text);

@@ -14,6 +14,8 @@ export interface ProcessJobProcessResult {
   readonly bytes: number;
   readonly storedBytes: number;
   readonly spawnError: Error | null;
+  /** False only when bounded termination settled without proof that the owned group disappeared. */
+  readonly groupExitConfirmed?: boolean;
   readonly durationMs: number;
 }
 

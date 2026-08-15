@@ -99,6 +99,8 @@ export function operatorFetch(options: {
   readonly supportsJobs?: boolean;
   readonly jobs?: readonly ProcessJobProjection[];
   readonly onJobsRequest?: (authorization: string | null) => void;
+  readonly onJobRequest?: (jobId: string, authorization: string | null) => void;
+  readonly jobForRequest?: (jobId: string) => ProcessJobProjection | undefined;
   readonly skills?: OperatorSkillRegistry;
   readonly pendingAsk?: Record<string, unknown> | null;
   readonly exactAsks?: Readonly<Record<string, Record<string, unknown> | null>>;
@@ -193,6 +195,17 @@ export function operatorFetch(options: {
     if (url.endsWith("/v1/jobs")) {
       options.onJobsRequest?.(new Headers(init?.headers).get("authorization"));
       return Response.json({ jobs: options.jobs ?? [] });
+    }
+    const jobMatch = /\/v1\/jobs\/([^/?]+)$/u.exec(url);
+    if (jobMatch?.[1] !== undefined) {
+      const jobId = decodeURIComponent(jobMatch[1]);
+      options.onJobRequest?.(jobId, new Headers(init?.headers).get("authorization"));
+      const job = options.jobForRequest === undefined
+        ? options.jobs?.find((candidate) => candidate.jobId === jobId)
+        : options.jobForRequest(jobId);
+      return job === undefined
+        ? Response.json({ error: { code: "process_job_not_found", message: "Process job was not found." } }, { status: 404 })
+        : Response.json(job);
     }
     if (url.endsWith("/v1/turns")) {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;

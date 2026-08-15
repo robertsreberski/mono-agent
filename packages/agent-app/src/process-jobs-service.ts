@@ -33,6 +33,7 @@ import {
   loadOrCreateProcessJobSecret,
   openProcessJobStore,
   prepareProcessJobStateDirectory,
+  PROCESS_JOB_ENV_KEYS_CAPS,
   projectProcessJob,
   processJobOperatorToken,
   type DurableProcessJobRecord,
@@ -57,6 +58,7 @@ interface PendingProcessJob {
 
 interface ActiveProcessJob extends PendingProcessJob {
   readonly handle: ProcessJobProcessHandle;
+  groupExitConfirmed?: boolean;
 }
 
 export interface ProcessJobWakeInput {
@@ -94,6 +96,7 @@ export interface OpenProcessJobsServiceOptions {
 export interface ProcessJobsServiceHandle {
   readonly settings: ProcessJobsSettings;
   readonly operatorToken: string;
+  readonly health: ProcessJobStore["health"];
   controller(origin: ProcessJobOriginRecord, chainDepth: number): ProcessJobsController;
   list(): Promise<readonly ProcessJobProjection[]>;
   get(jobId: string): Promise<ProcessJobProjection | undefined>;
@@ -159,6 +162,12 @@ export async function openProcessJobsService(
     throw error;
   }
   const service = new ProcessJobsService(normalizedOptions, store, lock, platform, operatorToken);
+  if (store.health.state === "degraded") {
+    options.logger?.warn?.("Process-job store recovered with quarantined transaction incidents.", {
+      quarantinedTransactions: store.health.quarantinedTransactions,
+      stateDir,
+    });
+  }
   try {
     await service.recover();
     await store.applyRetention(normalizedOptions.settings, (options.now ?? (() => new Date()))());
@@ -172,6 +181,7 @@ export async function openProcessJobsService(
 class ProcessJobsService implements ProcessJobsServiceHandle {
   readonly settings: ProcessJobsSettings;
   readonly operatorToken: string;
+  readonly health: ProcessJobStore["health"];
   private readonly pending = new Map<string, PendingProcessJob>();
   private readonly active = new Map<string, ActiveProcessJob>();
   private readonly settlements = new Map<string, Promise<void>>();
@@ -203,6 +213,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   ) {
     this.settings = options.settings;
     this.operatorToken = operatorToken;
+    this.health = store.health;
     this.now = options.now ?? (() => new Date());
     this.platform = platform;
     this.randomId = options.randomId ?? randomUUID;
@@ -537,7 +548,12 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       // still blocked on its anonymous pipe at this point.
       await this.store.mutate((records) => {
         const record = requireRecord(records, jobId);
-        if (record.state !== "starting") return;
+        if (record.state !== "starting") {
+          throw new ProcessJobServiceError(
+            "process_job_conflict",
+            "Process job left the starting state before ownership metadata was recorded.",
+          );
+        }
         record.pid = handle.pid;
         record.pgid = handle.pgid;
         record.processIncarnation = processIncarnation;
@@ -556,8 +572,18 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       // durable. In both cases the kernel-owned cancel closure is the only safe
       // termination authority; never infer or signal a caller-supplied group.
       try { handle.cancel(); } catch { /* completion/recovery remains authoritative */ }
-      await completion.catch(() => undefined);
-      await active.cleanup().catch(() => undefined);
+      const termination = await completion.catch(() => undefined);
+      if (termination?.groupExitConfirmed !== undefined) {
+        active.groupExitConfirmed = termination.groupExitConfirmed;
+      }
+      const terminationConfirmed = termination?.groupExitConfirmed !== false;
+      if (!terminationConfirmed) {
+        this.options.logger?.warn?.("Spawn-fence cancellation could not confirm owned process-group exit; sandbox cleanup was withheld.", {
+          jobId,
+        });
+      } else {
+        await active.cleanup().catch(() => undefined);
+      }
       this.active.delete(jobId);
       this.pending.delete(jobId);
       let failureRecorded = false;
@@ -570,7 +596,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             "spawn_failed",
             this.now(),
             "process_job_store_error",
-            "The spawned process was terminated because its ownership metadata could not be recorded.",
+            terminationConfirmed
+              ? "The spawned process was terminated because its ownership metadata could not be recorded."
+              : "Process-group exit could not be confirmed after the ownership-record failure; sandbox cleanup was withheld.",
           );
           failureRecorded = true;
         });
@@ -582,13 +610,17 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         this.scheduleSurfaceUpdate(jobId);
         this.scheduleWake(jobId);
       }
+      if (error instanceof ProcessJobServiceError) throw error;
       throw new ProcessJobServiceError(
         "process_job_store_error",
         safeProcessError(error, "Process-job ownership could not be recorded.", pending.redactionSecrets),
       );
     }
     if (scheduleSurface) this.scheduleSurfaceUpdate(jobId);
-    const settlement = completion.then((result) => this.complete(jobId, result)).catch((error: unknown) => {
+    const settlement = completion.then((result) => {
+      if (result.groupExitConfirmed !== undefined) active.groupExitConfirmed = result.groupExitConfirmed;
+      return this.complete(jobId, result);
+    }).catch((error: unknown) => {
       if (this.stopping) this.shutdownFailures.push(error);
       this.options.logger?.warn?.("Process-job completion could not be recorded.", {
         jobId,
@@ -604,7 +636,13 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       const active = this.active.get(jobId);
       if (active === undefined) return;
       let cleanupError: unknown;
-      try { await active.cleanup(); } catch (error) { cleanupError = error; }
+      if (result.groupExitConfirmed === false) {
+        cleanupError = new Error(
+          "Sandbox cleanup was withheld because owned process-group exit was not confirmed.",
+        );
+      } else {
+        try { await active.cleanup(); } catch (error) { cleanupError = error; }
+      }
       const runnerTruncated = result.truncated || result.bufferExceeded;
       const stdout = boundOutput(
         redactOutput(result.stdout, active.redactionSecrets, runnerTruncated),
@@ -945,11 +983,17 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           // so sandbox cleanup is now safe and remains exactly-once wrapped.
           for (const [jobId, active] of this.active) {
             let cleaned = false;
-            try {
-              await active.cleanup();
-              cleaned = true;
-            } catch (error) {
-              failures.push(error);
+            if (active.groupExitConfirmed === false) {
+              failures.push(new Error(
+                `Sandbox cleanup for process job ${jobId} was withheld because owned process-group exit was not confirmed.`,
+              ));
+            } else {
+              try {
+                await active.cleanup();
+                cleaned = true;
+              } catch (error) {
+                failures.push(error);
+              }
             }
             if (cleaned) {
               try {
@@ -1190,32 +1234,39 @@ function terminalFromResult(
       "unknown artifact failure",
       redactionSecrets,
     )}`;
+  const cleanupFailure = cleanupError === undefined
+    ? ""
+    : ` Sandbox cleanup failed or was withheld: ${safeProcessError(
+      cleanupError,
+      "unknown cleanup failure",
+      redactionSecrets,
+    )}`;
   if (record.cancelRequested || result.aborted) {
     return {
       state: "cancelled",
       code: "process_job_cancelled",
-      message: `Process job was cancelled.${artifactFailure}`,
+      message: `Process job was cancelled.${artifactFailure}${cleanupFailure}`,
     };
   }
   if (result.timedOut) {
     return {
       state: "timed_out",
       code: "process_job_timeout",
-      message: `Process job exceeded its maximum runtime.${artifactFailure}`,
+      message: `Process job exceeded its maximum runtime.${artifactFailure}${cleanupFailure}`,
     };
   }
   if (result.spawnError !== null) {
     return {
       state: "spawn_failed",
       code: "process_job_spawn_failed",
-      message: `${safeProcessError(result.spawnError, "Process spawn failed.", redactionSecrets)}${artifactFailure}`,
+      message: `${safeProcessError(result.spawnError, "Process spawn failed.", redactionSecrets)}${artifactFailure}${cleanupFailure}`,
     };
   }
   if (artifactError !== undefined) {
     return {
       state: "failed",
       code: "process_job_store_error",
-      message: artifactFailure.trim(),
+      message: `${artifactFailure}${cleanupFailure}`.trim(),
     };
   }
   if (cleanupError !== undefined) {
@@ -1344,7 +1395,17 @@ function effectiveEnvironmentKeys(overrides: Readonly<Record<string, string | un
     if (value === undefined) keys.delete(key);
     else keys.add(key);
   }
-  return [...keys].filter((key) => key.length > 0 && Buffer.byteLength(key, "utf8") <= 512).sort();
+  const bounded: string[] = [];
+  let totalBytes = 0;
+  for (const key of [...keys].sort()) {
+    const bytes = Buffer.byteLength(key, "utf8");
+    if (key.length === 0 || bytes > PROCESS_JOB_ENV_KEYS_CAPS.maxItemBytes) continue;
+    if (bounded.length >= PROCESS_JOB_ENV_KEYS_CAPS.maxItems
+      || totalBytes + bytes > PROCESS_JOB_ENV_KEYS_CAPS.maxTotalBytes) break;
+    bounded.push(key);
+    totalBytes += bytes;
+  }
+  return bounded;
 }
 
 function processOutputSecrets(
@@ -1410,6 +1471,7 @@ function rejectedProcessResult(error: unknown): ProcessJobProcessResult {
     bytes: 0,
     storedBytes: 0,
     spawnError: error instanceof Error ? error : new Error(String(error)),
+    groupExitConfirmed: false,
     durationMs: 0,
   };
 }

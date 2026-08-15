@@ -580,6 +580,65 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("proxies only one retained job bound to the exact source and thread", async () => {
+    const requests: Array<{ jobId: string; authorization: string | null }> = [];
+    let jobs: readonly ReturnType<typeof fakeProcessJob>[] = [];
+    let jobOverride: ReturnType<typeof fakeProcessJob> | undefined;
+    const second = fakeDiscoveredAgent();
+    const service = await createService({
+      discoverImpl: async () => [
+        fakeDiscoveredAgent({ processJobsBearer: "owner-token" }),
+        {
+          ...second,
+          source: { ...second.source, sourceId: "agent-two", label: "Agent Two" },
+          baseUrl: "http://127.0.0.1:45124/gui",
+          processJobsBearer: "other-owner-token",
+        },
+      ],
+      fetchImpl: operatorFetch({
+        supportsJobs: true,
+        get jobs() { return jobs; },
+        jobForRequest: (jobId) => jobOverride ?? jobs.find((candidate) => candidate.jobId === jobId),
+        onJobRequest: (jobId, authorization) => requests.push({ jobId, authorization }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const running = fakeProcessJob({ conversationId: `web:${thread.id}` });
+    jobs = [running];
+    await service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: running.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: running,
+    });
+
+    await expect(service.threadJob(thread.id, running.jobId)).resolves.toEqual(running);
+    expect(requests).toEqual([{ jobId: running.jobId, authorization: "Bearer owner-token" }]);
+
+    const sameSourceOtherThread = service.createThread("agent-one");
+    await expect(service.threadJob(sameSourceOtherThread.id, running.jobId))
+      .rejects.toMatchObject({ code: "process_job_not_found", status: 404 });
+    const otherSourceThread = service.createThread("agent-two");
+    await expect(service.threadJob(otherSourceThread.id, running.jobId))
+      .rejects.toMatchObject({ code: "process_job_not_found", status: 404 });
+    expect(requests).toHaveLength(1);
+
+    jobs = [fakeProcessJob({ conversationId: `web:${sameSourceOtherThread.id}` })];
+    await expect(service.threadJob(thread.id, running.jobId))
+      .rejects.toMatchObject({ code: "process_job_not_found", status: 404 });
+    expect(requests).toHaveLength(2);
+
+    jobOverride = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      jobId: "33333333-3333-4333-8333-333333333333",
+    });
+    await expect(service.threadJob(thread.id, running.jobId))
+      .rejects.toMatchObject({ code: "process_job_not_found", status: 404 });
+    expect(requests).toHaveLength(3);
+    await service.stop();
+  });
+
   it("announces suppressible terminal and AskUser push events without exposing Ask options", async () => {
     const pendingAsk = {
       interactionId: "ask-1",

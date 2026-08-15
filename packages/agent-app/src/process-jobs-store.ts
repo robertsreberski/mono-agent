@@ -6,6 +6,7 @@ import {
   mkdir,
   readdir,
   realpath,
+  rename,
   rm,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -34,6 +35,7 @@ export const PROCESS_JOB_RECORDS_DIRECTORY = "records-v1";
 export const PROCESS_JOB_ARTIFACTS_DIRECTORY = "artifacts";
 export const PROCESS_JOB_MANIFEST_FILE = "process-jobs-store-v1.json";
 export const PROCESS_JOB_TRANSACTION_FILE = "process-jobs-transaction-v1.json";
+export const PROCESS_JOB_QUARANTINE_DIRECTORY = "quarantine-v1";
 export const PROCESS_JOB_SECRET_FILE = "process-jobs-secret";
 export const PROCESS_JOB_ROLLBACK_GUARD = "PROCESS-JOBS-STORE-V1";
 export const PROCESS_JOB_ROLLBACK_GUARD_CONTENT =
@@ -43,6 +45,12 @@ const MAX_RECORD_BYTES = 128 * 1024;
 const MAX_TRANSACTION_BYTES = 256 * 1024;
 const MAX_MANIFEST_BYTES = 64 * 1024;
 const MAX_GUARD_BYTES = 4 * 1024;
+export const PROCESS_JOB_ENV_KEYS_CAPS = Object.freeze({
+  maxItems: 128,
+  maxItemBytes: 256,
+  maxTotalBytes: 8 * 1024,
+});
+const MAX_QUARANTINED_TRANSACTIONS = 10_000;
 
 export interface ProcessJobOriginRecord {
   readonly conversationId: string;
@@ -117,10 +125,28 @@ interface ProcessJobTransaction {
   readonly delete: string | null;
 }
 
+class ProcessJobStoreMutationError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ProcessJobStoreMutationError";
+  }
+}
+
+class UnreplayableProcessJobTransactionError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "UnreplayableProcessJobTransactionError";
+  }
+}
+
 export interface ProcessJobStore {
   readonly stateDir: string;
   readonly recordsDir: string;
   readonly artifactsDir: string;
+  readonly health: {
+    readonly state: "ok" | "degraded";
+    readonly quarantinedTransactions: number;
+  };
   get(jobId: string): Promise<DurableProcessJobRecord | undefined>;
   list(): Promise<readonly DurableProcessJobRecord[]>;
   mutate<T>(operation: (records: Map<string, DurableProcessJobRecord>) => T | Promise<T>): Promise<T>;
@@ -139,15 +165,23 @@ export async function openProcessJobStore(
   await ensureConfinedPrivateDirectory(root, confined);
   const recordsDir = join(confined, PROCESS_JOB_RECORDS_DIRECTORY);
   const artifactsDir = join(confined, PROCESS_JOB_ARTIFACTS_DIRECTORY);
+  const quarantineDir = join(confined, PROCESS_JOB_QUARANTINE_DIRECTORY);
   await ensureConfinedPrivateDirectory(root, recordsDir);
   await ensureConfinedPrivateDirectory(root, artifactsDir);
+  await ensureConfinedPrivateDirectory(root, quarantineDir);
   const manifestPath = join(confined, PROCESS_JOB_MANIFEST_FILE);
   const transactionPath = join(confined, PROCESS_JOB_TRANSACTION_FILE);
   const guardPath = join(confined, PROCESS_JOB_ROLLBACK_GUARD);
   await ensureRollbackGuard(guardPath);
 
   let manifest = await readManifest(manifestPath);
-  const transaction = await readTransaction(transactionPath);
+  let transaction: ProcessJobTransaction | undefined;
+  try {
+    transaction = await readTransaction(transactionPath);
+  } catch (error) {
+    if (!(error instanceof UnreplayableProcessJobTransactionError)) throw error;
+    await quarantineUnreplayableTransaction(confined, quarantineDir, transactionPath);
+  }
   if (transaction !== undefined) {
     await applyTransaction(recordsDir, transaction);
     manifest = await persistManifest(manifestPath, transaction.generation, await recordCount(recordsDir));
@@ -162,6 +196,7 @@ export async function openProcessJobStore(
     throw new Error("Process-job manifest record count does not match the durable record set.");
   }
   await removeOrphanArtifacts(artifactsDir, records);
+  const quarantinedTransactions = await inspectQuarantinedTransactions(quarantineDir);
 
   let tail: Promise<void> = Promise.resolve();
   let poisoned: unknown;
@@ -182,6 +217,10 @@ export async function openProcessJobStore(
     stateDir: confined,
     recordsDir,
     artifactsDir,
+    health: {
+      state: quarantinedTransactions === 0 ? "ok" : "degraded",
+      quarantinedTransactions,
+    },
     async get(jobId) {
       return await withLock(async () => clone(records.get(jobId)));
     },
@@ -196,7 +235,7 @@ export async function openProcessJobStore(
         try {
           await persistDiff(confined, recordsDir, transactionPath, manifestPath, before, draft);
         } catch (error) {
-          poisoned = error;
+          if (!(error instanceof ProcessJobStoreMutationError)) poisoned = error;
           throw error;
         }
         replaceMap(records, draft);
@@ -404,9 +443,18 @@ async function persistDiff(
   // caller bug must not strand malformed recovery input in otherwise healthy
   // owner state.
   for (const [jobId, record] of after) {
-    assertJobId(jobId);
-    assertDurableRecord(record);
-    if (record.jobId !== jobId) throw new Error("Process-job record key does not match its job id.");
+    try {
+      assertJobId(jobId);
+      assertDurableRecord(record);
+      if (record.jobId !== jobId) throw new Error("Process-job record key does not match its job id.");
+      assertBoundedJson(join(recordsDir, `${jobId}.json`), record, MAX_RECORD_BYTES);
+    } catch (error) {
+      const reason = error instanceof Error ? ` ${error.message}` : "";
+      throw new ProcessJobStoreMutationError(
+        `Process-job mutation produced an invalid durable record.${reason}`,
+        { cause: error },
+      );
+    }
   }
   const changes: Array<{
     readonly write: DurableProcessJobRecord | null;
@@ -488,19 +536,30 @@ async function readTransaction(path: string): Promise<ProcessJobTransaction | un
     if (isErrno(error, "ENOENT")) return undefined;
     throw error;
   }
-  const value = parseJson(text, path);
-  if (!isRecord(value)
-    || !hasExactKeys(value, ["schemaVersion", "generation", "createdAt", "write", "delete"])
-    || value.schemaVersion !== 1
-    || !isUuid(value.generation)
-    || !isIso(value.createdAt)
-    || !((value.write === null && typeof value.delete === "string")
-      || (value.delete === null && isRecord(value.write)))) {
-    throw new Error(`Process-job transaction has a malformed schema: ${path}`);
+  try {
+    const value = parseJson(text, path);
+    if (!isRecord(value)
+      || !hasExactKeys(value, ["schemaVersion", "generation", "createdAt", "write", "delete"])
+      || value.schemaVersion !== 1
+      || !isUuid(value.generation)
+      || !isIso(value.createdAt)
+      || !((value.write === null && typeof value.delete === "string")
+        || (value.delete === null && isRecord(value.write)))) {
+      throw new Error(`Process-job transaction has a malformed schema: ${path}`);
+    }
+    if (value.write !== null) {
+      assertDurableRecord(value.write);
+      assertBoundedJson(`${path}#record`, value.write, MAX_RECORD_BYTES);
+    } else {
+      assertJobId(value.delete as string);
+    }
+    return value as unknown as ProcessJobTransaction;
+  } catch (error) {
+    throw new UnreplayableProcessJobTransactionError(
+      "Process-job transaction is permanently unreplayable and must be quarantined.",
+      { cause: error },
+    );
   }
-  if (value.write !== null) assertDurableRecord(value.write);
-  else assertJobId(value.delete as string);
-  return value as unknown as ProcessJobTransaction;
 }
 
 async function readManifest(path: string): Promise<ProcessJobStoreManifest | undefined> {
@@ -550,12 +609,55 @@ async function ensureRollbackGuard(path: string): Promise<void> {
 }
 
 async function writeBoundedJson(path: string, value: unknown, maxBytes: number): Promise<void> {
-  const contents = `${JSON.stringify(value, null, 2)}\n`;
-  if (Buffer.byteLength(contents, "utf8") > maxBytes) {
-    throw new Error(`Process-job durable file exceeds its ${String(maxBytes)} byte limit: ${path}`);
-  }
+  const contents = assertBoundedJson(path, value, maxBytes);
   await replacePrivateFile(path, contents, 0o600);
   await syncDirectory(dirname(path));
+}
+
+function assertBoundedJson(path: string, value: unknown, maxBytes: number): string {
+  const contents = `${JSON.stringify(value, null, 2)}\n`;
+  if (Buffer.byteLength(contents, "utf8") > maxBytes) {
+    throw new ProcessJobStoreMutationError(
+      `Process-job durable file exceeds its ${String(maxBytes)} byte limit: ${path}`,
+    );
+  }
+  return contents;
+}
+
+async function quarantineUnreplayableTransaction(
+  stateDir: string,
+  quarantineDir: string,
+  transactionPath: string,
+): Promise<void> {
+  const name = `transaction-${new Date().toISOString().replaceAll(":", "-")}-${randomUUID()}.json`;
+  const quarantinePath = join(quarantineDir, name);
+  await rename(transactionPath, quarantinePath);
+  assertPrivateFile(await lstat(quarantinePath), quarantinePath, 0o600);
+  await syncDirectory(quarantineDir);
+  await syncDirectory(stateDir);
+}
+
+async function inspectQuarantinedTransactions(quarantineDir: string): Promise<number> {
+  const entries = await readdir(quarantineDir, { withFileTypes: true });
+  if (entries.length > MAX_QUARANTINED_TRANSACTIONS) {
+    throw new Error(
+      `Process-job quarantined transaction count exceeds ${String(MAX_QUARANTINED_TRANSACTIONS)}.`,
+    );
+  }
+  for (const entry of entries) {
+    if (!entry.isFile()
+      || entry.isSymbolicLink()
+      || !/^transaction-\d{4}-\d{2}-\d{2}T[0-9.-]+Z-[0-9a-f-]{36}\.json$/iu.test(entry.name)) {
+      throw new Error(`Process-job quarantine contains an unsupported entry: ${entry.name}`);
+    }
+    const path = join(quarantineDir, entry.name);
+    const info = await lstat(path);
+    assertPrivateFile(info, path, 0o600);
+    if (info.size > MAX_TRANSACTION_BYTES) {
+      throw new Error(`Process-job quarantined transaction exceeds its durable bound: ${entry.name}`);
+    }
+  }
+  return entries.length;
 }
 
 async function replacePrivateFile(path: string, contents: string, mode: number): Promise<void> {
@@ -668,7 +770,12 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
     || !nullableSandboxSettingsPath(value.sandboxSettingsPath)
     || !boundedString(value.argvSummary, 8_000)
     || !boundedString(value.cwd, 16_384)
-    || !stringArray(value.envKeys, 512, 512)
+    || !stringArray(
+      value.envKeys,
+      PROCESS_JOB_ENV_KEYS_CAPS.maxItems,
+      PROCESS_JOB_ENV_KEYS_CAPS.maxItemBytes,
+      PROCESS_JOB_ENV_KEYS_CAPS.maxTotalBytes,
+    )
     || !isProcessJobOriginRecord(value.origin)
     || !nonNegativeInteger(value.chainDepth)
     || !boundedPositiveInteger(value.maxRuntimeMs, PROCESS_JOBS_CAPS.maxRuntimeMs)
@@ -986,9 +1093,13 @@ function nullableString(value: unknown, max: number): boolean {
   return value === null || boundedString(value, max);
 }
 
-function stringArray(value: unknown, maxItems: number, maxBytes: number): boolean {
+function stringArray(value: unknown, maxItems: number, maxBytes: number, maxTotalBytes: number): boolean {
   return Array.isArray(value) && value.length <= maxItems
-    && value.every((item) => boundedNonEmptyString(item, maxBytes));
+    && value.every((item) => boundedNonEmptyString(item, maxBytes))
+    && value.reduce(
+      (total, item) => total + (typeof item === "string" ? Buffer.byteLength(item, "utf8") : 0),
+      0,
+    ) <= maxTotalBytes;
 }
 
 function positiveInteger(value: unknown): boolean {

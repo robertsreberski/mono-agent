@@ -88,6 +88,7 @@ import { CONTINUATION_STATES, continuationDigest, type ContinuationState } from 
 import { isProcessJobState, PROCESS_JOB_STATES } from "@mono-agent/agent-contracts";
 import { loadProcessJobsSettings } from "./process-jobs-config.js";
 import {
+  PROCESS_JOB_QUARANTINE_DIRECTORY,
   PROCESS_JOB_RECORDS_DIRECTORY,
   PROCESS_JOB_SECRET_FILE,
 } from "./process-jobs-store.js";
@@ -2571,6 +2572,9 @@ async function inspectProcessJobState(cwd: string, stateDir: string): Promise<{
   const rootSecurity = processJobOwnershipError(root, "state directory", 0o700);
   if (rootSecurity !== undefined) return { status: "error", details: [rootSecurity] };
 
+  const quarantineInspection = await inspectProcessJobQuarantine(stateDir);
+  if (quarantineInspection !== undefined) return quarantineInspection;
+
   const secretPath = join(stateDir, PROCESS_JOB_SECRET_FILE);
   try {
     const secret = await lstat(secretPath);
@@ -2626,6 +2630,59 @@ async function inspectProcessJobState(cwd: string, stateDir: string): Promise<{
       `States: ${PROCESS_JOB_STATES.map((state) => `${state}=${String(counts[state] ?? 0)}`).join(", ")}.`,
     ],
   };
+}
+
+async function inspectProcessJobQuarantine(stateDir: string): Promise<{
+  readonly status: "error";
+  readonly details: readonly string[];
+} | undefined> {
+  const quarantinePath = join(stateDir, PROCESS_JOB_QUARANTINE_DIRECTORY);
+  let names: string[];
+  try {
+    const directory = await lstat(quarantinePath);
+    if (!directory.isDirectory() || directory.isSymbolicLink()) {
+      return { status: "error", details: ["Process-job quarantine path must be a real directory."] };
+    }
+    const security = processJobOwnershipError(directory, "quarantine directory", 0o700);
+    if (security !== undefined) return { status: "error", details: [security] };
+    names = await readdir(quarantinePath);
+  } catch (error) {
+    return continuationFsCode(error) === "ENOENT"
+      ? undefined
+      : { status: "error", details: [`Process-job quarantine cannot be inspected: ${continuationReason(error)}`] };
+  }
+  if (names.length > 10_000) {
+    return { status: "error", details: ["Process-job quarantined transaction count exceeds 10000."] };
+  }
+  for (const name of names) {
+    const path = join(quarantinePath, name);
+    try {
+      if (!/^transaction-\d{4}-\d{2}-\d{2}T[0-9.-]+Z-[0-9a-f-]{36}\.json$/iu.test(name)) {
+        throw new Error("quarantine filename is invalid");
+      }
+      const info = await lstat(path);
+      if (!info.isFile() || info.isSymbolicLink() || Number(info.nlink) !== 1) {
+        throw new Error("quarantined transaction is not one regular file");
+      }
+      const security = processJobOwnershipError(info, `quarantined transaction ${name}`, 0o600);
+      if (security !== undefined) throw new Error(security);
+      if (Number(info.size) > 256 * 1024) throw new Error("quarantined transaction exceeds 262144 bytes");
+    } catch (error) {
+      return {
+        status: "error",
+        details: [`Process-job quarantined transaction ${name} is unsafe: ${continuationReason(error)}`],
+      };
+    }
+  }
+  return names.length === 0
+    ? undefined
+    : {
+        status: "error",
+        details: [
+          `Quarantined unreplayable process-job transactions: ${String(names.length)}.`,
+          "The agent can continue without the affected transaction, but operator review is required.",
+        ],
+      };
 }
 
 function processJobOwnershipError(

@@ -264,6 +264,14 @@ export const api = {
     return result.jobs;
   },
 
+  threadJob: async (threadId: string, jobId: string, signal?: AbortSignal) => {
+    const result = await request<{ job: ProcessJobProjection }>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/jobs/${encodeURIComponent(jobId)}`,
+      { signal },
+    );
+    return result.job;
+  },
+
   createThread: async (sourceId: string) => {
     const result = await request<{ thread: ThreadSummary }>("/api/v1/threads", {
       method: "POST",

@@ -4,6 +4,8 @@ import { spawn } from "node:child_process";
 
 export const DEFAULT_PROCESS_BUFFER_BYTES = 8 * 1024 * 1024;
 const KILL_GRACE_MS = 1_000;
+const KILL_EXIT_CONFIRM_MS = 1_000;
+const PROCESS_GROUP_REATTEST_MAX_GAP_MS = 250;
 const PROCESS_JOB_LAUNCH_PAYLOAD_BYTES = 8 * 1024 * 1024;
 const PROCESS_JOB_STATUS_BYTES = 64 * 1024;
 
@@ -21,6 +23,8 @@ const input = createReadStream(null, { fd: 3, autoClose: true });
 const chunks = [];
 let bytes = 0;
 let finished = false;
+let target;
+let groupTerminationSignal = null;
 
 function finish(value) {
   if (finished) return;
@@ -40,6 +44,16 @@ function spawnFailure(code) {
     },
   });
 }
+
+// Group-wide SIGTERM also reaches this command-agnostic leader. Keep it alive
+// while its direct target settles. Before release there cannot be a target, so
+// close the gate and exit promptly instead of manufacturing a later spawn.
+process.on("SIGTERM", () => {
+  groupTerminationSignal = "SIGTERM";
+  if (target !== undefined) return;
+  input.destroy();
+  finish({ code: null, signal: "SIGTERM", spawnError: null });
+});
 
 function forwardOutput(source, destination) {
   let destinationOpen = true;
@@ -93,7 +107,6 @@ input.once("end", () => {
     spawnFailure("PROCESS_JOB_LAUNCH_PAYLOAD_INVALID");
     return;
   }
-  let target;
   try {
     target = spawn(spec.command, spec.args, {
       cwd: spec.cwd,
@@ -109,7 +122,7 @@ input.once("end", () => {
   forwardOutput(target.stderr, process.stderr);
   target.once("error", (error) => spawnFailure(error && error.code));
   target.once("close", (code, signal) => {
-    finish({ code, signal, spawnError: null });
+    finish({ code, signal: signal || groupTerminationSignal, spawnError: null });
   });
 });
 `;
@@ -239,20 +252,125 @@ export function startPreparedProcess(
     const statusChunks = [];
     let statusBytes = 0;
     let killTimer = null;
+    let killExitTimer = null;
+    let groupProbeTimer = null;
     let timeoutTimer = null;
     let settled = false;
+    let childClosed = false;
+    let closeCode = null;
+    let closeSignal = null;
+    let groupAbsentObserved = false;
+    let terminationRequested = false;
+    let terminationFailure = null;
+    const ownedGroup = gated && child.pid ? createOwnedProcessGroupAttestation(child.pid) : null;
+
+    const finish = (groupExitConfirmed = true) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutTimer !== null) clearTimeout(timeoutTimer);
+      if (killTimer !== null) clearTimeout(killTimer);
+      if (killExitTimer !== null) clearTimeout(killExitTimer);
+      if (groupProbeTimer !== null) clearTimeout(groupProbeTimer);
+      signal?.removeEventListener?.("abort", onAbort);
+      if (!childClosed) {
+        child?.stdout?.destroy();
+        child?.stderr?.destroy();
+        for (const stream of child?.stdio ?? []) stream?.destroy?.();
+        child?.unref?.();
+      }
+      const statusSpawnError = targetStatus?.spawnError
+        ? processSpawnError(targetStatus.spawnError)
+        : null;
+      const missingTargetStatus = gated
+        && targetStatus === null
+        && closeSignal === null
+        && closeCode !== 0
+        && !state.timedOut
+        && !state.bufferExceeded;
+      resolve({
+        code: targetStatus?.code ?? closeCode,
+        signal: targetStatus?.signal ?? closeSignal,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+        ...state,
+        spawnError: state.spawnError
+          ?? statusSpawnError
+          ?? (terminationFailure !== null
+            ? new Error(terminationFailure)
+            : statusInvalid || missingTargetStatus
+              ? new Error("The process-job launch gate exited without a valid target result.")
+              : null),
+        groupExitConfirmed,
+        durationMs: Date.now() - startedAt,
+      });
+    };
+
+    const probeOwnedGroup = () => {
+      groupProbeTimer = null;
+      if (settled || !child?.pid || !waitForProcessGroup || process.platform === "win32") return;
+      const presence = ownedProcessGroupPresence(child.pid);
+      if (presence === "absent") {
+        groupAbsentObserved = true;
+        if (ownedGroup !== null) ownedGroup.ownershipLost = true;
+        if (childClosed) finish(true);
+        return;
+      }
+      if (ownedGroup !== null) {
+        if (presence === "present") {
+          const observedAt = Date.now();
+          if (observedAt - ownedGroup.lastObservedAt > PROCESS_GROUP_REATTEST_MAX_GAP_MS) {
+            // A missed observation window can hide group disappearance and
+            // numeric reuse. Once continuity is lost, later presence can never
+            // restore authority over that PGID.
+            ownedGroup.ownershipLost = true;
+          } else if (!ownedGroup.ownershipLost) {
+            if (ownedGroup.leaderExited) ownedGroup.observedAfterLeaderExit = true;
+            ownedGroup.lastObservedAt = observedAt;
+          }
+        } else {
+          // An indeterminate probe cannot extend numeric PGID authority.
+          ownedGroup.ownershipLost = true;
+        }
+      }
+      groupProbeTimer = setTimeout(probeOwnedGroup, 25);
+      groupProbeTimer.unref?.();
+    };
 
     function terminate() {
-      if (processLeaderExited(child)) return;
-      killProcessGroup(child, "SIGTERM");
-      if (killTimer === null) {
-        killTimer = setTimeout(() => {
-          // Once the exact ChildProcess reports exit, its PID/PGID may be
-          // reused. Fail closed instead of signalling by a stale numeric id.
-          if (!processLeaderExited(child)) killProcessGroup(child, "SIGKILL");
-        }, KILL_GRACE_MS);
-        killTimer.unref?.();
+      if (terminationRequested) return;
+      terminationRequested = true;
+      const term = signalAttestedProcessGroup(child, ownedGroup, "SIGTERM");
+      if (term === "absent") {
+        finish(true);
+        return;
       }
+      if (term === "unproven") {
+        terminationFailure = "Owned process-group termination was withheld because its surviving identity could not be re-attested.";
+      }
+      killTimer = setTimeout(() => {
+        const kill = signalAttestedProcessGroup(child, ownedGroup, "SIGKILL");
+        if (kill === "absent") {
+          finish(true);
+          return;
+        }
+        if (kill === "unproven") {
+          terminationFailure = "Owned process-group escalation was withheld because its surviving identity could not be re-attested.";
+        }
+        // SIGKILL should make the group disappear promptly, but a kernel/OS
+        // anomaly or lost ownership proof must still settle explicitly. The
+        // caller can then withhold sandbox cleanup instead of hanging forever.
+        killExitTimer = setTimeout(() => {
+          const absent = child?.pid
+            ? ownedProcessGroupPresence(child.pid) === "absent"
+            : true;
+          if (!absent && terminationFailure === null) {
+            terminationFailure = "Owned process-group exit could not be confirmed after SIGKILL.";
+          }
+          finish(absent);
+        }, KILL_EXIT_CONFIRM_MS);
+        killExitTimer.unref?.();
+      }, KILL_GRACE_MS);
+      killTimer.unref?.();
     }
     cancel = terminate;
 
@@ -341,43 +459,33 @@ export function startPreparedProcess(
     child.once("error", (error) => {
       state.spawnError = error;
     });
-    child.once("close", (code, closeSignal) => {
+    // Refresh the continuity proof at the kernel exit notification, not
+    // `close`: inherited stdio can delay `close` while an in-group descendant
+    // survives.
+    child.once("exit", (code, childExitSignal) => {
+      closeCode = code;
+      closeSignal = childExitSignal;
+      if (ownedGroup !== null) ownedGroup.leaderExited = true;
+      if (groupProbeTimer !== null) clearTimeout(groupProbeTimer);
+      groupProbeTimer = null;
+      probeOwnedGroup();
+    });
+    child.once("close", (code, childCloseSignal) => {
       if (settled) return;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        if (timeoutTimer !== null) clearTimeout(timeoutTimer);
-        if (killTimer !== null) clearTimeout(killTimer);
-        signal?.removeEventListener?.("abort", onAbort);
-        const statusSpawnError = targetStatus?.spawnError
-          ? processSpawnError(targetStatus.spawnError)
-          : null;
-        const missingTargetStatus = gated
-          && targetStatus === null
-          && closeSignal === null
-          && code !== 0
-          && !state.timedOut
-          && !state.bufferExceeded;
-        resolve({
-          code: targetStatus?.code ?? code,
-          signal: targetStatus?.signal ?? closeSignal,
-          stdout: Buffer.concat(stdout).toString("utf8"),
-          stderr: Buffer.concat(stderr).toString("utf8"),
-          ...state,
-          spawnError: state.spawnError
-            ?? statusSpawnError
-            ?? (statusInvalid || missingTargetStatus
-              ? new Error("The process-job launch gate exited without a valid target result.")
-              : null),
-          durationMs: Date.now() - startedAt,
-        });
-      };
+      childClosed = true;
+      closeCode = code;
+      closeSignal = childCloseSignal;
       if (!waitForProcessGroup || process.platform === "win32" || !child?.pid) {
-        finish();
+        finish(true);
         return;
       }
-      waitForOwnedProcessGroupExit(child.pid, finish);
+      if (groupAbsentObserved) finish(true);
+      else if (groupProbeTimer === null) probeOwnedGroup();
     });
+    // Observe the exact self-led group continuously while the known leader is
+    // alive so the first post-exit observation has an unbroken provenance
+    // chain. This is intentionally limited to process-job group ownership.
+    if (ownedGroup !== null) probeOwnedGroup();
   });
   return {
     pid: child?.pid ?? null,
@@ -406,22 +514,94 @@ function processSpawnError(value) {
   );
 }
 
-function waitForOwnedProcessGroupExit(pgid, finish) {
-  const probe = () => {
-    try {
-      process.kill(-pgid, 0);
-      const timer = setTimeout(probe, 25);
-      timer.unref?.();
-    } catch (error) {
-      if (error?.code === "EPERM") {
-        const timer = setTimeout(probe, 25);
-        timer.unref?.();
-        return;
-      }
-      finish();
-    }
+function createOwnedProcessGroupAttestation(pgid) {
+  return {
+    pgid,
+    leaderExited: false,
+    observedAfterLeaderExit: false,
+    ownershipLost: false,
+    lastObservedAt: Date.now(),
   };
-  probe();
+}
+
+function reattestOwnedProcessGroup(attestation) {
+  if (attestation.ownershipLost
+    || !attestation.leaderExited
+    || !attestation.observedAfterLeaderExit) return false;
+  if (Date.now() - attestation.lastObservedAt > PROCESS_GROUP_REATTEST_MAX_GAP_MS) {
+    attestation.ownershipLost = true;
+    return false;
+  }
+  const presence = ownedProcessGroupPresence(attestation.pgid);
+  if (presence === "absent") {
+    attestation.ownershipLost = true;
+    return false;
+  }
+  if (presence !== "present") {
+    // An indeterminate observation is itself a continuity gap. A later
+    // successful probe must never restore authority over the numeric PGID.
+    attestation.ownershipLost = true;
+    return false;
+  }
+  // POSIX cannot reuse the numeric PGID while any member of that exact group
+  // survives. Continuous polling begins with the exact detached leader and
+  // permanently revokes authority on an observation gap or the first observed
+  // absence; a later group using the number is never signalled.
+  attestation.observedAfterLeaderExit = true;
+  attestation.lastObservedAt = Date.now();
+  return true;
+}
+
+function signalAttestedProcessGroup(child, attestation, signal) {
+  if (!child?.pid) return "absent";
+  if (process.platform !== "win32" && attestation !== null) {
+    const continuityExpired = Date.now() - attestation.lastObservedAt
+      > PROCESS_GROUP_REATTEST_MAX_GAP_MS;
+    if (continuityExpired) attestation.ownershipLost = true;
+    if (attestation.ownershipLost) {
+      // ChildProcess exit delivery can lag behind kernel exit while the event
+      // loop is stalled. Once observation continuity is lost, a still-null
+      // exitCode cannot re-authorize signalling; only observed group absence
+      // can safely confirm completion.
+      return ownedProcessGroupPresence(attestation.pgid) === "absent"
+        ? "absent"
+        : "unproven";
+    }
+  }
+  if (!processLeaderExited(child)) {
+    try {
+      process.kill(process.platform === "win32" ? child.pid : -child.pid, signal);
+      return "signalled";
+    } catch (error) {
+      if (error?.code === "ESRCH") return "absent";
+      return "unproven";
+    }
+  }
+  if (process.platform === "win32") return "absent";
+  const presence = ownedProcessGroupPresence(child.pid);
+  if (presence === "absent") return "absent";
+  if (presence !== "present") {
+    if (attestation !== null) attestation.ownershipLost = true;
+    return "unproven";
+  }
+  if (attestation === null || !reattestOwnedProcessGroup(attestation)) return "unproven";
+  try {
+    process.kill(-child.pid, signal);
+    return "signalled";
+  } catch (error) {
+    if (error?.code === "ESRCH") return "absent";
+    return "unproven";
+  }
+}
+
+function ownedProcessGroupPresence(pgid) {
+  try {
+    process.kill(-pgid, 0);
+    return "present";
+  } catch (error) {
+    if (error?.code === "ESRCH") return "absent";
+    return "unknown";
+  }
 }
 
 function mergedProcessEnv(overrides) {

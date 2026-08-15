@@ -330,6 +330,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   continuationServiceStart: Promise<ContinuationServiceHandle | undefined> | undefined;
   processJobsService: ProcessJobsServiceHandle | undefined;
   processJobsServiceStart: Promise<ProcessJobsServiceHandle | undefined> | undefined;
+  processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
   /** One bounded scan cache for artifact-derived native-notify destinations. */
   readonly seenNotifyDestinations = createSeenNotifyDestinationCache();
 

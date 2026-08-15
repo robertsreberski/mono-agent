@@ -3,12 +3,18 @@ import {
   ThreadPrimitive,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { api } from "../api";
 import { convertWebMessage } from "../runtime";
 import type { WebMessage } from "../types";
 import { processJob } from "../test/fixtures";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 function MessageHarness({ message }: { readonly message: WebMessage }) {
   const runtime = useExternalStoreRuntime<WebMessage>({
@@ -389,6 +395,55 @@ describe("message actions", () => {
     expect(screen.getByText("Completed normally.")).toBeVisible();
     const disclosure = screen.getByText("Output");
     expect(disclosure.closest("details")).not.toHaveAttribute("open");
+  });
+
+  it("polls only one job with backoff and stops after the terminal projection", async () => {
+    vi.useFakeTimers();
+    const complete = processJob();
+    const running = processJob({
+      state: "running",
+      timestamps: { ...complete.timestamps, completedAt: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      exitCode: null,
+      durationMs: null,
+    });
+    const threadJob = vi.spyOn(api, "threadJob")
+      .mockResolvedValueOnce(running)
+      .mockResolvedValueOnce(running)
+      .mockResolvedValue(complete);
+    const threadJobs = vi.spyOn(api, "threadJobs");
+    render(<MessageHarness message={{
+      ...assistantMessage("running"),
+      parts: [{ type: "process-job", job: running }],
+    }} />);
+
+    await act(async () => { await Promise.resolve(); });
+    expect(threadJob).toHaveBeenCalledTimes(1);
+    expect(threadJob).toHaveBeenLastCalledWith("thread", running.jobId, expect.any(AbortSignal));
+    expect(threadJobs).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      vi.advanceTimersByTime(1_999);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole("region", { name: "Exec background job succeeded" })).toBeVisible();
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(3);
   });
 
   it("keeps the copy action mounted before hover so revealing it cannot shift layout", () => {

@@ -115,6 +115,16 @@ for inherited-group descendants before sandbox cleanup. Commands that
 deliberately daemonize into another POSIX process group or session are not
 contained by this contract and must not use `background: true`.
 
+Live timeout, cancellation, and shutdown use a bounded `SIGTERM` then `SIGKILL`
+sequence. The host observes the self-led group continuously from spawn and
+probes it immediately when the gate leader exits. It signals the recorded
+negative PGID only while that uninterrupted proof still shows the numeric
+identity has not disappeared and been reused. An over-limit or indeterminate
+observation gap permanently revokes signalling authority. If termination or
+final group absence cannot be proved, the job settles with an explicit degraded
+error and leaves sandbox settings intact for operator investigation instead of
+hanging or cleaning beneath a possibly live descendant.
+
 ## Lifecycle, output, and wake delivery
 
 Jobs move through this durable state machine:
@@ -146,6 +156,14 @@ environment key names; raw argv and environment values are never projected to
 operator clients. Distinctive effective environment values and values from
 sensitive environment names are also scrubbed from previews and artifacts,
 including a retained secret prefix at the process-runner truncation boundary.
+Environment-key inventories are bounded independently, and the exact serialized
+record size is checked before a recovery transaction marker is published. A
+legacy transaction that can never fit or validate is moved intact into the
+owner-only `quarantine-v1/` directory; the store opens in degraded health and
+`mono-agent validate` reports the incident for operator review. Other unsafe or
+transient store failures remain fail-closed. Because process jobs are opt-in,
+an unavailable store disables only background jobs instead of aborting the
+whole agent.
 
 Slack and Telegram wake the original thread/chat through their normal proactive
 turn path and settle the existing in-thread running indicator once, without an
@@ -193,10 +211,12 @@ An enabled local operator endpoint exposes bearer-protected
 `GET /gui/v1/jobs`, `GET /gui/v1/jobs/:jobId`, and
 `POST /gui/v1/jobs/:jobId/cancel`. Its info response advertises `jobs: true`
 only while the controller and its owner bearer are present. The web console
-proxies `GET /api/v1/threads/:id/jobs` for the exact source-bound thread and
-keeps running and terminal job cards in the transcript.
+keeps running and terminal job cards in the transcript. Each nonterminal card
+polls only its exact authenticated, source- and thread-bound
+`GET /api/v1/threads/:id/jobs/:jobId` proxy with bounded backoff; it does not
+clone or serialize the retained job list on every refresh.
 
 `mono-agent validate` / `doctor` reports whether the feature is disabled or
 unsupported on Windows, then inspects only bounded local record counts and
-owner-only modes. It does not probe or mutate the live controller and never
-creates a missing store.
+owner-only modes, including any quarantined transaction count. It does not
+probe or mutate the live controller and never creates a missing store.

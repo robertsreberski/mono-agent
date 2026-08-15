@@ -94,8 +94,10 @@ export interface ProcessJobProjectionError {
  * Secret-free operator projection of one durable process job.
  *
  * This intentionally excludes argv, environment values, sandbox settings
- * paths, reply routes, PIDs, and process-incarnation evidence. Those fields
- * belong to the owner-private host record, not a cross-package API.
+ * paths, the separate owner-private normalized reply-target fields, PIDs, and
+ * process-incarnation evidence. `origin.conversationId` deliberately remains:
+ * it is the exact bound originating conversation and therefore the operator
+ * projection's reply route, including any host-owned rollover bucket.
  */
 export interface ProcessJobProjection {
   readonly schema: "mono-agent.process-job-projection.v1";

@@ -1362,6 +1362,14 @@ export class WebStore {
     return { thread: this.requireThread(input.threadId), duplicate: false };
   }
 
+  /** Exact retained binding used before proxying a single operator job. */
+  processJobCardBelongsToThread(sourceId: string, threadId: string, jobId: string): boolean {
+    return this.database.prepare(`
+      SELECT 1 FROM process_job_cards
+      WHERE source_id = ? AND thread_id = ? AND job_id = ?
+    `).get(sourceId, threadId, jobId) !== undefined;
+  }
+
   createThread(sourceId: string): WebThread {
     const agent = this.getAgent(sourceId);
     if (agent === undefined) {

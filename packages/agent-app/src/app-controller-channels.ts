@@ -37,6 +37,7 @@ export interface ChannelsControllerPort {
   readonly stopped: boolean;
   readonly traceabilityStatusValue: TraceabilityStatus;
   readonly processJobsService: ProcessJobsServiceHandle | undefined;
+  readonly processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
   setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus;
   rememberSelectedSkills(coreConfig: MonoAgentConfig): void;
   ensureInteractionBridge(coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined>;
@@ -211,12 +212,23 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
         });
       },
     });
-    const summary = driver.id === "tui" && controller.processJobsService !== undefined
-      ? {
-          ...runningChannel.summary,
-          processJobs: { stateDir: controller.processJobsService.settings.stateDir },
-        }
-      : runningChannel.summary;
+    const summary = driver.id !== "tui"
+      ? runningChannel.summary
+      : controller.processJobsService !== undefined
+        ? {
+            ...runningChannel.summary,
+            processJobs: {
+              stateDir: controller.processJobsService.settings.stateDir,
+              health: controller.processJobsService.health.state,
+              quarantinedTransactions: controller.processJobsService.health.quarantinedTransactions,
+            },
+          }
+        : controller.processJobsDegradation === undefined
+          ? runningChannel.summary
+          : {
+              ...runningChannel.summary,
+              processJobsDegraded: controller.processJobsDegradation,
+            };
     controller.running.set(driver.id, {
       ...runningChannel,
       summary,

@@ -6,7 +6,10 @@ import { resolve } from "node:path";
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 import { bashToolRun, execToolRun } from "../../agent/tools/index.js";
 import { getPiBuiltinTools } from "../../agent/tools/pi-bridge.js";
-import { killProcessGroup } from "../../agent/tools/shared/process-runner.js";
+import {
+  killProcessGroup,
+  startPreparedProcess,
+} from "../../agent/tools/shared/process-runner.js";
 
 const tempDirs = [];
 
@@ -205,6 +208,162 @@ describe("Exec", () => {
     expect(existsSync(marker)).toBe(false);
     await terminal;
     expect(existsSync(marker)).toBe(true);
+  });
+
+  it("bounds deadline termination through SIGKILL for a long inherited-group descendant", async () => {
+    if (process.platform === "win32") return;
+    const workspace = tempWorkspace();
+    const childPidPath = resolve(workspace, "deadline-child.pid");
+    const descendant = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)";
+    const target = [
+      "const { spawn } = require('node:child_process');",
+      `const child = spawn(process.execPath, ['--eval', ${JSON.stringify(descendant)}], { stdio: 'ignore' });`,
+      "require('node:fs').writeFileSync(process.argv[1], String(child.pid));",
+      "child.unref();",
+    ].join("\n");
+    const handle = startPreparedProcess({
+      command: process.execPath,
+      args: ["--eval", target, childPidPath],
+    }, { waitForProcessGroup: true, timeoutMs: 400 });
+    try {
+      await handle.release();
+      await waitForPath(childPidPath);
+      const outcome = await within(handle.completion, 3_500);
+      const childPid = Number(readFileSync(childPidPath, "utf8").trim());
+      expect(outcome).toMatchObject({ timedOut: true, groupExitConfirmed: true });
+      await waitForProcessExit(childPid);
+    } finally {
+      try { if (handle.pgid !== null) process.kill(-handle.pgid, "SIGKILL"); } catch { /* already gone */ }
+    }
+  });
+
+  it("re-attests and cancels an owned descendant group after the gate leader exits", async () => {
+    if (process.platform === "win32") return;
+    const workspace = tempWorkspace();
+    const childPidPath = resolve(workspace, "leader-exit-child.pid");
+    const descendant = "setInterval(() => {}, 1000)";
+    const target = [
+      "const { spawn } = require('node:child_process');",
+      `const child = spawn(process.execPath, ['--eval', ${JSON.stringify(descendant)}], { stdio: 'ignore' });`,
+      "require('node:fs').writeFileSync(process.argv[1], String(child.pid));",
+      "child.unref();",
+    ].join("\n");
+    const handle = startPreparedProcess({
+      command: process.execPath,
+      args: ["--eval", target, childPidPath],
+    }, { waitForProcessGroup: true, timeoutMs: 10_000 });
+    try {
+      await handle.release();
+      await waitForPath(childPidPath);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 150));
+      try { if (handle.pid !== null) process.kill(handle.pid, "SIGKILL"); } catch { /* leader already exited */ }
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+      handle.cancel();
+      const outcome = await within(handle.completion, 3_000);
+      const childPid = Number(readFileSync(childPidPath, "utf8").trim());
+      expect(outcome.groupExitConfirmed).toBe(true);
+      await waitForProcessExit(childPid);
+    } finally {
+      try { if (handle.pgid !== null) process.kill(-handle.pgid, "SIGKILL"); } catch { /* already gone */ }
+    }
+  });
+
+  it("permanently revokes group authority after an over-limit observation gap", async () => {
+    if (process.platform === "win32") return;
+    const workspace = tempWorkspace();
+    const targetPidPath = resolve(workspace, "observation-gap-target.pid");
+    const target = [
+      "require('node:fs').writeFileSync(process.argv[1], String(process.pid));",
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const handle = startPreparedProcess({
+      command: process.execPath,
+      args: ["--eval", target, targetPidPath],
+    }, { waitForProcessGroup: true, timeoutMs: 10_000 });
+    try {
+      await handle.release();
+      await waitForPath(targetPidPath);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 75));
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 350);
+
+      handle.cancel();
+      const outcome = await within(handle.completion, 3_500);
+      const targetPid = Number(readFileSync(targetPidPath, "utf8").trim());
+      expect(outcome).toMatchObject({ groupExitConfirmed: false });
+      expect(outcome.spawnError?.message).toMatch(/identity could not be re-attested/u);
+      expect(() => process.kill(targetPid, 0)).not.toThrow();
+    } finally {
+      try { if (handle.pgid !== null) process.kill(-handle.pgid, "SIGKILL"); } catch { /* already gone */ }
+    }
+  });
+
+  it("does not restore group authority after an indeterminate observation", async () => {
+    if (process.platform === "win32") return;
+    const workspace = tempWorkspace();
+    const targetPidPath = resolve(workspace, "indeterminate-observation-target.pid");
+    const target = [
+      "require('node:fs').writeFileSync(process.argv[1], String(process.pid));",
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const handle = startPreparedProcess({
+      command: process.execPath,
+      args: ["--eval", target, targetPidPath],
+    }, { waitForProcessGroup: true, timeoutMs: 10_000 });
+    const nativeKill = process.kill.bind(process);
+    let injectIndeterminateProbe = false;
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (injectIndeterminateProbe && pid === -(handle.pgid ?? 0) && signal === 0) {
+        injectIndeterminateProbe = false;
+        throw Object.assign(new Error("probe indeterminate"), { code: "EPERM" });
+      }
+      return nativeKill(pid, signal);
+    });
+    try {
+      await handle.release();
+      await waitForPath(targetPidPath);
+      injectIndeterminateProbe = true;
+      await vi.waitFor(() => expect(injectIndeterminateProbe).toBe(false));
+      // Later successful presence probes must not refresh the revoked proof.
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 75));
+      kill.mockRestore();
+
+      handle.cancel();
+      const outcome = await within(handle.completion, 3_500);
+      const targetPid = Number(readFileSync(targetPidPath, "utf8").trim());
+      expect(outcome).toMatchObject({ groupExitConfirmed: false });
+      expect(() => nativeKill(targetPid, 0)).not.toThrow();
+    } finally {
+      kill.mockRestore();
+      try { if (handle.pgid !== null) nativeKill(-handle.pgid, "SIGKILL"); } catch { /* already gone */ }
+    }
+  });
+
+  it("settles a shutdown abort only after its long inherited group exits", async () => {
+    if (process.platform === "win32") return;
+    const workspace = tempWorkspace();
+    const childPidPath = resolve(workspace, "shutdown-child.pid");
+    const target = [
+      "const { spawn } = require('node:child_process');",
+      "const child = spawn(process.execPath, ['--eval', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+      "require('node:fs').writeFileSync(process.argv[1], String(child.pid));",
+      "child.unref();",
+    ].join("\n");
+    const shutdown = new AbortController();
+    const handle = startPreparedProcess({
+      command: process.execPath,
+      args: ["--eval", target, childPidPath],
+    }, { waitForProcessGroup: true, timeoutMs: 10_000, signal: shutdown.signal });
+    try {
+      await handle.release();
+      await waitForPath(childPidPath);
+      shutdown.abort(new Error("runtime shutdown"));
+      const outcome = await within(handle.completion, 3_000);
+      const childPid = Number(readFileSync(childPidPath, "utf8").trim());
+      expect(outcome).toMatchObject({ aborted: true, groupExitConfirmed: true });
+      await waitForProcessExit(childPid);
+    } finally {
+      try { if (handle.pgid !== null) process.kill(-handle.pgid, "SIGKILL"); } catch { /* already gone */ }
+    }
   });
 
   it("never falls back from an absent POSIX group to a potentially reused leader PID", () => {
@@ -528,3 +687,35 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
     expect(sequential.every((tool) => tool.executionMode === "sequential")).toBe(true);
   });
 });
+
+async function waitForPath(path, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${path}.`);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+  }
+}
+
+async function waitForProcessExit(pid, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try { process.kill(pid, 0); }
+    catch { return; }
+    if (Date.now() >= deadline) throw new Error(`Process ${String(pid)} did not exit.`);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+  }
+}
+
+async function within(promise, timeoutMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Operation exceeded ${String(timeoutMs)}ms.`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}

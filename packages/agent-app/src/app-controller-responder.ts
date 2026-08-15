@@ -66,6 +66,7 @@ import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 import { createProcessJobsRuntimeExtension } from "./process-jobs-runtime.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
+import { bindProcessJobWakeContextToResponder } from "./process-jobs-context.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 
@@ -379,9 +380,10 @@ export async function buildResponder(
     },
   });
   const replyResponder = replyArtifacts.wrapResponder(responder);
-  return postedReplyHistory.wrapResponder(
+  const richReplyResponder = postedReplyHistory.wrapResponder(
     mcpApps === undefined ? replyResponder : mcpApps.wrapResponder(replyResponder),
   );
+  return bindProcessJobWakeContextToResponder(richReplyResponder);
 }
 
 export function requestModelOverrideRuntimeOptions(

@@ -14,6 +14,7 @@ import { launchdLogsSectionFromInspection, validateMonoAgentFolder } from "../do
 import type { SdkAuthStatusExecFile } from "../doctor.js";
 import type { LaunchdLogInspection } from "../launchd-logs.js";
 import { agentAppPackageVersion } from "../package-version.js";
+import { PROCESS_JOB_QUARANTINE_DIRECTORY } from "../process-jobs-store.js";
 
 let dir: string;
 
@@ -480,6 +481,27 @@ describe("validateMonoAgentFolder", () => {
     expect(section.details.join("\n")).toContain("running=1");
     expect(section.details.join("\n")).toContain("succeeded=1");
     expect(section.details.join("\n")).not.toContain("secret artifact contents");
+  });
+
+  it("reports quarantined unreplayable process-job transactions as a degraded incident", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "process-jobs");
+    const quarantineDir = join(stateDir, PROCESS_JOB_QUARANTINE_DIRECTORY);
+    await mkdir(quarantineDir, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700);
+    await chmod(quarantineDir, 0o700);
+    const quarantineName = "transaction-2026-08-15T10-00-00.000Z-24242424-2424-4424-8424-242424242424.json";
+    await writeFile(join(quarantineDir, quarantineName), "{\"unreplayable\":true}\n", { mode: 0o600 });
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      processJobs: { enabled: true },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const section = sectionById(report, "process-jobs");
+    expect(section.status).toBe("error");
+    expect(section.details).toContain("Quarantined unreplayable process-job transactions: 1.");
   });
 
   it("fails continuation doctor validation for ephemeral configured ports", async () => {

@@ -576,7 +576,10 @@ key or accept a remote token.
 projection. `cancel` requests cancellation of the owned process group and
 returns the resulting projection. JSON output is the same bounded operator
 projection (or `{ "jobs": [...] }` for `list`); it never contains raw argv,
-environment values, process ids, sandbox paths, or reply targets.
+environment values, process ids, sandbox paths, or the private normalized
+reply-target fields. `origin.conversationId` is intentionally present: it is
+the exact bound originating conversation and reply route, including any
+host-owned rollover bucket.
 
 Agent discovery, credentials, connection, or response validation failures exit
 `1`; an unreachable selection uses `agent_unreachable`, while a remote endpoint

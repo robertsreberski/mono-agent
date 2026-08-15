@@ -19,6 +19,7 @@ import {
 } from "../process-jobs-service.js";
 import {
   openProcessJobStore,
+  PROCESS_JOB_QUARANTINE_DIRECTORY,
   PROCESS_JOB_TRANSACTION_FILE,
   type DurableProcessJobRecord,
   type ProcessJobOriginRecord,
@@ -109,6 +110,27 @@ describe("process job service", () => {
       if (previous === undefined) delete process.env[inheritedName];
       else process.env[inheritedName] = previous;
     }
+  });
+
+  it("bounds the durable environment-key inventory independently of process output", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const service = await startService(fixture);
+    const env = Object.fromEntries(Array.from(
+      { length: 300 },
+      (_, index) => [`REVIEW_ENV_${String(index).padStart(3, "0")}`, `value-${String(index)}`],
+    ));
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion), undefined, env));
+    const record = JSON.parse(await readFile(
+      join(fixture.settings.stateDir, "records-v1", `${started.jobId}.json`),
+      "utf8",
+    )) as DurableProcessJobRecord;
+    expect(record.envKeys.length).toBeLessThanOrEqual(128);
+    expect(record.envKeys.every((key) => Buffer.byteLength(key, "utf8") <= 256)).toBe(true);
+    expect(record.envKeys.reduce((bytes, key) => bytes + Buffer.byteLength(key, "utf8"), 0))
+      .toBeLessThanOrEqual(8 * 1024);
+    completion.resolve(processResult());
+    await waitFor(async () => (await service.get(started.jobId))?.state === "succeeded");
   });
 
   it("redacts a secret prefix retained at the process-runner truncation boundary", async () => {
@@ -287,6 +309,24 @@ describe("process job service", () => {
     expect(wake).toHaveBeenCalledOnce();
   });
 
+  it("withholds sandbox cleanup and records the incident when group exit is unconfirmed", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const cleanup = vi.fn(async () => undefined);
+    const service = await startService(fixture);
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion), cleanup));
+
+    completion.resolve(processResult({
+      code: null,
+      timedOut: true,
+      groupExitConfirmed: false,
+      spawnError: new Error("Owned process-group exit could not be confirmed after SIGKILL."),
+    }));
+    await waitFor(async () => (await service.get(started.jobId))?.state === "timed_out");
+    expect(cleanup).not.toHaveBeenCalled();
+    expect((await service.get(started.jobId))?.lastError?.message).toContain("cleanup was withheld");
+  });
+
   it("terminates and cleans a spawned tree when ownership metadata cannot be recorded", async () => {
     const fixture = await createFixture();
     const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
@@ -318,6 +358,43 @@ describe("process job service", () => {
       pid: 4321,
       pgid: 4321,
       processIncarnation: INCARNATION,
+      lastError: { code: "process_job_store_error" },
+    });
+  });
+
+  it("fails closed when the durable record leaves starting before ownership attestation", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    let conflictInjected = false;
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async mutate(operation) {
+        return await baseStore.mutate(async (records) => {
+          const starting = [...records.values()].find((record) =>
+            record.state === "starting" && record.pid === null);
+          if (!conflictInjected && starting !== undefined) {
+            conflictInjected = true;
+            starting.state = "queued";
+          }
+          return await operation(records);
+        });
+      },
+    };
+    const completion = deferred<ProcessJobProcessResult>();
+    const handle = handleOf(completion);
+    handle.cancel.mockImplementation(() => completion.resolve(processResult({ aborted: true, code: null })));
+    const cleanup = vi.fn(async () => undefined);
+    const service = await startService(fixture, { store });
+
+    await expect(service.controller(ORIGIN, 0).start(requestOf(handle, cleanup)))
+      .rejects.toMatchObject({ code: "process_job_conflict" });
+    expect(handle.release).not.toHaveBeenCalled();
+    expect(handle.cancel).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect((await baseStore.list())[0]).toMatchObject({
+      state: "spawn_failed",
+      pid: null,
+      pgid: null,
       lastError: { code: "process_job_store_error" },
     });
   });
@@ -726,6 +803,89 @@ describe("process job service", () => {
 });
 
 describe("process job store", () => {
+  it("rejects an oversized first record before publishing a recovery marker", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "20202020-2020-4020-8020-202020202020";
+    const oversized = durableRecord(jobId, {
+      agentIncarnation: {
+        ...INCARNATION,
+        bootSessionId: `oversized-${"x".repeat(132 * 1024)}`,
+      },
+    });
+    expect(Buffer.byteLength(`${JSON.stringify(oversized, null, 2)}\n`, "utf8"))
+      .toBeGreaterThan(128 * 1024);
+
+    await expect(store.mutate((records) => records.set(jobId, oversized)))
+      .rejects.toThrow(/durable file exceeds/u);
+    await expect(lstat(join(fixture.settings.stateDir, PROCESS_JOB_TRANSACTION_FILE)))
+      .rejects.toMatchObject({ code: "ENOENT" });
+
+    const validId = "21212121-2121-4121-8121-212121212121";
+    await store.ensureArtifacts(validId);
+    await store.mutate((records) => records.set(validId, durableRecord(validId)));
+
+    const prefixId = "24242424-2424-4424-8424-242424242424";
+    await expect(store.mutate((records) => {
+      records.set(prefixId, durableRecord(prefixId));
+      records.set(jobId, oversized);
+    })).rejects.toThrow(/durable file exceeds/u);
+    await expect(lstat(join(fixture.settings.stateDir, PROCESS_JOB_TRANSACTION_FILE)))
+      .rejects.toMatchObject({ code: "ENOENT" });
+
+    const reopened = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    expect((await reopened.list()).map((record) => record.jobId)).toEqual([validId]);
+  });
+
+  it("quarantines a permanently unreplayable transaction and reopens in degraded health", async () => {
+    const fixture = await createFixture();
+    await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "22222222-2020-4222-8222-222222222222";
+    const generation = "23232323-2323-4323-8323-232323232323";
+    const oversized = durableRecord(jobId, {
+      generation,
+      envKeys: Array.from(
+        { length: 512 },
+        (_, index) => `LEGACY_${String(index).padStart(3, "0")}_${"y".repeat(235)}`,
+      ),
+    });
+    const transaction = {
+      schemaVersion: 1,
+      generation,
+      createdAt: "2026-08-14T10:00:00.000Z",
+      write: oversized,
+      delete: null,
+    };
+    expect(Buffer.byteLength(`${JSON.stringify(oversized, null, 2)}\n`, "utf8"))
+      .toBeGreaterThan(128 * 1024);
+    expect(Buffer.byteLength(`${JSON.stringify(transaction, null, 2)}\n`, "utf8"))
+      .toBeLessThan(256 * 1024);
+    await writeFile(
+      join(fixture.settings.stateDir, PROCESS_JOB_TRANSACTION_FILE),
+      `${JSON.stringify(transaction, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+
+    const recovered = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    expect(recovered.health).toEqual({ state: "degraded", quarantinedTransactions: 1 });
+    expect(await recovered.get(jobId)).toBeUndefined();
+    await expect(lstat(join(fixture.settings.stateDir, PROCESS_JOB_TRANSACTION_FILE)))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(join(fixture.settings.stateDir, PROCESS_JOB_QUARANTINE_DIRECTORY)))
+      .toHaveLength(1);
+
+    const warn = vi.fn();
+    const service = await startService(fixture, { store: recovered, logger: { warn } });
+    expect(service.health).toEqual({ state: "degraded", quarantinedTransactions: 1 });
+    expect(warn).toHaveBeenCalledWith(
+      "Process-job store recovered with quarantined transaction incidents.",
+      expect.objectContaining({ quarantinedTransactions: 1 }),
+    );
+
+    const reopened = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    expect(reopened.health).toEqual({ state: "degraded", quarantinedTransactions: 1 });
+  });
+
   it("uses owner-only modes, rejects a symlinked records path, and reopens after multi-record retention", async () => {
     const fixture = await createFixture();
     const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
