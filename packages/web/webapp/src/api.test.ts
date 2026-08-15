@@ -294,3 +294,171 @@ describe("agent favorites", () => {
     );
   });
 });
+
+describe("short-lived reply access", () => {
+  const staleResourceUrl = "/api/v1/threads/thread-one/messages/message-one/mcp-apps/app-one?expires=1000000000&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const staleBridgeUrl = "/api/v1/threads/thread-one/messages/message-one/mcp-apps/app-one/requests?expires=1000000000&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const freshResourceUrl = "/api/v1/threads/thread-one/messages/message-one/mcp-apps/app-one?expires=2000000000&token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const freshBridgeUrl = "/api/v1/threads/thread-one/messages/message-one/mcp-apps/app-one/requests?expires=2000000000&token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const appPart = {
+    type: "mcp_app" as const,
+    id: "app-one",
+    invocationId: "app-one",
+    connectionId: "connection-one",
+    serverName: "widgets",
+    toolName: "show_chart",
+    resourceUri: "ui://widgets/chart",
+    mediaType: "text/html;profile=mcp-app" as const,
+    protocolVersion: "2026-01-26" as const,
+    resourceUrl: freshResourceUrl,
+    bridgeUrl: freshBridgeUrl,
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("refreshes an authentic expired MCP resource once from its authoritative part", async () => {
+    const resource = { app: appPart, html: "<!doctype html><p>ready</p>", connected: true };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ error: { code: "reply_access_expired", message: "Expired." } }, { status: 410 }))
+      .mockResolvedValueOnce(Response.json({ part: appPart }))
+      .mockResolvedValueOnce(Response.json(resource));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.mcpAppResource(staleResourceUrl)).resolves.toEqual(resource);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "/api/v1/threads/thread-one/messages/message-one/mcp-apps/app-one/access",
+    );
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      method: "POST",
+      headers: expect.objectContaining({ "X-Mono-Agent-Web-Origin": window.location.origin }),
+    });
+    expect(fetchMock.mock.calls[2]?.[0]).toBe(freshResourceUrl);
+  });
+
+  it("retries an expired MCP bridge mutation at most once", async () => {
+    const expired = () => Response.json(
+      { error: { code: "reply_access_expired", message: "Expired." } },
+      { status: 410 },
+    );
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(expired())
+      .mockResolvedValueOnce(Response.json({ part: appPart }))
+      .mockResolvedValueOnce(expired());
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.mcpAppRequest(
+      staleBridgeUrl,
+      "tools/call",
+      { name: "refresh_chart" },
+      true,
+    )).rejects.toMatchObject({ code: "reply_access_expired", status: 410 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[2]?.[0]).toBe(freshBridgeUrl);
+    expect(JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body)))
+      .toEqual(JSON.parse(String((fetchMock.mock.calls[2]?.[1] as RequestInit).body)));
+  });
+
+  it("does not refresh forged or unknown reply capabilities", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({ error: { code: "reply_part_not_found", message: "Not found." } }, { status: 404 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.mcpAppResource(staleResourceUrl)).rejects.toMatchObject({
+      code: "reply_part_not_found",
+      status: 404,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes an authentic expired attachment once without carrying stale query data forward", async () => {
+    const staleContentUrl = "/api/v1/threads/thread-one/messages/message-one/reply-attachments/file-one/content?expires=1000000000&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const fresh = {
+      type: "attachment" as const,
+      id: "file-one",
+      artifactId: "artifact-one",
+      name: "report.txt",
+      mediaType: "text/plain",
+      sizeBytes: 6,
+      integrityId: `sha256:${"a".repeat(64)}`,
+      contentUrl: "/api/v1/threads/thread-one/messages/message-one/reply-attachments/file-one/content?expires=2000000000&token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(
+        { error: { code: "reply_access_expired", message: "Expired." } },
+        { status: 410 },
+      ))
+      .mockResolvedValueOnce(Response.json({ part: fresh }))
+      .mockResolvedValueOnce(new Response("report", {
+        headers: {
+          "content-length": "6",
+          "x-mono-agent-integrity-id": fresh.integrityId,
+        },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await api.replyAttachmentContent(staleContentUrl);
+    await expect(response.text()).resolves.toBe("report");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "/api/v1/threads/thread-one/messages/message-one/reply-attachments/file-one/access",
+    );
+    expect(String(fetchMock.mock.calls[1]?.[0])).not.toContain("expires=");
+    expect(String(fetchMock.mock.calls[1]?.[0])).not.toContain("token=");
+    expect(fetchMock.mock.calls[2]?.[0]).toBe(fresh.contentUrl);
+  });
+
+  it("keeps concurrent MCP App instance refreshes bound to their own message and part", async () => {
+    const requestCounts = new Map<string, number>();
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      requestCounts.set(url, (requestCounts.get(url) ?? 0) + 1);
+      const match = /threads\/(thread-[ab])\/messages\/(message-[ab])\/mcp-apps\/(app-[ab])/u.exec(url);
+      if (match === null) return Response.json({ error: { code: "reply_part_not_found" } }, { status: 404 });
+      const [, threadId, messageId, appId] = match;
+      const base = `/api/v1/threads/${threadId}/messages/${messageId}/mcp-apps/${appId}`;
+      if (url.endsWith("/access")) {
+        return Response.json({
+          part: {
+            ...appPart,
+            id: appId,
+            invocationId: appId,
+            connectionId: `connection-${appId}`,
+            resourceUri: `ui://widgets/${appId}`,
+            resourceUrl: `${base}?expires=2000000000&token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb`,
+            bridgeUrl: `${base}/requests?expires=2000000000&token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb`,
+          },
+        });
+      }
+      if (url.includes("expires=1000000000")) {
+        return Response.json({ error: { code: "reply_access_expired", message: "Expired." } }, { status: 410 });
+      }
+      return Response.json({
+        app: {
+          ...appPart,
+          id: appId,
+          invocationId: appId,
+          connectionId: `connection-${appId}`,
+          resourceUri: `ui://widgets/${appId}`,
+        },
+        html: `<!doctype html><p>${appId}</p>`,
+        connected: true,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const stale = (suffix: "a" | "b") =>
+      `/api/v1/threads/thread-${suffix}/messages/message-${suffix}/mcp-apps/app-${suffix}?expires=1000000000&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;
+    const [left, right] = await Promise.all([api.mcpAppResource(stale("a")), api.mcpAppResource(stale("b"))]);
+    expect(left.app.invocationId).toBe("app-a");
+    expect(right.app.invocationId).toBe("app-b");
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect([...requestCounts.keys()].filter((url) => url.endsWith("/access"))).toEqual(expect.arrayContaining([
+      "/api/v1/threads/thread-a/messages/message-a/mcp-apps/app-a/access",
+      "/api/v1/threads/thread-b/messages/message-b/mcp-apps/app-b/access",
+    ]));
+  });
+});

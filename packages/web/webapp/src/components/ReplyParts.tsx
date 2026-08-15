@@ -14,7 +14,7 @@ import {
   useState,
 } from "react";
 
-import { api, sameOriginReplyUrl } from "../api";
+import { api, isReplyAccessExpired, sameOriginReplyUrl } from "../api";
 import { isMcpAppProtocolVersion } from "../mcp-app-protocol";
 import type { McpAppPart, McpAppResource, MessagePart } from "../types";
 import { Icon } from "./Icon";
@@ -384,8 +384,28 @@ const parseMcpApp = (value: unknown): McpAppPart | undefined => {
     : undefined;
 };
 
+/** Download only bytes already fetched through an authorized same-origin request. */
+export const startReplyAttachmentDownload = (blob: Blob, name: string): void => {
+  const contentUrl = URL.createObjectURL(blob);
+  const revokeObjectUrl = URL.revokeObjectURL.bind(URL);
+  const link = document.createElement("a");
+  link.href = contentUrl;
+  link.download = name;
+  link.rel = "noopener noreferrer";
+  link.hidden = true;
+  document.body.append(link);
+  try {
+    link.click();
+  } finally {
+    link.remove();
+    window.setTimeout(() => revokeObjectUrl(contentUrl), 0);
+  }
+};
+
 export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
   const part = parseAttachment(data);
+  const [downloadState, setDownloadState] = useState<"idle" | "refreshing" | "started" | "expired" | "error">("idle");
+  const [downloadStatus, setDownloadStatus] = useState("");
   if (part === undefined) {
     return <div className="reply-part-error" role="alert">An attachment reference was invalid.</div>;
   }
@@ -403,12 +423,41 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
         <span>{part.mediaType} · {formatBytes(part.sizeBytes)}</span>
       </span>
       {contentUrl === undefined
-        ? <span className="reply-part-unavailable" role="status">Unavailable</span>
+        ? <span className="reply-part-unavailable" role="status">This file is no longer available.</span>
         : (
-          <a className="reply-part-action" href={contentUrl} download={part.name}>
-            Download<span className="sr-only"> {part.name}</span>
-          </a>
+          <button
+            type="button"
+            className="reply-part-action"
+            disabled={downloadState === "refreshing"}
+            onClick={() => {
+              setDownloadState("refreshing");
+              setDownloadStatus("Refreshing download access…");
+              void api.replyAttachmentContent(contentUrl).then(async (response) => {
+                if (
+                  Number(response.headers.get("content-length")) !== part.sizeBytes
+                  || response.headers.get("x-mono-agent-integrity-id") !== part.integrityId
+                ) {
+                  throw new Error("The refreshed attachment metadata changed.");
+                }
+                const blob = await response.blob();
+                if (blob.size !== part.sizeBytes) throw new Error("The refreshed attachment size changed.");
+                startReplyAttachmentDownload(blob, part.name);
+                setDownloadState("started");
+                setDownloadStatus("Download started with refreshed access.");
+              }).catch((error: unknown) => {
+                const expired = isReplyAccessExpired(error);
+                setDownloadState(expired ? "expired" : "error");
+                setDownloadStatus(expired
+                  ? "Download access expired. Refresh and try again."
+                  : "Download access could not be refreshed. Try again.");
+              });
+            }}
+          >
+            {downloadState === "expired" ? "Refresh access" : downloadState === "error" ? "Try again" : "Download"}
+            <span className="sr-only"> {part.name}</span>
+          </button>
         )}
+      {downloadStatus.length > 0 && <span className="reply-part-status" role="status" aria-live="polite">{downloadStatus}</span>}
     </section>
   );
 }
@@ -463,6 +512,8 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   const [statusText, setStatusText] = useState("Loading interactive app…");
   const [height, setHeight] = useState(320);
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
+  const [accessExpired, setAccessExpired] = useState(false);
+  const [accessRevision, setAccessRevision] = useState(0);
   const confirmationRef = useRef<ConfirmationRequest | null>(null);
   const confirmationId = useRef(0);
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
@@ -519,6 +570,7 @@ export function McpAppPart({ data }: DataMessagePartProps) {
     }
     const controller = new AbortController();
     setResource(null);
+    setAccessExpired(false);
     setStatus("loading");
     setStatusText("Loading interactive app…");
     void api.mcpAppResource(part.resourceUrl, controller.signal).then((loaded) => {
@@ -529,11 +581,15 @@ export function McpAppPart({ data }: DataMessagePartProps) {
       setStatusText("Starting the isolated app…");
     }).catch((error: unknown) => {
       if (controller.signal.aborted) return;
+      const expired = isReplyAccessExpired(error);
+      setAccessExpired(expired);
       setStatus("error");
-      setStatusText(error instanceof Error ? error.message : "The MCP App could not be loaded.");
+      setStatusText(expired
+        ? "Interactive app access expired. Refresh access to reconnect."
+        : error instanceof Error ? error.message : "The MCP App could not be loaded.");
     });
     return () => controller.abort();
-  }, [part?.bridgeUrl, part?.connectionId, part?.invocationId, part?.resourceUrl]);
+  }, [accessRevision, part?.bridgeUrl, part?.connectionId, part?.invocationId, part?.resourceUrl]);
 
   const metadata = useMemo(
     () => safeMcpAppResourceMetadata(resource?.resourceMetadata),
@@ -581,7 +637,18 @@ export function McpAppPart({ data }: DataMessagePartProps) {
       method: "resources/read" | "tools/call" | "ui/open-link" | "ui/update-model-context",
       params: unknown,
       confirmed: boolean,
-    ): Promise<unknown> => await api.mcpAppRequest(bridgeUrl, method, params, confirmed);
+    ): Promise<unknown> => {
+      try {
+        return await api.mcpAppRequest(bridgeUrl, method, params, confirmed);
+      } catch (error) {
+        if (isReplyAccessExpired(error)) {
+          setAccessExpired(true);
+          setStatus("error");
+          setStatusText("Interactive app access expired. Refresh access to reconnect.");
+        }
+        throw error;
+      }
+    };
 
     const ready = async (event: MessageEvent): Promise<void> => {
       if (
@@ -767,6 +834,14 @@ export function McpAppPart({ data }: DataMessagePartProps) {
               setStatusText("The interactive app closed.");
             }}
           >Close<span className="sr-only"> {part.title ?? part.toolName}</span></button>
+        )}
+        {accessExpired && status !== "closed" && (
+          <button
+            type="button"
+            className="reply-part-action"
+            disabled={confirmation !== null}
+            onClick={() => setAccessRevision((revision) => revision + 1)}
+          >Refresh app access<span className="sr-only"> for {part.title ?? part.toolName}</span></button>
         )}
       </header>
       <p className={`mcp-app-status is-${status}`} role="status">{statusText}</p>

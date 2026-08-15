@@ -3,6 +3,8 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const bridgeHarness = vi.hoisted(() => ({ instances: [] as Array<Record<string, unknown>> }));
+const originalCreateObjectUrl = URL.createObjectURL;
+const originalRevokeObjectUrl = URL.revokeObjectURL;
 
 vi.mock("@modelcontextprotocol/ext-apps/app-bridge", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@modelcontextprotocol/ext-apps/app-bridge")>();
@@ -30,7 +32,7 @@ vi.mock("@modelcontextprotocol/ext-apps/app-bridge", async (importOriginal) => {
   return { ...actual, AppBridge: TestAppBridge, PostMessageTransport: TestPostMessageTransport };
 });
 
-import { api } from "../api";
+import { ApiError, api } from "../api";
 import type { McpAppPart as McpAppPartValue } from "../types";
 import {
   McpAppPart,
@@ -72,11 +74,13 @@ const appPart: McpAppPartValue = {
 afterEach(() => {
   bridgeHarness.instances.length = 0;
   vi.restoreAllMocks();
+  Object.defineProperty(URL, "createObjectURL", { configurable: true, value: originalCreateObjectUrl });
+  Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: originalRevokeObjectUrl });
 });
 
 describe("assistant reply files", () => {
   it("renders an accessible download-only reference without inlining active content", () => {
-    const { container } = render(attachment({
+    const value = {
       type: "attachment",
       id: "file-1",
       artifactId: "artifact-1",
@@ -85,14 +89,32 @@ describe("assistant reply files", () => {
       sizeBytes: 2_048,
       integrityId: "sha256:abc",
       contentUrl: "/api/v1/threads/t/messages/m/reply-attachments/file-1/content?expires=1234567890&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    } as const;
+    vi.spyOn(api, "replyAttachmentContent").mockResolvedValue(new Response("x".repeat(value.sizeBytes), {
+      headers: {
+        "content-length": String(value.sizeBytes),
+        "content-type": "application/octet-stream",
+        "x-mono-agent-integrity-id": value.integrityId,
+      },
     }));
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:reply-file") });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    const { container } = render(attachment(value));
 
     expect(screen.getByRole("region", { name: "File attachment: report.html" })).toBeVisible();
-    const link = screen.getByRole("link", { name: "Download report.html" });
-    expect(link).toHaveAttribute("download", "report.html");
-    expect(link).toHaveAttribute("href", expect.stringContaining("/reply-attachments/file-1/content"));
+    const button = screen.getByRole("button", { name: "Download report.html" });
+    fireEvent.click(button);
     expect(screen.getByText("text/html · 2 KiB")).toBeVisible();
     expect(container.querySelector("img, object, embed, iframe")).toBeNull();
+    return waitFor(() => {
+      expect(click).toHaveBeenCalledTimes(1);
+      expect(click.mock.instances[0]).toMatchObject({
+        download: "report.html",
+        href: "blob:reply-file",
+      });
+      expect(screen.getByRole("status")).toHaveTextContent("Download started with refreshed access");
+    });
   });
 
   it("fails closed when a stored private endpoint points off origin", () => {
@@ -107,8 +129,30 @@ describe("assistant reply files", () => {
       contentUrl: "https://attacker.example/file",
     }));
 
-    expect(screen.getByRole("status")).toHaveTextContent("Unavailable");
-    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("no longer available");
+    expect(screen.queryByRole("button", { name: /Download/u })).not.toBeInTheDocument();
+  });
+
+  it("announces expired download access and exposes a clear refresh action", async () => {
+    vi.spyOn(api, "replyAttachmentContent").mockRejectedValue(
+      new ApiError("Reply access expired.", 410, "reply_access_expired"),
+    );
+    render(attachment({
+      type: "attachment",
+      id: "file-1",
+      artifactId: "artifact-1",
+      name: "report.pdf",
+      mediaType: "application/pdf",
+      sizeBytes: 10,
+      integrityId: "sha256:abc",
+      contentUrl: "/api/v1/threads/t/messages/m/reply-attachments/file-1/content?expires=1234567890&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Download report.pdf" }));
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("Download access expired");
+      expect(screen.getByRole("button", { name: "Refresh access report.pdf" })).toBeVisible();
+    });
   });
 
   it("announces per-part publication failures without hiding successful siblings", () => {
@@ -331,5 +375,24 @@ describe("MCP App sandbox", () => {
     render(app({ ...appPart, resourceUrl: undefined, bridgeUrl: undefined }));
     expect(screen.getByRole("status")).toHaveTextContent("does not have a valid private host endpoint");
     expect(screen.queryByTitle("Quarterly report interactive app")).not.toBeInTheDocument();
+  });
+
+  it("announces exhausted app access recovery and reconnects from an explicit refresh action", async () => {
+    const resource = {
+      app: appPart,
+      html: "<!doctype html><p>reconnected</p>",
+      connected: true,
+    };
+    const load = vi.spyOn(api, "mcpAppResource")
+      .mockRejectedValueOnce(new ApiError("Reply access expired.", 410, "reply_access_expired"))
+      .mockResolvedValueOnce(resource);
+
+    render(app(appPart));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Interactive app access expired"));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh app access for Quarterly report" }));
+
+    expect(await screen.findByTitle("Quarterly report interactive app")).toHaveAttribute("sandbox", "allow-scripts");
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("status")).toHaveTextContent("Starting the isolated app");
   });
 });

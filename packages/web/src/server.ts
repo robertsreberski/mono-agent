@@ -262,6 +262,24 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  app.post(
+    "/api/v1/threads/:threadId/messages/:messageId/reply-attachments/:partId/access",
+    (req, res, next) => {
+      try {
+        exactRequestOrigin(req);
+        const part = service.replyPartAccess(
+          pathParam(req.params.threadId),
+          pathParam(req.params.messageId),
+          pathParam(req.params.partId),
+          "attachment",
+        );
+        res.status(200).json({ part });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   app.get(
     "/api/v1/threads/:threadId/messages/:messageId/reply-attachments/:partId/content",
     (req, res, next) => {
@@ -290,6 +308,21 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       });
     },
   );
+
+  app.post("/api/v1/threads/:threadId/messages/:messageId/mcp-apps/:partId/access", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const part = service.replyPartAccess(
+        pathParam(req.params.threadId),
+        pathParam(req.params.messageId),
+        pathParam(req.params.partId),
+        "mcp_app",
+      );
+      res.status(200).json({ part });
+    } catch (error) {
+      next(error);
+    }
+  });
 
   app.get("/api/v1/threads/:threadId/messages/:messageId/mcp-apps/:partId", (req, res, next) => {
     const access = replyAccessQuery(req);

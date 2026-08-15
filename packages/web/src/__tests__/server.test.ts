@@ -576,8 +576,9 @@ describe("web HTTP server", () => {
     const bytes = Buffer.from("<script>alert(1)</script>");
     const integrityId = `sha256:${"a".repeat(64)}`;
     const bridgeBodies: Record<string, unknown>[] = [];
+    let clockMs = Date.parse("2026-08-14T12:00:00.000Z");
     const { baseUrl } = await start({
-      clock: () => new Date("2026-08-14T12:00:00.000Z"),
+      clock: () => new Date(clockMs),
       fetchImpl: operatorFetch({
         supportsReplyAttachments: true,
         supportsMcpApps: true,
@@ -739,6 +740,76 @@ describe("web HTTP server", () => {
       body: JSON.stringify({ method: "resources/read", params: { value: "x".repeat(70 * 1024) } }),
     });
     expect(oversized.status).toBe(413);
+
+    clockMs += 11 * 60 * 1_000;
+    const expiredDownload = await fetch(`${baseUrl}${String(attachment?.contentUrl)}`);
+    expect(expiredDownload.status).toBe(410);
+    await expect(expiredDownload.json()).resolves.toMatchObject({
+      error: { code: "reply_access_expired" },
+    });
+    const expiredResource = await fetch(`${baseUrl}${String(app?.resourceUrl)}`);
+    expect(expiredResource.status).toBe(410);
+    await expect(expiredResource.json()).resolves.toMatchObject({
+      error: { code: "reply_access_expired" },
+    });
+    const expiredBridge = await fetch(bridgeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({ method: "resources/read", params: { uri: "ui://widgets/data" } }),
+    });
+    expect(expiredBridge.status).toBe(410);
+    await expect(expiredBridge.json()).resolves.toMatchObject({
+      error: { code: "reply_access_expired" },
+    });
+
+    const attachmentAccessPath = new URL(String(attachment?.contentUrl), baseUrl).pathname
+      .replace(/\/content$/u, "/access");
+    const appAccessPath = `${new URL(String(app?.resourceUrl), baseUrl).pathname}/access`;
+    const refreshedAttachmentResponse = await fetch(`${baseUrl}${attachmentAccessPath}`, {
+      method: "POST",
+      headers: { origin: baseUrl },
+    });
+    expect(refreshedAttachmentResponse.status).toBe(200);
+    const refreshedAttachment = (await json(refreshedAttachmentResponse)).part as Record<string, unknown>;
+    expect(refreshedAttachment.contentUrl).not.toBe(attachment?.contentUrl);
+    expect((await fetch(`${baseUrl}${String(refreshedAttachment.contentUrl)}`)).status).toBe(200);
+
+    const refreshedAppResponse = await fetch(`${baseUrl}${appAccessPath}`, {
+      method: "POST",
+      headers: { origin: baseUrl },
+    });
+    expect(refreshedAppResponse.status).toBe(200);
+    const refreshedApp = (await json(refreshedAppResponse)).part as Record<string, unknown>;
+    expect(refreshedApp.resourceUrl).not.toBe(app?.resourceUrl);
+    expect((await fetch(`${baseUrl}${String(refreshedApp.resourceUrl)}`)).status).toBe(200);
+    const refreshedBridge = await fetch(`${baseUrl}${String(refreshedApp.bridgeUrl)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({ method: "resources/read", params: { uri: "ui://widgets/data" } }),
+    });
+    expect(refreshedBridge.status).toBe(200);
+
+    const staleAttachmentUrl = new URL(String(attachment?.contentUrl), baseUrl);
+    const originalToken = staleAttachmentUrl.searchParams.get("token")!;
+    staleAttachmentUrl.searchParams.set(
+      "token",
+      `${originalToken.slice(0, -1)}${originalToken.endsWith("x") ? "y" : "x"}`,
+    );
+    const forged = await fetch(staleAttachmentUrl);
+    expect(forged.status).toBe(404);
+    await expect(forged.json()).resolves.toMatchObject({ error: { code: "reply_part_not_found" } });
+    const unknown = await fetch(
+      `${baseUrl}${String(attachment?.contentUrl).replace("file-part", "unknown-part")}`,
+    );
+    expect(unknown.status).toBe(404);
+    const crossThreadRefresh = await fetch(
+      `${baseUrl}${attachmentAccessPath.replace(thread.id, otherId)}`,
+      { method: "POST", headers: { origin: baseUrl } },
+    );
+    expect(crossThreadRefresh.status).toBe(404);
+    const missingOriginRefresh = await fetch(`${baseUrl}${attachmentAccessPath}`, { method: "POST" });
+    expect(missingOriginRefresh.status).toBe(403);
+    expect(bridgeBodies).toHaveLength(2);
   });
 
   it("keeps failed upload bytes staged/retryable and removes only staged attachments", async () => {

@@ -642,15 +642,17 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 /* Assistant reply files and MCP Apps are explicit rich parts. App markup is
    never inserted here: only the trusted outer sandbox iframe occupies the card. */
 .reply-attachment, .mcp-app { margin: 12px 0; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 11px; box-shadow: var(--shadow-sm); }
-.reply-attachment { min-height: 52px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; }
+.reply-attachment { min-height: 52px; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 8px 10px; }
 .reply-part-icon { width: 30px; height: 30px; display: grid; place-items: center; flex: none; color: var(--accent); background: var(--accent-soft); border-radius: 8px; }
 .reply-part-copy { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 2px; }
 .reply-part-copy strong { overflow: hidden; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .reply-part-copy > span { overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
 .reply-part-action { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; flex: none; padding: 0 10px; color: var(--accent); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line)); border-radius: 8px; cursor: pointer; font-size: 10px; font-weight: 700; text-decoration: none; }
 .reply-part-action:hover { color: var(--on-accent); background: var(--accent-strong); }
+.reply-part-action:disabled { opacity: 0.58; cursor: wait; }
 .reply-part-action:focus-visible, .mcp-app-confirmation button:focus-visible, .mcp-app-frame:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .reply-part-unavailable { flex: none; color: var(--danger); font-size: 10px; font-weight: 650; }
+.reply-part-status { flex-basis: 100%; margin-left: 40px; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
 .reply-part-error { display: flex; flex-direction: column; gap: 3px; margin: 10px 0; padding: 10px 12px; color: var(--danger); background: var(--danger-soft); border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent); border-radius: 9px; font-size: 11px; }
 .reply-part-error strong { font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; }
 .mcp-app { position: relative; overflow: clip; }

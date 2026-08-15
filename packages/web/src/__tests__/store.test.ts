@@ -4,6 +4,8 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { MAX_AGENT_REPLY_PARTS, type AgentReplyPart } from "@mono-agent/agent-contracts";
+
 import type { WebAgentSummary } from "../contracts.js";
 import { WebStore } from "../store.js";
 import { temporaryRoot } from "./helpers.js";
@@ -159,6 +161,81 @@ describe("WebStore", () => {
     expect(reopened.ensureReplyAccessKey(() => "b".repeat(43))).toBe(key);
     expect(reopened.getMessage(detail.messages.at(-1)!.id)?.parts).toEqual(detail.messages.at(-1)?.parts);
     reopened.close();
+  });
+
+  it("bounds direct rich-part writes and keeps every decorated capability out of SQLite", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "bypass wire parser", attachmentIds: [] });
+    const injected = Array.from({ length: MAX_AGENT_REPLY_PARTS + 5 }, (_, index) => {
+      const decorated = index % 2 === 0
+        ? {
+            type: "attachment",
+            id: `part-${index}`,
+            reference: { scheme: "mono-agent-artifact", id: `artifact-${index}` },
+            name: `report-${index}.txt`,
+            mediaType: "text/plain",
+            sizeBytes: index,
+            integrityId: `sha256:${index.toString(16).padStart(64, "0")}`,
+          }
+        : {
+            type: "mcp_app",
+            id: `part-${index}`,
+            invocationId: `part-${index}`,
+            connectionId: `connection-${index}`,
+            serverName: "widgets",
+            toolName: "show_chart",
+            resourceUri: `ui://widgets/chart-${index}`,
+            mediaType: "text/html;profile=mcp-app",
+            protocolVersion: "2026-01-26",
+          };
+      return {
+        ...decorated,
+        contentUrl: `/stolen/content?access=decorated-${index}&token=secret-${index}`,
+        resourceUrl: `/stolen/resource?token=secret-${index}`,
+        bridgeUrl: `/stolen/bridge?access_token=secret-${index}`,
+        token: `secret-${index}`,
+        tokens: [`secret-${index}`],
+        access: { query: `token=secret-${index}` },
+        accessQuery: `expires=9999999999&token=secret-${index}`,
+      } as unknown as AgentReplyPart;
+    });
+
+    const detail = store.completeTurn(turn.turnId, "Bounded", undefined, injected);
+    const outcomes = detail.messages.at(-1)!.parts.filter(
+      (part) => part.type === "attachment" || part.type === "mcp_app" || part.type === "failure",
+    );
+    expect(outcomes).toHaveLength(MAX_AGENT_REPLY_PARTS);
+    expect(outcomes.slice(0, MAX_AGENT_REPLY_PARTS - 1).map((part) => "id" in part ? part.id : undefined))
+      .toEqual(Array.from({ length: MAX_AGENT_REPLY_PARTS - 1 }, (_, index) => `part-${index}`));
+    expect(outcomes.at(-1)).toEqual({
+      type: "failure",
+      id: "web-reply-parts-truncated",
+      code: "reply_part_too_large",
+      message: `The web console retained the first ${MAX_AGENT_REPLY_PARTS - 1} rich reply parts and omitted 6 because one reply may contain at most ${MAX_AGENT_REPLY_PARTS} outcomes.`,
+    });
+
+    const databasePath = store.paths.database;
+    const raw = new DatabaseSync(databasePath);
+    const row = raw.prepare("SELECT parts_json FROM messages WHERE id = ?")
+      .get(detail.messages.at(-1)!.id) as unknown as { parts_json: string };
+    raw.close();
+    expect(row.parts_json).not.toMatch(/contentUrl|resourceUrl|bridgeUrl|accessQuery|access_token|secret-/u);
+    expect(row.parts_json).not.toMatch(/"tokens?"|"access"/u);
+    store.close();
+
+    const corrupt = new DatabaseSync(databasePath);
+    const parts = JSON.parse(row.parts_json) as Array<Record<string, unknown>>;
+    const storedAttachment = parts.find((part) => part.type === "attachment")!;
+    storedAttachment.contentUrl = "/api/v1/threads/durable-capability";
+    corrupt.prepare("UPDATE messages SET parts_json = ? WHERE id = ?")
+      .run(JSON.stringify(parts), detail.messages.at(-1)!.id);
+    corrupt.close();
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });
   });
 
   it("projects synthetic steering events as one completed Steered tool row", async () => {

@@ -12,7 +12,9 @@ import type {
   CronRun,
   CronRunPage,
   LiveInputReceipt,
+  McpAppPart,
   McpAppResource,
+  MessagePart,
   PushSubscriptionStatus,
   StartTurnInput,
   ThreadDetail,
@@ -77,6 +79,79 @@ export const sameOriginReplyUrl = (value: string): string => {
     throw new Error("The reply part endpoint is not on this console origin.");
   }
   return `${url.pathname}${url.search}`;
+};
+
+type ReplyAttachmentPart = Extract<MessagePart, { readonly type: "attachment" }>;
+type RichReplyPart = ReplyAttachmentPart | McpAppPart;
+type RichReplyType = RichReplyPart["type"];
+
+interface ReplyEndpoint {
+  readonly type: RichReplyType;
+  readonly partId: string;
+  readonly accessPath: string;
+}
+
+const replyEndpoint = (value: string): ReplyEndpoint => {
+  const sameOrigin = sameOriginReplyUrl(value);
+  const url = new URL(sameOrigin, window.location.origin);
+  const match = /^\/api\/v1\/threads\/([^/]+)\/messages\/([^/]+)\/(reply-attachments|mcp-apps)\/([^/]+)(\/content|\/requests)?$/u
+    .exec(url.pathname);
+  if (match === null) throw new Error("The reply part endpoint has an invalid route.");
+  const [, , , family, encodedPartId, suffix = ""] = match;
+  const type = family === "reply-attachments" ? "attachment" : "mcp_app";
+  if ((type === "attachment" && suffix !== "/content") || (type === "mcp_app" && suffix === "/content")) {
+    throw new Error("The reply part endpoint has an invalid route.");
+  }
+  let partId: string;
+  try {
+    partId = decodeURIComponent(encodedPartId!);
+  } catch {
+    throw new Error("The reply part endpoint has an invalid identifier.");
+  }
+  const basePath = suffix.length === 0 ? url.pathname : url.pathname.slice(0, -suffix.length);
+  return { type, partId, accessPath: `${basePath}/access` };
+};
+
+export const isReplyAccessExpired = (error: unknown): error is ApiError =>
+  error instanceof ApiError && error.code === "reply_access_expired";
+
+const refreshReplyPartAccess = async <T extends RichReplyType>(
+  staleUrl: string,
+  expectedType: T,
+  signal?: AbortSignal,
+): Promise<Extract<RichReplyPart, { readonly type: T }>> => {
+  const endpoint = replyEndpoint(staleUrl);
+  if (endpoint.type !== expectedType) throw new Error("The reply part endpoint type changed.");
+  const payload = await request<{ readonly part: MessagePart }>(endpoint.accessPath, {
+    method: "POST",
+    headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+    ...(signal === undefined ? {} : { signal }),
+  });
+  const part = payload.part;
+  if (part.type !== expectedType || part.id !== endpoint.partId) {
+    throw new Error("The refreshed reply part identity changed.");
+  }
+  return part as Extract<RichReplyPart, { readonly type: T }>;
+};
+
+const withReplyAccessRetry = async <T extends RichReplyType, TResult>(
+  initialUrl: string,
+  type: T,
+  refreshedUrl: (part: Extract<RichReplyPart, { readonly type: T }>) => string | undefined,
+  operation: (url: string) => Promise<TResult>,
+  signal?: AbortSignal,
+): Promise<TResult> => {
+  try {
+    return await operation(sameOriginReplyUrl(initialUrl));
+  } catch (error) {
+    if (!isReplyAccessExpired(error) || signal?.aborted === true) throw error;
+  }
+  const refreshed = await refreshReplyPartAccess(initialUrl, type, signal);
+  const nextUrl = refreshedUrl(refreshed);
+  if (nextUrl === undefined) throw new Error("The refreshed reply part has no private endpoint.");
+  // Only an authenticated expiry response reaches this retry, and the newly
+  // minted request is attempted exactly once.
+  return await operation(sameOriginReplyUrl(nextUrl));
 };
 
 const cronMutation = async <T>(path: string, body: Readonly<Record<string, unknown>>): Promise<CronMutationResult<T>> => {
@@ -319,8 +394,30 @@ export const api = {
     if (!response.ok) throw await readError(response);
   },
 
+  replyAttachmentContent: (contentUrl: string, signal?: AbortSignal) =>
+    withReplyAccessRetry(
+      contentUrl,
+      "attachment",
+      (part) => part.contentUrl,
+      async (url) => {
+        const response = await fetch(url, {
+          headers: { Accept: "application/octet-stream" },
+          ...(signal === undefined ? {} : { signal }),
+        });
+        if (!response.ok) throw await readError(response);
+        return response;
+      },
+      signal,
+    ),
+
   mcpAppResource: (resourceUrl: string, signal?: AbortSignal) =>
-    request<McpAppResource>(sameOriginReplyUrl(resourceUrl), { signal }),
+    withReplyAccessRetry(
+      resourceUrl,
+      "mcp_app",
+      (part) => part.resourceUrl,
+      (url) => request<McpAppResource>(url, { signal }),
+      signal,
+    ),
 
   mcpAppRequest: async (
     bridgeUrl: string,
@@ -329,13 +426,21 @@ export const api = {
     confirmed: boolean,
     signal?: AbortSignal,
   ) => {
-    const payload = await request<{ readonly result: unknown }>(sameOriginReplyUrl(bridgeUrl), {
-      method: "POST",
-      headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
-      body: JSON.stringify({ method, params, confirmed }),
+    return await withReplyAccessRetry(
+      bridgeUrl,
+      "mcp_app",
+      (part) => part.bridgeUrl,
+      async (url) => {
+        const payload = await request<{ readonly result: unknown }>(url, {
+          method: "POST",
+          headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+          body: JSON.stringify({ method, params, confirmed }),
+          signal,
+        });
+        return payload.result;
+      },
       signal,
-    });
-    return payload.result;
+    );
   },
 };
 

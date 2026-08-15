@@ -226,6 +226,23 @@ agent to revalidate ownership and SHA-256 integrity, and streams the file with
 `Accept-Ranges: none`; browser DTOs never contain a host filesystem path or an
 agent capability URL.
 
+SQLite stores only inert artifact/app identity and retention metadata. The
+store independently caps rich reply outcomes at `MAX_AGENT_REPLY_PARTS`; an
+over-limit direct writer keeps a deterministic prefix and uses the final slot
+for an explicit bounded truncation failure. Decorated `contentUrl`,
+`resourceUrl`, `bridgeUrl`, token, and access-query fields are stripped at every
+message write and rejected if found in durable rich-part records.
+
+The service mints exact-thread/message/part capabilities only while projecting
+a browser DTO, with the existing ten-minute access TTL bounded by the part's
+retention deadline. An authentic expired capability returns
+`reply_access_expired`; forged, cross-thread, and unknown references keep the
+generic not-found response. The PWA then asks the exact-origin access route to
+re-project the authoritative retained part and retries an attachment, app
+resource, or app bridge request at most once. Tokens are neither persisted nor
+renewed as credentials. Attachment and app cards announce recovery status and
+offer an explicit refresh action if automatic recovery is exhausted.
+
 An advertised MCP App is stored as a structured message part and rendered only
 while its exact originating connection remains live. The PWA uses a
 nonce/identity-bound double iframe; both frames have opaque origins and
@@ -396,6 +413,11 @@ The browser API is rooted at `/api/v1`:
 - `GET /threads/:id/ask` and `POST /threads/:id/ask` for the current structured
   `AskUser` snapshot and atomic answer submission
 - `POST /uploads`, `PUT/GET /uploads/:id/content`, and `DELETE /uploads/:id`
+- Message-bound rich reply routes under
+  `/threads/:threadId/messages/:messageId`: `GET` reply-attachment content and
+  MCP App resources, `POST` MCP App bridge requests, plus exact-origin `POST`
+  access routes that re-project a retained authoritative part with a fresh
+  short-lived browser capability
 - `PUT/GET/DELETE /push/subscriptions[/:id]`, `POST /push/subscriptions/:id/test`,
   and `POST /push/events/:eventId/ack`; the status read carries the exact
   `X-Mono-Agent-Web-Origin` browser-origin claim and returns no endpoint or key

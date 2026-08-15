@@ -313,6 +313,22 @@ export class WebService {
     return { ...page, messages: page.messages.map((message) => this.decorateMessage(message)) };
   }
 
+  /**
+   * Re-mint a browser capability from the authoritative durable message. The
+   * HTTP route supplies exact-origin console authority; stale access tokens are
+   * deliberately not accepted as renewable credentials.
+   */
+  replyPartAccess(
+    threadId: string,
+    messageId: string,
+    partId: string,
+    type: "attachment" | "mcp_app",
+  ): WebRichReplyPart {
+    const { message, part } = this.requireReplyPart(threadId, messageId, partId, type);
+    this.assertReplyPartRetained(part);
+    return this.decorateReplyPart(message, part);
+  }
+
   async replyAttachment(
     threadId: string,
     messageId: string,
@@ -1405,9 +1421,32 @@ export class WebService {
     readonly thread: WebThread;
     readonly part: Extract<WebMessagePart, { type: T }>;
   } {
-    if (!this.validReplyAccessToken(threadId, messageId, type, partId, expires, token)) {
+    const access = this.replyAccessTokenStatus(threadId, messageId, type, partId, expires, token);
+    if (access === "invalid") {
       throw new WebConsoleError("reply_part_not_found", "The reply part is unavailable.", 404);
     }
+    const { thread, part } = this.requireReplyPart(threadId, messageId, partId, type);
+    this.assertReplyPartRetained(part);
+    if (access === "expired") {
+      throw new WebConsoleError(
+        "reply_access_expired",
+        "Reply access expired. Refresh this reply part and try again.",
+        410,
+      );
+    }
+    return { thread, part };
+  }
+
+  private requireReplyPart<T extends "attachment" | "mcp_app">(
+    threadId: string,
+    messageId: string,
+    partId: string,
+    type: T,
+  ): {
+    readonly thread: WebThread;
+    readonly message: WebMessage;
+    readonly part: Extract<WebMessagePart, { type: T }>;
+  } {
     const thread = this.store.getThread(threadId);
     const message = this.store.getMessage(messageId);
     if (thread === undefined || message === undefined || message.threadId !== thread.id) {
@@ -1420,11 +1459,14 @@ export class WebService {
       throw new WebConsoleError("reply_part_not_found", "The reply part is unavailable.", 404);
     }
     const part = matches[0]!;
+    return { thread, message, part };
+  }
+
+  private assertReplyPartRetained(part: WebRichReplyPart): void {
     const expiresAt = (part as WebRichReplyPart).expiresAt;
     if (expiresAt !== undefined && Date.parse(expiresAt) <= this.currentDate().getTime()) {
       throw new WebConsoleError("reply_part_expired", "The reply part has expired.", 410);
     }
-    return { thread, part };
   }
 
   private decorateThreadDetail(detail: WebThreadDetail): WebThreadDetail {
@@ -1434,28 +1476,33 @@ export class WebService {
   private decorateMessage(message: WebMessage): WebMessage {
     const parts = message.parts.map((part): WebMessagePart => {
       if (part.type !== "attachment" && part.type !== "mcp_app") return part;
-      const retentionDeadline = part.expiresAt === undefined
-        ? Number.POSITIVE_INFINITY
-        : Date.parse(part.expiresAt);
-      const expiresAt = Math.min(this.currentDate().getTime() + REPLY_ACCESS_TTL_MS, retentionDeadline);
-      if (!Number.isFinite(expiresAt) || expiresAt <= this.currentDate().getTime()) return part;
-      const expires = String(Math.floor(expiresAt / 1_000));
-      const token = this.replyAccessToken(message.threadId, message.id, part.type, part.id, expires);
-      const base = `/api/v1/threads/${encodeURIComponent(message.threadId)}`
-        + `/messages/${encodeURIComponent(message.id)}`;
-      const query = new URLSearchParams({ expires, token }).toString();
-      return part.type === "attachment"
-        ? {
-            ...part,
-            contentUrl: `${base}/reply-attachments/${encodeURIComponent(part.id)}/content?${query}`,
-          }
-        : {
-            ...part,
-            resourceUrl: `${base}/mcp-apps/${encodeURIComponent(part.id)}?${query}`,
-            bridgeUrl: `${base}/mcp-apps/${encodeURIComponent(part.id)}/requests?${query}`,
-          };
+      return this.decorateReplyPart(message, part);
     });
     return { ...message, parts };
+  }
+
+  private decorateReplyPart(message: WebMessage, part: WebRichReplyPart): WebRichReplyPart {
+    const now = this.currentDate().getTime();
+    const retentionDeadline = part.expiresAt === undefined
+      ? Number.POSITIVE_INFINITY
+      : Date.parse(part.expiresAt);
+    const expiresAt = Math.min(now + REPLY_ACCESS_TTL_MS, retentionDeadline);
+    if (!Number.isFinite(expiresAt) || expiresAt <= now) return part;
+    const expires = String(Math.floor(expiresAt / 1_000));
+    const token = this.replyAccessToken(message.threadId, message.id, part.type, part.id, expires);
+    const base = `/api/v1/threads/${encodeURIComponent(message.threadId)}`
+      + `/messages/${encodeURIComponent(message.id)}`;
+    const query = new URLSearchParams({ expires, token }).toString();
+    return part.type === "attachment"
+      ? {
+          ...part,
+          contentUrl: `${base}/reply-attachments/${encodeURIComponent(part.id)}/content?${query}`,
+        }
+      : {
+          ...part,
+          resourceUrl: `${base}/mcp-apps/${encodeURIComponent(part.id)}?${query}`,
+          bridgeUrl: `${base}/mcp-apps/${encodeURIComponent(part.id)}/requests?${query}`,
+        };
   }
 
   private replyAccessToken(
@@ -1470,23 +1517,23 @@ export class WebService {
       .digest("base64url");
   }
 
-  private validReplyAccessToken(
+  private replyAccessTokenStatus(
     threadId: string,
     messageId: string,
     type: "attachment" | "mcp_app",
     partId: string,
     expires: string,
     supplied: string,
-  ): boolean {
-    if (!/^\d{10,13}$/u.test(expires) || !/^[A-Za-z0-9_-]{43}$/u.test(supplied)) return false;
+  ): "valid" | "expired" | "invalid" {
+    if (!/^\d{10,13}$/u.test(expires) || !/^[A-Za-z0-9_-]{43}$/u.test(supplied)) return "invalid";
     const expiresMs = Number(expires) * 1_000;
-    const now = this.currentDate().getTime();
-    if (!Number.isSafeInteger(expiresMs) || expiresMs <= now || expiresMs > now + REPLY_ACCESS_TTL_MS + 1_000) {
-      return false;
-    }
+    if (!Number.isSafeInteger(expiresMs)) return "invalid";
     const expected = Buffer.from(this.replyAccessToken(threadId, messageId, type, partId, expires), "utf8");
     const candidate = Buffer.from(supplied, "utf8");
-    return candidate.byteLength === expected.byteLength && timingSafeEqual(candidate, expected);
+    if (candidate.byteLength !== expected.byteLength || !timingSafeEqual(candidate, expected)) return "invalid";
+    const now = this.currentDate().getTime();
+    if (expiresMs > now + REPLY_ACCESS_TTL_MS + 1_000) return "invalid";
+    return expiresMs <= now ? "expired" : "valid";
   }
 
   private conversationIdForThread(threadId: string): string {
