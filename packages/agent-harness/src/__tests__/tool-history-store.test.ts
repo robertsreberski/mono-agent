@@ -304,6 +304,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     const reader = new ToolHistoryReader(root);
     expect(reader.get({
       logicalConversationId: run.logicalConversationId,
+      currentConversationId: run.conversationId,
       currentRunId: "current-run",
       recordId: resultRecordId!,
     }).record?.artifactReferences).toEqual([
