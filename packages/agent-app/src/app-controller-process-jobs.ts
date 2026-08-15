@@ -77,7 +77,8 @@ export function ensureProcessJobsService(
             return;
           }
           const outcome = await routeProactiveNotification({
-            conversationId: projection.origin.conversationId,
+            conversationId: projection.origin.conversationId.split("#", 1)[0]
+              ?? projection.origin.conversationId,
             text: "",
             deliveryKey: projection.wake.deliveryKey,
             processJob: projection,
