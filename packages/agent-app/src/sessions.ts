@@ -7,10 +7,9 @@ import {
   TOOL_HISTORY_OWNER_DATABASE,
 } from "@mono-agent/agent-harness";
 
-import { resolveAppArtifactDir, resolveAppSessionsRoot } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
-import { acpSessionAuthorizationsRoot } from "./acp-session-store.js";
-import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
+import { resolveConversationStatePurgeRoots } from "./conversation-state-roots.js";
+import { loadProcessJobsSettings } from "./process-jobs-config.js";
 
 export interface PurgeSessionsResult {
   /** The resolved sessions root, or undefined when sessions are in-memory only. */
@@ -69,7 +68,11 @@ export interface PurgeConversationStateResult {
  * not writing sessions while they are deleted.
  */
 export async function purgeSessions(input: MonoAgentAppConfigInput): Promise<PurgeSessionsResult> {
-  const root = await resolveAppSessionsRoot(input);
+  const root = (await resolveConversationStatePurgeRoots(input)).sessions;
+  return await purgeSessionsRoot(root);
+}
+
+async function purgeSessionsRoot(root: string | undefined): Promise<PurgeSessionsResult> {
   if (root === undefined) {
     return { removed: false, files: 0 };
   }
@@ -97,8 +100,11 @@ export async function purgeSessions(input: MonoAgentAppConfigInput): Promise<Pur
 export async function purgeConversationHistory(
   input: MonoAgentAppConfigInput,
 ): Promise<PurgeConversationHistoryResult> {
-  const artifactDir = await resolveAppArtifactDir(input);
-  const root = agentArtifactDerivedRoots(artifactDir).history;
+  const root = (await resolveConversationStatePurgeRoots(input)).history;
+  return await purgeConversationHistoryRoot(root);
+}
+
+async function purgeConversationHistoryRoot(root: string): Promise<PurgeConversationHistoryResult> {
   let messageHistory = { files: 0, bytes: 0 };
   try {
     messageHistory = await countTopLevelFilesWithSuffix(root, ".history.json");
@@ -141,8 +147,13 @@ export async function purgeConversationHistory(
 export async function purgeAcpSessionAuthorizations(
   input: MonoAgentAppConfigInput,
 ): Promise<PurgeAcpSessionAuthorizationsResult> {
-  const artifactDir = await resolveAppArtifactDir(input);
-  const root = acpSessionAuthorizationsRoot(artifactDir);
+  const root = (await resolveConversationStatePurgeRoots(input)).acpSessions;
+  return await purgeAcpSessionAuthorizationsRoot(root);
+}
+
+async function purgeAcpSessionAuthorizationsRoot(
+  root: string,
+): Promise<PurgeAcpSessionAuthorizationsResult> {
   let files = 0;
   try {
     files = await countFilesWithSuffix(root, ".json");
@@ -158,9 +169,13 @@ export async function purgeAcpSessionAuthorizations(
 export async function purgeConversationState(
   input: MonoAgentAppConfigInput,
 ): Promise<PurgeConversationStateResult> {
-  const sessions = await purgeSessions(input);
-  const acpSessions = await purgeAcpSessionAuthorizations(input);
-  const history = await purgeConversationHistory(input);
+  // Validate before removing the first root so a newly edited config cannot
+  // make clear-sessions erase or partially erase durable process-job state.
+  await loadProcessJobsSettings(input);
+  const roots = await resolveConversationStatePurgeRoots(input);
+  const sessions = await purgeSessionsRoot(roots.sessions);
+  const acpSessions = await purgeAcpSessionAuthorizationsRoot(roots.acpSessions);
+  const history = await purgeConversationHistoryRoot(roots.history);
   return { sessions, history, acpSessions };
 }
 

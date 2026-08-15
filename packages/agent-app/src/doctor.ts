@@ -2508,7 +2508,7 @@ async function processJobsSection(
 ): Promise<ValidationSection> {
   let settings;
   try {
-    settings = await loadProcessJobsSettings({ cwd: input.cwd, configPath: input.configPath });
+    settings = await loadProcessJobsSettings({ cwd: input.cwd, configPath: input.configPath, env: input.env });
   } catch (error) {
     return {
       id: "process-jobs",

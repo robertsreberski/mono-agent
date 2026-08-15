@@ -1491,6 +1491,30 @@ describe("WebStore", () => {
     expect(processJobCards).toBeDefined();
   });
 
+  it("migrates schema v6 state to v7 process-job cards", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const initial = await WebStore.open({ stateDir });
+    const databasePath = initial.paths.database;
+    initial.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec("DROP TABLE process_job_cards; PRAGMA user_version = 6");
+    legacy.close();
+
+    const migrated = await WebStore.open({ stateDir });
+    migrated.close();
+    const inspected = new DatabaseSync(databasePath);
+    const version = inspected.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+    const processJobCards = inspected.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'",
+    ).get();
+    inspected.close();
+    expect(version.user_version).toBe(7);
+    expect(processJobCards).toBeDefined();
+  });
+
   it("rejects a future schema without retaining the failed database handle", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

@@ -1,5 +1,9 @@
-import { readFile, realpath } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { lstat, readFile, realpath } from "node:fs/promises";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+
+import { MonoAgentConfigError } from "@mono-agent/config";
+
+import { resolveConversationStatePurgeRoots } from "./conversation-state-roots.js";
 
 export const PROCESS_JOBS_DEFAULTS = Object.freeze({
   enabled: false,
@@ -58,6 +62,7 @@ export interface ProcessJobsSettings {
 export async function loadProcessJobsSettings(input: {
   readonly cwd: string;
   readonly configPath: string;
+  readonly env?: Record<string, string | undefined>;
 }): Promise<ProcessJobsSettings> {
   let raw: unknown = {};
   try {
@@ -68,7 +73,7 @@ export async function loadProcessJobsSettings(input: {
   }
   const root = objectOf(raw);
   const value = root.processJobs;
-  if (value === undefined) return resolvedSettings(input.cwd, false, {});
+  if (value === undefined) return await resolvedSettings(input, false, {});
   const block = requireObject(value, "processJobs");
   rejectUnknownKeys(block, "processJobs", [
     "enabled",
@@ -83,11 +88,15 @@ export async function loadProcessJobsSettings(input: {
     "maxChainDepth",
     "retention",
   ]);
-  return resolvedSettings(input.cwd, true, block);
+  return await resolvedSettings(input, true, block);
 }
 
 async function resolvedSettings(
-  cwd: string,
+  input: {
+    readonly cwd: string;
+    readonly configPath: string;
+    readonly env?: Record<string, string | undefined>;
+  },
   configured: boolean,
   block: Record<string, unknown>,
 ): Promise<ProcessJobsSettings> {
@@ -96,7 +105,7 @@ async function resolvedSettings(
   if (isAbsolute(rawStateDir)) {
     throw new Error("processJobs.stateDir must be relative to the agent root.");
   }
-  const agentRoot = await realpath(resolve(cwd)).catch(() => resolve(cwd));
+  const agentRoot = await realpath(resolve(input.cwd)).catch(() => resolve(input.cwd));
   const stateDir = resolve(agentRoot, rawStateDir);
   const escaped = relative(agentRoot, stateDir);
   if (escaped.length === 0) {
@@ -104,6 +113,13 @@ async function resolvedSettings(
   }
   if (escaped === ".." || escaped.startsWith(`..${sep}`) || isAbsolute(escaped)) {
     throw new Error("processJobs.stateDir must stay inside the agent root.");
+  }
+  if (configured) {
+    await assertStateDirOutsideConversationPurgeRoots(stateDir, {
+      cwd: input.cwd,
+      configPath: input.configPath,
+      env: input.env ?? {},
+    });
   }
 
   const retentionValue = block.retention;
@@ -140,6 +156,98 @@ async function resolvedSettings(
       ),
     },
   };
+}
+
+async function assertStateDirOutsideConversationPurgeRoots(
+  stateDir: string,
+  input: {
+    readonly cwd: string;
+    readonly configPath: string;
+    readonly env: Record<string, string | undefined>;
+  },
+): Promise<void> {
+  const roots = await resolveConversationStatePurgeRoots(input);
+  const canonicalStateDir = await canonicalConfigPath(stateDir, "processJobs.stateDir");
+  const purgeRoots = [
+    { kind: "Pi provider sessions", path: roots.sessions },
+    { kind: "durable session/tool history", path: roots.history },
+    { kind: "ACP sessions", path: roots.acpSessions },
+  ] as const;
+
+  for (const purgeRoot of purgeRoots) {
+    if (purgeRoot.path === undefined) continue;
+    const canonicalPurgeRoot = await canonicalConfigPath(
+      purgeRoot.path,
+      `restart --clear-sessions ${purgeRoot.kind} purge root`,
+    );
+    if (!pathsContainEachOther(canonicalStateDir, canonicalPurgeRoot)) continue;
+    const message = `processJobs.stateDir must be disjoint from the restart --clear-sessions ${purgeRoot.kind} purge root; neither path may contain the other.`;
+    throw new MonoAgentConfigError("invalid_json", message, {
+      path: "processJobs.stateDir",
+      reason: message,
+      stateDir: canonicalStateDir,
+      purgeRoot: canonicalPurgeRoot,
+      purgeRootKind: purgeRoot.kind,
+    });
+  }
+}
+
+async function canonicalConfigPath(path: string, label: string): Promise<string> {
+  let cursor = resolve(path);
+  const missingSuffix: string[] = [];
+  while (true) {
+    try {
+      const canonicalPrefix = await realpath(cursor);
+      return resolve(canonicalPrefix, ...missingSuffix);
+    } catch (error) {
+      if (!isErrno(error, "ENOENT")) {
+        const reason = error instanceof Error ? error.message : String(error);
+        const message = `${label} could not be canonicalized: ${reason}`;
+        throw new MonoAgentConfigError("invalid_json", message, {
+          path: "processJobs.stateDir",
+          reason: message,
+        });
+      }
+      try {
+        await lstat(cursor);
+        const message = `${label} exists but could not be canonicalized.`;
+        throw new MonoAgentConfigError("invalid_json", message, {
+          path: "processJobs.stateDir",
+          reason: message,
+        });
+      } catch (lstatError) {
+        if (lstatError instanceof MonoAgentConfigError) throw lstatError;
+        if (!isErrno(lstatError, "ENOENT")) {
+          const reason = lstatError instanceof Error ? lstatError.message : String(lstatError);
+          const message = `${label} could not be inspected while canonicalizing it: ${reason}`;
+          throw new MonoAgentConfigError("invalid_json", message, {
+            path: "processJobs.stateDir",
+            reason: message,
+          });
+        }
+      }
+      const parent = dirname(cursor);
+      if (parent === cursor) {
+        const message = `${label} could not be canonicalized because no existing ancestor was found.`;
+        throw new MonoAgentConfigError("invalid_json", message, {
+          path: "processJobs.stateDir",
+          reason: message,
+        });
+      }
+      missingSuffix.unshift(basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+function pathsContainEachOther(first: string, second: string): boolean {
+  return pathContains(first, second) || pathContains(second, first);
+}
+
+function pathContains(parent: string, child: string): boolean {
+  const candidate = relative(parent, child);
+  return candidate.length === 0
+    || (candidate !== ".." && !candidate.startsWith(`..${sep}`) && !isAbsolute(candidate));
 }
 
 function bounded(value: unknown, path: string, fallback: number, cap: number): number {
@@ -184,4 +292,8 @@ function rejectUnknownKeys(value: Record<string, unknown>, path: string, allowed
   if (unknown.length > 0) {
     throw new Error(`${path} has unknown ${unknown.length === 1 ? "key" : "keys"}: ${unknown.join(", ")}.`);
   }
+}
+
+function isErrno(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return typeof error === "object" && error !== null && "code" in error && error.code === code;
 }

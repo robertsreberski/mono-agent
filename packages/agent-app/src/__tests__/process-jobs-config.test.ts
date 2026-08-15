@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, realpath, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,6 +6,7 @@ import {
   parseProcessJobProjections,
   type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
+import { MonoAgentConfigError } from "@mono-agent/config";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -164,5 +165,118 @@ describe("loadProcessJobsSettings", () => {
     await mkdir(join(input.cwd, "nested"));
     await writeFile(input.configPath, JSON.stringify({ processJobs: { stateDir: "nested/jobs" } }));
     await expect(loadProcessJobsSettings(input)).resolves.toMatchObject({ stateDir: join(input.cwd, "nested/jobs") });
+  });
+
+  it.each([
+    {
+      name: "equal to durable history",
+      value: {
+        artifacts: { dir: ".state/artifacts" },
+        processJobs: { stateDir: ".state/history" },
+      },
+      kind: "durable session/tool history",
+    },
+    {
+      name: "inside durable history",
+      value: {
+        artifacts: { dir: ".state/artifacts" },
+        processJobs: { stateDir: ".state/history/jobs" },
+      },
+      kind: "durable session/tool history",
+    },
+    {
+      name: "containing durable history",
+      value: {
+        artifacts: { dir: ".state/artifacts" },
+        processJobs: { stateDir: ".state" },
+      },
+      kind: "durable session/tool history",
+    },
+    {
+      name: "inside ACP sessions",
+      value: {
+        artifacts: { dir: ".state/artifacts" },
+        processJobs: { stateDir: ".state/acp-sessions/jobs" },
+      },
+      kind: "ACP sessions",
+    },
+    {
+      name: "inside Pi provider sessions",
+      value: {
+        artifacts: { dir: ".other/artifacts" },
+        providers: { piNative: { piSessionsRoot: ".state/sessions" } },
+        processJobs: { stateDir: ".state/sessions/jobs" },
+      },
+      kind: "Pi provider sessions",
+    },
+    {
+      name: "containing Pi provider sessions",
+      value: {
+        artifacts: { dir: ".other/artifacts" },
+        providers: { piNative: { piSessionsRoot: ".state/sessions" } },
+        processJobs: { stateDir: ".state" },
+      },
+      kind: "Pi provider sessions",
+    },
+  ])("rejects a process-job state directory $name the clear-sessions root", async ({ value, kind }) => {
+    const input = await fixture(value);
+    let failure: unknown;
+    try {
+      await loadProcessJobsSettings(input);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(MonoAgentConfigError);
+    expect(failure).toMatchObject({
+      code: "invalid_json",
+      details: { path: "processJobs.stateDir", purgeRootKind: kind },
+    });
+    expect((failure as Error).message).toMatch(/restart --clear-sessions/u);
+  });
+
+  it("accepts custom state and reset roots that are safe siblings", async () => {
+    const input = await fixture({
+      artifacts: { dir: ".state/artifacts" },
+      providers: { piNative: { piSessionsRoot: ".state/sessions" } },
+      processJobs: { enabled: true, stateDir: ".state/jobs" },
+    });
+    await expect(loadProcessJobsSettings(input)).resolves.toMatchObject({
+      enabled: true,
+      stateDir: join(input.cwd, ".state/jobs"),
+    });
+  });
+
+  it("accepts the normal default state directory beside the default purge roots", async () => {
+    const input = await fixture({ processJobs: { enabled: true } });
+    await expect(loadProcessJobsSettings(input)).resolves.toMatchObject({
+      enabled: true,
+      stateDir: join(input.cwd, ".mono-agent/process-jobs"),
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a canonical symlink alias of a reset root", async () => {
+    const input = await fixture({
+      artifacts: { dir: ".other/artifacts" },
+      providers: { piNative: { piSessionsRoot: ".reset/sessions" } },
+      processJobs: { stateDir: ".state/jobs" },
+    });
+    await mkdir(join(input.cwd, ".reset/sessions"), { recursive: true });
+    await mkdir(join(input.cwd, ".state"), { recursive: true });
+    await symlink(join(input.cwd, ".reset/sessions"), join(input.cwd, ".state/jobs"), "dir");
+
+    await expect(loadProcessJobsSettings(input)).rejects.toMatchObject({
+      code: "invalid_json",
+      details: { path: "processJobs.stateDir", purgeRootKind: "Pi provider sessions" },
+    });
+  });
+
+  it("fails closed with a typed config error when state cannot be canonicalized", async () => {
+    const input = await fixture({ processJobs: { stateDir: "blocked/jobs" } });
+    await writeFile(join(input.cwd, "blocked"), "not a directory");
+    await expect(loadProcessJobsSettings(input)).rejects.toMatchObject({
+      code: "invalid_json",
+      details: { path: "processJobs.stateDir" },
+    });
+    await expect(loadProcessJobsSettings(input)).rejects.toThrow(/could not be canonicalized/u);
   });
 });

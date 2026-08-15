@@ -73,7 +73,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
   {
     jsonPath: "processJobs.stateDir", env: "--", type: "string",
     defaultLabel: ".mono-agent/process-jobs", defaultValue: ".mono-agent/process-jobs", example: ".mono-agent/process-jobs",
-    description: "Agent-root-confined owner-private process-job records and artifacts.",
+    description: "Agent-root-confined owner-private process-job records and artifacts; must be disjoint from every restart --clear-sessions purge root.",
   },
   {
     jsonPath: "processJobs.maxConcurrent", env: "--", type: "integer",

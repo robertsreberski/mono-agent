@@ -161,29 +161,62 @@ describe("purgeConversationHistory", () => {
 });
 
 describe("purgeConversationState", () => {
+  it("rejects an overlapping process-job root before deleting any conversation state", async () => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.state/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+      processJobs: { enabled: true, stateDir: "./.state/history" },
+    });
+    const sessionsRoot = join(dir, ".state", "sessions");
+    const historyRoot = join(dir, ".state", "history");
+    const acpSessionsRoot = join(dir, ".state", "acp-sessions");
+    await Promise.all([
+      mkdir(sessionsRoot, { recursive: true }),
+      mkdir(historyRoot, { recursive: true }),
+      mkdir(acpSessionsRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(sessionsRoot, "session.jsonl"), "{}\n"),
+      writeFile(join(historyRoot, "process-job-record.json"), "{}\n"),
+      writeFile(join(acpSessionsRoot, "authorization.json"), "{}\n"),
+    ]);
+
+    await expect(purgeConversationState(inputFor(configPath))).rejects.toMatchObject({
+      code: "invalid_json",
+      details: { path: "processJobs.stateDir", purgeRootKind: "durable session/tool history" },
+    });
+    await expect(readFile(join(sessionsRoot, "session.jsonl"), "utf8")).resolves.toBe("{}\n");
+    await expect(readFile(join(historyRoot, "process-job-record.json"), "utf8")).resolves.toBe("{}\n");
+    await expect(readFile(join(acpSessionsRoot, "authorization.json"), "utf8")).resolves.toBe("{}\n");
+  });
+
   it("clears provider transcripts and active history while preserving long-term memory and run artifacts", async () => {
     const configPath = await writeConfig({
       artifacts: { dir: "./.mono-agent/artifacts" },
       providers: { piNative: { piSessionsRoot: "./.mono-agent/sessions" } },
       memory: { mode: "lite", path: "./.mono-agent/memory", writeMode: "append-host-summary" },
+      processJobs: { enabled: true, stateDir: "./.mono-agent/process-jobs" },
     });
     const sessionsRoot = join(dir, ".mono-agent", "sessions");
     const historyRoot = join(dir, ".mono-agent", "history");
     const acpSessionsRoot = join(dir, ".mono-agent", "acp-sessions");
     const memoryRoot = join(dir, ".mono-agent", "memory");
     const artifactsRoot = join(dir, ".mono-agent", "artifacts");
+    const processJobsRoot = join(dir, ".mono-agent", "process-jobs");
     await Promise.all([
       mkdir(sessionsRoot, { recursive: true }),
       mkdir(historyRoot, { recursive: true }),
       mkdir(acpSessionsRoot, { recursive: true }),
       mkdir(memoryRoot, { recursive: true }),
       mkdir(artifactsRoot, { recursive: true }),
+      mkdir(processJobsRoot, { recursive: true }),
     ]);
     await writeFile(join(sessionsRoot, "session.jsonl"), "{}\n");
     await writeFile(join(historyRoot, "conversation.history.json"), "{}\n");
     await writeFile(join(acpSessionsRoot, "authorization.json"), "{}\n");
     await writeFile(join(memoryRoot, "memory.md"), "keep memory\n");
     await writeFile(join(artifactsRoot, "run.summary.json"), "{}\n");
+    await writeFile(join(processJobsRoot, "record.json"), "{}\n");
 
     const result = await purgeConversationState(inputFor(configPath));
 
@@ -200,5 +233,6 @@ describe("purgeConversationState", () => {
     await expect(stat(acpSessionsRoot)).rejects.toThrow();
     await expect(readFile(join(memoryRoot, "memory.md"), "utf8")).resolves.toBe("keep memory\n");
     await expect(readFile(join(artifactsRoot, "run.summary.json"), "utf8")).resolves.toBe("{}\n");
+    await expect(readFile(join(processJobsRoot, "record.json"), "utf8")).resolves.toBe("{}\n");
   });
 });

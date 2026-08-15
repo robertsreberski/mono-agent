@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ProcessJobProjection } from "@mono-agent/agent-contracts";
+import { MonoAgentConfigError } from "@mono-agent/config";
 
 import {
   ensureProcessJobsService,
@@ -38,6 +39,45 @@ afterEach(async () => {
 });
 
 describe("process-job lifecycle surface routing", () => {
+  it("fails startup with a typed config error before opening overlapping durable state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "mono-agent-process-job-overlap-"));
+    temporaryDirectories.push(cwd);
+    const configReadPath = join(cwd, "mono-agent.config.json");
+    await writeFile(configReadPath, JSON.stringify({
+      artifacts: { dir: ".config-state/artifacts" },
+      processJobs: { enabled: true, stateDir: ".state/history" },
+    }));
+    const controller: ProcessJobsControllerPort = {
+      cwd,
+      configReadPath,
+      env: { MONO_AGENT_ARTIFACT_DIR: ".state/artifacts" },
+      logger: undefined,
+      running: new Map(),
+      statuses: new Map(),
+      stopped: false,
+      processJobsService: undefined,
+      processJobsServiceStart: undefined,
+      processJobsDegradation: undefined,
+      observabilityContext: async () => ({}),
+      setStatus: (_id, status) => status,
+      refreshTraceSource: async () => undefined,
+    };
+
+    let failure: unknown;
+    try {
+      await ensureProcessJobsService(controller);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(MonoAgentConfigError);
+    expect(failure).toMatchObject({
+      code: "invalid_json",
+      details: { path: "processJobs.stateDir", purgeRootKind: "durable session/tool history" },
+    });
+    expect(processJobsService.open).not.toHaveBeenCalled();
+    expect(controller.processJobsDegradation).toBeUndefined();
+  });
+
   it("sends bucketed Slack and Telegram origins to their exact-base real driver destinations", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "mono-agent-process-job-surface-"));
     temporaryDirectories.push(cwd);

@@ -21,7 +21,12 @@ later result from a selected external MCP service.
 ## Configuration
 
 The feature is opt-in and every key is JSON-only. Unknown keys are rejected.
-`stateDir` must be a relative child of the agent root.
+`stateDir` must be a relative child of the agent root. Its canonical path must
+be disjoint from every root removed by `restart --clear-sessions`: Pi provider
+sessions, durable message/tool history, and ACP session authorizations. Startup
+and clear-sessions preflight reject equality or containment in either direction,
+including symlink aliases, so clearing conversation state cannot delete
+process-job records or output.
 
 ```json
 {

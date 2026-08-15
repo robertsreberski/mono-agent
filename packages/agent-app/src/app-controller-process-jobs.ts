@@ -40,6 +40,7 @@ export function ensureProcessJobsService(
     const settings = await loadProcessJobsSettings({
       cwd: controller.cwd,
       configPath: controller.configReadPath,
+      env: controller.env,
     });
     if (!settings.enabled) {
       controller.processJobsDegradation = undefined;

@@ -65,6 +65,7 @@ import type { MemoryRetrievalService } from "./memory-retrieval.js";
 import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 import { createProcessJobsRuntimeExtension } from "./process-jobs-runtime.js";
+import { loadProcessJobsSettings } from "./process-jobs-config.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import { bindProcessJobWakeContextToResponder } from "./process-jobs-context.js";
 
@@ -174,6 +175,12 @@ export async function buildResponder(
     configPath: controller.configReadPath,
     env: controller.env,
   })).stateDir;
+  const processJobsStateDir = controller.processJobsService?.settings.stateDir
+    ?? (await loadProcessJobsSettings({
+      cwd: controller.cwd,
+      configPath: controller.configReadPath,
+      env: controller.env,
+    })).stateDir;
   const replyArtifactPrivateRoots = [
     resolve(controller.cwd, ".mono-agent"),
     controller.configPath,
@@ -187,6 +194,7 @@ export async function buildResponder(
     coreConfig.providers?.piNative?.piSessionsRoot,
     coreConfig.traceability.registryDir,
     continuationStateDir,
+    processJobsStateDir,
     artifactDerivedRoots.history,
   ].filter((path): path is string => path !== undefined);
   const replyArtifacts = createReplyArtifactService({

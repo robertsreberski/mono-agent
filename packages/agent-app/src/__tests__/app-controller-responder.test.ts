@@ -105,6 +105,7 @@ describe("reply artifact responder composition", () => {
       activeRuntimes: [],
       interactionBridge: undefined,
       continuationService: undefined,
+      processJobsService: undefined,
       seenNotifyDestinations: createSeenNotifyDestinationCache(),
       sandboxEngineFor: () => undefined,
       memoryStore: async () => memory as never,
@@ -116,6 +117,7 @@ describe("reply artifact responder composition", () => {
         extension: async () => ({ runtimeOptions: {}, cleanup: async () => {} }),
         targetsDirectOpenCode: () => false,
         targetsUnsupportedHistoryTool: () => false,
+        targetsPiNative: () => false,
       }),
       buildRuntimeForModel: () => () => runtime,
       observabilityContext: async () => ({}),
@@ -157,6 +159,7 @@ describe("reply artifact responder composition", () => {
     const piSessionsRoot = join(workspace, "host-g");
     const traceRegistryDir = join(workspace, "host-h");
     const continuationStateDir = join(workspace, "host-i");
+    const processJobsStateDir = join(workspace, "host-l");
     const historyCandidate = join(historyRoot, "host-data.txt");
     const authorizedFilePath = join(workspace, "exports", "ordinary-report.txt");
     const authorizedFileContents = "composition-authorized-public-content";
@@ -177,6 +180,7 @@ describe("reply artifact responder composition", () => {
       { label: "provider sessions", path: join(piSessionsRoot, "host-data.txt") },
       { label: "trace registry", path: join(traceRegistryDir, "host-data.txt") },
       { label: "continuation state", path: join(continuationStateDir, "host-data.txt") },
+      { label: "process-job state", path: join(processJobsStateDir, "host-data.txt") },
     ] as const;
     await Promise.all([...new Set([...candidates.map(({ path }) => dirname(path)), dirname(authorizedFilePath)])]
       .map(async (dir) => await mkdir(dir, { recursive: true })));
@@ -204,6 +208,7 @@ describe("reply artifact responder composition", () => {
       artifacts: { dir: "./data/artifacts" },
       traceability: { registryDir: "./host-h", globalDiscovery: false },
       continuations: { enabled: false, stateDir: "./host-i" },
+      processJobs: { enabled: false, stateDir: "./host-l" },
     };
     const serializedConfig = `${JSON.stringify(rawConfig, null, 2)}\n`;
     await Promise.all([
@@ -218,6 +223,7 @@ describe("reply artifact responder composition", () => {
       writeFile(join(piSessionsRoot, "host-data.txt"), privateSentinel),
       writeFile(join(traceRegistryDir, "host-data.txt"), privateSentinel),
       writeFile(join(continuationStateDir, "host-data.txt"), privateSentinel),
+      writeFile(join(processJobsStateDir, "host-data.txt"), privateSentinel),
       writeFile(join(artifactDir, "host-data.txt"), privateSentinel),
       writeFile(join(artifactDir, "attachments", "host-data.txt"), privateSentinel),
       writeFile(join(artifactDir, "outbound", "not-current", "host-data.txt"), privateSentinel),
@@ -277,6 +283,7 @@ describe("reply artifact responder composition", () => {
       activeRuntimes: [],
       interactionBridge: undefined,
       continuationService: undefined,
+      processJobsService: undefined,
       seenNotifyDestinations: createSeenNotifyDestinationCache(),
       sandboxEngineFor: () => undefined,
       memoryStore: async () => memory as never,
@@ -288,6 +295,7 @@ describe("reply artifact responder composition", () => {
         extension: async () => ({ runtimeOptions: {}, cleanup: async () => {} }),
         targetsDirectOpenCode: () => false,
         targetsUnsupportedHistoryTool: () => false,
+        targetsPiNative: () => false,
       }),
       buildRuntimeForModel: () => () => runtime,
       observabilityContext: async () => ({}),

@@ -110,7 +110,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `processJobs.retention.artifactMaxBytes` | `integer` | `--` | 268435456 | `268435456` | Aggregate retained terminal output artifact budget (compiled cap 1 GiB). |
 | `processJobs.retention.maxAgeMs` | `integer` | `--` | 604800000 | `604800000` | Maximum terminal process-job record age (compiled cap 30 days). |
 | `processJobs.retention.maxRecords` | `integer` | `--` | 1000 | `1000` | Maximum retained terminal process-job records (compiled cap 10000). |
-| `processJobs.stateDir` | `string` | `--` | .mono-agent/process-jobs | `.mono-agent/process-jobs` | Agent-root-confined owner-private process-job records and artifacts. |
+| `processJobs.stateDir` | `string` | `--` | .mono-agent/process-jobs | `.mono-agent/process-jobs` | Agent-root-confined owner-private process-job records and artifacts; must be disjoint from every restart --clear-sessions purge root. |
 | `providers.local` | `array` | `MONO_AGENT_LOCAL_PROVIDERS_JSON` | unset | `[]` | Configures local for the providers section. |
 | `providers.piAuthPath` | `string` | `MONO_AGENT_PI_AUTH_PATH` | unset | `~/.pi/agent/auth.json` | Configures piAuthPath for the providers section. |
 | `providers.piNative.maxRetryDelayMs` | `integer` | `MONO_AGENT_MAX_RETRY_DELAY_MS` | 60000 | `60000` | Configures piNative.maxRetryDelayMs for the providers section. |
