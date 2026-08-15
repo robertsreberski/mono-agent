@@ -96,7 +96,7 @@ export function classifyPiToolResult(input) {
   if (Number.isFinite(exitCode) && exitCode !== 0) {
     return terminal("exit_nonzero", "runtime_error", `exit_${String(exitCode)}`);
   }
-  if (outcome?.code === "aborted" || input.aborted && input.isError && outcomeFailureKind === "runtime_error") {
+  if (outcome?.code === "aborted" || input.aborted && input.isError && !failureOutranksAbort(outcomeFailureKind)) {
     return terminal("cancelled", "cancelled", "abort_signal");
   }
   if (input.isError || outcome?.status === "error") {
@@ -166,6 +166,11 @@ function classifyGenericResult(block, timing, approval, abortSignal) {
     : hostToolLifecycleMetadata(timing?.tool_lifecycle)
       ? timing.tool_lifecycle
       : undefined;
+  // A failure kind only outranks host cancellation when its trusted hint also
+  // supplies the terminal error state required by the lifecycle contract.
+  const explicitFailureOutranksAbort = record(explicit)
+    && explicit.state === "error"
+    && failureOutranksAbort(explicit.failure_kind);
   if (approval?.reason === "approval_timeout") return terminal("timeout", "runtime_error", "approval_timeout");
   if (approval?.decision === "deny") return terminal("rejected", "runtime_error", boundedCode(approval.reason || "approval_denied"));
   if (record(explicit) && terminalState(explicit.state) && explicit.state !== "error") {
@@ -181,7 +186,7 @@ function classifyGenericResult(block, timing, approval, abortSignal) {
   if (
     abortSignal?.aborted
     && block.is_error === true
-    && (!record(explicit) || explicit.state !== "error" || failureKind(explicit.failure_kind) === "runtime_error")
+    && !explicitFailureOutranksAbort
   ) {
     return terminal("cancelled", cancellationFailureKind(abortSignal), "abort_signal");
   }
@@ -292,7 +297,14 @@ function failureKind(value) {
 /** @param {string} state @param {any} value */
 function lifecycleFailureKind(state, value) {
   if (typeof value === "string" && FAILURE_KINDS.has(value)) return value;
-  return state === "signal" || state === "interrupted" ? "process_death" : "runtime_error";
+  if (state === "signal" || state === "interrupted") return "process_death";
+  return state === "cancelled" ? "cancelled" : "runtime_error";
+}
+
+/** @param {any} value */
+function failureOutranksAbort(value) {
+  const kind = failureKind(value);
+  return kind !== "runtime_error" && !kind.startsWith("cancelled");
 }
 
 /** @param {AbortSignal} signal */
