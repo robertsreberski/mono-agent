@@ -392,6 +392,7 @@ export interface UpsertWebProcessJobCardInput {
   readonly deliveryKey: string;
   readonly processJob: ProcessJobProjection;
   readonly responseText?: string;
+  readonly replyParts?: readonly AgentReplyPart[];
 }
 
 export class WebStore {
@@ -1272,7 +1273,7 @@ export class WebStore {
     const now = this.now();
     if (existing === undefined) {
       const messageId = randomUUID();
-      const part = processJobPart(projection, input.responseText);
+      const parts = processJobCardParts(projection, input.responseText, input.replyParts);
       this.transaction(() => {
         this.database.prepare(`
           INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
@@ -1280,7 +1281,7 @@ export class WebStore {
         `).run(
           messageId,
           input.threadId,
-          JSON.stringify([part]),
+          serializeParts(parts),
           now,
           now,
           isTerminalJobState(projection.state) ? "complete" : "running",
@@ -1321,16 +1322,20 @@ export class WebStore {
       throw new WebConsoleError("storage_corrupt", "A retained process-job card is missing its message.", 500);
     }
     const priorParts = parseParts(message.parts_json);
-    const priorPart = priorParts.length === 1 && priorParts[0]?.type === "process-job"
-      ? priorParts[0]
-      : undefined;
-    if (priorPart === undefined || priorPart.job.jobId !== projection.jobId) {
+    const priorJobParts = priorParts.filter((part) => part.type === "process-job");
+    const priorReplyParts = priorParts.filter(isDurableWebReplyPart);
+    const priorPart = priorJobParts[0];
+    if (priorJobParts.length !== 1
+      || priorPart === undefined
+      || priorPart.job.jobId !== projection.jobId
+      || priorParts.length !== 1 + priorReplyParts.length) {
       throw new WebConsoleError("storage_corrupt", "A retained process-job card has invalid content.", 500);
     }
     assertProcessJobCardTransition(priorPart.job, projection);
-    if (existing.response_text !== null
+    const hasPriorWakeResponse = existing.response_text !== null || priorReplyParts.length > 0;
+    if (hasPriorWakeResponse
       && input.responseText !== undefined
-      && input.responseText !== existing.response_text) {
+      && input.responseText !== (existing.response_text ?? undefined)) {
       throw new WebConsoleError(
         "notification_idempotency_conflict",
         "The process-job wake response cannot be replaced by different text.",
@@ -1338,14 +1343,29 @@ export class WebStore {
       );
     }
     const responseText = input.responseText ?? existing.response_text ?? undefined;
-    if (existing.projection_sha256 === projectionSha256 && responseText === (existing.response_text ?? undefined)) {
+    const nextReplyParts = input.replyParts === undefined
+      ? priorReplyParts
+      : boundedWebReplyParts(input.replyParts, []);
+    if (hasPriorWakeResponse
+      && input.replyParts !== undefined
+      && !isDeepStrictEqual(nextReplyParts, priorReplyParts)) {
+      throw new WebConsoleError(
+        "notification_idempotency_conflict",
+        "The process-job wake reply parts cannot be replaced by different parts.",
+        409,
+      );
+    }
+    const replyPartsChanged = !isDeepStrictEqual(nextReplyParts, priorReplyParts);
+    if (existing.projection_sha256 === projectionSha256
+      && responseText === (existing.response_text ?? undefined)
+      && !replyPartsChanged) {
       return { thread, duplicate: true };
     }
     this.transaction(() => {
       this.database.prepare(`
         UPDATE messages SET parts_json = ?, updated_at = ?, status = ? WHERE id = ?
       `).run(
-        JSON.stringify([processJobPart(projection, responseText)]),
+        serializeParts([processJobPart(projection, responseText), ...nextReplyParts]),
         now,
         isTerminalJobState(projection.state) ? "complete" : "running",
         existing.message_id,
@@ -5013,6 +5033,15 @@ function processJobPart(
     job,
     ...(responseText === undefined ? {} : { responseText }),
   };
+}
+
+function processJobCardParts(
+  job: ProcessJobProjection,
+  responseText: string | undefined,
+  replyParts: readonly AgentReplyPart[] | undefined,
+): WebMessagePart[] {
+  const card = processJobPart(job, responseText);
+  return replyParts === undefined ? [card] : boundedWebReplyParts(replyParts, [card]);
 }
 
 function isTerminalJobState(state: ProcessJobState): boolean {

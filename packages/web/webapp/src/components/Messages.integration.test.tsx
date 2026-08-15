@@ -383,16 +383,44 @@ describe("AssistantMessage grouped parts", () => {
 });
 
 describe("message actions", () => {
-  it("renders one durable process-job card with bounded expandable output", () => {
+  it("renders one durable process-job card with its rich reply siblings", () => {
     render(<MessageHarness message={{
       ...assistantMessage("complete"),
-      parts: [{ type: "process-job", job: processJob(), responseText: "Completed normally." }],
+      parts: [
+        { type: "process-job", job: processJob(), responseText: "Completed normally." },
+        {
+          type: "attachment",
+          id: "job-attachment",
+          artifactId: "job-artifact",
+          name: "report.txt",
+          mediaType: "text/plain",
+          sizeBytes: 12,
+          integrityId: `sha256:${"a".repeat(64)}`,
+        },
+        {
+          type: "mcp_app",
+          id: "11111111-1111-4111-8111-111111111111",
+          invocationId: "11111111-1111-4111-8111-111111111111",
+          connectionId: "job-connection",
+          serverName: "widgets",
+          toolName: "show_chart",
+          resourceUri: "ui://widgets/chart",
+          mediaType: "text/html;profile=mcp-app",
+          protocolVersion: "2026-01-26",
+          title: "Job chart",
+        },
+        { type: "failure", id: "job-failure", code: "artifact_missing", message: "File expired." },
+      ],
     }} />);
 
     expect(screen.getByRole("region", { name: "Exec background job succeeded" })).toBeVisible();
     expect(screen.getByText("node worker.js --safe-summary")).toBeVisible();
     expect(screen.getByText("2 s")).toBeVisible();
     expect(screen.getByText("Completed normally.")).toBeVisible();
+    expect(screen.getByRole("region", { name: "File attachment: report.txt" })).toBeVisible();
+    expect(screen.getByRole("region", { name: "Interactive app: Job chart" })).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("artifact_missing");
+    expect(screen.getByRole("alert")).toHaveTextContent("File expired.");
     const disclosure = screen.getByText("Output");
     expect(disclosure.closest("details")).not.toHaveAttribute("open");
   });

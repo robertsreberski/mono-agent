@@ -273,7 +273,9 @@ export function createTuiChannelDriver(
               abortSignal: controller.signal,
               metadata: { source: "web", web: { trigger: "job" } },
             }, NULL_MESSAGE_STREAM);
-            if (response.text === undefined || response.text.trim().length === 0) {
+            const hasText = response.text !== undefined && response.text.trim().length > 0;
+            const hasParts = response.parts !== undefined && response.parts.length > 0;
+            if (!hasText && !hasParts) {
               return { delivered: false, code: "empty_response", reason: "The process-job wake produced no answer.", retryable: false };
             }
             const threadId = webThreadId(conversationId);
@@ -291,7 +293,8 @@ export function createTuiChannelDriver(
               deliveryKey,
               threadId,
               processJob,
-              text: boundedProcessJobResponse(response.text),
+              ...(hasText ? { text: boundedProcessJobResponse(response.text!) } : {}),
+              ...(response.parts === undefined ? {} : { parts: response.parts }),
             });
             return { delivered: true, code: "delivered", channelId: "tui", historyRecorded: true };
           } catch (error) {

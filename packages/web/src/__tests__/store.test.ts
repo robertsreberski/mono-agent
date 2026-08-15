@@ -1410,25 +1410,59 @@ describe("WebStore", () => {
     const terminal = fakeProcessJob({
       conversationId: `web:${thread.id}`,
       state: "succeeded",
-      wakeState: "delivered",
     });
+    const replyParts = [
+      {
+        type: "attachment",
+        id: "job-attachment",
+        reference: { scheme: "mono-agent-artifact", id: "job-artifact" },
+        name: "report.txt",
+        mediaType: "text/plain",
+        sizeBytes: 12,
+        integrityId: `sha256:${"a".repeat(64)}`,
+      },
+      {
+        type: "mcp_app",
+        id: "11111111-1111-4111-8111-111111111111",
+        invocationId: "11111111-1111-4111-8111-111111111111",
+        connectionId: "job-connection",
+        serverName: "widgets",
+        toolName: "show_chart",
+        resourceUri: "ui://widgets/chart",
+        mediaType: "text/html;profile=mcp-app",
+        protocolVersion: "2026-01-26",
+        title: "Job chart",
+      },
+      {
+        type: "failure",
+        id: "job-failure",
+        code: "artifact_missing",
+        message: "One optional artifact expired.",
+      },
+    ] as const satisfies readonly AgentReplyPart[];
     expect(store.upsertProcessJobCard({
       sourceId: "agent-one",
       threadId: thread.id,
       deliveryKey: terminal.wake.deliveryKey,
       processJob: terminal,
       responseText: "The worker completed safely.",
+      replyParts,
     })).toMatchObject({ duplicate: false, thread: { messageCount: 1 } });
     const terminalDetail = store.getThreadDetail(thread.id);
     expect(terminalDetail?.messages).toHaveLength(1);
     expect(terminalDetail?.messages[0]).toMatchObject({
       id: runningDetail?.messages[0]?.id,
       status: "complete",
-      parts: [{
-        type: "process-job",
-        job: { state: "succeeded", wake: { state: "delivered" } },
-        responseText: "The worker completed safely.",
-      }],
+      parts: [
+        {
+          type: "process-job",
+          job: { state: "succeeded", wake: { state: "pending" } },
+          responseText: "The worker completed safely.",
+        },
+        { type: "attachment", id: "job-attachment", artifactId: "job-artifact", name: "report.txt" },
+        { type: "mcp_app", id: "11111111-1111-4111-8111-111111111111", connectionId: "job-connection" },
+        replyParts[2],
+      ],
     });
     expect(store.upsertProcessJobCard({
       sourceId: "agent-one",
@@ -1436,24 +1470,59 @@ describe("WebStore", () => {
       deliveryKey: terminal.wake.deliveryKey,
       processJob: terminal,
       responseText: "The worker completed safely.",
+      replyParts,
     })).toMatchObject({ duplicate: true });
     expect(() => store.upsertProcessJobCard({
       sourceId: "agent-one",
       threadId: thread.id,
       deliveryKey: terminal.wake.deliveryKey,
       processJob: terminal,
-      responseText: "A conflicting second answer.",
+      responseText: "The worker completed safely.",
+      replyParts: [{ ...replyParts[2], message: "A conflicting second outcome." }],
     })).toThrowError(expect.objectContaining({ code: "notification_idempotency_conflict" }));
+    expect(() => store.upsertProcessJobCard({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      deliveryKey: terminal.wake.deliveryKey,
+      processJob: terminal,
+      responseText: "A conflicting second answer.",
+      replyParts,
+    })).toThrowError(expect.objectContaining({ code: "notification_idempotency_conflict" }));
+
+    const settled = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      state: "succeeded",
+      wakeState: "delivered",
+    });
+    expect(store.upsertProcessJobCard({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      deliveryKey: settled.wake.deliveryKey,
+      processJob: settled,
+    })).toMatchObject({ duplicate: false });
+    const settledParts = store.getThreadDetail(thread.id)?.messages[0]?.parts;
+    expect(settledParts).toMatchObject([
+      { type: "process-job", job: { wake: { state: "delivered" } }, responseText: "The worker completed safely." },
+      { type: "attachment", id: "job-attachment", artifactId: "job-artifact" },
+      { type: "mcp_app", id: "11111111-1111-4111-8111-111111111111" },
+      replyParts[2],
+    ]);
     expect(() => store.upsertProcessJobCard({
       sourceId: "agent-one",
       threadId: thread.id,
       deliveryKey: running.wake.deliveryKey,
       processJob: running,
     })).toThrowError(expect.objectContaining({ code: "notification_idempotency_conflict" }));
+
+    const raw = new DatabaseSync(store.paths.database);
+    const row = raw.prepare("SELECT parts_json FROM messages WHERE id = ?")
+      .get(runningDetail!.messages[0]!.id) as unknown as { parts_json: string };
+    raw.close();
+    expect(row.parts_json).not.toMatch(/mono-agent-artifact|contentUrl|resourceUrl|bridgeUrl|token/u);
     store.close();
 
     const reopened = await WebStore.open({ stateDir });
-    expect(reopened.getThreadDetail(thread.id)?.messages).toHaveLength(1);
+    expect(reopened.getThreadDetail(thread.id)?.messages[0]?.parts).toEqual(settledParts);
     reopened.close();
   });
 

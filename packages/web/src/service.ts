@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import {
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
+  type AgentReplyPart,
   createChannelUserCancelReason,
   isChannelUserCancelReason,
   toolNameLeaf,
@@ -167,6 +168,7 @@ export interface DeliverWebProcessJobNotificationInput {
   readonly threadId: string;
   readonly processJob: ProcessJobProjection;
   readonly text?: string;
+  readonly parts?: readonly AgentReplyPart[];
 }
 
 export type DeliverWebNotificationInput =
@@ -739,6 +741,7 @@ export class WebService {
         deliveryKey: input.deliveryKey,
         processJob: input.processJob,
         ...(input.text === undefined ? {} : { responseText: input.text }),
+        ...(input.parts === undefined ? {} : { replyParts: input.parts }),
       });
       const message = this.store.getThreadDetail(input.threadId)?.messages.find((candidate) =>
         candidate.parts.some((part) => part.type === "process-job" && part.job.jobId === input.processJob.jobId));

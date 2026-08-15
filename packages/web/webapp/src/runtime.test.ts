@@ -16,16 +16,39 @@ const message = (overrides: Partial<WebMessage> = {}): WebMessage => ({
 });
 
 describe("convertWebMessage", () => {
-  it("maps a retained process job into one named data card", () => {
+  it("maps a retained process job and rich reply siblings into named data parts", () => {
     const job = processJob();
     const converted = convertWebMessage(message({
       role: "assistant",
-      parts: [{ type: "process-job", job, responseText: "Completed normally." }],
+      parts: [
+        { type: "process-job", job, responseText: "Completed normally." },
+        {
+          type: "attachment",
+          id: "job-attachment",
+          artifactId: "job-artifact",
+          name: "report.txt",
+          mediaType: "text/plain",
+          sizeBytes: 12,
+          integrityId: `sha256:${"a".repeat(64)}`,
+          contentUrl: "/api/v1/threads/thread-1/messages/message-1/reply-attachments/job-attachment/content?token=access",
+        },
+        { type: "failure", id: "job-failure", code: "artifact_missing", message: "File expired." },
+      ],
     }));
-    expect(converted.content).toEqual([{
-      type: "data-process-job",
-      data: { type: "process-job", job, responseText: "Completed normally." },
-    }]);
+    expect(converted.content).toEqual([
+      {
+        type: "data-process-job",
+        data: { type: "process-job", job, responseText: "Completed normally." },
+      },
+      expect.objectContaining({
+        type: "data-reply-attachment",
+        data: expect.objectContaining({ id: "job-attachment", artifactId: "job-artifact" }),
+      }),
+      {
+        type: "data-reply-failure",
+        data: { type: "failure", id: "job-failure", code: "artifact_missing", message: "File expired." },
+      },
+    ]);
   });
 
   it("preserves attachment-only user messages without manufacturing text or running state", () => {

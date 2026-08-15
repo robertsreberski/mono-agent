@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   isChannelUserCancelReason,
+  type AgentReplyPart,
 } from "@mono-agent/agent-contracts";
 
 import { WebService, WeightedTurnBudget } from "../service.js";
@@ -537,22 +538,73 @@ describe("WebService", () => {
       state: "succeeded",
       wakeState: "delivered",
     });
-    await service.deliverNotification({
+    const replyParts = [
+      {
+        type: "attachment" as const,
+        id: "job-attachment",
+        reference: { scheme: "mono-agent-artifact" as const, id: "job-artifact" },
+        name: "report.txt",
+        mediaType: "text/plain",
+        sizeBytes: 12,
+        integrityId: `sha256:${"a".repeat(64)}`,
+      },
+      {
+        type: "mcp_app" as const,
+        id: "11111111-1111-4111-8111-111111111111",
+        invocationId: "11111111-1111-4111-8111-111111111111",
+        connectionId: "job-connection",
+        serverName: "widgets",
+        toolName: "show_chart",
+        resourceUri: "ui://widgets/chart",
+        mediaType: "text/html;profile=mcp-app" as const,
+        protocolVersion: "2026-01-26" as const,
+        title: "Job chart",
+      },
+      {
+        type: "failure" as const,
+        id: "job-failure",
+        code: "artifact_missing" as const,
+        message: "One optional artifact expired.",
+      },
+    ] as const satisfies readonly AgentReplyPart[];
+    const terminalInput = {
       sourceId: "agent-one",
-      triggerKind: "job",
+      triggerKind: "job" as const,
       deliveryKey: terminal.wake.deliveryKey,
       threadId: thread.id,
       processJob: terminal,
       text: "Completed normally.",
-    });
+      parts: replyParts,
+    };
+    await expect(service.deliverNotification(terminalInput)).resolves.toMatchObject({ duplicate: false });
     expect(service.thread(thread.id).messages).toHaveLength(1);
-    expect(service.thread(thread.id).messages[0]?.parts).toEqual([
+    const parts = service.thread(thread.id).messages[0]?.parts;
+    expect(parts).toEqual([
       expect.objectContaining({
         type: "process-job",
         job: expect.objectContaining({ state: "succeeded" }),
         responseText: "Completed normally.",
       }),
+      expect.objectContaining({
+        type: "attachment",
+        id: "job-attachment",
+        artifactId: "job-artifact",
+        contentUrl: expect.stringContaining("/reply-attachments/job-attachment/content?"),
+      }),
+      expect.objectContaining({
+        type: "mcp_app",
+        id: "11111111-1111-4111-8111-111111111111",
+        resourceUrl: expect.stringContaining("/mcp-apps/11111111-1111-4111-8111-111111111111?"),
+        bridgeUrl: expect.stringContaining("/mcp-apps/11111111-1111-4111-8111-111111111111/requests?"),
+      }),
+      replyParts[2],
     ]);
+    expect(JSON.stringify(parts)).not.toContain("mono-agent-artifact");
+    await expect(service.deliverNotification(terminalInput)).resolves.toMatchObject({ duplicate: true });
+    await expect(service.deliverNotification({
+      ...terminalInput,
+      parts: [{ ...replyParts[2], message: "A different retry." }],
+    })).rejects.toMatchObject({ code: "notification_idempotency_conflict", status: 409 });
     expect(onVerbatim).not.toHaveBeenCalled();
     await service.stop();
   });

@@ -6,8 +6,10 @@ import {
   bearerTokensEqual,
   close,
   listen,
+  MAX_AGENT_REPLY_PARTS,
   parseProcessJobProjection,
   readAuthorizationBearer,
+  type AgentReplyPart,
   type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
@@ -155,6 +157,7 @@ type ParsedNotificationRequest = {
   readonly threadId: string;
   readonly processJob: ProcessJobProjection;
   readonly text?: string;
+  readonly parts?: readonly AgentReplyPart[];
 };
 
 export function parseNotificationRequest(body: unknown): ParsedNotificationRequest {
@@ -163,7 +166,7 @@ export function parseNotificationRequest(body: unknown): ParsedNotificationReque
   }
   const record = body as Record<string, unknown>;
   const allowed = record.triggerKind === "job"
-    ? new Set(["sourceId", "triggerKind", "deliveryKey", "threadId", "processJob", "text"])
+    ? new Set(["sourceId", "triggerKind", "deliveryKey", "threadId", "processJob", "text", "parts"])
     : new Set(["sourceId", "triggerKind", "deliveryKey", "text", "jobId", "runId"]);
   if (Object.keys(record).some((key) => !allowed.has(key))) {
     throw new WebConsoleError("invalid_notification", "Notification body contains unsupported fields.", 400);
@@ -184,6 +187,7 @@ export function parseNotificationRequest(body: unknown): ParsedNotificationReque
     if (typeof record.text === "string" && record.text.length > 8_000) {
       throw new WebConsoleError("invalid_notification", "Process-job response text exceeds its limit.", 413);
     }
+    const parts = parseReplyParts(record.parts);
     return {
       sourceId,
       triggerKind: "job",
@@ -191,6 +195,7 @@ export function parseNotificationRequest(body: unknown): ParsedNotificationReque
       threadId,
       processJob,
       ...(typeof record.text === "string" ? { text: record.text } : {}),
+      ...(parts === undefined ? {} : { parts }),
     };
   }
   if (record.triggerKind !== "cron" && record.triggerKind !== "webhook") {
@@ -218,6 +223,27 @@ export function parseNotificationRequest(body: unknown): ParsedNotificationReque
     text: record.text,
     ...(jobId === undefined ? {} : { jobId, runId: runId! }),
   };
+}
+
+function parseReplyParts(value: unknown): readonly AgentReplyPart[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new WebConsoleError("invalid_notification", "parts must be an array when provided.", 400);
+  }
+  if (value.length > MAX_AGENT_REPLY_PARTS) {
+    throw new WebConsoleError("invalid_notification", "Process-job reply parts exceed their limit.", 413);
+  }
+  if (!value.every((part) => {
+    if (typeof part !== "object" || part === null || Array.isArray(part)) return false;
+    const record = part as Record<string, unknown>;
+    return typeof record.type === "string"
+      && record.type.length > 0
+      && typeof record.id === "string"
+      && record.id.length > 0;
+  })) {
+    throw new WebConsoleError("invalid_notification", "parts must contain reply-part records.", 400);
+  }
+  return value as readonly AgentReplyPart[];
 }
 
 function normalizedField(value: unknown, name: string, maxLength: number): string {

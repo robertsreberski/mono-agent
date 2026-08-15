@@ -1,7 +1,7 @@
 import { constants as fsConstants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 
-import type { ProcessJobProjection } from "@mono-agent/agent-contracts";
+import type { AgentReplyPart, ProcessJobProjection } from "@mono-agent/agent-contracts";
 
 import type { WebThreadNotificationTriggerKind } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
@@ -29,6 +29,7 @@ export interface DeliverWebProcessJobNotificationInput {
   readonly threadId: string;
   readonly processJob: ProcessJobProjection;
   readonly text?: string;
+  readonly parts?: readonly AgentReplyPart[];
 }
 
 export type DeliverWebNotificationInput =

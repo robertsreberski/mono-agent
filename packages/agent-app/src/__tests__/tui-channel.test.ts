@@ -2,7 +2,7 @@ import { realpath } from "node:fs/promises";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentMessageStream, AgentRequestBase, AgentResponder, ProcessJobOperator, ProcessJobProjection } from "@mono-agent/agent-contracts";
+import type { AgentMessageStream, AgentReplyPart, AgentRequestBase, AgentResponder, ProcessJobOperator, ProcessJobProjection } from "@mono-agent/agent-contracts";
 import type { DiscoveredLocalModel, LocalProviderDefinition } from "@mono-agent/runtime-adapter";
 import type { TuiAdapterConfig, TuiAdapterInfo, TuiAdapterOptions, TuiAdapterStartResult } from "@mono-agent/operator-adapter";
 import type { DeliverWebNotificationInput } from "@mono-agent/web";
@@ -354,7 +354,7 @@ describe("tui channel driver — process jobs", () => {
       discoverModels: async () => [],
       deliverNotification,
     });
-    const respond = vi.fn(async (_request: AgentRequestBase, _stream: AgentMessageStream) => ({ text: "Job finished safely." }));
+    const respond = vi.fn<AgentResponder["respond"]>(async (_request: AgentRequestBase, _stream: AgentMessageStream) => ({ text: "Job finished safely." }));
     const deliverVerbatim = vi.fn(async () => undefined);
     const processJobs: ProcessJobOperator = {
       operatorToken: "owner-token",
@@ -393,13 +393,53 @@ describe("tui channel driver — process jobs", () => {
       text: "Job finished safely.",
     });
 
+    respond.mockResolvedValueOnce({ parts: RICH_REPLY_PARTS });
+    const partOnlyDeliveryKey = `${PROCESS_JOB.wake.deliveryKey}:part-only`;
+    await expect(running.notify?.({
+      conversationId: "web:thread-1",
+      text: "render rich answer",
+      deliveryKey: partOnlyDeliveryKey,
+      processJob: {
+        ...PROCESS_JOB,
+        wake: { ...PROCESS_JOB.wake, deliveryKey: partOnlyDeliveryKey },
+      },
+    })).resolves.toMatchObject({ delivered: true, historyRecorded: true });
+    expect(deliverNotification).toHaveBeenLastCalledWith({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: partOnlyDeliveryKey,
+      threadId: "thread-1",
+      processJob: {
+        ...PROCESS_JOB,
+        wake: { ...PROCESS_JOB.wake, deliveryKey: partOnlyDeliveryKey },
+      },
+      parts: RICH_REPLY_PARTS,
+    });
+
+    respond.mockResolvedValueOnce({ text: "Rich answer ready.", parts: RICH_REPLY_PARTS });
+    const mixedDeliveryKey = `${PROCESS_JOB.wake.deliveryKey}:mixed`;
+    await expect(running.notify?.({
+      conversationId: "web:thread-1",
+      text: "render mixed answer",
+      deliveryKey: mixedDeliveryKey,
+      processJob: {
+        ...PROCESS_JOB,
+        wake: { ...PROCESS_JOB.wake, deliveryKey: mixedDeliveryKey },
+      },
+    })).resolves.toMatchObject({ delivered: true, historyRecorded: true });
+    expect(deliverNotification).toHaveBeenLastCalledWith(expect.objectContaining({
+      deliveryKey: mixedDeliveryKey,
+      text: "Rich answer ready.",
+      parts: RICH_REPLY_PARTS,
+    }));
+
     await expect(running.notify?.({
       conversationId: "web:thread-1#wrong-bucket",
       text: "wrong bucket",
       deliveryKey: PROCESS_JOB.wake.deliveryKey,
       processJob: PROCESS_JOB,
     })).resolves.toMatchObject({ delivered: false, code: "process_job_origin_mismatch" });
-    expect(respond).toHaveBeenCalledOnce();
+    expect(respond).toHaveBeenCalledTimes(3);
 
     respond.mockResolvedValueOnce({ text: "x".repeat(8_100) });
     await expect(running.notify?.({
@@ -417,9 +457,39 @@ describe("tui channel driver — process jobs", () => {
 
     await expect(running.notify?.({ conversationId: "tui:direct", text: "wake" }))
       .resolves.toMatchObject({ delivered: false, code: "background_unsupported_channel" });
-    expect(respond).toHaveBeenCalledTimes(2);
+    expect(respond).toHaveBeenCalledTimes(4);
   });
 });
+
+const RICH_REPLY_PARTS = [
+  {
+    type: "attachment",
+    id: "wake-attachment",
+    reference: { scheme: "mono-agent-artifact", id: "wake-artifact" },
+    name: "report.txt",
+    mediaType: "text/plain",
+    sizeBytes: 12,
+    integrityId: `sha256:${"a".repeat(64)}`,
+  },
+  {
+    type: "mcp_app",
+    id: "11111111-1111-4111-8111-111111111111",
+    invocationId: "11111111-1111-4111-8111-111111111111",
+    connectionId: "wake-connection",
+    serverName: "widgets",
+    toolName: "show_chart",
+    resourceUri: "ui://widgets/chart",
+    mediaType: "text/html;profile=mcp-app",
+    protocolVersion: "2026-01-26",
+    title: "Wake chart",
+  },
+  {
+    type: "failure",
+    id: "wake-failure",
+    code: "artifact_missing",
+    message: "One optional artifact expired.",
+  },
+] as const satisfies readonly AgentReplyPart[];
 
 const PROCESS_JOB: ProcessJobProjection = {
   schema: "mono-agent.process-job-projection.v1",
