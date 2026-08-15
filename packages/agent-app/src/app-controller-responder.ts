@@ -59,6 +59,7 @@ import type { InteractionBridgeHandle } from "./interaction-bridge.js";
 import type { ContinuationServiceHandle } from "./continuation-service.js";
 import type { MemoryRetrievalService } from "./memory-retrieval.js";
 import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
+import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 
@@ -148,6 +149,7 @@ export async function buildResponder(
   const historyToolSupport = historyToolRouteSupport(coreConfig);
   const replyPartBudget = createReplyPartBudget();
   const replyArtifactStorage = replyArtifactStorageBudgetFor(coreConfig.artifacts.dir);
+  const artifactDerivedRoots = agentArtifactDerivedRoots(coreConfig.artifacts.dir);
   const continuationStateDir = (await loadContinuationSettings({
     cwd: controller.cwd,
     configPath: controller.configReadPath,
@@ -166,6 +168,7 @@ export async function buildResponder(
     coreConfig.providers?.piNative?.piSessionsRoot,
     coreConfig.traceability.registryDir,
     continuationStateDir,
+    artifactDerivedRoots.history,
   ].filter((path): path is string => path !== undefined);
   const replyArtifacts = createReplyArtifactService({
     artifactDir: coreConfig.artifacts.dir,
@@ -455,7 +458,7 @@ export async function adapterSendToolsRuntimeOptions(controller: ResponderContro
   const indexPath = resolvePostedMessageIndexPath(await resolveAppArtifactDir(input));
   const interactionForChild = settings.askUser;
   const runOutputRoot = settings.telegram?.sendTools?.pathScope === "run-output"
-    ? resolve(coreConfig.artifacts.dir, "outbound")
+    ? agentArtifactDerivedRoots(coreConfig.artifacts.dir).outbound
     : undefined;
   const createExtension = (
     targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean,

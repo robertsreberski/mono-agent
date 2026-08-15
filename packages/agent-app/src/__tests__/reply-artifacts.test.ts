@@ -32,6 +32,7 @@ import {
   replyArtifactStorageBudgetFor,
   type ReplyArtifactService,
 } from "../reply-artifacts.js";
+import { createReplyPartBudget } from "../reply-part-budget.js";
 
 const tempDirs: string[] = [];
 
@@ -180,7 +181,9 @@ describe("reply artifact publication", () => {
   it("allows ordinary workspace and exact current-run output files while excluding every private namespace", async () => {
     const root = await tempDir();
     const workspace = join(root, "workspace");
-    const artifactDir = join(workspace, "runtime-records");
+    const artifactDir = join(workspace, "data", "artifacts");
+    const historyFile = join(workspace, "data", "history", `${"a".repeat(64)}.history.json`);
+    const historySentinel = "durable-history-private-sentinel";
     const currentRunOutput = join(artifactDir, "outbound", "run-scope");
     const otherRunOutput = join(artifactDir, "outbound", "run-other");
     const memoryRoot = join(workspace, "knowledge-store");
@@ -193,6 +196,7 @@ describe("reply artifact publication", () => {
       mkdir(memoryRoot, { recursive: true }),
       mkdir(stateRoot, { recursive: true }),
       mkdir(nestedPrivateRoot, { recursive: true }),
+      mkdir(join(workspace, "data", "history"), { recursive: true }),
     ]);
     await Promise.all([
       writeFile(join(workspace, "exports", "ordinary.txt"), "ordinary-public"),
@@ -202,6 +206,7 @@ describe("reply artifact publication", () => {
       writeFile(join(stateRoot, "harmless-name.txt"), "state-private"),
       writeFile(join(nestedPrivateRoot, "harmless-name.txt"), "nested-private"),
       writeFile(join(artifactDir, "run-private.events.jsonl"), "transcript-private"),
+      writeFile(historyFile, historySentinel),
     ]);
     const service = createReplyArtifactService({
       artifactDir,
@@ -230,6 +235,7 @@ describe("reply artifact publication", () => {
         join(nestedPrivateRoot, "harmless-name.txt"),
         join(artifactDir, "run-private.events.jsonl"),
         join(artifactDir, "reply-files", firstArtifactId, "content"),
+        historyFile,
       ]) {
         failures.push(await publisher.client.callTool({
           name: PUBLISH_REPLY_FILE_TOOL_NAME,
@@ -240,7 +246,7 @@ describe("reply artifact publication", () => {
       await publisher.close();
     }
 
-    expect(failures).toHaveLength(6);
+    expect(failures).toHaveLength(7);
     expect(failures).toEqual(failures.map(() => expect.objectContaining({
       isError: true,
       structuredContent: { published: false, code: "artifact_publish_failed" },
@@ -252,8 +258,11 @@ describe("reply artifact publication", () => {
       "state-private",
       "nested-private",
       "transcript-private",
+      historySentinel,
       artifactDir,
+      historyFile,
     ]) expect(serializedFailures).not.toContain(secret);
+    expect(await readFile(historyFile, "utf8")).toBe(historySentinel);
 
     const response = await service.wrapResponder(responder("run-scope")).respond({
       conversationId: "delivery-conversation",
@@ -262,7 +271,7 @@ describe("reply artifact publication", () => {
     }, stream);
     expect(response.text).toBe("Done");
     expect(response.parts?.filter((part) => part.type === "attachment")).toHaveLength(2);
-    expect(response.parts?.filter((part) => part.type === "failure")).toHaveLength(6);
+    expect(response.parts?.filter((part) => part.type === "failure")).toHaveLength(7);
   });
 
   it("rejects hidden, credential, key-store, state-database, and Unicode-disguised names at any depth", async () => {
@@ -294,12 +303,40 @@ describe("reply artifact publication", () => {
       "nested/KUBECONFIG",
       "nested/memory.SQLite",
       "nested/passwords.KDBX",
+      `nested/${"a".repeat(64)}.history.json`,
+      `nested/${"b".repeat(64)}.dirty.json`,
+      "nested/history-lock.sqlite-journal",
+      "nested/history-lock.sqlite-shm",
+      "nested/history-lock.sqlite-wal",
+      "nested/legacy-lock.sqlite3-journal",
+      "nested/legacy-lock.sqlite3-shm",
+      "nested/legacy-lock.sqlite3-wal",
+      "nested/memory.db-journal",
+      "nested/memory.db-shm",
+      "nested/memory.db-wal",
     ] as const;
     for (const path of blocked) await writeFile(join(workspace, path), `private:${path}`);
-    const allowed = ["nested/re\u0301sume\u0301.txt", "nested/authors-notes.txt", "nested/tokenizer.txt"] as const;
+    const allowed = [
+      "nested/re\u0301sume\u0301.txt",
+      "nested/authors-notes.txt",
+      "nested/tokenizer.txt",
+      "nested/history.json",
+      "nested/report-history.json",
+      "nested/report.history.json.txt",
+      "nested/dirty.json",
+      "nested/report-dirty.json",
+      "nested/report.dirty.json.txt",
+      "nested/sqlite-report.txt",
+      "nested/report.sqlite-wal.txt",
+      "nested/report.db-shm.txt",
+    ] as const;
     for (const path of allowed) await writeFile(join(workspace, path), `public:${path}`);
 
-    const service = createReplyArtifactService({ artifactDir: join(root, "artifacts"), workspace });
+    const service = createReplyArtifactService({
+      artifactDir: join(root, "artifacts"),
+      workspace,
+      replyPartBudget: createReplyPartBudget(128),
+    });
     const publisher = await openPublisher(service, "run-names", "conversation");
     const blockedResults: unknown[] = [];
     const allowedResults: unknown[] = [];

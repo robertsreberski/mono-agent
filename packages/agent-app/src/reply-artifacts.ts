@@ -41,6 +41,7 @@ import type { ToolPolicyInput } from "@mono-agent/agent-harness";
 import * as z from "zod/v4";
 
 import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
+import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 import {
   createReplyPartBudget,
   mergeReplyParts,
@@ -75,10 +76,13 @@ const SENSITIVE_FILE_EXTENSIONS = [
   ".crt",
   ".csr",
   ".db",
+  ".db-journal",
   ".db-shm",
   ".db-wal",
   ".der",
+  ".dirty.json",
   ".env",
+  ".history.json",
   ".jks",
   ".kdb",
   ".kdbx",
@@ -94,7 +98,13 @@ const SENSITIVE_FILE_EXTENSIONS = [
   ".pkcs8",
   ".ppk",
   ".sqlite",
+  ".sqlite-journal",
+  ".sqlite-shm",
+  ".sqlite-wal",
   ".sqlite3",
+  ".sqlite3-journal",
+  ".sqlite3-shm",
+  ".sqlite3-wal",
 ] as const;
 const SENSITIVE_NAME_SEGMENTS = new Set([
   "apikey",
@@ -297,7 +307,7 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
   const root = resolve(artifactDir, "reply-files");
   const stagingRoot = join(root, STAGING_NAMESPACE);
   const workspace = resolve(options.workspace);
-  const outboundRoot = resolve(artifactDir, "outbound");
+  const outboundRoot = agentArtifactDerivedRoots(artifactDir).outbound;
   const privateRoots = [
     artifactDir,
     resolve(workspace, ".mono-agent"),

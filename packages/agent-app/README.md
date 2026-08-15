@@ -658,9 +658,12 @@ The configured responder adds a request-scoped `PublishReplyFile` MCP tool when
 the tool policy and runtime route can carry it. The tool copies one generated
 ordinary-workspace file or one file from the exact current run's outbound root
 into owner-private artifact storage, hashes it, and returns only an opaque
-reference. The ordinary workspace grant never includes configured artifact,
-state, memory, trace, session, config, identity, skill, MCP, or provider-auth
-roots. Hidden path components, mono-agent/MCP/auth/credential/secret/token
+reference. The app composition explicitly treats its configured artifact root,
+the artifact-dir-derived durable conversation-history/session store,
+continuation state, memory, trace registry, provider sessions/auth, config,
+identity, skill, and MCP roots as private. Only the exact current run's outbound
+directory is admitted as a narrow artifact-root exception. Hidden path
+components, mono-agent/MCP/auth/credential/secret/token
 files, npmrc, private keys, certificates, key stores, state databases, and
 Unicode-disguised variants are rejected at every depth, including under the
 run-output exception. Publication rejects traversal, symlinks, multiply linked
