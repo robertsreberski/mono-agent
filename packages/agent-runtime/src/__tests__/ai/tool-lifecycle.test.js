@@ -331,6 +331,12 @@ describe("tool lifecycle persistence gate", () => {
       expected: { state: "cancelled", failureKind: "cancelled_user", detailCode: "abort_signal" },
     },
     {
+      name: "uses generic host abort provenance for a trusted cancelled hint",
+      abortReason: "late cancellation",
+      lifecycle: { state: "cancelled", failure_kind: "cancelled_user", detail_code: "pi_cancelled" },
+      expected: { state: "cancelled", failureKind: "cancelled", detailCode: "pi_cancelled" },
+    },
+    {
       name: "maps a trusted cancelled hint without a failure kind to cancellation",
       abortReason: "late cancellation",
       lifecycle: { state: "cancelled" },

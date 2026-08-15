@@ -109,13 +109,15 @@ actually supplies:
 | ACP v1 | `completed` → `success`, `failed` → `error`; shared approval/abort rules still apply | ACP exposes no tool-level signal/exit/timeout distinction, so failed → `error` |
 
 The runtime never derives a state from result prose. Structured timeout, signal,
-non-zero exit, completed success, and a specific non-runtime provider failure
-win over a later outer abort. For an aborted failed result, cancellation wins
-over a provider bridge's otherwise generic `error` / `runtime_error` fallback
-and preserves the host cancellation kind. A started call with no result is
-closed by the harness as `cancelled`, `error`, or `interrupted` from the run
-boundary; process-startup recovery specifically uses `interrupted` and does not
-rerun the tool.
+non-zero exit, completed success, and a specific non-runtime, non-cancellation
+provider failure win over a later outer abort. For a failed result with an
+aborted outer signal, cancellation wins over a provider bridge's otherwise
+generic `error` / `runtime_error` fallback. If the bridge already supplied a
+trusted `cancelled` state, that state is retained while its cancellation failure
+kind is derived from the host signal. A started call with no result is closed by
+the harness as `cancelled`, `error`, or `interrupted` from the run boundary;
+process-startup recovery specifically uses `interrupted` and does not rerun the
+tool.
 
 Terminal states reuse the observability taxonomy: `success` has no failure kind;
 `signal` and `interrupted` map to `process_death`; `cancelled` preserves a known

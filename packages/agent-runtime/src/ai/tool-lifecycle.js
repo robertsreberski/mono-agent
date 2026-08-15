@@ -176,7 +176,13 @@ function classifyGenericResult(block, timing, approval, abortSignal) {
   if (record(explicit) && terminalState(explicit.state) && explicit.state !== "error") {
     return explicit.state === "success"
       ? terminal("success", undefined, undefined)
-      : terminal(explicit.state, lifecycleFailureKind(explicit.state, explicit.failure_kind), boundedCode(explicit.detail_code || explicit.state));
+      : terminal(
+          explicit.state,
+          explicit.state === "cancelled" && abortSignal?.aborted
+            ? cancellationFailureKind(abortSignal)
+            : lifecycleFailureKind(explicit.state, explicit.failure_kind),
+          boundedCode(explicit.detail_code || explicit.state),
+        );
   }
   if (timing?.timed_out === true) return terminal("timeout", "runtime_error", "tool_timeout");
   if (typeof timing?.signal === "string" && timing.signal.length > 0) return terminal("signal", "process_death", boundedCode(timing.signal));

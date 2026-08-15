@@ -34,11 +34,17 @@ function driver(overrides = {}) {
     ? createToolLifecycleEventGate({
         sink: overrides.toolLifecycleSink,
         onEvent: (event) => emitted.push(event),
+        abortSignal: overrides.abortSignal,
       })
     : undefined;
   const handler = createStreamSubscriber(runState, {
     onEvent: gate?.emit ?? ((event) => emitted.push(event)),
-    options: { cwd: "/repo", maxTurns: overrides.maxTurns, toolLifecycleSink: overrides.toolLifecycleSink },
+    options: {
+      cwd: "/repo",
+      maxTurns: overrides.maxTurns,
+      toolLifecycleSink: overrides.toolLifecycleSink,
+      abortSignal: overrides.abortSignal,
+    },
     toolLimits: {},
     harness,
     sdk: "pi",
@@ -217,6 +223,66 @@ describe("createStreamSubscriber — tool lifecycle + timing", () => {
     expect(runState.toolResultsSeen).toBe(0);
     expect(emitted.find((e) => e.type === "tool_timing").is_error).toBe(true);
     expect(emitted.find((e) => e.type === "user").message.content[0].is_error).toBe(true);
+  });
+
+  it.each([
+    {
+      name: "user",
+      abortReason: { kind: "user" },
+      rawFailureKind: "cancelled_shutdown",
+      expectedFailureKind: "cancelled_user",
+    },
+    {
+      name: "shutdown",
+      abortReason: { kind: "shutdown" },
+      rawFailureKind: "cancelled_user",
+      expectedFailureKind: "cancelled_shutdown",
+    },
+  ])("derives $name cancellation provenance from the host signal on Pi's trusted-cancelled path", async ({
+    abortReason,
+    rawFailureKind,
+    expectedFailureKind,
+  }) => {
+    const abort = new AbortController();
+    abort.abort(abortReason);
+    const persisted = [];
+    const { emitted, handler, flush } = driver({
+      abortSignal: abort.signal,
+      toolLifecycleSink: async (event) => {
+        persisted.push(event);
+        return { persistence: "persisted", recordId: "result-record", sequence: 1 };
+      },
+    });
+
+    handler({
+      type: "tool_execution_end",
+      toolName: "t",
+      toolCallId: "cancelled",
+      result: {
+        content: [{ type: "text", text: "cancelled" }],
+        details: {
+          outcome: {
+            status: "error",
+            code: "provider_cancelled",
+            failureKind: rawFailureKind,
+          },
+        },
+      },
+      isError: true,
+    });
+    await flush();
+
+    expect(emitted.find((event) => event.type === "user").message.content[0].tool_lifecycle).toEqual({
+      state: "cancelled",
+      failure_kind: "cancelled",
+      detail_code: "abort_signal",
+    });
+    expect(persisted).toMatchObject([{
+      phase: "result",
+      state: "cancelled",
+      failureKind: expectedFailureKind,
+      detailCode: "abort_signal",
+    }]);
   });
 
   it("copies structured file-change details onto the normalized tool_result block", () => {
