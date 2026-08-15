@@ -31,12 +31,14 @@ describe("configured tool-history acquisition", () => {
       return Promise.resolve(handle);
     });
     const warnings: string[] = [];
+    let now = 0;
     const history = lazyConfiguredToolHistory({
       root: join(tmpdir(), "configured-tool-history-retry"),
       artifactRoot: join(tmpdir(), "configured-tool-history-artifacts"),
       rollover: "daily",
       onWarning: (message) => warnings.push(message),
       acquireWriter: acquireWriter as never,
+      now: () => now,
     });
     const firstBinding = {
       conversationId: "chat:42#2026-08-14",
@@ -73,6 +75,12 @@ describe("configured tool-history acquisition", () => {
       .rejects.toMatchObject({ code: "history_writer_in_use" });
     expect(acquireWriter).toHaveBeenCalledTimes(1);
 
+    const cooldownBinding = { ...firstBinding, runId: "cooldown-run" };
+    await expect(history.writer.createSink(cooldownBinding)({ ...event, toolCallId: "cooldown-call" }))
+      .rejects.toMatchObject({ code: "history_writer_in_use" });
+    expect(acquireWriter).toHaveBeenCalledTimes(1);
+
+    now = 1_000;
     const retryBinding = {
       conversationId: "chat:42#2026-08-14",
       logicalConversationId: "chat:42",
@@ -86,6 +94,7 @@ describe("configured tool-history acquisition", () => {
       .rejects.toMatchObject({ code: "history_writer_in_use" });
     expect(acquireWriter).toHaveBeenCalledTimes(2);
 
+    now = 2_000;
     const recoveredBinding = { ...retryBinding, runId: "recovery-run" };
     await expect(history.writer.createSink(recoveredBinding)({ ...event, toolCallId: "recovery-call" }))
       .resolves.toEqual({ persistence: "persisted" });
@@ -99,7 +108,7 @@ describe("configured tool-history acquisition", () => {
     expect(persist).toHaveBeenCalledTimes(2);
     expect(finishRun).toHaveBeenCalledTimes(1);
     expect(warnings).toEqual([
-      "Tool history writer acquisition failed (history_writer_in_use); the next turn will retry.",
+      "Tool history writer acquisition failed (history_writer_in_use); new turns fail fast for 1000 ms, while explicit reset may retry immediately.",
       "Tool history writer acquisition recovered; lifecycle persistence resumed.",
     ]);
     expect(warnings.join(" ")).not.toContain("transient private acquisition detail");
@@ -147,12 +156,14 @@ describe("configured tool-history acquisition", () => {
       });
     });
     const warnings: string[] = [];
+    let now = 0;
     const history = lazyConfiguredToolHistory({
       root,
       artifactRoot: join(base, "artifacts"),
       rollover: "daily",
       onWarning: (message) => warnings.push(message),
       acquireWriter: acquireWriter as never,
+      now: () => now,
     });
     const outageBinding = {
       conversationId: "chat:42#2026-08-14",
@@ -195,6 +206,12 @@ describe("configured tool-history acquisition", () => {
         .rejects.toMatchObject({ code: "history_writer_in_use" });
       expect(acquireWriter).toHaveBeenCalledTimes(3);
 
+      const cooldownBinding = { ...outageBinding, runId: "cooldown-run" };
+      await expect(history.writer.createSink(cooldownBinding)({ ...event, toolCallId: "cooldown-call" }))
+        .rejects.toMatchObject({ code: "history_writer_in_use" });
+      expect(acquireWriter).toHaveBeenCalledTimes(3);
+
+      now = 1_000;
       const recoveredBinding = { ...outageBinding, runId: "recovered-run" };
       const recoveredSink = history.writer.createSink(recoveredBinding);
       const recoveredFallbackSink = history.writer.createSink(recoveredBinding);
@@ -215,7 +232,7 @@ describe("configured tool-history acquisition", () => {
       expect(persist).toHaveBeenCalledTimes(2);
       expect(resetConversation).toHaveBeenCalledTimes(1);
       expect(warnings).toEqual([
-        "Tool history writer acquisition failed (history_writer_in_use); the next turn will retry.",
+        "Tool history writer acquisition failed (history_writer_in_use); new turns fail fast for 1000 ms, while explicit reset may retry immediately.",
         "Tool history writer acquisition recovered; lifecycle persistence resumed.",
       ]);
       expect(warnings.join(" ")).not.toContain("private outage detail");
@@ -224,5 +241,117 @@ describe("configured tool-history acquisition", () => {
       await rm(base, { recursive: true, force: true });
     }
     expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("invalidates closed and dead cached writers, then shares each reset-recovered handle", async () => {
+    const base = await mkdtemp(join(tmpdir(), "configured-tool-history-worker-recovery-"));
+    const root = join(base, "history");
+    const initialized = await ToolHistoryWriter.open({ root });
+    await initialized.close();
+
+    let firstClosed = false;
+    const firstPersist = vi.fn(async () => {
+      firstClosed = true;
+      return { persistence: "failed" as const, errorCode: "history_writer_closed" };
+    });
+    const firstRelease = vi.fn(async () => undefined);
+    const firstHandle: ToolHistoryWriterHandle = {
+      writer: {
+        get isClosed() { return firstClosed; },
+        persist: firstPersist,
+      } as unknown as ToolHistoryWriter,
+      release: firstRelease,
+    };
+
+    let secondClosed = false;
+    const secondPersist = vi.fn(async () => ({ persistence: "persisted" as const }));
+    const secondFinish = vi.fn(async () => undefined);
+    const secondReset = vi.fn(async () => undefined);
+    const secondRelease = vi.fn(async () => undefined);
+    const secondHandle: ToolHistoryWriterHandle = {
+      writer: {
+        get isClosed() { return secondClosed; },
+        persist: secondPersist,
+        finishRun: secondFinish,
+        resetConversation: secondReset,
+      } as unknown as ToolHistoryWriter,
+      release: secondRelease,
+    };
+
+    const thirdPersist = vi.fn(async () => ({ persistence: "persisted" as const }));
+    const thirdReset = vi.fn(async () => undefined);
+    const thirdRelease = vi.fn(async () => undefined);
+    const thirdHandle: ToolHistoryWriterHandle = {
+      writer: {
+        isClosed: false,
+        persist: thirdPersist,
+        finishRun: vi.fn(async () => undefined),
+        resetConversation: thirdReset,
+      } as unknown as ToolHistoryWriter,
+      release: thirdRelease,
+    };
+    const handles = [firstHandle, secondHandle, thirdHandle];
+    const acquireWriter = vi.fn(async () => handles.shift()!);
+    const history = lazyConfiguredToolHistory({
+      root,
+      artifactRoot: join(base, "artifacts"),
+      rollover: "daily",
+      acquireWriter: acquireWriter as never,
+    });
+    const event = {
+      phase: "invocation" as const,
+      toolCallId: "call",
+      toolName: "Read",
+      arguments: {},
+    };
+    const firstBinding = {
+      conversationId: "chat:42#2026-08-14",
+      logicalConversationId: "chat:42",
+      runId: "closed-run",
+      isolated: false,
+    };
+
+    try {
+      const firstSink = history.writer.createSink(firstBinding);
+      await expect(firstSink(event)).resolves.toEqual({
+        persistence: "failed",
+        errorCode: "history_writer_closed",
+      });
+      await expect(firstSink({ ...event, toolCallId: "same-turn-call" }))
+        .rejects.toMatchObject({ code: "history_writer_closed" });
+      expect(acquireWriter).toHaveBeenCalledTimes(1);
+
+      await expect(history.writer.resetConversation("chat:42")).resolves.toBeUndefined();
+      expect(acquireWriter).toHaveBeenCalledTimes(2);
+      expect(firstRelease).toHaveBeenCalledTimes(1);
+      expect(secondReset).toHaveBeenCalledTimes(1);
+
+      const sharedBinding = { ...firstBinding, runId: "shared-second-handle" };
+      await expect(history.writer.createSink(sharedBinding)({ ...event, toolCallId: "shared-call" }))
+        .resolves.toEqual({ persistence: "persisted" });
+      expect(acquireWriter).toHaveBeenCalledTimes(2);
+      expect(secondPersist).toHaveBeenCalledTimes(1);
+
+      secondClosed = true;
+      const deadBinding = { ...firstBinding, runId: "dead-worker-run" };
+      await expect(history.writer.createSink(deadBinding)({ ...event, toolCallId: "dead-call" }))
+        .rejects.toMatchObject({ code: "history_writer_closed" });
+      expect(acquireWriter).toHaveBeenCalledTimes(2);
+
+      await expect(history.writer.resetConversation("chat:42")).resolves.toBeUndefined();
+      expect(acquireWriter).toHaveBeenCalledTimes(3);
+      expect(secondRelease).toHaveBeenCalledTimes(1);
+      expect(thirdReset).toHaveBeenCalledTimes(1);
+
+      const recoveredBinding = { ...firstBinding, runId: "shared-third-handle" };
+      await expect(history.writer.createSink(recoveredBinding)({ ...event, toolCallId: "recovered-call" }))
+        .resolves.toEqual({ persistence: "persisted" });
+      expect(acquireWriter).toHaveBeenCalledTimes(3);
+      expect(thirdPersist).toHaveBeenCalledTimes(1);
+    } finally {
+      await history.release?.();
+      await rm(base, { recursive: true, force: true });
+    }
+    expect(thirdRelease).toHaveBeenCalledTimes(1);
   });
 });

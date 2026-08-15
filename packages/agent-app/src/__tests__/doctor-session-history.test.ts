@@ -64,6 +64,27 @@ describe("sessionToolHistorySection", () => {
     expect(section.details.join("\n")).toMatch(/Tool history: 1 calls, 2 records, 0 tombstones, \d+ retained payload bytes, \d+ database bytes/iu);
   });
 
+  it("treats a crash-stale zero-byte content database as pristine and writer-recoverable", async () => {
+    const root = await tempRoot();
+    const initialized = await ToolHistoryWriter.open({ root });
+    await initialized.close();
+    const path = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+    await writeFile(path, "", { mode: 0o600 });
+
+    const pristine = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(pristine.status, pristine.details.join("\n")).toBe("ok");
+    expect(pristine.details).toContain(
+      "Tool history database is a pristine zero-byte file; the next writer can initialize it safely.",
+    );
+    expect(pristine.details.join("\n")).not.toMatch(/unsupported.*schema|downgrade/iu);
+
+    const recovered = await ToolHistoryWriter.open({ root });
+    await expect(recovered.stats()).resolves.toMatchObject({ calls: 0, records: 0 });
+    await recovered.close();
+    const healthy = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(healthy.status, healthy.details.join("\n")).toBe("ok");
+  });
+
   it("reports unresolved writer incidents and returns to healthy after matching operations succeed", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });
@@ -124,6 +145,63 @@ describe("sessionToolHistorySection", () => {
     const recovered = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
     expect(recovered.status, recovered.details.join("\n")).toBe("ok");
     expect(recovered.details.join("\n")).not.toContain("unresolved lifecycle");
+  });
+
+  it("returns to healthy when reset retires conflicted and failed lifecycle identities", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    await writer.persist(binding, {
+      phase: "invocation", toolCallId: "reset-call", toolName: "Read", arguments: {},
+    });
+    await writer.persist(binding, {
+      phase: "invocation", toolCallId: "reset-call", toolName: "Bash", arguments: {},
+    });
+    await writer.persist(binding, {
+      phase: "invocation", toolCallId: "failed-call", toolName: "", arguments: {},
+    });
+    await writer.close();
+
+    const degraded = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(degraded.status, degraded.details.join("\n")).toBe("error");
+    expect(degraded.details.join("\n")).toContain("1 unresolved lifecycle write incident(s)");
+    expect(degraded.details.join("\n")).toContain("1 unresolved lifecycle idempotency conflict(s)");
+
+    const reset = await ToolHistoryWriter.open({ root });
+    await reset.resetConversation(binding.logicalConversationId);
+    await reset.close();
+    const healthy = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(healthy.status, healthy.details.join("\n")).toBe("ok");
+    expect(healthy.details.join("\n")).not.toContain("unresolved lifecycle");
+  });
+
+  it("returns to healthy when retention makes a conflicted call unretryable", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({
+      root,
+      retention: { maxCompletedCalls: 1, maxBytes: 1024 * 1024, maxTombstones: 0 },
+    });
+    const victim = { ...binding, runId: "a-pruned-conflict" };
+    const trigger = { ...binding, runId: "z-retention-trigger" };
+    await writer.persist(victim, {
+      phase: "invocation", toolCallId: "victim-call", toolName: "Read", arguments: {},
+    });
+    await writer.persist(victim, {
+      phase: "result", toolCallId: "victim-call", state: "success", content: "victim",
+    });
+    await writer.persist(victim, {
+      phase: "invocation", toolCallId: "victim-call", toolName: "Bash", arguments: {},
+    });
+    await writer.persist(trigger, {
+      phase: "invocation", toolCallId: "trigger-call", toolName: "Read", arguments: {},
+    });
+    await writer.persist(trigger, {
+      phase: "result", toolCallId: "trigger-call", state: "success", content: "trigger",
+    });
+    await writer.close();
+
+    const healthy = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(healthy.status, healthy.details.join("\n")).toBe("ok");
+    expect(healthy.details.join("\n")).not.toContain("unresolved lifecycle idempotency conflict");
   });
 
   it("does not classify a graceful close of a dangling invocation as crash recovery", async () => {
@@ -217,6 +295,26 @@ describe("sessionToolHistorySection", () => {
     const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
     expect(section.status).toBe("error");
     expect(section.details.join("\n")).toContain("Downgrade hard-fails until persisted conversation state is purged.");
+  });
+
+  it("reports an older compatible schema as upgrade-pending rather than a blocked downgrade", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    await writer.close();
+    const path = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+    const database = new DatabaseSync(path);
+    database.exec(`PRAGMA user_version=${String(TOOL_HISTORY_USER_VERSION - 1)}`);
+    database.close();
+
+    const pending = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(pending.status, pending.details.join("\n")).toBe("waiting");
+    expect(pending.details.join("\n")).toContain("Tool-history schema upgrade is pending");
+    expect(pending.details.join("\n")).not.toMatch(/downgrade/iu);
+
+    const upgraded = await ToolHistoryWriter.open({ root });
+    await upgraded.close();
+    const healthy = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(healthy.status, healthy.details.join("\n")).toBe("ok");
   });
 
   it.skipIf(process.platform === "win32")("rejects a content database that is not owner-only", async () => {

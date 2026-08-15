@@ -304,16 +304,22 @@ using the durable-history liveness pattern, succeeds when a normal old writer
 releases in time, and otherwise fails deterministically with
 `history_writer_in_use`. Configured lazy acquisition permits that bounded
 restart-handoff wait once, then caches the failure for every already-created
-turn; one sink from the next new turn re-arms acquisition. A successful handle
-remains process-shared.
+turn and for new turns during a one-second failure backoff. The first new turn
+after that backoff re-arms acquisition; serialized explicit reset may bypass
+only the backoff, never the full handoff window. A successful handle remains
+process-shared, and a closed or dead worker is retired before its replacement is
+shared.
 
 Incremental lifecycle writes retain their 250 ms streaming ceiling. Reset,
-statistics, and close are bounded maintenance operations with a separate 2 s
+statistics, and close are bounded maintenance operations with a separate 10 s
 deadline; reset still fails closed on a real worker error. Writer-health
 counters describe distinct unresolved incidents. Identical failed retries do
 not increment them, and unrelated lifecycle success or run finalization does
 not clear them. Only the matching tool phase, its durable synthetic terminal
 closure, or canonical run-binding retry resolves a write/conflict incident.
+Reset or retention also removes only incidents scoped to records, calls, or
+runs that the same operation made permanently unretryable; live unrelated
+incidents remain visible.
 Retention and startup-recovery incidents clear after their corresponding pass
 succeeds.
 

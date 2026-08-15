@@ -91,7 +91,18 @@ export async function sessionToolHistorySection(
     `Tool history physical storage: ${String(canonicalToolFiles.length)} files, ${String(canonicalToolFiles.reduce((sum, info) => sum + Number(info.size), 0))} bytes.`,
   );
 
-  if (contentInfo !== undefined && contentInfo.isFile() && !contentInfo.isSymbolicLink()) {
+  if (
+    contentInfo !== undefined
+    && contentInfo.isFile()
+    && !contentInfo.isSymbolicLink()
+    && contentInfo.size === 0
+    && journalInfo === undefined
+  ) {
+    details.push("Tool history database is a pristine zero-byte file; the next writer can initialize it safely.");
+    if (owner.live === true) {
+      worsen("waiting", "A live writer is still initializing the pristine tool-history database.");
+    }
+  } else if (contentInfo !== undefined && contentInfo.isFile() && !contentInfo.isSymbolicLink()) {
     const readable = inspectContentDatabase(contentPath, owner.live === true, worsen);
     if (readable) {
       try {
@@ -147,10 +158,24 @@ function inspectContentDatabase(
     database.exec("PRAGMA busy_timeout=250");
     const applicationId = pragmaNumber(database, "application_id");
     const userVersion = pragmaNumber(database, "user_version");
-    if (applicationId !== TOOL_HISTORY_APPLICATION_ID || userVersion !== TOOL_HISTORY_USER_VERSION) {
+    if (applicationId !== TOOL_HISTORY_APPLICATION_ID) {
       worsen(
         "error",
-        `Unsupported tool-history schema (application_id=${String(applicationId)}, user_version=${String(userVersion)}). Downgrade hard-fails until persisted conversation state is purged.`,
+        `Foreign tool-history schema (application_id=${String(applicationId)}, user_version=${String(userVersion)}); persisted conversation state must be purged before adoption.`,
+      );
+      return false;
+    }
+    if (userVersion < TOOL_HISTORY_USER_VERSION) {
+      worsen(
+        "waiting",
+        `Tool-history schema upgrade is pending (user_version=${String(userVersion)}, current=${String(TOOL_HISTORY_USER_VERSION)}); the next writer will upgrade it before use.`,
+      );
+      return false;
+    }
+    if (userVersion > TOOL_HISTORY_USER_VERSION) {
+      worsen(
+        "error",
+        `Tool-history schema is newer (user_version=${String(userVersion)}, current=${String(TOOL_HISTORY_USER_VERSION)}). Downgrade hard-fails until persisted conversation state is purged.`,
       );
       return false;
     }

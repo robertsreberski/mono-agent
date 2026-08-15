@@ -41,8 +41,11 @@
   message-history store. The custom store remains the sole owner of messages;
   the sidecar remains a separate lifecycle contract.
 - Lazy writer acquisition keeps one bounded restart-handoff attempt, then
-  fails fast for the rest of already-started turns and re-arms once at the next
-  new turn. A delayed real result safely supersedes a finalization/recovery
+  fails fast for already-started turns and new turns during a one-second
+  cooldown. A later turn or serialized explicit reset re-arms acquisition;
+  closed/dead cached handles are retired before the recovered handle is shared.
+  Reset and retention clear only incidents whose durable identity becomes
+  unretryable. A delayed real result safely supersedes a finalization/recovery
   result for the same call without creating a permanent conflict.
 
 ## 0.19.1 — Web Push delivery fix (2026-08-13)

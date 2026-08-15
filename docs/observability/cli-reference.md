@@ -310,16 +310,20 @@ dangling or synthetic pairs, recovered interruptions, fail-soft write and
 maintenance incidents, idempotency conflicts, and retention quota pressure.
 Lifecycle write/conflict counts represent distinct unresolved tool phases or run
 bindings: identical failed retries deduplicate, unrelated success does not clear
-them, and the matching phase or canonical binding retry resolves them. A
-direct OpenCode or ACP route reports `unsupported_route`: lifecycle records still
-persist and cold-project, but that route has no host-tool seam for the
-request-scoped `SessionHistory` tool.
+them, and the matching phase or canonical binding retry resolves them. A logical
+reset or retention pass clears only incidents whose exact durable identity
+becomes permanently unretryable in that operation; unrelated live incidents
+remain visible. A direct OpenCode or ACP route reports `unsupported_route`:
+lifecycle records still persist and cold-project, but that route has no host-tool
+seam for the request-scoped `SessionHistory` tool.
 
-A newer or foreign tool-history schema is a hard error. Downgrade does not try to
-interpret or rewrite that state and hard-fails until persisted conversation state
-is purged with `mono-agent restart --clear-sessions`. Busy state held by a live
-writer is reported as `waiting`; a dead recorded owner is reaped by the next
-writer's bounded acquisition.
+An older compatible tool-history schema is `waiting` and upgrade-pending for the
+next writer. A newer or foreign schema is a hard error. Downgrade does not try
+to interpret or rewrite that state and hard-fails until persisted conversation
+state is purged with `mono-agent restart --clear-sessions`. A secure zero-byte
+content database left before initialization is pristine/recoverable. Busy state
+held by a live writer is reported as `waiting`; a dead recorded owner is reaped
+by the next writer's bounded acquisition.
 
 ### Secret placement
 

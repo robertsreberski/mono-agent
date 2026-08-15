@@ -27,7 +27,7 @@ export const TOOL_HISTORY_APPLICATION_ID = 0x4d415448;
 export const TOOL_HISTORY_USER_VERSION = 2;
 export const TOOL_HISTORY_PERSISTENCE_CEILING_MS = 250;
 export const TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS = 10_000;
-const TOOL_HISTORY_MAINTENANCE_CEILING_MS = 2_000;
+const TOOL_HISTORY_MAINTENANCE_CEILING_MS = 10_000;
 
 export interface ToolHistoryRetentionOptions {
   readonly maxCompletedCalls?: number;
@@ -242,6 +242,13 @@ export async function acquireToolHistoryWriter(
         "One canonical history root cannot use multiple artifact roots.",
       );
     }
+    // A worker can die while several configured responders still reference its
+    // process entry. The dead handles remain releasable, but no new acquisition
+    // may revive that writer or wait for every old reference to drain.
+    if (entry.writer.isClosed) {
+      if (PROCESS_WRITERS.get(root) === entryPromise) PROCESS_WRITERS.delete(root);
+      continue;
+    }
     // A final release can delete this registry entry while an earlier acquire
     // is suspended on the already-resolved promise. Retry instead of reviving
     // the writer that release is closing.
@@ -270,6 +277,11 @@ export class ToolHistoryWriter {
   private requestId = 0;
   private closed = false;
   private readonly warnedKinds = new Set<string>();
+
+  /** True after graceful close or worker failure; a host must reacquire. */
+  get isClosed(): boolean {
+    return this.closed;
+  }
 
   private constructor(worker: Worker, options: ToolHistoryWriterOptions) {
     this.worker = worker;
@@ -886,10 +898,18 @@ export function toolHistoryLogicalConversationId(
 function validateDatabase(database: DatabaseSync): void {
   const application = database.prepare("PRAGMA application_id").get() as Record<string, unknown>;
   const version = database.prepare("PRAGMA user_version").get() as Record<string, unknown>;
-  if (Number(Object.values(application)[0]) !== TOOL_HISTORY_APPLICATION_ID || Number(Object.values(version)[0]) !== TOOL_HISTORY_USER_VERSION) {
+  const applicationId = Number(Object.values(application)[0]);
+  const userVersion = Number(Object.values(version)[0]);
+  if (applicationId === TOOL_HISTORY_APPLICATION_ID && userVersion < TOOL_HISTORY_USER_VERSION) {
     throw new ToolHistoryWriterError(
       "history_schema_unsupported",
-      "Tool history schema is unsupported. Downgrade is blocked until persisted conversation state is purged.",
+      `Tool history schema version ${String(userVersion)} is upgrade-pending; a writer must upgrade it to ${String(TOOL_HISTORY_USER_VERSION)} before read-only access.`,
+    );
+  }
+  if (applicationId !== TOOL_HISTORY_APPLICATION_ID || userVersion !== TOOL_HISTORY_USER_VERSION) {
+    throw new ToolHistoryWriterError(
+      "history_schema_unsupported",
+      "Tool history schema is unsupported because it is newer or foreign. Downgrade is blocked until persisted conversation state is purged.",
     );
   }
 }

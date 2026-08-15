@@ -939,16 +939,43 @@ interface LazyConfiguredToolHistoryOptions {
   readonly onWarning?: (message: string) => void;
   /** Internal seam for deterministic acquisition-retry tests. */
   readonly acquireWriter?: typeof acquireToolHistoryWriter;
+  /** Internal seam for deterministic post-failure backoff tests. */
+  readonly acquisitionFailureBackoffMs?: number;
+  /** Internal monotonic-enough clock seam; production uses wall time. */
+  readonly now?: () => number;
 }
+
+interface ConfiguredWriterAttempt {
+  promise: Promise<ToolHistoryWriterHandle>;
+  failurePromise?: Promise<ToolHistoryWriterHandle>;
+  handle?: ToolHistoryWriterHandle;
+  failed: boolean;
+  retryAtMs?: number;
+  retired: boolean;
+}
+
+interface ConfiguredTurnWriterState {
+  readonly generation: number;
+  attempt?: ConfiguredWriterAttempt;
+  failure?: Promise<ToolHistoryWriterHandle>;
+}
+
+const TOOL_HISTORY_ACQUISITION_FAILURE_BACKOFF_MS = 1_000;
 
 export function lazyConfiguredToolHistory(
   options: LazyConfiguredToolHistoryOptions,
 ): AgentHarnessToolHistoryOptions {
-  let handlePromise: Promise<ToolHistoryWriterHandle> | undefined;
+  const failureBackoffMs = options.acquisitionFailureBackoffMs
+    ?? TOOL_HISTORY_ACQUISITION_FAILURE_BACKOFF_MS;
+  if (!Number.isSafeInteger(failureBackoffMs) || failureBackoffMs < 0) {
+    throw new TypeError("tool history acquisition failure backoff must be a non-negative integer.");
+  }
+  const now = options.now ?? Date.now;
+  let sharedAttempt: ConfiguredWriterAttempt | undefined;
   let latestTurnGeneration = 0;
-  let failedThroughGeneration: number | undefined;
-  const turnGenerations = new Map<string, number>();
+  const turnStates = new Map<string, ConfiguredTurnWriterState>();
   let resetTail: Promise<void> = Promise.resolve();
+  let retirementTail: Promise<void> = Promise.resolve();
   let acquisitionOutage = false;
   const reader = new ToolHistoryReader(options.root);
   const warn = (message: string): void => {
@@ -956,72 +983,192 @@ export function lazyConfiguredToolHistory(
   };
   const turnKey = (conversationId: string, runId: string): string =>
     JSON.stringify([conversationId, runId]);
-  const generationFor = (conversationId: string, runId: string): number => {
+  const stateFor = (conversationId: string, runId: string): ConfiguredTurnWriterState => {
     const key = turnKey(conversationId, runId);
-    const existing = turnGenerations.get(key);
+    const existing = turnStates.get(key);
     if (existing !== undefined) return existing;
-    const generation = ++latestTurnGeneration;
-    turnGenerations.set(key, generation);
-    return generation;
-  };
-  const acquire = (turnGeneration: number): Promise<ToolHistoryWriterHandle> => {
-    if (handlePromise !== undefined) {
-      if (failedThroughGeneration === undefined || turnGeneration <= failedThroughGeneration) {
-        return handlePromise;
-      }
-      // The first sink created after the observed outage is the only retry
-      // boundary. All sinks that already existed when acquisition failed keep
-      // the cached rejection and cannot repay the owner-handoff window.
-      handlePromise = undefined;
-      failedThroughGeneration = undefined;
+    const state: ConfiguredTurnWriterState = { generation: ++latestTurnGeneration };
+    if (
+      sharedAttempt?.failed === true
+      && sharedAttempt.retryAtMs !== undefined
+      && now() < sharedAttempt.retryAtMs
+    ) {
+      state.attempt = sharedAttempt;
     }
-    let pending: Promise<ToolHistoryWriterHandle>;
-    pending = (options.acquireWriter ?? acquireToolHistoryWriter)({
+    turnStates.set(key, state);
+    return state;
+  };
+  const failedPromise = (code: string): Promise<ToolHistoryWriterHandle> => {
+    const error = Object.assign(new Error("Tool history writer became unavailable; a fresh boundary must reacquire it."), { code });
+    const failure = Promise.reject<ToolHistoryWriterHandle>(error);
+    void failure.catch(() => undefined);
+    return failure;
+  };
+  const retire = (attempt: ConfiguredWriterAttempt): void => {
+    if (attempt.retired || attempt.handle === undefined) return;
+    attempt.retired = true;
+    retirementTail = retirementTail.then(async () => {
+      try { await attempt.handle?.release(); } catch { /* replacement acquisition must remain armed */ }
+    });
+  };
+  const latchExistingTurns = (
+    attempt: ConfiguredWriterAttempt,
+    failure: Promise<ToolHistoryWriterHandle>,
+  ): void => {
+    const failedThrough = latestTurnGeneration;
+    for (const state of turnStates.values()) {
+      if (state.generation > failedThrough) continue;
+      if (state.attempt === undefined || state.attempt === attempt) state.failure = failure;
+    }
+  };
+  const invalidate = (attempt: ConfiguredWriterAttempt, code: string): Promise<ToolHistoryWriterHandle> => {
+    if (attempt.failed) return attempt.failurePromise ?? attempt.promise;
+    const failure = failedPromise(code);
+    attempt.failed = true;
+    attempt.failurePromise = failure;
+    attempt.retryAtMs = now() + failureBackoffMs;
+    latchExistingTurns(attempt, failure);
+    retire(attempt);
+    if (sharedAttempt === attempt) {
+      sharedAttempt = {
+        promise: failure,
+        failurePromise: failure,
+        failed: true,
+        retryAtMs: attempt.retryAtMs,
+        retired: true,
+      };
+    }
+    acquisitionOutage = true;
+    return failure;
+  };
+  const startAttempt = (): ConfiguredWriterAttempt => {
+    const acquisition = retirementTail.then(async () => await (options.acquireWriter ?? acquireToolHistoryWriter)({
       root: options.root,
       artifactRoot: options.artifactRoot,
       ...(options.onWarning === undefined ? {} : { onWarning: options.onWarning }),
-    }).then((handle) => {
+    }));
+    const attempt: ConfiguredWriterAttempt = {
+      promise: acquisition,
+      failed: false,
+      retired: false,
+    };
+    attempt.promise = acquisition.then((handle) => {
+      attempt.handle = handle;
       if (acquisitionOutage) {
         warn("Tool history writer acquisition recovered; lifecycle persistence resumed.");
       }
       acquisitionOutage = false;
       return handle;
     }).catch((error: unknown) => {
-      if (handlePromise === pending) failedThroughGeneration = latestTurnGeneration;
+      attempt.failed = true;
+      attempt.failurePromise = attempt.promise;
+      attempt.retryAtMs = now() + failureBackoffMs;
+      latchExistingTurns(attempt, attempt.promise);
       if (!acquisitionOutage) {
         acquisitionOutage = true;
-        warn(`Tool history writer acquisition failed (${toolHistoryAcquisitionErrorCode(error)}); the next turn will retry.`);
+        warn(`Tool history writer acquisition failed (${toolHistoryAcquisitionErrorCode(error)}); new turns fail fast for ${String(failureBackoffMs)} ms, while explicit reset may retry immediately.`);
       }
       throw error;
     });
-    handlePromise = pending;
-    return pending;
+    void attempt.promise.catch(() => undefined);
+    sharedAttempt = attempt;
+    return attempt;
+  };
+  const selectAttempt = (bypassFailureBackoff: boolean): ConfiguredWriterAttempt => {
+    if (sharedAttempt !== undefined) {
+      if (sharedAttempt.handle?.writer.isClosed === true) {
+        invalidate(sharedAttempt, "history_writer_closed");
+      }
+      const withinFailureBackoff = sharedAttempt.retryAtMs !== undefined
+        && now() < sharedAttempt.retryAtMs;
+      if (
+        !sharedAttempt.failed
+        || (!bypassFailureBackoff && withinFailureBackoff)
+      ) {
+        return sharedAttempt;
+      }
+      sharedAttempt = undefined;
+    }
+    return startAttempt();
+  };
+  const acquireForTurn = async (state: ConfiguredTurnWriterState): Promise<ToolHistoryWriterHandle> => {
+    if (state.failure !== undefined) return await state.failure;
+    state.attempt ??= selectAttempt(false);
+    const handle = await state.attempt.promise;
+    if (handle.writer.isClosed) {
+      state.failure = invalidate(state.attempt, "history_writer_closed");
+      return await state.failure;
+    }
+    return handle;
   };
   const writer: AgentHarnessToolHistoryOptions["writer"] = {
     createSink(binding) {
-      const turnGeneration = generationFor(binding.conversationId, binding.runId);
-      return async (event) => await (await acquire(turnGeneration)).writer.persist(binding, event);
+      const state = stateFor(binding.conversationId, binding.runId);
+      return async (event) => {
+        const handle = await acquireForTurn(state);
+        try {
+          const result = await handle.writer.persist(binding, event);
+          const terminalCode = terminalToolHistoryWriterFailureCode(result, handle);
+          if (terminalCode !== undefined && state.attempt !== undefined) {
+            state.failure = invalidate(state.attempt, terminalCode);
+          }
+          return result;
+        } catch (error) {
+          const terminalCode = terminalToolHistoryWriterFailureCode(error, handle);
+          if (terminalCode !== undefined && state.attempt !== undefined) {
+            state.failure = invalidate(state.attempt, terminalCode);
+          }
+          throw error;
+        }
+      };
     },
     async finishRun(binding, status, failureKind) {
+      const key = turnKey(binding.conversationId, binding.runId);
+      const state = turnStates.get(key);
       try {
-        if (handlePromise === undefined) return;
-        const handle = await handlePromise.catch(() => undefined);
-        await handle?.writer.finishRun(binding, status, failureKind);
+        if (state?.attempt === undefined || state.failure !== undefined) return;
+        const handle = await state.attempt.promise.catch(() => undefined);
+        try {
+          await handle?.writer.finishRun(binding, status, failureKind);
+        } catch (error) {
+          if (handle === undefined) return;
+          const terminalCode = terminalToolHistoryWriterFailureCode(error, handle);
+          if (terminalCode === undefined) throw error;
+          invalidate(state.attempt, terminalCode);
+          return;
+        }
+        const terminalCode = handle === undefined
+          ? undefined
+          : terminalToolHistoryWriterFailureCode(undefined, handle);
+        if (terminalCode !== undefined) invalidate(state.attempt, terminalCode);
       } finally {
-        turnGenerations.delete(turnKey(binding.conversationId, binding.runId));
+        turnStates.delete(key);
       }
     },
     async resetConversation(logicalConversationId) {
       const reset = resetTail.then(async () => {
         if (!await reader.exists()) return;
-        // An explicit reset is a fresh retry boundary after an outage. Wait for
-        // any attempt it observed to settle before assigning that boundary so a
-        // concurrent failure cannot latch the reset's generation. The single
-        // tail keeps concurrent resets from opening overlapping writers.
-        const observedHandle = handlePromise;
-        if (observedHandle !== undefined) await observedHandle.catch(() => undefined);
-        const resetGeneration = ++latestTurnGeneration;
-        await (await acquire(resetGeneration)).writer.resetConversation(logicalConversationId);
+        // Reset is serialized and host-explicit, so it may bypass only the
+        // short post-failure cooldown. It still reuses a healthy/pending handle
+        // and every fresh acquisition keeps the full restart-handoff ceiling.
+        const observedAttempt = sharedAttempt;
+        if (observedAttempt !== undefined && !observedAttempt.failed) {
+          await observedAttempt.promise.catch(() => undefined);
+        }
+        let attempt = selectAttempt(true);
+        let handle = await attempt.promise;
+        try {
+          await handle.writer.resetConversation(logicalConversationId);
+        } catch (error) {
+          const terminalCode = terminalToolHistoryWriterFailureCode(error, handle);
+          if (terminalCode === undefined || attempt !== observedAttempt) throw error;
+          invalidate(attempt, terminalCode);
+          attempt = selectAttempt(true);
+          handle = await attempt.promise;
+          await handle.writer.resetConversation(logicalConversationId);
+        }
+        const terminalCode = terminalToolHistoryWriterFailureCode(undefined, handle);
+        if (terminalCode !== undefined) invalidate(attempt, terminalCode);
       });
       resetTail = reset.then(
         () => undefined,
@@ -1036,11 +1183,30 @@ export function lazyConfiguredToolHistory(
     logicalConversationId: (conversationId) =>
       toolHistoryLogicalConversationId(conversationId, options.rollover),
     async release(): Promise<void> {
-      if (handlePromise === undefined) return;
-      const handle = await handlePromise.catch(() => undefined);
-      await handle?.release();
+      const attempt = sharedAttempt;
+      sharedAttempt = undefined;
+      if (attempt !== undefined) {
+        await attempt.promise.catch(() => undefined);
+        retire(attempt);
+      }
+      await retirementTail;
     },
   };
+}
+
+function terminalToolHistoryWriterFailureCode(
+  value: unknown,
+  handle: ToolHistoryWriterHandle,
+): string | undefined {
+  const candidate = typeof value === "object" && value !== null
+    ? "errorCode" in value
+      ? (value as { readonly errorCode?: unknown }).errorCode
+      : "code" in value
+        ? (value as { readonly code?: unknown }).code
+        : undefined
+    : undefined;
+  if (candidate === "history_writer_closed") return candidate;
+  return handle.writer.isClosed ? "history_writer_closed" : undefined;
 }
 
 function toolHistoryAcquisitionErrorCode(error: unknown): string {
