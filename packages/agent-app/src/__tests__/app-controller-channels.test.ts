@@ -59,6 +59,7 @@ describe("app channel capability composition", () => {
         statuses,
         running: new Map(),
         channelStartGenerations: new Map(),
+        startsInFlight: new Map(),
         stopped: false,
         traceabilityStatusValue: {} as never,
         processJobsService,
