@@ -692,35 +692,80 @@ describe("redactJsonValue", () => {
     }
   });
 
-  it("preserves serialized already-redacted credential fields across repeated sanitization", () => {
+  it("scans every raw JSON credential occurrence while preserving exact safe sentinels", () => {
     const serialized = JSON.stringify({
       token: "[redacted]",
-      credential: "[redacted]",
       nested: { credentials: "[redacted]" },
       command: "TOKEN=[redacted]",
-      safe: "visible-json-negative",
+      safe: "visible",
     });
-    const unsafe = JSON.stringify({ token: "[redacted]", credential: "still-secret" });
-    const sentinelTail = JSON.stringify({ command: "TOKEN=[redacted],fixture-secret-tail" });
-    const escapedCredentialKey = '{"credenti\\u0061ls":"fixture-escaped-key-secret"}';
-    const escapedAssignmentOperator = '{"command":"TOKEN\\u003dfixture-escaped-operator-secret"}';
-    const nonJsonCommaTail = "credential=[redacted],fixture-secret-tail";
-    const nonJsonClosingTail = 'credential="[redacted]"}fixture-secret-tail';
+    const safeJson = [
+      ["valid serialized sentinels", serialized],
+      ["safe duplicate sentinels", '{"token":"[redacted]","token":"[redacted]"}'],
+      ["escaped credential key sentinel", '{"tok\\u0065n":"[redacted]"}'],
+      ["escaped assignment sentinel", '{"command":"TOKEN\\u003d[redacted]"}'],
+      ["key-embedded assignment sentinel", '{"note password=[redacted]":1}'],
+      ["object-like code output", "{foo: bar}"],
+      ["quoted prose suffix", '"quoted prose", said Alice'],
+      ["numbered list item", "[1] item"],
+      ["truncated exact-sentinel object", '{"token":"[redacted]"'],
+      ["nested truncated exact-sentinel object", '{"nested":{"credentials":"[redacted]"'],
+      ["unterminated escaped-string prose", '{"note":"harmless\\u0020prefix'],
+      ["malformed escape without credential evidence", '{"note":"harmless\\q'],
+      ["earlier syntax error before escaped credential sentinel", '{"x": nul, "credenti\\u0061ls":"[redacted]"}'],
+      ["malformed escape before escaped credential sentinel", '{"note":"harmless\\q", "credenti\\u0061ls":"[redacted]"}'],
+    ] as const;
+    const hostileJson = [
+      ["unsafe first duplicate", '{"token":"fixture-duplicate-first-secret","token":"[redacted]"}'],
+      ["unsafe last duplicate", '{"token":"[redacted]","token":"fixture-duplicate-last-secret"}'],
+      ["nested duplicate", '{"nested":{"password":"fixture-nested-duplicate-secret","password":"[redacted]"}}'],
+      ["array duplicate", '[{"api_key":"[redacted]","api_key":"fixture-array-duplicate-secret"}]'],
+      ["key assignment", '{"note password=fixture-key-assignment-secret":1}'],
+      ["escaped key assignment", '{"api\\u005fkey\\u003dfixture-escaped-key-assignment-secret":1}'],
+      ["unsafe parsed key", JSON.stringify({ token: "[redacted]", credential: "still-secret" })],
+      ["sentinel tail", JSON.stringify({ command: "TOKEN=[redacted],fixture-secret-tail" })],
+      ["escaped credential key", '{"credenti\\u0061ls":"fixture-escaped-key-secret"}'],
+      ["escaped assignment operator", '{"command":"TOKEN\\u003dfixture-escaped-operator-secret"}'],
+      ["malformed credential assignment", '{"token":"fixture-malformed-assignment-secret'],
+      ["malformed sentinel tail", '{"command":"TOKEN=[redacted],fixture-malformed-tail-secret'],
+      ["truncated escaped credential key value", '{"credenti\\u0061ls":"fixture-truncated-secret'],
+      ["truncated escaped assignment operator", '{"command":"TOKEN\\u003dfixture-truncated-secret'],
+      ["truncated escaped key assignment", '{"api\\u005fkey\\u003dfixture-truncated-key-secret'],
+      ["earlier invalid literal before escaped assignment", '{"x": nul, "command":"TOKEN\\u003dfixture-ordering-secret"}'],
+      ["earlier invalid literal before escaped credential key", '{"x": nul, "credenti\\u0061ls":"fixture-ordering-secret"}'],
+      ["invalid tail before escaped credential key", '{"a":1} zz {"credenti\\u0061ls":"fixture-tail-secret"}'],
+      ["invalid unquoted key before escaped assignment", '{1:2, "command":"TOKEN\\u003dfixture-badkey-secret"}'],
+      ["concatenated JSON documents with later escaped assignment", '{"safe":true}\n{"command":"TOKEN\\u003dfixture-concatenated-secret"}'],
+      ["malformed escape before escaped credential key", '{"note":"harmless\\q", "credenti\\u0061ls":"fixture-after-malformed-secret"}'],
+      ["non-JSON comma tail", "credential=[redacted],fixture-secret-tail"],
+      ["non-JSON closing tail", 'credential="[redacted]"}fixture-secret-tail'],
+    ] as const;
 
-    expect(containsVisibleSensitiveText(serialized)).toBe(false);
-    expect(sanitizeVisibleText(serialized)).toBe(serialized);
-    expect(sanitizeVisibleText(sanitizeVisibleText(serialized))).toBe(serialized);
-    for (const value of [
-      unsafe,
-      sentinelTail,
-      escapedCredentialKey,
-      escapedAssignmentOperator,
-      nonJsonCommaTail,
-      nonJsonClosingTail,
-    ]) {
-      expect(containsVisibleSensitiveText(value), value).toBe(true);
-      expect(sanitizeVisibleText(value), value).not.toBe(value);
+    for (const [name, value] of safeJson) {
+      expect(containsVisibleSensitiveText(value), name).toBe(false);
+      expect(sanitizeVisibleText(value), name).toBe(value);
+      expect(sanitizeVisibleText(sanitizeVisibleText(value)), name).toBe(value);
     }
+    for (const [name, value] of hostileJson) {
+      expect(containsVisibleSensitiveText(value), name).toBe(true);
+      expect(sanitizeVisibleText(value), name).not.toBe(value);
+    }
+  });
+
+  it.each([
+    ["input", JSON.stringify({ safe: "x".repeat(256 * 1_024) })],
+    ["depth", `${"[".repeat(13)}0${"]".repeat(13)}`],
+    ["array item", JSON.stringify(Array.from({ length: 1_001 }, () => 0))],
+    ["object key", JSON.stringify(Object.fromEntries(
+      Array.from({ length: 1_001 }, (_, index) => [`key-${String(index)}`, 0]),
+    ))],
+    ["node", JSON.stringify(Array.from(
+      { length: 1_000 },
+      () => Array.from({ length: 10 }, () => 0),
+    ))],
+  ])("fails closed at the raw JSON credential scanner %s limit", (_limit, value) => {
+    expect(containsVisibleSensitiveText(value)).toBe(true);
+    expect(sanitizeVisibleText(value)).not.toBe(value);
   });
 });
 

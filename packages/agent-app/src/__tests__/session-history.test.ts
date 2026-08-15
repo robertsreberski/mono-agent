@@ -532,31 +532,102 @@ describe("SessionHistory MCP tool", () => {
     }
   });
 
-  it("returns writer-sanitized JSON bypasses and oversized-key omissions through the actual MCP transport", async () => {
+  it("returns every writer-sanitized JSON credential occurrence and safe control through the actual MCP transport", async () => {
     const root = await tempRoot();
+    const omission = "[tool payload omitted because it contained a private host path]";
+    const preprocessingOmission = "[oversized value omitted before redaction]";
+    const hostileJsonDocuments = {
+      duplicateUnsafeFirst: '{"token":"fixture-mcp-duplicate-first-secret","token":"[redacted]"}',
+      duplicateUnsafeLast: '{"token":"[redacted]","token":"fixture-mcp-duplicate-last-secret"}',
+      nestedDuplicate: '{"nested":{"password":"fixture-mcp-nested-duplicate-secret","password":"[redacted]"}}',
+      arrayDuplicate: '[{"api_key":"[redacted]","api_key":"fixture-mcp-array-duplicate-secret"}]',
+      keyEmbeddedAssignment: '{"note password=fixture-mcp-key-assignment-secret":1}',
+      escapedKeyEmbeddedAssignment: '{"api\\u005fkey\\u003dfixture-mcp-escaped-key-assignment-secret":1}',
+      serializedTail: JSON.stringify({ command: "TOKEN=[redacted],fixture-mcp-tail-secret" }),
+      escapedKeyDocument: '{"credenti\\u0061ls":"fixture-mcp-escaped-key-secret"}',
+      escapedOperator: '{"command":"TOKEN\\u003dfixture-mcp-escaped-operator-secret"}',
+      malformedAssignment: '{"token":"fixture-mcp-malformed-assignment-secret',
+      malformedSentinelTail: '{"command":"TOKEN=[redacted],fixture-mcp-malformed-json-tail-secret',
+      truncatedEscapedKeyDocument: '{"credenti\\u0061ls":"fixture-truncated-secret',
+      truncatedEscapedOperator: '{"command":"TOKEN\\u003dfixture-truncated-secret',
+      truncatedEscapedKeyAssignment: '{"api\\u005fkey\\u003dfixture-truncated-key-secret',
+      invalidLiteralBeforeEscapedAssignment: '{"x": nul, "command":"TOKEN\\u003dfixture-ordering-secret"}',
+      invalidLiteralBeforeEscapedKey: '{"x": nul, "credenti\\u0061ls":"fixture-ordering-secret"}',
+      invalidTailBeforeEscapedKey: '{"a":1} zz {"credenti\\u0061ls":"fixture-tail-secret"}',
+      invalidUnquotedKeyBeforeEscapedAssignment: '{1:2, "command":"TOKEN\\u003dfixture-badkey-secret"}',
+      concatenatedJsonDocuments: '{"safe":true}\n{"command":"TOKEN\\u003dfixture-concatenated-secret"}',
+      malformedTail: "credential=[redacted],fixture-mcp-malformed-secret",
+    } as const;
+    const safeJsonDocuments = {
+      stableSerialized: JSON.stringify({
+        token: "[redacted]",
+        nested: { credentials: "[redacted]" },
+        command: "TOKEN=[redacted]",
+        safe: "stable-mcp-json-negative",
+      }),
+      safeDuplicate: '{"token":"[redacted]","token":"[redacted]"}',
+      safeEscapedKeyDocument: '{"tok\\u0065n":"[redacted]"}',
+      safeEscapedOperator: '{"command":"TOKEN\\u003d[redacted]"}',
+      safeKeyAssignment: '{"note password=[redacted]":1}',
+      harmlessObjectLike: "{foo: bar}",
+      quotedProse: '"quoted prose", said Alice',
+      numberedItem: "[1] item",
+      malformedSentinel: '{"token":"[redacted]"',
+      nestedMalformedSentinel: '{"nested":{"credentials":"[redacted]"',
+      unterminatedEscapedString: '{"note":"harmless\\u0020prefix',
+      malformedEscape: '{"note":"harmless\\q',
+      invalidLiteralBeforeEscapedKeySentinel: '{"x": nul, "credenti\\u0061ls":"[redacted]"}',
+      terminalSentinel: "TOKEN=[redacted]",
+      sentinelObject: { token: "[redacted]", credentials: "[redacted]" },
+    } as const;
+    const omittedHostileDocuments = Object.fromEntries(
+      Object.keys(hostileJsonDocuments).map((key) => [key, omission]),
+    );
+    const hiddenJsonSecrets = [
+      "fixture-mcp-duplicate-first-secret",
+      "fixture-mcp-duplicate-last-secret",
+      "fixture-mcp-nested-duplicate-secret",
+      "fixture-mcp-array-duplicate-secret",
+      "fixture-mcp-key-assignment-secret",
+      "fixture-mcp-escaped-key-assignment-secret",
+      "fixture-mcp-tail-secret",
+      "fixture-mcp-escaped-key-secret",
+      "fixture-mcp-escaped-operator-secret",
+      "fixture-mcp-malformed-assignment-secret",
+      "fixture-mcp-malformed-json-tail-secret",
+      "fixture-truncated-secret",
+      "fixture-truncated-key-secret",
+      "fixture-ordering-secret",
+      "fixture-tail-secret",
+      "fixture-badkey-secret",
+      "fixture-concatenated-secret",
+      "fixture-mcp-malformed-secret",
+    ];
     const oversizedKey = `${"k".repeat(513)}password`;
     const remainingBudgetKey = `${"r".repeat(292)}password`;
     const largeSafeValue = `mcp-remaining-budget-safe-marker-${"s".repeat(65_267)}`;
     expect(largeSafeValue).toHaveLength(65_300);
+    const benign = {
+      PUBLIC_KEY: "ssh-rsa-mcp-public-material",
+      DOCS_URL: "https://example.com/mcp/docs",
+      input_tokens: 37,
+      marker: "serialized-redaction-mcp-marker",
+    } as const;
+    const expectedInvocation = {
+      ...omittedHostileDocuments,
+      ...safeJsonDocuments,
+      benign,
+      oversizedKeys: { __oversized_key_0__: preprocessingOmission },
+    };
     const writer = await ToolHistoryWriter.open({ root });
     let stored: { readonly invocationId: string; readonly resultId: string };
     try {
       stored = await writeCall(writer, binding("serialized-json-mcp-run"), "serialized-json-mcp", {
         toolName: "Inspect",
         arguments: {
-          sentinelTail: JSON.stringify({ command: "TOKEN=[redacted],fixture-mcp-tail-secret" }),
-          escapedKeyDocument: '{"credenti\\u0061ls":"fixture-mcp-escaped-key-secret"}',
-          escapedOperatorDocument: '{"command":"TOKEN\\u003dfixture-mcp-escaped-operator-secret"}',
-          malformedTail: "credential=[redacted],fixture-mcp-malformed-secret",
-          stableSerialized: JSON.stringify({ token: "[redacted]", safe: "stable-mcp-json-negative" }),
-          terminalSentinel: "TOKEN=[redacted]",
-          sentinelObject: { token: "[redacted]", credentials: "[redacted]" },
-          benign: {
-            PUBLIC_KEY: "ssh-rsa-mcp-public-material",
-            DOCS_URL: "https://example.com/mcp/docs",
-            input_tokens: 37,
-            marker: "serialized-redaction-mcp-marker",
-          },
+          ...hostileJsonDocuments,
+          ...safeJsonDocuments,
+          benign,
           oversizedKeys: { [oversizedKey]: "fixture-mcp-oversized-key-secret" },
         },
         content: {
@@ -583,13 +654,21 @@ describe("SessionHistory MCP tool", () => {
         arguments: { action: "get", recordId: stored.resultId, chunkBytes: 8 * 1024 },
       });
       const visible = JSON.stringify({ search, invocationGet, resultGet });
+      const invocationRecord = body<{
+        readonly record: { readonly chunk: string; readonly nextCursor?: string };
+      }>(invocationGet).record;
 
       expect(body<{ readonly items: readonly unknown[] }>(search).items).toHaveLength(1);
+      expect(invocationRecord.nextCursor).toBeUndefined();
+      expect(JSON.parse(invocationRecord.chunk)).toEqual(expectedInvocation);
       for (const retained of [
-        "[tool payload omitted because it contained a private host path]",
-        "[oversized value omitted before redaction]",
+        omission,
+        preprocessingOmission,
         "[redacted]",
         "stable-mcp-json-negative",
+        "{foo: bar}",
+        "quoted prose",
+        "[1] item",
         "TOKEN=[redacted]",
         "serialized-redaction-mcp-marker",
         "ssh-rsa-mcp-public-material",
@@ -600,10 +679,7 @@ describe("SessionHistory MCP tool", () => {
         expect(visible, retained).toContain(retained);
       }
       for (const hidden of [
-        "fixture-mcp-tail-secret",
-        "fixture-mcp-escaped-key-secret",
-        "fixture-mcp-escaped-operator-secret",
-        "fixture-mcp-malformed-secret",
+        ...hiddenJsonSecrets,
         "fixture-mcp-oversized-key-secret",
         "fixture-mcp-remaining-budget-secret",
         oversizedKey,

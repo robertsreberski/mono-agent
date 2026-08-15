@@ -789,16 +789,79 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     }
   });
 
-  it("blocks serialized-JSON sentinel bypasses and omits values whose structured keys cannot be retained", async () => {
+  it("blocks every hostile JSON credential occurrence and omits values whose structured keys cannot be retained", async () => {
     const root = await tempRoot();
     const run = binding("serialized-json-redaction");
     const omission = "[tool payload omitted because it contained a private host path]";
     const preprocessingOmission = "[oversized value omitted before redaction]";
-    const serializedTail = JSON.stringify({ command: "TOKEN=[redacted],fixture-secret-tail" });
-    const escapedCredentialKey = '{"credenti\\u0061ls":"fixture-escaped-key-secret"}';
-    const escapedOperator = '{"command":"TOKEN\\u003dfixture-escaped-operator-secret"}';
-    const malformedTail = "credential=[redacted],fixture-malformed-tail";
-    const stableSerialized = JSON.stringify({ token: "[redacted]", safe: "stable-json-negative" });
+    const hostileJsonDocuments = {
+      duplicateUnsafeFirst: '{"token":"fixture-duplicate-first-secret","token":"[redacted]"}',
+      duplicateUnsafeLast: '{"token":"[redacted]","token":"fixture-duplicate-last-secret"}',
+      nestedDuplicate: '{"nested":{"password":"fixture-nested-duplicate-secret","password":"[redacted]"}}',
+      arrayDuplicate: '[{"api_key":"[redacted]","api_key":"fixture-array-duplicate-secret"}]',
+      keyEmbeddedAssignment: '{"note password=fixture-key-assignment-secret":1}',
+      escapedKeyEmbeddedAssignment: '{"api\\u005fkey\\u003dfixture-escaped-key-assignment-secret":1}',
+      serializedTail: JSON.stringify({ command: "TOKEN=[redacted],fixture-secret-tail" }),
+      escapedKeyDocument: '{"credenti\\u0061ls":"fixture-escaped-key-secret"}',
+      escapedOperator: '{"command":"TOKEN\\u003dfixture-escaped-operator-secret"}',
+      malformedAssignment: '{"token":"fixture-malformed-assignment-secret',
+      malformedSentinelTail: '{"command":"TOKEN=[redacted],fixture-malformed-json-tail-secret',
+      truncatedEscapedKeyDocument: '{"credenti\\u0061ls":"fixture-truncated-secret',
+      truncatedEscapedOperator: '{"command":"TOKEN\\u003dfixture-truncated-secret',
+      truncatedEscapedKeyAssignment: '{"api\\u005fkey\\u003dfixture-truncated-key-secret',
+      invalidLiteralBeforeEscapedAssignment: '{"x": nul, "command":"TOKEN\\u003dfixture-ordering-secret"}',
+      invalidLiteralBeforeEscapedKey: '{"x": nul, "credenti\\u0061ls":"fixture-ordering-secret"}',
+      invalidTailBeforeEscapedKey: '{"a":1} zz {"credenti\\u0061ls":"fixture-tail-secret"}',
+      invalidUnquotedKeyBeforeEscapedAssignment: '{1:2, "command":"TOKEN\\u003dfixture-badkey-secret"}',
+      concatenatedJsonDocuments: '{"safe":true}\n{"command":"TOKEN\\u003dfixture-concatenated-secret"}',
+      malformedTail: "credential=[redacted],fixture-malformed-tail",
+    } as const;
+    const safeJsonDocuments = {
+      stableSerialized: JSON.stringify({
+        token: "[redacted]",
+        nested: { credentials: "[redacted]" },
+        command: "TOKEN=[redacted]",
+        safe: "visible",
+      }),
+      stableNegative: JSON.stringify({ safe: "stable-json-negative" }),
+      safeDuplicate: '{"token":"[redacted]","token":"[redacted]"}',
+      safeEscapedKeyDocument: '{"tok\\u0065n":"[redacted]"}',
+      safeEscapedOperator: '{"command":"TOKEN\\u003d[redacted]"}',
+      safeKeyAssignment: '{"note password=[redacted]":1}',
+      harmlessObjectLike: "{foo: bar}",
+      quotedProse: '"quoted prose", said Alice',
+      numberedItem: "[1] item",
+      malformedSentinel: '{"token":"[redacted]"',
+      nestedMalformedSentinel: '{"nested":{"credentials":"[redacted]"',
+      unterminatedEscapedString: '{"note":"harmless\\u0020prefix',
+      malformedEscape: '{"note":"harmless\\q',
+      invalidLiteralBeforeEscapedKeySentinel: '{"x": nul, "credenti\\u0061ls":"[redacted]"}',
+      terminalSentinel: "TOKEN=[redacted]",
+      sentinelObject: { token: "[redacted]", credentials: "[redacted]" },
+    } as const;
+    const omittedHostileDocuments = Object.fromEntries(
+      Object.keys(hostileJsonDocuments).map((key) => [key, omission]),
+    );
+    const hiddenJsonSecrets = [
+      "fixture-duplicate-first-secret",
+      "fixture-duplicate-last-secret",
+      "fixture-nested-duplicate-secret",
+      "fixture-array-duplicate-secret",
+      "fixture-key-assignment-secret",
+      "fixture-escaped-key-assignment-secret",
+      "fixture-secret-tail",
+      "fixture-escaped-key-secret",
+      "fixture-escaped-operator-secret",
+      "fixture-malformed-assignment-secret",
+      "fixture-malformed-json-tail-secret",
+      "fixture-truncated-secret",
+      "fixture-truncated-key-secret",
+      "fixture-ordering-secret",
+      "fixture-tail-secret",
+      "fixture-badkey-secret",
+      "fixture-concatenated-secret",
+      "fixture-malformed-tail",
+    ];
     const oversizedKey = `${"k".repeat(513)}password`;
     const remainingBudgetKey = `${"r".repeat(292)}password`;
     const largeSafeValue = `remaining-budget-safe-marker-${"s".repeat(65_271)}`;
@@ -806,13 +869,8 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     expect(remainingBudgetKey).toHaveLength(300);
 
     const invocationPayload = {
-      serializedTail,
-      escapedKeyDocument: escapedCredentialKey,
-      escapedOperatorDocument: escapedOperator,
-      malformedTail,
-      stableSerialized,
-      terminalSentinel: "TOKEN=[redacted]",
-      sentinelObject: { token: "[redacted]", credentials: "[redacted]" },
+      ...hostileJsonDocuments,
+      ...safeJsonDocuments,
       benign: {
         PUBLIC_KEY: "ssh-rsa-public-material",
         DOCS_URL: "https://example.com/docs/path",
@@ -826,13 +884,8 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       [remainingBudgetKey]: "fixture-remaining-budget-secret",
     };
     const expectedInvocation = {
-      serializedTail: omission,
-      escapedKeyDocument: omission,
-      escapedOperatorDocument: omission,
-      malformedTail: omission,
-      stableSerialized,
-      terminalSentinel: "TOKEN=[redacted]",
-      sentinelObject: { token: "[redacted]", credentials: "[redacted]" },
+      ...omittedHostileDocuments,
+      ...safeJsonDocuments,
       benign: invocationPayload.benign,
       oversizedKeys: { __oversized_key_0__: preprocessingOmission },
     };
@@ -880,10 +933,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
     const rawBytes = await readFile(databasePath);
     for (const hidden of [
-      "fixture-secret-tail",
-      "fixture-escaped-key-secret",
-      "fixture-escaped-operator-secret",
-      "fixture-malformed-tail",
+      ...hiddenJsonSecrets,
       "fixture-oversized-key-secret",
       "fixture-remaining-budget-secret",
       oversizedKey,
@@ -894,12 +944,31 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     for (const retained of [
       "serialized-redaction-reader-marker",
       "stable-json-negative",
+      "visible",
+      "{foo: bar}",
+      "quoted prose",
+      "[1] item",
       "ssh-rsa-public-material",
       "https://example.com/docs/path",
       "remaining-budget-safe-marker",
       preprocessingOmission,
     ]) {
       expect(rawBytes.includes(Buffer.from(retained)), retained).toBe(true);
+    }
+
+    // Reinsert the hostile pre-fix payload to prove that every independent
+    // reader surface fails closed even when raw storage predates the writer fix.
+    const vulnerablePayload = {
+      ...hostileJsonDocuments,
+      ...safeJsonDocuments,
+      benign: invocationPayload.benign,
+    };
+    const raw = new DatabaseSync(databasePath);
+    try {
+      raw.prepare("UPDATE tool_records SET payload_json=?, search_text=? WHERE record_id=?")
+        .run(JSON.stringify(vulnerablePayload), invocationPayload.benign.marker, invocation.recordId);
+    } finally {
+      raw.close();
     }
 
     const reader = new ToolHistoryReader(root);
@@ -912,7 +981,11 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     const invocationGet = reader.get({ ...scope, recordId: invocation.recordId, chunkBytes: 8 * 1024 });
     const resultGet = reader.get({ ...scope, recordId: result.recordId, chunkBytes: 8 * 1024 });
     expect(search.items).toHaveLength(1);
-    expect(invocationGet.record?.payload).toEqual(expectedInvocation);
+    expect(invocationGet.record?.payload).toEqual({
+      ...omittedHostileDocuments,
+      ...safeJsonDocuments,
+      benign: invocationPayload.benign,
+    });
     expect(resultGet.record?.payload).toEqual(expectedResult);
 
     const projection = buildToolHistoryProjection(
@@ -927,6 +1000,10 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       preprocessingOmission,
       "serialized-redaction-reader-marker",
       "stable-json-negative",
+      "visible",
+      "{foo: bar}",
+      "quoted prose",
+      "[1] item",
       "TOKEN=[redacted]",
       "ssh-rsa-public-material",
       "remaining-budget-safe-marker",
@@ -934,10 +1011,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       expect(visible, retained).toContain(retained);
     }
     for (const hidden of [
-      "fixture-secret-tail",
-      "fixture-escaped-key-secret",
-      "fixture-escaped-operator-secret",
-      "fixture-malformed-tail",
+      ...hiddenJsonSecrets,
       "fixture-oversized-key-secret",
       "fixture-remaining-budget-secret",
       oversizedKey,

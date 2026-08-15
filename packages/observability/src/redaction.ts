@@ -48,6 +48,7 @@ const TRUNCATION_SUFFIX_PATTERN = /…\[truncated ([1-9]\d*) bytes\]$/u;
 const MAX_REDACTION_NODES = 10_000;
 const MAX_ARRAY_ITEMS = 1_000;
 const MAX_OBJECT_KEYS = 1_000;
+const MAX_JSON_CREDENTIAL_SCAN_CODE_UNITS = 256 * 1_024;
 
 export interface RedactJsonValueOptions {
   /**
@@ -326,6 +327,14 @@ export function truncateVisibleText(value: string, maxBytes: number): string {
 }
 
 function containsCredentialAssignment(text: string): boolean {
+  if (looksLikeStructuredJsonText(text)) {
+    const lexicalInspection = inspectOriginalJsonCredentialOccurrences(text);
+    if (lexicalInspection === "unsafe" || lexicalInspection === "limit") return true;
+    if (lexicalInspection === "invalid") {
+      return containsTextualCredentialAssignment(text)
+        || containsCredentialAssignmentInTolerantJsonStrings(text);
+    }
+  }
   try {
     return containsCredentialAssignmentInParsedJson(
       JSON.parse(text),
@@ -335,6 +344,388 @@ function containsCredentialAssignment(text: string): boolean {
   } catch {
     return containsTextualCredentialAssignment(text);
   }
+}
+
+type JsonCredentialInspection = "safe" | "unsafe" | "invalid" | "limit";
+
+type JsonCredentialValueInspection =
+  | { readonly kind: "safe-string"; readonly value: string }
+  | { readonly kind: "safe-other" }
+  | { readonly kind: "unsafe" }
+  | { readonly kind: "invalid" }
+  | { readonly kind: "limit" };
+
+type JsonStringInspection =
+  | { readonly kind: "complete"; readonly value: string; readonly end: number }
+  | { readonly kind: "invalid"; readonly decodedPrefix: string; readonly failureIndex: number };
+
+interface JsonCredentialScanner {
+  readonly text: string;
+  index: number;
+  readonly budget: RedactionBudget;
+}
+
+function looksLikeStructuredJsonText(text: string): boolean {
+  let index = 0;
+  while (index < text.length && isJsonWhitespace(text[index]!)) index += 1;
+  const first = text[index];
+  if (first === "\"") return true;
+  if (first === "{") return looksLikeJsonObjectAt(text, index);
+  if (first !== "[") return false;
+  return looksLikeJsonArrayAt(text, index, 0);
+}
+
+function looksLikeJsonObjectAt(text: string, openingIndex: number): boolean {
+  let index = openingIndex + 1;
+  while (index < text.length && isJsonWhitespace(text[index]!)) index += 1;
+  const firstKey = text[index];
+  return firstKey === undefined
+    || firstKey === "}"
+    || firstKey === "\""
+    || isJsonDigit(firstKey);
+}
+
+function looksLikeJsonArrayAt(text: string, openingIndex: number, depth: number): boolean {
+  if (depth >= 12) return true;
+  let index = openingIndex + 1;
+  while (index < text.length && isJsonWhitespace(text[index]!)) index += 1;
+  const firstItem = text[index];
+  return firstItem === undefined
+    || firstItem === "]"
+    || firstItem === "\""
+    || firstItem === "-"
+    || (firstItem !== undefined && firstItem >= "0" && firstItem <= "9")
+    || (firstItem === "{" && looksLikeJsonObjectAt(text, index))
+    || (firstItem === "[" && looksLikeJsonArrayAt(text, index, depth + 1))
+    || text.startsWith("true", index)
+    || text.startsWith("false", index)
+    || text.startsWith("null", index);
+}
+
+function inspectOriginalJsonCredentialOccurrences(text: string): JsonCredentialInspection {
+  if (text.length > MAX_JSON_CREDENTIAL_SCAN_CODE_UNITS) return "limit";
+  const scanner: JsonCredentialScanner = {
+    text,
+    index: 0,
+    budget: { remainingNodes: MAX_REDACTION_NODES },
+  };
+  skipJsonWhitespace(scanner);
+  const value = inspectJsonCredentialValue(scanner, 0);
+  if (value.kind === "unsafe" || value.kind === "invalid" || value.kind === "limit") {
+    return value.kind;
+  }
+  skipJsonWhitespace(scanner);
+  return scanner.index === text.length ? "safe" : "invalid";
+}
+
+function containsCredentialAssignmentInTolerantJsonStrings(text: string): boolean {
+  // Completion and failure boundaries move this cursor monotonically; no
+  // string prefix or malformed remainder is rescanned by this tolerant pass.
+  const scanner: JsonCredentialScanner = {
+    text,
+    index: 0,
+    budget: { remainingNodes: MAX_REDACTION_NODES },
+  };
+  while (scanner.index < text.length) {
+    const openingIndex = text.indexOf("\"", scanner.index);
+    if (openingIndex < 0) return false;
+    scanner.index = openingIndex;
+    if (!consumeNode(scanner.budget)) return true;
+    const string = scanJsonString(scanner);
+    const decoded = string.kind === "complete" ? string.value : string.decodedPrefix;
+    const boundary = string.kind === "complete"
+      ? { closed: true, end: string.end }
+      : recoverInvalidJsonStringBoundary(text, string.failureIndex);
+    scanner.index = boundary.end;
+    if (containsTextualCredentialAssignment(decoded)) return true;
+    if (!boundary.closed) return false;
+
+    let separatorIndex = boundary.end;
+    while (separatorIndex < text.length && isJsonWhitespace(text[separatorIndex]!)) {
+      separatorIndex += 1;
+    }
+    if (text[separatorIndex] !== ":" || !isCredentialKey(decoded)) continue;
+    separatorIndex += 1;
+    while (separatorIndex < text.length && isJsonWhitespace(text[separatorIndex]!)) {
+      separatorIndex += 1;
+    }
+    if (text[separatorIndex] !== "\"") return true;
+    scanner.index = separatorIndex;
+    if (!consumeNode(scanner.budget)) return true;
+    const immediateValue = scanJsonString(scanner);
+    if (immediateValue.kind !== "complete" || immediateValue.value !== "[redacted]") {
+      return true;
+    }
+  }
+  return false;
+}
+
+function recoverInvalidJsonStringBoundary(
+  text: string,
+  failureIndex: number,
+): { readonly closed: boolean; readonly end: number } {
+  let index = failureIndex;
+  while (index < text.length) {
+    const current = text[index]!;
+    if (current === "\"") return { closed: true, end: index + 1 };
+    if (current === "\\" && index + 1 < text.length) {
+      index += 2;
+      continue;
+    }
+    index += 1;
+  }
+  return { closed: false, end: text.length };
+}
+
+function inspectJsonCredentialValue(
+  scanner: JsonCredentialScanner,
+  depth: number,
+): JsonCredentialValueInspection {
+  skipJsonWhitespace(scanner);
+  if (!consumeNode(scanner.budget)) return { kind: "limit" };
+  const current = scanner.text[scanner.index];
+  if (current === "\"") {
+    const string = scanJsonString(scanner);
+    if (string.kind === "invalid") {
+      return containsTextualCredentialAssignment(string.decodedPrefix)
+        ? { kind: "unsafe" }
+        : { kind: "invalid" };
+    }
+    return containsTextualCredentialAssignment(string.value)
+      ? { kind: "unsafe" }
+      : { kind: "safe-string", value: string.value };
+  }
+  if (current === "{") {
+    if (depth >= 12) return { kind: "limit" };
+    return inspectJsonCredentialObject(scanner, depth);
+  }
+  if (current === "[") {
+    if (depth >= 12) return { kind: "limit" };
+    return inspectJsonCredentialArray(scanner, depth);
+  }
+  for (const literal of ["true", "false", "null"] as const) {
+    if (scanner.text.startsWith(literal, scanner.index)) {
+      scanner.index += literal.length;
+      return { kind: "safe-other" };
+    }
+  }
+  return scanJsonNumber(scanner)
+    ? { kind: "safe-other" }
+    : { kind: "invalid" };
+}
+
+function inspectJsonCredentialObject(
+  scanner: JsonCredentialScanner,
+  depth: number,
+): JsonCredentialValueInspection {
+  scanner.index += 1;
+  skipJsonWhitespace(scanner);
+  if (scanner.text[scanner.index] === "}") {
+    scanner.index += 1;
+    return { kind: "safe-other" };
+  }
+  let inspectedKeys = 0;
+  while (scanner.index < scanner.text.length) {
+    inspectedKeys += 1;
+    if (inspectedKeys > MAX_OBJECT_KEYS) return { kind: "limit" };
+    const scannedKey = scanJsonString(scanner);
+    if (scannedKey.kind === "invalid") {
+      return containsTextualCredentialAssignment(scannedKey.decodedPrefix)
+        ? { kind: "unsafe" }
+        : { kind: "invalid" };
+    }
+    const key = scannedKey.value;
+    if (containsTextualCredentialAssignment(key)) return { kind: "unsafe" };
+    skipJsonWhitespace(scanner);
+    if (scanner.text[scanner.index] !== ":") return { kind: "invalid" };
+    scanner.index += 1;
+    const value = inspectJsonCredentialValue(scanner, depth + 1);
+    if (value.kind === "unsafe" || value.kind === "limit") {
+      return value;
+    }
+    if (isCredentialKey(key) && (value.kind !== "safe-string" || value.value !== "[redacted]")) {
+      return { kind: "unsafe" };
+    }
+    if (value.kind === "invalid") return value;
+    skipJsonWhitespace(scanner);
+    const delimiter = scanner.text[scanner.index];
+    if (delimiter === "}") {
+      scanner.index += 1;
+      return { kind: "safe-other" };
+    }
+    if (delimiter !== ",") return { kind: "invalid" };
+    scanner.index += 1;
+    skipJsonWhitespace(scanner);
+  }
+  return { kind: "invalid" };
+}
+
+function inspectJsonCredentialArray(
+  scanner: JsonCredentialScanner,
+  depth: number,
+): JsonCredentialValueInspection {
+  scanner.index += 1;
+  skipJsonWhitespace(scanner);
+  if (scanner.text[scanner.index] === "]") {
+    scanner.index += 1;
+    return { kind: "safe-other" };
+  }
+  let inspectedItems = 0;
+  while (scanner.index < scanner.text.length) {
+    inspectedItems += 1;
+    if (inspectedItems > MAX_ARRAY_ITEMS) return { kind: "limit" };
+    const value = inspectJsonCredentialValue(scanner, depth + 1);
+    if (value.kind === "unsafe" || value.kind === "invalid" || value.kind === "limit") {
+      return value;
+    }
+    skipJsonWhitespace(scanner);
+    const delimiter = scanner.text[scanner.index];
+    if (delimiter === "]") {
+      scanner.index += 1;
+      return { kind: "safe-other" };
+    }
+    if (delimiter !== ",") return { kind: "invalid" };
+    scanner.index += 1;
+    skipJsonWhitespace(scanner);
+  }
+  return { kind: "invalid" };
+}
+
+function scanJsonString(scanner: JsonCredentialScanner): JsonStringInspection {
+  if (scanner.text[scanner.index] !== "\"") {
+    return invalidJsonString(scanner, [], scanner.index);
+  }
+  const decodedParts: string[] = [];
+  let index = scanner.index + 1;
+  let segmentStart = index;
+  while (index < scanner.text.length) {
+    const current = scanner.text[index]!;
+    if (current === "\"") {
+      decodedParts.push(scanner.text.slice(segmentStart, index));
+      scanner.index = index + 1;
+      return { kind: "complete", value: decodedParts.join(""), end: scanner.index };
+    }
+    if (current === "\\") {
+      decodedParts.push(scanner.text.slice(segmentStart, index));
+      index += 1;
+      const escape = scanner.text[index];
+      if (escape === undefined) {
+        return invalidJsonString(scanner, decodedParts, index);
+      }
+      if (escape === "u") {
+        for (let offset = 1; offset <= 4; offset += 1) {
+          const digit = scanner.text[index + offset];
+          if (digit === undefined || !isJsonHexDigit(digit)) {
+            return invalidJsonString(scanner, decodedParts, index + offset);
+          }
+        }
+        decodedParts.push(String.fromCharCode(Number.parseInt(scanner.text.slice(index + 1, index + 5), 16)));
+        index += 5;
+        segmentStart = index;
+        continue;
+      }
+      switch (escape) {
+        case "\"":
+        case "\\":
+        case "/":
+          decodedParts.push(escape);
+          break;
+        case "b":
+          decodedParts.push("\b");
+          break;
+        case "f":
+          decodedParts.push("\f");
+          break;
+        case "n":
+          decodedParts.push("\n");
+          break;
+        case "r":
+          decodedParts.push("\r");
+          break;
+        case "t":
+          decodedParts.push("\t");
+          break;
+        default:
+          return invalidJsonString(scanner, decodedParts, index);
+      }
+      index += 1;
+      segmentStart = index;
+      continue;
+    }
+    if (current.charCodeAt(0) <= 0x1f) {
+      decodedParts.push(scanner.text.slice(segmentStart, index));
+      return invalidJsonString(scanner, decodedParts, index);
+    }
+    index += 1;
+  }
+  decodedParts.push(scanner.text.slice(segmentStart, index));
+  return invalidJsonString(scanner, decodedParts, index);
+}
+
+function invalidJsonString(
+  scanner: JsonCredentialScanner,
+  decodedParts: readonly string[],
+  failureIndex: number,
+): JsonStringInspection {
+  const boundedFailureIndex = Math.max(
+    scanner.index,
+    Math.min(scanner.text.length, failureIndex),
+  );
+  scanner.index = boundedFailureIndex < scanner.text.length
+    ? boundedFailureIndex + 1
+    : scanner.text.length;
+  return {
+    kind: "invalid",
+    decodedPrefix: decodedParts.join(""),
+    failureIndex: boundedFailureIndex,
+  };
+}
+
+function scanJsonNumber(scanner: JsonCredentialScanner): boolean {
+  let index = scanner.index;
+  if (scanner.text[index] === "-") index += 1;
+  const integerStart = scanner.text[index];
+  if (integerStart === "0") {
+    index += 1;
+  } else if (integerStart !== undefined && integerStart >= "1" && integerStart <= "9") {
+    index += 1;
+    while (isJsonDigit(scanner.text[index])) index += 1;
+  } else {
+    return false;
+  }
+  if (scanner.text[index] === ".") {
+    index += 1;
+    if (!isJsonDigit(scanner.text[index])) return false;
+    while (isJsonDigit(scanner.text[index])) index += 1;
+  }
+  if (scanner.text[index] === "e" || scanner.text[index] === "E") {
+    index += 1;
+    if (scanner.text[index] === "+" || scanner.text[index] === "-") index += 1;
+    if (!isJsonDigit(scanner.text[index])) return false;
+    while (isJsonDigit(scanner.text[index])) index += 1;
+  }
+  scanner.index = index;
+  return true;
+}
+
+function skipJsonWhitespace(scanner: JsonCredentialScanner): void {
+  while (scanner.index < scanner.text.length && isJsonWhitespace(scanner.text[scanner.index]!)) {
+    scanner.index += 1;
+  }
+}
+
+function isJsonWhitespace(value: string): boolean {
+  return value === " " || value === "\t" || value === "\n" || value === "\r";
+}
+
+function isJsonDigit(value: string | undefined): value is string {
+  return value !== undefined && value >= "0" && value <= "9";
+}
+
+function isJsonHexDigit(value: string): boolean {
+  return value >= "0" && value <= "9"
+    || value >= "a" && value <= "f"
+    || value >= "A" && value <= "F";
 }
 
 function containsCredentialAssignmentInParsedJson(
