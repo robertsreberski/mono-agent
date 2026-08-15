@@ -17,6 +17,7 @@ import {
   MAX_CRON_OPERATOR_SUMMARY_FAILURE_KIND_BYTES,
   MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES,
   MAX_CRON_OPERATOR_SUMMARY_TEXT_BYTES,
+  MAX_CRON_OPERATOR_RESPONSE_BYTES,
   isAgentReplyPartDeliveryOutcomes,
   sanitizeReplyPartDeliveryOutcomes,
   type AgentReplyPartDeliveryOutcome,
@@ -564,14 +565,7 @@ export async function openCronControlStore(
               OR (ordered_at = ? AND sequence = ? AND run_id < ?)
             ) ORDER BY ordered_at DESC, sequence DESC, run_id DESC LIMIT ?`)
           .all(jobId, cursor.orderedAt, cursor.orderedAt, cursor.sequence, cursor.orderedAt, cursor.sequence, cursor.runId, limit + 1)) as unknown as RunRow[];
-      const selected = rows.slice(0, limit);
-      const tail = selected[selected.length - 1];
-      return {
-        runs: selected.map((row) => operatorRunSummary(row)),
-        ...(rows.length <= limit || tail === undefined
-          ? {}
-          : { nextCursor: encodeCursor({ orderedAt: tail.ordered_at, sequence: tail.sequence, runId: tail.run_id }) }),
-      };
+      return operatorRunPage(rows, limit);
     },
     audit(input) {
       withTransaction(() => {
@@ -1076,6 +1070,40 @@ function operatorRunSummary(row: RunRow, includeReplyPartOutcomes = true): CronO
     failureKindBytes: MAX_SUMMARY_FAILURE_KIND_BYTES,
     replyPartOutcomeLimit: includeReplyPartOutcomes ? MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES : 0,
   });
+}
+
+function operatorRunPage(rows: readonly RunRow[], limit: number): CronOperatorRunPage {
+  const candidates = rows.slice(0, limit);
+  if (candidates.length === 0) return { runs: [] };
+  const runs: CronOperatorRunSummary[] = [];
+  for (let index = 0; index < candidates.length; index += 1) {
+    const row = candidates[index]!;
+    runs.push(operatorRunSummary(row));
+    const more = index + 1 < rows.length;
+    const candidatePage: CronOperatorRunPage = {
+      runs,
+      ...(more ? { nextCursor: encodeRunCursor(row) } : {}),
+    };
+    if (Buffer.byteLength(JSON.stringify(candidatePage), "utf8") > MAX_CRON_OPERATOR_RESPONSE_BYTES) {
+      runs.pop();
+      if (runs.length === 0) {
+        throw new CronControlStoreError(
+          "corrupt",
+          "A single cron run summary exceeded the operator response boundary.",
+        );
+      }
+      break;
+    }
+  }
+  const tail = candidates[runs.length - 1]!;
+  return {
+    runs,
+    ...(runs.length < rows.length ? { nextCursor: encodeRunCursor(tail) } : {}),
+  };
+}
+
+function encodeRunCursor(row: RunRow): string {
+  return encodeCursor({ orderedAt: row.ordered_at, sequence: row.sequence, runId: row.run_id });
 }
 
 function operatorRunDetail(database: DatabaseSync, row: RunRow): CronOperatorRunDetail {

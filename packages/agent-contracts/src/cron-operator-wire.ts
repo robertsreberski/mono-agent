@@ -4,6 +4,7 @@ import {
   sanitizeReplyPartDeliveryOutcomes,
   type AgentReplyPartDeliveryOutcome,
 } from "./reply-part-outcomes.js";
+import { MAX_AGENT_REPLY_PARTS } from "./stream-wire.js";
 
 /** Producer ceiling; consumers retain a separate 1 MiB defensive read cap. */
 export const MAX_CRON_OPERATOR_RESPONSE_BYTES = 768 * 1024;
@@ -110,6 +111,7 @@ export interface CronOperatorOverview {
 }
 
 export interface CronOperatorRunPage {
+  /** May be shorter than the requested item limit when the next summary would exceed the response byte ceiling. */
   readonly runs: readonly CronOperatorRunSummary[];
   readonly nextCursor?: string;
 }
@@ -122,25 +124,24 @@ export class CronOperatorWireError extends TypeError {
 }
 
 export function parseCronOperatorOverview(value: unknown): CronOperatorOverview {
-  const overview = requireRecord(value);
+  const overview = snapshotOwnDataRecord(value);
+  const jobs = snapshotOwnDataArray(overview.jobs, MAX_CRON_OPERATOR_JOBS);
   if (!hasOnlyKeys(overview, ["generatedAt", "actionsEnabled", "jobs", "degradedReason", "jobsTruncated"])
     || !validDate(overview.generatedAt)
     || typeof overview.actionsEnabled !== "boolean"
-    || !Array.isArray(overview.jobs)
-    || overview.jobs.length > MAX_CRON_OPERATOR_JOBS
     || !optionalBoundedString(overview.degradedReason, MAX_CRON_OPERATOR_DEGRADED_REASON_BYTES)
     || (overview.jobsTruncated !== undefined && overview.jobsTruncated !== true)) fail();
   return {
     generatedAt: overview.generatedAt as string,
     actionsEnabled: overview.actionsEnabled as boolean,
-    jobs: (overview.jobs as unknown[]).map(parseCronOperatorJob),
+    jobs: jobs.map(parseCronOperatorJob),
     ...(overview.degradedReason === undefined ? {} : { degradedReason: overview.degradedReason as string }),
     ...(overview.jobsTruncated === true ? { jobsTruncated: true as const } : {}),
   };
 }
 
 export function parseCronOperatorJob(value: unknown): CronOperatorJob {
-  const job = requireRecord(value);
+  const job = snapshotOwnDataRecord(value);
   if (!hasOnlyKeys(job, [
     "jobId", "expression", "timezone", "conversationId", "configured", "declaredEnabled",
     "effectiveEnabled", "nextRunAt", "health", "lastRun", "activeRunId",
@@ -152,7 +153,7 @@ export function parseCronOperatorJob(value: unknown): CronOperatorJob {
     || typeof job.configured !== "boolean"
     || typeof job.declaredEnabled !== "boolean"
     || typeof job.effectiveEnabled !== "boolean"
-    || !["healthy", "warning", "unhealthy", "disabled", "unknown"].includes(String(job.health))
+    || !oneOf(job.health, ["healthy", "warning", "unhealthy", "disabled", "unknown"])
     || (job.nextRunAt !== undefined && !validDate(job.nextRunAt))
     || !optionalBoundedString(job.activeRunId, MAX_CRON_OPERATOR_RUN_ID_BYTES)) fail();
   return {
@@ -176,30 +177,31 @@ export function parseCronOperatorRunSummary(value: unknown): CronOperatorRunSumm
 
 export function parseCronOperatorRunDetail(value: unknown): CronOperatorRunDetail {
   const run = parseRunBase(value, "detail", [...RUN_BASE_KEYS, "events", "eventsIncluded"]);
-  if (!Array.isArray(run.events)
-    || run.events.length > MAX_CRON_OPERATOR_DETAIL_EVENTS
-    || !Number.isSafeInteger(run.eventsIncluded)
-    || Number(run.eventsIncluded) !== run.events.length
+  const sourceEvents = snapshotOwnDataArray(run.events, MAX_CRON_OPERATOR_DETAIL_EVENTS);
+  const events = sourceEvents.map(parseCronOperatorEvent);
+  if (!Number.isSafeInteger(run.eventsIncluded)
+    || Number(run.eventsIncluded) !== events.length
     || Number(run.eventsIncluded) > Number(run.eventCount)
-    || serializedBytes(run.events) > MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES) fail();
+    || serializedBytes(events) > MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES) fail();
   return {
     ...run,
     projection: "detail",
-    events: run.events.map(parseCronOperatorEvent),
+    events,
     eventsIncluded: run.eventsIncluded as number,
   } as unknown as CronOperatorRunDetail;
 }
 
 export function parseCronOperatorRunPage(value: unknown): CronOperatorRunPage {
-  const page = requireRecord(value);
+  const page = snapshotOwnDataRecord(value);
+  const sourceRuns = snapshotOwnDataArray(page.runs, MAX_CRON_OPERATOR_RUN_PAGE);
   if (!hasOnlyKeys(page, ["runs", "nextCursor"])
-    || !Array.isArray(page.runs)
-    || page.runs.length > MAX_CRON_OPERATOR_RUN_PAGE
     || !optionalBoundedString(page.nextCursor, MAX_CRON_OPERATOR_CURSOR_BYTES)) fail();
-  return {
-    runs: (page.runs as unknown[]).map(parseCronOperatorRunSummary),
+  const parsed: CronOperatorRunPage = {
+    runs: sourceRuns.map(parseCronOperatorRunSummary),
     ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor as string }),
   };
+  if (serializedBytes(parsed) > MAX_CRON_OPERATOR_RESPONSE_BYTES) fail();
+  return parsed;
 }
 
 const RUN_BASE_KEYS = [
@@ -225,8 +227,9 @@ function parseRunBase(
     || !Number.isSafeInteger(run.sequence)
     || Number(run.sequence) <= 0
     || (run.trigger !== "scheduled" && run.trigger !== "manual")
-    || !["admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "dropped"]
-      .includes(String(run.status))
+    || !oneOf(run.status, [
+      "admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "dropped",
+    ])
     || !Number.isSafeInteger(run.eventCount)
     || Number(run.eventCount) < 0
     || Number(run.eventCount) > MAX_CRON_OPERATOR_DETAIL_EVENTS
@@ -249,20 +252,19 @@ function parseRunBase(
       && run.blockedByTrigger !== "scheduled"
       && run.blockedByTrigger !== "manual")
     || (run.queueDepth !== undefined && (!Number.isSafeInteger(run.queueDepth) || Number(run.queueDepth) < 0))
-    || (sourceReplyPartOutcomes !== undefined && !isAgentReplyPartDeliveryOutcomes(sourceReplyPartOutcomes))
     || (run.eventsTruncated !== undefined && run.eventsTruncated !== true)) fail();
-  const fields = run.fieldsTruncated;
-  const allowedFields: readonly string[] = ["artifactRunId", "error", "failureKind", "text"];
-  if (fields !== undefined
-    && (!Array.isArray(fields)
-      || new Set(fields).size !== fields.length
-      || fields.some((field) => !allowedFields.includes(String(field))))) fail();
+  const fields = run.fieldsTruncated === undefined
+    ? undefined
+    : snapshotOwnDataArray(run.fieldsTruncated, 4);
+  const allowedFields = ["artifactRunId", "error", "failureKind", "text"] as const;
+  if (fields !== undefined && (new Set(fields).size !== fields.length
+    || fields.some((field) => !oneOf(field, allowedFields)))) fail();
   const replyPartOutcomes = sourceReplyPartOutcomes === undefined
     ? undefined
-    : sanitizeReplyPartDeliveryOutcomes(sourceReplyPartOutcomes);
-  if (sourceReplyPartOutcomes !== undefined
-    && (replyPartOutcomes === undefined
-      || (!detail && replyPartOutcomes.length > MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES))) fail();
+    : parseReplyPartOutcomes(
+        sourceReplyPartOutcomes,
+        detail ? MAX_AGENT_REPLY_PARTS : MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES,
+      );
   const parsed: Record<string, unknown> = {
     projection,
     runId: run.runId as string,
@@ -285,7 +287,7 @@ function parseRunBase(
     ...(run.queueDepth === undefined ? {} : { queueDepth: run.queueDepth as number }),
     ...(replyPartOutcomes === undefined ? {} : { replyPartOutcomes }),
     eventCount: run.eventCount as number,
-    ...(fields === undefined ? {} : { fieldsTruncated: fields }),
+    ...(fields === undefined ? {} : { fieldsTruncated: fields as readonly CronOperatorRunTruncatedField[] }),
     ...(run.eventsTruncated === true ? { eventsTruncated: true as const } : {}),
   };
   return detail
@@ -294,8 +296,8 @@ function parseRunBase(
 }
 
 function parseCronOperatorEvent(value: unknown): AgentStreamEvent {
-  const event = requireRecord(value);
-  const metadataValid = event.metadata === undefined || isRecord(event.metadata);
+  const event = snapshotJsonRecord(value);
+  const metadataValid = event.metadata === undefined || isSnapshotRecord(event.metadata);
   if (!metadataValid || typeof event.type !== "string") fail();
   switch (event.type) {
     case "assistant_thought":
@@ -325,12 +327,12 @@ function parseCronOperatorEvent(value: unknown): AgentStreamEvent {
         || (event.model !== undefined && typeof event.model !== "string")
         || !optionalFiniteNumber(event.cumulativeUsd, true)) fail();
       if (event.tokens !== undefined) {
-        const tokens = requireRecord(event.tokens);
-        if (!hasOnlyKeys(tokens, ["input", "output", "cacheRead", "cacheCreation"])
-          || !nonnegativeInteger(tokens.input)
-          || !nonnegativeInteger(tokens.output)
-          || !nonnegativeInteger(tokens.cacheRead)
-          || !nonnegativeInteger(tokens.cacheCreation)) fail();
+        if (!isSnapshotRecord(event.tokens)
+          || !hasOnlyKeys(event.tokens, ["input", "output", "cacheRead", "cacheCreation"])
+          || !nonnegativeInteger(event.tokens.input)
+          || !nonnegativeInteger(event.tokens.output)
+          || !nonnegativeInteger(event.tokens.cacheRead)
+          || !nonnegativeInteger(event.tokens.cacheCreation)) fail();
       }
       break;
     }
@@ -339,8 +341,9 @@ function parseCronOperatorEvent(value: unknown): AgentStreamEvent {
         "type", "kind", "model", "from", "to", "attemptIndex", "retryIndex", "reason", "durationMs",
         "cancelled", "metadata",
       ])
-        || !["request_started", "request_completed", "failover_started", "failover_completed", "retry_started"]
-          .includes(String(event.kind))
+        || !oneOf(event.kind, [
+          "request_started", "request_completed", "failover_started", "failover_completed", "retry_started",
+        ])
         || !optionalString(event.model)
         || !optionalString(event.from)
         || !optionalString(event.to)
@@ -358,7 +361,7 @@ function parseCronOperatorEvent(value: unknown): AgentStreamEvent {
     case "runtime_telemetry":
       if (!hasOnlyKeys(event, ["type", "kind", "data", "metadata"])
         || typeof event.kind !== "string"
-        || (event.data !== undefined && !isRecord(event.data))) fail();
+        || (event.data !== undefined && !isSnapshotRecord(event.data))) fail();
       break;
     case "runtime_warning":
       if (!hasOnlyKeys(event, ["type", "message", "warningKind", "metadata"])
@@ -373,7 +376,7 @@ function parseCronOperatorEvent(value: unknown): AgentStreamEvent {
 
 function validToolHistoryMetadata(value: unknown): boolean {
   if (value === undefined) return true;
-  if (!isRecord(value)
+  if (!isSnapshotRecord(value)
     || !hasOnlyKeys(value, [
       "recordId", "sequence", "persistence", "terminalState", "truncated", "originalBytes",
       "retainedBytes", "artifactReferences", "errorCode", "untrusted",
@@ -391,15 +394,21 @@ function validToolHistoryMetadata(value: unknown): boolean {
     || value.untrusted !== true
     || (value.artifactReferences !== undefined && !Array.isArray(value.artifactReferences))) return false;
   return value.artifactReferences === undefined || value.artifactReferences.every((artifact) =>
-    isRecord(artifact)
+    isSnapshotRecord(artifact)
     && hasOnlyKeys(artifact, ["id", "available"])
     && typeof artifact.id === "string"
     && typeof artifact.available === "boolean");
 }
 
-function requireRecord(value: unknown): Record<string, unknown> {
-  if (!isRecord(value)) fail();
-  return value;
+function parseReplyPartOutcomes(
+  value: unknown,
+  maxLength: number,
+): readonly AgentReplyPartDeliveryOutcome[] {
+  const source = snapshotOwnDataArray(value, maxLength).map(snapshotOwnDataRecord);
+  if (!isAgentReplyPartDeliveryOutcomes(source)) fail();
+  const parsed = sanitizeReplyPartDeliveryOutcomes(source);
+  if (parsed === undefined) fail();
+  return parsed;
 }
 
 function snapshotOwnDataRecord(value: unknown): Record<string, unknown> {
@@ -414,19 +423,126 @@ function snapshotOwnDataRecord(value: unknown): Record<string, unknown> {
   for (const key of Reflect.ownKeys(descriptors)) {
     if (typeof key !== "string") fail();
     const descriptor = descriptors[key];
-    if (descriptor === undefined || !("value" in descriptor)) fail();
+    if (descriptor === undefined || descriptor.enumerable !== true || !("value" in descriptor)) fail();
     snapshot[key] = descriptor.value;
   }
   return snapshot;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function snapshotOwnDataArray(value: unknown, maxLength: number): readonly unknown[] {
+  let descriptors: ReturnType<typeof Object.getOwnPropertyDescriptors>;
+  try {
+    if (!Array.isArray(value)) fail();
+    descriptors = Object.getOwnPropertyDescriptors(value);
+  } catch {
+    fail();
+  }
+  const lengthDescriptor = descriptors.length;
+  if (lengthDescriptor === undefined
+    || !("value" in lengthDescriptor)
+    || lengthDescriptor.enumerable !== false
+    || !Number.isSafeInteger(lengthDescriptor.value)
+    || Number(lengthDescriptor.value) < 0
+    || Number(lengthDescriptor.value) > maxLength) fail();
+  const length = Number(lengthDescriptor.value);
+  const snapshot = new Array<unknown>(length);
+  let elementCount = 0;
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (typeof key !== "string") fail();
+    if (key === "length") continue;
+    const index = canonicalArrayIndex(key);
+    const descriptor = descriptors[key];
+    if (index === undefined
+      || index >= length
+      || descriptor === undefined
+      || descriptor.enumerable !== true
+      || !("value" in descriptor)) fail();
+    snapshot[index] = descriptor.value;
+    elementCount += 1;
+  }
+  if (elementCount !== length) fail();
+  return snapshot;
+}
+
+function canonicalArrayIndex(key: string): number | undefined {
+  if (!/^(?:0|[1-9]\d*)$/u.test(key)) return undefined;
+  const index = Number(key);
+  return Number.isSafeInteger(index) ? index : undefined;
+}
+
+interface JsonSnapshotContext {
+  readonly active: WeakSet<object>;
+  readonly snapshots: WeakMap<object, unknown>;
+}
+
+function createJsonSnapshotContext(): JsonSnapshotContext {
+  return { active: new WeakSet(), snapshots: new WeakMap() };
+}
+
+function snapshotJsonRecord(value: unknown): Record<string, unknown> {
+  try {
+    const snapshot = snapshotJsonValue(value, createJsonSnapshotContext());
+    if (!isSnapshotRecord(snapshot)) fail();
+    return snapshot;
+  } catch {
+    fail();
+  }
+}
+
+function snapshotJsonValue(value: unknown, context: JsonSnapshotContext): unknown {
+  if (value === undefined || value === null || typeof value === "string" || typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) fail();
+    return value;
+  }
+  if (typeof value !== "object") fail();
+  if (context.active.has(value)) fail();
+  const cached = context.snapshots.get(value);
+  if (cached !== undefined) return cached;
+  context.active.add(value);
+  try {
+    if (isArrayValue(value)) {
+      const source = snapshotOwnDataArray(value, MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES);
+      const snapshot = new Array<unknown>(source.length);
+      context.snapshots.set(value, snapshot);
+      for (let index = 0; index < source.length; index += 1) {
+        snapshot[index] = snapshotJsonValue(source[index], context);
+      }
+      return snapshot;
+    }
+    const source = snapshotOwnDataRecord(value);
+    const snapshot = Object.create(null) as Record<string, unknown>;
+    context.snapshots.set(value, snapshot);
+    for (const key of Object.keys(source)) {
+      snapshot[key] = snapshotJsonValue(source[key], context);
+    }
+    return snapshot;
+  } finally {
+    context.active.delete(value);
+  }
+}
+
+function isSnapshotRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isArrayValue(value: object): boolean {
+  try {
+    return Array.isArray(value);
+  } catch {
+    fail();
+  }
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const allowed = new Set(keys);
   return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function oneOf<const T extends string>(value: unknown, allowed: readonly T[]): value is T {
+  return typeof value === "string" && (allowed as readonly string[]).includes(value);
 }
 
 function validDate(value: unknown): value is string {
@@ -468,7 +584,8 @@ function utf8Bytes(value: string): number {
 
 function serializedBytes(value: unknown): number {
   try {
-    return utf8Bytes(JSON.stringify(value));
+    const serialized = JSON.stringify(value);
+    return typeof serialized === "string" ? utf8Bytes(serialized) : Number.POSITIVE_INFINITY;
   } catch {
     return Number.POSITIVE_INFINITY;
   }

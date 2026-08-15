@@ -8,6 +8,10 @@ import {
   MAX_AGENT_REPLY_PARTS,
   MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES,
   isChannelUserCancelReason,
+  parseCronOperatorJob,
+  parseCronOperatorOverview,
+  parseCronOperatorRunDetail,
+  parseCronOperatorRunPage,
   parseAgentStreamFrame,
   serializeAgentStreamFrame,
   type AgentMessageStream,
@@ -495,6 +499,87 @@ describe("startTuiAdapter", () => {
       const serialized = await response.text();
       expect(Buffer.byteLength(serialized, "utf8")).toBeLessThan(MAX_CRON_OPERATOR_RESPONSE_BYTES);
       expect(() => JSON.parse(serialized)).not.toThrow();
+    }
+  });
+
+  it("rejects swapping getters through the compiled public cron parser boundary without reading them", () => {
+    const summary = (overrides: Record<string, unknown> = {}) => ({
+      projection: "summary",
+      runId: "cron:digest:2026-08-14T10:00:00.000Z",
+      jobId: "digest",
+      scheduledAt: "2026-08-14T10:00:00.000Z",
+      orderedAt: "2026-08-14T10:00:00.000Z",
+      sequence: 1,
+      trigger: "scheduled",
+      status: "succeeded",
+      eventCount: 1,
+      ...overrides,
+    });
+    const probes: Array<{ readonly parse: () => unknown; readonly reads: () => number }> = [];
+
+    let expressionReads = 0;
+    const job = {
+      jobId: "digest",
+      conversationId: "cron:digest",
+      configured: true,
+      declaredEnabled: true,
+      effectiveEnabled: true,
+      health: "healthy",
+    };
+    Object.defineProperty(job, "expression", {
+      enumerable: true,
+      get() {
+        expressionReads += 1;
+        return expressionReads === 1 ? "0 10 * * *" : "s".repeat(1_066);
+      },
+    });
+    probes.push({ parse: () => parseCronOperatorJob(job), reads: () => expressionReads });
+
+    let reasonReads = 0;
+    const overview = { generatedAt: "2026-08-14T10:00:00.000Z", actionsEnabled: false, jobs: [] };
+    Object.defineProperty(overview, "degradedReason", {
+      enumerable: true,
+      get() {
+        reasonReads += 1;
+        return reasonReads === 1 ? "bounded" : "s".repeat(4_097);
+      },
+    });
+    probes.push({ parse: () => parseCronOperatorOverview(overview), reads: () => reasonReads });
+
+    let runsReads = 0;
+    const page = {};
+    Object.defineProperty(page, "runs", {
+      enumerable: true,
+      get() {
+        runsReads += 1;
+        return runsReads === 1 ? [summary()] : Array.from({ length: 600 }, () => summary());
+      },
+    });
+    probes.push({ parse: () => parseCronOperatorRunPage(page), reads: () => runsReads });
+
+    let eventReads = 0;
+    const events = [{ type: "runtime_warning", message: "bounded" }];
+    Object.defineProperty(events, "0", {
+      enumerable: true,
+      get() {
+        eventReads += 1;
+        return eventReads === 1
+          ? { type: "runtime_warning", message: "bounded" }
+          : { type: "runtime_warning", message: "s".repeat(600 * 1024) };
+      },
+    });
+    probes.push({
+      parse: () => parseCronOperatorRunDetail(summary({
+        projection: "detail",
+        events,
+        eventsIncluded: 1,
+      })),
+      reads: () => eventReads,
+    });
+
+    for (const probe of probes) {
+      expect(probe.parse).toThrowError(/invalid cron operator/iu);
+      expect(probe.reads()).toBe(0);
     }
   });
 

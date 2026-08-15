@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAX_AGENT_REPLY_PARTS,
+  MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES,
   MAX_CRON_OPERATOR_JOBS,
+  MAX_CRON_OPERATOR_RESPONSE_BYTES,
   MAX_CRON_OPERATOR_RUN_PAGE,
   MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES,
+  parseCronOperatorJob,
   parseCronOperatorOverview,
   parseCronOperatorRunDetail,
   parseCronOperatorRunPage,
@@ -23,6 +26,20 @@ const summary = (overrides: Record<string, unknown> = {}) => ({
   eventCount: 1,
   ...overrides,
 });
+
+const job = (overrides: Record<string, unknown> = {}) => ({
+  jobId: "digest",
+  expression: "0 10 * * *",
+  timezone: "UTC",
+  conversationId: "cron:digest",
+  configured: true,
+  declaredEnabled: true,
+  effectiveEnabled: true,
+  health: "healthy",
+  ...overrides,
+});
+
+const wireBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 
 describe("cron operator wire contract", () => {
   it("keeps compact and detail projections honest and rejects unknown fields", () => {
@@ -161,6 +178,160 @@ describe("cron operator wire contract", () => {
     }
   });
 
+  it("snapshots every public parser boundary without invoking swapping accessors", () => {
+    const sensitive = `/private/${"s".repeat(1_024)}?capabilityToken=secret`;
+    const attacks: Array<{
+      readonly parse: () => unknown;
+      readonly reads: () => number;
+    }> = [];
+
+    let expressionReads = 0;
+    const hostileJob = job();
+    Object.defineProperty(hostileJob, "expression", {
+      enumerable: true,
+      get() {
+        expressionReads += 1;
+        return expressionReads === 1 ? "0 10 * * *" : sensitive;
+      },
+    });
+    attacks.push({ parse: () => parseCronOperatorJob(hostileJob), reads: () => expressionReads });
+
+    let degradedReasonReads = 0;
+    const hostileOverview = {
+      generatedAt: "2026-08-14T10:00:00.000Z",
+      actionsEnabled: false,
+      jobs: [],
+    };
+    Object.defineProperty(hostileOverview, "degradedReason", {
+      enumerable: true,
+      get() {
+        degradedReasonReads += 1;
+        return degradedReasonReads === 1 ? "bounded" : sensitive;
+      },
+    });
+    attacks.push({
+      parse: () => parseCronOperatorOverview(hostileOverview),
+      reads: () => degradedReasonReads,
+    });
+
+    let runsReads = 0;
+    const hostilePage = {};
+    Object.defineProperty(hostilePage, "runs", {
+      enumerable: true,
+      get() {
+        runsReads += 1;
+        return runsReads === 1
+          ? [summary()]
+          : Array.from({ length: 600 }, () => summary({ text: sensitive }));
+      },
+    });
+    attacks.push({ parse: () => parseCronOperatorRunPage(hostilePage), reads: () => runsReads });
+
+    let eventReads = 0;
+    const events = [{ type: "runtime_warning", message: "bounded" }];
+    Object.defineProperty(events, "0", {
+      enumerable: true,
+      get() {
+        eventReads += 1;
+        return eventReads === 1
+          ? { type: "runtime_warning", message: "bounded" }
+          : { type: "runtime_warning", message: sensitive.repeat(600) };
+      },
+    });
+    attacks.push({
+      parse: () => parseCronOperatorRunDetail(summary({
+        projection: "detail",
+        events,
+        eventsIncluded: 1,
+      })),
+      reads: () => eventReads,
+    });
+
+    for (const attack of attacks) {
+      expect(attack.parse).toThrowError(/invalid cron operator/iu);
+      expect(attack.reads()).toBe(0);
+    }
+  });
+
+  it("rejects nested event and outcome accessors without reading or retaining them", () => {
+    const sensitive = "/private/report.csv?capabilityToken=secret";
+    let nestedReads = 0;
+    const argumentsValue = { bounded: true };
+    Object.defineProperty(argumentsValue, "secret", {
+      enumerable: true,
+      get() {
+        nestedReads += 1;
+        return sensitive;
+      },
+    });
+    expect(() => parseCronOperatorRunDetail(summary({
+      projection: "detail",
+      events: [{ type: "tool_call_started", id: "call-1", name: "read", arguments: argumentsValue }],
+      eventsIncluded: 1,
+    }))).toThrowError(/invalid cron operator/iu);
+    expect(nestedReads).toBe(0);
+
+    const outcome = {
+      partIndex: 0,
+      partType: "attachment",
+      status: "failed",
+      code: "unsupported_destination",
+    };
+    Object.defineProperty(outcome, "message", {
+      enumerable: true,
+      get() {
+        nestedReads += 1;
+        return sensitive;
+      },
+    });
+    expect(() => parseCronOperatorRunSummary(summary({ replyPartOutcomes: [outcome] })))
+      .toThrowError(/invalid cron operator/iu);
+    expect(nestedReads).toBe(0);
+
+    const fieldsTruncated = ["text"];
+    Object.defineProperty(fieldsTruncated, "0", {
+      enumerable: true,
+      get() {
+        nestedReads += 1;
+        return "text";
+      },
+    });
+    expect(() => parseCronOperatorRunSummary(summary({ fieldsTruncated })))
+      .toThrowError(/invalid cron operator/iu);
+    expect(nestedReads).toBe(0);
+
+    const tokens = { input: 1, output: 1, cacheRead: 0, cacheCreation: 0 };
+    Object.defineProperty(tokens, "input", {
+      enumerable: true,
+      get() {
+        nestedReads += 1;
+        return 1;
+      },
+    });
+    expect(() => parseCronOperatorRunDetail(summary({
+      projection: "detail",
+      events: [{ type: "usage_update", tokens }],
+      eventsIncluded: 1,
+    }))).toThrowError(/invalid cron operator/iu);
+    expect(nestedReads).toBe(0);
+  });
+
+  it("rejects symbols, non-enumerable fields, sparse arrays, and extra array properties", () => {
+    const symbolBacked = summary();
+    Object.defineProperty(symbolBacked, Symbol("secret"), { enumerable: true, value: "secret" });
+    expect(() => parseCronOperatorRunSummary(symbolBacked)).toThrowError(/invalid cron operator/iu);
+
+    const hiddenKnownField = summary();
+    Object.defineProperty(hiddenKnownField, "text", { enumerable: false, value: "bounded" });
+    expect(() => parseCronOperatorRunSummary(hiddenKnownField)).toThrowError(/invalid cron operator/iu);
+
+    expect(() => parseCronOperatorRunSummary(summary({ fieldsTruncated: new Array(1) })))
+      .toThrowError(/invalid cron operator/iu);
+    const runs = [summary()];
+    Object.defineProperty(runs, "hidden", { enumerable: false, value: "secret" });
+    expect(() => parseCronOperatorRunPage({ runs })).toThrowError(/invalid cron operator/iu);
+  });
+
   it("uses one Proxy descriptor snapshot without get or prototype access and rebuilds only allowed fields", () => {
     const sensitive = "/private/report.csv?capabilityToken=secret";
     let inheritedGetterReads = 0;
@@ -222,6 +393,42 @@ describe("cron operator wire contract", () => {
       .toThrowError(/invalid cron operator/iu);
   });
 
+  it("snapshots nested array and event Proxies once without invoking get traps", () => {
+    let getReads = 0;
+    let arrayOwnKeysReads = 0;
+    let eventOwnKeysReads = 0;
+    const event = new Proxy({ type: "runtime_warning", message: "bounded" }, {
+      get(target, property, receiver) {
+        getReads += 1;
+        return Reflect.get(target, property, receiver);
+      },
+      ownKeys(target) {
+        eventOwnKeysReads += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+    const runs = new Proxy([summary()], {
+      get(target, property, receiver) {
+        getReads += 1;
+        return Reflect.get(target, property, receiver);
+      },
+      ownKeys(target) {
+        arrayOwnKeysReads += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+
+    expect(parseCronOperatorRunPage({ runs }).runs).toHaveLength(1);
+    expect(parseCronOperatorRunDetail(summary({
+      projection: "detail",
+      events: [event],
+      eventsIncluded: 1,
+    })).events).toEqual([{ type: "runtime_warning", message: "bounded" }]);
+    expect(arrayOwnKeysReads).toBe(1);
+    expect(eventOwnKeysReads).toBe(1);
+    expect(getReads).toBe(0);
+  });
+
   it("caps summary outcomes deterministically while detail retains the shared boundary", () => {
     const outcomes = Array.from({ length: MAX_AGENT_REPLY_PARTS }, (_, partIndex) => ({
       partIndex,
@@ -263,5 +470,79 @@ describe("cron operator wire contract", () => {
         health: "disabled",
       })),
     })).toThrowError(/invalid cron operator/iu);
+  });
+
+  it("measures canonical detail events at the exact UTF-8 aggregate boundary", () => {
+    const event = { type: "runtime_warning", message: "" };
+    const overhead = wireBytes([event]);
+    event.message = "x".repeat(MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES - overhead);
+    const exact = summary({ projection: "detail", events: [event], eventsIncluded: 1 });
+
+    expect(wireBytes([event])).toBe(MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES);
+    expect(parseCronOperatorRunDetail(exact).events).toEqual([event]);
+
+    const overflowEvent = { ...event, message: `${event.message.slice(0, -3)}🙂` };
+    expect(wireBytes([overflowEvent])).toBe(MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES + 1);
+    expect(() => parseCronOperatorRunDetail(summary({
+      projection: "detail",
+      events: [overflowEvent],
+      eventsIncluded: 1,
+    }))).toThrowError(/invalid cron operator/iu);
+  });
+
+  it("accepts an exact 768 KiB run page and rejects a one-byte UTF-8 overflow", () => {
+    const outcomes = Array.from({ length: MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES }, (_, partIndex) => ({
+      partIndex,
+      partType: "failure",
+      status: "failed",
+      code: "artifact_integrity_failed",
+      message: "Reply part failed before destination delivery.",
+    }));
+    const maximalSummary = (sequence: number) => ({
+      projection: "summary",
+      runId: "r".repeat(2_048),
+      jobId: "j".repeat(256),
+      scheduledAt: "2026-08-14T10:00:00.000Z",
+      orderedAt: "2026-08-14T10:00:00.000Z",
+      sequence,
+      trigger: "scheduled",
+      status: "failed",
+      startedAt: "2026-08-14T10:00:00.000Z",
+      completedAt: "2026-08-14T10:00:01.000Z",
+      artifactRunId: "a".repeat(512),
+      text: "t".repeat(2_048),
+      error: "e".repeat(512),
+      failureKind: "f".repeat(128),
+      blockedByRunId: "b".repeat(2_048),
+      blockedByTrigger: "manual",
+      queueDepth: Number.MAX_SAFE_INTEGER,
+      replyPartOutcomes: outcomes,
+      eventCount: 256,
+      fieldsTruncated: ["artifactRunId", "error", "failureKind", "text"],
+      eventsTruncated: true,
+    });
+    const exact = {
+      runs: Array.from({ length: MAX_CRON_OPERATOR_RUN_PAGE }, (_, index) => maximalSummary(index + 1)),
+      nextCursor: "c".repeat(4_096),
+    };
+    exact.runs[0]!.text = "t".repeat(2_047);
+    let excess = wireBytes(exact) - MAX_CRON_OPERATOR_RESPONSE_BYTES;
+    expect(excess).toBeGreaterThan(0);
+    for (let index = 1; index < exact.runs.length && excess > 0; index += 1) {
+      const run = exact.runs[index]!;
+      const removed = Math.min(excess, run.text.length);
+      run.text = run.text.slice(0, run.text.length - removed);
+      excess -= removed;
+    }
+
+    expect(excess).toBe(0);
+    expect(wireBytes(exact)).toBe(MAX_CRON_OPERATOR_RESPONSE_BYTES);
+    const parsed = parseCronOperatorRunPage(exact);
+    expect(wireBytes(parsed)).toBe(MAX_CRON_OPERATOR_RESPONSE_BYTES);
+
+    const overflow = structuredClone(exact);
+    overflow.runs[0]!.text = `${overflow.runs[0]!.text.slice(0, -3)}🙂`;
+    expect(wireBytes(overflow)).toBe(MAX_CRON_OPERATOR_RESPONSE_BYTES + 1);
+    expect(() => parseCronOperatorRunPage(overflow)).toThrowError(/invalid cron operator/iu);
   });
 });

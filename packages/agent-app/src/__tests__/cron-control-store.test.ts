@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_AGENT_REPLY_PARTS,
   MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES,
+  parseCronOperatorRunPage,
   type AgentStreamEvent,
 } from "@mono-agent/agent-contracts";
 import {
@@ -842,6 +843,68 @@ describe("cron control store", () => {
     expect(detail).toMatchObject({ projection: "detail", eventCount: 30, eventsIncluded: 30 });
     expect(detail?.replyPartOutcomes).toEqual(replyPartOutcomes);
     expect(Buffer.byteLength(JSON.stringify({ run: detail }), "utf8")).toBeLessThan(MAX_CRON_OPERATOR_RESPONSE_BYTES);
+  });
+
+  it("byte-paginates hostile-maximal stored summaries with monotonic nonempty progress", async () => {
+    const { cwd, store } = await fixture();
+    const replyPartOutcomes = Array.from({ length: MAX_AGENT_REPLY_PARTS }, (_, partIndex) => ({
+      partIndex,
+      partType: "failure" as const,
+      status: "failed" as const,
+      code: "artifact_integrity_failed" as const,
+      message: "Reply part failed before destination delivery.",
+    }));
+    for (let index = 1; index <= 101; index += 1) {
+      const at = new Date(Date.parse("2026-08-14T10:00:00.000Z") + index * 1_000).toISOString();
+      const firing = store.allocateFiring({ jobId: "digest", scheduledAt: at, observedAt: at, trigger: "scheduled" });
+      store.recordResult({ ...succeeded(firing), replyPartOutcomes } as CronJobResult);
+    }
+
+    const database = new DatabaseSync(resolveCronControlPaths(await realpath(cwd)).database);
+    try {
+      const update = database.prepare(`
+        UPDATE cron_runs SET run_id = ?, artifact_run_id = ?, text = ?, error = ?, failure_kind = ?,
+          blocked_by_run_id = ?, blocked_by_trigger = 'manual', queue_depth = ?, event_count = 256,
+          events_truncated = 1
+        WHERE sequence = ?
+      `);
+      for (let sequence = 1; sequence <= 101; sequence += 1) {
+        update.run(
+          `${"r".repeat(2_040)}${String(sequence).padStart(8, "0")}`,
+          "a".repeat(513),
+          "t".repeat(2_049),
+          "e".repeat(513),
+          "f".repeat(129),
+          "b".repeat(2_048),
+          Number.MAX_SAFE_INTEGER,
+          sequence,
+        );
+      }
+    } finally {
+      database.close();
+    }
+
+    const sequences: number[] = [];
+    const pageLengths: number[] = [];
+    let before: string | undefined;
+    let pages = 0;
+    do {
+      const page = store.runs("digest", 100, before);
+      pages += 1;
+      expect(page.runs.length).toBeGreaterThan(0);
+      pageLengths.push(page.runs.length);
+      expect(Buffer.byteLength(JSON.stringify(page), "utf8")).toBeLessThanOrEqual(
+        MAX_CRON_OPERATOR_RESPONSE_BYTES,
+      );
+      expect(parseCronOperatorRunPage(page)).toEqual(page);
+      sequences.push(...page.runs.map((run) => run.sequence));
+      before = page.nextCursor;
+    } while (before !== undefined);
+
+    expect(pages).toBeGreaterThan(1);
+    expect(pageLengths[0]).toBeLessThan(100);
+    expect(sequences).toEqual(Array.from({ length: 101 }, (_, index) => 101 - index));
+    expect(new Set(sequences).size).toBe(101);
   });
 
   it("marks oversized stored activity and human fields when the detail wire budget omits them", async () => {
