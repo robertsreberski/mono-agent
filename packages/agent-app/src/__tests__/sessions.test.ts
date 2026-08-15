@@ -429,6 +429,137 @@ describe("purgeConversationState", () => {
     await expect(readdir(clearSessionsRegistryRoot(dir))).resolves.toEqual([]);
   });
 
+  it("reconciles an old quarantine before rejecting a replacement root that contains the registry", async () => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.old/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.old/sessions" } },
+    });
+    const oldSessionsRoot = join(dir, ".old", "sessions");
+    const outsideRoot = join(dir, "outside-overlap-recovery");
+    await Promise.all([
+      mkdir(oldSessionsRoot, { recursive: true }),
+      mkdir(outsideRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(oldSessionsRoot, "session.jsonl"), "old session\n"),
+      writeFile(join(outsideRoot, "sentinel.txt"), "outside\n"),
+    ]);
+    let quarantine = "";
+    await expect(purgeConversationState(inputFor(configPath), {
+      hooks: {
+        afterRootQuarantined: (path) => {
+          quarantine = path;
+          throw new Error("simulated overlap-recovery crash");
+        },
+      },
+    })).rejects.toThrow(/simulated overlap-recovery crash/u);
+    await writeFile(configPath, JSON.stringify({
+      artifacts: { dir: "./.mono-agent/clear-sessions-v1/artifacts" },
+    }));
+
+    await expect(purgeConversationState(inputFor(configPath))).rejects.toThrow(/registry must be disjoint/u);
+
+    await expect(stat(quarantine)).rejects.toThrow();
+    await expect(readFile(join(outsideRoot, "sentinel.txt"), "utf8")).resolves.toBe("outside\n");
+    await expect(readdir(clearSessionsRegistryRoot(dir))).resolves.toEqual([]);
+    await expect(assertClearSessionsRecoveryResolved(dir)).resolves.toBeUndefined();
+  });
+
+  it("recovers a published manifest whose original root was never renamed", async () => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.old/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.old/sessions" } },
+    });
+    const oldSessionsRoot = join(dir, ".old", "sessions");
+    await mkdir(oldSessionsRoot, { recursive: true });
+    await writeFile(join(oldSessionsRoot, "session.jsonl"), "old session\n");
+    let manifest = "";
+    await expect(purgeConversationState(inputFor(configPath), {
+      hooks: {
+        afterManifestPublished: (path) => {
+          manifest = path;
+          throw new Error("simulated pre-rename crash");
+        },
+      },
+    })).rejects.toThrow(/simulated pre-rename crash/u);
+    await expect(stat(manifest)).resolves.toBeDefined();
+    await expect(readFile(join(oldSessionsRoot, "session.jsonl"), "utf8")).resolves.toBe("old session\n");
+    await writeFile(configPath, JSON.stringify({ artifacts: { dir: "./.new/artifacts" } }));
+
+    await purgeSessions(inputFor(configPath));
+
+    await expect(stat(manifest)).rejects.toThrow();
+    await expect(readFile(join(oldSessionsRoot, "session.jsonl"), "utf8")).resolves.toBe("old session\n");
+    await expect(readdir(clearSessionsRegistryRoot(dir))).resolves.toEqual([]);
+  });
+
+  it("recovers a stale manifest after its quarantine was already deleted", async () => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.old/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.old/sessions" } },
+    });
+    const oldSessionsRoot = join(dir, ".old", "sessions");
+    await mkdir(oldSessionsRoot, { recursive: true });
+    await writeFile(join(oldSessionsRoot, "session.jsonl"), "old session\n");
+    let removedQuarantine = "";
+    await expect(purgeConversationState(inputFor(configPath), {
+      hooks: {
+        afterQuarantineRemoved: (path) => {
+          removedQuarantine = path;
+          throw new Error("simulated post-delete crash");
+        },
+      },
+    })).rejects.toThrow(/simulated post-delete crash/u);
+    await expect(stat(removedQuarantine)).rejects.toThrow();
+    await expect(readdir(clearSessionsRegistryRoot(dir))).resolves.toHaveLength(1);
+    await writeFile(configPath, JSON.stringify({ artifacts: { dir: "./.new/artifacts" } }));
+
+    await purgeConversationState(inputFor(configPath));
+
+    await expect(stat(oldSessionsRoot)).rejects.toThrow();
+    await expect(readdir(clearSessionsRegistryRoot(dir))).resolves.toEqual([]);
+  });
+
+  it.skipIf(process.platform === "win32")("validates every pending manifest before deleting the first quarantine", async () => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.state/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+    });
+    const sessionsRoot = join(dir, ".state", "sessions");
+    const historyRoot = join(dir, ".state", "history");
+    const outsideRoot = join(dir, "outside-multi-recovery");
+    await Promise.all([
+      mkdir(sessionsRoot, { recursive: true }),
+      mkdir(historyRoot, { recursive: true }),
+      mkdir(outsideRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(sessionsRoot, "session.jsonl"), "session\n"),
+      writeFile(join(historyRoot, "conversation.history.json"), "history\n"),
+      writeFile(join(outsideRoot, "sentinel.txt"), "outside\n"),
+    ]);
+    const quarantines: string[] = [];
+    await expect(purgeConversationState(inputFor(configPath), {
+      hooks: {
+        afterRootQuarantined: (path) => {
+          quarantines.push(path);
+          if (quarantines.length === 2) throw new Error("simulated two-manifest crash");
+        },
+      },
+    })).rejects.toThrow(/simulated two-manifest crash/u);
+    const [first, second] = quarantines as [string, string];
+    const movedSecond = `${second}.attacker-moved`;
+    await rename(second, movedSecond);
+    await symlink(outsideRoot, second, "dir");
+
+    await expect(purgeConversationState(inputFor(configPath))).rejects.toThrow(/non-directory or symbolic-link/u);
+
+    await expect(readFile(join(first, "session.jsonl"), "utf8")).resolves.toBe("session\n");
+    await expect(readFile(join(movedSecond, "conversation.history.json"), "utf8")).resolves.toBe("history\n");
+    await expect(readFile(join(outsideRoot, "sentinel.txt"), "utf8")).resolves.toBe("outside\n");
+    await expect(assertClearSessionsRecoveryResolved(dir)).rejects.toThrow(/recovery is unresolved/u);
+  });
+
   it.skipIf(process.platform === "win32")("never follows or deletes a quarantine replacement symlink", async () => {
     const configPath = await writeConfig({
       artifacts: { dir: "./.state/artifacts" },

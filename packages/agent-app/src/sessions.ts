@@ -80,8 +80,12 @@ export interface PurgeConversationStateOptions {
   /** @internal Deterministic race-test seam after every preflight validation and before any traversal. */
   readonly hooks?: {
     readonly afterValidation?: (plan: ConversationStatePurgePlan) => void | Promise<void>;
+    /** Simulate process death after the manifest is durable but before the root rename. */
+    readonly afterManifestPublished?: (path: string) => void | Promise<void>;
     /** Simulate process death after the durable manifest and quarantine rename. */
     readonly afterRootQuarantined?: (path: string) => void | Promise<void>;
+    /** Simulate process death after quarantine deletion but before manifest removal. */
+    readonly afterQuarantineRemoved?: (path: string) => void | Promise<void>;
     /** Race seam immediately before the final quarantine identity proof. */
     readonly beforeQuarantineRemoval?: (path: string) => void | Promise<void>;
   };
@@ -99,10 +103,11 @@ export interface PurgeConversationStateOptions {
  */
 export async function purgeSessions(input: MonoAgentAppConfigInput): Promise<PurgeSessionsResult> {
   const root = (await resolveConversationStatePurgeRoots(input)).sessions;
-  if (root === undefined) return { removed: false, files: 0 };
   return await purgeSessionsRoot(
     input,
-    await resolveAndAttestConversationStatePurgeRoot("Pi provider sessions", root),
+    root === undefined
+      ? undefined
+      : await resolveAndAttestConversationStatePurgeRoot("Pi provider sessions", root),
   );
 }
 
@@ -111,8 +116,7 @@ async function purgeSessionsRoot(
   root: ResolvedConversationStatePurgeRoot | undefined,
 ): Promise<PurgeSessionsResult> {
   const inspected = await inspectSessionsRoot(root);
-  if (root?.target === undefined) return inspected;
-  await securelyRemoveStandaloneRoots(input, [root]);
+  await securelyRemoveStandaloneRoots(input, root?.target === undefined ? [] : [root]);
   return inspected;
 }
 
@@ -136,8 +140,7 @@ async function purgeConversationHistoryRoot(
   root: ResolvedConversationStatePurgeRoot,
 ): Promise<PurgeConversationHistoryResult> {
   const inspected = await inspectConversationHistoryRoot(root);
-  if (root.target === undefined) return inspected;
-  await securelyRemoveStandaloneRoots(input, [root]);
+  await securelyRemoveStandaloneRoots(input, root.target === undefined ? [] : [root]);
   return inspected;
 }
 
@@ -193,8 +196,7 @@ async function purgeAcpSessionAuthorizationsRoot(
   root: ResolvedConversationStatePurgeRoot,
 ): Promise<PurgeAcpSessionAuthorizationsResult> {
   const inspected = await inspectAcpSessionAuthorizationsRoot(root);
-  if (root.target === undefined) return inspected;
-  await securelyRemoveStandaloneRoots(input, [root]);
+  await securelyRemoveStandaloneRoots(input, root.target === undefined ? [] : [root]);
   return inspected;
 }
 
@@ -203,11 +205,12 @@ export async function purgeConversationState(
   input: MonoAgentAppConfigInput,
   options: PurgeConversationStateOptions = {},
 ): Promise<PurgeConversationStateResult> {
+  // Recovery is config-independent: settle already-published manifests before
+  // an unsafe replacement config can reject its own new purge plan.
+  const registry = await ensureClearSessionsRegistry(input.cwd);
+  await reconcileClearSessionsRecovery(registry);
   const snapshot = await readProcessJobsConfigSnapshot(input);
   const frozenInput = { ...input, env: { ...snapshot.env } };
-  // Establish the registry parent before attesting absent default roots beneath
-  // `.mono-agent`, so our own registry creation cannot invalidate the plan.
-  await ensureClearSessionsRegistryParent(frozenInput.cwd);
   const plan = await resolveConversationStatePurgePlan(frozenInput, snapshot);
   // A stale default store remains protected even after processJobs is removed
   // from config. Startup stays dormant; only this destructive path opts in.
@@ -218,9 +221,7 @@ export async function purgeConversationState(
   });
   assertPurgeRootsDisjoint(plan);
   assertRegistryPathDisjoint(clearSessionsRegistryRoot(frozenInput.cwd), plan, processJobs.stateDir);
-  const registry = await ensureClearSessionsRegistry(frozenInput.cwd);
   await assertRegistryDisjoint(registry, plan, processJobs.stateDir);
-  await reconcileClearSessionsRecovery(registry);
   await options.hooks?.afterValidation?.(plan);
   // Re-attest every target before counting so a detected swap cannot redirect
   // even read-only traversal, and again after counting before the first rename.
@@ -352,12 +353,12 @@ async function securelyRemoveStandaloneRoots(
   roots: readonly ResolvedConversationStatePurgeRoot[],
 ): Promise<void> {
   const registry = await ensureClearSessionsRegistry(input.cwd);
+  await reconcileClearSessionsRecovery(registry);
   for (const root of roots) {
     if (pathsContainEachOther(registry.canonicalPath, root.canonicalPath)) {
       throw new Error("Clear-sessions registry must be disjoint from every purge root.");
     }
   }
-  await reconcileClearSessionsRecovery(registry);
   await securelyRemovePurgeRoots(roots, registry, {});
 }
 
@@ -376,6 +377,7 @@ async function securelyRemovePurgeRoots(
       root,
       registry,
       index === 0 ? beforeFirstRename : undefined,
+      options.hooks?.afterManifestPublished,
     );
     quarantined.push(value);
     await options.hooks?.afterRootQuarantined?.(value.path);
@@ -389,6 +391,7 @@ async function securelyRemovePurgeRoots(
     // same-UID ambient OS processes are outside this deletion boundary.
     await rm(value.path, { recursive: true, force: false });
     await syncAndReattestPrivateDirectory(value.control, "clear-sessions control directory");
+    await options.hooks?.afterQuarantineRemoved?.(value.path);
     await removeManifest(value);
   }
 }
@@ -397,6 +400,7 @@ async function quarantinePurgeRoot(
   root: ResolvedConversationStatePurgeRoot,
   registry: AttestedPrivateDirectory,
   beforeRename?: () => Promise<void>,
+  afterManifestPublished?: (path: string) => void | Promise<void>,
 ): Promise<QuarantinedPurgeRoot> {
   const target = root.target;
   if (target === undefined) throw new Error(`Cannot quarantine missing purge root: ${root.path}`);
@@ -439,6 +443,7 @@ async function quarantinePurgeRoot(
     manifestPath,
     manifest,
   );
+  await afterManifestPublished?.(manifestPath);
   await Promise.all([
     assertConversationStatePurgeRootUnchanged(root),
     assertPrivateDirectoryUnchanged(control, "clear-sessions control directory"),
