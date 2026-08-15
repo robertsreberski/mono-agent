@@ -74,6 +74,37 @@ describe("composeRuntimeOptionExtensions", () => {
     expect(result.runtimeOptions).not.toHaveProperty("sandboxPolicy");
   });
 
+  it("protects a reachable Pi fallback without adding policy to a non-Pi-only route", async () => {
+    const registryRoot = "/agent/.mono-agent/clear-sessions-v1";
+    const nonPiPrimary = { sdk: "claude" as const, model: "claude-opus-4-8" };
+    const piFallback = { sdk: "pi" as const, provider: "openai-codex", model: "gpt-5.6-sol" };
+    const fallbackExtension = createClearSessionsRuntimeExtension(undefined, {
+      cwd: "/agent",
+      workspace: "/agent/workspace",
+      baseModel: nonPiPrimary,
+      fallbackModels: [piFallback],
+      assertRecoveryResolved: async () => {},
+      registryRoot: () => registryRoot,
+    });
+    const directExtension = createClearSessionsRuntimeExtension(undefined, {
+      cwd: "/agent",
+      workspace: "/agent/workspace",
+      baseModel: nonPiPrimary,
+      assertRecoveryResolved: async () => {},
+      registryRoot: () => registryRoot,
+    });
+
+    await expect(fallbackExtension(INPUT)).resolves.toMatchObject({
+      runtimeOptions: {
+        sandboxPolicy: { protectedRoots: [registryRoot] },
+      },
+    });
+    await expect(directExtension(INPUT)).resolves.toEqual({
+      runtimeOptions: {},
+      cleanup: expect.any(Function),
+    });
+  });
+
   it("merges sandbox policies monotonically so later extensions cannot erase protected roots", async () => {
     const firstPolicy = protectSandboxRoots(
       failClosedSandboxPolicy({ root: "/agent" }),

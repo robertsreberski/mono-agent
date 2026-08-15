@@ -33,6 +33,7 @@ export interface ClearSessionsRuntimeBoundaryOptions {
   readonly cwd: string;
   readonly workspace: string;
   readonly baseModel: RuntimeModelReference;
+  readonly fallbackModels?: readonly RuntimeModelReference[];
   readonly sandboxPolicy?: SandboxPolicy;
   /** Test seam; production always uses the sessions-owned attestation. */
   readonly assertRecoveryResolved?: (cwd: string) => Promise<void>;
@@ -42,7 +43,9 @@ export interface ClearSessionsRuntimeBoundaryOptions {
 
 /**
  * Run the recovery attestation before any sibling extension/provider work,
- * then protect the stable registry only for Pi-native host-tool execution.
+ * then protect the stable registry whenever a reachable attempt can execute
+ * Pi-native host tools. Per-route-native routing removes this policy from
+ * non-Pi attempts; a genuinely non-Pi-only route stays policy-free here.
  */
 export function createClearSessionsRuntimeExtension(
   next: RuntimeOptionsExtension | undefined,
@@ -54,21 +57,32 @@ export function createClearSessionsRuntimeExtension(
       ? { runtimeOptions: {}, cleanup: async () => {} }
       : await next(input);
     const effectiveModel = runtimeModel(result.runtimeOptions?.model) ?? options.baseModel;
-    if (effectiveModel.sdk !== "pi") return result;
-    const base = options.sandboxPolicy?.mode === "native"
-      ? { ...options.sandboxPolicy, fallback: "fail-closed" as const, unsafeAllowHostProcess: false }
-      : failClosedSandboxPolicy({
-          root: options.workspace,
-          network: { mode: "all" },
-        });
-    const registryPolicy = protectSandboxRoots(base, [
-      (options.registryRoot ?? clearSessionsRegistryRoot)(options.cwd),
-    ]);
+    const registryPolicy = clearSessionsSandboxPolicy(options, effectiveModel);
+    if (registryPolicy === undefined) return result;
     const runtimeOptions: Record<string, unknown> = {};
     mergeRuntimeOptions(runtimeOptions, result.runtimeOptions);
     mergeRuntimeOptions(runtimeOptions, { sandboxPolicy: registryPolicy });
     return { ...result, runtimeOptions };
   };
+}
+
+/** Build the stable tool-context half of the clear-sessions boundary. */
+export function clearSessionsSandboxPolicy(
+  options: ClearSessionsRuntimeBoundaryOptions,
+  effectiveModel: RuntimeModelReference = options.baseModel,
+): SandboxPolicy | undefined {
+  if (![effectiveModel, ...(options.fallbackModels ?? [])].some((model) => model.sdk === "pi")) {
+    return undefined;
+  }
+  const base = options.sandboxPolicy?.mode === "native"
+    ? { ...options.sandboxPolicy, fallback: "fail-closed" as const, unsafeAllowHostProcess: false }
+    : failClosedSandboxPolicy({
+        root: options.workspace,
+        network: { mode: "all" },
+      });
+  return protectSandboxRoots(base, [
+    (options.registryRoot ?? clearSessionsRegistryRoot)(options.cwd),
+  ]);
 }
 
 /** Compose request-scoped runtime extensions without dropping tools or cleanup hooks. */

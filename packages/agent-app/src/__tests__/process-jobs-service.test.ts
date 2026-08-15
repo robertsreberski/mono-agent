@@ -2050,6 +2050,52 @@ describe("process job service", () => {
     expect((await service.get(started.jobId))?.wake.state).toBe("delivered");
   });
 
+  it("keeps wakes inactive after enumeration fails and activates them exactly once on retry", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "45454545-4545-4454-8454-454545454545";
+    await baseStore.ensureArtifacts(jobId);
+    await baseStore.mutate((records) => records.set(jobId, durableRecord(jobId, {
+      state: "succeeded",
+      completedAt: "2026-08-14T10:00:02.000Z",
+      wake: {
+        state: "pending",
+        attempts: 0,
+        deliveryKey: `process-job:${jobId}`,
+        lastAttemptAt: null,
+        retrySafe: false,
+      },
+      lastError: null,
+    })));
+    const activationFailure = new Error("injected activation list failure");
+    let failNextList = false;
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async list() {
+        if (failNextList) {
+          failNextList = false;
+          throw activationFailure;
+        }
+        return await baseStore.list();
+      },
+    };
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const service = await startService(fixture, { store, wake });
+    const activationState = service as unknown as { wakesActive: boolean };
+
+    failNextList = true;
+    await expect(service.activateWakes()).rejects.toBe(activationFailure);
+    expect(activationState.wakesActive).toBe(false);
+    await Promise.resolve();
+    expect(wake).not.toHaveBeenCalled();
+
+    await service.activateWakes();
+    await waitFor(() => wake.mock.calls.length === 1);
+    expect(activationState.wakesActive).toBe(true);
+    expect(wake).toHaveBeenCalledOnce();
+    expect(wake.mock.calls[0]?.[0].projection.jobId).toBe(jobId);
+  });
+
   it("retains terminal output and reports sandbox cleanup failure during shutdown", async () => {
     const fixture = await createFixture();
     const completion = deferred<ProcessJobProcessResult>();

@@ -8,7 +8,9 @@ import type { ProcessJobProjection } from "@mono-agent/agent-contracts";
 import { MonoAgentConfigError } from "@mono-agent/config";
 
 import {
+  activateProcessJobWakes,
   ensureProcessJobsService,
+  stopProcessJobsService,
   type ProcessJobsControllerPort,
 } from "../app-controller-process-jobs.js";
 import {
@@ -116,6 +118,53 @@ describe("process-job lifecycle surface routing", () => {
     });
   });
 
+  it("stops and never publishes a service whose open resolves after teardown invalidates its flight", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "mono-agent-process-job-late-open-"));
+    temporaryDirectories.push(cwd);
+    const configReadPath = join(cwd, "mono-agent.config.json");
+    await writeFile(configReadPath, JSON.stringify({ processJobs: { enabled: true } }));
+    const opened = deferred<ProcessJobsServiceHandle>();
+    const stop = vi.fn(async () => undefined);
+    const activateWakes = vi.fn(async () => undefined);
+    const lateService = { stop, activateWakes } as unknown as ProcessJobsServiceHandle;
+    processJobsService.open.mockImplementation(async () => await opened.promise);
+    const controller: ProcessJobsControllerPort = {
+      cwd,
+      configReadPath,
+      env: {},
+      logger: undefined,
+      running: new Map(),
+      statuses: new Map(),
+      stopped: false,
+      processJobsService: undefined,
+      processJobsServiceStart: undefined,
+      processJobsStateDir: undefined,
+      processJobsDegradation: undefined,
+      observabilityContext: async () => ({}),
+      setStatus: (_id, status) => status,
+      refreshTraceSource: async () => undefined,
+    };
+
+    const staleStartup = ensureProcessJobsService(controller).then(async () => {
+      await activateProcessJobWakes(controller);
+    });
+    await vi.waitFor(() => expect(processJobsService.open).toHaveBeenCalledOnce());
+    const teardown = stopProcessJobsService(controller);
+    expect(controller.processJobsService).toBeUndefined();
+    expect(controller.processJobsServiceStart).toBeUndefined();
+
+    opened.resolve(lateService);
+    await Promise.all([staleStartup, teardown]);
+
+    expect(stop).toHaveBeenCalledOnce();
+    expect(activateWakes).not.toHaveBeenCalled();
+    expect(controller.processJobsService).toBeUndefined();
+    expect(controller.processJobsServiceStart).toBeUndefined();
+    expect(controller.processJobsServiceStartFlight).toBeUndefined();
+    expect(controller.processJobsStateDir).toBeUndefined();
+    expect(controller.processJobsDegradation).toBeUndefined();
+  });
+
   it("sends bucketed Slack and Telegram origins to their exact-base real driver destinations", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "mono-agent-process-job-surface-"));
     temporaryDirectories.push(cwd);
@@ -218,6 +267,17 @@ describe("process-job lifecycle surface routing", () => {
     expect(telegramUpdate).toHaveBeenCalledWith(42, telegramProjection, undefined);
   });
 });
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolvePromise!: (value: T) => void;
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return { promise, resolve: resolvePromise };
+}
 
 function startInput<T>(cwd: string, config: T): ChannelStartInput<T> {
   return {

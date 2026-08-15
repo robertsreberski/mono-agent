@@ -45,7 +45,7 @@ import type { NotifyDestination } from "./notify-destinations.js";
 import { createSeenNotifyDestinationCache } from "./seen-conversations.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import type { ManagedRuntimeLaunchVerification } from "./background-runtime.js";
-import { sandboxStatusFromState } from "./app-controller-utils.js";
+import { reasonOf, sandboxStatusFromState } from "./app-controller-utils.js";
 import * as lifecycleOperations from "./app-controller-lifecycle.js";
 import * as traceabilityOperations from "./app-controller-traceability.js";
 import * as memory_healthOperations from "./app-controller-memory-health.js";
@@ -186,28 +186,43 @@ async function startMonoAgentAppInternal(
     trustedRuntimeReadRoots,
   });
 
-  await measure("sandbox", () => controller.refreshSandboxStatus("startup"));
-  await measure("traceability", () => controller.startTraceability("startup"));
-  await measure("services", async () => {
-    await controller.startExporters("startup");
-    await controller.startContinuationServiceIfConfigured("startup");
-    await controller.startProcessJobsIfConfigured("startup");
-  });
-  await measure(
-    "channels",
-    () => Promise.all(drivers.map((driver) => controller.startChannelIfConfigured(driver.id, "startup"))),
-  );
-  await controller.activateProcessJobWakes();
-  await measure("memoryRituals", () => controller.startMemoryRitualsIfConfigured("startup"));
-  const memoryHealthStartedAt = performance.now();
-  await controller.refreshMemoryHealthAfterLifecycle("startup-complete", () => {
-    startupPhases.memoryHealth = roundedMilliseconds(performance.now() - memoryHealthStartedAt);
-    controller.startupTimingValue = {
-      durationMs: roundedMilliseconds(performance.now() - startupStartedAt),
-      phases: { ...startupPhases },
-    };
-  });
-  return controller;
+  try {
+    await measure("sandbox", () => controller.refreshSandboxStatus("startup"));
+    await measure("traceability", () => controller.startTraceability("startup"));
+    await measure("services", async () => {
+      await controller.startExporters("startup");
+      await controller.startContinuationServiceIfConfigured("startup");
+      await controller.startProcessJobsIfConfigured("startup");
+    });
+    await measure(
+      "channels",
+      () => Promise.all(drivers.map((driver) => controller.startChannelIfConfigured(driver.id, "startup"))),
+    );
+    await controller.activateProcessJobWakes();
+    await measure("memoryRituals", () => controller.startMemoryRitualsIfConfigured("startup"));
+    const memoryHealthStartedAt = performance.now();
+    await controller.refreshMemoryHealthAfterLifecycle("startup-complete", () => {
+      startupPhases.memoryHealth = roundedMilliseconds(performance.now() - memoryHealthStartedAt);
+      controller.startupTimingValue = {
+        durationMs: roundedMilliseconds(performance.now() - startupStartedAt),
+        phases: { ...startupPhases },
+      };
+    });
+    return controller;
+  } catch (error) {
+    try {
+      await controller.stop();
+    } catch (cleanupError) {
+      try {
+        controller.logger?.warn?.("Mono agent app startup cleanup did not complete cleanly.", {
+          reason: reasonOf(cleanupError),
+        });
+      } catch {
+        // A diagnostic sink must not replace the original startup failure.
+      }
+    }
+    throw error;
+  }
 }
 
 function roundedMilliseconds(value: number): number {
@@ -330,6 +345,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   continuationServiceStart: Promise<ContinuationServiceHandle | undefined> | undefined;
   processJobsService: ProcessJobsServiceHandle | undefined;
   processJobsServiceStart: Promise<ProcessJobsServiceHandle | undefined> | undefined;
+  processJobsServiceStartFlight: symbol | undefined;
   /** Configured private root; retained even when the durable store cannot open. */
   processJobsStateDir: string | undefined;
   processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;

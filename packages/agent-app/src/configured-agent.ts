@@ -70,9 +70,15 @@ import {
   MemoryRetrievalService,
 } from "./memory-retrieval.js";
 import {
+  clearSessionsSandboxPolicy,
   composeRuntimeOptionExtensions,
   createClearSessionsRuntimeExtension,
+  type ClearSessionsRuntimeBoundaryOptions,
 } from "./runtime-option-extensions.js";
+import {
+  configuredRuntimeFallbackModels,
+  runtimeUsesFallbackRouter,
+} from "./runtime-routes.js";
 import { isReadSkillDenied } from "./skill-registry.js";
 import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 
@@ -373,9 +379,14 @@ export function createConfiguredAgentRuntime(
   const config = isRuntimeOptions(input) ? input.config : input;
   const options = isRuntimeOptions(input) ? input : undefined;
   const fallback = fallbackChainForConfig(config, options);
+  const sandboxEngine = configuredSandboxEngine(
+    config,
+    options?.model ?? config.runtime.model,
+    options?.sandboxEngine,
+  );
   const runtimeOptions: Parameters<typeof createMonoRuntime>[0] = {
     ...runtimeHostOptionsForConfig(config),
-    ...(options?.sandboxEngine === undefined ? {} : { sandboxEngine: options.sandboxEngine }),
+    ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
     ...fallback,
     ...(fallback.fallbackChain === undefined
       ? {}
@@ -398,6 +409,18 @@ export function createConfiguredAgentRuntime(
         }),
   };
   return createMonoRuntime(runtimeOptions);
+}
+
+function configuredSandboxEngine(
+  config: MonoAgentConfig,
+  primaryModel: RuntimeModelReference,
+  explicit: SandboxEngine | undefined,
+): SandboxEngine | undefined {
+  if (explicit !== undefined) return explicit;
+  return [primaryModel, ...configuredRuntimeFallbackModels(config.runtime)]
+    .some((model) => model.sdk === "pi")
+    ? createSrtSandboxEngine()
+    : undefined;
 }
 
 /**
@@ -764,13 +787,32 @@ async function createConfiguredAgentHarnessInternal(
   setToolActivityPathRoots({ workspaceRoot: config.runtime.workspace, homeDir: homedir() });
   const model = options.model ?? config.runtime.model;
   const executionMode = options.executionMode ?? config.runtime.executionMode;
-  const sandboxEngine = options.sandboxEngine
-    ?? (model.sdk === "pi" ? createSrtSandboxEngine() : undefined);
+  const fallbackModels = configuredRuntimeFallbackModels(config.runtime);
+  const sandboxEngine = configuredSandboxEngine(config, model, options.sandboxEngine);
   const runtime = options.runtime ?? createConfiguredAgentRuntime({
     config,
     model,
     executionMode,
     ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
+  });
+  const clearSessionsBoundaryOptions = {
+    cwd: resolvePath(options.cwd ?? process.cwd()),
+    workspace: config.runtime.workspace,
+    baseModel: model,
+    fallbackModels,
+    ...(config.sandbox === undefined ? {} : { sandboxPolicy: config.sandbox }),
+  } satisfies ClearSessionsRuntimeBoundaryOptions;
+  const routedClearSessionsPolicy = runtimeUsesFallbackRouter(config.runtime)
+    ? clearSessionsSandboxPolicy(clearSessionsBoundaryOptions)
+    : undefined;
+  // Request policy is still attested and applied per turn below. Configure the
+  // same stable engine/policy into the routed ToolContext so Pi filesystem
+  // builtins resolve their native boundary there; per-route-native projection
+  // clears both fields from every non-Pi attempt.
+  runtime.configureTools?.({
+    workspace: config.runtime.workspace,
+    ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
+    ...(routedClearSessionsPolicy === undefined ? {} : { sandboxPolicy: routedClearSessionsPolicy }),
   });
   // The memory LLM must NOT ride the channel `runtime`: that runtime carries the
   // channel fallback chain whose primary is `config.runtime.model`, and the
@@ -801,12 +843,7 @@ async function createConfiguredAgentHarnessInternal(
   });
   const runtimeOptionsForRequest = createClearSessionsRuntimeExtension(
     composedRuntimeOptionsForRequest,
-    {
-      cwd: resolvePath(options.cwd ?? process.cwd()),
-      workspace: config.runtime.workspace,
-      baseModel: model,
-      ...(config.sandbox === undefined ? {} : { sandboxPolicy: config.sandbox }),
-    },
+    clearSessionsBoundaryOptions,
   );
   const subagents = subagentsRuntimeOptions(config, {
     runtime,

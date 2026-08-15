@@ -386,42 +386,52 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   }
 
   async activateWakes(): Promise<void> {
-    this.wakesActive = true;
-    for (const record of await this.storeList("activate_wakes")) {
-      if (isTerminalProcessJobState(record.state) && record.wake.state === "pending") {
-        const destinationUnavailableExhausted = (record.wake.destinationUnavailableAttempts ?? 0)
-          >= PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS;
-        const conversationBusyExhausted = isConversationBusyExhausted(record, this.now());
-        if (!destinationUnavailableExhausted && !conversationBusyExhausted && (record.wake.attempts === 0
-          || (record.wake.retrySafe === true && record.wake.attempts < MAX_WAKE_ATTEMPTS))) {
-          this.scheduleWake(record.jobId);
-        } else {
-          await this.storeMutate("activate_wakes.fail", (records) => {
-            const current = records.get(record.jobId);
-            if (current?.wake.state === "pending") {
-              const unavailableExhausted = (current.wake.destinationUnavailableAttempts ?? 0)
-                >= PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS;
-              const safeRetryExhausted = current.wake.retrySafe === true
-                && current.wake.attempts >= MAX_WAKE_ATTEMPTS;
-              const busyExhausted = isConversationBusyExhausted(current, this.now());
-              current.wake.state = "failed";
-              current.wake.retrySafe = false;
-              recordWakeFailure(
-                current,
-                unavailableExhausted
-                  ? "The destination channel remained unavailable through its bounded pre-dispatch retry window."
-                  : busyExhausted
-                    ? "The originating conversation remained busy through its bounded deferral window."
-                  : safeRetryExhausted
-                    ? "Process-job wake delivery exhausted its safe retry budget."
-                    : "A prior wake attempt ended ambiguously; it was not replayed to avoid duplicate delivery.",
-              );
-            }
-          });
-          await this.updateSurfaceById(record.jobId);
-          await this.storeApplyRetention("activate_wakes.retention");
+    if (this.stopping || this.stopped) return;
+    this.wakesActive = false;
+    try {
+      const wakeJobIds: string[] = [];
+      for (const record of await this.storeList("activate_wakes")) {
+        if (isTerminalProcessJobState(record.state) && record.wake.state === "pending") {
+          const destinationUnavailableExhausted = (record.wake.destinationUnavailableAttempts ?? 0)
+            >= PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS;
+          const conversationBusyExhausted = isConversationBusyExhausted(record, this.now());
+          if (!destinationUnavailableExhausted && !conversationBusyExhausted && (record.wake.attempts === 0
+            || (record.wake.retrySafe === true && record.wake.attempts < MAX_WAKE_ATTEMPTS))) {
+            wakeJobIds.push(record.jobId);
+          } else {
+            await this.storeMutate("activate_wakes.fail", (records) => {
+              const current = records.get(record.jobId);
+              if (current?.wake.state === "pending") {
+                const unavailableExhausted = (current.wake.destinationUnavailableAttempts ?? 0)
+                  >= PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS;
+                const safeRetryExhausted = current.wake.retrySafe === true
+                  && current.wake.attempts >= MAX_WAKE_ATTEMPTS;
+                const busyExhausted = isConversationBusyExhausted(current, this.now());
+                current.wake.state = "failed";
+                current.wake.retrySafe = false;
+                recordWakeFailure(
+                  current,
+                  unavailableExhausted
+                    ? "The destination channel remained unavailable through its bounded pre-dispatch retry window."
+                    : busyExhausted
+                      ? "The originating conversation remained busy through its bounded deferral window."
+                      : safeRetryExhausted
+                        ? "Process-job wake delivery exhausted its safe retry budget."
+                        : "A prior wake attempt ended ambiguously; it was not replayed to avoid duplicate delivery.",
+                );
+              }
+            });
+            await this.updateSurfaceById(record.jobId);
+            await this.storeApplyRetention("activate_wakes.retention");
+          }
         }
       }
+      if (this.stopping || this.stopped) return;
+      this.wakesActive = true;
+      for (const jobId of wakeJobIds) this.scheduleWake(jobId);
+    } catch (error) {
+      this.wakesActive = false;
+      throw error;
     }
   }
 

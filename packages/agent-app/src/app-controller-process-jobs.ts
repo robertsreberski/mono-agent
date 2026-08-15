@@ -27,6 +27,7 @@ export interface ProcessJobsControllerPort {
   readonly stopped: boolean;
   processJobsService: ProcessJobsServiceHandle | undefined;
   processJobsServiceStart: Promise<ProcessJobsServiceHandle | undefined> | undefined;
+  processJobsServiceStartFlight?: symbol | undefined;
   processJobsStateDir: string | undefined;
   processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
   observabilityContext(): Promise<{ readonly sourceId?: string }>;
@@ -37,12 +38,27 @@ export interface ProcessJobsControllerPort {
 export function ensureProcessJobsService(
   controller: ProcessJobsControllerPort,
 ): Promise<ProcessJobsServiceHandle | undefined> {
-  controller.processJobsServiceStart ??= (async () => {
-    const settings = await loadProcessJobsSettings({
-      cwd: controller.cwd,
-      configPath: controller.configReadPath,
-      env: controller.env,
-    });
+  if (controller.processJobsServiceStart !== undefined) {
+    return controller.processJobsServiceStart;
+  }
+
+  const flight = Symbol("process-jobs-service-start");
+  controller.processJobsServiceStartFlight = flight;
+  const isCurrentFlight = (): boolean =>
+    !controller.stopped && controller.processJobsServiceStartFlight === flight;
+  const start = (async () => {
+    let settings: Awaited<ReturnType<typeof loadProcessJobsSettings>>;
+    try {
+      settings = await loadProcessJobsSettings({
+        cwd: controller.cwd,
+        configPath: controller.configReadPath,
+        env: controller.env,
+      });
+    } catch (error) {
+      if (!isCurrentFlight()) return undefined;
+      throw error;
+    }
+    if (!isCurrentFlight()) return undefined;
     controller.processJobsStateDir = settings.enabled ? settings.stateDir : undefined;
     if (!settings.enabled) {
       controller.processJobsDegradation = undefined;
@@ -50,6 +66,7 @@ export function ensureProcessJobsService(
     }
     try {
       const sourceId = (await controller.observabilityContext()).sourceId;
+      if (!isCurrentFlight()) return undefined;
       const service = await openProcessJobsService({
         cwd: controller.cwd,
         settings,
@@ -96,11 +113,16 @@ export function ensureProcessJobsService(
           await publishProcessJobsHealth(controller, settings.stateDir, health),
         ...(controller.logger === undefined ? {} : { logger: controller.logger }),
       });
+      if (!isCurrentFlight()) {
+        await stopLateProcessJobsService(controller, service);
+        return undefined;
+      }
       controller.processJobsService = service;
       controller.processJobsDegradation = undefined;
       controller.logger?.info?.("Process-job controller started.", { stateDir: settings.stateDir });
       return service;
     } catch (error) {
+      if (!isCurrentFlight()) return undefined;
       if (error instanceof ProcessJobServiceError && error.code === "process_job_platform_unsupported") {
         controller.processJobsDegradation = undefined;
         controller.logger?.warn?.("Process-job controller is unavailable on this platform.", { reason: error.message });
@@ -112,7 +134,21 @@ export function ensureProcessJobsService(
       return undefined;
     }
   })();
-  return controller.processJobsServiceStart;
+  controller.processJobsServiceStart = start;
+  return start;
+}
+
+async function stopLateProcessJobsService(
+  controller: ProcessJobsControllerPort,
+  service: ProcessJobsServiceHandle,
+): Promise<void> {
+  try {
+    await service.stop();
+  } catch (error) {
+    controller.logger?.warn?.("Late process-job controller did not stop cleanly.", {
+      reason: reasonOf(error),
+    });
+  }
 }
 
 /** Publish a later store-health transition to both live operator surfaces. */
@@ -175,8 +211,10 @@ export async function activateProcessJobWakes(controller: ProcessJobsControllerP
 
 export async function stopProcessJobsService(controller: ProcessJobsControllerPort): Promise<void> {
   const service = controller.processJobsService;
+  const start = controller.processJobsServiceStart;
   controller.processJobsService = undefined;
   controller.processJobsServiceStart = undefined;
+  controller.processJobsServiceStartFlight = undefined;
   controller.processJobsStateDir = undefined;
   controller.processJobsDegradation = undefined;
   try {
@@ -187,5 +225,16 @@ export async function stopProcessJobsService(controller: ProcessJobsControllerPo
     // cleanup diagnostic cannot strand the channel and runtime teardown that
     // follows this boundary.
     controller.logger?.warn?.("Process-job controller did not stop cleanly.", { reason: reasonOf(error) });
+  }
+  let started: ProcessJobsServiceHandle | undefined;
+  try {
+    started = await start;
+  } catch (error) {
+    controller.logger?.warn?.("Process-job controller start did not settle cleanly during teardown.", {
+      reason: reasonOf(error),
+    });
+  }
+  if (started !== undefined && started !== service) {
+    await stopLateProcessJobsService(controller, started);
   }
 }
