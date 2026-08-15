@@ -11,7 +11,7 @@ import type {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ProcessJobsSettings } from "../process-jobs-config.js";
-import { PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
+import { PROCESS_JOBS_CAPS, PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
 import {
   openProcessJobsService,
   type ProcessJobWakeInput,
@@ -840,6 +840,67 @@ describe("process job service", () => {
     await expect(service.counts()).resolves.toMatchObject({ succeeded: 1, running: 0 });
     expect(service.health).toMatchObject({ state: "degraded", failureOperation: "list" });
     expect(onHealthChange.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("bounds oversized pending-wake lists without hiding active work or mutating store results", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const recordCeiling = PROCESS_JOBS_CAPS.retention.maxRecords
+      + PROCESS_JOBS_CAPS.maxQueued
+      + PROCESS_JOBS_CAPS.maxConcurrent;
+    const terminalRecords = Array.from({ length: recordCeiling }, (_, index) => {
+      const jobId = `pending-${String(index).padStart(5, "0")}`;
+      const admittedAt = new Date(Date.parse("2026-08-14T10:00:00.000Z") + index).toISOString();
+      return durableRecord(jobId, {
+        state: "succeeded",
+        admittedAt,
+        completedAt: new Date(Date.parse(admittedAt) + 1).toISOString(),
+        exitCode: 0,
+        durationMs: 1,
+      });
+    });
+    const queued = durableRecord("active-queued", {
+      state: "queued",
+      admittedAt: "2026-08-14T08:00:00.000Z",
+      pid: null,
+      pgid: null,
+      startedAt: null,
+      runtimeDeadlineAt: null,
+    });
+    delete queued.processIncarnation;
+    const running = durableRecord("active-running", {
+      admittedAt: "2026-08-14T09:00:00.000Z",
+    });
+    const storedRecords = [queued, ...terminalRecords, running];
+    const originalOrder = storedRecords.map((record) => record.jobId);
+    let listCalls = 0;
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async list() {
+        listCalls += 1;
+        return listCalls <= 2 ? [] : storedRecords;
+      },
+    };
+    const service = await startService(fixture, { store });
+
+    const listed = await service.list();
+
+    expect(listed).toHaveLength(recordCeiling);
+    expect(listed[0]?.jobId).toBe(`pending-${String(recordCeiling - 1).padStart(5, "0")}`);
+    expect(listed.slice(-3).map((record) => record.jobId)).toEqual([
+      "pending-00002",
+      "active-running",
+      "active-queued",
+    ]);
+    expect(listed.some((record) => record.jobId === "pending-00000")).toBe(false);
+    expect(listed.some((record) => record.jobId === "pending-00001")).toBe(false);
+    expect(storedRecords.map((record) => record.jobId)).toEqual(originalOrder);
+
+    const first = listed[0] as unknown as { summary: string; output: { preview: string } };
+    first.summary = "mutated operator result";
+    first.output.preview = "mutated operator preview";
+    const storedFirst = storedRecords.find((record) => record.jobId === listed[0]?.jobId);
+    expect(storedFirst).toMatchObject({ summary: "exec (values redacted)", preview: "" });
   });
 
   it("waits for an already-started wake before releasing service ownership", async () => {

@@ -287,8 +287,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     } catch {
       records = this.snapshotRecords();
     }
-    return [...records]
-      .sort((left, right) => right.admittedAt.localeCompare(left.admittedAt) || left.jobId.localeCompare(right.jobId))
+    return boundedNewestRecords(records)
       .map((record) => structuredClone(this.completionOverlays.get(record.jobId) ?? projectProcessJob(record)));
   }
 
@@ -1383,10 +1382,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   }
 
   private reconcileRecords(records: readonly DurableProcessJobRecord[]): void {
-    const bounded = [...records]
-      .sort((left, right) => right.admittedAt.localeCompare(left.admittedAt)
-        || left.jobId.localeCompare(right.jobId))
-      .slice(0, MAX_IN_MEMORY_RECORDS);
+    const bounded = boundedNewestRecords(records);
     this.recordSnapshot.clear();
     for (const record of bounded) this.recordSnapshot.set(record.jobId, structuredClone(record));
     const durableIds = new Set(records.map((record) => record.jobId));
@@ -1546,6 +1542,25 @@ function enforceAdmission(
   if (running >= settings.maxConcurrent && queued >= settings.maxQueued) {
     throw new ProcessJobServiceError("process_job_queue_full", "Process-job queue is full.");
   }
+}
+
+function boundedNewestRecords(
+  records: readonly DurableProcessJobRecord[],
+): readonly DurableProcessJobRecord[] {
+  const sorted = [...records].sort((left, right) =>
+    right.admittedAt.localeCompare(left.admittedAt) || left.jobId.localeCompare(right.jobId));
+  if (sorted.length <= MAX_IN_MEMORY_RECORDS) return sorted;
+
+  const active = sorted.filter((record) => !isTerminalProcessJobState(record.state));
+  if (active.length >= MAX_IN_MEMORY_RECORDS) return active.slice(0, MAX_IN_MEMORY_RECORDS);
+
+  let terminalSlots = MAX_IN_MEMORY_RECORDS - active.length;
+  return sorted.filter((record) => {
+    if (!isTerminalProcessJobState(record.state)) return true;
+    if (terminalSlots === 0) return false;
+    terminalSlots -= 1;
+    return true;
+  });
 }
 
 function transitionTerminal(

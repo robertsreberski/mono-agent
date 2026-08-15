@@ -2,6 +2,10 @@ import { mkdtemp, mkdir, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import {
+  parseProcessJobProjections,
+  type ProcessJobProjection,
+} from "@mono-agent/agent-contracts";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -86,6 +90,65 @@ describe("loadProcessJobsSettings", () => {
       processJobs: { maxConcurrent: PROCESS_JOBS_CAPS.maxConcurrent + 1 },
     }));
     await expect(loadProcessJobsSettings(input)).rejects.toThrow(/cannot exceed 32/u);
+  });
+
+  it("keeps the shared operator parser at or above the host record ceiling", () => {
+    const hostRecordCeiling = PROCESS_JOBS_CAPS.retention.maxRecords
+      + PROCESS_JOBS_CAPS.maxQueued
+      + PROCESS_JOBS_CAPS.maxConcurrent;
+    const projection: ProcessJobProjection = {
+      schema: "mono-agent.process-job-projection.v1",
+      jobId: "pj_capacity_0",
+      tool: "Exec",
+      state: "queued",
+      summary: "exec (values redacted)",
+      origin: {
+        conversationId: "web:capacity",
+        channel: "web",
+        runId: "run-capacity",
+        historyBoundary: "run-capacity",
+        bucket: null,
+      },
+      timestamps: {
+        admittedAt: "2026-08-14T10:00:00.000Z",
+        queueDeadlineAt: "2026-08-14T10:05:00.000Z",
+        startedAt: null,
+        runtimeDeadlineAt: null,
+        completedAt: null,
+      },
+      limits: {
+        maxRuntimeMs: PROCESS_JOBS_CAPS.maxRuntimeMs,
+        maxOutputBytes: PROCESS_JOBS_CAPS.maxOutputBytes,
+        previewChars: PROCESS_JOBS_CAPS.previewChars,
+        chainDepth: 0,
+      },
+      output: {
+        stdoutBytes: 0,
+        stderrBytes: 0,
+        truncated: false,
+        preview: "",
+        stdoutRef: null,
+        stderrRef: null,
+      },
+      wake: {
+        state: "pending",
+        attempts: 0,
+        deliveryKey: "process-job:pj_capacity_0",
+        lastAttemptAt: null,
+      },
+      exitCode: null,
+      signal: null,
+      durationMs: null,
+      cancelRequested: false,
+      lastError: null,
+    };
+    const atHostCeiling = Array.from({ length: hostRecordCeiling }, (_, index) => ({
+      ...projection,
+      jobId: `pj_capacity_${String(index)}`,
+      wake: { ...projection.wake, deliveryKey: `process-job:pj_capacity_${String(index)}` },
+    }));
+
+    expect(parseProcessJobProjections(atHostCeiling)).toHaveLength(hostRecordCeiling);
   });
 
   it("rejects unknown keys and state paths outside the agent root", async () => {

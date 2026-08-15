@@ -630,6 +630,21 @@ describe("Exec", () => {
     ]);
   });
 
+  it.each([
+    ["exit code", { pid: 4321, exitCode: 0, signalCode: null }],
+    ["signal code", { pid: 4321, exitCode: null, signalCode: "SIGTERM" }],
+  ])("never falls back to a reaped Node REPL child PID with a recorded %s", (_label, child) => {
+    if (process.platform === "win32") return;
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid) => {
+      if (pid < 0) throw Object.assign(new Error("group unavailable"), { code: "ESRCH" });
+      return true;
+    });
+
+    killProcessGroup(child, "SIGKILL", { fallbackToChildPid: true });
+
+    expect(kill.mock.calls).toEqual([[-4321, "SIGKILL"]]);
+  });
+
   it("preserves foreground behavior with an injected controller and narrows explicit background limits", async () => {
     const workspace = tempWorkspace();
     const controller = { start: vi.fn(async (request) => ({ jobId: "pj_limits", state: "queued", startedAt: null })) };
