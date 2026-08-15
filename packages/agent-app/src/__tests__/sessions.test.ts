@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -161,6 +161,41 @@ describe("purgeConversationHistory", () => {
 });
 
 describe("purgeConversationState", () => {
+  it.each([
+    ["the agent state parent", "./.mono-agent"],
+    ["the default process-job state root", "./.mono-agent/process-jobs"],
+  ])("protects stale unconfigured process-job state when Pi sessions use %s", async (_name, piSessionsRoot) => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.mono-agent/artifacts" },
+      providers: { piNative: { piSessionsRoot } },
+    });
+    const sessionsRoot = join(dir, piSessionsRoot);
+    const historyRoot = join(dir, ".mono-agent", "history");
+    const acpSessionsRoot = join(dir, ".mono-agent", "acp-sessions");
+    const processJobsRoot = join(dir, ".mono-agent", "process-jobs");
+    await Promise.all([
+      mkdir(sessionsRoot, { recursive: true }),
+      mkdir(historyRoot, { recursive: true }),
+      mkdir(acpSessionsRoot, { recursive: true }),
+      mkdir(processJobsRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(sessionsRoot, "session.jsonl"), "session\n"),
+      writeFile(join(historyRoot, "conversation.history.json"), "history\n"),
+      writeFile(join(acpSessionsRoot, "authorization.json"), "authorization\n"),
+      writeFile(join(processJobsRoot, "record.json"), "process-job\n"),
+    ]);
+
+    await expect(purgeConversationState(inputFor(configPath))).rejects.toMatchObject({
+      code: "invalid_json",
+      details: { path: "processJobs.stateDir", purgeRootKind: "Pi provider sessions" },
+    });
+    await expect(readFile(join(sessionsRoot, "session.jsonl"), "utf8")).resolves.toBe("session\n");
+    await expect(readFile(join(historyRoot, "conversation.history.json"), "utf8")).resolves.toBe("history\n");
+    await expect(readFile(join(acpSessionsRoot, "authorization.json"), "utf8")).resolves.toBe("authorization\n");
+    await expect(readFile(join(processJobsRoot, "record.json"), "utf8")).resolves.toBe("process-job\n");
+  });
+
   it("rejects an overlapping process-job root before deleting any conversation state", async () => {
     const configPath = await writeConfig({
       artifacts: { dir: "./.state/artifacts" },
@@ -234,5 +269,82 @@ describe("purgeConversationState", () => {
     await expect(readFile(join(memoryRoot, "memory.md"), "utf8")).resolves.toBe("keep memory\n");
     await expect(readFile(join(artifactsRoot, "run.summary.json"), "utf8")).resolves.toBe("{}\n");
     await expect(readFile(join(processJobsRoot, "record.json"), "utf8")).resolves.toBe("{}\n");
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a target swap after validation without deleting any root or outside sentinel", async () => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.state/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+    });
+    const sessionsRoot = join(dir, ".state", "sessions");
+    const movedSessionsRoot = join(dir, ".state", "sessions-original");
+    const historyRoot = join(dir, ".state", "history");
+    const acpSessionsRoot = join(dir, ".state", "acp-sessions");
+    const outsideRoot = join(dir, "outside-target");
+    await Promise.all([
+      mkdir(sessionsRoot, { recursive: true }),
+      mkdir(historyRoot, { recursive: true }),
+      mkdir(acpSessionsRoot, { recursive: true }),
+      mkdir(outsideRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(sessionsRoot, "session.jsonl"), "session\n"),
+      writeFile(join(historyRoot, "conversation.history.json"), "history\n"),
+      writeFile(join(acpSessionsRoot, "authorization.json"), "authorization\n"),
+      writeFile(join(outsideRoot, "sentinel.txt"), "outside\n"),
+    ]);
+
+    await expect(purgeConversationState(inputFor(configPath), {
+      hooks: {
+        afterValidation: async () => {
+          await rename(sessionsRoot, movedSessionsRoot);
+          await symlink(outsideRoot, sessionsRoot, "dir");
+        },
+      },
+    })).rejects.toThrow(/real directory|changed after validation/u);
+    await expect(readFile(join(movedSessionsRoot, "session.jsonl"), "utf8")).resolves.toBe("session\n");
+    await expect(readFile(join(historyRoot, "conversation.history.json"), "utf8")).resolves.toBe("history\n");
+    await expect(readFile(join(acpSessionsRoot, "authorization.json"), "utf8")).resolves.toBe("authorization\n");
+    await expect(readFile(join(outsideRoot, "sentinel.txt"), "utf8")).resolves.toBe("outside\n");
+  });
+
+  it.skipIf(process.platform === "win32")("rejects an ancestor swap after validation without partial deletion", async () => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.state/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+    });
+    const stateRoot = join(dir, ".state");
+    const movedStateRoot = join(dir, ".state-original");
+    const sessionsRoot = join(stateRoot, "sessions");
+    const historyRoot = join(stateRoot, "history");
+    const acpSessionsRoot = join(stateRoot, "acp-sessions");
+    const outsideRoot = join(dir, "outside-ancestor");
+    await Promise.all([
+      mkdir(sessionsRoot, { recursive: true }),
+      mkdir(historyRoot, { recursive: true }),
+      mkdir(acpSessionsRoot, { recursive: true }),
+      mkdir(join(outsideRoot, "sessions"), { recursive: true }),
+      mkdir(join(outsideRoot, "history"), { recursive: true }),
+      mkdir(join(outsideRoot, "acp-sessions"), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(sessionsRoot, "session.jsonl"), "session\n"),
+      writeFile(join(historyRoot, "conversation.history.json"), "history\n"),
+      writeFile(join(acpSessionsRoot, "authorization.json"), "authorization\n"),
+      writeFile(join(outsideRoot, "sentinel.txt"), "outside\n"),
+    ]);
+
+    await expect(purgeConversationState(inputFor(configPath), {
+      hooks: {
+        afterValidation: async () => {
+          await rename(stateRoot, movedStateRoot);
+          await symlink(outsideRoot, stateRoot, "dir");
+        },
+      },
+    })).rejects.toThrow(/changed after validation/u);
+    await expect(readFile(join(movedStateRoot, "sessions", "session.jsonl"), "utf8")).resolves.toBe("session\n");
+    await expect(readFile(join(movedStateRoot, "history", "conversation.history.json"), "utf8")).resolves.toBe("history\n");
+    await expect(readFile(join(movedStateRoot, "acp-sessions", "authorization.json"), "utf8")).resolves.toBe("authorization\n");
+    await expect(readFile(join(outsideRoot, "sentinel.txt"), "utf8")).resolves.toBe("outside\n");
   });
 });

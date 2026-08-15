@@ -3,7 +3,11 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path
 
 import { MonoAgentConfigError } from "@mono-agent/config";
 
-import { resolveConversationStatePurgeRoots } from "./conversation-state-roots.js";
+import {
+  conversationStatePurgePlanEntries,
+  type ConversationStatePurgePlan,
+  resolveConversationStatePurgeRoots,
+} from "./conversation-state-roots.js";
 
 export const PROCESS_JOBS_DEFAULTS = Object.freeze({
   enabled: false,
@@ -58,12 +62,19 @@ export interface ProcessJobsSettings {
   };
 }
 
+export interface LoadProcessJobsSettingsOptions {
+  /** The exact destructive-root plan already attested by clear-sessions preflight. */
+  readonly purgePlan?: ConversationStatePurgePlan;
+  /** Check an unconfigured default state root only when destructive reset is imminent. */
+  readonly validateDormantStateRoot?: boolean;
+}
+
 /** Load the host-only process-job block and fail closed on every unknown key. */
 export async function loadProcessJobsSettings(input: {
   readonly cwd: string;
   readonly configPath: string;
   readonly env?: Record<string, string | undefined>;
-}): Promise<ProcessJobsSettings> {
+}, options: LoadProcessJobsSettingsOptions = {}): Promise<ProcessJobsSettings> {
   let raw: unknown = {};
   try {
     raw = JSON.parse(await readFile(input.configPath, "utf8")) as unknown;
@@ -73,7 +84,7 @@ export async function loadProcessJobsSettings(input: {
   }
   const root = objectOf(raw);
   const value = root.processJobs;
-  if (value === undefined) return await resolvedSettings(input, false, {});
+  if (value === undefined) return await resolvedSettings(input, false, {}, options);
   const block = requireObject(value, "processJobs");
   rejectUnknownKeys(block, "processJobs", [
     "enabled",
@@ -88,7 +99,7 @@ export async function loadProcessJobsSettings(input: {
     "maxChainDepth",
     "retention",
   ]);
-  return await resolvedSettings(input, true, block);
+  return await resolvedSettings(input, true, block, options);
 }
 
 async function resolvedSettings(
@@ -99,6 +110,7 @@ async function resolvedSettings(
   },
   configured: boolean,
   block: Record<string, unknown>,
+  options: LoadProcessJobsSettingsOptions,
 ): Promise<ProcessJobsSettings> {
   const enabled = optionalBoolean(block.enabled, "processJobs.enabled") ?? PROCESS_JOBS_DEFAULTS.enabled;
   const rawStateDir = optionalString(block.stateDir, "processJobs.stateDir") ?? PROCESS_JOBS_DEFAULTS.stateDir;
@@ -114,12 +126,14 @@ async function resolvedSettings(
   if (escaped === ".." || escaped.startsWith(`..${sep}`) || isAbsolute(escaped)) {
     throw new Error("processJobs.stateDir must stay inside the agent root.");
   }
-  if (configured) {
+  const validateStateDir = configured
+    || (options.validateDormantStateRoot === true && await pathExists(stateDir));
+  if (validateStateDir) {
     await assertStateDirOutsideConversationPurgeRoots(stateDir, {
       cwd: input.cwd,
       configPath: input.configPath,
       env: input.env ?? {},
-    });
+    }, options.purgePlan);
   }
 
   const retentionValue = block.retention;
@@ -165,21 +179,19 @@ async function assertStateDirOutsideConversationPurgeRoots(
     readonly configPath: string;
     readonly env: Record<string, string | undefined>;
   },
+  purgePlan?: ConversationStatePurgePlan,
 ): Promise<void> {
-  const roots = await resolveConversationStatePurgeRoots(input);
   const canonicalStateDir = await canonicalConfigPath(stateDir, "processJobs.stateDir");
-  const purgeRoots = [
-    { kind: "Pi provider sessions", path: roots.sessions },
-    { kind: "durable session/tool history", path: roots.history },
-    { kind: "ACP sessions", path: roots.acpSessions },
-  ] as const;
+  const purgeRoots = purgePlan === undefined
+    ? await configuredPurgeRoots(input)
+    : conversationStatePurgePlanEntries(purgePlan).map((root) => ({
+      kind: root.kind,
+      path: root.path,
+      canonicalPath: root.canonicalPath,
+    }));
 
   for (const purgeRoot of purgeRoots) {
-    if (purgeRoot.path === undefined) continue;
-    const canonicalPurgeRoot = await canonicalConfigPath(
-      purgeRoot.path,
-      `restart --clear-sessions ${purgeRoot.kind} purge root`,
-    );
+    const canonicalPurgeRoot = purgeRoot.canonicalPath;
     if (!pathsContainEachOther(canonicalStateDir, canonicalPurgeRoot)) continue;
     const message = `processJobs.stateDir must be disjoint from the restart --clear-sessions ${purgeRoot.kind} purge root; neither path may contain the other.`;
     throw new MonoAgentConfigError("invalid_json", message, {
@@ -190,6 +202,34 @@ async function assertStateDirOutsideConversationPurgeRoots(
       purgeRootKind: purgeRoot.kind,
     });
   }
+}
+
+async function configuredPurgeRoots(input: {
+  readonly cwd: string;
+  readonly configPath: string;
+  readonly env: Record<string, string | undefined>;
+}): Promise<readonly {
+  readonly kind: "Pi provider sessions" | "durable session/tool history" | "ACP sessions";
+  readonly path: string;
+  readonly canonicalPath: string;
+}[]> {
+  const roots = await resolveConversationStatePurgeRoots(input);
+  const values = [
+    ...(roots.sessions === undefined ? [] : [{
+      kind: "Pi provider sessions" as const,
+      path: roots.sessions,
+    }]),
+    { kind: "durable session/tool history", path: roots.history },
+    { kind: "ACP sessions", path: roots.acpSessions },
+  ] as const;
+  return await Promise.all(values.map(async (root) => ({
+    kind: root.kind,
+    path: root.path,
+    canonicalPath: await canonicalConfigPath(
+      root.path,
+      `restart --clear-sessions ${root.kind} purge root`,
+    ),
+  })));
 }
 
 async function canonicalConfigPath(path: string, label: string): Promise<string> {
@@ -296,4 +336,14 @@ function rejectUnknownKeys(value: Record<string, unknown>, path: string, allowed
 
 function isErrno(error: unknown, code: string): error is NodeJS.ErrnoException {
   return typeof error === "object" && error !== null && "code" in error && error.code === code;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return false;
+    throw error;
+  }
 }

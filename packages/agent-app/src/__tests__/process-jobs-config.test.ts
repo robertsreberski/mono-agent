@@ -56,6 +56,17 @@ describe("loadProcessJobsSettings", () => {
     });
   });
 
+  it("keeps ordinary unconfigured startup permissive when no default durable state exists", async () => {
+    const input = await fixture({
+      providers: { piNative: { piSessionsRoot: ".mono-agent" } },
+    });
+    await expect(loadProcessJobsSettings(input)).resolves.toMatchObject({
+      configured: false,
+      enabled: false,
+      stateDir: join(input.cwd, ".mono-agent/process-jobs"),
+    });
+  });
+
   it("accepts every bounded setting and rejects values above compiled caps", async () => {
     const input = await fixture({
       processJobs: {
