@@ -65,7 +65,17 @@ export async function handOffProcessJob({
       },
     });
     if (!validProcessJobStartResult(result)) {
-      if (!launched) await ownedPrepared.cleanup?.();
+      if (!launched) {
+        try {
+          await ownedPrepared.cleanup?.();
+        } catch {
+          return failed(
+            `Error: ${PUBLIC_BACKGROUND_START_FAILURES.process_job_cleanup_incomplete}`,
+            "process_job_cleanup_incomplete",
+            startedAt,
+          );
+        }
+      }
       return failed("Error: Process-job controller returned an invalid start result.", "process_job_controller_invalid", startedAt);
     }
     const payload = {

@@ -604,7 +604,16 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       await this.updateInitialSurface(result.jobId);
       return result;
     } catch (error) {
-      if (!handedOff) await pending.cleanup().catch(() => undefined);
+      let cleanupIncomplete = false;
+      if (!handedOff) {
+        try { await pending.cleanup(); } catch { cleanupIncomplete = true; }
+      }
+      if (cleanupIncomplete) {
+        this.options.logger?.warn?.("Process-job sandbox cleanup was incomplete after rejected admission.", {
+          operation: "admission.reject",
+        });
+        throw new ProcessJobServiceError("process_job_cleanup_incomplete");
+      }
       if (error instanceof ProcessJobServiceError) throw error;
       throw new ProcessJobServiceError("process_job_store_error");
     }
@@ -638,7 +647,14 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       assertOwnedProcessHandle(handle);
     } catch (error) {
       await cancelMalformedHandle(handle);
-      await pending.cleanup().catch(() => undefined);
+      let cleanupIncomplete = false;
+      try { await pending.cleanup(); } catch { cleanupIncomplete = true; }
+      if (cleanupIncomplete) {
+        this.options.logger?.warn?.("Process-job sandbox cleanup was incomplete after launch failure.", {
+          jobId,
+          operation: "launch.cleanup",
+        });
+      }
       this.pending.delete(jobId);
       await this.storeMutate("launch.spawn_failed", (records) => {
         const record = requireRecord(records, jobId);
@@ -647,14 +663,16 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             record,
             "spawn_failed",
             this.now(),
-            "process_job_spawn_failed",
+            cleanupIncomplete ? "process_job_cleanup_incomplete" : "process_job_spawn_failed",
             safeProcessError(error, "The process could not be launched.", pending.redactionSecrets),
           );
         }
       });
       this.scheduleSurfaceUpdate(jobId);
       this.scheduleWake(jobId);
-      throw new ProcessJobServiceError("process_job_spawn_failed", "The process could not be launched.");
+      throw new ProcessJobServiceError(
+        cleanupIncomplete ? "process_job_cleanup_incomplete" : "process_job_spawn_failed",
+      );
     }
     const completion = handle.completion.then(
       (result) => result,

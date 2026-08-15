@@ -260,6 +260,34 @@ describe("process job service", () => {
     expect(JSON.stringify(warn.mock.calls)).not.toContain(fixture.cwd);
   });
 
+  it("makes failed sandbox cleanup authoritative after a capacity rejection", async () => {
+    const fixture = await createFixture({
+      maxConcurrent: 1,
+      maxQueued: 1,
+      retention: { ...PROCESS_JOBS_DEFAULTS.retention, maxRecords: 1 },
+    });
+    await seedRetainedProcessJobStore(fixture, 3, { pendingWakes: true });
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const privateText = `private-admission-cleanup at ${join(fixture.cwd, "sandbox", "settings.json")}`;
+    const cleanup = vi.fn(async () => { throw new Error(privateText); });
+    const warn = vi.fn();
+    const service = await startService(fixture, { store, logger: { warn } });
+
+    await expect(service.controller(ORIGIN, 0).start(
+      requestOf(handleOf(deferred<ProcessJobProcessResult>()), cleanup),
+    )).rejects.toEqual(expect.objectContaining(
+      processJobPublicError("process_job_cleanup_incomplete"),
+    ));
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(await store.list()).toHaveLength(3);
+    expect(warn).toHaveBeenCalledWith(
+      "Process-job sandbox cleanup was incomplete after rejected admission.",
+      { operation: "admission.reject" },
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("private-admission-cleanup");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(fixture.cwd);
+  });
+
   it("keeps artifact and cleanup exceptions out of durable, projected, and wake failure surfaces", async () => {
     const fixture = await createFixture();
     const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
@@ -694,6 +722,46 @@ describe("process job service", () => {
       timestamps: { startedAt: null },
     });
   });
+
+  it.each(["throwing launcher", "malformed handle"] as const)(
+    "persists cleanup-incomplete when a %s is followed by failed sandbox cleanup",
+    async (variant) => {
+      const fixture = await createFixture();
+      const completion = deferred<ProcessJobProcessResult>();
+      completion.resolve(processResult());
+      const handle = handleOf(completion);
+      const privateText = `private-launch-cleanup at ${join(fixture.cwd, "sandbox", "settings.json")}`;
+      const cleanup = vi.fn(async () => { throw new Error(privateText); });
+      const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+      const warn = vi.fn();
+      const service = await startService(fixture, { wake, logger: { warn } });
+      await service.activateWakes();
+      const baseRequest = requestOf(handle, cleanup);
+      const request: ProcessJobStartRequest = {
+        ...baseRequest,
+        launch: variant === "throwing launcher"
+          ? () => { throw new Error(`private-launch-failure at ${fixture.cwd}`); }
+          : () => ({ ...handle, pgid: handle.pid! + 1 }),
+      };
+
+      await expect(service.controller(ORIGIN, 0).start(request)).rejects.toEqual(
+        expect.objectContaining(processJobPublicError("process_job_cleanup_incomplete")),
+      );
+      expect(cleanup).toHaveBeenCalledOnce();
+      const projection = (await service.list())[0];
+      expect(projection).toMatchObject({
+        state: "spawn_failed",
+        lastError: processJobPublicError("process_job_cleanup_incomplete"),
+      });
+      await waitFor(() => wake.mock.calls.length === 1);
+      expect(wake.mock.calls[0]?.[0].projection.lastError)
+        .toEqual(processJobPublicError("process_job_cleanup_incomplete"));
+      for (const value of [projection, wake.mock.calls, warn.mock.calls]) {
+        expect(JSON.stringify(value)).not.toContain("private-launch");
+        expect(JSON.stringify(value)).not.toContain(fixture.cwd);
+      }
+    },
+  );
 
   it("records an artifact publication failure without dropping the bounded preview", async () => {
     const fixture = await createFixture();

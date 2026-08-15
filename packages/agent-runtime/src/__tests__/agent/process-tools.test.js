@@ -120,6 +120,36 @@ describe("Exec", () => {
     expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
+  it("makes cleanup failure authoritative for an invalid unlaunched controller result", async () => {
+    const workspace = tempWorkspace();
+    const privateText = `private-invalid-cleanup at ${resolve(workspace, "sandbox", "settings.json")}`;
+    const cleanup = vi.fn(async () => { throw new Error(privateText); });
+    const sandbox = {
+      ...passthroughSandbox,
+      async prepareCommand({ command }) {
+        return { ...command, args: command.args ?? [], cleanup };
+      },
+    };
+
+    const result = await execToolRun({
+      executable: process.execPath,
+      args: ["--eval", "process.stdout.write('must-not-run')"],
+      background: true,
+    }, {
+      ctx: { workspace, sandbox },
+      processJobsController: { start: vi.fn(async () => ({ invalid: true })) },
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      text: "Error: Process-job cleanup could not be confirmed.",
+      outcome: { code: "process_job_cleanup_incomplete" },
+    });
+    expect(JSON.stringify(result)).not.toContain("private-invalid-cleanup");
+    expect(JSON.stringify(result)).not.toContain(workspace);
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
   it("returns only a stable public code and generic message when background admission fails", async () => {
     const workspace = tempWorkspace();
     const cleanup = vi.fn(async () => {});
