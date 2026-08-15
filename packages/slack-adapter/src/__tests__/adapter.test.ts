@@ -967,6 +967,46 @@ describe("SlackAdapter", () => {
     expect(api.postMessageCalls).toHaveLength(nativePostsBeforeSettlement);
   });
 
+  it("reclaims a failed terminal attempt after wake settlement without posting it twice", async () => {
+    const api = new FakeSlackApi();
+    api.failPostMessageAfter = 0;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: responderFrom(async () => ({ text: "unused" })),
+    });
+    const original = processJobProjection("failed", "pj_failed_terminal");
+    await expect(adapter.updateProcessJob("C1", "171.5", original))
+      .resolves.toMatchObject({ delivered: false, code: "surface_update_failed" });
+    const settled: ProcessJobProjection = {
+      ...original,
+      wake: { ...original.wake, state: "delivered", attempts: 1 },
+    };
+    await expect(adapter.updateProcessJob("C1", "171.5", settled))
+      .resolves.toMatchObject({
+        delivered: false,
+        code: "surface_terminal_fallback_already_attempted",
+      });
+    expect(api.postMessageCalls).toHaveLength(1);
+
+    api.failPostMessageAfter = undefined;
+    for (let index = 0; index < MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES - 1; index += 1) {
+      await adapter.updateProcessJob(
+        "C1",
+        "171.5",
+        processJobProjection("running", `pj_failed_pressure_${String(index)}`),
+      );
+    }
+    expect(adapter.processJobLifecycleStateCount()).toBe(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES);
+    await expect(adapter.updateProcessJob(
+      "C1",
+      "171.5",
+      processJobProjection("running", "pj_after_failed_terminal_settlement"),
+    )).resolves.toMatchObject({ delivered: true, code: "surface_posted" });
+    expect(adapter.processJobLifecycleStateCount()).toBe(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES);
+    expect(api.postMessageCalls).toHaveLength(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES + 1);
+  });
+
   it("retains the full shared outstanding population and refuses unsafe overflow", async () => {
     const api = new FakeSlackApi();
     const adapter = new SlackAdapter({

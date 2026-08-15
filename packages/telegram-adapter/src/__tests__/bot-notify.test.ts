@@ -293,6 +293,43 @@ describe("createTelegramBot notify (proactive)", () => {
       .toHaveLength(nativePostsBeforeSettlement);
   });
 
+  it("reclaims a failed terminal attempt after wake settlement without posting it twice", async () => {
+    const behavior: { failSendAfter?: number } = { failSendAfter: 0 };
+    const { controller, calls } = buildNotifiableBot(
+      { async respond() { return { text: "unused" }; } },
+      behavior,
+    );
+    const original = processJobProjection("failed", "pj_failed_terminal");
+    await expect(controller.updateProcessJob(42, original))
+      .resolves.toMatchObject({ delivered: false, code: "surface_update_failed" });
+    const settled: ProcessJobProjection = {
+      ...original,
+      wake: { ...original.wake, state: "delivered", attempts: 1 },
+    };
+    await expect(controller.updateProcessJob(42, settled))
+      .resolves.toMatchObject({
+        delivered: false,
+        code: "surface_terminal_fallback_already_attempted",
+      });
+    expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(1);
+
+    delete behavior.failSendAfter;
+    for (let index = 0; index < MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES - 1; index += 1) {
+      await controller.updateProcessJob(
+        42,
+        processJobProjection("running", `pj_failed_pressure_${String(index)}`),
+      );
+    }
+    expect(controller.processJobLifecycleStateCount()).toBe(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES);
+    await expect(controller.updateProcessJob(
+      42,
+      processJobProjection("running", "pj_after_failed_terminal_settlement"),
+    )).resolves.toMatchObject({ delivered: true, code: "surface_posted" });
+    expect(controller.processJobLifecycleStateCount()).toBe(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES);
+    expect(calls.filter((call) => call.method === "sendMessage"))
+      .toHaveLength(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES + 1);
+  });
+
   it("retains the full shared outstanding population and refuses unsafe overflow", async () => {
     const terminalPostStarted = createDeferred<void>();
     const releaseTerminalPost = createDeferred<void>();

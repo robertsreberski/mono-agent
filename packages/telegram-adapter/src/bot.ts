@@ -2194,6 +2194,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       const text = renderProcessJobSurface(projection);
       if (current === undefined) {
         if (terminal && !rememberTerminalFallbackAttempt(lifecycle)) {
+          lifecycle.retireable ||= projection.wake.state !== "pending";
           return {
             delivered: false,
             code: "surface_terminal_fallback_already_attempted",
