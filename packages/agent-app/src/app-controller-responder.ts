@@ -41,6 +41,7 @@ import {
 import { createReplyPartBudget } from "./reply-part-budget.js";
 import {
   createRequestModelOverrideRuntimeExtension,
+  requestModelOverrideRoutesOnlyPiNative,
   requestModelOverrideTargetsDirectOpenCode,
   requestModelOverrideTargetsUnsupportedHistoryTool,
   requestModelOverrideTargetsPiNative,
@@ -85,6 +86,7 @@ export interface ResponderControllerPort {
   readonly interactionBridge: InteractionBridgeHandle | undefined;
   readonly continuationService: ContinuationServiceHandle | undefined;
   readonly processJobsService: ProcessJobsServiceHandle | undefined;
+  readonly processJobsStateDir: string | undefined;
   readonly seenNotifyDestinations: SeenNotifyDestinationCache;
   sandboxEngineFor(coreConfig: MonoAgentConfig): SandboxEngine | undefined;
   memoryStore(coreConfig: MonoAgentConfig): Promise<ConfiguredMemory>;
@@ -108,6 +110,7 @@ export interface ResponderControllerPort {
     readonly targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean;
     readonly targetsUnsupportedHistoryTool: (metadata: Record<string, unknown> | undefined) => boolean;
     readonly targetsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
+    readonly targetsProcessJobsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
   };
   buildRuntimeForModel(
     coreConfig: MonoAgentConfig,
@@ -150,15 +153,15 @@ export async function buildResponder(
   coreConfig: MonoAgentConfig,
   channelId?: ChannelId,
 ): Promise<AgentResponder> {
-  const modelBoundaryConfig = controller.processJobsService === undefined
+  const processJobsProtectionStateDir = controller.processJobsStateDir
+    ?? controller.processJobsService?.settings.stateDir;
+  const modelBoundaryConfig = processJobsProtectionStateDir === undefined
     ? coreConfig
     : {
         ...coreConfig,
         sandbox: processJobsSandboxPolicy({
-          service: controller.processJobsService,
           coreConfig,
-          channelId,
-          targetsPiNative: () => true,
+          stateDir: processJobsProtectionStateDir,
         }),
       };
   const sandboxEngineConfig = modelBoundaryConfig.sandbox?.mode === "native"
@@ -198,7 +201,7 @@ export async function buildResponder(
     configPath: controller.configReadPath,
     env: controller.env,
   })).stateDir;
-  const processJobsStateDir = controller.processJobsService?.settings.stateDir
+  const processJobsStateDir = processJobsProtectionStateDir
     ?? (await loadProcessJobsSettings({
       cwd: controller.cwd,
       configPath: controller.configReadPath,
@@ -303,13 +306,15 @@ export async function buildResponder(
     : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
       ? { runtimeOptions: {}, cleanup: async () => {} }
       : await replyArtifactsBase(requestInput);
-  const processJobsExtension = controller.processJobsService === undefined
+  const processJobsExtension = processJobsProtectionStateDir === undefined
     ? undefined
     : createProcessJobsRuntimeExtension({
         service: controller.processJobsService,
+        stateDir: processJobsProtectionStateDir,
         coreConfig,
         channelId,
-        targetsPiNative: requestModelOverride.targetsPiNative,
+        sandboxEngine,
+        targetsPiNative: requestModelOverride.targetsProcessJobsPiNative,
       });
   const runHistoryExtension: RuntimeOptionsExtension | undefined = runHistoryBase === undefined
     ? undefined
@@ -426,6 +431,7 @@ export function requestModelOverrideRuntimeOptions(
   readonly targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean;
   readonly targetsUnsupportedHistoryTool: (metadata: Record<string, unknown> | undefined) => boolean;
   readonly targetsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
+  readonly targetsProcessJobsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
 } {
   const options = {
     ...(controller.logger === undefined ? {} : { logger: controller.logger }),
@@ -447,6 +453,7 @@ export function requestModelOverrideRuntimeOptions(
     targetsDirectOpenCode: (metadata) => requestModelOverrideTargetsDirectOpenCode(metadata, options),
     targetsUnsupportedHistoryTool: (metadata) => requestModelOverrideTargetsUnsupportedHistoryTool(metadata, options),
     targetsPiNative: (metadata) => requestModelOverrideTargetsPiNative(metadata, options),
+    targetsProcessJobsPiNative: (metadata) => requestModelOverrideRoutesOnlyPiNative(metadata, options),
   };
 }
 

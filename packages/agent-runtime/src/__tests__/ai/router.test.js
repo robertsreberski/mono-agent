@@ -17,6 +17,13 @@ const { passthroughSandbox } = await import("../../agent/sandbox-seam.js");
 const { resetToolRuntime } = await import("../../agent/tools/shared/runtime-context.js");
 const { createFakeSandbox } = await import("../helpers/fake-sandbox.js");
 
+const NON_PI_PROVIDER_ROUTES = [
+  ["Claude", { sdk: "claude", model: "claude-sonnet-4-6" }],
+  ["Codex", { sdk: "codex", model: "gpt-5.6-sol" }],
+  ["OpenCode", { sdk: "opencode", provider: "github-copilot", model: "gpt-4.1" }],
+  ["ACP", { sdk: "acp", model: "worklab" }],
+];
+
 beforeEach(() => {
   executeMock.mockReset();
   resolveRuntimeBridgeMock.mockReset();
@@ -951,6 +958,164 @@ describe("createRouterRuntime — production fallback contracts", () => {
     for (const key of Object.keys(primaryMetadata)) {
       expect(executeMock.mock.calls[1][1]).not.toHaveProperty(key);
     }
+  });
+
+  it.each(NON_PI_PROVIDER_ROUTES)(
+    "rejects a protected-root %s route before resolver or provider invocation",
+    async (_label, model) => {
+      const resolveAttempt = vi.fn(() => ({
+        runtime: { run: vi.fn(async () => ({ text: "private state", events: [], failureKind: null })) },
+      }));
+      const protectedRoot = "/repo/.mono-agent/process-jobs/private-route-secret";
+      const router = createRouterRuntime({
+        routeSafety: "per-route-native",
+        chain: [model],
+        resolveAttempt,
+      });
+
+      const result = await router.run("sys", {
+        messages: [],
+        sandboxPolicy: { mode: "native", protectedRoots: [protectedRoot] },
+      });
+
+      expect(result).toMatchObject({
+        failureKind: "safety_unavailable",
+        error: "The route safety contract could not be established before execution.",
+        routeSafetyHistory: [expect.objectContaining({ status: "safety_unavailable" })],
+      });
+      expect(resolveAttempt).not.toHaveBeenCalled();
+      expect(executeMock).not.toHaveBeenCalled();
+      expect(JSON.stringify(result)).not.toContain(protectedRoot);
+    },
+  );
+
+  it.each(NON_PI_PROVIDER_ROUTES)(
+    "preserves an ordinary %s provider-native route when protected roots are empty",
+    async (_label, model) => {
+      executeMock.mockResolvedValueOnce({ text: "ordinary route", events: [], failureKind: null });
+      const router = createRouterRuntime({
+        routeSafety: "per-route-native",
+        chain: [model],
+      });
+
+      const result = await router.run("sys", {
+        messages: [],
+        sandboxPolicy: { mode: "native", protectedRoots: [] },
+      });
+
+      expect(result.text).toBe("ordinary route");
+      expect(executeMock).toHaveBeenCalledOnce();
+      expect(executeMock.mock.calls[0][1].model).toEqual(model);
+    },
+  );
+
+  it.each(["host", "configureTools"])(
+    "detects protected roots supplied through the router %s context",
+    async (source) => {
+      const sandboxPolicy = { mode: "native", protectedRoots: ["/repo/.mono-agent/process-jobs"] };
+      const router = createRouterRuntime({
+        ...(source === "host" ? { host: { sandboxPolicy } } : {}),
+        routeSafety: "per-route-native",
+        chain: [{ sdk: "claude", model: "claude-sonnet-4-6" }],
+      });
+      if (source === "configureTools") router.configureTools({ sandboxPolicy });
+
+      const result = await router.run("sys", { messages: [] });
+
+      expect(result.failureKind).toBe("safety_unavailable");
+      expect(executeMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(NON_PI_PROVIDER_ROUTES)(
+    "skips a protected-root %s primary and permits its Pi fallback",
+    async (_label, model) => {
+      executeMock.mockResolvedValueOnce({ text: "pi fallback", events: [], failureKind: null });
+      const router = createRouterRuntime({
+        routeSafety: "per-route-native",
+        chain: [
+          model,
+          { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
+        ],
+      });
+
+      const result = await router.run("sys", {
+        messages: [],
+        sandboxPolicy: { mode: "native", protectedRoots: ["/repo/.mono-agent/process-jobs"] },
+      });
+
+      expect(result.text).toBe("pi fallback");
+      expect(result.failoverHistory[0]).toMatchObject({
+        model,
+        failureKind: "safety_unavailable",
+      });
+      expect(executeMock).toHaveBeenCalledOnce();
+      expect(executeMock.mock.calls[0][1].model.sdk).toBe("pi");
+    },
+  );
+
+  it.each(NON_PI_PROVIDER_ROUTES)(
+    "never invokes a protected-root %s fallback after Pi fails",
+    async (_label, model) => {
+      executeMock.mockResolvedValueOnce({
+        text: null,
+        error: "Connection error.",
+        failureKind: "provider_unavailable",
+        events: [],
+        cancelled: false,
+      });
+      const router = createRouterRuntime({
+        routeSafety: "per-route-native",
+        chain: [
+          { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
+          model,
+        ],
+      });
+
+      const result = await router.run("sys", {
+        messages: [],
+        sandboxPolicy: { mode: "native", protectedRoots: ["/repo/.mono-agent/process-jobs"] },
+      });
+
+      expect(result.failureKind).toBe("provider_unavailable_exhausted");
+      expect(result.failoverHistory.map((attempt) => attempt.failureKind)).toEqual([
+        "provider_unavailable",
+        "safety_unavailable",
+      ]);
+      expect(executeMock).toHaveBeenCalledOnce();
+      expect(executeMock.mock.calls[0][1].model.sdk).toBe("pi");
+    },
+  );
+
+  it("preserves an all-Pi protected-root fallback chain", async () => {
+    executeMock
+      .mockResolvedValueOnce({
+        text: null,
+        error: "Connection error.",
+        failureKind: "provider_unavailable",
+        events: [],
+        cancelled: false,
+      })
+      .mockResolvedValueOnce({ text: "second Pi route", events: [], failureKind: null });
+    const router = createRouterRuntime({
+      routeSafety: "per-route-native",
+      chain: [
+        { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
+        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
+      ],
+    });
+    const sandboxPolicy = {
+      mode: "native",
+      protectedRoots: ["/repo/.mono-agent/process-jobs"],
+    };
+
+    const result = await router.run("sys", { messages: [], sandboxPolicy });
+
+    expect(result.text).toBe("second Pi route");
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(executeMock.mock.calls.map((call) => call[1].model.sdk)).toEqual(["pi", "pi"]);
+    expect(executeMock.mock.calls[0][1].sandboxPolicy).toBe(sandboxPolicy);
+    expect(executeMock.mock.calls[1][1].sandboxPolicy).toBe(sandboxPolicy);
   });
 
   it("keeps uniform safety monotonic and explicitly projects per-route-native contracts", async () => {

@@ -5,6 +5,7 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import {
   failClosedSandboxPolicy,
   protectSandboxRoots,
+  type SandboxEngine,
   type SandboxPolicy,
 } from "@mono-agent/runtime-adapter";
 
@@ -18,11 +19,20 @@ import {
 import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 
 export interface ProcessJobsRuntimeExtensionOptions {
-  readonly service: ProcessJobsServiceHandle;
+  /** Optional because configured private state remains protected when the store cannot open. */
+  readonly service: ProcessJobsServiceHandle | undefined;
+  readonly stateDir: string;
   readonly coreConfig: MonoAgentConfig;
   readonly channelId: ChannelId | undefined;
+  readonly sandboxEngine: SandboxEngine | undefined;
+  /** True only when every reachable effective primary/fallback route is Pi-native. */
   readonly targetsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
 }
+
+export const PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR =
+  "Process-job private state requires a Pi-native runtime.";
+export const PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR =
+  "Process-job private state protection is unavailable.";
 
 /** Inject the controller only for a Pi-native, wake-capable, normally allowed turn. */
 export function createProcessJobsRuntimeExtension(
@@ -30,9 +40,19 @@ export function createProcessJobsRuntimeExtension(
 ): RuntimeOptionsExtension {
   return async (input) => {
     if (!options.targetsPiNative(input.request.metadata)) {
-      throw new Error("Process-job private state requires a Pi-native runtime.");
+      throw new Error(PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR);
     }
     const sandboxPolicy = processJobsSandboxPolicy(options);
+    if (!await sandboxEngineAvailable(options.sandboxEngine)) {
+      throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
+    }
+    const protectedRuntimeOptions = {
+      sandboxPolicy,
+      sandboxEngine: options.sandboxEngine,
+    };
+    if (options.service === undefined) {
+      return { runtimeOptions: protectedRuntimeOptions, cleanup: async () => {} };
+    }
     const origin = processJobOriginForRequest(input, options.channelId);
     const wake = processJobWakeContextForRequest(input.request);
     const chainDepth = wake.kind === "resolved" ? wake.context.chainDepth : 0;
@@ -40,19 +60,21 @@ export function createProcessJobsRuntimeExtension(
       || wake.kind === "missed"
       || chainDepth >= options.service.settings.maxChainDepth
       || !hasAllowedProcessTool(options.coreConfig)) {
-      return { runtimeOptions: { sandboxPolicy }, cleanup: async () => {} };
+      return { runtimeOptions: protectedRuntimeOptions, cleanup: async () => {} };
     }
     return {
       runtimeOptions: {
         processJobs: options.service.controller(origin, chainDepth),
-        sandboxPolicy,
+        ...protectedRuntimeOptions,
       },
       cleanup: async () => {},
     };
   };
 }
 
-export function processJobsSandboxPolicy(options: ProcessJobsRuntimeExtensionOptions): SandboxPolicy {
+export function processJobsSandboxPolicy(
+  options: Pick<ProcessJobsRuntimeExtensionOptions, "coreConfig" | "stateDir">,
+): SandboxPolicy {
   const configured = options.coreConfig.sandbox;
   const base = configured?.mode === "native"
     ? { ...configured, fallback: "fail-closed" as const, unsafeAllowHostProcess: false }
@@ -61,12 +83,21 @@ export function processJobsSandboxPolicy(options: ProcessJobsRuntimeExtensionOpt
         network: { mode: "all" },
       });
   const workspace = resolve(options.coreConfig.runtime.workspace);
-  const stateDir = resolve(options.service.settings.stateDir);
+  const stateDir = resolve(options.stateDir);
   const fromState = relative(stateDir, workspace);
   if (fromState === "" || (!fromState.startsWith("..") && !isAbsolute(fromState))) {
     throw new Error("Process-job private state cannot contain the model workspace.");
   }
   return protectSandboxRoots(base, [stateDir]);
+}
+
+async function sandboxEngineAvailable(engine: SandboxEngine | undefined): Promise<boolean> {
+  if (engine === undefined) return false;
+  try {
+    return await engine.isAvailable();
+  } catch {
+    return false;
+  }
 }
 
 /** Strict host-origin classifier. Unsupported trigger surfaces never receive a controller. */

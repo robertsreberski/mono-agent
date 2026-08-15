@@ -405,9 +405,13 @@ tool policy and uses SRT only when an effective native sandbox policy is active
 (otherwise telemetry says `disabled` and subprocess tools are unsandboxed),
 Claude drops only the unrepresentable mono-agent SRT layer, and direct
 Codex/OpenCode use provider-native safety with an effective allow-all policy
-(allowlist omitted or containing `"*"`, empty denylist). Capability-bearing
-inputs are never silently discarded; an unsupported route is skipped with bounded,
-credential-free safety telemetry.
+(allowlist omitted or containing `"*"`, empty denylist). That projection is
+available only when the effective internal `sandboxPolicy.protectedRoots` is
+empty: a provider-native non-Pi route carrying protected roots is rejected as
+`safety_unavailable` before its resolver or provider runs. This also covers a
+named `Agent` child that inherits a protected parent policy. Capability-bearing
+inputs are never silently discarded; an unsupported route is skipped with
+bounded, credential-free safety telemetry.
 
 On macOS, the default SRT resolver prefers the integrity-verified managed copy in
 the private mono-agent cache. It revalidates the managed tree against an

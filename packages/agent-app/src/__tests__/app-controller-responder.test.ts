@@ -1,16 +1,27 @@
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import {
+  createMonoRuntime,
+  defaultExecutionModeForModel,
+  parseMonoRuntimeModelReference,
+} from "@mono-agent/runtime-adapter";
+import type {
+  MonoRuntimeLike,
+  RuntimeModelReference,
+  RuntimeResult,
+  RuntimeRunOptions,
+} from "@mono-agent/runtime-adapter";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { loadAppCoreConfig } from "../app-config.js";
 import {
   buildResponder,
   replyArtifactStorageMaxBytesForMcpApps,
+  requestModelOverrideRuntimeOptions as createRequestModelOverrideRuntimeOptions,
   type ResponderControllerPort,
 } from "../app-controller-responder.js";
 import { DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES } from "../mcp-apps.js";
@@ -116,6 +127,7 @@ describe("reply artifact responder composition", () => {
       interactionBridge: undefined,
       continuationService: undefined,
       processJobsService: undefined,
+      processJobsStateDir: undefined,
       seenNotifyDestinations: createSeenNotifyDestinationCache(),
       sandboxEngineFor: () => undefined,
       memoryStore: async () => memory as never,
@@ -128,6 +140,7 @@ describe("reply artifact responder composition", () => {
         targetsDirectOpenCode: () => false,
         targetsUnsupportedHistoryTool: () => false,
         targetsPiNative: () => false,
+        targetsProcessJobsPiNative: () => false,
       }),
       buildRuntimeForModel: () => () => runtime,
       observabilityContext: async () => ({}),
@@ -316,6 +329,7 @@ describe("reply artifact responder composition", () => {
         settings: { stateDir: processJobsStateDir, maxChainDepth: 4 },
         controller: vi.fn(),
       } as never,
+      processJobsStateDir,
       seenNotifyDestinations: createSeenNotifyDestinationCache(),
       sandboxEngineFor,
       memoryStore: async () => memory as never,
@@ -328,6 +342,7 @@ describe("reply artifact responder composition", () => {
         targetsDirectOpenCode: () => false,
         targetsUnsupportedHistoryTool: () => false,
         targetsPiNative: () => true,
+        targetsProcessJobsPiNative: () => true,
       }),
       buildRuntimeForModel: () => () => runtime,
       observabilityContext: async () => ({}),
@@ -398,3 +413,331 @@ describe("reply artifact responder composition", () => {
     for (const candidate of candidates) expect(serializedOutbound).not.toContain(candidate.path);
   });
 });
+
+const PI_ROUTE = "pi:openai-codex:gpt-5.6-sol";
+const PI_FALLBACK_ROUTE = "pi:ollama:qwen3:8b";
+const NON_PI_ROUTES = [
+  ["Claude", "claude:claude-opus-4-8"],
+  ["Codex", "codex:gpt-5.6-sol"],
+  ["OpenCode", "opencode:github-copilot:gpt-5.1"],
+  ["ACP", "acp:personal-agent"],
+] as const;
+
+describe("process-job mixed fallback route guard", () => {
+  it.each(NON_PI_ROUTES)("blocks Pi to %s before either routed provider runs", async (_label, nonPiRoute) => {
+    const fixture = await createRouteGuardFixture(PI_ROUTE, nonPiRoute, "live");
+    try {
+      await expect(fixture.responder.respond({
+        conversationId: "slack:C1:1.1",
+        text: "do not invoke a provider",
+        abortSignal: new AbortController().signal,
+      }, { append: async () => {} })).rejects.toThrow(
+        "Process-job private state requires a Pi-native runtime.",
+      );
+      expect(fixture.providerRunCounts).toEqual([0, 0]);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it.each(NON_PI_ROUTES)("blocks %s to Pi before either routed provider runs", async (_label, nonPiRoute) => {
+    const fixture = await createRouteGuardFixture(nonPiRoute, PI_ROUTE, "live");
+    try {
+      await expect(fixture.responder.respond({
+        conversationId: "slack:C1:1.1",
+        text: "do not invoke a provider",
+        abortSignal: new AbortController().signal,
+      }, { append: async () => {} })).rejects.toThrow(
+        "Process-job private state requires a Pi-native runtime.",
+      );
+      expect(fixture.providerRunCounts).toEqual([0, 0]);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it.each(NON_PI_ROUTES)("blocks degraded Pi to %s before either routed provider runs", async (_label, nonPiRoute) => {
+    const fixture = await createRouteGuardFixture(PI_ROUTE, nonPiRoute, "degraded");
+    try {
+      await expect(fixture.responder.respond({
+        conversationId: "slack:C1:1.1",
+        text: "do not invoke a provider",
+        abortSignal: new AbortController().signal,
+      }, { append: async () => {} })).rejects.toThrow(
+        "Process-job private state requires a Pi-native runtime.",
+      );
+      expect(fixture.providerRunCounts).toEqual([0, 0]);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it.each(NON_PI_ROUTES)("blocks degraded %s to Pi before either routed provider runs", async (_label, nonPiRoute) => {
+    const fixture = await createRouteGuardFixture(nonPiRoute, PI_ROUTE, "degraded");
+    try {
+      await expect(fixture.responder.respond({
+        conversationId: "slack:C1:1.1",
+        text: "do not invoke a provider",
+        abortSignal: new AbortController().signal,
+      }, { append: async () => {} })).rejects.toThrow(
+        "Process-job private state requires a Pi-native runtime.",
+      );
+      expect(fixture.providerRunCounts).toEqual([0, 0]);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it("keeps degraded all-Pi fallback turns protected without exposing a controller", async () => {
+    const fixture = await createRouteGuardFixture(PI_ROUTE, PI_FALLBACK_ROUTE, "degraded");
+    try {
+      const response = await fixture.responder.respond({
+        conversationId: "slack:C1:1.1",
+        text: "exercise protected fallback",
+        abortSignal: new AbortController().signal,
+      }, { append: async () => {} });
+
+      expect(response.text).toContain("fallback route completed");
+      expect(fixture.providerRunCounts).toEqual([1, 1]);
+      expect(fixture.routeRunOptions).toHaveLength(2);
+      for (const options of fixture.routeRunOptions) {
+        expect(options.sandboxEngine).toBe(fixture.sandboxEngine);
+        expect(options.processJobs).toBeUndefined();
+        expect(options.sandboxPolicy).toMatchObject({
+          mode: "native",
+          fallback: "fail-closed",
+          unsafeAllowHostProcess: false,
+          readableRoots: [fixture.workspace],
+        });
+        expect(options.sandboxPolicy?.protectedRoots).toContain(fixture.processJobsStateDir);
+        expect(options.sandboxPolicy?.protectedRoots).not.toContain(dirname(fixture.processJobsStateDir));
+        expect(options.sandboxPolicy?.protectedRoots).not.toContain(dirname(fixture.siblingFile));
+      }
+      expect(relative(fixture.processJobsStateDir, fixture.siblingFile)).toMatch(/^\.\./u);
+      expect(await readFile(fixture.siblingFile, "utf8")).toBe("normal sibling remains readable");
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it("fails a degraded all-Pi turn before providers when the sandbox engine is unavailable", async () => {
+    const fixture = await createRouteGuardFixture(
+      PI_ROUTE,
+      PI_FALLBACK_ROUTE,
+      "degraded",
+      false,
+    );
+    try {
+      await expect(fixture.responder.respond({
+        conversationId: "slack:C1:1.1",
+        text: "do not invoke a provider without protection",
+        abortSignal: new AbortController().signal,
+      }, { append: async () => {} })).rejects.toThrow(
+        "Process-job private state protection is unavailable.",
+      );
+      expect(fixture.providerRunCounts).toEqual([0, 0]);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it("does not project another private app root to a non-Pi fallback when process jobs are disabled", async () => {
+    const fixture = await createRouteGuardFixture(PI_ROUTE, NON_PI_ROUTES[0][1], "none");
+    try {
+      await expect(fixture.responder.respond({
+        conversationId: "slack:C1:1.1",
+        text: "do not drop the clear-sessions registry guard",
+        abortSignal: new AbortController().signal,
+      }, { append: async () => {} })).rejects.toThrow("Connection error.");
+      expect(fixture.providerRunCounts).toEqual([1, 0]);
+      expect(fixture.routeRunOptions[0]?.sandboxPolicy?.protectedRoots).not.toHaveLength(0);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it("preserves a clean non-Pi route when process jobs are disabled and protected roots are empty", async () => {
+    const fixture = await createRouteGuardFixture(NON_PI_ROUTES[0][1], undefined, "none");
+    try {
+      const response = await fixture.responder.respond({
+        conversationId: "slack:C1:1.1",
+        text: "exercise a clean direct route",
+        abortSignal: new AbortController().signal,
+      }, { append: async () => {} });
+      expect(response.text).toContain("fallback route completed");
+      expect(fixture.providerRunCounts).toEqual([1]);
+      expect(fixture.routeRunOptions[0]?.sandboxPolicy?.protectedRoots ?? []).toHaveLength(0);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+});
+
+async function createRouteGuardFixture(
+  primaryReference: string,
+  fallbackReference: string | undefined,
+  processJobsMode: "live" | "degraded" | "none",
+  sandboxEngineAvailable = true,
+): Promise<{
+  readonly responder: Awaited<ReturnType<typeof buildResponder>>;
+  readonly providerRunCounts: readonly number[];
+  readonly routeRunOptions: readonly RuntimeRunOptions[];
+  readonly sandboxEngine: object;
+  readonly workspace: string;
+  readonly processJobsStateDir: string;
+  readonly siblingFile: string;
+  readonly dispose: () => Promise<void>;
+}> {
+  const workspace = await realpath(await mkdtemp(join(tmpdir(), "agent-app-process-job-route-guard-")));
+  tempDirs.push(workspace);
+  const configPath = join(workspace, "mono-agent.config.json");
+  const processJobsStateDir = join(workspace, ".mono-agent", "process-jobs");
+  const siblingFile = join(workspace, ".mono-agent", "attachments", "sibling.txt");
+  await Promise.all([
+    mkdir(processJobsStateDir, { recursive: true, mode: 0o700 }),
+    mkdir(dirname(siblingFile), { recursive: true }),
+    mkdir(join(workspace, "artifacts"), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(join(workspace, "IDENTITY.md"), "Route guard integration test"),
+    writeFile(join(workspace, "SOUL.md"), "Keep routing deterministic"),
+    writeFile(siblingFile, "normal sibling remains readable"),
+  ]);
+  await writeFile(configPath, `${JSON.stringify({
+    agent: { name: "process-job-route-guard" },
+    runtime: {
+      // Static agent JSON deliberately rejects ACP. The loaded result is
+      // replaced below through the app's programmatic config seam so this one
+      // integration matrix can cover ACP without weakening config validation.
+      model: PI_ROUTE,
+      ...(fallbackReference === undefined ? {} : { fallbacks: [{ model: NON_PI_ROUTES[0][1] }] }),
+      routeSafety: "per-route-native",
+      retry: { primaryAttempts: 1, backoffMs: 0, maxBackoffMs: 0 },
+      workspace: ".",
+    },
+    context: {
+      identityPath: "./IDENTITY.md",
+      soulPath: "./SOUL.md",
+      selectedSkills: [],
+    },
+    tools: { allowedTools: [], disallowedTools: [] },
+    artifacts: { dir: "./artifacts" },
+    continuations: { enabled: false },
+    processJobs: {
+      enabled: processJobsMode !== "none",
+      stateDir: ".mono-agent/process-jobs",
+    },
+  }, null, 2)}\n`);
+  const loadedConfig = await loadAppCoreConfig({ cwd: workspace, configPath, env: {} });
+  const primaryModel = parseMonoRuntimeModelReference(primaryReference);
+  const fallbackModel = fallbackReference === undefined
+    ? undefined
+    : parseMonoRuntimeModelReference(fallbackReference);
+  const coreConfig = {
+    ...loadedConfig,
+    runtime: {
+      ...loadedConfig.runtime,
+      model: primaryModel,
+      fallbacks: fallbackModel === undefined ? [] : [{ model: fallbackModel }],
+      executionMode: defaultExecutionModeForModel(primaryModel),
+      routeSafety: "per-route-native" as const,
+    },
+  };
+  const routes = [
+    coreConfig.runtime.model,
+    coreConfig.runtime.fallbacks?.[0]?.model,
+  ].filter((route): route is RuntimeModelReference => route !== undefined);
+  expect(routes).toHaveLength(fallbackModel === undefined ? 1 : 2);
+  const providerRunCounts = routes.map(() => 0);
+  const routeRunOptions: RuntimeRunOptions[] = [];
+  const routeRuntimes = routes.map((_route, index): MonoRuntimeLike => ({
+    configureTools() {},
+    async run(_systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+      providerRunCounts[index] = (providerRunCounts[index] ?? 0) + 1;
+      routeRunOptions.push(options);
+      if (index === 0 && routes.length > 1) {
+        return {
+          text: null,
+          error: "Connection error.",
+          events: [],
+          cancelled: false,
+          usage: {},
+          failureKind: "provider_unavailable",
+        } as RuntimeResult;
+      }
+      return {
+        text: "fallback route completed",
+        events: [],
+        cancelled: false,
+        usage: {},
+        failureKind: null,
+      } as RuntimeResult;
+    },
+    async disposeAllSessions() {},
+  }));
+  const runtime = createMonoRuntime({
+    fallbackChain: routes.map((model) => ({ model })),
+    routeSafety: "per-route-native",
+    retry: { backoffMs: 0, maxBackoffMs: 0 },
+    resolveAttempt: ({ attemptIndex }) => {
+      const runtimeForAttempt = routeRuntimes[attemptIndex];
+      return runtimeForAttempt === undefined ? undefined : { runtime: runtimeForAttempt };
+    },
+  });
+  const memory = {
+    async load() { return undefined; },
+    async appendHostSummary(conversationId: string) {
+      return { conversationId, source: "route-guard-test", bytesWritten: 0 };
+    },
+  };
+  const sandboxEngine = {
+    id: "route-guard-test",
+    async isAvailable() { return sandboxEngineAvailable; },
+    async prepareCommand(command: unknown) { return command; },
+  };
+  const controller: ResponderControllerPort = {
+    cwd: workspace,
+    configPath,
+    configReadPath: configPath,
+    env: {},
+    logger: undefined,
+    runtime,
+    activeRuntimes: [],
+    interactionBridge: undefined,
+    continuationService: undefined,
+    processJobsService: processJobsMode === "live"
+      ? {
+          settings: { stateDir: processJobsStateDir, maxChainDepth: 4 },
+          controller: vi.fn(),
+        } as never
+      : undefined,
+    processJobsStateDir: processJobsMode === "none" ? undefined : processJobsStateDir,
+    seenNotifyDestinations: createSeenNotifyDestinationCache(),
+    sandboxEngineFor: () => sandboxEngine as never,
+    memoryStore: async () => memory as never,
+    ensureSharedMemoryRetrieval: () => undefined,
+    reportMemoryRecallStatus: () => false,
+    supermemoryMcpRuntimeOptions: () => undefined,
+    adapterSendToolsRuntimeOptions: async () => ({ blockingToolNames: [] }),
+    requestModelOverrideRuntimeOptions(coreConfigInput, compatibility) {
+      return createRequestModelOverrideRuntimeOptions(controller, coreConfigInput, compatibility);
+    },
+    buildRuntimeForModel: () => () => runtime,
+    observabilityContext: async () => ({}),
+    recordExporterWarning() {},
+    recordSessionEvent() {},
+  };
+  const responder = await buildResponder(controller, coreConfig, "slack");
+  return {
+    responder,
+    providerRunCounts,
+    routeRunOptions,
+    sandboxEngine,
+    workspace,
+    processJobsStateDir,
+    siblingFile,
+    dispose: async () => {
+      await (responder as { dispose?: () => Promise<void> }).dispose?.();
+    },
+  };
+}

@@ -70,14 +70,21 @@ at admission. The runtime deadline starts when the detached launch gate is
 spawned immediately before ownership is persisted, so waiting in a busy queue
 does not consume the runtime budget.
 
-Whenever the process-job service is active, every Pi-native model turn receives
-host-internal, fail-closed native protection for the exact configured
-`stateDir`, independently of whether that turn receives the background
-controller. Model `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, and `Exec`
-cannot read, replace, rename, search, or use that directory as a workdir. Host
-filesystem tools perform their actual file operation through the native
-sandbox, closing symlink swaps after path authorization. SRT also denies a
-rename of any ancestor that would move the protected leaf.
+Whenever process jobs are configured and enabled, every model turn is guarded
+for the exact configured `stateDir`, even if the durable store cannot open and
+startup continues without a background controller. Every reachable primary,
+fallback, accepted request-override, and configured `Agent` child route must be
+Pi-native, and each accepted turn must have an available real sandbox engine
+before any provider runs. The router independently rejects a provider-native
+non-Pi route carrying protected roots before route resolution or provider
+invocation, so nested model routes cannot bypass the app's early chain guard.
+Eligible Pi-native turns receive host-internal, fail-closed native protection
+independently of whether they receive the background controller. Model `Read`,
+`Write`, `Edit`, `Glob`, `Grep`, `Bash`, and `Exec` cannot read, replace,
+rename, search, or use that directory as a workdir. Host filesystem tools
+perform their actual file operation through the native sandbox, closing
+symlink swaps after path authorization. SRT also denies a rename of any
+ancestor that would move the protected leaf.
 
 Only the exact state directory is protected: workspace siblings such as
 `.mono-agent/artifacts/attachments` remain readable, including when the
@@ -244,8 +251,10 @@ process's active slot. It preserves the durable nonterminal record so the next
 owner restart can reconcile it to `interrupted` and deliver the recovery wake.
 A clean restart clears the marker only after recovery, retention, and durable
 readback succeed.
-Because process jobs are opt-in, an unavailable store disables only background
-jobs instead of aborting the whole agent.
+Because process jobs are opt-in, an unavailable store disables only the
+background controller instead of aborting the whole agent. The resolved
+configured `stateDir` remains protected on every model turn; mixed or non-Pi
+routes and unavailable native protection fail before provider invocation.
 
 Slack and Telegram start one host-owned lifecycle message before the tool call
 returns, without waiting indefinitely on chat API latency. Updates are

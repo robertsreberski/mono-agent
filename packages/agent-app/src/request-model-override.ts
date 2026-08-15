@@ -1,5 +1,10 @@
 import { detectEffortKeyword, EFFORT_LEVELS, effortRank } from "@mono-agent/config";
-import { parseMonoRuntimeModelReference, runtimeOptionsForLocalProvider } from "@mono-agent/runtime-adapter";
+import {
+  assertParsedRuntimeModelReference,
+  modelReferenceKey,
+  parseMonoRuntimeModelReference,
+  runtimeOptionsForLocalProvider,
+} from "@mono-agent/runtime-adapter";
 import { isAllowAllTools } from "./modules/known-tools.js";
 import type {
   LocalProviderDefinition,
@@ -248,6 +253,53 @@ export function requestModelOverrideTargetsPiNative(
 ): boolean {
   const accepted = resolveAcceptedModelOverride(metadata, options, undefined).model ?? options?.baseModel;
   return [accepted, ...(options?.fallbackModels ?? [])].some((model) => model?.sdk === "pi");
+}
+
+/**
+ * Whether every route the configured fallback router can reach for this
+ * request is Pi-native. ProcessJobs private-state protection requires this
+ * stronger contract: a single non-Pi primary or fallback would move execution
+ * to a provider-owned tool loop that cannot enforce the mono-agent sandbox.
+ *
+ * Keep this separate from `requestModelOverrideTargetsPiNative`, whose
+ * intentionally permissive any-Pi meaning is used by other capability
+ * discovery. The chain projection mirrors `fallbackChainForConfig`: an
+ * accepted request override replaces the primary and a configured fallback
+ * equal to that effective primary is skipped without otherwise rewriting the
+ * configured order. Missing, malformed, or duplicate reachable routes fail
+ * closed.
+ */
+export function requestModelOverrideRoutesOnlyPiNative(
+  metadata: Record<string, unknown> | undefined,
+  options?: RequestModelOverrideOptions,
+): boolean {
+  try {
+    const primary = resolveAcceptedModelOverride(metadata, options, undefined).model ?? options?.baseModel;
+    assertParsedRuntimeModelReference(primary);
+    const fallbacks = options?.fallbackModels;
+    if (fallbacks !== undefined && !Array.isArray(fallbacks)) {
+      return false;
+    }
+
+    const primaryKey = modelReferenceKey(primary);
+    const reachable = [primary];
+    const reachableKeys = new Set([primaryKey]);
+    for (const fallback of fallbacks ?? []) {
+      assertParsedRuntimeModelReference(fallback);
+      const key = modelReferenceKey(fallback);
+      if (key === primaryKey) {
+        continue;
+      }
+      if (reachableKeys.has(key)) {
+        return false;
+      }
+      reachableKeys.add(key);
+      reachable.push(fallback);
+    }
+    return reachable.every((model) => model.sdk === "pi");
+  } catch {
+    return false;
+  }
 }
 
 interface ModelOverrideResolution {

@@ -27,6 +27,12 @@ import {
 import { traceMetadata } from "../app-controller-traceability.js";
 
 const PROCESS_JOB_WAKE_DELIVERY_METADATA = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");
+const PROCESS_JOBS_STATE_DIR = "/agent/.mono-agent/process-jobs";
+const availableSandboxEngine = {
+  id: "process-jobs-runtime-test",
+  async isAvailable() { return true; },
+  async prepareCommand(command: unknown) { return command; },
+} as never;
 
 describe("process-job request availability", () => {
   it("publishes later storage degradation to live TUI status and trace metadata", async () => {
@@ -106,6 +112,7 @@ describe("process-job request availability", () => {
       logger: { warn },
       processJobsService: { stop },
       processJobsServiceStart: Promise.resolve(undefined),
+      processJobsStateDir: PROCESS_JOBS_STATE_DIR,
     } as never;
 
     await expect(stopProcessJobsService(controller)).resolves.toBeUndefined();
@@ -113,6 +120,7 @@ describe("process-job request availability", () => {
     expect(controller).toMatchObject({
       processJobsService: undefined,
       processJobsServiceStart: undefined,
+      processJobsStateDir: undefined,
     });
     expect(warn).toHaveBeenCalledWith(
       "Process-job controller did not stop cleanly.",
@@ -178,11 +186,13 @@ describe("process-job request availability", () => {
         },
         controller,
       } as never,
+      stateDir: PROCESS_JOBS_STATE_DIR,
       coreConfig: {
         runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
         tools: { allowedTools: ["Exec", "Bash"], disallowedTools: [] },
       } as never,
       channelId: "slack",
+      sandboxEngine: availableSandboxEngine,
       targetsPiNative: (metadata) => metadata?.route !== "claude",
     });
     const input = (metadata?: Record<string, unknown>) => ({
@@ -207,11 +217,13 @@ describe("process-job request availability", () => {
         },
         controller,
       } as never,
+      stateDir: PROCESS_JOBS_STATE_DIR,
       coreConfig: {
         runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
         tools: { allowedTools: ["Exec"], disallowedTools: [] },
       } as never,
       channelId: "slack",
+      sandboxEngine: availableSandboxEngine,
       targetsPiNative: () => true,
     });
     let releaseActive!: () => void;
@@ -317,11 +329,13 @@ describe("process-job request availability", () => {
           },
           controller,
         } as never,
+        stateDir: PROCESS_JOBS_STATE_DIR,
         coreConfig: {
           runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
           tools: { allowedTools: ["Exec"], disallowedTools: [] },
         } as never,
         channelId: channel,
+        sandboxEngine: availableSandboxEngine,
         targetsPiNative: () => true,
       });
       let release!: () => void;
@@ -405,11 +419,13 @@ describe("process-job request availability", () => {
           },
           controller,
         } as never,
+        stateDir: PROCESS_JOBS_STATE_DIR,
         coreConfig: {
           runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
           tools: { allowedTools: ["Exec"], disallowedTools: [] },
         } as never,
         channelId: "slack",
+        sandboxEngine: availableSandboxEngine,
         targetsPiNative: () => true,
       });
       let runtimeCall = 0;
@@ -501,11 +517,13 @@ describe("process-job request availability", () => {
         },
         controller,
       } as never,
+      stateDir: PROCESS_JOBS_STATE_DIR,
       coreConfig: {
         runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
         tools: { allowedTools: ["Exec"], disallowedTools: [] },
       } as never,
       channelId: "slack",
+      sandboxEngine: availableSandboxEngine,
       targetsPiNative: () => true,
     });
     let release!: () => void;

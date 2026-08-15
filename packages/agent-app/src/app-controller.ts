@@ -330,6 +330,8 @@ export class MonoAgentAppController implements MonoAgentApp {
   continuationServiceStart: Promise<ContinuationServiceHandle | undefined> | undefined;
   processJobsService: ProcessJobsServiceHandle | undefined;
   processJobsServiceStart: Promise<ProcessJobsServiceHandle | undefined> | undefined;
+  /** Configured private root; retained even when the durable store cannot open. */
+  processJobsStateDir: string | undefined;
   processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
   /** One bounded scan cache for artifact-derived native-notify destinations. */
   readonly seenNotifyDestinations = createSeenNotifyDestinationCache();
@@ -603,6 +605,7 @@ export class MonoAgentAppController implements MonoAgentApp {
     readonly targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean;
     readonly targetsUnsupportedHistoryTool: (metadata: Record<string, unknown> | undefined) => boolean;
     readonly targetsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
+    readonly targetsProcessJobsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
   } { return responderOperations.requestModelOverrideRuntimeOptions(this, coreConfig, compatibility); }
 
   /**

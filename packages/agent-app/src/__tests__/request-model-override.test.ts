@@ -6,6 +6,7 @@ import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness"
 
 import {
   createRequestModelOverrideRuntimeExtension,
+  requestModelOverrideRoutesOnlyPiNative,
   requestModelOverrideTargetsDirectOpenCode,
   requestModelOverrideTargetsUnsupportedHistoryTool,
   requestModelOverrideTargetsPiNative,
@@ -82,6 +83,103 @@ describe("requestModelOverrideTargetsPiNative", () => {
     expect(requestModelOverrideTargetsPiNative(undefined, {
       baseModel: parseMonoRuntimeModelReference("claude:claude-opus-4-8"),
       fallbackModels: [parseMonoRuntimeModelReference("opencode:github-copilot:gpt-5.1")],
+    })).toBe(false);
+  });
+});
+
+describe("requestModelOverrideRoutesOnlyPiNative", () => {
+  const piPrimary = parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-sol");
+  const piFallback = parseMonoRuntimeModelReference("pi:ollama:qwen3:8b");
+  const nonPiRoutes = [
+    ["Claude", "claude:claude-opus-4-8"],
+    ["Codex", "codex:gpt-5.6-sol"],
+    ["OpenCode", "opencode:github-copilot:gpt-5.1"],
+    ["ACP", "acp:personal-agent"],
+  ] as const;
+
+  it("accepts an all-Pi primary and fallback chain", () => {
+    expect(requestModelOverrideRoutesOnlyPiNative(undefined, {
+      baseModel: piPrimary,
+      fallbackModels: [piFallback],
+    })).toBe(true);
+  });
+
+  it.each(nonPiRoutes)("rejects a Pi primary with a %s fallback", (_label, reference) => {
+    expect(requestModelOverrideRoutesOnlyPiNative(undefined, {
+      baseModel: piPrimary,
+      fallbackModels: [parseMonoRuntimeModelReference(reference)],
+    })).toBe(false);
+  });
+
+  it.each(nonPiRoutes)("rejects a %s primary with a Pi fallback", (_label, reference) => {
+    expect(requestModelOverrideRoutesOnlyPiNative(undefined, {
+      baseModel: parseMonoRuntimeModelReference(reference),
+      fallbackModels: [piFallback],
+    })).toBe(false);
+  });
+
+  it("uses an accepted Pi request override as primary and removes its duplicate configured fallback", () => {
+    expect(requestModelOverrideRoutesOnlyPiNative(
+      { tui: { model: "pi:ollama:qwen3:8b" } },
+      {
+        baseModel: parseMonoRuntimeModelReference("claude:claude-opus-4-8"),
+        fallbackModels: [piFallback],
+      },
+    )).toBe(true);
+  });
+
+  it("still rejects a non-Pi configured fallback behind an accepted Pi request override", () => {
+    expect(requestModelOverrideRoutesOnlyPiNative(
+      { tui: { model: "pi:ollama:qwen3:8b" } },
+      {
+        baseModel: parseMonoRuntimeModelReference("claude:claude-opus-4-8"),
+        fallbackModels: [parseMonoRuntimeModelReference("acp:personal-agent")],
+      },
+    )).toBe(false);
+  });
+
+  it("rejects an accepted non-Pi request override even when every configured fallback is Pi", () => {
+    expect(requestModelOverrideRoutesOnlyPiNative(
+      { tui: { model: "claude:claude-opus-4-8" } },
+      {
+        baseModel: piPrimary,
+        fallbackModels: [piFallback],
+        sandboxPolicy: { mode: "off" },
+      },
+    )).toBe(false);
+  });
+
+  it("rejects an accepted ACP request override under the active native sandbox", () => {
+    expect(requestModelOverrideRoutesOnlyPiNative(
+      { tui: { model: "acp:personal-agent" } },
+      {
+        baseModel: piPrimary,
+        fallbackModels: [piFallback],
+        sandboxPolicy: { mode: "native" },
+      },
+    )).toBe(false);
+  });
+
+  it("uses the unchanged base chain when there is no request override", () => {
+    expect(requestModelOverrideRoutesOnlyPiNative(undefined, {
+      baseModel: piPrimary,
+      fallbackModels: [piFallback],
+    })).toBe(true);
+    expect(requestModelOverrideRoutesOnlyPiNative(undefined, {
+      baseModel: piPrimary,
+      fallbackModels: [parseMonoRuntimeModelReference("claude:claude-opus-4-8")],
+    })).toBe(false);
+  });
+
+  it("fails closed for empty, malformed, and duplicate reachable chains", () => {
+    expect(requestModelOverrideRoutesOnlyPiNative(undefined)).toBe(false);
+    expect(requestModelOverrideRoutesOnlyPiNative(undefined, {
+      baseModel: piPrimary,
+      fallbackModels: [undefined as never],
+    })).toBe(false);
+    expect(requestModelOverrideRoutesOnlyPiNative(undefined, {
+      baseModel: piPrimary,
+      fallbackModels: [piFallback, piFallback],
     })).toBe(false);
   });
 });

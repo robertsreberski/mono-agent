@@ -27,6 +27,7 @@ export interface ProcessJobsControllerPort {
   readonly stopped: boolean;
   processJobsService: ProcessJobsServiceHandle | undefined;
   processJobsServiceStart: Promise<ProcessJobsServiceHandle | undefined> | undefined;
+  processJobsStateDir: string | undefined;
   processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
   observabilityContext(): Promise<{ readonly sourceId?: string }>;
   setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus;
@@ -42,6 +43,7 @@ export function ensureProcessJobsService(
       configPath: controller.configReadPath,
       env: controller.env,
     });
+    controller.processJobsStateDir = settings.enabled ? settings.stateDir : undefined;
     if (!settings.enabled) {
       controller.processJobsDegradation = undefined;
       return undefined;
@@ -175,6 +177,7 @@ export async function stopProcessJobsService(controller: ProcessJobsControllerPo
   const service = controller.processJobsService;
   controller.processJobsService = undefined;
   controller.processJobsServiceStart = undefined;
+  controller.processJobsStateDir = undefined;
   controller.processJobsDegradation = undefined;
   try {
     await service?.stop();

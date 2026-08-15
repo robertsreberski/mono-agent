@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -57,6 +57,7 @@ describe("process-job lifecycle surface routing", () => {
       stopped: false,
       processJobsService: undefined,
       processJobsServiceStart: undefined,
+      processJobsStateDir: undefined,
       processJobsDegradation: undefined,
       observabilityContext: async () => ({}),
       setStatus: (_id, status) => status,
@@ -75,7 +76,44 @@ describe("process-job lifecycle surface routing", () => {
       details: { path: "processJobs.stateDir", purgeRootKind: "durable session/tool history" },
     });
     expect(processJobsService.open).not.toHaveBeenCalled();
+    expect(controller.processJobsStateDir).toBeUndefined();
     expect(controller.processJobsDegradation).toBeUndefined();
+  });
+
+  it("retains the resolved configured private root when the durable store fails to open", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "mono-agent-process-job-degraded-open-"));
+    temporaryDirectories.push(cwd);
+    const configReadPath = join(cwd, "mono-agent.config.json");
+    await writeFile(configReadPath, JSON.stringify({
+      processJobs: { enabled: true, stateDir: ".state/jobs" },
+    }));
+    processJobsService.open.mockRejectedValue(new Error("durable store unavailable"));
+    const controller: ProcessJobsControllerPort = {
+      cwd,
+      configReadPath,
+      env: {},
+      logger: undefined,
+      running: new Map(),
+      statuses: new Map(),
+      stopped: false,
+      processJobsService: undefined,
+      processJobsServiceStart: undefined,
+      processJobsStateDir: undefined,
+      processJobsDegradation: undefined,
+      observabilityContext: async () => ({}),
+      setStatus: (_id, status) => status,
+      refreshTraceSource: async () => undefined,
+    };
+
+    await expect(ensureProcessJobsService(controller)).resolves.toBeUndefined();
+
+    const stateDir = join(await realpath(cwd), ".state/jobs");
+    expect(controller.processJobsService).toBeUndefined();
+    expect(controller.processJobsStateDir).toBe(stateDir);
+    expect(controller.processJobsDegradation).toEqual({
+      stateDir,
+      reason: "durable store unavailable",
+    });
   });
 
   it("sends bucketed Slack and Telegram origins to their exact-base real driver destinations", async () => {
@@ -147,6 +185,7 @@ describe("process-job lifecycle surface routing", () => {
       stopped: false,
       processJobsService: undefined,
       processJobsServiceStart: undefined,
+      processJobsStateDir: undefined,
       processJobsDegradation: undefined,
       observabilityContext: async () => ({}),
       setStatus: (_id, status) => status,
@@ -154,6 +193,7 @@ describe("process-job lifecycle surface routing", () => {
     };
 
     await expect(ensureProcessJobsService(controller)).resolves.toBe(serviceHandle);
+    expect(controller.processJobsStateDir).toBe(join(await realpath(cwd), ".mono-agent/process-jobs"));
     const surfaceUpdate = serviceOptions?.surfaceUpdate;
     expect(surfaceUpdate).toBeTypeOf("function");
 

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
+import { createMonoRuntime } from "@mono-agent/runtime-adapter";
 
 const harnessMock = vi.fn((options: Record<string, unknown>) => ({ options }));
 
@@ -13,6 +14,7 @@ const { createConfiguredAgentHarness } = await import("../index.js");
 
 const PRIMARY = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
 const HAIKU = { sdk: "pi", provider: "anthropic", model: "claude-haiku-4-5", reference: "pi:anthropic:claude-haiku-4-5" } as const;
+const CLAUDE_CHILD = { sdk: "claude", model: "claude-sonnet-4-6", reference: "claude:claude-sonnet-4-6" } as const;
 
 function monoConfig(
   subagents?: MonoAgentConfig["subagents"],
@@ -158,6 +160,58 @@ describe("configured subagents", () => {
     expect(runtimeForModel).toHaveBeenCalledWith(HAIKU, expect.any(String));
     expect(overrideRuntime.run).toHaveBeenCalledOnce();
     expect(runtime.run).not.toHaveBeenCalled();
+  });
+
+  it("blocks a named non-Pi Agent child before its provider can read protected ProcessJobs state", async () => {
+    const privateState = "PRIVATE_PROCESS_JOB_STATE_MUST_NOT_ESCAPE";
+    const providerRun = vi.fn(async () => ({ text: privateState, events: [], failureKind: null }));
+    const resolveAttempt = vi.fn(() => ({ runtime: { run: providerRun } }));
+    const childRouter = createMonoRuntime({
+      routeSafety: "per-route-native",
+      fallbackChain: [{ model: CLAUDE_CHILD }],
+      resolveAttempt,
+    });
+    const runtimeForModel = vi.fn(() => childRouter);
+    const { runtime, subagents } = await buildSubagents(
+      monoConfig({
+        enabled: true,
+        definitions: [{ name: "private-reader", description: "Reads code.", prompt: "Read state.", model: CLAUDE_CHILD }],
+      }),
+      { runtimeForModel },
+    );
+    const definitions = (subagents?.definitions ?? []) as Array<Record<string, unknown>>;
+    const definition = definitions[0];
+    const run = subagents?.run as (request: unknown) => Promise<Record<string, unknown>>;
+    const protectedRoot = "/repo/.mono-agent/process-jobs";
+
+    expect(definition).toMatchObject({
+      name: "private-reader",
+      model: CLAUDE_CHILD,
+      allowedTools: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
+    });
+    const result = await run({
+      systemPrompt: definition?.systemPrompt,
+      prompt: "Read the ProcessJobs store.",
+      definition,
+      maxTurns: 5,
+      depth: 1,
+      cwd: "/repo",
+      sandboxPolicy: { mode: "native", protectedRoots: [protectedRoot] },
+      sandboxEngine: { id: "srt" },
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    });
+
+    expect(runtimeForModel).toHaveBeenCalledWith(CLAUDE_CHILD, "sdk");
+    expect(result).toMatchObject({
+      failureKind: "safety_unavailable",
+      error: "The route safety contract could not be established before execution.",
+    });
+    expect(resolveAttempt).not.toHaveBeenCalled();
+    expect(providerRun).not.toHaveBeenCalled();
+    expect(runtime.run).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain(privateState);
+    expect(JSON.stringify(result)).not.toContain(protectedRoot);
   });
 
   it("keeps a profile whose model matches the primary on the shared router", async () => {

@@ -6,7 +6,10 @@ import {
   createProcessJobsRuntimeExtension,
   processJobsSandboxPolicy,
 } from "../process-jobs-runtime.js";
-import { requestModelOverrideTargetsPiNative } from "../request-model-override.js";
+import {
+  requestModelOverrideRoutesOnlyPiNative,
+  requestModelOverrideTargetsPiNative,
+} from "../request-model-override.js";
 
 function eligibleCoreConfig(sandbox?: ReturnType<typeof createSandboxPolicy>): never {
   return {
@@ -27,7 +30,43 @@ function eligibleInput(): never {
   } as never;
 }
 
+const availableSandboxEngine = {
+  id: "process-jobs-test",
+  async isAvailable() { return true; },
+  async prepareCommand(command: unknown) { return command; },
+} as never;
+
 describe("process-job runtime sandbox protection", () => {
+  it("rejects a mixed configured fallback chain before composing private-state policy", async () => {
+    const coreConfig = eligibleCoreConfig();
+    const controller = vi.fn();
+    const service = {
+      settings: { maxChainDepth: 4, stateDir: "/agent/.mono-agent/process-jobs" },
+      controller,
+    } as never;
+    const policy = processJobsSandboxPolicy({
+      coreConfig,
+      stateDir: "/agent/.mono-agent/process-jobs",
+    });
+    const extension = createProcessJobsRuntimeExtension({
+      service,
+      stateDir: "/agent/.mono-agent/process-jobs",
+      coreConfig,
+      channelId: "slack",
+      sandboxEngine: availableSandboxEngine,
+      targetsPiNative: (metadata) => requestModelOverrideRoutesOnlyPiNative(metadata, {
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-sol"),
+        fallbackModels: [parseMonoRuntimeModelReference("claude:claude-opus-4-8")],
+        sandboxPolicy: policy,
+      }),
+    });
+
+    await expect(extension(eligibleInput())).rejects.toThrow(
+      "Process-job private state requires a Pi-native runtime.",
+    );
+    expect(controller).not.toHaveBeenCalled();
+  });
+
   it("makes a direct provider override ineligible while process-job private state is active", () => {
     const coreConfig = eligibleCoreConfig();
     const service = {
@@ -35,10 +74,8 @@ describe("process-job runtime sandbox protection", () => {
       controller: vi.fn(),
     } as never;
     const policy = processJobsSandboxPolicy({
-      service,
       coreConfig,
-      channelId: "slack",
-      targetsPiNative: () => true,
+      stateDir: "/agent/.mono-agent/process-jobs",
     });
 
     expect(requestModelOverrideTargetsPiNative(
@@ -59,10 +96,12 @@ describe("process-job runtime sandbox protection", () => {
           settings: { maxChainDepth: 4, stateDir: "/agent/private/process-jobs" },
           controller: vi.fn(() => ({ start: vi.fn() })),
         } as never,
+        stateDir: "/agent/private/process-jobs",
         coreConfig: eligibleCoreConfig(configuredPolicy === "off"
           ? createSandboxPolicy({ mode: "off", root: "/agent", network: { mode: "all" } })
           : undefined),
         channelId: "slack",
+        sandboxEngine: availableSandboxEngine,
         targetsPiNative: () => true,
       });
 
@@ -93,8 +132,10 @@ describe("process-job runtime sandbox protection", () => {
         settings: { maxChainDepth: 4, stateDir: "/agent/process-jobs" },
         controller: vi.fn(() => ({ start: vi.fn() })),
       } as never,
+      stateDir: "/agent/process-jobs",
       coreConfig: eligibleCoreConfig(configured),
       channelId: "slack",
+      sandboxEngine: availableSandboxEngine,
       targetsPiNative: () => true,
     });
 
@@ -116,8 +157,10 @@ describe("process-job runtime sandbox protection", () => {
         settings: { maxChainDepth: 4, stateDir: "/host-private/process-jobs" },
         controller: vi.fn(() => ({ start: vi.fn() })),
       } as never,
+      stateDir: "/host-private/process-jobs",
       coreConfig: eligibleCoreConfig(),
       channelId: "slack",
+      sandboxEngine: availableSandboxEngine,
       targetsPiNative: () => true,
     });
 
@@ -136,8 +179,10 @@ describe("process-job runtime sandbox protection", () => {
         settings: { maxChainDepth: 4, stateDir: "/agent/.mono-agent/process-jobs" },
         controller,
       } as never,
+      stateDir: "/agent/.mono-agent/process-jobs",
       coreConfig: eligibleCoreConfig(),
       channelId: "slack",
+      sandboxEngine: availableSandboxEngine,
       targetsPiNative: (metadata) => metadata?.route !== "direct-claude",
     });
 
@@ -175,6 +220,7 @@ describe("process-job runtime sandbox protection", () => {
         settings: { maxChainDepth: 4, stateDir: "/agent/.mono-agent/process-jobs" },
         controller: vi.fn(() => ({ start: vi.fn() })),
       } as never,
+      stateDir: "/agent/.mono-agent/process-jobs",
       coreConfig: {
         ...coreConfig,
         runtime: {
@@ -183,6 +229,7 @@ describe("process-job runtime sandbox protection", () => {
         },
       } as never,
       channelId: "slack",
+      sandboxEngine: availableSandboxEngine,
       targetsPiNative: () => true,
     });
 
@@ -194,5 +241,50 @@ describe("process-job runtime sandbox protection", () => {
         },
       },
     });
+  });
+
+  it("protects configured private state even when the durable service is unavailable", async () => {
+    const extension = createProcessJobsRuntimeExtension({
+      service: undefined,
+      stateDir: "/agent/.mono-agent/process-jobs",
+      coreConfig: eligibleCoreConfig(),
+      channelId: "slack",
+      sandboxEngine: availableSandboxEngine,
+      targetsPiNative: () => true,
+    });
+
+    const result = await extension(eligibleInput());
+    expect(result).toMatchObject({
+      runtimeOptions: {
+        sandboxEngine: availableSandboxEngine,
+        sandboxPolicy: {
+          readableRoots: ["/agent"],
+          protectedRoots: ["/agent/.mono-agent/process-jobs"],
+        },
+      },
+    });
+    expect(result.runtimeOptions?.processJobs).toBeUndefined();
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["unavailable", {
+      id: "unavailable-process-jobs-test",
+      async isAvailable() { return false; },
+      async prepareCommand(command: unknown) { return command; },
+    } as never],
+  ] as const)("fails the turn closed when the real sandbox engine is %s", async (_label, sandboxEngine) => {
+    const extension = createProcessJobsRuntimeExtension({
+      service: undefined,
+      stateDir: "/agent/.mono-agent/process-jobs",
+      coreConfig: eligibleCoreConfig(),
+      channelId: "slack",
+      sandboxEngine,
+      targetsPiNative: () => true,
+    });
+
+    await expect(extension(eligibleInput())).rejects.toThrow(
+      "Process-job private state protection is unavailable.",
+    );
   });
 });

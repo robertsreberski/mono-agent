@@ -1076,6 +1076,12 @@ Behaviour:
 - Chain exhausted → `failureKind: "provider_unavailable_exhausted"`, `failoverHistory` lists every attempt.
 - `uniform` safety keeps the shared monotonic runtime; `per-route-native` isolates
   route runtimes and records each bounded safety contract/status.
+- A `per-route-native` non-Pi route cannot project non-empty internal
+  `sandboxPolicy.protectedRoots`; the router records `safety_unavailable` and
+  advances before route resolution or provider invocation. Empty protected-root
+  sets preserve ordinary provider-native behavior, while Pi routes retain the
+  policy. The same invariant covers model routes reached through `Agent`
+  children.
 - Pi route telemetry distinguishes `disabled`, fail-closed `mono-agent-srt`,
   and `mono-agent-srt-unsafe-host-fallback`; the last describes a configured
   policy that prefers SRT but permits host execution, not which branch ran.
