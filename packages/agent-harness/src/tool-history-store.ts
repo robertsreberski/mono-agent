@@ -333,16 +333,23 @@ export class ToolHistoryWriter {
       },
     });
     const writer = new ToolHistoryWriter(worker, options);
+    // Keep the whole public open alive, including worker termination after a
+    // startup failure. The request timer alone is cleared when readiness
+    // rejects and cannot reference the remaining cleanup await.
+    const startupReference = setInterval(() => undefined, 60_000);
     try {
       await writer.request("ready", undefined, (options.ownerAcquireCeilingMs ?? TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS) + 1_000);
-      // request() releases the startup reference once the pending map drains.
+      // request() unreferences the worker once its pending map drains, and the
+      // outer startup reference is cleared when this public promise settles.
       // An idle sidecar must not prolong a one-shot CLI process; every later
-      // awaited operation temporarily references it again until it settles.
+      // awaited operation temporarily references the worker until it settles.
       return writer;
     } catch (error) {
       writer.closed = true;
       await worker.terminate().catch(() => undefined);
       throw error;
+    } finally {
+      clearInterval(startupReference);
     }
   }
 

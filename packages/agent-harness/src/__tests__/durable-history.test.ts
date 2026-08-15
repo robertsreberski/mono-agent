@@ -3,7 +3,8 @@ import { execFile, spawn } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 
 import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
@@ -93,6 +94,43 @@ describe("DurableConversationHistoryStore", () => {
     await expect(store.load("chat:99#2026-08-14")).resolves.toEqual([{ role: "assistant", content: "foreign" }]);
   });
 
+  it("resets a date-shaped logical id and exactly one rollover generation without touching lookalikes", async () => {
+    const dir = await tempDir();
+    const store = createDurableHistoryStore({ root: join(dir, "history") });
+    const logicalId = "chat:42#2026-08-13";
+    const rolloverId = `${logicalId}#2026-08-14`;
+    const siblingId = "chat:42#2026-08-12";
+    const lookalikeId = `${logicalId}#not-a-day`;
+    const deeperId = `${rolloverId}#2026-08-15`;
+    await store.append(logicalId, [{ role: "assistant", content: "exact" }]);
+    await store.append(rolloverId, [{ role: "assistant", content: "one rollover" }]);
+    await store.append(siblingId, [{ role: "assistant", content: "sibling" }]);
+    await store.append(lookalikeId, [{ role: "assistant", content: "lookalike" }]);
+    await store.append(deeperId, [{ role: "assistant", content: "deeper" }]);
+
+    await store.resetLogicalConversation(`  ${logicalId}  `);
+
+    await expect(store.load(logicalId)).resolves.toEqual([]);
+    await expect(store.load(rolloverId)).resolves.toEqual([]);
+    await expect(store.load(siblingId)).resolves.toEqual([{ role: "assistant", content: "sibling" }]);
+    await expect(store.load(lookalikeId)).resolves.toEqual([{ role: "assistant", content: "lookalike" }]);
+    await expect(store.load(deeperId)).resolves.toEqual([{ role: "assistant", content: "deeper" }]);
+  });
+
+  it("resets an absent date-shaped exact id without re-entering its rollover child's physical shard", async () => {
+    const dir = await tempDir();
+    const store = createDurableHistoryStore({ root: join(dir, "history") });
+    const logicalId = "date-anchor-45#2026-08-13";
+    const rolloverId = `${logicalId}#2026-08-14`;
+    expect(conversationShardForTest(logicalId)).toBe(conversationShardForTest(rolloverId));
+    await store.append(rolloverId, [{ role: "assistant", content: "rollover only" }]);
+
+    await store.resetLogicalConversation(logicalId);
+
+    await expect(store.load(logicalId)).resolves.toEqual([]);
+    await expect(store.load(rolloverId)).resolves.toEqual([]);
+  });
+
   it("holds one cross-process logical-session fence across bucket discovery and every reset", async () => {
     const dir = await tempDir();
     const root = join(dir, "history");
@@ -135,6 +173,97 @@ describe("DurableConversationHistoryStore", () => {
       await expect(store.load("chat:42#2026-08-14")).resolves.toEqual([]);
     } finally {
       await unseen.abort().catch(() => undefined);
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  }, 20_000);
+
+  it("blocks a date-shaped exact append until its cross-process logical reset completes", async () => {
+    const dir = await tempDir();
+    const root = join(dir, "history");
+    const store = createDurableHistoryStore({ root });
+    const logicalId = "chat:42#2026-08-13";
+    const held = await store.prepareAppend(logicalId, [
+      { role: "assistant", content: "committed while reset waits" },
+    ]);
+    await compileDurableHistoryFixture(dir);
+    const workerPath = join(dir, "date-shaped-logical-reset-worker.mjs");
+    await writeFile(workerPath, [
+      'import { createDurableHistoryStore } from "./durable-history.mjs";',
+      "const [root, logicalId] = process.argv.slice(2);",
+      "const store = createDurableHistoryStore({ root });",
+      'process.stdout.write("RESET_STARTING\\n");',
+      "await store.resetLogicalConversation(logicalId);",
+      'process.stdout.write("RESET_FINISHED\\n");',
+    ].join("\n"));
+
+    const child = spawn(
+      process.execPath,
+      [workerPath, root, logicalId],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
+    child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+    let resetSettled = false;
+    const exited = once(child, "exit").then(([code]) => {
+      resetSettled = true;
+      return code as number | null;
+    });
+
+    try {
+      await waitForChildOutput(child, "RESET_STARTING", 2_000);
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+      expect(resetSettled).toBe(false);
+      await held.commit();
+      const code = await exited;
+      expect(code, Buffer.concat(stderr).toString("utf8")).toBe(0);
+      expect(Buffer.concat(stdout).toString("utf8")).toContain("RESET_FINISHED");
+      await expect(store.load(logicalId)).resolves.toEqual([]);
+    } finally {
+      await held.abort().catch(() => undefined);
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  }, 20_000);
+
+  it("does not block unrelated real processes whose logical ids share the old lock shard", async () => {
+    const dir = await tempDir();
+    const root = join(dir, "history");
+    const store = createDurableHistoryStore({ root });
+    const collision = logicalShardCollisionForTest();
+    expect(logicalSessionShardForTest(collision.firstLogicalId))
+      .toBe(logicalSessionShardForTest(collision.secondLogicalId));
+    expect(conversationShardForTest(collision.firstConversationId))
+      .not.toBe(conversationShardForTest(collision.secondConversationId));
+    const held = await store.prepareAppend(collision.firstConversationId, [
+      { role: "assistant", content: "held" },
+    ]);
+    await compileDurableHistoryFixture(dir);
+    const workerPath = join(dir, "logical-collision-worker.mjs");
+    await writeFile(workerPath, [
+      'import { createDurableHistoryStore } from "./durable-history.mjs";',
+      "const [root, conversationId] = process.argv.slice(2);",
+      "const store = createDurableHistoryStore({ root });",
+      "await store.append(conversationId, [{ role: 'assistant', content: 'unrelated' }]);",
+      'process.stdout.write("APPENDED\\n");',
+    ].join("\n"));
+    const child = spawn(
+      process.execPath,
+      [workerPath, root, collision.secondConversationId],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const stderr: Buffer[] = [];
+    child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+
+    try {
+      await waitForChildOutput(child, "APPENDED", 2_000);
+      const code = child.exitCode ?? (await once(child, "exit") as [number | null])[0];
+      expect(code, Buffer.concat(stderr).toString("utf8")).toBe(0);
+      await expect(store.load(collision.secondConversationId)).resolves.toEqual([
+        { role: "assistant", content: "unrelated" },
+      ]);
+    } finally {
+      await held.abort().catch(() => undefined);
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     }
   }, 20_000);
@@ -730,10 +859,163 @@ describe("DurableConversationHistoryStore", () => {
       const turn = await store.beginProviderSessionTurn(`aborted-${index}`, `run-${index}`);
       await turn.abort();
     }
+    const rolloverTurn = await store.beginProviderSessionTurn(
+      "aborted-rollover#2026-08-14",
+      "run-rollover",
+    );
+    await rolloverTurn.abort();
 
     expect((await readdir(locksRoot)).filter((name) => name.endsWith(".sqlite")).sort())
       .toEqual(initialSqliteLocks);
+    expect(await sessionClaimCount(root)).toBe(0);
+    for (const name of initialSqliteLocks.filter((entry) => entry.startsWith("logical-session-shard-"))) {
+      expect((await lstat(join(locksRoot, name))).size).toBeLessThanOrEqual(1024 * 1024);
+    }
     expect(await dirtyFenceKeys(root)).toHaveLength(1);
+  });
+
+  it("reclaims a full shard of distinct dead session claims before admitting a new key", async () => {
+    const dir = await tempDir();
+    const root = join(dir, "history");
+    const conversationId = "dead-claim-capacity";
+    const store = createDurableHistoryStore({ root });
+    await store.append(conversationId, [{ role: "assistant", content: "seed" }]);
+    const shardPath = logicalSessionShardPathForTest(root, conversationId);
+    const database = new DatabaseSync(shardPath);
+    try {
+      database.exec("PRAGMA journal_mode=DELETE");
+      database.exec("PRAGMA synchronous=FULL");
+      database.exec("BEGIN IMMEDIATE");
+      const insert = database.prepare(`
+        INSERT INTO session_claims (claim_key,pid,token,acquired_at_ms) VALUES (?,?,?,?)
+      `);
+      for (let index = 0; index < 1_024; index += 1) {
+        const deadKey = createHash("sha256")
+          .update("mono-agent-dead-session-claim-test-v1\0")
+          .update(String(index), "utf8")
+          .digest("hex");
+        insert.run(deadKey, 2_147_483_647, "a".repeat(32), Date.now());
+      }
+      database.exec("COMMIT");
+    } catch (error) {
+      try { database.exec("ROLLBACK"); } catch { /* preserve the seeding failure */ }
+      throw error;
+    } finally {
+      database.close();
+    }
+    expect(await sessionClaimCount(root)).toBe(1_024);
+
+    await store.append(conversationId, [{ role: "assistant", content: "admitted after recovery" }]);
+
+    expect(await sessionClaimCount(root)).toBe(0);
+    expect((await lstat(shardPath)).size).toBeLessThanOrEqual(1024 * 1024);
+  });
+
+  it("recovers crash-journaled session-claim acquisition and release mutations", async () => {
+    const dir = await tempDir();
+    const root = join(dir, "history");
+    const conversationId = "claim-journal-crash";
+    const store = createDurableHistoryStore({ root });
+    await store.append(conversationId, [{ role: "assistant", content: "seed" }]);
+    const shardPath = logicalSessionShardPathForTest(root, conversationId);
+    const claimKey = sessionClaimKeyForTest("logical", conversationId);
+    const workerPath = join(dir, "claim-journal-crash-worker.mjs");
+    await writeFile(workerPath, [
+      'import { DatabaseSync } from "node:sqlite";',
+      "const [path, mode, claimKey] = process.argv.slice(2);",
+      "const database = new DatabaseSync(path);",
+      'database.exec("PRAGMA journal_mode=DELETE");',
+      'database.exec("PRAGMA synchronous=FULL");',
+      'const token = "a".repeat(32);',
+      'if (mode === "release") {',
+      "  database.prepare('INSERT INTO session_claims (claim_key,pid,token,acquired_at_ms) VALUES (?,?,?,?)')",
+      "    .run(claimKey, process.pid, token, Date.now());",
+      "}",
+      'database.exec("BEGIN IMMEDIATE");',
+      'if (mode === "acquire") {',
+      "  database.prepare('INSERT INTO session_claims (claim_key,pid,token,acquired_at_ms) VALUES (?,?,?,?)')",
+      "    .run(claimKey, process.pid, token, Date.now());",
+      "} else {",
+      "  database.prepare('DELETE FROM session_claims WHERE claim_key=? AND pid=? AND token=?')",
+      "    .run(claimKey, process.pid, token);",
+      "}",
+      'process.stdout.write("MUTATED\\n");',
+      "setInterval(() => undefined, 60_000);",
+    ].join("\n"));
+
+    for (const mode of ["acquire", "release"] as const) {
+      const child = spawn(
+        process.execPath,
+        [workerPath, shardPath, mode, claimKey],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      const stderr: Buffer[] = [];
+      child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+      const exited = once(child, "exit");
+      let appendSettled = false;
+      let pendingAppend: Promise<void> | undefined;
+      try {
+        await waitForChildOutput(child, "MUTATED", 2_000);
+        const journalInfo = await lstat(`${shardPath}-journal`);
+        expect(journalInfo.isFile()).toBe(true);
+        expect(journalInfo.mode & 0o777).toBe(0o600);
+        expect(journalInfo.size).toBeLessThanOrEqual(2 * 1024 * 1024);
+        const bystanderId = `claim-journal-bystander-${mode}`;
+        expect(logicalSessionShardForTest(bystanderId))
+          .not.toBe(logicalSessionShardForTest(conversationId));
+        await store.append(bystanderId, [
+          { role: "assistant", content: "live journal stayed scanner-safe" },
+        ]);
+        pendingAppend = store.append(conversationId, [
+          { role: "assistant", content: `recovered ${mode}` },
+        ]).then(() => {
+          appendSettled = true;
+        });
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+        expect(appendSettled).toBe(false);
+        child.kill("SIGKILL");
+        await exited;
+        await pendingAppend;
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+          await exited.catch(() => undefined);
+        }
+        await pendingAppend?.catch(() => undefined);
+      }
+      expect(Buffer.concat(stderr).toString("utf8")).not.toContain("Error:");
+      expect(await sessionClaimCount(root)).toBe(0);
+      expect(await readdir(join(root, ".locks"))).not.toContain(`${basename(shardPath)}-journal`);
+      const database = new DatabaseSync(shardPath, { readOnly: true });
+      try {
+        const integrity = database.prepare("PRAGMA integrity_check").get() as { readonly integrity_check: string };
+        expect(integrity.integrity_check).toBe("ok");
+      } finally {
+        database.close();
+      }
+    }
+  }, 20_000);
+
+  it("fails closed for unsafe or oversized session-claim journals", async () => {
+    const dir = await tempDir();
+    const root = join(dir, "history");
+    const conversationId = "unsafe-claim-journal";
+    const store = createDurableHistoryStore({ root });
+    await store.append(conversationId, [{ role: "assistant", content: "seed" }]);
+    const journalPath = `${logicalSessionShardPathForTest(root, conversationId)}-journal`;
+    const outside = join(dir, "outside-journal");
+    await writeFile(outside, "outside");
+    await symlink(outside, journalPath);
+
+    await expect(store.append(conversationId, [{ role: "assistant", content: "blocked" }]))
+      .rejects.toThrow(/non-symlink regular file/iu);
+
+    await rm(journalPath);
+    await writeFile(journalPath, Buffer.alloc(2 * 1024 * 1024 + 1));
+    await chmod(journalPath, 0o600);
+    await expect(store.append(conversationId, [{ role: "assistant", content: "still blocked" }]))
+      .rejects.toThrow(/journal .* unexpectedly large/iu);
+    await rm(journalPath);
   });
 
   it("keeps and honors legacy per-conversation lock inodes during migration", async () => {
@@ -755,22 +1037,27 @@ describe("DurableConversationHistoryStore", () => {
   it("waits for a live cross-process owner and recovers its dirty epoch after process death", async () => {
     const dir = await tempDir();
     const root = join(dir, "history");
+    const conversationId = "shared#2026-08-14";
     await compileDurableHistoryFixture(dir);
     const workerPath = join(dir, "crash-worker.mjs");
     await writeFile(workerPath, [
       'import { createDurableHistoryStore } from "./durable-history.mjs";',
       "const store = createDurableHistoryStore({ root: process.argv[2] });",
-      "const turn = await store.beginProviderSessionTurn('shared', 'crashed-run');",
+      "const turn = await store.beginProviderSessionTurn(process.argv[3], 'crashed-run');",
       "process.stdout.write(`${turn.providerSessionId}\\n`);",
       "setInterval(() => undefined, 60_000);",
     ].join("\n"));
 
-    const child = spawn(process.execPath, [workerPath, root], { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(
+      process.execPath,
+      [workerPath, root, conversationId],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
     const [firstChunk] = await once(child.stdout, "data") as [Buffer];
     const crashedSessionId = firstChunk.toString("utf8").trim();
     let recovered = false;
     const recovery = createDurableHistoryStore({ root })
-      .beginProviderSessionTurn("shared", "recovered-run")
+      .beginProviderSessionTurn(conversationId, "recovered-run")
       .then((turn) => {
         recovered = true;
         return turn;
@@ -783,9 +1070,10 @@ describe("DurableConversationHistoryStore", () => {
     const recoveredTurn = await recovery;
     expect(recoveredTurn.providerSessionId).not.toBe(crashedSessionId);
     expect(recoveredTurn.providerSessionRevision).toBe(0);
-    await expect(createDurableHistoryStore({ root }).load("shared")).resolves.toEqual([]);
-    expect(await dirtyFenceKeys(root)).toEqual([historyKeyForTest("shared")]);
+    await expect(createDurableHistoryStore({ root }).load(conversationId)).resolves.toEqual([]);
+    expect(await dirtyFenceKeys(root)).toEqual([historyKeyForTest(conversationId)]);
     await recoveredTurn.abort();
+    expect(await sessionClaimCount(root)).toBe(0);
   }, 20_000);
 
   it("keeps prepared history invisible until commit and supports abort, restart, and idempotent settlement", async () => {
@@ -1112,6 +1400,113 @@ function historyKeyForTest(conversationId: string): string {
     .update("mono-agent-history-v1\0")
     .update(conversationId.trim(), "utf8")
     .digest("hex");
+}
+
+function logicalSessionShardForTest(logicalConversationId: string): number {
+  return Number.parseInt(historyKeyForTest(logicalConversationId).slice(0, 8), 16) % 16;
+}
+
+function logicalSessionShardPathForTest(root: string, logicalConversationId: string): string {
+  const shard = logicalSessionShardForTest(logicalConversationId);
+  return join(root, ".locks", `logical-session-shard-${shard.toString(16).padStart(2, "0")}.sqlite`);
+}
+
+function sessionClaimKeyForTest(kind: "exact" | "logical", conversationId: string): string {
+  return createHash("sha256")
+    .update("mono-agent-history-session-claim-v1\0")
+    .update(kind, "utf8")
+    .update("\0")
+    .update(conversationId.trim(), "utf8")
+    .digest("hex");
+}
+
+function conversationShardForTest(conversationId: string): number {
+  return Number.parseInt(historyKeyForTest(conversationId).slice(0, 8), 16) % 16;
+}
+
+function logicalShardCollisionForTest(): {
+  readonly firstLogicalId: string;
+  readonly firstConversationId: string;
+  readonly secondLogicalId: string;
+  readonly secondConversationId: string;
+} {
+  const byLogicalShard = new Map<number, Array<{
+    readonly logicalId: string;
+    readonly conversationId: string;
+    readonly conversationShard: number;
+  }>>();
+  for (let index = 0; index < 1_000; index += 1) {
+    const logicalId = `logical-collision-${String(index)}`;
+    const conversationId = `${logicalId}#2026-08-14`;
+    const logicalShard = logicalSessionShardForTest(logicalId);
+    const conversationShard = conversationShardForTest(conversationId);
+    const prior = byLogicalShard.get(logicalShard) ?? [];
+    const match = prior.find((candidate) => candidate.conversationShard !== conversationShard);
+    if (match !== undefined) {
+      return {
+        firstLogicalId: match.logicalId,
+        firstConversationId: match.conversationId,
+        secondLogicalId: logicalId,
+        secondConversationId: conversationId,
+      };
+    }
+    prior.push({ logicalId, conversationId, conversationShard });
+    byLogicalShard.set(logicalShard, prior);
+  }
+  throw new Error("Could not find a deterministic logical-shard collision for the test.");
+}
+
+async function waitForChildOutput(
+  child: ReturnType<typeof spawn>,
+  marker: string,
+  timeoutMs: number,
+): Promise<void> {
+  let output = "";
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      rejectPromise(new Error(`Timed out waiting for child marker ${marker}: ${output}`));
+    }, timeoutMs);
+    const onData = (chunk: Buffer): void => {
+      output += chunk.toString("utf8");
+      if (!output.includes(marker)) return;
+      cleanup();
+      resolvePromise();
+    };
+    const onExit = (code: number | null): void => {
+      cleanup();
+      rejectPromise(new Error(`Child exited ${String(code)} before ${marker}: ${output}`));
+    };
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      child.stdout?.off("data", onData);
+      child.off("exit", onExit);
+    };
+    child.stdout?.on("data", onData);
+    child.once("exit", onExit);
+  });
+}
+
+async function sessionClaimCount(root: string): Promise<number> {
+  const locksRoot = join(root, ".locks");
+  let total = 0;
+  for (const name of await readdir(locksRoot)) {
+    if (!/^logical-session-shard-[a-f0-9]{2}\.sqlite$/u.test(name)) continue;
+    const database = new DatabaseSync(join(locksRoot, name), { readOnly: true });
+    try {
+      const table = database.prepare(`
+        SELECT count(*) AS count FROM sqlite_master
+        WHERE type='table' AND name='session_claims'
+      `).get() as { readonly count: number };
+      if (table.count === 0) continue;
+      const claims = database.prepare("SELECT count(*) AS count FROM session_claims")
+        .get() as { readonly count: number };
+      total += claims.count;
+    } finally {
+      database.close();
+    }
+  }
+  return total;
 }
 
 async function dirtyFenceKeys(root: string): Promise<string[]> {

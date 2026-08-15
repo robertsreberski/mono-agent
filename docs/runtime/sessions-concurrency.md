@@ -75,6 +75,18 @@ history stores must implement logical-session reset for daily rollover or the
 operation fails closed before either store is cleared. Other conversations and
 threads remain inaccessible.
 
+The default durable history store makes that reset atomic across processes: a
+logical-session owner row covers bucket discovery and every matching append or
+reset, while a date-shaped exact bucket has a separate exact-id row. The rows
+contain namespaced digests rather than conversation ids, and the shared SQLite
+transactions are short, so unrelated logical sessions remain concurrent even
+when they map to the same one of 16 fixed registry files. Normal settlement
+deletes each row; crash recovery replaces it only after its owner PID is no
+longer live. A bounded capacity pass applies the same proof to distinct crashed
+owners; the store never age-deletes a claim. Full-synchronous DELETE journals
+make interrupted row changes recoverable, while fixed file, row-count, and byte
+ceilings prevent per-conversation lock-file growth.
+
 Rollover never applies to the console channel (the `gui` operator channel behind
 both `mono-agent tui` and the web console). A console thread already carries an
 explicit, reader-owned session boundary: it has a permanent conversation id and

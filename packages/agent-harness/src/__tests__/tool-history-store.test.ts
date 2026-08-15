@@ -1933,6 +1933,22 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     }
   }, 10_000);
 
+  it("keeps public open referenced until live-owner acquisition fails deterministically", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    try {
+      // Force the worker handle itself to be unreferenced. The public open's
+      // lifecycle reference must independently prevent Node's unsettled
+      // top-level-await exit 13 through acquisition and failure cleanup.
+      const result = await childResult(startChild(root, 75, "force-unref-open"));
+      expect(result.code, JSON.stringify(result)).toBe(23);
+      expect(result.stdout).toContain("history_writer_in_use");
+      expect(result.stderr).not.toContain("unsettled top-level await");
+    } finally {
+      await writer.close();
+    }
+  }, 10_000);
+
   it("allows an overlapping normal restart to take ownership when the live writer releases inside the window", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });
@@ -2127,7 +2143,7 @@ function queryPlanDetails(database: DatabaseSync, sql: string, ...values: string
 function startChild(
   root: string,
   ceilingMs: number,
-  mode: "close" | "hold" | "open-only" | "settle" = "close",
+  mode: "close" | "force-unref-open" | "hold" | "open-only" | "settle" = "close",
 ): ChildProcess {
   const fixture = fileURLToPath(new URL("./fixtures/tool-history-child.mjs", import.meta.url));
   if (sourceFixtureModuleUrl === "") throw new Error("Tool history source fixture was not compiled.");

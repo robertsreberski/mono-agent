@@ -290,10 +290,26 @@ toolPolicyToRuntimeOptions
 
 With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation. Confirmed warm runs pass `sessionId`/`sessionKeepAlive` and send only the current user message. A cold history-coordinated Pi reopen supplies canonical history as structured leading runtime messages, outside the system prompt; Pi seeds those messages when its durable JSONL is missing and skips them when the JSONL truly resumes. Stateless/fresh runs and the one stale-session retry keep the ordinary prompt-history replay path. Rotated provider session ids are tracked, `dispose()` retires this harness's live sessions, and history is appended after every successful turn.
 
-Daily-rollover reset holds one fixed-table, cross-process logical-session fence
-from bucket discovery through every physical bucket reset. Appends take the same
-fence before their physical-conversation lock, so reset cannot miss a newly
-created bucket or leave a post-reset append in a bucket it already cleared.
+Daily-rollover reset claims its normalized logical id as a namespaced opaque
+digest in a fixed 16-file, cross-process owner registry from bucket discovery
+through every physical bucket reset. Appends take the same logical claim before
+their physical-conversation lock, so reset cannot miss a newly created bucket or
+leave a post-reset append in a bucket it already cleared. Rollover-shaped
+physical ids also take a namespaced exact-id claim. A date-shaped logical reset
+anchors that same exact-id claim before discovery, preserving the contract for
+its exact physical bucket without touching sibling or deeper lookalikes.
+
+Registry transactions are short and crash-journaled: the active `(digest, pid,
+random token)` row, not the shared shard database, remains for the provider turn.
+Unrelated logical ids therefore proceed concurrently even when they map to the
+same shard. Normal release deletes the row; crash recovery replaces it only
+after its PID is proven dead, never because it merely looks old. At capacity, a
+bounded pass reclaims distinct rows under the same liveness rule before rejecting
+a new owner. SQLite DELETE rollback journals are transient owner-only files,
+bounded at 2 MiB, and recovered by SQLite rather than age-deleted after a crash.
+Shard files are never unlinked, deleted row pages are reused, and each shard
+fails closed above 1,024 live or indeterminate claims or a 1 MiB file, bounding
+storage without per-conversation lock-file growth.
 
 ### Canonical tool lifecycle sidecar
 
