@@ -13,6 +13,11 @@ import type {
   SlackConversationsInfoResult,
   SlackConversationsRepliesParams,
   SlackDownloadFileParams,
+  SlackFilesCompleteUploadExternalParams,
+  SlackFilesCompleteUploadExternalResult,
+  SlackFilesGetUploadUrlExternalParams,
+  SlackFilesGetUploadUrlExternalResult,
+  SlackFilesUploadExternalParams,
   SlackReactionsAddParams,
   SlackRequestOptions,
   SlackSetAssistantStatusParams,
@@ -153,6 +158,74 @@ export class SlackWebApiClient implements SlackWebApi {
     options?: SlackRequestOptions,
   ): Promise<SlackChatPostMessageResult> {
     return this.request<SlackChatPostMessageResult>("chat.postMessage", params, this.botToken, options);
+  }
+
+  filesGetUploadURLExternal(
+    params: SlackFilesGetUploadUrlExternalParams,
+    options?: SlackRequestOptions,
+  ): Promise<SlackFilesGetUploadUrlExternalResult> {
+    return this.request<SlackFilesGetUploadUrlExternalResult>(
+      "files.getUploadURLExternal",
+      params,
+      this.botToken,
+      options,
+    );
+  }
+
+  async filesUploadExternal(
+    params: SlackFilesUploadExternalParams,
+    options?: SlackRequestOptions,
+  ): Promise<void> {
+    const method = "files.uploadExternal";
+    const { signal, cleanup } = createRequestSignal(options?.signal, this.requestTimeoutMs);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(params.uploadUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/octet-stream",
+          "content-length": String(params.data.byteLength),
+        },
+        body: params.data as unknown as NonNullable<RequestInit["body"]>,
+        ...(signal === undefined ? {} : { signal }),
+      });
+    } catch (error) {
+      cleanup();
+      if (isAbortError(error) || options?.signal?.aborted === true) {
+        throw new SlackApiError("Slack external file upload was aborted.", {
+          kind: "aborted",
+          method,
+        });
+      }
+      throw new SlackApiError("Network failure while uploading a Slack file.", {
+        kind: "network",
+        method,
+      });
+    }
+    cleanup();
+    if (!response.ok) {
+      const retryAfterMs = parseRetryAfterMs(response);
+      await safelyDrainResponse(response);
+      throw new SlackApiError(`Slack external file upload failed with HTTP ${response.status}.`, {
+        kind: "http",
+        method,
+        status: response.status,
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+      });
+    }
+    await safelyDrainResponse(response);
+  }
+
+  filesCompleteUploadExternal(
+    params: SlackFilesCompleteUploadExternalParams,
+    options?: SlackRequestOptions,
+  ): Promise<SlackFilesCompleteUploadExternalResult> {
+    return this.request<SlackFilesCompleteUploadExternalResult>(
+      "files.completeUploadExternal",
+      params,
+      this.botToken,
+      options,
+    );
   }
 
   private requiredAppToken(): string {

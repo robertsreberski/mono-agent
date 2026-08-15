@@ -364,6 +364,21 @@ Destinations still pass the Slack channel allowlist. See the canonical
 [Slack channel guide](https://mono-agent-docs.vercel.app/channels/slack/#shortcuts) for all fields,
 routing behavior, and Slack app setup.
 
+### Generated reply files
+
+When the host returns an authorized reply-file part, the adapter uses Slack's
+modern external upload sequence: request an upload URL, send the exact
+integrity-checked bytes, then complete the upload in the destination
+channel/thread. The bot token needs Slack's `files:write` scope. A file is
+removed from textual fallback only after completion succeeds; an unavailable
+API method or failed upload leaves a concise warning and never exposes the
+local artifact path or private URL. Confirmed uploads are deduplicated by file
+integrity plus channel/thread, including proactive retries.
+
+Custom `SlackWebApi` implementations may omit the three optional external-file
+methods and retain fallback-only behavior. See
+[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+
 ## Architecture
 
 ### Data flow
@@ -502,6 +517,11 @@ SlackEventCallbackHandler
 SlackEventHandlingResult
 SlackEventIgnoredReason
 SlackFile
+SlackFilesCompleteUploadExternalParams
+SlackFilesCompleteUploadExternalResult
+SlackFilesGetUploadUrlExternalParams
+SlackFilesGetUploadUrlExternalResult
+SlackFilesUploadExternalParams
 SlackHomeButton
 SlackHomeButtonConfig
 SlackHomeTabConfig
@@ -571,6 +591,7 @@ It does not own model execution, memory, prompt context, tool policy, browser/te
 - [Slack channel guide](https://mono-agent-docs.vercel.app/channels/slack/)
 - [Slack team-bot playbook](https://mono-agent-docs.vercel.app/playbooks/slack-team-bot-mcp-tools/)
 - [Delivery and send tools](https://mono-agent-docs.vercel.app/channels/delivery-and-send-tools/)
+- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
 - [Custom channel adapters](https://mono-agent-docs.vercel.app/programmatic/custom-channels/)
 
 ## Verification

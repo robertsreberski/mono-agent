@@ -264,6 +264,26 @@ describe("cron operator service", () => {
       trigger: "scheduled",
     });
     store.appendEvent(firing, { type: "runtime_warning", message: "bounded activity" });
+    const replyPartOutcomes = [{
+      partIndex: 0,
+      partType: "attachment" as const,
+      status: "failed" as const,
+      code: "unsupported_destination" as const,
+      message: "Attachment reply parts are unsupported on this destination.",
+    }];
+    store.recordResult({
+      kind: "succeeded",
+      cronRunId: firing.runId,
+      jobId: firing.jobId,
+      scheduledAt: firing.scheduledAt,
+      orderedAt: firing.orderedAt,
+      sequence: firing.sequence,
+      trigger: firing.trigger,
+      startedAt: firing.orderedAt,
+      completedAt: firing.orderedAt,
+      text: "  operator text\n",
+      replyPartOutcomes,
+    });
     const service = createCronOperatorService({
       config: config(),
       store,
@@ -278,15 +298,22 @@ describe("cron operator service", () => {
     expect(overview.jobsTruncated).toBe(true);
     expect(overview.jobs.find((candidate) => candidate.jobId === "digest")?.lastRun).toMatchObject({
       projection: "summary",
+      status: "succeeded",
+      text: "  operator text\n",
       eventCount: 1,
+      replyPartOutcomes,
     });
     expect(overview.jobs.find((candidate) => candidate.jobId === "digest")?.lastRun).not.toHaveProperty("events");
     expect(Buffer.byteLength(JSON.stringify(overview), "utf8")).toBeLessThan(MAX_CRON_OPERATOR_RESPONSE_BYTES);
 
+    expect(service.runs({ jobId: "digest", limit: 10 })).toMatchObject({
+      runs: [{ projection: "summary", replyPartOutcomes }],
+    });
     expect(service.run({ jobId: "digest", runId: firing.runId })).toMatchObject({
       projection: "detail",
       eventsIncluded: 1,
       events: [{ type: "runtime_warning", message: "bounded activity" }],
+      replyPartOutcomes,
     });
     expect(() => service.run({ jobId: "digest", runId: "cron:other" }))
       .toThrowError(expect.objectContaining({ code: "not_found", status: 404 }));

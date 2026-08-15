@@ -60,6 +60,7 @@ import type {
 } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
+import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 import { resolveMemoryRecallSettings } from "./memory-recall.js";
 import { BUILTIN_TOOL_NAMES, canonicalToolName, isAllowAllTools } from "./modules/known-tools.js";
 import {
@@ -751,6 +752,7 @@ async function createConfiguredAgentHarnessInternal(
   internalHooks: ConfiguredAgentInternalHooks = {},
 ): Promise<AgentHarness> {
   const config = options.config;
+  const artifactDerivedRoots = agentArtifactDerivedRoots(config.artifacts.dir);
   // Chat activity lines are formatted deep in the streaming layer, which has no
   // per-message workspace to hand down. Without this the root falls back to
   // `process.cwd()` — for a service-managed agent, whatever directory the
@@ -820,7 +822,7 @@ async function createConfiguredAgentHarnessInternal(
   };
   const piSessionsRoot = config.providers?.piNative?.piSessionsRoot;
   const retireDurableSession = runtime.retireDurableSession?.bind(runtime);
-  const historyRoot = resolvePath(config.artifacts.dir, "..", "history");
+  const historyRoot = artifactDerivedRoots.history;
   const baseHistoryStore = options.historyStore ?? createDurableHistoryStore({
     root: historyRoot,
     maxMessages: DEFAULT_HISTORY_MAX_MESSAGES,
@@ -887,7 +889,7 @@ async function createConfiguredAgentHarnessInternal(
       : {
           mcpRequestContext: {
             serverNames: config.tools.mcpRequestContextServers,
-            runOutputRoot: resolvePath(config.artifacts.dir, "outbound"),
+            runOutputRoot: artifactDerivedRoots.outbound,
             ...(options.progressCapabilityIssuer === undefined
               ? {}
               : { progressCapabilityIssuer: options.progressCapabilityIssuer }),
@@ -910,7 +912,7 @@ async function createConfiguredAgentHarnessInternal(
     ...(options.turnHistoryEnricher === undefined ? {} : { turnHistoryEnricher: options.turnHistoryEnricher }),
     // Inbound channel attachments are saved here (under the artifacts dir, which
     // sits inside a sandbox-readable root) so the agent can open them by path.
-    attachmentsDir: resolvePath(config.artifacts.dir, "attachments"),
+    attachmentsDir: artifactDerivedRoots.attachments,
     toolPolicy: createToolPolicy(toolPolicyInput(config)),
     ...(config.sandbox === undefined ? {} : { sandboxPolicy: config.sandbox }),
     recorderFactory: ({ runId, conversationId, userInput, source, sourceDetail, isolated }) =>

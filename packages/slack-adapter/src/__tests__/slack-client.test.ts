@@ -17,6 +17,55 @@ function jsonResponse(payload: unknown, init?: ResponseInit): Response {
 }
 
 describe("SlackWebApiClient", () => {
+  it("performs Slack's modern external file upload flow without sending auth to the capability URL", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/files.getUploadURLExternal")) {
+        return jsonResponse({
+          ok: true,
+          upload_url: "https://uploads.slack.test/opaque-capability",
+          file_id: "F123",
+        });
+      }
+      if (url === "https://uploads.slack.test/opaque-capability") return new Response("OK", { status: 200 });
+      return jsonResponse({ ok: true, files: [{ id: "F123" }] });
+    }) as unknown as typeof fetch;
+    const client = new SlackWebApiClient({
+      botToken: BOT_TOKEN,
+      apiBaseUrl: "https://slack.example/api",
+      fetchImpl,
+      requestTimeoutMs: 0,
+    });
+    const bytes = new TextEncoder().encode("hello");
+
+    const pending = await client.filesGetUploadURLExternal({ filename: "report.txt", length: bytes.byteLength });
+    await client.filesUploadExternal({ uploadUrl: pending.upload_url, data: bytes });
+    await client.filesCompleteUploadExternal({
+      files: [{ id: pending.file_id, title: "report.txt" }],
+      channel_id: "C1",
+      thread_ts: "100.1",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    const [getUrl, getInit] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
+    expect(String(getUrl)).toBe("https://slack.example/api/files.getUploadURLExternal");
+    expect(JSON.parse(String(getInit?.body))).toEqual({ filename: "report.txt", length: 5 });
+    const [uploadUrl, uploadInit] = vi.mocked(fetchImpl).mock.calls[1] ?? [];
+    expect(String(uploadUrl)).toBe("https://uploads.slack.test/opaque-capability");
+    expect(uploadInit?.headers).toEqual({
+      "content-type": "application/octet-stream",
+      "content-length": "5",
+    });
+    expect(JSON.stringify(uploadInit?.headers)).not.toContain(BOT_TOKEN);
+    const [completeUrl, completeInit] = vi.mocked(fetchImpl).mock.calls[2] ?? [];
+    expect(String(completeUrl)).toBe("https://slack.example/api/files.completeUploadExternal");
+    expect(JSON.parse(String(completeInit?.body))).toEqual({
+      files: [{ id: "F123", title: "report.txt" }],
+      channel_id: "C1",
+      thread_ts: "100.1",
+    });
+  });
+
   it("sends Slack write requests with bearer auth and JSON bodies", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({ ok: true, channel: "C1", ts: "171.1", message: { text: "hello" } }),

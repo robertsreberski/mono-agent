@@ -487,16 +487,28 @@ describe("ReplayView list mode", () => {
 
     // all -> tui (no tui runs recorded in this fixture dir).
     view.handleInput("s");
-    await flush();
+    await waitFor(() => {
+      const rendered = renderText(view);
+      return rendered.includes("source: tui") && !rendered.includes("daily-digest");
+    }, "source filter never rendered tui without cron rows");
     let text = renderText(view);
     expect(text).toContain("source: tui");
     expect(text).not.toContain("daily-digest");
 
-    // tui -> telegram -> slack -> cron -> webhook -> memory -> other -> all.
-    for (let i = 0; i < 7; i += 1) {
+    // tui -> telegram -> slack -> cron -> webhook -> memory -> other.
+    for (const source of ["telegram", "slack", "cron", "webhook", "memory", "other"]) {
       view.handleInput("s");
-      await flush();
+      await waitFor(
+        () => renderText(view).includes(`source: ${source}`),
+        `source filter never rendered ${source}`,
+      );
     }
+    // other -> all.
+    view.handleInput("s");
+    await waitFor(() => {
+      const rendered = renderText(view);
+      return !rendered.includes("source:") && rendered.includes("daily-digest");
+    }, "source filter never rendered all with cron rows");
     text = renderText(view);
     expect(text).not.toContain("source:");
     expect(text).toContain("daily-digest");

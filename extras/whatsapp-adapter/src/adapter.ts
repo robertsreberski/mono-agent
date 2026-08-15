@@ -393,7 +393,7 @@ export class WhatsAppAdapter {
         );
       }
 
-      await stream.finish(response.text);
+      await stream.finish(response.text, response.parts === undefined ? undefined : { parts: response.parts });
       const result: WhatsAppMessageHandlingResult = {
         kind: "handled",
         chatJid: message.chatJid,

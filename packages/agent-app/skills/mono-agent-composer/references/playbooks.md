@@ -273,20 +273,20 @@ per-route form for a new agent.
 ## 15. Interactive agent with long jobs and large media
 **For:** a builder whose Telegram agent needs to ask before acting, run multi-minute tools, and exchange large files.
 **Goal:** one Telegram agent uses `AskUser`, long-running MCP tool progress, a self-hosted Bot API server, and `TelegramSendFile`.
-**Features:** `telegram.long-polling`, `agent-app.adapter-send-tools`, `interaction.ask-user`, `interaction.progress`, `tool-policy.mcp-servers`.
+**Features:** `telegram.long-polling`, `agent-app.adapter-send-tools`, `agent-app.rich-replies`, `interaction.ask-user`, `interaction.progress`, `tool-policy.mcp-servers`.
 
 **Bridge startup:** the interaction bridge defaults to loopback and auto-starts when `AskUser` is allowed, when the `interaction` block or an interaction env override is configured, or when `interaction.progress.enabled` resolves true and `tools.mcpRequestContextServers` names at least one opted project MCP server. Keep `interaction.bridge.host` on loopback because non-loopback values are not rejected. AskUser takes one to five structured questions with two or three described choices each; Telegram presents them sequentially with native buttons, Other/custom reply, and Done for multi-select.
 
 ```json
 {
   "runtime": { "model": "pi:openai-codex:gpt-5.5", "executionMode": "sdk" },
-  "tools": { "allowedTools": ["Read", "AskUser", "TelegramSendFile"], "mcpConfigPath": "./.mcp.json", "mcpCallMaxTotalTimeoutMs": 2700000 },
+  "tools": { "allowedTools": ["Read", "AskUser", "TelegramSendFile", "PublishReplyFile"], "mcpConfigPath": "./.mcp.json", "mcpCallMaxTotalTimeoutMs": 2700000 },
   "interaction": { "bridge": { "host": "127.0.0.1", "port": 4471 }, "askUser": { "timeoutMs": 600000 }, "progress": { "enabled": true } },
   "telegram": { "enabled": true, "allowedChatIds": ["123456789"], "apiRoot": "http://127.0.0.1:8081", "attachments": { "maxBytes": 268435456, "maxUploadBytes": 268435456 } }
 }
 ```
 **Steps:** run a loopback self-hosted Bot API server if files exceed 20 MB, wire a long-running MCP tool in `.mcp.json`, `validate`, `start`.
-**Smoke:** send media with no caption, answer the `AskUser` question, watch progress update during the long job, and receive the generated file via `TelegramSendFile`.
+**Smoke:** send media with no caption, answer the `AskUser` question, watch progress update during the long job, and receive both an explicit `TelegramSendFile` send and a final generated reply file published with `PublishReplyFile` as native documents.
 
 ## 16. Local-first web research agent
 **For:** a researcher wanting operator-owned search infrastructure and bounded public-page extraction.

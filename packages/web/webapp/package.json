@@ -16,6 +16,7 @@
     "@assistant-ui/react": "0.14.27",
     "@assistant-ui/react-markdown": "0.14.6",
     "@base-ui/react": "1.6.0",
+    "@modelcontextprotocol/ext-apps": "1.7.5",
     "cmdk": "1.1.1",
     "react": "19.1.0",
     "react-dom": "19.1.0",

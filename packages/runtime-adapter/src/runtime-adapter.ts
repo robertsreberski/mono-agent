@@ -179,6 +179,13 @@ export function monoRuntimeSupportsLiveInput(
   return runtimeBackendForModel(model, executionMode).capabilities.supports_live_input === true;
 }
 
+export function monoRuntimeSupportsMcpApps(
+  model: RuntimeModelReference,
+  executionMode?: RuntimeExecutionMode,
+): boolean {
+  return runtimeBackendForModel(model, executionMode).capabilities.supports_mcp_apps === true;
+}
+
 export function describeMonoRuntimeSupport(
   model: RuntimeModelReference,
   executionMode?: RuntimeExecutionMode,

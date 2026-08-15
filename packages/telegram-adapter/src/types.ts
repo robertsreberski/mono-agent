@@ -150,6 +150,9 @@ export interface TelegramSendDocumentParams {
   /** Filename shown to the recipient. Ignored for string documents (the server derives it). */
   filename?: string;
   caption?: string;
+  reply_to_message_id?: number;
+  allow_sending_without_reply?: boolean;
+  disable_notification?: boolean;
 }
 
 export interface TelegramSendPhotoParams {

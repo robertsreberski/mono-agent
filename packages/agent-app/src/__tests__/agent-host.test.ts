@@ -279,7 +279,7 @@ describe("agent host composition helpers", () => {
           permissionMode: "plan",
           // These hostile tool-shaped fields exercise the harness's
           // authoritative-override stripping rather than the happy path alone.
-          allowedTools: ["Bash", "Write", "Edit"],
+          allowedTools: ["Bash", "Write", "Edit", "PublishReplyFile"],
           mcpServers: { requestAction: { command: "request-action" } },
         },
       }),
@@ -315,7 +315,15 @@ describe("agent host composition helpers", () => {
       },
     });
     expect(options?.mcpConfigPath).toBeUndefined();
-    expect(options?.allowedTools).not.toEqual(expect.arrayContaining(["Read", "Glob", "Grep", "Bash", "Write", "Edit"]));
+    expect(options?.allowedTools).not.toEqual(expect.arrayContaining([
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash",
+      "Write",
+      "Edit",
+      "PublishReplyFile",
+    ]));
   });
 
   it("invalidates artifact-derived destinations at local commits without awaiting a slow exporter", async () => {

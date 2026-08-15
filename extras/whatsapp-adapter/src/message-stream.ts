@@ -1,8 +1,10 @@
 import {
   DEFAULT_EMPTY_FINAL_TEXT,
   DEFAULT_MAX_MESSAGE_CHARS,
+  appendReplyPartFallback,
   normalizeTrailing,
   splitTextByCodePoints,
+  type AgentMessageFinishOptions,
   type AgentMessageStream,
 } from "@mono-agent/agent-contracts";
 import type {
@@ -82,14 +84,15 @@ export class WhatsAppMessageStream implements AgentMessageStream {
     this.currentText = text;
   }
 
-  async finish(finalText?: string): Promise<void> {
+  async finish(finalText?: string, options?: AgentMessageFinishOptions): Promise<void> {
     if (this.finished) {
       return;
     }
 
     this.finished = true;
-    if (finalText !== undefined) {
-      this.currentText = finalText;
+    const deliveredText = appendReplyPartFallback(finalText, options?.parts);
+    if (deliveredText !== undefined) {
+      this.currentText = deliveredText;
     }
 
     const chunks = splitWhatsAppText(this.currentText, this.maxMessageChars);

@@ -1906,7 +1906,7 @@ describe("AgentHarness", () => {
     });
   });
 
-  it("lets an authenticated request replace host/static tool and MCP authority", async () => {
+  it("lets an authenticated request replace host/static tool and MCP authority, including PublishReplyFile", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
@@ -1938,7 +1938,10 @@ describe("AgentHarness", () => {
           // Tool-shaped fields in the same extension cannot escape the
           // authoritative request boundary.
           allowedTools: ["Bash"],
-          mcpServers: { requestMutator: { command: "mutate-request" } },
+          mcpServers: {
+            requestMutator: { command: "mutate-request" },
+            "mono-agent-reply-artifacts": { command: "publish-reply-file" },
+          },
         },
       }),
     }).run({ conversationId: "c", userMessage: "configure", abortSignal: new AbortController().signal });

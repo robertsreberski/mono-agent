@@ -15,6 +15,7 @@ const REQUIRED_APP_LICENSE = "GPL-3.0-only";
 // license expressions fail closed until they receive an explicit review.
 export const ALLOWED_WEBAPP_PRODUCTION_LICENSES = Object.freeze([
   "0BSD",
+  "BSD-2-Clause",
   "BSD-3-Clause",
   "ISC",
   "MIT",

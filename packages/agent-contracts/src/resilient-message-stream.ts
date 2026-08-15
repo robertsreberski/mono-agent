@@ -17,7 +17,9 @@
 import { types as nodeUtilTypes } from "node:util";
 
 import type {
+  AgentMessageFinishOptions,
   AgentMessageStream as AgentMessageStreamBase,
+  AgentReplyPart,
   AgentStreamEvent,
 } from "./index.js";
 import {
@@ -257,7 +259,7 @@ export interface ResilientAgentMessageStream extends AgentMessageStreamBase {
   append(delta: string): Promise<void>;
   replace(text: string): Promise<void>;
   event(event: AgentStreamEvent): Promise<void>;
-  finish(finalText?: string): Promise<void>;
+  finish(finalText?: string, options?: AgentMessageFinishOptions): Promise<void>;
 }
 
 export class ResilientMessageStream implements ResilientAgentMessageStream {
@@ -580,15 +582,20 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     }
   }
 
-  async finish(finalText?: string): Promise<void> {
+  async finish(finalText?: string, options?: AgentMessageFinishOptions): Promise<void> {
     if (this.finished) {
       return;
     }
 
     this.finished = true;
-    if (finalText !== undefined) {
-      this.currentText = finalText;
-      if (finalText.trim().length > 0) {
+    const deliveredText = appendReplyPartFallback(
+      finalText,
+      options?.parts,
+      options?.unsupportedPartFallback,
+    );
+    if (deliveredText !== undefined) {
+      this.currentText = deliveredText;
+      if (deliveredText.trim().length > 0) {
         this.hasAnswerText = true;
       }
     }
@@ -1290,6 +1297,33 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
       throw new Error("Cannot write to a finished ResilientMessageStream.");
     }
   }
+}
+
+/**
+ * Visible fallback for destinations that do not implement native rich-part
+ * delivery. Adapters with a safe upload path remove successfully delivered
+ * parts before delegating to the resilient text stream.
+ */
+export function appendReplyPartFallback(
+  text: string | undefined,
+  parts: readonly AgentReplyPart[] | undefined,
+  policy: AgentMessageFinishOptions["unsupportedPartFallback"] = "human",
+): string | undefined {
+  if (policy === "none" || parts === undefined || parts.length === 0) return text;
+  const lines = parts.map(replyPartFallbackLine);
+  const body = lines.join("\n");
+  return text === undefined || text.length === 0 ? body : `${text}\n\n${body}`;
+}
+
+function replyPartFallbackLine(part: AgentReplyPart): string {
+  if (part.type === "attachment") {
+    return `⚠️ Attachment not delivered on this destination: ${part.name} (${part.mediaType}, ${part.sizeBytes} bytes).`;
+  }
+  if (part.type === "mcp_app") {
+    const title = part.title?.trim() || part.toolName;
+    return `⚠️ Interactive app “${title}” is available only in a compatible web console.`;
+  }
+  return `⚠️ Reply part failed (${part.code}): ${part.message}`;
 }
 
 /** Default abort-aware sleep used when no `sleep` is injected. */

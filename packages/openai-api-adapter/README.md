@@ -104,6 +104,15 @@ Open WebUI caveat: title and tag generation requests go to the same backend and 
 
 Sampling parameter caveat: `temperature`, `top_p`, `max_tokens`, `max_completion_tokens`, `stop`, `seed`, `logit_bias`, `presence_penalty`, and `frequency_penalty` are preserved in `metadata.openaiApi.parameters` for compatibility, but the adapter does not currently apply them to the configured runtime. Absent parameters and explicit OpenAI defaults are quiet. A supplied non-default value emits a `runtime_warning` containing only the ignored parameter names, then the request continues with the runtime's configured values. Streaming responses render it as a reasoning delta; non-stream JSON responses include the structured event in the additive `mono_agent.events` extension. Open WebUI sampling sliders are therefore currently inert.
 
+Rich reply parts use a separate additive extension and never change assistant
+`content`. Non-stream responses expose bounded sanitized failures at
+`mono_agent.reply_part_outcomes`; streaming responses emit the same field on one
+metadata-only `chat.completion.chunk` before the normal `stop` chunk and
+`[DONE]`. Attachments and MCP Apps terminate as `unsupported_destination`.
+Unknown extensions remain ignorable by ordinary OpenAI clients, and the records
+cannot contain source ids, filenames, paths, URLs, integrity values, producer
+messages, or payload bytes.
+
 Streaming responders may send structured stream events through `AgentMessageStream.event()`. Genuine assistant thoughts are emitted as `delta.reasoning_content` so OpenWebUI can render them separately from the final answer. Tool starts are not synthesized into reasoning text such as `Running Bash...`. Internally executed tools are rendered as OpenWebUI `<details type="tool_calls">` content blocks after completion. The adapter intentionally does not emit `delta.tool_calls` or `finish_reason: "tool_calls"` for host-owned tools because those fields ask the client to execute tools.
 
 Tool-call argument and result previews each have a 128 KiB UTF-8 upper bound by
@@ -171,6 +180,7 @@ small summary, excluding full image URLs and data payloads.
 | Message-level `tool_calls` or `function_call` | Rejected | Returns HTTP `400`; host-owned tools are not delegated to the client. |
 | Other content-part types, including `input_audio` | Rejected | Only `text` and `image_url` are accepted. |
 | Host-owned tool progress | Open WebUI extension | Completed tools render as bounded details blocks; no `delta.tool_calls` or `finish_reason: "tool_calls"` is emitted. |
+| Rich reply parts | Mono-agent extension | Assistant content is unchanged; sanitized terminal failures use `mono_agent.reply_part_outcomes` in JSON and metadata-only SSE chunks. |
 | Responses, Embeddings, Files, Images, and Audio APIs | Not implemented | Outside this package's Chat Completions boundary. |
 
 ## Architecture

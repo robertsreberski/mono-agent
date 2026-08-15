@@ -218,6 +218,51 @@ reconstructs those outcomes from display text, run JSONL, or its own SQLite.
 Historical content and artifact references remain untrusted; references expose
 no host path and may later become unavailable when their independently retained
 artifact is removed.
+### Reply files and MCP Apps
+
+Agents that advertise reply attachments expose message-bound downloads in the
+console. The web service authorizes the exact thread/message/part, asks the
+agent to revalidate ownership and SHA-256 integrity, and streams the file with
+`Accept-Ranges: none`; browser DTOs never contain a host filesystem path or an
+agent capability URL.
+
+SQLite stores only inert artifact/app identity and retention metadata. The
+store independently caps rich reply outcomes at `MAX_AGENT_REPLY_PARTS`; an
+over-limit direct writer keeps a deterministic prefix and uses the final slot
+for an explicit bounded truncation failure. Decorated `contentUrl`,
+`resourceUrl`, `bridgeUrl`, token, and access-query fields are stripped at every
+message write and rejected if found in durable rich-part records.
+
+The service mints exact-thread/message/part capabilities only while projecting
+a browser DTO, with the existing ten-minute access TTL bounded by the part's
+retention deadline. An authentic expired capability returns
+`reply_access_expired`; forged, cross-thread, and unknown references keep the
+generic not-found response. The PWA then asks the exact-origin access route to
+re-project the authoritative retained part and retries an attachment, app
+resource, or app bridge request at most once. Tokens are neither persisted nor
+renewed as credentials. Attachment and app cards announce recovery status and
+offer an explicit refresh action if automatic recovery is exhausted.
+
+An advertised MCP App is stored as a structured message part and rendered only
+while its exact originating connection remains live. The PWA uses a
+nonce/identity-bound double iframe; both frames have opaque origins and
+exactly `allow-scripts` without same-origin, popup, form, or top-navigation
+grants. An intersected clipboard grant adds `clipboard-write` to both levels
+and no other permission. The fixed outer proxy is a same-origin, no-store
+response with a route-local executable CSP, while the SPA shell retains
+`script-src 'self'`. Its response policy omits the capability directives owned
+by the canonical sanitized inner meta CSP, whose exact prefix is validated
+before `srcdoc` is assigned. The first direct-parent configuration supplies and
+locks invocation binding without placing it in the proxy document or URL;
+matching repeated configuration retires the inner frame and re-arms the bridge,
+while delayed host-ready remains ignored without accepting an identity, origin,
+parent, or permission replacement.
+Server origins are default-denied and intersected with a host allowlist, and
+resource origins never become script origins. Tool/link/context actions use an
+inert, focus-trapped confirmation dialog; tool arguments are bounded and
+secret-key-redacted. Exact declared resource reads remain read-only, while
+cross-resource requests fail. See
+[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
 
 ## Architecture
 
@@ -378,6 +423,11 @@ The browser API is rooted at `/api/v1`:
 - `GET /threads/:id/ask` and `POST /threads/:id/ask` for the current structured
   `AskUser` snapshot and atomic answer submission
 - `POST /uploads`, `PUT/GET /uploads/:id/content`, and `DELETE /uploads/:id`
+- Message-bound rich reply routes under
+  `/threads/:threadId/messages/:messageId`: `GET` reply-attachment content and
+  MCP App resources, `POST` MCP App bridge requests, plus exact-origin `POST`
+  access routes that re-project a retained authoritative part with a fresh
+  short-lived browser capability
 - `PUT/GET/DELETE /push/subscriptions[/:id]`, `POST /push/subscriptions/:id/test`,
   and `POST /push/events/:eventId/ack`; the status read carries the exact
   `X-Mono-Agent-Web-Origin` browser-origin claim and returns no endpoint or key
@@ -427,6 +477,7 @@ import a communication adapter or another operator surface.
 - [Operator stream endpoint](https://mono-agent-docs.vercel.app/channels/tui/)
 - [Sessions and concurrency](https://mono-agent-docs.vercel.app/runtime/sessions-concurrency/)
 - [Artifacts and traces](https://mono-agent-docs.vercel.app/observability/artifacts-and-traces/)
+- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
 
 ## Verification
 

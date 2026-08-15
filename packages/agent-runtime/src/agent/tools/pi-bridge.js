@@ -1,4 +1,5 @@
 import { Type } from "@earendil-works/pi-ai";
+import { randomUUID } from "node:crypto";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
@@ -55,6 +56,11 @@ const DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS = 2_700_000;
 const MCP_RAW_DETAIL_LIMIT = 4_000;
 const MCP_IMAGE_INLINE_MAX_BYTES = 250_000;
 const DEFAULT_BASH_TIMEOUT_MS = 120_000;
+const MCP_APPS_EXTENSION_ID = "io.modelcontextprotocol/ui";
+const MCP_APP_RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
+const MCP_APP_SUPPORTED_PROTOCOL_VERSIONS = ["2026-01-26", "2025-11-21"];
+const MCP_APP_RESOURCE_MAX_BYTES = 2 * 1024 * 1024;
+const PRIVATE_CAPABILITY_URL = Symbol.for("@mono-agent/private-capability-url");
 
 function objectSchema(properties, required = []) {
   return { type: "object", properties, required, additionalProperties: false };
@@ -618,41 +624,61 @@ export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPoli
 /**
  * @param {any} name
  * @param {any} cfg
- * @param {{cwd?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ * @param {{cwd?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, mcpApps?: any}} [options]
  */
-async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, ctx } = {}) {
+async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, ctx, mcpApps } = {}) {
   const brand = (ctx ?? readToolRuntime()).runtimeBrand;
+  const privateCapabilityUrl = cfg?.[PRIVATE_CAPABILITY_URL] === true;
   const client = new McpClient(
     { name: `${brand.mcpClientName}/${name}`, version: brand.mcpClientVersion },
-    { capabilities: {} },
+    {
+      capabilities: mcpApps?.mimeTypes?.includes?.(MCP_APP_RESOURCE_MIME_TYPE)
+        ? {
+            extensions: {
+              [MCP_APPS_EXTENSION_ID]: {
+                mimeTypes: [MCP_APP_RESOURCE_MIME_TYPE],
+              },
+            },
+          }
+        : {},
+    },
   );
   let transport;
-  if (cfg.type === "http") {
-    transport = new StreamableHTTPClientTransport(new URL(cfg.url), { requestInit: { headers: cfg.headers || {} } });
-  } else if (cfg.type === "sse") {
-    transport = new SSEClientTransport(new URL(cfg.url), {
-      // SSE EventSourceInit's typed shape omits `headers`, but the transport
-      // forwards them to the underlying EventSource — keep the header pass-through.
-      eventSourceInit: /** @type {any} */ ({ headers: cfg.headers || {} }),
-      requestInit: { headers: cfg.headers || {} },
-    });
-  } else {
-    const prepared = await prepareMcpStdioCommand(cfg, { cwd, sandboxPolicy, sandboxEngine, ctx });
-    transport = new StdioClientTransport({
-      command: prepared.command,
-      args: prepared.args || [],
-      cwd: prepared.cwd,
-      env: { ...process.env, ...(prepared.env || {}) },
-    });
-    // Monkey-patched cleanup handle: not part of the MCP transport's typed shape.
-    /** @type {any} */ (transport).__monoSandboxCleanup = prepared.cleanup;
-  }
   try {
+    if (cfg.type === "http") {
+      transport = new StreamableHTTPClientTransport(new URL(cfg.url), { requestInit: { headers: cfg.headers || {} } });
+    } else if (cfg.type === "sse") {
+      transport = new SSEClientTransport(new URL(cfg.url), {
+        // SSE EventSourceInit's typed shape omits `headers`, but the transport
+        // forwards them to the underlying EventSource — keep the header pass-through.
+        eventSourceInit: /** @type {any} */ ({ headers: cfg.headers || {} }),
+        requestInit: { headers: cfg.headers || {} },
+      });
+    } else {
+      const prepared = await prepareMcpStdioCommand(cfg, { cwd, sandboxPolicy, sandboxEngine, ctx });
+      transport = new StdioClientTransport({
+        command: prepared.command,
+        args: prepared.args || [],
+        cwd: prepared.cwd,
+        env: { ...process.env, ...(prepared.env || {}) },
+      });
+      // Monkey-patched cleanup handle: not part of the MCP transport's typed shape.
+      /** @type {any} */ (transport).__monoSandboxCleanup = prepared.cleanup;
+    }
     await client.connect(transport);
-    return { name, client, transport };
+    return {
+      name,
+      client,
+      transport,
+      connectionId: randomUUID(),
+      retainedByMcpApps: false,
+      privateCapabilityUrl,
+      closed: false,
+    };
   } catch (error) {
     try { await transport?.close?.(); } catch { /* best-effort */ }
     try { await /** @type {any} */ (transport)?.__monoSandboxCleanup?.(); } catch { /* best-effort */ }
+    if (privateCapabilityUrl) throw new Error("Private request-scoped MCP server connection failed.");
     throw error;
   }
 }
@@ -741,7 +767,7 @@ function withTimeout(promise, timeoutMs, signal, label, registerReset) {
 /**
  * @param {any} mcpConfig
  * @param {Set<any>} [reservedNames]
- * @param {{limits?: any, cwd?: any, persistArtifact?: any, qaOutputDir?: any, onTruncate?: any, toolPayloadMaxBytes?: number, sandboxPolicy?: any, sandboxEngine?: any, onToolProgress?: any, ctx?: any}} [options]
+ * @param {{limits?: any, cwd?: any, persistArtifact?: any, qaOutputDir?: any, onTruncate?: any, toolPayloadMaxBytes?: number, sandboxPolicy?: any, sandboxEngine?: any, onToolProgress?: any, ctx?: any, mcpApps?: any, runId?: string}} [options]
  */
 export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   limits = {},
@@ -754,11 +780,19 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   sandboxEngine = null,
   onToolProgress = null,
   ctx = null,
+  mcpApps = null,
+  runId = null,
 } = {}) {
   const clients = [];
   const tools = [];
   const entries = Object.entries(mcpConfig || {});
-  const settled = await Promise.allSettled(entries.map(([name, cfg]) => connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, ctx })));
+  const settled = await Promise.allSettled(entries.map(([name, cfg]) => connectMcpClient(name, cfg, {
+    cwd,
+    sandboxPolicy,
+    sandboxEngine,
+    ctx,
+    mcpApps,
+  })));
   const warnings = [];
   const seen = new Set(reservedNames);
 
@@ -797,7 +831,9 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
         type: "runtime_warning",
         warning_kind: "mcp_list_tools_failed",
         server: serverName,
-        message: error?.message || String(error),
+        message: connected.privateCapabilityUrl
+          ? "Private request-scoped MCP server did not expose its tools."
+          : error?.message || String(error),
       });
       continue;
     }
@@ -848,21 +884,27 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
               ...(progress?.message === undefined ? {} : { message: progress.message }),
             });
           };
+          const request = connected.client.callTool(
+            { name: sourceTool.name, arguments: normalizedParams || {} },
+            undefined,
+            // Forward the abort signal too, so a cancelled/timed-out call also cancels the
+            // in-flight MCP request on the wire (otherwise the SDK keeps awaiting until its own
+            // timeout, and an in-process loopback turn could post late after the bridge rejected).
+            {
+              timeout: mcpCallTimeoutMs,
+              resetTimeoutOnProgress: true,
+              maxTotalTimeout: mcpCallMaxTotalTimeoutMs,
+              signal,
+              onprogress,
+            },
+          ).catch((error) => {
+            if (connected.privateCapabilityUrl) {
+              throw new Error("Private request-scoped MCP tool call failed.");
+            }
+            throw error;
+          });
           const out = await withTimeout(
-            connected.client.callTool(
-              { name: sourceTool.name, arguments: normalizedParams || {} },
-              undefined,
-              // Forward the abort signal too, so a cancelled/timed-out call also cancels the
-              // in-flight MCP request on the wire (otherwise the SDK keeps awaiting until its own
-              // timeout, and an in-process loopback turn could post late after the bridge rejected).
-              {
-                timeout: mcpCallTimeoutMs,
-                resetTimeoutOnProgress: true,
-                maxTotalTimeout: mcpCallMaxTotalTimeoutMs,
-                signal,
-                onprogress,
-              },
-            ),
+            request,
             mcpCallTimeoutMs,
             signal,
             `${serverName}:${sourceTool.name}`,
@@ -871,6 +913,19 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
             },
           );
           const mcpCallDurationMs = Date.now() - mcpCallStartMs;
+          if (mcpApps) {
+            await registerMcpAppForToolResult({
+              mcpApps,
+              runId,
+              serverName,
+              connected,
+              sourceTool,
+              listedTools: listed.tools || [],
+              toolCallId,
+              toolInput: normalizedParams || {},
+              toolResult: out,
+            });
+          }
           const imageTruncations = [];
           return {
             content: coerceMcpContent(out, {
@@ -932,13 +987,154 @@ async function closeWithTimeout(close, timeoutMs) {
   }
 }
 
+async function registerMcpAppForToolResult({
+  mcpApps,
+  runId,
+  serverName,
+  connected,
+  sourceTool,
+  listedTools,
+  toolCallId,
+  toolInput,
+  toolResult,
+}) {
+  const resourceUri = mcpAppResourceUri(sourceTool);
+  if (!resourceUri) return;
+  const fail = async (code, message) => {
+    try {
+      await mcpApps.recordFailure({
+        ...(runId ? { runId } : {}),
+        serverName,
+        toolName: sourceTool.name,
+        toolCallId,
+        code,
+        message,
+      });
+    } catch { /* A rich-part failure cannot turn a successful MCP call into a failed tool. */ }
+  };
+
+  if (!resourceUri.startsWith("ui://")) {
+    await fail("app_resource_invalid", "The MCP App resource URI is invalid.");
+    return;
+  }
+  const hostVersions = Array.isArray(mcpApps.protocolVersions)
+    ? mcpApps.protocolVersions.filter((value) => typeof value === "string")
+    : [];
+  const protocolVersion = MCP_APP_SUPPORTED_PROTOCOL_VERSIONS.find((version) => hostVersions.includes(version));
+  const hostMimeTypes = Array.isArray(mcpApps.mimeTypes)
+    ? mcpApps.mimeTypes.filter((value) => typeof value === "string")
+    : [];
+  if (
+    !protocolVersion
+    || !hostMimeTypes.includes(MCP_APP_RESOURCE_MIME_TYPE)
+  ) {
+    await fail("app_capability_mismatch", "The MCP App protocol or resource MIME type is incompatible with this host.");
+    return;
+  }
+
+  let resource;
+  try {
+    const response = await connected.client.readResource({ uri: resourceUri });
+    resource = selectMcpAppResource(response, resourceUri);
+  } catch {
+    await fail("app_resource_invalid", "The MCP App resource could not be resolved through its originating connection.");
+    return;
+  }
+  if (!resource) {
+    await fail("app_resource_invalid", "The MCP App resource is missing, oversized, or has an incompatible MIME type.");
+    return;
+  }
+
+  const connection = {
+    connectionId: connected.connectionId,
+    readResource: async (uri) => await connected.client.readResource({ uri }),
+    callTool: async (name, args, signal) => await connected.client.callTool(
+      { name, arguments: args && typeof args === "object" && !Array.isArray(args) ? args : {} },
+      undefined,
+      {
+        timeout: 120_000,
+        maxTotalTimeout: 120_000,
+        ...(signal ? { signal } : {}),
+      },
+    ),
+    close: async () => {
+      connected.retainedByMcpApps = false;
+      await closeConnectedMcpClient(connected, 5_000);
+    },
+  };
+  try {
+    const registered = await mcpApps.register({
+      ...(runId ? { runId } : {}),
+      serverName,
+      toolName: sourceTool.name,
+      ...(typeof sourceTool.title === "string" ? { title: sourceTool.title } : {}),
+      ...(typeof sourceTool.description === "string" ? { description: sourceTool.description } : {}),
+      toolCallId,
+      resourceUri,
+      protocolVersion,
+      toolInput,
+      toolResult,
+      resource,
+      appVisibleTools: listedTools
+        .filter((tool) => mcpToolVisibleToApp(tool))
+        .map((tool) => tool.name),
+      connection,
+    });
+    if (registered?.retainConnection === true && registered.part?.type === "mcp_app") {
+      connected.retainedByMcpApps = true;
+    }
+  } catch {
+    await fail("app_resource_invalid", "The MCP App host could not persist the negotiated resource.");
+  }
+}
+
+function mcpAppResourceUri(tool) {
+  const meta = tool?._meta || tool?.meta;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
+  if (meta.ui && typeof meta.ui === "object" && !Array.isArray(meta.ui)
+    && typeof meta.ui.resourceUri === "string") return meta.ui.resourceUri;
+  return typeof meta["ui/resourceUri"] === "string" ? meta["ui/resourceUri"] : null;
+}
+
+function mcpToolVisibleToApp(tool) {
+  const meta = tool?._meta || tool?.meta;
+  const visibility = meta?.ui?.visibility;
+  return !Array.isArray(visibility) || visibility.includes("app");
+}
+
+function selectMcpAppResource(response, resourceUri) {
+  const content = Array.isArray(response?.contents)
+    ? response.contents.find((entry) => entry?.uri === resourceUri)
+    : null;
+  if (!content || typeof content.text !== "string") return null;
+  const mimeType = content.mimeType || content.mime_type;
+  if (mimeType !== MCP_APP_RESOURCE_MIME_TYPE) return null;
+  if (Buffer.byteLength(content.text, "utf8") > MCP_APP_RESOURCE_MAX_BYTES) return null;
+  return {
+    uri: resourceUri,
+    mimeType,
+    text: content.text,
+    ...(content._meta && typeof content._meta === "object" && !Array.isArray(content._meta)
+      ? { _meta: content._meta }
+      : {}),
+  };
+}
+
+async function closeConnectedMcpClient(connected, timeoutMs) {
+  if (!connected || connected.closed === true) return;
+  connected.closed = true;
+  const { client, transport } = connected;
+  try { await closeWithTimeout(client?.close?.bind(client), timeoutMs); } catch { /* best-effort */ }
+  try { await closeWithTimeout(transport?.close?.bind(transport), timeoutMs); } catch { /* best-effort */ }
+  try { await transport?.__monoSandboxCleanup?.(); } catch { /* best-effort */ }
+}
+
 export async function closePiMcpClients(clients, { timeoutMs = 5000 } = {}) {
   // Close the client first (stop accepting messages) then the transport (tear
   // down I/O), each bounded by a timeout so a hung stdio pipe cannot stall
   // shutdown — a common source of "Connection closed" churn on reconnect.
-  await Promise.all((clients || []).map(async ({ client, transport }) => {
-    try { await closeWithTimeout(client?.close?.bind(client), timeoutMs); } catch { /* best-effort */ }
-    try { await closeWithTimeout(transport?.close?.bind(transport), timeoutMs); } catch { /* best-effort */ }
-    try { await transport?.__monoSandboxCleanup?.(); } catch { /* best-effort */ }
+  await Promise.all((clients || []).map(async (connected) => {
+    if (connected?.retainedByMcpApps === true) return;
+    await closeConnectedMcpClient(connected, timeoutMs);
   }));
 }

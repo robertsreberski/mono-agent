@@ -8,6 +8,7 @@ import {
   describeMonoRuntimeSupport,
   listMonoRuntimeBackends,
   monoRuntimeSupportsLiveInput,
+  monoRuntimeSupportsMcpApps,
   monoRuntimeSupportsSessionResume,
   parseMonoRuntimeModelReference,
   runtimeOptionsForLocalProvider,
@@ -168,6 +169,15 @@ describe("runtime adapter Pi auth exports", () => {
 });
 
 describe("runtime adapter provider sessions", () => {
+  it("reports MCP Apps support only for the host-routed Pi runtime", () => {
+    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"))).toBe(true);
+    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "sdk")).toBe(false);
+    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli")).toBe(false);
+    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("codex:gpt-5.5"), "cli")).toBe(false);
+    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1"), "cli")).toBe(false);
+    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("acp:personal-agent"), "acp")).toBe(false);
+  });
+
   it("reports live-input support from the selected runtime backend", () => {
     expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "sdk")).toBe(true);
     expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli")).toBe(false);

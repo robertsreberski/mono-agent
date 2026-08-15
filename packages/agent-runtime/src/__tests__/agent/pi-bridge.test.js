@@ -6,6 +6,7 @@ import sharp from "sharp";
 import { createFakeSandbox, testSandboxPolicy as failClosedSandboxPolicy } from "../helpers/fake-sandbox.js";
 import {
   coerceMcpContent,
+  closePiMcpClients,
   getPiBuiltinTools,
   initPiMcpTools,
   normalizeMcpToolParams,
@@ -418,6 +419,30 @@ describe("pi MCP tool helpers", () => {
     expect(cleanupCalls).toBe(1);
   });
 
+  it("never serializes or echoes a private request capability URL in MCP warnings", async () => {
+    const secretUrl = "http://127.0.0.1:43199/mcp/11111111-1111-4111-8111-111111111111";
+    const spec = { type: "http" };
+    Object.defineProperty(spec, "url", { value: secretUrl, enumerable: false });
+    Object.defineProperty(spec, Symbol.for("@mono-agent/private-capability-url"), {
+      value: true,
+      enumerable: false,
+    });
+    const connectSpy = vi.spyOn(McpClient.prototype, "connect")
+      .mockRejectedValue(new Error(`Connection failed for ${secretUrl}`));
+    try {
+      const result = await initPiMcpTools({ private: spec });
+      expect(JSON.stringify(spec)).toBe('{"type":"http"}');
+      expect(result.warnings).toEqual([expect.objectContaining({
+        warning_kind: "mcp_init_failed",
+        server: "private",
+        message: "Private request-scoped MCP server connection failed.",
+      })]);
+      expect(JSON.stringify(result.warnings)).not.toContain(secretUrl);
+    } finally {
+      connectSpy.mockRestore();
+    }
+  });
+
   it("passes an explicit request timeout to MCP callTool so the SDK's 60s default cannot pre-empt a long in-process tool", async () => {
     // The MCP SDK request timeout defaults to 60s (DEFAULT_REQUEST_TIMEOUT_MSEC) and would fire
     // -32001 before the outer wall-clock cap — fatal for tools that run a whole agent turn (e.g.
@@ -455,6 +480,76 @@ describe("pi MCP tool helpers", () => {
       connectSpy.mockRestore();
       listSpy.mockRestore();
       callSpy.mockRestore();
+    }
+  });
+
+  it("intersects both shipped MCP Apps revisions and retains one exact connection until the host evicts it", async () => {
+    const resourceUri = "ui://widgets/chart";
+    const mimeType = "text/html;profile=mcp-app";
+    let hostVersions = ["2025-11-21"];
+    const connectSpy = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const listSpy = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+      tools: [{
+        name: "show_chart",
+        description: "Show a chart",
+        inputSchema: { type: "object", properties: {} },
+        _meta: { ui: { resourceUri } },
+      }],
+    });
+    const callSpy = vi.spyOn(McpClient.prototype, "callTool").mockResolvedValue({
+      content: [{ type: "text", text: "ok" }],
+    });
+    const readSpy = vi.spyOn(McpClient.prototype, "readResource").mockImplementation(async ({ uri }) => ({
+      contents: [{ uri, mimeType, text: "<!doctype html><p>chart</p>" }],
+    }));
+    const registrations = [];
+    const mcpApps = {
+      get protocolVersions() { return hostVersions; },
+      mimeTypes: [mimeType],
+      recordFailure: vi.fn(),
+      register: vi.fn(async (registration) => {
+        registrations.push(registration);
+        return { retainConnection: true, part: { type: "mcp_app" } };
+      }),
+    };
+    let clients = [];
+    try {
+      const initialized = await initPiMcpTools(
+        { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+        new Set(),
+        { mcpApps, runId: "run-app" },
+      );
+      clients = initialized.clients;
+      const clientClose = vi.spyOn(clients[0].client, "close").mockResolvedValue(undefined);
+      const tool = initialized.tools.find((entry) => entry.name === "show_chart");
+
+      expect(clients[0].client._capabilities.extensions["io.modelcontextprotocol/ui"]).toEqual({
+        mimeTypes: [mimeType],
+      });
+      await tool.execute("call-legacy", { range: "week" });
+      hostVersions = ["2026-01-26"];
+      await tool.execute("call-current", { range: "month" });
+
+      expect(readSpy).toHaveBeenNthCalledWith(1, { uri: resourceUri });
+      expect(registrations.map((entry) => entry.protocolVersion)).toEqual(["2025-11-21", "2026-01-26"]);
+      expect(new Set(registrations.map((entry) => entry.connection.connectionId)).size).toBe(1);
+      await closePiMcpClients(clients);
+      expect(clientClose).not.toHaveBeenCalled();
+
+      await registrations[0].connection.close();
+      expect(clientClose).toHaveBeenCalledOnce();
+      expect(clients[0].closed).toBe(true);
+      await registrations[1].connection.close();
+      expect(clientClose).toHaveBeenCalledOnce();
+      expect(mcpApps.recordFailure).not.toHaveBeenCalled();
+    } finally {
+      await Promise.all(clients.map(async (client) => {
+        client.retainedByMcpApps = false;
+      }));
+      connectSpy.mockRestore();
+      listSpy.mockRestore();
+      callSpy.mockRestore();
+      readSpy.mockRestore();
     }
   });
 

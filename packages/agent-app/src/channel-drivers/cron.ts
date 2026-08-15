@@ -198,7 +198,20 @@ export function createCronChannelDriver(
         onResult: async (result) => {
           store?.recordResult(result);
           const level = result.kind === "failed" ? "error" : result.kind === "skipped" ? "warn" : "info";
-          input.logger?.[level]?.("Cron job finished.", { result });
+          const replyPartOutcomes = "replyPartOutcomes" in result ? result.replyPartOutcomes : undefined;
+          const loggedResult = { ...result } as Record<string, unknown>;
+          delete loggedResult.replyPartOutcomes;
+          input.logger?.[level]?.("Cron job finished.", { result: loggedResult });
+          if (replyPartOutcomes !== undefined) {
+            input.logger?.warn?.(
+              "Cron rich reply delivery outcomes recorded.",
+              {
+                jobId: result.jobId,
+                cronRunId: result.cronRunId,
+                replyPartOutcomes,
+              },
+            );
+          }
           void deliverCronModelExhaustionFailureNotice({
             job: jobById.get(result.jobId),
             result,

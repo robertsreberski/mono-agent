@@ -240,6 +240,25 @@ describe("sendDocument document shapes", () => {
     expect(uploaded).not.toBeTypeOf("string");
     expect(uploaded.filename).toBe("t.md");
   });
+
+  it("binds native documents to the requested reply and silent-delivery options", async () => {
+    const { api, calls } = documentApi();
+    const sender = createGrammyTelegramApi(api);
+
+    await sender.sendDocument!({
+      chat_id: 42,
+      document: new Uint8Array([1, 2]),
+      filename: "t.md",
+      reply_to_message_id: 7,
+      allow_sending_without_reply: true,
+      disable_notification: true,
+    });
+
+    expect(calls[0]?.args[2]).toEqual({
+      reply_parameters: { message_id: 7, allow_sending_without_reply: true },
+      disable_notification: true,
+    });
+  });
 });
 
 describe("createTelegramMessageSender client options", () => {

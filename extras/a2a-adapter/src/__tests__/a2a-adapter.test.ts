@@ -2,10 +2,12 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   isChannelUserCancelReason,
+  MAX_AGENT_REPLY_PARTS,
+  type AgentReplyPart,
   type AgentResponder,
 } from "@mono-agent/agent-contracts";
 import type {
@@ -28,7 +30,250 @@ import {
   startA2AProvider,
 } from "../index.js";
 
+function sensitiveReplyParts(): readonly AgentReplyPart[] {
+  const sensitive = "/private/private-report.csv?token=capability-secret#sha256:deadbeef";
+  return [
+    {
+      type: "attachment",
+      id: sensitive,
+      reference: { scheme: "mono-agent-artifact", id: sensitive },
+      name: sensitive,
+      mediaType: "text/csv",
+      sizeBytes: 42,
+      integrityId: "sha256:deadbeef",
+    },
+    {
+      type: "mcp_app",
+      id: sensitive,
+      invocationId: sensitive,
+      connectionId: sensitive,
+      serverName: sensitive,
+      toolName: sensitive,
+      resourceUri: `http://127.0.0.1:4319/${sensitive}`,
+      mediaType: "text/html;profile=mcp-app",
+      protocolVersion: "2026-01-26",
+      title: sensitive,
+    },
+    ...Array.from({ length: 20 }, (_, index) => ({
+      type: "failure" as const,
+      id: `${sensitive}:${String(index)}`,
+      code: "artifact_missing" as const,
+      message: sensitive.repeat(1_000),
+      relatedPartId: sensitive,
+    })),
+  ];
+}
+
+function sparseReplyParts(length: number): readonly AgentReplyPart[] {
+  const parts = new Array<AgentReplyPart>(length);
+  parts[1] = {
+    type: "attachment",
+    id: "artifact",
+    reference: { scheme: "mono-agent-artifact", id: "artifact" },
+    name: "artifact.txt",
+    mediaType: "text/plain",
+    sizeBytes: 8,
+    integrityId: "sha256:artifact",
+  };
+  return parts;
+}
+
+function replyPartOutcomesFromA2AResponse(rawResponse: unknown): Array<Record<string, unknown>> {
+  const envelope = rawResponse as {
+    result?: {
+      task?: {
+        artifacts?: Array<{ parts?: Array<{ text?: string; data?: Record<string, unknown> }> }>;
+      };
+    };
+    task?: {
+      artifacts?: Array<{ parts?: Array<{ text?: string; data?: Record<string, unknown> }> }>;
+    };
+  };
+  const task = envelope.result?.task ?? envelope.task;
+  const data = task?.artifacts?.[0]?.parts?.find((part) => part.data)?.data;
+  expect(data).toEqual(expect.objectContaining({ schemaVersion: 1 }));
+  return data?.replyPartOutcomes as Array<Record<string, unknown>>;
+}
+
 describe("A2A adapter contract", () => {
+  it("keeps text exact and replays bounded sanitized structured part failures idempotently", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "mono-agent-a2a-rich-parts-"));
+    const rawResponses: unknown[] = [];
+    const warn = vi.fn();
+    let responderCalls = 0;
+    const exactText = "  {\"answer\":true}\n";
+    const provider = await startA2AProvider({
+      host: "127.0.0.1",
+      port: 0,
+      idempotency: {
+        stateDir,
+        namespace: "rich-part-test",
+        retentionMs: 60_000,
+        maxRecords: 10,
+      },
+      responder: {
+        async respond() {
+          responderCalls += 1;
+          return {
+            text: exactText,
+            parts: sensitiveReplyParts(),
+          };
+        },
+      },
+      agent: { name: "Machine", description: "Machine output", version: "0.1.0" },
+      skill: { id: "machine", name: "Machine", description: "Machine output", tags: ["machine"] },
+      logger: { warn },
+    });
+    try {
+      const fetchImpl: typeof fetch = async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        const response = await fetch(request);
+        if (request.method === "POST") {
+          rawResponses.push(await response.clone().json());
+        }
+        return response;
+      };
+      const request = {
+        agentUrl: provider.agentCardUrl,
+        fetchImpl,
+        text: "json",
+        idempotencyKey: "rich-part-replay",
+      };
+
+      await expect(sendA2AMessage(request)).resolves.toMatchObject({ text: '{"answer":true}' });
+      await expect(sendA2AMessage(request)).resolves.toMatchObject({ text: '{"answer":true}' });
+
+      expect(responderCalls).toBe(1);
+      expect(rawResponses).toHaveLength(2);
+      for (const rawResponse of rawResponses) {
+        const envelope = rawResponse as {
+          result?: {
+            task?: {
+              artifacts?: Array<{
+                artifactId?: string;
+                name?: string;
+                description?: string;
+                parts?: Array<{ text?: string; data?: Record<string, unknown> }>;
+              }>;
+            };
+          };
+          task?: {
+            artifacts?: Array<{
+              artifactId?: string;
+              name?: string;
+              description?: string;
+              parts?: Array<{ text?: string; data?: Record<string, unknown> }>;
+            }>;
+          };
+        };
+        const result = envelope.result?.task ?? envelope.task;
+        const artifact = result?.artifacts?.[0];
+        expect(artifact).toMatchObject({
+          artifactId: "final-text",
+          name: "Final text response",
+          description: "Text response returned by the responder.",
+        });
+        const parts = artifact?.parts;
+        expect(parts?.[0]?.text).toBe(exactText);
+        const data = parts?.[1]?.data as {
+          schemaVersion?: number;
+          replyPartOutcomes?: Array<Record<string, unknown>>;
+        } | undefined;
+        expect(data?.schemaVersion).toBe(1);
+        expect(data?.replyPartOutcomes).toHaveLength(MAX_AGENT_REPLY_PARTS);
+        expect(data?.replyPartOutcomes?.slice(0, 2)).toEqual([
+          expect.objectContaining({ partIndex: 0, partType: "attachment", code: "unsupported_destination" }),
+          expect.objectContaining({ partIndex: 1, partType: "mcp_app", code: "unsupported_destination" }),
+        ]);
+        expect(data?.replyPartOutcomes?.at(-1)).toMatchObject({
+          code: "reply_part_too_large",
+          affectedPartCount: 3,
+        });
+        const serialized = JSON.stringify(rawResponse);
+        expect(Buffer.byteLength(serialized, "utf8")).toBeLessThan(10_000);
+        expect(serialized).not.toContain("private-report");
+        expect(serialized).not.toContain("capability-secret");
+        expect(serialized).not.toContain("deadbeef");
+      }
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      await provider.stop();
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("emits dense bounded A2A data-part outcomes for sparse reply arrays", async () => {
+    const exactText = {
+      below: "  below sparse text\n",
+      above: "  above sparse text\n",
+    } as const;
+    const rawResponses: unknown[] = [];
+    const provider = await startA2AProvider({
+      host: "127.0.0.1",
+      port: 0,
+      responder: {
+        async respond(request) {
+          const kind = request.text === "below" ? "below" : "above";
+          return {
+            text: exactText[kind],
+            parts: sparseReplyParts(kind === "below" ? 4 : 23),
+          };
+        },
+      },
+      agent: { name: "Sparse", description: "Sparse reply parts", version: "0.1.0" },
+      skill: { id: "sparse", name: "Sparse", description: "Sparse reply parts", tags: ["sparse"] },
+    });
+
+    try {
+      const fetchImpl: typeof fetch = async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        const response = await fetch(request);
+        if (request.method === "POST") {
+          rawResponses.push(await response.clone().json());
+        }
+        return response;
+      };
+
+      await expect(sendA2AMessage({ agentUrl: provider.agentCardUrl, fetchImpl, text: "below" }))
+        .resolves.toMatchObject({ text: "below sparse text" });
+      await expect(sendA2AMessage({ agentUrl: provider.agentCardUrl, fetchImpl, text: "above" }))
+        .resolves.toMatchObject({ text: "above sparse text" });
+
+      expect(rawResponses).toHaveLength(2);
+      const belowOutcomes = replyPartOutcomesFromA2AResponse(rawResponses[0]);
+      const aboveOutcomes = replyPartOutcomesFromA2AResponse(rawResponses[1]);
+
+      expect(belowOutcomes).toHaveLength(4);
+      expect(belowOutcomes.map((outcome) => outcome.partIndex)).toEqual([0, 1, 2, 3]);
+      expect(aboveOutcomes).toHaveLength(MAX_AGENT_REPLY_PARTS);
+      expect(aboveOutcomes.slice(0, -1).map((outcome) => outcome.partIndex)).toEqual(
+        Array.from({ length: MAX_AGENT_REPLY_PARTS - 1 }, (_, index) => index),
+      );
+      expect(aboveOutcomes.at(-1)).toEqual(expect.objectContaining({
+        partIndex: MAX_AGENT_REPLY_PARTS - 1,
+        code: "reply_part_too_large",
+        affectedPartCount: 4,
+      }));
+
+      for (const [index, rawResponse] of rawResponses.entries()) {
+        const outcomes = replyPartOutcomesFromA2AResponse(rawResponse);
+        const serialized = JSON.stringify(outcomes);
+        expect(serialized).not.toContain("null");
+        expect(JSON.parse(serialized)).toEqual(outcomes);
+        const envelope = rawResponse as {
+          result?: { task?: { artifacts?: Array<{ parts?: Array<{ text?: string }> }> } };
+          task?: { artifacts?: Array<{ parts?: Array<{ text?: string }> }> };
+        };
+        const task = envelope.result?.task ?? envelope.task;
+        expect(task?.artifacts?.[0]?.parts?.[0]?.text).toBe(
+          index === 0 ? exactText.below : exactText.above,
+        );
+      }
+    } finally {
+      await provider.stop();
+    }
+  });
+
   it("creates a v1 Agent Card without secrets and with JSON-RPC and REST interfaces", () => {
     const card = createA2AAgentCard({
       name: "Local Mono",
@@ -406,6 +651,8 @@ describe("A2A adapter contract", () => {
   it("cancels active responder work through A2A task cancellation", async () => {
     let observedAbort = false;
     let observedAbortReason: unknown;
+    const warn = vi.fn();
+    const lateSensitive = "  /private/late-a2a.txt?token=secret\n";
     const responder: AgentResponder = {
       async respond(request) {
         await new Promise<void>((resolve) => {
@@ -415,7 +662,10 @@ describe("A2A adapter contract", () => {
             resolve();
           }, { once: true });
         });
-        return { text: "should not complete" };
+        return {
+          text: lateSensitive,
+          parts: sparseReplyParts(MAX_AGENT_REPLY_PARTS + 3),
+        };
       },
     };
 
@@ -423,6 +673,7 @@ describe("A2A adapter contract", () => {
       host: "127.0.0.1",
       port: 0,
       responder,
+      logger: { warn },
       agent: {
         name: "Cancelable Mono",
         description: "Can cancel",
@@ -441,9 +692,17 @@ describe("A2A adapter contract", () => {
       const task = await consumer.sendMessage({ text: "wait", returnImmediately: true });
       const taskId = task.metadata.a2a.taskId;
       expect(taskId).toEqual(expect.any(String));
-      await consumer.cancelTask(taskId as string);
+      const cancelled = await consumer.cancelTask(taskId as string);
       expect(observedAbort).toBe(true);
       expect(isChannelUserCancelReason(observedAbortReason)).toBe(true);
+      expect(cancelled).toMatchObject({
+        metadata: { a2a: { taskId, state: "TASK_STATE_CANCELED" } },
+      });
+      expect(JSON.stringify(cancelled)).not.toContain(lateSensitive.trim());
+      expect(JSON.stringify(cancelled)).not.toContain("replyPartOutcomes");
+      expect(warn.mock.calls.filter(
+        (call) => call[0] === "A2A rich reply parts were not delivered by this destination.",
+      )).toHaveLength(0);
     } finally {
       await provider.stop();
     }

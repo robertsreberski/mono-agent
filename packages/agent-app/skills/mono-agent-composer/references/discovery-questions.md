@@ -77,7 +77,7 @@ What tools does the agent need?
 Plus, independently: MCP servers from an mcp.json config file?
 ```
 
-Fills: `tools.allowedTools`, `tools.disallowedTools` (denylist wins, even under allow-all), `tools.mcpConfigPath`. The default is allow-all (`["*"]`) — write that unless the user asks to narrow. Under allow-all the adapter-derived send tools (`SlackSendMessage` / `TelegramSendMessage` / …) are auto-available once the channel is enabled; only a **specific** allowlist needs their exact names added. Valid enabled Slack/Telegram adapter config and destination allowlists are required either way. On the pi-native runtime `disallowedTools` does not filter external MCP-server tools — to withhold one, don't declare its server.
+Fills: `tools.allowedTools`, `tools.disallowedTools` (denylist wins, even under allow-all), `tools.mcpConfigPath`. The default is allow-all (`["*"]`) — write that unless the user asks to narrow. Under allow-all the adapter-derived send tools (`SlackSendMessage` / `TelegramSendMessage` / …) and `PublishReplyFile` are auto-available once their host requirements are met; only a **specific** allowlist needs their exact names added. Valid enabled Slack/Telegram adapter config and destination allowlists are required either way. If the user needs MCP Apps, select a Pi-native primary and only Pi-native fallbacks: the host suppresses App registration and advertising when any possible route cannot carry the bridge. On the pi-native runtime `disallowedTools` does not filter external MCP-server tools — to withhold one, don't declare its server.
 
 For Pi process work, prefer the `Exec` built-in for one executable plus literal
 argv and offer `Bash` only when shell syntax is required. Offer `NodeRepl` when

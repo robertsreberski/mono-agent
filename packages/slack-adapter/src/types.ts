@@ -75,6 +75,35 @@ export interface SlackChatDeleteResult {
   [key: string]: unknown;
 }
 
+export interface SlackFilesGetUploadUrlExternalParams {
+  filename: string;
+  length: number;
+}
+
+export interface SlackFilesGetUploadUrlExternalResult {
+  ok: true;
+  upload_url: string;
+  file_id: string;
+  [key: string]: unknown;
+}
+
+export interface SlackFilesUploadExternalParams {
+  uploadUrl: string;
+  data: Uint8Array;
+}
+
+export interface SlackFilesCompleteUploadExternalParams {
+  files: readonly { readonly id: string; readonly title?: string }[];
+  channel_id: SlackChannelId;
+  thread_ts?: SlackMessageTs;
+}
+
+export interface SlackFilesCompleteUploadExternalResult {
+  ok: true;
+  files?: readonly unknown[];
+  [key: string]: unknown;
+}
+
 /** Parameters for an authenticated download of a private Slack file. */
 export interface SlackDownloadFileParams {
   /** The file's `url_private` (or `url_private_download`). */
@@ -240,6 +269,21 @@ export interface SlackWebApi {
     params: SlackChatPostMessageParams,
     options?: SlackRequestOptions,
   ): Promise<SlackChatPostMessageResult>;
+  /** Begin Slack's modern external upload flow. */
+  filesGetUploadURLExternal?(
+    params: SlackFilesGetUploadUrlExternalParams,
+    options?: SlackRequestOptions,
+  ): Promise<SlackFilesGetUploadUrlExternalResult>;
+  /** Upload raw bytes to the capability URL returned by getUploadURLExternal. */
+  filesUploadExternal?(
+    params: SlackFilesUploadExternalParams,
+    options?: SlackRequestOptions,
+  ): Promise<void>;
+  /** Confirm and bind an uploaded file to the exact channel/thread. */
+  filesCompleteUploadExternal?(
+    params: SlackFilesCompleteUploadExternalParams,
+    options?: SlackRequestOptions,
+  ): Promise<SlackFilesCompleteUploadExternalResult>;
   /**
    * Optional: add an emoji reaction (e.g. 👀 to signal "seen"). Best-effort; the
    * message stream swallows failures (and "already_reacted" is not an error).

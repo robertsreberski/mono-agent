@@ -6,7 +6,9 @@ import { isDeepStrictEqual } from "node:util";
 
 import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
+  MAX_AGENT_REPLY_PARTS,
   classifyNotifySuppression,
+  type AgentReplyPart,
   type AgentStreamEvent,
   type AgentStreamWireFrame,
 } from "@mono-agent/agent-contracts";
@@ -704,7 +706,7 @@ export class WebStore {
           assistantMessageId,
           completedThreadId,
           turnId,
-          JSON.stringify([{ type: "text", text: reservation.text } satisfies WebMessagePart]),
+          serializeParts([{ type: "text", text: reservation.text } satisfies WebMessagePart]),
           now,
           now,
         );
@@ -721,7 +723,7 @@ export class WebStore {
         if (!parts.some((part) => part.type === "text" && part.text === reservation.text)) {
           parts.push({ type: "text", text: reservation.text });
           this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ? WHERE id = ?")
-            .run(JSON.stringify(parts), now, assistantMessageId);
+            .run(serializeParts(parts), now, assistantMessageId);
         }
       }
       this.database.prepare(`
@@ -1056,7 +1058,7 @@ export class WebStore {
           priorParts,
           conversationId,
         );
-        const serializedParts = JSON.stringify(parts);
+        const serializedParts = serializeParts(parts);
         const status = cronMessageStatus(run.status);
         const turnStatus = status === "running" ? "running" : status;
         const finishedAt = status === "running" ? null : run.completedAt ?? run.orderedAt;
@@ -1324,6 +1326,12 @@ export class WebStore {
       messages: page.messages,
       ...(page.nextCursor === undefined ? {} : { messagesNextCursor: page.nextCursor }),
     };
+  }
+
+  getMessage(id: string): WebMessage | undefined {
+    const row = this.database.prepare("SELECT * FROM messages WHERE id = ?")
+      .get(id) as unknown as MessageRow | undefined;
+    return row === undefined ? undefined : this.mapMessage(row);
   }
 
   listMessagesPage(
@@ -1655,7 +1663,7 @@ export class WebStore {
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
         VALUES (?, ?, ?, 'user', ?, ?, ?, 'complete')
-      `).run(userMessageId, threadId, turnId, JSON.stringify(userParts), now, now);
+      `).run(userMessageId, threadId, turnId, serializeParts(userParts), now, now);
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
         VALUES (?, ?, ?, 'assistant', '[]', ?, ?, 'running')
@@ -1734,7 +1742,7 @@ export class WebStore {
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
         VALUES (?, ?, ?, 'user', ?, ?, ?, 'complete')
-      `).run(messageId, threadId, active?.id ?? null, JSON.stringify(parts), now, now);
+      `).run(messageId, threadId, active?.id ?? null, serializeParts(parts), now, now);
       this.database.prepare(`
         INSERT INTO live_inputs (
           id, thread_id, message_id, active_turn_id, text, model, effort, status, created_at, updated_at
@@ -1777,7 +1785,7 @@ export class WebStore {
     const now = this.now();
     this.transaction(() => {
       this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(JSON.stringify(withLiveInputStatus(message.parts, "applied")), now, row.message_id);
+        .run(serializeParts(withLiveInputStatus(message.parts, "applied")), now, row.message_id);
       this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(id);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, row.thread_id);
@@ -1796,7 +1804,7 @@ export class WebStore {
         UPDATE live_inputs SET status = 'queued', active_turn_id = NULL, updated_at = ? WHERE id = ?
       `).run(now, id);
       this.database.prepare("UPDATE messages SET turn_id = NULL, parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(JSON.stringify(withLiveInputStatus(message.parts, "queued")), now, row.message_id);
+        .run(serializeParts(withLiveInputStatus(message.parts, "queued")), now, row.message_id);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, row.thread_id);
       this.recordThreadRevision(row.thread_id, "live_input_queued", now);
@@ -1811,7 +1819,7 @@ export class WebStore {
     const now = this.now();
     this.transaction(() => {
       this.database.prepare("UPDATE messages SET turn_id = NULL, parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(JSON.stringify(withLiveInputStatus(message.parts, "cancelled")), now, row.message_id);
+        .run(serializeParts(withLiveInputStatus(message.parts, "cancelled")), now, row.message_id);
       this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(id);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, row.thread_id);
@@ -1833,7 +1841,7 @@ export class WebStore {
       );
       for (const row of rows) {
         const message = this.requireMessage(row.message_id);
-        update.run(JSON.stringify(withLiveInputStatus(message.parts, "cancelled")), now, row.message_id);
+        update.run(serializeParts(withLiveInputStatus(message.parts, "cancelled")), now, row.message_id);
       }
       this.database.prepare("DELETE FROM live_inputs WHERE thread_id = ?").run(threadId);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
@@ -1876,7 +1884,7 @@ export class WebStore {
         ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, NULL, NULL, NULL)
       `).run(turnId, threadId, row.text, row.model, row.effort, assistantMessageId, now);
       this.database.prepare("UPDATE messages SET turn_id = ?, parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(turnId, JSON.stringify(withoutLiveInputTelemetry(userMessage.parts)), now, row.message_id);
+        .run(turnId, serializeParts(withoutLiveInputTelemetry(userMessage.parts)), now, row.message_id);
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
         VALUES (?, ?, ?, 'assistant', '[]', ?, ?, 'running')
@@ -1926,7 +1934,7 @@ export class WebStore {
     const now = this.now();
     this.transaction(() => {
       this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(JSON.stringify(parts), now, message.id);
+        .run(serializeParts(parts), now, message.id);
       if (actualModel !== undefined || actualEffort !== undefined) {
         this.database.prepare(`
           UPDATE turns SET
@@ -1939,9 +1947,14 @@ export class WebStore {
     return this.requireMessage(message.id);
   }
 
-  completeTurn(turnId: string, finalText?: string, metadata?: Readonly<Record<string, unknown>>): WebThreadDetail {
+  completeTurn(
+    turnId: string,
+    finalText?: string,
+    metadata?: Readonly<Record<string, unknown>>,
+    replyParts?: readonly AgentReplyPart[],
+  ): WebThreadDetail {
     const runtime = runtimeMetadata(metadata);
-    return this.finishTurn(turnId, "complete", finalText, undefined, undefined, runtime);
+    return this.finishTurn(turnId, "complete", finalText, undefined, undefined, runtime, replyParts);
   }
 
   failTurn(turnId: string, error: { readonly message: string; readonly code?: string; readonly cancelled?: boolean }): WebThreadDetail {
@@ -2014,6 +2027,24 @@ export class WebStore {
       this.setSetting("web_push_key_fingerprint", generatedFingerprint);
     });
     return { ...generated, fingerprint: generatedFingerprint };
+  }
+
+  /** Stable owner-private key for short-lived message-bound rich-part URLs. */
+  ensureReplyAccessKey(generate: () => string): string {
+    const existing = this.database.prepare("SELECT value FROM settings WHERE key = 'reply_access_key_v1'")
+      .get() as unknown as { value: string } | undefined;
+    if (existing !== undefined) {
+      if (!/^[A-Za-z0-9_-]{43}$/u.test(existing.value)) {
+        throw new WebConsoleError("reply_access_key_corrupt", "The stored reply access key is invalid.", 500);
+      }
+      return existing.value;
+    }
+    const created = generate();
+    if (!/^[A-Za-z0-9_-]{43}$/u.test(created)) {
+      throw new WebConsoleError("reply_access_key_generation_failed", "Unable to generate a reply access key.", 500);
+    }
+    this.setSetting("reply_access_key_v1", created);
+    return created;
   }
 
   registerWebPushSubscription(input: RegisterWebPushSubscriptionInput): WebPushSubscriptionStatus {
@@ -2862,7 +2893,7 @@ export class WebStore {
         }
         updateInput.run(now, row.id);
         updateMessage.run(
-          JSON.stringify(withLiveInputStatus(parseParts(persisted.parts_json), "queued")),
+          serializeParts(withLiveInputStatus(parseParts(persisted.parts_json), "queued")),
           now,
           row.message_id,
         );
@@ -2890,13 +2921,14 @@ export class WebStore {
     errorCode?: string,
     errorMessage?: string,
     runtime?: { readonly model?: string; readonly effort?: string },
+    replyParts?: readonly AgentReplyPart[],
   ): WebThreadDetail {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") {
       return this.requireThreadDetail(turn.thread_id);
     }
     this.transaction(() => {
-      this.finishTurnInTransaction(turnId, status, finalText, errorCode, errorMessage, runtime);
+      this.finishTurnInTransaction(turnId, status, finalText, errorCode, errorMessage, runtime, replyParts);
     });
     return this.requireThreadDetail(turn.thread_id);
   }
@@ -2908,12 +2940,14 @@ export class WebStore {
     errorCode?: string,
     errorMessage?: string,
     runtime?: { readonly model?: string; readonly effort?: string },
+    replyParts?: readonly AgentReplyPart[],
   ): void {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") return;
     const existing = this.requireMessage(turn.assistant_message_id);
-    const parts = [...existing.parts];
+    let parts = [...existing.parts];
     if (finalText !== undefined && finalText.length > 0) reconcileFinalText(parts, finalText);
+    if (replyParts !== undefined) parts = boundedWebReplyParts(replyParts, parts);
     if (errorMessage !== undefined) {
       parts.push({ type: "error", ...(errorCode === undefined ? {} : { code: errorCode }), message: errorMessage });
     }
@@ -2937,7 +2971,7 @@ export class WebStore {
         turnId,
       );
     this.database.prepare("UPDATE messages SET parts_json = ?, status = ?, updated_at = ? WHERE id = ?")
-      .run(JSON.stringify(parts), status, now, existing.id);
+      .run(serializeParts(parts), status, now, existing.id);
     this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
       .run(now, turn.thread_id);
     this.recordThreadRevision(turn.thread_id, `turn_${status}`, now);
@@ -4189,6 +4223,316 @@ function normalizeTitle(value: string): string {
   return title;
 }
 
+const REPLY_FAILURE_CODES = new Set([
+  "app_capability_mismatch",
+  "app_connection_closed",
+  "app_resource_invalid",
+  "artifact_expired",
+  "artifact_integrity_failed",
+  "artifact_missing",
+  "artifact_publish_failed",
+  "artifact_too_large",
+  "reply_part_too_large",
+  "unsupported_destination",
+]);
+
+const REPLY_PARTS_TRUNCATED_ID = "web-reply-parts-truncated";
+const INVALID_REPLY_PART_ID = "invalid-rich-part";
+type DurableWebReplyPart = Extract<WebMessagePart, { type: "attachment" | "mcp_app" | "failure" }>;
+
+/**
+ * The SQLite boundary does not trust the operator wire parser. A truncated
+ * reply reserves one of the shared outcome slots for a durable diagnostic so
+ * every omitted suffix is visible without allowing this completion to take a
+ * message beyond the producer/wire limit. Legacy over-cap state is repaired by
+ * retaining a deterministic prefix and reserving the final slot for the same
+ * bounded diagnostic.
+ */
+function nextSyntheticReplyPartId(base: string, ids: Set<string>): string {
+  let failureId = base;
+  for (let suffix = 2; ids.has(failureId); suffix += 1) {
+    failureId = `${base}-${suffix}`;
+  }
+  ids.add(failureId);
+  return failureId;
+}
+
+function replyPartIds(values: readonly unknown[]): Set<string> {
+  const ids = new Set<string>();
+  for (const value of values) {
+    const id = record(value)?.id;
+    if (validRichId(id)) ids.add(id);
+  }
+  return ids;
+}
+
+function replyPartIdCounts(values: readonly unknown[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    const id = record(value)?.id;
+    if (validRichId(id)) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function isDurableWebReplyPart(part: WebMessagePart): part is DurableWebReplyPart {
+  return part.type === "attachment" || part.type === "mcp_app" || part.type === "failure";
+}
+
+function boundedWebReplyParts(
+  input: unknown,
+  existingParts: readonly WebMessagePart[],
+): WebMessagePart[] {
+  const existingReplyParts = existingParts.filter(isDurableWebReplyPart);
+  const existingReplyPartCount = existingReplyParts.length;
+  const existingIds = replyPartIds(existingReplyParts);
+  const ids = new Set(existingIds);
+  const claimedIds = new Set(existingIds);
+  const availableSlots = Math.max(0, MAX_AGENT_REPLY_PARTS - existingReplyPartCount);
+  const inputParts = Array.isArray(input) ? input : undefined;
+  const needsDiagnostic = inputParts === undefined
+    || existingReplyPartCount > MAX_AGENT_REPLY_PARTS
+    || inputParts.length > availableSlots;
+  const retainedExistingCount = needsDiagnostic
+    ? Math.min(existingReplyPartCount, MAX_AGENT_REPLY_PARTS - 1)
+    : existingReplyPartCount;
+  let seenExistingReplyParts = 0;
+  const retainedExistingParts = existingParts.filter((part) => {
+    if (!isDurableWebReplyPart(part)) return true;
+    seenExistingReplyParts += 1;
+    return seenExistingReplyParts <= retainedExistingCount;
+  });
+
+  if (inputParts === undefined) {
+    const invalidRecord = record(input);
+    const legacyValues = invalidRecord === undefined ? [input] : [input, ...Object.values(invalidRecord)];
+    for (const id of replyPartIds(legacyValues)) ids.add(id);
+    const omittedExistingCount = existingReplyPartCount - retainedExistingCount;
+    return [...retainedExistingParts, {
+      type: "failure",
+      id: nextSyntheticReplyPartId(REPLY_PARTS_TRUNCATED_ID, ids),
+      code: "unsupported_destination",
+      message: `The web console retained ${retainedExistingCount} existing rich reply parts, omitted ${omittedExistingCount} existing parts, and rejected an invalid incoming rich reply collection; ${availableSlots} of ${MAX_AGENT_REPLY_PARTS} outcome slots were available before this bounded diagnostic.`,
+    }];
+  }
+  // Object.values visits only populated entries, so a legacy sparse array with
+  // a very large length cannot make this collision scan walk every empty slot.
+  const populated = Object.values(inputParts);
+  const inputIdCounts = replyPartIdCounts(populated);
+  for (const id of inputIdCounts.keys()) ids.add(id);
+  const retainedCount = Math.min(
+    inputParts.length,
+    Math.max(0, MAX_AGENT_REPLY_PARTS - retainedExistingCount - (needsDiagnostic ? 1 : 0)),
+  );
+  const retained = Array.from(
+    { length: retainedCount },
+    (_, index): DurableWebReplyPart => {
+      const converted = toWebReplyPart(inputParts[index], () => {
+        const inputId = record(inputParts[index])?.id;
+        return validRichId(inputId)
+          && !existingIds.has(inputId)
+          && inputIdCounts.get(inputId) === 1
+          ? inputId
+          : nextSyntheticReplyPartId(INVALID_REPLY_PART_ID, ids);
+      });
+      if (!claimedIds.has(converted.id)) {
+        claimedIds.add(converted.id);
+        return converted;
+      }
+      const collision: DurableWebReplyPart = {
+        type: "failure",
+        id: nextSyntheticReplyPartId(INVALID_REPLY_PART_ID, ids),
+        code: "unsupported_destination",
+        message: "A rich reply part reused an existing identifier and could not be displayed.",
+      };
+      claimedIds.add(collision.id);
+      return collision;
+    },
+  );
+  const merged = [...retainedExistingParts, ...retained];
+  if (!needsDiagnostic) return merged;
+
+  const omittedExistingCount = existingReplyPartCount - retainedExistingCount;
+  const omittedIncomingCount = inputParts.length - retainedCount;
+  merged.push({
+    type: "failure",
+    id: nextSyntheticReplyPartId(REPLY_PARTS_TRUNCATED_ID, ids),
+    code: "reply_part_too_large",
+    message: `The web console retained ${retainedExistingCount} existing and ${retainedCount} incoming rich reply parts, omitted ${omittedExistingCount} existing and ${omittedIncomingCount} incoming parts, and used one diagnostic slot; before reserving it, ${availableSlots} of ${MAX_AGENT_REPLY_PARTS} outcome slots were available to incoming parts.`,
+  });
+  return merged;
+}
+
+function isMcpAppProtocolVersion(value: unknown): value is "2026-01-26" | "2025-11-21" {
+  return value === "2026-01-26" || value === "2025-11-21";
+}
+
+function toWebReplyPart(input: unknown, syntheticId: () => string): DurableWebReplyPart {
+  const part = record(input);
+  const failure = (
+    code: "artifact_publish_failed" | "artifact_too_large" | "app_resource_invalid",
+  ): DurableWebReplyPart => ({
+    type: "failure",
+    id: syntheticId(),
+    code,
+    message: code === "artifact_too_large"
+      ? "The generated file exceeded the web console attachment limit."
+      : code === "app_resource_invalid"
+        ? "The MCP App metadata was invalid and could not be displayed."
+        : "The generated file metadata was invalid and could not be displayed.",
+  });
+  if (part?.type === "attachment") {
+    const reference = record(part.reference);
+    if (
+      !validRichId(part.id)
+      || reference?.scheme !== "mono-agent-artifact"
+      || !validRichId(reference.id)
+      || typeof part.name !== "string"
+      || part.name.length === 0
+      || part.name.length > 255
+      || /[\u0000-\u001f\u007f/\\]/u.test(part.name)
+      || typeof part.mediaType !== "string"
+      || !validReplyMimeType(part.mediaType)
+      || !Number.isSafeInteger(part.sizeBytes)
+      || Number(part.sizeBytes) < 0
+      || typeof part.integrityId !== "string"
+      || !/^sha256:[0-9a-f]{64}$/u.test(part.integrityId)
+      || !validOptionalDate(part.expiresAt)
+    ) return failure("artifact_publish_failed");
+    if (Number(part.sizeBytes) > 20 * 1024 * 1024) return failure("artifact_too_large");
+    return {
+      type: "attachment",
+      id: part.id,
+      artifactId: reference.id,
+      name: part.name,
+      mediaType: part.mediaType,
+      sizeBytes: part.sizeBytes as number,
+      integrityId: part.integrityId,
+      ...(part.expiresAt === undefined ? {} : { expiresAt: part.expiresAt as string }),
+    };
+  }
+  if (part?.type === "mcp_app") {
+    if (
+      !validRichId(part.id)
+      || part.invocationId !== part.id
+      || !validRichId(part.invocationId)
+      || !validRichId(part.connectionId)
+      || typeof part.serverName !== "string"
+      || typeof part.toolName !== "string"
+      || typeof part.resourceUri !== "string"
+      || !part.resourceUri.startsWith("ui://")
+      || part.mediaType !== "text/html;profile=mcp-app"
+      || !isMcpAppProtocolVersion(part.protocolVersion)
+      || !validOptionalBoundedText(part.title, 240)
+      || !validOptionalBoundedText(part.description, 1_000)
+      || !validOptionalDate(part.expiresAt)
+    ) return failure("app_resource_invalid");
+    return {
+      type: "mcp_app",
+      id: part.id,
+      invocationId: part.invocationId as string,
+      connectionId: part.connectionId as string,
+      serverName: (part.serverName as string).slice(0, 256),
+      toolName: (part.toolName as string).slice(0, 256),
+      resourceUri: (part.resourceUri as string).slice(0, 4_096),
+      mediaType: "text/html;profile=mcp-app",
+      protocolVersion: part.protocolVersion,
+      ...(part.title === undefined ? {} : { title: part.title as string }),
+      ...(part.description === undefined ? {} : { description: part.description as string }),
+      ...(part.expiresAt === undefined ? {} : { expiresAt: part.expiresAt as string }),
+    };
+  }
+  if (
+    part?.type === "failure"
+    && validRichId(part.id)
+    && typeof part.code === "string"
+    && REPLY_FAILURE_CODES.has(part.code)
+    && typeof part.message === "string"
+    && Buffer.byteLength(part.message, "utf8") <= 1_024
+    && (part.relatedPartId === undefined || validRichId(part.relatedPartId))
+  ) {
+    return {
+      type: "failure",
+      id: part.id,
+      code: part.code as Extract<WebMessagePart, { type: "failure" }>["code"],
+      message: part.message,
+      ...(part.relatedPartId === undefined ? {} : { relatedPartId: part.relatedPartId }),
+    };
+  }
+  return {
+    type: "failure",
+    id: syntheticId(),
+    code: "unsupported_destination",
+    message: "A rich reply part used an unsupported format and could not be displayed.",
+  };
+}
+
+/** Persist only the inert durable projection; browser capabilities are DTO-only. */
+function durableMessagePart(part: WebMessagePart): WebMessagePart {
+  if (part.type === "attachment") {
+    return {
+      type: "attachment",
+      id: part.id,
+      artifactId: part.artifactId,
+      name: part.name,
+      mediaType: part.mediaType,
+      sizeBytes: part.sizeBytes,
+      integrityId: part.integrityId,
+      ...(part.expiresAt === undefined ? {} : { expiresAt: part.expiresAt }),
+    };
+  }
+  if (part.type === "mcp_app") {
+    return {
+      type: "mcp_app",
+      id: part.id,
+      invocationId: part.invocationId,
+      connectionId: part.connectionId,
+      serverName: part.serverName,
+      toolName: part.toolName,
+      resourceUri: part.resourceUri,
+      mediaType: part.mediaType,
+      protocolVersion: part.protocolVersion,
+      ...(part.title === undefined ? {} : { title: part.title }),
+      ...(part.description === undefined ? {} : { description: part.description }),
+      ...(part.expiresAt === undefined ? {} : { expiresAt: part.expiresAt }),
+    };
+  }
+  if (part.type === "failure") {
+    return {
+      type: "failure",
+      id: part.id,
+      code: part.code,
+      message: part.message,
+      ...(part.relatedPartId === undefined ? {} : { relatedPartId: part.relatedPartId }),
+    };
+  }
+  return part;
+}
+
+function serializeParts(parts: readonly WebMessagePart[]): string {
+  return JSON.stringify(parts.map(durableMessagePart));
+}
+
+function validRichId(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && Buffer.byteLength(value, "utf8") <= 256
+    && !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+function validReplyMimeType(value: string): boolean {
+  return value.length <= 256
+    && /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(?:;[a-z0-9=._+-]+)*$/iu.test(value);
+}
+
+function validOptionalDate(value: unknown): boolean {
+  return value === undefined || (typeof value === "string" && !Number.isNaN(Date.parse(value)));
+}
+
+function validOptionalBoundedText(value: unknown, maxBytes: number): boolean {
+  return value === undefined || (typeof value === "string" && Buffer.byteLength(value, "utf8") <= maxBytes);
+}
+
 function parseParts(value: string): WebMessagePart[] {
   let parsed: unknown;
   try {
@@ -4410,6 +4754,21 @@ function nonNegativeSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
+const DURABLE_REPLY_ATTACHMENT_KEYS = new Set([
+  "type", "id", "artifactId", "name", "mediaType", "sizeBytes", "integrityId", "expiresAt",
+]);
+const DURABLE_MCP_APP_KEYS = new Set([
+  "type", "id", "invocationId", "connectionId", "serverName", "toolName", "resourceUri",
+  "mediaType", "protocolVersion", "title", "description", "expiresAt",
+]);
+const DURABLE_REPLY_FAILURE_KEYS = new Set([
+  "type", "id", "code", "message", "relatedPartId",
+]);
+
+function hasOnlyKeys(value: Readonly<Record<string, unknown>>, allowed: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
 function isWebMessagePart(value: unknown): value is WebMessagePart {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const part = value as Record<string, unknown>;
@@ -4428,6 +4787,46 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
   }
   if (part.type === "telemetry") return typeof part.event === "string";
   if (part.type === "error") return typeof part.message === "string" && (part.code === undefined || typeof part.code === "string");
+  if (part.type === "attachment") {
+    return hasOnlyKeys(part, DURABLE_REPLY_ATTACHMENT_KEYS)
+      && validRichId(part.id)
+      && validRichId(part.artifactId)
+      && typeof part.name === "string"
+      && part.name.length > 0
+      && !/[\u0000-\u001f\u007f/\\]/u.test(part.name)
+      && typeof part.mediaType === "string"
+      && validReplyMimeType(part.mediaType)
+      && Number.isSafeInteger(part.sizeBytes)
+      && Number(part.sizeBytes) >= 0
+      && Number(part.sizeBytes) <= 20 * 1024 * 1024
+      && typeof part.integrityId === "string"
+      && /^sha256:[0-9a-f]{64}$/u.test(part.integrityId)
+      && validOptionalDate(part.expiresAt);
+  }
+  if (part.type === "mcp_app") {
+    return hasOnlyKeys(part, DURABLE_MCP_APP_KEYS)
+      && validRichId(part.id)
+      && part.invocationId === part.id
+      && validRichId(part.connectionId)
+      && typeof part.serverName === "string"
+      && typeof part.toolName === "string"
+      && typeof part.resourceUri === "string"
+      && part.resourceUri.startsWith("ui://")
+      && part.mediaType === "text/html;profile=mcp-app"
+      && isMcpAppProtocolVersion(part.protocolVersion)
+      && validOptionalBoundedText(part.title, 240)
+      && validOptionalBoundedText(part.description, 1_000)
+      && validOptionalDate(part.expiresAt);
+  }
+  if (part.type === "failure") {
+    return hasOnlyKeys(part, DURABLE_REPLY_FAILURE_KEYS)
+      && validRichId(part.id)
+      && typeof part.code === "string"
+      && REPLY_FAILURE_CODES.has(part.code)
+      && typeof part.message === "string"
+      && Buffer.byteLength(part.message, "utf8") <= 1_024
+      && (part.relatedPartId === undefined || validRichId(part.relatedPartId));
+  }
   return false;
 }
 

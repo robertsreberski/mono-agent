@@ -124,6 +124,18 @@ If nothing happens:
 - Check that only one process is polling the bot token; Telegram permits one
   long-polling consumer per token.
 
+## Generated reply files
+
+A response part created with `PublishReplyFile` is sent through the Bot API as a
+native document to the exact chat and reply target. Proactive quiet-hour sends
+retain their silent-delivery flag. Telegram removes the part from textual
+fallback only after `sendDocument` succeeds and deduplicates retries by file
+integrity plus destination. Failure keeps a concise human warning and never
+reveals the host path or private capability URL. This is separate from the
+model-invoked `TelegramSendFile` tool; see
+[Reply files and MCP Apps](/tools/rich-replies/) for the shared limits,
+authorization, retention, and fallback contract.
+
 ## Interactive features
 
 The per-chat runtime controls and fresh-session command below are built in

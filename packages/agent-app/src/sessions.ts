@@ -10,6 +10,7 @@ import {
 import { resolveAppArtifactDir, resolveAppSessionsRoot } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { acpSessionAuthorizationsRoot } from "./acp-session-store.js";
+import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 
 export interface PurgeSessionsResult {
   /** The resolved sessions root, or undefined when sessions are in-memory only. */
@@ -97,7 +98,7 @@ export async function purgeConversationHistory(
   input: MonoAgentAppConfigInput,
 ): Promise<PurgeConversationHistoryResult> {
   const artifactDir = await resolveAppArtifactDir(input);
-  const root = join(artifactDir, "..", "history");
+  const root = agentArtifactDerivedRoots(artifactDir).history;
   let messageHistory = { files: 0, bytes: 0 };
   try {
     messageHistory = await countTopLevelFilesWithSuffix(root, ".history.json");

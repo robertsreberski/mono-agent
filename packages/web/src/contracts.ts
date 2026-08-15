@@ -1,5 +1,7 @@
 import {
   AGENT_LIVE_INPUT_MAX_MESSAGES,
+  type AgentReplyMcpAppPart,
+  type AgentReplyPartFailure,
   type CronOperatorHealth,
   type CronOperatorJob,
   type CronOperatorOverview,
@@ -223,7 +225,43 @@ export type WebMessagePart =
       readonly calls: readonly WebToolCall[];
     }
   | { readonly type: "telemetry"; readonly event: string; readonly data?: unknown }
-  | { readonly type: "error"; readonly code?: string; readonly message: string };
+  | { readonly type: "error"; readonly code?: string; readonly message: string }
+  | {
+      readonly type: "attachment";
+      readonly id: string;
+      readonly artifactId: string;
+      readonly name: string;
+      readonly mediaType: string;
+      readonly sizeBytes: number;
+      readonly integrityId: string;
+      readonly expiresAt?: string;
+      /** Short-lived, message-bound URL added only to browser DTOs. */
+      readonly contentUrl?: string;
+    }
+  | {
+      readonly type: "mcp_app";
+      readonly id: string;
+      readonly invocationId: string;
+      readonly connectionId: string;
+      readonly serverName: string;
+      readonly toolName: string;
+      readonly resourceUri: string;
+      readonly mediaType: "text/html;profile=mcp-app";
+      readonly protocolVersion: AgentReplyMcpAppPart["protocolVersion"];
+      readonly title?: string;
+      readonly description?: string;
+      readonly expiresAt?: string;
+      /** Short-lived, message-bound host endpoints added only to browser DTOs. */
+      readonly resourceUrl?: string;
+      readonly bridgeUrl?: string;
+    }
+  | {
+      readonly type: "failure";
+      readonly id: string;
+      readonly code: AgentReplyPartFailure["code"];
+      readonly message: string;
+      readonly relatedPartId?: string;
+    };
 
 export interface WebAttachment {
   readonly id: string;

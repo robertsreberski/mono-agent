@@ -15,9 +15,10 @@ const manifest = {
 describe("webapp production dependency license gate", () => {
   it("accepts a complete reviewed permissive production graph", () => {
     expect(evaluateWebappDependencyLicenses({
+      "BSD-2-Clause": [{ name: "json-schema-typed", versions: ["8.0.2"] }],
       MIT: [{ name: "@base-ui/react", versions: ["1.6.0"] }],
       ISC: [{ name: "cmdk", versions: ["1.1.1"] }],
-    }, manifest)).toEqual({ issues: [], packageCount: 2 });
+    }, manifest)).toEqual({ issues: [], packageCount: 3 });
   });
 
   it("fails closed on unreviewed licenses and omitted direct dependencies", () => {
@@ -29,5 +30,12 @@ describe("webapp production dependency license gate", () => {
       "production dependency missing from license report: cmdk",
       "unreviewed production license: AGPL-3.0-only",
     ]);
+  });
+
+  it("fails closed on malformed reports", () => {
+    expect(evaluateWebappDependencyLicenses(null, manifest)).toEqual({
+      issues: ["pnpm license report must be an object"],
+      packageCount: 0,
+    });
   });
 });

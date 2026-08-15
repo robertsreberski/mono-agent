@@ -8,6 +8,9 @@ import {
   isChannelUserCancelReason,
   toolNameLeaf,
   type AgentAttachment,
+  type AgentMcpAppHostRequest,
+  type AgentMcpAppResource,
+  type AgentReplyAttachmentPart,
   type AgentStreamWireFrame,
   type ChannelAskAnswer,
   type ChannelAskSnapshot,
@@ -41,6 +44,7 @@ import {
   type WebEventType,
   type WebLiveInputReceipt,
   type WebMessage,
+  type WebMessagePart,
   type WebModelOption,
   type WebNotificationTriggerKind,
   type WebSkillRegistry,
@@ -83,6 +87,7 @@ const DEFAULT_DISCOVERY_INTERVAL_MS = 5_000;
 const DEFAULT_PURGE_INTERVAL_MS = 60 * 60 * 1_000;
 const INFO_TIMEOUT_MS = 2_500;
 const ASK_DISCOVERY_TIMEOUT_MS = 120_000;
+const REPLY_ACCESS_TTL_MS = 10 * 60 * 1_000;
 
 function formatQuotedTurn(quote: string, text: string): string {
   const blockquote = quote
@@ -141,6 +146,10 @@ interface AskWatch {
   readonly promise: Promise<void>;
 }
 
+type WebRichReplyPart =
+  | Extract<WebMessagePart, { type: "attachment" }>
+  | Extract<WebMessagePart, { type: "mcp_app" }>;
+
 export interface DeliverWebNotificationInput {
   readonly sourceId: string;
   readonly triggerKind: WebNotificationTriggerKind;
@@ -177,6 +186,7 @@ export class WebService {
   private readonly pushIdentity: WebPushIdentity;
   private readonly pushDispatcher: WebPushDispatcher;
   private readonly pushAckKey = randomBytes(32);
+  private readonly replyAccessKey: Buffer;
   private readonly askWatches = new Map<string, AskWatch>();
   private connections = new Map<string, AgentConnection>();
   private discoveryTimer: ReturnType<typeof setInterval> | undefined;
@@ -193,11 +203,13 @@ export class WebService {
     options: CreateWebServiceOptions,
     pushIdentity: WebPushIdentity,
     pushSubject: string,
+    replyAccessKey: Buffer,
   ) {
     this.store = store;
     this.lease = lease;
     this.options = options;
     this.pushIdentity = pushIdentity;
+    this.replyAccessKey = replyAccessKey;
     this.attachmentTurnBudget = new WeightedTurnBudget(
       options.maxActiveAttachmentTurnBytes ?? WEB_MAX_ACTIVE_ATTACHMENT_TURN_BYTES,
       options.maxQueuedAttachmentTurns ?? WEB_MAX_QUEUED_ATTACHMENT_TURNS,
@@ -231,8 +243,12 @@ export class WebService {
     let service: WebService | undefined;
     try {
       const pushIdentity = store.ensureWebPushIdentity(generateWebPushIdentity);
+      const replyAccessKey = Buffer.from(
+        store.ensureReplyAccessKey(() => randomBytes(32).toString("base64url")),
+        "base64url",
+      );
       const pushSubject = resolveWebPushSubject(options.env?.MONO_AGENT_WEB_PUSH_SUBJECT);
-      service = new WebService(store, lease, options, pushIdentity, pushSubject);
+      service = new WebService(store, lease, options, pushIdentity, pushSubject, replyAccessKey);
       await store.purgePartialUploadFiles();
       await service.purgeOrphans();
       await service.refreshAgents();
@@ -280,7 +296,7 @@ export class WebService {
   thread(id: string): WebThreadDetail {
     const detail = this.store.getThreadDetail(id);
     if (detail === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
-    return detail;
+    return this.decorateThreadDetail(detail);
   }
 
   threadsPage(input: {
@@ -293,7 +309,142 @@ export class WebService {
   }
 
   messagePage(threadId: string, input: { readonly limit?: number; readonly before?: string }): WebMessagePage {
-    return this.store.listMessagesPage(threadId, input);
+    const page = this.store.listMessagesPage(threadId, input);
+    return { ...page, messages: page.messages.map((message) => this.decorateMessage(message)) };
+  }
+
+  /**
+   * Re-mint a browser capability from the authoritative durable message. The
+   * HTTP route supplies exact-origin console authority; stale access tokens are
+   * deliberately not accepted as renewable credentials.
+   */
+  replyPartAccess(
+    threadId: string,
+    messageId: string,
+    partId: string,
+    type: "attachment" | "mcp_app",
+  ): WebRichReplyPart {
+    const { message, part } = this.requireReplyPart(threadId, messageId, partId, type);
+    this.assertReplyPartRetained(part);
+    return this.decorateReplyPart(message, part);
+  }
+
+  async replyAttachment(
+    threadId: string,
+    messageId: string,
+    partId: string,
+    expires: string,
+    token: string,
+    signal?: AbortSignal,
+  ): Promise<{
+    readonly part: Extract<WebMessagePart, { type: "attachment" }>;
+    readonly response: Response;
+  }> {
+    const { thread, part } = this.authorizeReplyPart(
+      threadId,
+      messageId,
+      partId,
+      "attachment",
+      expires,
+      token,
+    );
+    const connection = this.connections.get(thread.sourceId);
+    if (connection === undefined || connection.info.replyAttachments?.version !== 1) {
+      throw new WebConsoleError("reply_attachment_unavailable", "The attachment source is offline or incompatible.", 409);
+    }
+    const attachment: AgentReplyAttachmentPart = {
+      type: "attachment",
+      id: part.id,
+      reference: { scheme: "mono-agent-artifact", id: part.artifactId },
+      name: part.name,
+      mediaType: part.mediaType,
+      sizeBytes: part.sizeBytes,
+      integrityId: part.integrityId,
+      ...(part.expiresAt === undefined ? {} : { expiresAt: part.expiresAt }),
+    };
+    const response = await connection.client.replyArtifact(
+      this.conversationIdForThread(thread.id),
+      attachment,
+      signal,
+    );
+    return { part, response };
+  }
+
+  async mcpAppResource(
+    threadId: string,
+    messageId: string,
+    partId: string,
+    expires: string,
+    token: string,
+    signal?: AbortSignal,
+  ): Promise<AgentMcpAppResource> {
+    const { thread, part } = this.authorizeReplyPart(
+      threadId,
+      messageId,
+      partId,
+      "mcp_app",
+      expires,
+      token,
+    );
+    const connection = this.connections.get(thread.sourceId);
+    if (connection === undefined || connection.info.mcpApps?.bridgeVersion !== 1) {
+      throw new WebConsoleError("mcp_app_unavailable", "The MCP App source is offline or incompatible.", 409);
+    }
+    const resource = await connection.client.mcpAppResource(
+      this.conversationIdForThread(thread.id),
+      part.invocationId,
+      part.connectionId,
+      signal,
+    );
+    if (
+      resource.app.invocationId !== part.invocationId
+      || resource.app.connectionId !== part.connectionId
+      || resource.app.resourceUri !== part.resourceUri
+      || resource.app.protocolVersion !== part.protocolVersion
+    ) {
+      throw new WebConsoleError("mcp_app_identity_mismatch", "The MCP App identity changed after publication.", 409);
+    }
+    return resource;
+  }
+
+  async mcpAppRequest(
+    threadId: string,
+    messageId: string,
+    partId: string,
+    expires: string,
+    token: string,
+    input: Pick<AgentMcpAppHostRequest, "method" | "params" | "confirmed">,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    const { thread, part } = this.authorizeReplyPart(
+      threadId,
+      messageId,
+      partId,
+      "mcp_app",
+      expires,
+      token,
+    );
+    const confirmationRequired = input.method === "tools/call"
+      || input.method === "ui/open-link"
+      || input.method === "ui/update-model-context";
+    if (confirmationRequired && input.confirmed !== true) {
+      throw new WebConsoleError("mcp_app_confirmation_required", "Confirm this MCP App action before continuing.", 409);
+    }
+    const connection = this.connections.get(thread.sourceId);
+    if (connection === undefined || connection.info.mcpApps?.bridgeVersion !== 1) {
+      throw new WebConsoleError("mcp_app_unavailable", "The MCP App source is offline or incompatible.", 409);
+    }
+    return await connection.client.mcpAppRequest(
+      this.conversationIdForThread(thread.id),
+      {
+        invocationId: part.invocationId,
+        connectionId: part.connectionId,
+        method: input.method,
+        ...(input.params === undefined ? {} : { params: input.params }),
+        ...(input.confirmed === undefined ? {} : { confirmed: input.confirmed }),
+      },
+      signal,
+    );
   }
 
   async registerWebPushSubscription(input: {
@@ -478,7 +629,10 @@ export class WebService {
         throw new WebConsoleError("cron_job_not_found", "Cron job not found for this agent.", 404);
       }
       if (input.before !== undefined) return { runs: [] };
-      return this.store.storedCronRuns(sourceId, jobId, input.limit);
+      const stored = this.store.storedCronRuns(sourceId, jobId, input.limit);
+      return stored.messages === undefined
+        ? stored
+        : { ...stored, messages: stored.messages.map((message) => this.decorateMessage(message)) };
     }
     const page = await connection.client.cronRuns(jobId, {
       limit: input.limit,
@@ -491,7 +645,7 @@ export class WebService {
       this.emit("thread.changed", threadId);
       this.emit("threads.changed", threadId);
     }
-    return { ...page, messages: reconciled.messages };
+    return { ...page, messages: reconciled.messages.map((message) => this.decorateMessage(message)) };
   }
 
   async cronRun(sourceId: string, jobId: string, runId: string): Promise<WebMessage> {
@@ -506,7 +660,7 @@ export class WebService {
       this.emit("thread.changed", message.threadId, { messageId: message.id });
       this.emit("threads.changed", message.threadId);
     }
-    return message;
+    return this.decorateMessage(message);
   }
 
   async cronConfigView(sourceId: string): Promise<WebChannelConfigView> {
@@ -841,7 +995,12 @@ export class WebService {
         },
       });
       await coalescer.flush();
-      const detail = this.store.completeTurn(started.turnId, response.finalText, response.metadata);
+      const detail = this.store.completeTurn(
+        started.turnId,
+        response.finalText,
+        response.metadata,
+        response.parts,
+      );
       this.emit("turn.changed", started.thread.id, { turn: detail.thread.runState });
       this.emit("thread.changed", started.thread.id, { revision: detail.thread.revision });
       this.emit("threads.changed", started.thread.id);
@@ -1249,6 +1408,136 @@ export class WebService {
       );
     }
     return connection;
+  }
+
+  private authorizeReplyPart<T extends "attachment" | "mcp_app">(
+    threadId: string,
+    messageId: string,
+    partId: string,
+    type: T,
+    expires: string,
+    token: string,
+  ): {
+    readonly thread: WebThread;
+    readonly part: Extract<WebMessagePart, { type: T }>;
+  } {
+    const access = this.replyAccessTokenStatus(threadId, messageId, type, partId, expires, token);
+    if (access === "invalid") {
+      throw new WebConsoleError("reply_part_not_found", "The reply part is unavailable.", 404);
+    }
+    const { thread, part } = this.requireReplyPart(threadId, messageId, partId, type);
+    this.assertReplyPartRetained(part);
+    if (access === "expired") {
+      throw new WebConsoleError(
+        "reply_access_expired",
+        "Reply access expired. Refresh this reply part and try again.",
+        410,
+      );
+    }
+    return { thread, part };
+  }
+
+  private requireReplyPart<T extends "attachment" | "mcp_app">(
+    threadId: string,
+    messageId: string,
+    partId: string,
+    type: T,
+  ): {
+    readonly thread: WebThread;
+    readonly message: WebMessage;
+    readonly part: Extract<WebMessagePart, { type: T }>;
+  } {
+    const thread = this.store.getThread(threadId);
+    const message = this.store.getMessage(messageId);
+    if (thread === undefined || message === undefined || message.threadId !== thread.id) {
+      throw new WebConsoleError("reply_part_not_found", "The reply part is unavailable.", 404);
+    }
+    const matches = message.parts.filter(
+      (part): part is Extract<WebMessagePart, { type: T }> => part.type === type && part.id === partId,
+    );
+    if (matches.length !== 1) {
+      throw new WebConsoleError("reply_part_not_found", "The reply part is unavailable.", 404);
+    }
+    const part = matches[0]!;
+    return { thread, message, part };
+  }
+
+  private assertReplyPartRetained(part: WebRichReplyPart): void {
+    const expiresAt = (part as WebRichReplyPart).expiresAt;
+    if (expiresAt !== undefined && Date.parse(expiresAt) <= this.currentDate().getTime()) {
+      throw new WebConsoleError("reply_part_expired", "The reply part has expired.", 410);
+    }
+  }
+
+  private decorateThreadDetail(detail: WebThreadDetail): WebThreadDetail {
+    return { ...detail, messages: detail.messages.map((message) => this.decorateMessage(message)) };
+  }
+
+  private decorateMessage(message: WebMessage): WebMessage {
+    const parts = message.parts.map((part): WebMessagePart => {
+      if (part.type !== "attachment" && part.type !== "mcp_app") return part;
+      return this.decorateReplyPart(message, part);
+    });
+    return { ...message, parts };
+  }
+
+  private decorateReplyPart(message: WebMessage, part: WebRichReplyPart): WebRichReplyPart {
+    const now = this.currentDate().getTime();
+    const retentionDeadline = part.expiresAt === undefined
+      ? Number.POSITIVE_INFINITY
+      : Date.parse(part.expiresAt);
+    const expiresAt = Math.min(now + REPLY_ACCESS_TTL_MS, retentionDeadline);
+    if (!Number.isFinite(expiresAt) || expiresAt <= now) return part;
+    const expires = String(Math.floor(expiresAt / 1_000));
+    const token = this.replyAccessToken(message.threadId, message.id, part.type, part.id, expires);
+    const base = `/api/v1/threads/${encodeURIComponent(message.threadId)}`
+      + `/messages/${encodeURIComponent(message.id)}`;
+    const query = new URLSearchParams({ expires, token }).toString();
+    return part.type === "attachment"
+      ? {
+          ...part,
+          contentUrl: `${base}/reply-attachments/${encodeURIComponent(part.id)}/content?${query}`,
+        }
+      : {
+          ...part,
+          resourceUrl: `${base}/mcp-apps/${encodeURIComponent(part.id)}?${query}`,
+          bridgeUrl: `${base}/mcp-apps/${encodeURIComponent(part.id)}/requests?${query}`,
+        };
+  }
+
+  private replyAccessToken(
+    threadId: string,
+    messageId: string,
+    type: "attachment" | "mcp_app",
+    partId: string,
+    expires: string,
+  ): string {
+    return createHmac("sha256", this.replyAccessKey)
+      .update(["v1", threadId, messageId, type, partId, expires].join("\0"))
+      .digest("base64url");
+  }
+
+  private replyAccessTokenStatus(
+    threadId: string,
+    messageId: string,
+    type: "attachment" | "mcp_app",
+    partId: string,
+    expires: string,
+    supplied: string,
+  ): "valid" | "expired" | "invalid" {
+    if (!/^\d{10,13}$/u.test(expires) || !/^[A-Za-z0-9_-]{43}$/u.test(supplied)) return "invalid";
+    const expiresMs = Number(expires) * 1_000;
+    if (!Number.isSafeInteger(expiresMs)) return "invalid";
+    const expected = Buffer.from(this.replyAccessToken(threadId, messageId, type, partId, expires), "utf8");
+    const candidate = Buffer.from(supplied, "utf8");
+    if (candidate.byteLength !== expected.byteLength || !timingSafeEqual(candidate, expected)) return "invalid";
+    const now = this.currentDate().getTime();
+    if (expiresMs > now + REPLY_ACCESS_TTL_MS + 1_000) return "invalid";
+    return expiresMs <= now ? "expired" : "valid";
+  }
+
+  private conversationIdForThread(threadId: string): string {
+    return this.store.cronConversationIdForThread(threadId) ?? `web:${threadId}`;
   }
 
   private currentDate(): Date {

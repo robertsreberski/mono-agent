@@ -122,6 +122,8 @@ It binds `0.0.0.0:5050` by default, auto-discovers running agents, and keeps sep
 
 Attachments come from the browser device's native file picker, not a browser over the host filesystem. The web transport uses the same `AgentAttachment` contract, MIME allowlist, 20 MiB per-file limit, image/document classification, text decoding, and harness persistence as Telegram; each turn additionally allows at most 10 files and 64 MiB total. See the [web console guide](./docs/observability/web-console.md) for lifecycle, security, retention, and current scope. The `mono-agent sessions` Session Recorder command was removed; use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console).
 
+Replies can also carry generated files and MCP Apps without embedding local paths, capability URLs, or payload bytes in the message stream. Slack and Telegram confirm native file uploads before suppressing a safe human fallback; machine and verbatim transports leave answer text unchanged. The web console provides integrity-checked downloads and a confirmation-gated, double-frame sandbox for supported Pi-native MCP Apps. See [Reply files and MCP Apps](./docs/tools/rich-replies.md) for route support, limits, retention, and the browser security boundary.
+
 Use the header bell to enable durable Web Push for completed responses, `AskUser` questions, and terminal failures. The server stores its VAPID identity, browser subscriptions, and retry outbox under the owner-private web state; notification previews are plain-text, redacted, and bounded. The web service is self-hosted, while encrypted delivery uses the browser vendor's standards-mandated push service. On iPhone or iPad, open the console over HTTPS and add it to the Home Screen first.
 
 ## Package Architecture

@@ -164,9 +164,8 @@ describe("artifact retention app scheduler", () => {
       clearInterval: vi.fn(),
     });
 
-    await vi.waitFor(async () => {
-      await expectExists(join(operatorRoot, "forget-4"), false);
-    }, SWEEP_WAIT);
+    await scheduler.runNow();
+    await expectExists(join(operatorRoot, "forget-4"), false);
     const expired = join(operatorRoot, "forget-expired");
     await writeOperatorBackup(operatorRoot, "forget-expired", NOW - 40 * DAY_MS);
     intervalSweep?.();

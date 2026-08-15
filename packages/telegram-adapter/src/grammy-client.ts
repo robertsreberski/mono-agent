@@ -159,10 +159,26 @@ export function createGrammyTelegramApi(api: Api): TelegramMessageSender {
           typeof params.document === "string"
             ? params.document
             : new InputFile(params.document, params.filename);
+        const other = {
+          ...(params.caption === undefined ? {} : { caption: params.caption }),
+          ...(params.reply_to_message_id === undefined
+            ? {}
+            : {
+                reply_parameters: {
+                  message_id: params.reply_to_message_id,
+                  ...(params.allow_sending_without_reply === undefined
+                    ? {}
+                    : { allow_sending_without_reply: params.allow_sending_without_reply }),
+                },
+              }),
+          ...(params.disable_notification === undefined
+            ? {}
+            : { disable_notification: params.disable_notification }),
+        };
         const message = await api.sendDocument(
           params.chat_id,
           document,
-          params.caption === undefined ? {} : { caption: params.caption },
+          other,
           asGrammySignal(options?.signal),
         );
         return message as unknown as TelegramSentMessage;

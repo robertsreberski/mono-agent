@@ -104,6 +104,15 @@ curl -s "http://127.0.0.1:${PORT}/webhook/requests/${REQUEST_ID}" \
 
 Async statuses are kept in memory subject to `retentionMs` and `maxStoredRequests`; a status URL polled after expiry returns `not_found`. If a turn is already running and the runtime cannot accept another, a request returns **HTTP 409** (`status: "busy"`) — that transient state is not stored or replayed via the status URL.
 
+Webhook responses are text/machine contracts. Attachments, MCP Apps, and prior
+part failures do not change `text`; successful sync JSON and completed async
+status JSON instead include optional `replyPartOutcomes`. Attachments and apps
+terminate as `unsupported_destination`. The array is capped at 20 with a
+counted overflow aggregate and contains only position, broad type, status, code,
+and a fixed message—never source ids, filenames, paths, URLs, capabilities,
+integrity ids, producer messages, or payload bytes. Programmatic `getStatus()`
+and result callbacks receive separate copies of the same sanitized outcome.
+
 ### HTTP status contract
 
 | Route outcome | HTTP status | JSON `status` | Status-store behavior |

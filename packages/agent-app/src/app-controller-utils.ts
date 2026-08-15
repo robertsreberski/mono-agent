@@ -12,6 +12,7 @@ import type {
 } from "@mono-agent/memory/bujo";
 import {
   describeSandboxEffectiveState,
+  monoRuntimeSupportsMcpApps,
   sandboxEffectiveStateWarning,
 } from "@mono-agent/runtime-adapter";
 import type { SandboxEffectiveState } from "@mono-agent/runtime-adapter";
@@ -265,6 +266,17 @@ export function historyToolRouteSupport(config: MonoAgentConfig): {
     runHistory: !runtimeRouteContainsDirectOpenCode(config),
     sessionHistory: !runtimeRouteContainsUnsupportedHistoryTool(config),
   };
+}
+
+export function runtimeRouteSupportsMcpApps(config: MonoAgentConfig): boolean {
+  const route = configuredRuntimeModels(config.runtime);
+  return route.length > 0 && route.every((model) => {
+    try {
+      return monoRuntimeSupportsMcpApps(model);
+    } catch {
+      return false;
+    }
+  });
 }
 
 export function isInteractionToolName(name: string): boolean {

@@ -44,5 +44,6 @@ export {
   CronOperatorError,
   MAX_CRON_OPERATOR_RESPONSE_BYTES,
   MAX_CRON_OPERATOR_RUN_PAGE,
+  MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES,
 } from "./cron.js";
 export type { CronOperatorErrorCode } from "./cron.js";

@@ -2276,6 +2276,7 @@ describe("startMonoAgentApp", () => {
       model: "gpt-5.1",
     }));
     expect(runtimeCalls[0]?.mcpServers).toBeUndefined();
+    expect(runtimeCalls[0]?.mcpApps).toBeUndefined();
     await app.stop();
   });
 

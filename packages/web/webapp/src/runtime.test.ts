@@ -262,6 +262,25 @@ describe("convertWebMessage", () => {
     ]);
   });
 
+  it("preserves distinct stable ids for repeated reply failures", () => {
+    const converted = convertWebMessage(
+      message({
+        role: "assistant",
+        status: "complete",
+        parts: [
+          { type: "failure", id: "failure-same-call-a", code: "app_resource_invalid", message: "First failure." },
+          { type: "failure", id: "failure-same-call-b", code: "app_resource_invalid", message: "Second failure." },
+        ],
+      }),
+    );
+
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content).toEqual([
+      expect.objectContaining({ type: "data-reply-failure", data: expect.objectContaining({ id: "failure-same-call-a" }) }),
+      expect.objectContaining({ type: "data-reply-failure", data: expect.objectContaining({ id: "failure-same-call-b" }) }),
+    ]);
+  });
+
   it("drops blank interim prose rather than folding an empty note into the log", () => {
     const converted = convertWebMessage(
       message({

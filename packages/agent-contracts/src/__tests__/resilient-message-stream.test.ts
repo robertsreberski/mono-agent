@@ -760,6 +760,76 @@ describe("ResilientMessageStream", () => {
     expect(transport.calls.length).toBe(afterFirst);
   });
 
+  it("renders every unsupported rich reply part as visible text", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 2_000 });
+    const stream = makeStream(transport, { finalOnly: true });
+
+    await stream.finish("Answer", {
+      parts: [
+        {
+          type: "attachment",
+          id: "attachment-1",
+          reference: { scheme: "mono-agent-artifact", id: "artifact-1" },
+          name: "report.pdf",
+          mediaType: "application/pdf",
+          sizeBytes: 42,
+          integrityId: `sha256:${"a".repeat(64)}`,
+        },
+        {
+          type: "mcp_app",
+          id: "app-1",
+          invocationId: "invocation-1",
+          connectionId: "connection-1",
+          serverName: "charts",
+          toolName: "render_chart",
+          title: "Chart explorer",
+          resourceUri: "ui://charts/main",
+          mediaType: "text/html;profile=mcp-app",
+          protocolVersion: "2026-01-26",
+        },
+        {
+          type: "failure",
+          id: "failure-1",
+          code: "artifact_missing",
+          message: "The report expired.",
+        },
+      ],
+    });
+
+    expect(transport.calls).toEqual([
+      expect.objectContaining({
+        op: "post",
+        text: expect.stringContaining("Attachment not delivered on this destination: report.pdf"),
+      }),
+    ]);
+    expect((transport.calls[0] as RecordedPost).text).toContain(
+      "Interactive app “Chart explorer” is available only in a compatible web console.",
+    );
+    expect((transport.calls[0] as RecordedPost).text).toContain(
+      "Reply part failed (artifact_missing): The report expired.",
+    );
+    expect((transport.calls[0] as RecordedPost).text).not.toContain("sha256:");
+  });
+
+  it("keeps machine/verbatim output unchanged when rich parts are unsupported", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 2_000 });
+    const stream = makeStream(transport, { finalOnly: true });
+
+    await stream.finish('{"answer":true}', {
+      parts: [{
+        type: "failure",
+        id: "failure-1",
+        code: "artifact_missing",
+        message: "A file was unavailable.",
+      }],
+      unsupportedPartFallback: "none",
+    });
+
+    expect(transport.calls).toEqual([
+      expect.objectContaining({ op: "post", text: '{"answer":true}' }),
+    ]);
+  });
+
   it("renders a tool activity hint while there is no answer text yet", async () => {
     const transport = new FakeTransport();
     const stream = makeStream(transport, { showHints: true });
