@@ -100,6 +100,15 @@ Only future ticks after startup are scheduled. Direct programmatic `startCronAda
 
 Programmatic hosts composing native notification can set a job's explicit `notifyConversationId`, pass a pre-resolved `notifyFallbackConversationId`, or provide `resolveNotifyFallbackConversationId` on the adapter options. The resolver runs once per firing; the selected route is used for request `replyTo` and returned on the succeeded `CronJobResult`, so a host can deliver the final text on the exact same route without resolving it again after the run. The resolver receives the run's optional `AbortSignal`, and the adapter also races its promise against that signal so replace/stop can reclaim the firing even when resolver code does not cooperate.
 
+Cron is a text/verbatim destination, not a reply-file transport. A response
+with attachments, MCP Apps, or prior part failures keeps its answer text
+byte-for-byte unchanged and adds bounded `replyPartOutcomes` to
+`CronJobResult`. Attachments and MCP Apps terminate as
+`unsupported_destination`; fixed sanitized records never expose source ids,
+paths, URLs, integrity values, or payloads. The adapter logs the outcomes, and
+the config-first native-notification path logs again while sending only the
+unchanged text, so a successful model run cannot imply that a file was sent.
+
 Cron expressions use the standard five positional fields `minute hour day-of-month month day-of-week`. The timezone defaults to `UTC`. Six-field expressions with seconds and macro aliases such as `@daily` are not supported. Hashed `H` fields are stable: the scheduler seeds them from the job `id`; direct `validateCronExpression` callers must pass a non-empty `hashSeed` when validating `H`. Hosts can validate user input with the same parser used by the scheduler:
 
 ```ts

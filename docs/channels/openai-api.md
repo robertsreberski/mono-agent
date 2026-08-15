@@ -104,6 +104,16 @@ curl http://127.0.0.1:4040/v1/chat/completions \
 
 Common sampling parameters (`temperature`, `top_p`, `max_tokens`, `max_completion_tokens`, `stop`, `seed`, `logit_bias`, `presence_penalty`, and `frequency_penalty`) are accepted for protocol and request-metadata compatibility, but are not currently applied to the configured runtime. Absent parameters and explicit OpenAI defaults are quiet. Supplying any non-default value emits a names-only `runtime_warning` and continues with the runtime's configured values: streaming responses render it as a reasoning delta, while non-stream JSON responses expose the structured event in the additive `mono_agent.events` extension. As a result, Open WebUI sampling sliders are currently inert for mono-agent requests.
 
+Reply attachments and MCP Apps are not OpenAI Chat Completions content parts.
+The adapter keeps assistant `content` byte-for-byte unchanged and exposes one
+bounded sanitized terminal failure per rich part under the additive
+`mono_agent.reply_part_outcomes` extension. Non-stream responses place it on the
+completion object; streams use one metadata-only chunk before the normal
+`finish_reason: "stop"` chunk and `[DONE]`. Attachments and apps report
+`unsupported_destination`. The maximum is 20 records with a counted overflow
+aggregate, and records never expose source ids, filenames, paths, URLs,
+capabilities, integrity ids, producer messages, or payload bytes.
+
 ### Compatibility matrix
 
 | Request or response surface | Support | Behavior |
@@ -120,6 +130,7 @@ Common sampling parameters (`temperature`, `top_p`, `max_tokens`, `max_completio
 | Message-level `tool_calls` or `function_call` | Rejected | Host-owned tools are never delegated to the API client. |
 | Other content parts, including `input_audio` | Rejected | Only `text` and `image_url` are accepted. |
 | Host-owned tool progress | Open WebUI extension | Completed tools render as bounded details blocks; no `delta.tool_calls` or `finish_reason: "tool_calls"`. |
+| Rich reply parts | Mono-agent extension | Assistant content is unchanged; sanitized terminal failures use `mono_agent.reply_part_outcomes` in JSON and metadata-only SSE chunks. |
 | Responses, Embeddings, Files, Images, or Audio endpoints | Not implemented | Outside this Chat Completions package boundary. |
 
 ## Session continuity

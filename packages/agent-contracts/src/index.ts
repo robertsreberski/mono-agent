@@ -895,6 +895,11 @@ export {
   frameFeedingMessageStream,
 } from "./stream-wire.js";
 export type { AgentStreamWireFrame } from "./stream-wire.js";
+export { unsupportedReplyPartDeliveryOutcomes } from "./reply-part-outcomes.js";
+export type {
+  AgentReplyPartDeliveryOutcome,
+  AgentReplyPartDeliveryType,
+} from "./reply-part-outcomes.js";
 export {
   BufferedMessageStream,
 } from "./buffered-message-stream.js";

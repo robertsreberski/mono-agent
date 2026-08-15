@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentResponder } from "@mono-agent/agent-contracts";
+import { MAX_AGENT_REPLY_PARTS, type AgentReplyPart, type AgentResponder } from "@mono-agent/agent-contracts";
 
 import type { CronJobResult } from "../index.js";
 import { CronAdapterError, startCronAdapter, toCronJobs } from "../index.js";
@@ -9,35 +9,87 @@ import { CronAdapterError, startCronAdapter, toCronJobs } from "../index.js";
 // startup validateOptions gate that rejects an invalid overlap value.
 import { handleTick } from "../scheduler.js";
 
+function sensitiveReplyParts(): readonly AgentReplyPart[] {
+  const sensitive = "/private/private-report.csv?token=capability-secret#sha256:deadbeef";
+  return [
+    {
+      type: "attachment",
+      id: sensitive,
+      reference: { scheme: "mono-agent-artifact", id: sensitive },
+      name: sensitive,
+      mediaType: "text/csv",
+      sizeBytes: 42,
+      integrityId: "sha256:deadbeef",
+    },
+    {
+      type: "mcp_app",
+      id: sensitive,
+      invocationId: sensitive,
+      connectionId: sensitive,
+      serverName: sensitive,
+      toolName: sensitive,
+      resourceUri: `http://127.0.0.1:4319/${sensitive}`,
+      mediaType: "text/html;profile=mcp-app",
+      protocolVersion: "2026-01-26",
+      title: sensitive,
+    },
+    ...Array.from({ length: 20 }, (_, index) => ({
+      type: "failure" as const,
+      id: `${sensitive}:${String(index)}`,
+      code: "artifact_missing" as const,
+      message: sensitive.repeat(1_000),
+      relatedPartId: sensitive,
+    })),
+  ];
+}
+
 describe("Cron adapter", () => {
-  it("keeps cron result text verbatim when rich parts cannot be represented", async () => {
+  it("keeps text verbatim and retains bounded sanitized failures for every unsupported rich part", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     const results: CronJobResult[] = [];
+    const warn = vi.fn();
+    const parts = sensitiveReplyParts();
+    const exactText = "  verbatim notification\n";
     const scheduler = startCronAdapter({
       responder: {
         async respond() {
           return {
-            text: "verbatim notification",
-            parts: [{
-              type: "failure" as const,
-              id: "failure-1",
-              code: "artifact_missing" as const,
-              message: "A file was unavailable.",
-            }],
+            text: exactText,
+            parts,
           };
         },
       },
       jobs: [{ id: "verbatim", expression: "* * * * *", prompt: "run" }],
       now: () => new Date(Date.now()),
       onResult: (result) => { results.push(result); },
+      logger: { warn },
     });
     try {
       await vi.advanceTimersByTimeAsync(60_000);
-      await expect.poll(() => {
-        const result = results[0];
-        return result?.kind === "succeeded" ? result.text : undefined;
-      }).toBe("verbatim notification");
+      await expect.poll(() => results.length).toBe(1);
+      const result = results[0];
+      expect(result?.kind).toBe("succeeded");
+      if (result?.kind !== "succeeded") throw new Error("Expected a succeeded cron result.");
+      expect(result.text).toBe(exactText);
+      expect(result.replyPartOutcomes).toHaveLength(MAX_AGENT_REPLY_PARTS);
+      expect(result.replyPartOutcomes?.slice(0, 2)).toEqual([
+        expect.objectContaining({ partIndex: 0, partType: "attachment", code: "unsupported_destination" }),
+        expect.objectContaining({ partIndex: 1, partType: "mcp_app", code: "unsupported_destination" }),
+      ]);
+      expect(result.replyPartOutcomes?.at(-1)).toMatchObject({
+        code: "reply_part_too_large",
+        affectedPartCount: 3,
+      });
+      const serialized = JSON.stringify(result);
+      expect(Buffer.byteLength(serialized, "utf8")).toBeLessThan(6_000);
+      expect(serialized).not.toContain("private-report");
+      expect(serialized).not.toContain("capability-secret");
+      expect(serialized).not.toContain("deadbeef");
+      expect(warn).toHaveBeenCalledWith(
+        "Cron rich reply parts were not delivered by this destination.",
+        expect.objectContaining({ replyPartOutcomes: result.replyPartOutcomes }),
+      );
     } finally {
       scheduler.stop();
       vi.useRealTimers();

@@ -2,7 +2,9 @@ import {
   BufferedMessageStream,
   isAgentResponseCancelledError,
   normalizeOptionalString,
+  unsupportedReplyPartDeliveryOutcomes,
   type AgentMessageStream,
+  type AgentReplyPartDeliveryOutcome,
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
@@ -99,6 +101,8 @@ export type CronJobResult =
       readonly notifyConversationId?: string;
       readonly text?: string;
       readonly metadata?: Record<string, unknown>;
+      /** Terminal, sanitized outcomes for rich parts this adapter cannot deliver. */
+      readonly replyPartOutcomes?: readonly AgentReplyPartDeliveryOutcome[];
     })
   | (CronResultIdentity & {
       readonly kind: "failed" | "cancelled";
@@ -108,6 +112,8 @@ export type CronJobResult =
       readonly failureKind?: string;
       /** Harness artifact id, when a recorder was created before failure. */
       readonly runId?: string;
+      /** Present when a responder resolved with parts after this run was cancelled. */
+      readonly replyPartOutcomes?: readonly AgentReplyPartDeliveryOutcome[];
     })
   | (CronResultIdentity & {
       readonly kind: "skipped";
@@ -701,6 +707,7 @@ function startRun(
     })
     .then(({ response, notifyConversationId }) => {
       finalize(async () => {
+        const replyPartOutcomes = unsupportedReplyPartDeliveryOutcomes(response.parts);
         await stream.finish(response.text, {
           ...(response.parts === undefined ? {} : { parts: response.parts }),
           unsupportedPartFallback: "none",
@@ -719,6 +726,7 @@ function startRun(
             completedAt: (options.now?.() ?? new Date()).toISOString(),
             error: "Cron job cancelled (responder resolved after abort).",
             ...artifactRunIdFields(options, firing),
+            ...(replyPartOutcomes === undefined ? {} : { replyPartOutcomes }),
           };
           options.logger?.warn?.("Cron job responder resolved after abort; reporting cancelled.", {
             jobId: job.id,
@@ -733,9 +741,17 @@ function startRun(
           startedAt,
           completedAt: (options.now?.() ?? new Date()).toISOString(),
           ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
-          ...(stream.text.length === 0 ? {} : { text: stream.text }),
+          ...((response.text ?? stream.text).length === 0 ? {} : { text: response.text ?? stream.text }),
           ...(response.metadata === undefined ? {} : { metadata: response.metadata }),
+          ...(replyPartOutcomes === undefined ? {} : { replyPartOutcomes }),
         };
+        if (replyPartOutcomes !== undefined) {
+          options.logger?.warn?.("Cron rich reply parts were not delivered by this destination.", {
+            jobId: job.id,
+            cronRunId: firing.runId,
+            replyPartOutcomes,
+          });
+        }
         await emitResult(options, result);
       });
     })

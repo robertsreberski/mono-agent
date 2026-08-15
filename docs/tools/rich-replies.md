@@ -54,7 +54,18 @@ cannot safely receive its MCP server.
 | Telegram | Sends a native `sendDocument` to the exact chat/reply target and preserves silent proactive delivery. | Concise human-readable warning. |
 | Web console | Shows a message-bound download control after server-side authorization and integrity verification. | MCP Apps render as described below; failures remain individual message parts. |
 | Terminal and other human channels | Preserve the answer and render a safe warning when a part has no native representation. | Same. |
-| OpenAI-compatible API, webhook, A2A, and cron/verbatim delivery | Never append fallback prose to machine or verbatim output. | The text contract remains byte-for-byte unchanged. |
+| OpenAI-compatible API | Keeps assistant `content` byte-for-byte unchanged and returns sanitized failures in `mono_agent.reply_part_outcomes`. | Non-stream JSON and a metadata-only SSE chunk use the same bounded shape. |
+| Webhook | Keeps `text` byte-for-byte unchanged and returns sanitized `replyPartOutcomes`. | Sync responses, async status reads, and result callbacks retain the outcomes. |
+| A2A | Keeps answer text byte-for-byte unchanged and adds an A2A structured data `Part` to the final artifact. | Attachments and MCP Apps become explicit `unsupported_destination` failures; no file bytes or private references cross A2A. |
+| Cron / verbatim notification | Keeps answer text byte-for-byte unchanged and retains sanitized `replyPartOutcomes` on `CronJobResult`. | The scheduler and app log the failures; native notification carries text only and never claims a file was sent. |
+
+Machine-facing outcome records contain only the source position, broad part
+type, terminal status, stable failure code, and a fixed safe message. They never
+copy part ids, filenames, local or host-only URLs, capability values, integrity
+ids, producer error messages, or payload bytes. The list shares the 20-part
+ceiling. If an off-contract responder exceeds it, the twentieth record is a
+bounded aggregate with the number of remaining parts, so overflow is explicit
+rather than silently discarded.
 
 Slack and Telegram remove a file part from textual fallback only after the
 platform confirms its native upload. The deduplication key binds the file

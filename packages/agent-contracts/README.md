@@ -187,6 +187,8 @@ AgentReplyArtifactStream
 AgentReplyAttachmentPart
 AgentReplyMcpAppPart
 AgentReplyPart
+AgentReplyPartDeliveryOutcome
+AgentReplyPartDeliveryType
 AgentReplyPartFailure
 AgentReplyTarget
 AgentRequestBase
@@ -363,6 +365,7 @@ splitTextForChat
 suppressesNotification
 toolHintFor
 toolNameLeaf
+unsupportedReplyPartDeliveryOutcomes
 writeSettingsJson
 ```
 

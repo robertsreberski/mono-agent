@@ -2,7 +2,12 @@ import dns from "node:dns";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { isWildcardHost, type AgentResponder } from "@mono-agent/agent-contracts";
+import {
+  MAX_AGENT_REPLY_PARTS,
+  isWildcardHost,
+  type AgentReplyPart,
+  type AgentResponder,
+} from "@mono-agent/agent-contracts";
 
 import {
   DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
@@ -11,24 +16,56 @@ import {
   type OpenAIApiChatRequest,
 } from "../index.js";
 
+function sensitiveReplyParts(): readonly AgentReplyPart[] {
+  const sensitive = "/private/private-report.csv?token=capability-secret#sha256:deadbeef";
+  return [
+    {
+      type: "attachment",
+      id: sensitive,
+      reference: { scheme: "mono-agent-artifact", id: sensitive },
+      name: sensitive,
+      mediaType: "text/csv",
+      sizeBytes: 42,
+      integrityId: "sha256:deadbeef",
+    },
+    {
+      type: "mcp_app",
+      id: sensitive,
+      invocationId: sensitive,
+      connectionId: sensitive,
+      serverName: sensitive,
+      toolName: sensitive,
+      resourceUri: `http://127.0.0.1:4319/${sensitive}`,
+      mediaType: "text/html;profile=mcp-app",
+      protocolVersion: "2026-01-26",
+      title: sensitive,
+    },
+    ...Array.from({ length: 20 }, (_, index) => ({
+      type: "failure" as const,
+      id: `${sensitive}:${String(index)}`,
+      code: "artifact_missing" as const,
+      message: sensitive.repeat(1_000),
+      relatedPartId: sensitive,
+    })),
+  ];
+}
+
 describe("OpenAI API adapter", () => {
-  it("does not append rich-part warnings to OpenAI-compatible machine output", async () => {
+  it("keeps sync/stream content exact and emits bounded sanitized mono-agent part failures", async () => {
+    const warn = vi.fn();
+    const exactText = "  {\"answer\":true}\n";
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",
       port: 0,
       responder: {
         async respond() {
           return {
-            text: '{"answer":true}',
-            parts: [{
-              type: "failure" as const,
-              id: "failure-1",
-              code: "artifact_missing" as const,
-              message: "A file was unavailable.",
-            }],
+            text: exactText,
+            parts: sensitiveReplyParts(),
           };
         },
       },
+      logger: { warn },
     });
     try {
       const response = await fetch(`${server.baseUrl}/chat/completions`, {
@@ -36,8 +73,56 @@ describe("OpenAI API adapter", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ model: "agent", messages: [{ role: "user", content: "json" }] }),
       });
-      const body = await response.json() as { choices: Array<{ message: { content: string } }> };
-      expect(body.choices[0]?.message.content).toBe('{"answer":true}');
+      const body = await response.json() as {
+        choices: Array<{ message: { content: string } }>;
+        mono_agent: { reply_part_outcomes: Array<Record<string, unknown>> };
+      };
+      expect(body.choices[0]?.message.content).toBe(exactText);
+      expect(body.mono_agent.reply_part_outcomes).toHaveLength(MAX_AGENT_REPLY_PARTS);
+      expect(body.mono_agent.reply_part_outcomes.slice(0, 2)).toEqual([
+        expect.objectContaining({ partIndex: 0, partType: "attachment", code: "unsupported_destination" }),
+        expect.objectContaining({ partIndex: 1, partType: "mcp_app", code: "unsupported_destination" }),
+      ]);
+      expect(body.mono_agent.reply_part_outcomes.at(-1)).toMatchObject({
+        code: "reply_part_too_large",
+        affectedPartCount: 3,
+      });
+
+      const streamed = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "agent",
+          stream: true,
+          messages: [{ role: "user", content: "json" }],
+        }),
+      });
+      const streamBody = await streamed.text();
+      const payloads = sseDataPayloads(streamBody);
+      const chunks = payloads
+        .filter((payload) => payload !== "[DONE]")
+        .map((payload) => JSON.parse(payload) as Record<string, unknown>);
+      const streamedContent = chunks
+        .flatMap((chunk) => chunk.choices as Array<{ delta: { content?: string } }>)
+        .map((choice) => choice.delta.content ?? "")
+        .join("");
+      expect(streamedContent).toBe(exactText);
+      expect(chunks).toContainEqual(expect.objectContaining({
+        mono_agent: {
+          reply_part_outcomes: body.mono_agent.reply_part_outcomes,
+        },
+      }));
+      expect(payloads.at(-1)).toBe("[DONE]");
+
+      for (const serialized of [JSON.stringify(body), streamBody]) {
+        expect(serialized).not.toContain("private-report");
+        expect(serialized).not.toContain("capability-secret");
+        expect(serialized).not.toContain("deadbeef");
+      }
+      for (const payload of payloads.slice(0, -1)) {
+        expect(Buffer.byteLength(`data: ${payload}\n\n`, "utf8")).toBeLessThanOrEqual(MAX_TOOL_SSE_FRAME_BYTES);
+      }
+      expect(warn).toHaveBeenCalledTimes(2);
     } finally {
       await server.stop();
     }

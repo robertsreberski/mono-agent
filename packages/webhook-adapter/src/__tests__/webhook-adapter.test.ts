@@ -4,7 +4,7 @@ import { createConnection } from "node:net";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentResponder } from "@mono-agent/agent-contracts";
+import { MAX_AGENT_REPLY_PARTS, type AgentReplyPart, type AgentResponder } from "@mono-agent/agent-contracts";
 
 import {
   NATIVE_NOTIFY_CALLBACK_CHANNEL_IDS,
@@ -13,24 +13,56 @@ import {
   type WebhookAdapterStartResult,
 } from "../index.js";
 
+function sensitiveReplyParts(): readonly AgentReplyPart[] {
+  const sensitive = "/private/private-report.csv?token=capability-secret#sha256:deadbeef";
+  return [
+    {
+      type: "attachment",
+      id: sensitive,
+      reference: { scheme: "mono-agent-artifact", id: sensitive },
+      name: sensitive,
+      mediaType: "text/csv",
+      sizeBytes: 42,
+      integrityId: "sha256:deadbeef",
+    },
+    {
+      type: "mcp_app",
+      id: sensitive,
+      invocationId: sensitive,
+      connectionId: sensitive,
+      serverName: sensitive,
+      toolName: sensitive,
+      resourceUri: `http://127.0.0.1:4319/${sensitive}`,
+      mediaType: "text/html;profile=mcp-app",
+      protocolVersion: "2026-01-26",
+      title: sensitive,
+    },
+    ...Array.from({ length: 20 }, (_, index) => ({
+      type: "failure" as const,
+      id: `${sensitive}:${String(index)}`,
+      code: "artifact_missing" as const,
+      message: sensitive.repeat(1_000),
+      relatedPartId: sensitive,
+    })),
+  ];
+}
+
 describe("Webhook adapter", () => {
-  it("keeps synchronous machine output unchanged when rich parts cannot be represented", async () => {
+  it("keeps sync/status text exact and exposes bounded sanitized rich-part failures", async () => {
+    const warn = vi.fn();
+    const exactText = "  {\"answer\":true}\n";
     const server = await startWebhookAdapter({
       host: "127.0.0.1",
       port: 0,
       responder: {
         async respond() {
           return {
-            text: '{"answer":true}',
-            parts: [{
-              type: "failure" as const,
-              id: "failure-1",
-              code: "artifact_missing" as const,
-              message: "A file was unavailable.",
-            }],
+            text: exactText,
+            parts: sensitiveReplyParts(),
           };
         },
       },
+      logger: { warn },
     });
     try {
       const response = await fetch(server.invokeUrl, {
@@ -38,7 +70,40 @@ describe("Webhook adapter", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text: "machine", conversationId: "machine-1", mode: "sync" }),
       });
-      await expect(response.json()).resolves.toMatchObject({ text: '{"answer":true}' });
+      const syncBody = await response.json() as Record<string, unknown>;
+      expect(syncBody.text).toBe(exactText);
+      expect((syncBody.replyPartOutcomes as unknown[])).toHaveLength(MAX_AGENT_REPLY_PARTS);
+      expect((syncBody.replyPartOutcomes as unknown[]).slice(0, 2)).toEqual([
+        expect.objectContaining({ partIndex: 0, partType: "attachment", code: "unsupported_destination" }),
+        expect.objectContaining({ partIndex: 1, partType: "mcp_app", code: "unsupported_destination" }),
+      ]);
+      expect((syncBody.replyPartOutcomes as Array<Record<string, unknown>>).at(-1)).toMatchObject({
+        code: "reply_part_too_large",
+        affectedPartCount: 3,
+      });
+
+      const accepted = await fetch(server.invokeUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "machine", conversationId: "machine-2", mode: "async" }),
+      });
+      const acceptedBody = await accepted.json() as { requestId: string; statusUrl: string };
+      await expect.poll(() => server.getStatus(acceptedBody.requestId)?.status).toBe("succeeded");
+      const statusResponse = await fetch(`${server.url}${acceptedBody.statusUrl}`);
+      const statusBody = await statusResponse.json() as Record<string, unknown>;
+      expect(statusBody).toMatchObject({
+        text: exactText,
+        replyPartOutcomes: syncBody.replyPartOutcomes,
+      });
+
+      for (const body of [syncBody, statusBody]) {
+        const serialized = JSON.stringify(body);
+        expect(Buffer.byteLength(serialized, "utf8")).toBeLessThan(7_000);
+        expect(serialized).not.toContain("private-report");
+        expect(serialized).not.toContain("capability-secret");
+        expect(serialized).not.toContain("deadbeef");
+      }
+      expect(warn).toHaveBeenCalledTimes(2);
     } finally {
       await server.stop();
     }

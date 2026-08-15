@@ -34,7 +34,9 @@ import {
   closeServerBounded,
   createChannelUserCancelReason,
   isAgentResponseCancelledError,
+  unsupportedReplyPartDeliveryOutcomes,
   type AgentMessageStream,
+  type AgentReplyPartDeliveryOutcome,
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
@@ -341,16 +343,21 @@ export class MonoA2AExecutor implements AgentExecutor {
         ...(response.parts === undefined ? {} : { parts: response.parts }),
         unsupportedPartFallback: "none",
       });
-      const finalText = stream.text;
-      if (finalText.length > 0) {
+      const finalText = response.text ?? stream.text;
+      const replyPartOutcomes = unsupportedReplyPartDeliveryOutcomes(response.parts);
+      const artifactParts: Part[] = [
+        ...(finalText.length === 0 ? [] : [textPart(finalText)]),
+        ...(replyPartOutcomes === undefined ? [] : [replyPartOutcomesPart(replyPartOutcomes)]),
+      ];
+      if (artifactParts.length > 0) {
         eventBus.publish(AgentEvent.artifactUpdate({
           taskId: requestContext.taskId,
           contextId: requestContext.contextId,
           artifact: {
             artifactId: "final-text",
-            name: "Final text response",
-            description: "Text response returned by the responder.",
-            parts: [textPart(finalText)],
+            name: "Final response",
+            description: "Text and sanitized reply-part outcomes returned by the responder.",
+            parts: artifactParts,
             metadata: {},
             extensions: [],
           },
@@ -358,6 +365,13 @@ export class MonoA2AExecutor implements AgentExecutor {
           lastChunk: true,
           metadata: {},
         }));
+      }
+      if (replyPartOutcomes !== undefined) {
+        this.logger?.warn?.("A2A rich reply parts were not delivered by this destination.", {
+          taskId: requestContext.taskId,
+          contextId: requestContext.contextId,
+          replyPartOutcomes,
+        });
       }
 
       eventBus.publish(AgentEvent.statusUpdate(createStatusUpdate({
@@ -704,6 +718,23 @@ function textPart(text: string): Part {
   return {
     content: { $case: "text", value: text },
     mediaType: "text/plain",
+    filename: "",
+    metadata: {},
+  };
+}
+
+function replyPartOutcomesPart(
+  replyPartOutcomes: readonly AgentReplyPartDeliveryOutcome[],
+): Part {
+  return {
+    content: {
+      $case: "data",
+      value: {
+        schemaVersion: 1,
+        replyPartOutcomes,
+      },
+    },
+    mediaType: "application/vnd.mono-agent.reply-part-outcomes+json",
     filename: "",
     metadata: {},
   };

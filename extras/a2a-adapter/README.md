@@ -19,6 +19,16 @@ Catalog responsibility: Exposes agent responders over A2A and consumes remote A2
 Expose an agent responder through an A2A Agent Card plus JSON-RPC/REST message
 routes, and provide direct-discovery consumer clients for text/task calls.
 
+Provider answer text remains byte-for-byte unchanged. When a responder also
+returns attachments, MCP Apps, or existing part failures, the final A2A artifact
+adds one `application/vnd.mono-agent.reply-part-outcomes+json` data `Part` with
+bounded sanitized terminal outcomes. Attachments and MCP Apps become
+`unsupported_destination`; the provider does not send file bytes or expose part
+ids, local/host URLs, capability values, integrity ids, producer messages, or
+private payloads. Text-only consumers continue to read the text part and ignore
+the additive data part. Durable idempotency persists and replays the same
+structured outcome without rerunning the responder.
+
 This is a **plugin-tier** package: it publishes to npm in the mono-agent lockstep at the same version as the core packages, but it is not part of the core `@mono-agent/agent-app` dependency closure. `@mono-agent/agent-app` loads its provider channel only when a host declares it under `channels.plugins[]`.
 
 **Upgrading from 0.4.0 (npm skew):** the standalone `0.4.0` build predates the `channels.plugins[]` seam — it has no `createChannelDriver` export, so `agent-app` refuses it with `Channel plugin @mono-agent/a2a-adapter must export createChannelDriver(options) returning a ChannelDriver`, and it drags the retired `@mono-agent/settings` package into your install tree. Upgrade to the current lockstep version (matching your `@mono-agent/agent-app`) to fix both.
@@ -190,7 +200,8 @@ them; it does not create autonomous delegation by itself.
    with the host's structural responder.
 2. Provider routes authenticate before parsing the bounded body, translate A2A
    text/task input into an `A2AAgentRequest`, and stream the responder's result
-   back through the SDK transport.
+   back through the SDK transport. Unsupported rich reply parts become a safe
+   structured outcome data part beside unchanged answer text.
 3. When enabled, the durable idempotency store binds a caller-supplied key to a
    canonical execution fingerprint, replays the same task, and fails closed on
    conflict, capacity, expired results, or in-doubt admissions.
@@ -296,7 +307,7 @@ This package depends only on `@mono-agent/agent-contracts` plus the pinned A2A S
 
 ## What This Package Does Not Own
 
-It does not own runtime execution, memory, tool policy, central registries, signed cards, push notifications, file exchange, gRPC hosting, or autonomous LLM-selected remote-agent delegation. This pass supports direct discovery and text/task communication only.
+It does not own runtime execution, memory, tool policy, central registries, signed cards, push notifications, file exchange, gRPC hosting, or autonomous LLM-selected remote-agent delegation. This pass supports direct discovery and text/task communication plus sanitized structured failure outcomes; it does not deliver rich-part payloads.
 
 ## Related Documentation
 

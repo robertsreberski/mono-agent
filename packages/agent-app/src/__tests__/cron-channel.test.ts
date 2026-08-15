@@ -295,6 +295,50 @@ describe("cron channel driver — native notification delivery", () => {
     expect(deliveredText).not.toContain("Do not call tools");
   });
 
+  it("keeps native notification text exact and logs retained rich-part failures", async () => {
+    const warn = vi.fn();
+    const notifyDestination = vi.fn(async (_conversationId: string, _text: string) => ({ delivered: true }));
+    const captured = await startCapturingCron({
+      ...baseInput,
+      logger: { warn },
+      notifyDestination,
+      config: {
+        jobs: [{
+          id: "j",
+          expression: "* * * * *",
+          timezone: "UTC",
+          prompt: "p",
+          enabled: true,
+          notify: true,
+          notifyConversationId: "telegram:42",
+        }],
+      },
+    });
+    const result = {
+      ...succeededResult("  byte-for-byte\n"),
+      replyPartOutcomes: [{
+        partIndex: 0,
+        partType: "attachment" as const,
+        status: "failed" as const,
+        code: "unsupported_destination" as const,
+        message: "Attachment reply parts are unsupported on this destination.",
+      }],
+    };
+
+    await captured.onResult?.(result);
+
+    await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledOnce());
+    expect(notifyDestination.mock.calls[0]?.[1]).toBe("  byte-for-byte\n");
+    expect(warn).toHaveBeenCalledWith(
+      "Cron rich reply parts were not delivered; native notification carries answer text only.",
+      {
+        jobId: "j",
+        cronRunId: "cron:j:2026-01-01T00:00:00.000Z",
+        replyPartOutcomes: result.replyPartOutcomes,
+      },
+    );
+  });
+
   it("adds stable success and failure delivery keys only for web:new", async () => {
     const notifyDestination = vi.fn(async () => ({ delivered: true }));
     const captured = await startCapturingCron({

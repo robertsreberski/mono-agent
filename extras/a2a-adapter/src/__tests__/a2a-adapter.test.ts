@@ -2,10 +2,12 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   isChannelUserCancelReason,
+  MAX_AGENT_REPLY_PARTS,
+  type AgentReplyPart,
   type AgentResponder,
 } from "@mono-agent/agent-contracts";
 import type {
@@ -28,32 +30,128 @@ import {
   startA2AProvider,
 } from "../index.js";
 
+function sensitiveReplyParts(): readonly AgentReplyPart[] {
+  const sensitive = "/private/private-report.csv?token=capability-secret#sha256:deadbeef";
+  return [
+    {
+      type: "attachment",
+      id: sensitive,
+      reference: { scheme: "mono-agent-artifact", id: sensitive },
+      name: sensitive,
+      mediaType: "text/csv",
+      sizeBytes: 42,
+      integrityId: "sha256:deadbeef",
+    },
+    {
+      type: "mcp_app",
+      id: sensitive,
+      invocationId: sensitive,
+      connectionId: sensitive,
+      serverName: sensitive,
+      toolName: sensitive,
+      resourceUri: `http://127.0.0.1:4319/${sensitive}`,
+      mediaType: "text/html;profile=mcp-app",
+      protocolVersion: "2026-01-26",
+      title: sensitive,
+    },
+    ...Array.from({ length: 20 }, (_, index) => ({
+      type: "failure" as const,
+      id: `${sensitive}:${String(index)}`,
+      code: "artifact_missing" as const,
+      message: sensitive.repeat(1_000),
+      relatedPartId: sensitive,
+    })),
+  ];
+}
+
 describe("A2A adapter contract", () => {
-  it("keeps A2A machine output unchanged when rich parts cannot be represented", async () => {
+  it("keeps text exact and replays bounded sanitized structured part failures idempotently", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "mono-agent-a2a-rich-parts-"));
+    const rawResponses: unknown[] = [];
+    const warn = vi.fn();
+    let responderCalls = 0;
+    const exactText = "  {\"answer\":true}\n";
     const provider = await startA2AProvider({
       host: "127.0.0.1",
       port: 0,
+      idempotency: {
+        stateDir,
+        namespace: "rich-part-test",
+        retentionMs: 60_000,
+        maxRecords: 10,
+      },
       responder: {
         async respond() {
+          responderCalls += 1;
           return {
-            text: '{"answer":true}',
-            parts: [{
-              type: "failure" as const,
-              id: "failure-1",
-              code: "artifact_missing" as const,
-              message: "A file was unavailable.",
-            }],
+            text: exactText,
+            parts: sensitiveReplyParts(),
           };
         },
       },
       agent: { name: "Machine", description: "Machine output", version: "0.1.0" },
       skill: { id: "machine", name: "Machine", description: "Machine output", tags: ["machine"] },
+      logger: { warn },
     });
     try {
-      await expect(sendA2AMessage({ agentUrl: provider.agentCardUrl, text: "json" }))
-        .resolves.toMatchObject({ text: '{"answer":true}' });
+      const fetchImpl: typeof fetch = async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        const response = await fetch(request);
+        if (request.method === "POST") {
+          rawResponses.push(await response.clone().json());
+        }
+        return response;
+      };
+      const request = {
+        agentUrl: provider.agentCardUrl,
+        fetchImpl,
+        text: "json",
+        idempotencyKey: "rich-part-replay",
+      };
+
+      await expect(sendA2AMessage(request)).resolves.toMatchObject({ text: '{"answer":true}' });
+      await expect(sendA2AMessage(request)).resolves.toMatchObject({ text: '{"answer":true}' });
+
+      expect(responderCalls).toBe(1);
+      expect(rawResponses).toHaveLength(2);
+      for (const rawResponse of rawResponses) {
+        const envelope = rawResponse as {
+          result?: {
+            task?: {
+              artifacts?: Array<{ parts?: Array<{ text?: string; data?: Record<string, unknown> }> }>;
+            };
+          };
+          task?: {
+            artifacts?: Array<{ parts?: Array<{ text?: string; data?: Record<string, unknown> }> }>;
+          };
+        };
+        const result = envelope.result?.task ?? envelope.task;
+        const parts = result?.artifacts?.[0]?.parts;
+        expect(parts?.[0]?.text).toBe(exactText);
+        const data = parts?.[1]?.data as {
+          schemaVersion?: number;
+          replyPartOutcomes?: Array<Record<string, unknown>>;
+        } | undefined;
+        expect(data?.schemaVersion).toBe(1);
+        expect(data?.replyPartOutcomes).toHaveLength(MAX_AGENT_REPLY_PARTS);
+        expect(data?.replyPartOutcomes?.slice(0, 2)).toEqual([
+          expect.objectContaining({ partIndex: 0, partType: "attachment", code: "unsupported_destination" }),
+          expect.objectContaining({ partIndex: 1, partType: "mcp_app", code: "unsupported_destination" }),
+        ]);
+        expect(data?.replyPartOutcomes?.at(-1)).toMatchObject({
+          code: "reply_part_too_large",
+          affectedPartCount: 3,
+        });
+        const serialized = JSON.stringify(rawResponse);
+        expect(Buffer.byteLength(serialized, "utf8")).toBeLessThan(10_000);
+        expect(serialized).not.toContain("private-report");
+        expect(serialized).not.toContain("capability-secret");
+        expect(serialized).not.toContain("deadbeef");
+      }
+      expect(warn).toHaveBeenCalledOnce();
     } finally {
       await provider.stop();
+      await rm(stateDir, { recursive: true, force: true });
     }
   });
 
