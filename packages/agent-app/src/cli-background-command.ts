@@ -621,10 +621,14 @@ async function runForceRestart(
       cleared.push(`persisted provider sessions${count}`);
     }
     if (result.history.removed) {
-      const count = result.history.files === 0
+      const count = result.history.messageHistory.files === 0
         ? ""
-        : ` (${result.history.files} conversation file${result.history.files === 1 ? "" : "s"})`;
+        : ` (${result.history.messageHistory.files} conversation file${result.history.messageHistory.files === 1 ? "" : "s"}, ${result.history.messageHistory.bytes} bytes)`;
       cleared.push(`active conversation history${count}`);
+      const toolCounts = result.history.toolHistory.countsKnown
+        ? `; ${result.history.toolHistory.calls ?? 0} calls, ${result.history.toolHistory.records ?? 0} records, ${result.history.toolHistory.tombstones ?? 0} tombstones`
+        : "; record counts unavailable";
+      cleared.push(`tool history (${result.history.toolHistory.files} files, ${result.history.toolHistory.bytes} bytes${toolCounts})`);
     }
     if (result.acpSessions.removed) {
       const count = result.acpSessions.files === 0

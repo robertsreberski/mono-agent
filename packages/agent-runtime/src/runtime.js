@@ -41,6 +41,7 @@ import { createToolContext, updateToolContext } from "./agent/tools/shared/tool-
 import { resolveRuntimeBrand } from "./runtime-brand.js";
 import { retireDurableNativeSession } from "./ai/providers/pi-native/session-lifecycle.js";
 import { instrumentLiveInputAppliedEvents } from "./ai/runtime/live-input-events.js";
+import { createToolLifecycleEventGate } from "./ai/tool-lifecycle.js";
 
 /**
  * @typedef {import('./ai/types.js').AgentRuntimeHostOptions} AgentRuntimeHostOptions
@@ -210,9 +211,16 @@ export function createRuntime(host = {}) {
       const callObservers = Array.isArray(options.observers) ? options.observers : [];
       const hub = createObserverHub({
         observers: [...hostObservers, ...callObservers],
-        onEvent: options.onEvent,
       });
-      const liveInput = instrumentLiveInputAppliedEvents(options.liveInput, hub.emit);
+      const lifecycleGate = createToolLifecycleEventGate({
+        sink: options.toolLifecycleSink,
+        // Observer delivery keeps the runtime's synchronous contract. Only the
+        // client-facing lifecycle event waits for its serialized persistence.
+        onObserve: (event) => hub.emit(event),
+        onEvent: options.onEvent,
+        abortSignal: options.abortSignal,
+      });
+      const liveInput = instrumentLiveInputAppliedEvents(options.liveInput, lifecycleGate.emit);
       const prompts = resolvePrompts(host.prompts, options.prompts);
       // A request-scoped environment must never mutate the long-lived runtime's
       // shared ToolContext. Clone only for this call, preserving configureTools
@@ -226,26 +234,32 @@ export function createRuntime(host = {}) {
       const subagents = options.subagents === undefined
         ? undefined
         : { ...options.subagents, run: options.subagents.run ?? defaultSubagentRun };
-      const result = await bridge.execute(systemPrompt, {
-        ...hostDefaults,
-        ...options,
-        ...(subagents === undefined ? {} : { subagents }),
-        // `...options` alone doesn't carry the `options.model` narrowing above
-        // (spread reads the parameter's declared — Partial — type); re-assert
-        // the already-validated model so the request satisfies RuntimeRequest.
-        model: options.model,
-        executionMode,
-        runtimeBrand,
-        toolContext: runToolContext,
-        observerHub: hub,
-        onEvent: hub.emit,
-        ...(liveInput === undefined ? {} : { liveInput }),
-        // Merged AFTER the spreads so the per-field run>host>default precedence
-        // wins over either bag's whole-object `prompts`.
-        ...(prompts === undefined ? {} : { prompts }),
-      });
-      await hub.flush();
-      return result;
+      try {
+        return await bridge.execute(systemPrompt, {
+          ...hostDefaults,
+          ...options,
+          ...(subagents === undefined ? {} : { subagents }),
+          // `...options` alone doesn't carry the `options.model` narrowing above
+          // (spread reads the parameter's declared — Partial — type); re-assert
+          // the already-validated model so the request satisfies RuntimeRequest.
+          model: options.model,
+          executionMode,
+          runtimeBrand,
+          toolContext: runToolContext,
+          observerHub: hub,
+          onEvent: lifecycleGate.emit,
+          // The host gate is the sole persistence owner. Provider subscribe
+          // callbacks are synchronous and must never await the storage sink.
+          toolLifecycleSink: undefined,
+          ...(liveInput === undefined ? {} : { liveInput }),
+          // Merged AFTER the spreads so the per-field run>host>default precedence
+          // wins over either bag's whole-object `prompts`.
+          ...(prompts === undefined ? {} : { prompts }),
+        });
+      } finally {
+        await lifecycleGate.flush();
+        await hub.flush();
+      }
     },
     configureTools(next = {}) {
       updateToolContext(toolContext, pickPresent(next, TOOL_RUNTIME_KEYS));

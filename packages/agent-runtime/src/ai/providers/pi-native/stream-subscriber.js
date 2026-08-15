@@ -14,6 +14,7 @@ import {
   streamContentKey,
 } from "../pi-events.js";
 import { contextUsageFromAssistantMessage } from "./result-builder.js";
+import { classifyPiToolResult, toolLifecycleMetadata } from "../../tool-lifecycle.js";
 
 function toolResultFileChange(result) {
   const fileChange = result?.details?.file_change;
@@ -66,6 +67,7 @@ function toolResultOutcome(result) {
  * @property {Set<unknown>} textDeltaIndexes
  * @property {Set<unknown>} thinkingDeltaIndexes
  * @property {Map<string, number>} toolStartTimes
+ * @property {Map<string, any>} toolApprovals
  * @property {number} turnCount
  * @property {number} toolResultsSeen
  * @property {string|null} lastToolName
@@ -128,7 +130,14 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       const input = eventToolArgs(event.toolName, event.args, { cwd: options.cwd, toolLimits });
       onEvent({
         type: "assistant",
-        message: { content: [{ type: "tool_use", id: event.toolCallId, name: event.toolName, input }] },
+        message: {
+          content: [{
+            type: "tool_use",
+            id: event.toolCallId,
+            name: event.toolName,
+            input,
+          }],
+        },
       });
     } else if (event.type === "tool_execution_update") {
       const input = eventToolArgs(event.toolName, event.args, { cwd: options.cwd, toolLimits });
@@ -143,6 +152,12 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       const resultContent = toolResultContent(event.result);
       const fileChange = toolResultFileChange(event.result);
       const outcome = toolResultOutcome(event.result);
+      const classification = classifyPiToolResult({
+        result: event.result,
+        isError: !!event.isError,
+        aborted: options.abortSignal?.aborted === true,
+        approval: runState.toolApprovals.get(event.toolCallId),
+      });
       if (!event.isError) runState.toolResultsSeen += 1;
       const startedAt = runState.toolStartTimes.get(event.toolCallId);
       if (startedAt !== undefined) {
@@ -154,8 +169,15 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
           execution_ms: Date.now() - startedAt,
           is_error: !!event.isError,
           ...(outcome || {}),
+          tool_lifecycle: toolLifecycleMetadata({
+            state: classification.state,
+            failure_kind: classification.failureKind,
+            detail_code: classification.detailCode,
+          }),
         });
       }
+      runState.toolApprovals.delete(event.toolCallId);
+      const rawResult = compactToolRawResult(jsonSerializable(event.result, resultContent), resultContent);
       onEvent({
         type: "user",
         message: {
@@ -163,9 +185,14 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
             type: "tool_result",
             tool_use_id: event.toolCallId,
             content: resultContent,
-            raw_result: compactToolRawResult(jsonSerializable(event.result, resultContent), resultContent),
+            raw_result: rawResult,
             ...(fileChange === null ? {} : { file_change: fileChange }),
             is_error: !!event.isError,
+            tool_lifecycle: toolLifecycleMetadata({
+              state: classification.state,
+              failure_kind: classification.failureKind,
+              detail_code: classification.detailCode,
+            }),
           }],
         },
       });

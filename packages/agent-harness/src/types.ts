@@ -22,6 +22,7 @@ import type { SandboxPolicy } from "@mono-agent/runtime-adapter";
 
 import type { BuiltAgentContext, HistoryMessage } from "./context/index.js";
 import type { SkillsCache } from "./skills/index.js";
+import type { ToolHistoryReader, ToolHistoryWriter } from "./tool-history-store.js";
 import type { ToolPolicy } from "./tool-policy/index.js";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary" | "capture";
@@ -71,6 +72,12 @@ export interface ConversationHistoryStore {
    * atomically; unrelated conversations are never touched.
    */
   reset?(conversationId: string): Promise<void>;
+  /**
+   * Reset every canonical message bucket owned by one logical conversation.
+   * Daily-rollover hosts require this capability so reset cannot leave prior
+   * day buckets visible while clearing logical tool history.
+   */
+  resetLogicalConversation?(logicalConversationId: string): Promise<void>;
   /**
    * Optional transactional path used by the harness to validate and fsync a
    * turn before it marks the conversation committed. Stores that omit it keep
@@ -178,7 +185,7 @@ export interface AgentHarness {
     text: string,
     options?: { readonly idempotencyKey?: string },
   ): Promise<void>;
-  /** Retire all live provider sessions (graceful shutdown). */
+  /** Drain admitted work, retire live provider sessions, and permanently stop accepting turns. */
   dispose?(): Promise<void>;
 }
 
@@ -394,7 +401,7 @@ export interface AgentHarnessOptions {
    * contract remain in-memory. Unset = in-memory only.
    */
   readonly piSessionsRoot?: string;
-  readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "executionMode" | "onEvent">;
+  readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "executionMode" | "onEvent" | "toolLifecycleSink">;
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
@@ -417,6 +424,12 @@ export interface AgentHarnessOptions {
   /** Best-effort post-provider persistence warning sink (host log/metric). */
   readonly onMemoryWarning?: (message: string) => void;
   readonly historyStore?: ConversationHistoryStore;
+  /**
+   * Host-owned lifecycle sidecar. It is intentionally independent of
+   * ConversationHistoryStore: starts/results are fsynced while tools run, even
+   * when the surrounding turn never reaches the canonical-history commit.
+   */
+  readonly toolHistory?: AgentHarnessToolHistoryOptions;
   /** Best-effort enrichment applied only to the assistant history entry. */
   readonly turnHistoryEnricher?: AgentHarnessTurnHistoryEnricher;
   readonly toolPolicy?: ToolPolicy;
@@ -465,7 +478,7 @@ export interface AgentHarnessRuntimeOptionsExtension {
   // not set it. Provider-session ids, keep-alive fields, and piSessionsRoot are
   // accepted structurally for compatibility but stripped and replaced by the
   // harness's coordinated decision.
-  readonly runtimeOptions?: Partial<Omit<RuntimeRunOptions, "messages" | "abortSignal" | "onEvent" | "executionMode">>;
+  readonly runtimeOptions?: Partial<Omit<RuntimeRunOptions, "messages" | "abortSignal" | "onEvent" | "executionMode" | "toolLifecycleSink">>;
   /**
    * Authoritative request-scoped tool boundary. When present, it replaces the
    * host/static allowed, denied, MCP-server, and MCP-config-path fields instead
@@ -481,4 +494,13 @@ export interface AgentHarnessRuntimeOptionsExtension {
    * may still have open.
    */
   readonly settleCleanup?: () => void | Promise<void>;
+}
+
+export interface AgentHarnessToolHistoryOptions {
+  readonly writer: Pick<ToolHistoryWriter, "createSink" | "finishRun" | "resetConversation">;
+  readonly reader: ToolHistoryReader;
+  /** Collapse a physical rollover bucket into its current logical session. */
+  readonly logicalConversationId: (conversationId: string) => string;
+  /** Release this harness's process-global writer reference on disposal. */
+  readonly release?: () => Promise<void>;
 }

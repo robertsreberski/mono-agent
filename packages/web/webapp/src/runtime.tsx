@@ -125,6 +125,7 @@ const convertPart = (part: MessagePart): ConvertedPart | null => {
         argsText: jsonText(part.args),
         result: part.result,
         isError: part.status === "failed",
+        ...(part.history === undefined ? {} : { artifact: part.history }),
       };
     case "subagent":
       // A delegation owns its children, so it cannot be an assistant-ui

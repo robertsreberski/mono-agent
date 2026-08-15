@@ -1488,6 +1488,49 @@ describe("codex-app persistent sessions", () => {
   });
 
   it.each([
+    ["completed", true, { state: "success" }],
+    ["failed", false, { state: "error", failure_kind: "runtime_error", detail_code: "codex_dynamic_tool_failed" }],
+  ])("maps root dynamic-tool status %s to Codex app-server's conservative terminal state", async (status, success, lifecycle) => {
+    const factory = stubClientFactory({ threadId: `thread-dynamic-${status}` });
+    factory.turnPlan.push("manual");
+    const pending = generateCodexAppResponse("SYS", runOptions(factory));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    client.notify("item/started", {
+      threadId: `thread-dynamic-${status}`,
+      turnId: "turn-1",
+      item: {
+        id: `dynamic-${status}`,
+        type: "dynamicToolCall",
+        namespace: "tickets",
+        tool: "lookup",
+        arguments: { id: "ABC" },
+        status: "inProgress",
+      },
+    });
+    client.notify("item/completed", {
+      threadId: `thread-dynamic-${status}`,
+      turnId: "turn-1",
+      item: {
+        id: `dynamic-${status}`,
+        type: "dynamicToolCall",
+        namespace: "tickets",
+        tool: "lookup",
+        contentItems: success ? [{ type: "inputText", text: "open" }] : [],
+        success,
+        status,
+      },
+    });
+    client.finishTurn({ text: "DONE" });
+
+    const result = await pending;
+    const block = result.events.flatMap((event) => event.message?.content ?? [])
+      .find((content) => content.tool_use_id === `dynamic-${status}`);
+    expect(block.tool_lifecycle).toEqual(lifecycle);
+  });
+
+  it.each([
     {
       label: "sleep",
       key: "sleep",

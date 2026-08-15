@@ -6,7 +6,7 @@ import {
   type Unstable_TriggerItem,
 } from "@assistant-ui/react";
 import { Command } from "cmdk";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { isUsableSkill, rankSkills } from "../../skill-discovery";
 import type { SkillInfo, SkillRegistryState } from "../../types";
@@ -40,22 +40,15 @@ const skillFormatter = {
 };
 
 function SkillPopoverBridge({
-  cursor,
   resultCount,
   onSelect,
 }: {
-  readonly cursor: number;
   readonly resultCount: number;
   readonly onSelect: (name: string) => void;
 }) {
   const popover = unstable_useTriggerPopoverScopeContext();
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
-
-  useEffect(() => {
-    const frame = window.requestAnimationFrame(() => popover.setCursorPosition(cursor));
-    return () => window.cancelAnimationFrame(frame);
-  }, [cursor, popover.setCursorPosition]);
 
   useEffect(() => popover.registerSelectItemOverride((item) => {
     onSelectRef.current(item.id);
@@ -71,7 +64,30 @@ function SkillPopoverBridge({
   ) : null;
 }
 
+function SkillCursorSynchronizer({
+  cursor,
+  onSynchronized,
+}: {
+  readonly cursor: number;
+  readonly onSynchronized: (cursor: number) => void;
+}) {
+  const popover = unstable_useTriggerPopoverScopeContext();
+
+  useLayoutEffect(() => popover.setCursorPosition(cursor), [cursor, popover.setCursorPosition]);
+  useLayoutEffect(() => onSynchronized(cursor), [cursor, onSynchronized]);
+
+  return null;
+}
+
 export function SkillAutocomplete({ skills, query, cursor, onSelect }: SkillAutocompleteProps) {
+  const [resourceMounted, setResourceMounted] = useState(false);
+  const [synchronizedCursor, setSynchronizedCursor] = useState<number>();
+  useEffect(() => {
+    // assistant-ui commits its trigger resource in a passive effect. Mount the
+    // bridge on the following commit so its synchronous layout update targets
+    // a live resource; subsequent cursor changes remain RAF-free.
+    setResourceMounted(true);
+  }, []);
   const adapter = useMemo(() => ({
     categories: () => [],
     categoryItems: () => [],
@@ -98,7 +114,17 @@ export function SkillAutocomplete({ skills, query, cursor, onSelect }: SkillAuto
         formatter={skillFormatter}
         onExecute={() => undefined}
       />
-      <SkillPopoverBridge cursor={cursor} resultCount={resultCount} onSelect={onSelect} />
+      {resourceMounted && synchronizedCursor !== cursor
+        ? (
+            <SkillCursorSynchronizer
+              cursor={cursor}
+              onSynchronized={setSynchronizedCursor}
+            />
+          )
+        : null}
+      {resourceMounted
+        ? <SkillPopoverBridge resultCount={resultCount} onSelect={onSelect} />
+        : null}
       <ComposerPrimitive.Unstable_TriggerPopoverItems aria-label="Available skills">
         {(items) => (
           <div className="composer-trigger-list" data-slot="skill-autocomplete-list">

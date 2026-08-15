@@ -250,6 +250,23 @@ export function runtimeRouteContainsDirectOpenCode(config: MonoAgentConfig): boo
     .some((model) => model.sdk === "opencode");
 }
 
+/** Direct OpenCode has no host-tool seam; direct ACP rejects request-scoped MCP. */
+export function runtimeRouteContainsUnsupportedHistoryTool(config: MonoAgentConfig): boolean {
+  return configuredRuntimeModels(config.runtime)
+    .some((model) => model.sdk === "opencode" || model.sdk === "acp");
+}
+
+/** Preserve RunHistory's shipped ACP route while gating the new SessionHistory seam. */
+export function historyToolRouteSupport(config: MonoAgentConfig): {
+  readonly runHistory: boolean;
+  readonly sessionHistory: boolean;
+} {
+  return {
+    runHistory: !runtimeRouteContainsDirectOpenCode(config),
+    sessionHistory: !runtimeRouteContainsUnsupportedHistoryTool(config),
+  };
+}
+
 export function isInteractionToolName(name: string): boolean {
   return name === "AskUser";
 }

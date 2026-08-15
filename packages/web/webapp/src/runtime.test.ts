@@ -82,6 +82,13 @@ describe("convertWebMessage", () => {
             args: { depth: 2 },
             result: { ok: true },
             status: "complete",
+            history: {
+              recordId: "sth1_result",
+              sequence: 2,
+              persistence: "persisted",
+              terminalState: "success",
+              untrusted: true,
+            },
           },
           { type: "telemetry", event: "usage_update", data: { tokens: { input: 10 } } },
           { type: "text", text: "Ready" },
@@ -96,6 +103,15 @@ describe("convertWebMessage", () => {
       "tool-call",
       "text",
     ]);
+    expect(converted.content.find((part) => part.type === "tool-call")).toMatchObject({
+      artifact: {
+        recordId: "sth1_result",
+        sequence: 2,
+        persistence: "persisted",
+        terminalState: "success",
+        untrusted: true,
+      },
+    });
     expect(converted.status).toEqual({ type: "running" });
   });
 

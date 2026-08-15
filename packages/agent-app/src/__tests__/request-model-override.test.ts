@@ -4,7 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
 
-import { createRequestModelOverrideRuntimeExtension } from "../request-model-override.js";
+import {
+  createRequestModelOverrideRuntimeExtension,
+  requestModelOverrideTargetsDirectOpenCode,
+  requestModelOverrideTargetsUnsupportedHistoryTool,
+} from "../request-model-override.js";
 import { composeRuntimeOptionExtensions } from "../runtime-option-extensions.js";
 
 interface RunOptions {
@@ -59,6 +63,16 @@ const OLLAMA_PROVIDER: LocalProviderDefinition = {
 };
 
 describe("createRequestModelOverrideRuntimeExtension", () => {
+  it("distinguishes the direct OpenCode gate from the wider request-scoped history-tool gate", () => {
+    const baseModel = parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5");
+    const base = { baseModel, sandboxPolicy: { mode: "off" as const }, toolPolicy: { allowedTools: ["*", "Read"], disallowedTools: [] } };
+    expect(requestModelOverrideTargetsDirectOpenCode({ cron: { model: "opencode:github-copilot:gpt-5.1" } }, base)).toBe(true);
+    expect(requestModelOverrideTargetsUnsupportedHistoryTool({ cron: { model: "opencode:github-copilot:gpt-5.1" } }, base)).toBe(true);
+    expect(requestModelOverrideTargetsDirectOpenCode({ cron: { model: "acp:personal-agent" } }, base)).toBe(false);
+    expect(requestModelOverrideTargetsUnsupportedHistoryTool({ cron: { model: "acp:personal-agent" } }, base)).toBe(true);
+    expect(requestModelOverrideTargetsUnsupportedHistoryTool({ cron: { model: "codex:gpt-5.5" } }, base)).toBe(false);
+  });
+
   it("applies a webhook model + effort override (executionMode is left to the harness)", async () => {
     const result = await run({ webhook: { model: "claude:claude-opus-4-8", effort: "high" } });
     expect(result.runtimeOptions.model).toEqual(expect.objectContaining({ sdk: "claude", model: "claude-opus-4-8" }));

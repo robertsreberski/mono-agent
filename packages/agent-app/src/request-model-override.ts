@@ -232,6 +232,15 @@ export function requestModelOverrideTargetsDirectOpenCode(
   return resolveAcceptedModelOverride(metadata, options, undefined).model?.sdk === "opencode";
 }
 
+/** Whether the accepted per-request route lacks a request-scoped host MCP seam. */
+export function requestModelOverrideTargetsUnsupportedHistoryTool(
+  metadata: Record<string, unknown> | undefined,
+  options?: RequestModelOverrideOptions,
+): boolean {
+  const sdk = resolveAcceptedModelOverride(metadata, options, undefined).model?.sdk;
+  return sdk === "opencode" || sdk === "acp";
+}
+
 interface ModelOverrideResolution {
   readonly rawModel?: string;
   readonly rawEffort?: string;

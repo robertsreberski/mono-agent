@@ -356,6 +356,25 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
   });
 
   it("dismisses $ skill autocomplete without changing or sending the draft", async () => {
+    const animationFrames = new Map<number, FrameRequestCallback>();
+    let nextAnimationFrame = 0;
+    const requestAnimationFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      nextAnimationFrame += 1;
+      animationFrames.set(nextAnimationFrame, callback);
+      return nextAnimationFrame;
+    });
+    const cancelAnimationFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frame) => {
+      animationFrames.delete(frame);
+    });
+    const flushAnimationFrames = async (): Promise<void> => {
+      for (let pass = 0; pass < 10 && animationFrames.size > 0; pass += 1) {
+        const callbacks = [...animationFrames.values()];
+        animationFrames.clear();
+        await act(async () => {
+          for (const callback of callbacks) callback(performance.now());
+        });
+      }
+    };
     const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
     storeMock.current = createStore(sendTurn, {
       skillRegistry: {
@@ -369,18 +388,27 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
         total: 1,
       },
     });
-    const { runtime } = await renderComposerRuntime();
-    const input = screen.getByRole("combobox", { name: "Message" });
+    try {
+      const { runtime } = await renderComposerRuntime();
+      const input = screen.getByRole("combobox", { name: "Message" });
+      await flushAnimationFrames();
+      expect(animationFrames.size).toBe(0);
 
-    fireEvent.change(input, { target: { value: "$res" } });
-    expect(await screen.findByRole("option", { name: /\$research/u })).toBeInTheDocument();
-    expect(screen.getByText("1 skill suggestion available.")).toBeInTheDocument();
-    fireEvent.keyDown(input, { key: "Escape", code: "Escape" });
+      fireEvent.change(input, { target: { value: "$res" } });
+      expect(await screen.findByRole("option", { name: /\$research/u })).toBeInTheDocument();
+      expect(screen.getByText("1 skill suggestion available.")).toBeInTheDocument();
+      expect(fireEvent.keyDown(input, { key: "Escape", code: "Escape" })).toBe(false);
+      await flushAnimationFrames();
+      await waitFor(() => expect(screen.queryByRole("listbox", { name: "Skills" })).not.toBeInTheDocument());
 
-    await waitFor(() => expect(screen.queryByRole("listbox", { name: "Skills" })).not.toBeInTheDocument());
-    expect(screen.queryByText("1 skill suggestion available.")).not.toBeInTheDocument();
-    expect(runtime.thread.composer.getState().text).toBe("$res");
-    expect(sendTurn).not.toHaveBeenCalled();
+      expect(screen.queryByRole("listbox", { name: "Skills" })).not.toBeInTheDocument();
+      expect(document.querySelector('[role="status"][aria-live="polite"]')).toBeNull();
+      expect(runtime.thread.composer.getState().text).toBe("$res");
+      expect(sendTurn).not.toHaveBeenCalled();
+    } finally {
+      requestAnimationFrame.mockRestore();
+      cancelAnimationFrame.mockRestore();
+    }
   });
 
   it("inserts a pointer-selected $ skill without sending", async () => {

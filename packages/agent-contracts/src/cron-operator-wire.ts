@@ -258,15 +258,18 @@ function parseCronOperatorEvent(value: unknown): AgentStreamEvent {
       if (!hasOnlyKeys(event, ["type", "text", "metadata"]) || typeof event.text !== "string") fail();
       break;
     case "tool_call_started":
-      if (!hasOnlyKeys(event, ["type", "id", "name", "arguments", "metadata"])
-        || typeof event.id !== "string" || typeof event.name !== "string") fail();
+      if (!hasOnlyKeys(event, ["type", "id", "name", "arguments", "history", "metadata"])
+        || typeof event.id !== "string"
+        || typeof event.name !== "string"
+        || !validToolHistoryMetadata(event.history)) fail();
       break;
     case "tool_call_completed":
-      if (!hasOnlyKeys(event, ["type", "id", "name", "arguments", "content", "isError", "executionMs", "metadata"])
+      if (!hasOnlyKeys(event, ["type", "id", "name", "arguments", "content", "isError", "executionMs", "history", "metadata"])
         || typeof event.id !== "string"
         || (event.name !== undefined && typeof event.name !== "string")
         || (event.isError !== undefined && typeof event.isError !== "boolean")
-        || !optionalFiniteNumber(event.executionMs, true)) fail();
+        || !optionalFiniteNumber(event.executionMs, true)
+        || !validToolHistoryMetadata(event.history)) fail();
       break;
     case "tool_call_progress":
       if (!hasOnlyKeys(event, ["type", "id", "name", "partialResult", "metadata"])
@@ -322,6 +325,32 @@ function parseCronOperatorEvent(value: unknown): AgentStreamEvent {
       fail();
   }
   return event as unknown as AgentStreamEvent;
+}
+
+function validToolHistoryMetadata(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value)
+    || !hasOnlyKeys(value, [
+      "recordId", "sequence", "persistence", "terminalState", "truncated", "originalBytes",
+      "retainedBytes", "artifactReferences", "errorCode", "untrusted",
+    ])
+    || !optionalString(value.recordId)
+    || !optionalNonnegativeInteger(value.sequence)
+    || !["persisted", "failed"].includes(String(value.persistence))
+    || (value.terminalState !== undefined && ![
+      "success", "rejected", "error", "exit_nonzero", "timeout", "signal", "cancelled", "interrupted",
+    ].includes(String(value.terminalState)))
+    || (value.truncated !== undefined && typeof value.truncated !== "boolean")
+    || !optionalNonnegativeInteger(value.originalBytes)
+    || !optionalNonnegativeInteger(value.retainedBytes)
+    || !optionalString(value.errorCode)
+    || value.untrusted !== true
+    || (value.artifactReferences !== undefined && !Array.isArray(value.artifactReferences))) return false;
+  return value.artifactReferences === undefined || value.artifactReferences.every((artifact) =>
+    isRecord(artifact)
+    && hasOnlyKeys(artifact, ["id", "available"])
+    && typeof artifact.id === "string"
+    && typeof artifact.available === "boolean");
 }
 
 function requireRecord(value: unknown): Record<string, unknown> {

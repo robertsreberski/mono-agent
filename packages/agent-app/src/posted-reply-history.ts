@@ -98,6 +98,10 @@ function wrapHistoryStore(
     ...(store.reset === undefined
       ? {}
       : { reset: (conversationId: string) => store.reset!(conversationId) }),
+    ...(store.resetLogicalConversation === undefined
+      ? {}
+      : { resetLogicalConversation: (logicalConversationId: string) =>
+          store.resetLogicalConversation!(logicalConversationId) }),
     ...(store.prepareAppend === undefined
       ? {}
       : { prepareAppend: (conversationId: string, messages: readonly HistoryMessage[]) =>

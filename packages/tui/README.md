@@ -84,7 +84,7 @@ carries the paths).
 
 | View | Content |
 | --- | --- |
-| chat | Streaming markdown answer, collapsed thinking cells (`ctrl+t` expands), tool panels (including completed `↪️ Steered` activity after applied live guidance), warnings/failover notices, status bar (model · tokens · cost · hints). |
+| chat | Streaming markdown answer, collapsed thinking cells (`ctrl+t` expands), tool panels (including completed `↪️ Steered` activity after applied live guidance), canonical history state/sequence/truncation/artifact-availability metadata, warnings/failover notices, status bar (model · tokens · cost · hints). |
 | replay | Recorded runs from the agent's artifact dir; open any run for the redacted, bounded events that reached terminal JSONL persistence. Non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; retained free text is scanned for a closed set of high-confidence credential shapes. Recorder-capped payload tails and RAM-buffered events lost to a crash cannot be replayed. |
 | config | Redacted, source-annotated resolved config (same builder as `mono-agent config`). |
 | agents | Running-instance picker over the trace-source registry. |
@@ -116,7 +116,10 @@ Important slash commands:
 2. `RemoteAgentResponder` reads `/v1/info`, forwards turns with session-scoped
    model/effort metadata, and decodes structured NDJSON stream frames.
 3. `MonoAgentTuiApp` routes frames into `TurnPresenter` and the chat, replay,
-   config, and picker views; the in-memory history store exists only for display.
+   config, and picker views. Tool panels render the harness writer's exact
+   persisted-or-failed record metadata and terminal state; they do not infer it
+   from prose or run artifacts. The in-memory history store exists only for
+   display and is not a canonical lifecycle source.
 4. Replay readers load bounded terminal artifacts directly. Config readers build
    a redacted source summary directly from the selected agent's config path.
 5. In managed self-config, the host-provided controller owns every mutation,

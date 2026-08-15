@@ -98,7 +98,12 @@ export class TurnPresenter implements AgentMessageStream {
         if (subagent !== undefined && event.metadata?.subagentLifecycle === true) {
           if (!this.toolPanels.has(subagent.id)) {
             this.sealStreamingCells();
-            const panel = new ToolPanel(subagent.id, "Agent", event.arguments);
+            const panel = new ToolPanel(
+              subagent.id,
+              "Agent",
+              event.arguments,
+              event.history === undefined ? undefined : { history: event.history },
+            );
             this.toolPanels.set(subagent.id, panel);
             this.options.transcript.addChild(panel);
           }
@@ -112,7 +117,7 @@ export class TurnPresenter implements AgentMessageStream {
             event.id,
             splitSubagentToolName(event.name).tool,
             event.arguments,
-            { nested: true },
+            { nested: true, ...(event.history === undefined ? {} : { history: event.history }) },
           );
           this.toolPanels.set(event.id, panel);
           parent.addChild(panel);
@@ -121,7 +126,12 @@ export class TurnPresenter implements AgentMessageStream {
         // No parent panel (a truncated or replayed stream): fall back to a
         // top-level panel so the activity is still shown rather than dropped.
         this.sealStreamingCells();
-        const panel = new ToolPanel(event.id, event.name, event.arguments);
+        const panel = new ToolPanel(
+          event.id,
+          event.name,
+          event.arguments,
+          event.history === undefined ? undefined : { history: event.history },
+        );
         this.toolPanels.set(event.id, panel);
         this.options.transcript.addChild(panel);
         break;
@@ -145,6 +155,7 @@ export class TurnPresenter implements AgentMessageStream {
             ...(event.content === undefined ? {} : { content: event.content }),
             ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }),
             ...(event.metadata?.truncated === true ? { truncated: true } : {}),
+            ...(event.history === undefined ? {} : { history: event.history }),
           });
         }
         break;

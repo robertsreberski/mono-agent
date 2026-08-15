@@ -6,12 +6,25 @@ import {
   runtimeUsesFallbackRouter,
   hasConfiguredRuntimeFallbacks,
 } from "../runtime-routes.js";
+import { historyToolRouteSupport } from "../app-controller-utils.js";
 
 const primary = { sdk: "codex", model: "gpt-5.6-terra", reference: "codex:gpt-5.6-terra" };
 const legacy = { sdk: "pi", provider: "ollama", model: "qwen3", reference: "pi:ollama:qwen3" };
 const canonical = { sdk: "claude", model: "claude-sonnet-5", reference: "claude:claude-sonnet-5" };
 
 describe("configured runtime routes", () => {
+  it("preserves RunHistory but suppresses SessionHistory on a direct ACP route", () => {
+    const config = {
+      runtime: {
+        model: { sdk: "acp", provider: "personal-agent", model: "personal-agent", reference: "acp:personal-agent" },
+      },
+    } as never;
+    expect(historyToolRouteSupport(config)).toEqual({
+      runHistory: true,
+      sessionHistory: false,
+    });
+  });
+
   it("uses structured fallbacks when present and keeps their effort out of model-only consumers", () => {
     const runtime = {
       model: primary,

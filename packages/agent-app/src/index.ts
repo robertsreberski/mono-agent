@@ -29,6 +29,17 @@ export {
   RUN_HISTORY_MCP_SERVER_NAME,
   RUN_HISTORY_TOOL_NAME,
 } from "./run-history.js";
+export {
+  createSessionHistoryRuntimeExtension,
+  createSessionHistoryServer,
+  isSessionHistoryToolAllowed,
+  SESSION_HISTORY_MCP_SERVER_NAME,
+  SESSION_HISTORY_TOOL_NAME,
+} from "./session-history.js";
+export type {
+  SessionHistoryBinding,
+  SessionHistoryRuntimeExtensionOptions,
+} from "./session-history.js";
 export type {
   RunHistoryBinding,
   RunHistoryRuntimeExtension,

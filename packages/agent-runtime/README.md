@@ -64,10 +64,14 @@ only after a run selects a matching model reference and execution mode:
 2. `resolveRuntimeBridge()` checks the six static bridge descriptors in order.
 3. The selected descriptor lazily imports its provider implementation.
 4. The bridge prepares the runtime inputs it supports, including managed or MCP
-   tools only where that bridge can represent them, streams normalized events,
-   and returns a provider-neutral `RuntimeResult`.
-5. The host validates any domain-specific result and owns persistence or UI
-   effects.
+   tools only where that bridge can represent them, and streams normalized
+   events through the lifecycle gate.
+5. For each managed-tool start/result, the gate awaits the host's incremental
+   persistence sink before publishing the same block with history metadata to
+   the client; provider events remain deterministically ordered even for
+   parallel tools.
+6. The bridge returns a provider-neutral `RuntimeResult`; the host owns storage,
+   recovery, and UI effects.
 
 ### Package structure
 
@@ -81,6 +85,58 @@ only after a run selects a matching model reference and execution mode:
 
 The detailed lifecycle, provider-session differences, and host boundary are in
 the [architecture guide](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/ARCHITECTURE.md).
+
+### Managed-tool lifecycle fidelity
+
+`RuntimeRunOptions.toolLifecycleSink` is an awaited host-owned boundary. The
+runtime sends redaction-eligible raw arguments/content plus stable provider call
+id and name; the host returns only record/sequence, persistence/truncation byte
+metadata, and opaque artifact references. That returned metadata is attached to
+the exact normalized `tool_use` / `tool_result` event rendered by clients. Sink
+failure is fail-soft and explicit (`persistence: "failed"` plus an error code),
+never fake success. A callback exception cannot duplicate a client event.
+
+Provider bridges only claim terminal distinctions their structured protocol
+actually supplies:
+
+| Bridge | Genuine tool-result distinctions | Conservative fallback |
+| --- | --- | --- |
+| Pi native | `success`, `error`, numeric `exit_nonzero`, structured `timeout`, structured `signal`, and abort-backed `cancelled`; host approval denial/expiry adds `rejected`/`timeout` | Unknown failed outcome → `error` |
+| Codex app-server | `success`, `error`, and numeric command `exit_nonzero`; shared host abort rules still apply | Other failed item → `error`; no result before run end remains dangling for host closure/recovery |
+| Claude SDK | `success` / `error`; shared host approval events can add `rejected`/`timeout` and an aborted error result can add `cancelled` | Undistinguished failed result → `error` |
+| Claude Code CLI | `success` / `error`; a Codex-shaped command item with an explicit non-zero code is `exit_nonzero`; shared approval/abort rules still apply | Undistinguished failed result → `error` |
+| OpenCode app-server | `success` / `error`; shared approval/abort rules still apply | Undistinguished failed result → `error` |
+| ACP v1 | `completed` → `success`, `failed` → `error`; shared approval/abort rules still apply | ACP exposes no tool-level signal/exit/timeout distinction, so failed → `error` |
+
+The runtime never derives a state from result prose. Structured timeout, signal,
+non-zero exit, completed success, and a specific non-runtime, non-cancellation
+provider failure win over a later outer abort. For a failed result with an
+aborted outer signal, cancellation wins over a provider bridge's otherwise
+generic `error` / `runtime_error` fallback. Whenever that outer abort determines
+the result—including when the bridge supplied a trusted `cancelled` hint—the
+failure kind comes only from host abort provenance: the cross-package own
+data-property brand `channelUserCancel === true` maps to `cancelled_user`; every
+unbranded reason maps to generic `cancelled`. Accessors, Proxies, inherited or
+brand-shaped impostors, error prose, class/channel names, reason `kind` or `code`
+strings, and raw provider result data never select host provenance.
+Without an outer abort, a trusted `cancelled` hint retains a known cancellation
+failure kind and otherwise falls back to `cancelled`.
+
+This outer-abort rule matches the harness run-level classifier. The standalone
+runtime keeps its zero-`@mono-agent/*` dependency boundary by recognizing the
+shared brand structurally rather than importing `@mono-agent/agent-contracts`.
+Its deliberate extra fidelity is tool-level only: a trusted bridge hint can
+retain a cancellation subtype when no outer abort exists. The run-level harness
+has no corresponding tool hint, so this does not widen a shared core contract.
+A started call with no result is closed by the harness as `cancelled`, `error`,
+or `interrupted` from the run boundary; process-startup recovery specifically
+uses `interrupted` and does not rerun the tool.
+
+Terminal states reuse the observability taxonomy: `success` has no failure kind;
+`signal` and `interrupted` map to `process_death`; `cancelled` preserves a known
+`cancelled`, `cancelled_user`, `cancelled_stale`, `cancelled_shutdown`, or
+`cancelled_signal`; `rejected`, `error`, `exit_nonzero`, and `timeout` use a
+provider-supplied known kind when available and otherwise `runtime_error`.
 
 ## Public API
 

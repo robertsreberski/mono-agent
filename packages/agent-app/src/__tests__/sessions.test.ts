@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { ToolHistoryWriter } from "@mono-agent/agent-harness";
+
 import { resolveAppSessionsRoot } from "../app-config.js";
 import { purgeConversationHistory, purgeConversationState, purgeSessions } from "../sessions.js";
 
@@ -102,7 +104,12 @@ describe("purgeConversationHistory", () => {
       MONO_AGENT_ARTIFACT_DIR: artifactDir,
     }));
 
-    expect(result).toEqual({ root, removed: true, files: 2 });
+    expect(result).toEqual({
+      root,
+      removed: true,
+      messageHistory: { files: 2, bytes: 6 },
+      toolHistory: { files: 0, bytes: 0, countsKnown: true, calls: 0, records: 0, tombstones: 0 },
+    });
     await expect(stat(root)).rejects.toThrow();
     await expect(readFile(join(memoryRoot, "memory.md"), "utf8")).resolves.toBe("durable fact\n");
   });
@@ -110,7 +117,46 @@ describe("purgeConversationHistory", () => {
   it("is a no-op when the configured history store does not exist", async () => {
     const configPath = await writeConfig({ artifacts: { dir: "./.mono-agent/artifacts" } });
     const result = await purgeConversationHistory(inputFor(configPath));
-    expect(result).toEqual({ root: join(dir, ".mono-agent", "history"), removed: false, files: 0 });
+    expect(result).toEqual({
+      root: join(dir, ".mono-agent", "history"),
+      removed: false,
+      messageHistory: { files: 0, bytes: 0 },
+      toolHistory: { files: 0, bytes: 0, countsKnown: true, calls: 0, records: 0, tombstones: 0 },
+    });
+  });
+
+  it("reports message and tool-history counts and bytes separately before removing both stores", async () => {
+    const configPath = await writeConfig({ artifacts: { dir: "./.mono-agent/artifacts" } });
+    const root = join(dir, ".mono-agent", "history");
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    await writeFile(join(root, "conversation.history.json"), "{}\n");
+    const writer = await ToolHistoryWriter.open({ root });
+    await writer.persist({
+      conversationId: "chat:42",
+      logicalConversationId: "chat:42",
+      runId: "prior-run",
+      isolated: false,
+    }, { phase: "invocation", toolCallId: "call-1", toolName: "Read", arguments: { path: "README.md" } });
+    await writer.persist({
+      conversationId: "chat:42",
+      logicalConversationId: "chat:42",
+      runId: "prior-run",
+      isolated: false,
+    }, { phase: "result", toolCallId: "call-1", state: "success", content: "ok" });
+    await writer.close();
+
+    const result = await purgeConversationHistory(inputFor(configPath));
+    expect(result.messageHistory).toEqual({ files: 1, bytes: 3 });
+    expect(result.toolHistory).toMatchObject({
+      files: 2,
+      bytes: expect.any(Number),
+      countsKnown: true,
+      calls: 1,
+      records: 2,
+      tombstones: 0,
+    });
+    expect(result.toolHistory.bytes).toBeGreaterThan(0);
+    await expect(stat(root)).rejects.toThrow();
   });
 });
 
@@ -142,7 +188,12 @@ describe("purgeConversationState", () => {
     const result = await purgeConversationState(inputFor(configPath));
 
     expect(result.sessions).toMatchObject({ root: sessionsRoot, removed: true, files: 1 });
-    expect(result.history).toEqual({ root: historyRoot, removed: true, files: 1 });
+    expect(result.history).toEqual({
+      root: historyRoot,
+      removed: true,
+      messageHistory: { files: 1, bytes: 3 },
+      toolHistory: { files: 0, bytes: 0, countsKnown: true, calls: 0, records: 0, tombstones: 0 },
+    });
     expect(result.acpSessions).toEqual({ root: acpSessionsRoot, removed: true, files: 1 });
     await expect(stat(sessionsRoot)).rejects.toThrow();
     await expect(stat(historyRoot)).rejects.toThrow();

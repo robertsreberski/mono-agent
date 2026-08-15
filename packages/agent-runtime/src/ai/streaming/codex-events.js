@@ -1,3 +1,5 @@
+import { toolLifecycleMetadata } from "../tool-lifecycle.js";
+
 const CODEX_ITEM_EVENTS = new Set(["item.started", "item.completed"]);
 
 export function normalizeCodexItemType(type) {
@@ -30,6 +32,17 @@ function itemFailed(item) {
     status === "error" ||
     (typeof exitCode === "number" && exitCode !== 0),
   );
+}
+
+function itemLifecycle(item) {
+  const exitCode = item?.exit_code ?? item?.exitCode;
+  if (typeof exitCode === "number" && exitCode !== 0) {
+    return toolLifecycleMetadata({ state: "exit_nonzero", failure_kind: "runtime_error", detail_code: `exit_${exitCode}` });
+  }
+  if (itemFailed(item)) {
+    return toolLifecycleMetadata({ state: "error", failure_kind: "runtime_error", detail_code: "codex_item_failed" });
+  }
+  return toolLifecycleMetadata({ state: "success" });
 }
 
 function commandOutput(item) {
@@ -97,6 +110,7 @@ export function normalizeCodexItemEvent(raw, context = {}) {
           tool_use_id: id,
           content: mcpResultContent(item),
           is_error: itemFailed(item),
+          tool_lifecycle: itemLifecycle(item),
         }],
       },
     };
@@ -118,6 +132,7 @@ export function normalizeCodexItemEvent(raw, context = {}) {
           tool_use_id: id,
           content: commandOutput(item),
           is_error: itemFailed(item),
+          tool_lifecycle: itemLifecycle(item),
         }],
       },
     };

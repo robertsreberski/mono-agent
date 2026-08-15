@@ -16,12 +16,20 @@ const RECORDER_REDACTION_CONTRACT = [
   "retained free text is scanned for a closed set of high-confidence credential shapes",
 ].join(" ");
 const RUN_HISTORY_SECOND_PASS_CONTRACT = [
-  "`runhistory` then applies an additional projection sanitizer.",
+  "`runhistory` then applies an additional projection sanitizer to object keys as well as string values, with deterministic collision-safe key disambiguation.",
   "in that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible;",
   "numeric values under `apikey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted.",
   "assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel.",
   "an optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted.",
 ].join(" ");
+const RUN_HISTORY_PATH_SPAN_CONTRACT = [
+  "filesystem spans",
+  "`[host-path]`",
+  "surrounding commands",
+  "assistant diagnostics",
+  "credentials",
+  "private run",
+] as const;
 const BACKFILL_INPUT_CONTRACT = "backfill forwards persisted `summary.userinput`";
 const CONTENT_PATTERN_OPTION = "contentpatternredaction";
 
@@ -174,6 +182,7 @@ describe("observability redaction docs parity", () => {
     for (const surface of surfaces) {
       expect(surface).toContain(SHARED_REDACTION_CONTRACT);
       expect(surface).toContain(RUN_HISTORY_SECOND_PASS_CONTRACT);
+      for (const phrase of RUN_HISTORY_PATH_SPAN_CONTRACT) expect(surface).toContain(phrase);
     }
   });
 

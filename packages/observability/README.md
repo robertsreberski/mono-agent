@@ -278,15 +278,18 @@ TraceSourceRegistryOptions
 TraceSourceStatus
 TraceSourceSupermemoryMemoryHealth
 UpdateTraceSourceOptions
+VisibleTextSanitizationOptions
 auditRecordedRuns
 buildEventSpanAttributes
 buildRootSpanAttributes
 combineRecordedRunEvents
+containsVisibleSensitiveText
 countRuntimeWarnings
 createCompositeRunRecorder
 createJsonlRunRecorder
 deriveRunSource
 describeRunFailureKind
+isKnownArtifactFailureKind
 isSafeRunId
 listRecordedRuns
 listTraceRuns
@@ -300,10 +303,13 @@ readTraceRun
 reconcileStaleRunArtifacts
 redactJsonValue
 registerTraceSource
+sanitizeVisibleObjectEntries
+sanitizeVisibleText
 segmentTimelineTurns
 spanKindHint
 spanStatusFor
 summarizeRecordedRunMetrics
+truncateVisibleText
 ```
 
 **`@mono-agent/observability/event-timeline`**

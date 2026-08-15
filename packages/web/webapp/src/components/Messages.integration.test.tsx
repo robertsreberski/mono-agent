@@ -124,6 +124,43 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.getByText('"Applied to current run"')).toBeVisible();
   });
 
+  it("renders the persisted terminal state, truncation, and unavailable artifact metadata from the canonical tool record", () => {
+    render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      parts: [
+        {
+          type: "tool-call",
+          toolCallId: "tool-history",
+          toolName: "Bash",
+          args: { command: "slow-command" },
+          result: "bounded output",
+          status: "failed",
+          history: {
+            recordId: "sth1_result",
+            sequence: 2,
+            persistence: "persisted",
+            terminalState: "timeout",
+            truncated: true,
+            originalBytes: 30_000,
+            retainedBytes: 16_000,
+            artifactReferences: [{ id: "stha1_output", available: false }],
+            untrusted: true,
+          },
+        },
+        { type: "text", text: "The command timed out." },
+      ],
+    }} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(screen.getByText("timeout")).toBeVisible();
+    fireEvent.click(screen.getByText("Bash").closest("summary")!);
+    expect(screen.getByText(/persisted · record sth1_result · sequence 2/iu)).toHaveTextContent(
+      "bounded 16000/30000 bytes",
+    );
+    expect(screen.getByText(/1 artifact reference \(1 unavailable\)/iu)).toBeVisible();
+    expect(screen.getByText(/untrusted historical data/iu)).toBeVisible();
+  });
+
   it("preserves reasoning, tools, and answer order while keeping telemetry internal", () => {
     render(<MessageHarness message={assistantMessage("complete")} />);
 

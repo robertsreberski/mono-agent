@@ -108,14 +108,14 @@ describe("AgentHarness.submit (queue-after-turn)", () => {
 
     const p1 = harness.submit?.(request("conv-a", "a"));
     const p2 = harness.submit?.(request("conv-b", "b"));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForCalls(fake.calls, 1);
 
     // Different conversations, but the global limit allows only one model run.
     expect(maxObserved).toBe(1);
     expect(fake.calls).toHaveLength(1);
 
     gates[0]?.();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForCalls(fake.calls, 2);
     expect(fake.calls).toHaveLength(2);
     gates[1]?.();
     await p1;

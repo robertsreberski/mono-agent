@@ -5,11 +5,11 @@ sidebar:
   order: 1
 ---
 
-The tool policy decides which tools an agent may call — built-in tools (Read, Bash, …) and policy-gated app-owned MCP tools such as `RunHistory` and adapter send tools. It is **allow-all by default**: an agent with no `tools` block gets every policy-gated tool, and you subtract from there. You declare it under `tools.allowedTools` / `tools.disallowedTools` (coverage: `config`), with deny always winning and overlaps rejected up front. External MCP-server tools use server declaration as their boundary instead.
+The tool policy decides which tools an agent may call — built-in tools (Read, Bash, …) and policy-gated app-owned MCP tools such as `RunHistory`, `SessionHistory`, and adapter send tools. It is **allow-all by default**: an agent with no `tools` block gets every policy-gated tool, and you subtract from there. You declare it under `tools.allowedTools` / `tools.disallowedTools` (coverage: `config`), with deny always winning and overlaps rejected up front. External MCP-server tools use server declaration as their boundary instead.
 
 ## Allow-all by default
 
-If you set no `tools` block, or omit `allowedTools`, the agent can call **every** built-in, `RunHistory` on a compatible route, and every enabled channel's send tools. There is no allowlist to curate before an agent can do anything — you start open and remove what you don't want. `allowedTools` accepts four shapes:
+If you set no `tools` block, or omit `allowedTools`, the agent can call **every** built-in, `RunHistory` and `SessionHistory` on a compatible route, and every enabled channel's send tools. There is no allowlist to curate before an agent can do anything — you start open and remove what you don't want. `allowedTools` accepts four shapes:
 
 | `tools.allowedTools` | Result |
 | --- | --- |
@@ -82,7 +82,7 @@ The example above keeps allow-all (every tool stays available) but denies `Bash`
 
 ## Deny enforcement by runtime
 
-`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, `RunHistory`, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …) on runtimes that expose those tools through mono-agent. The **Claude Code** CLI additionally receives `--disallowedTools`, so the denial reaches its native tools. Pi-native honors the list for built-ins and policy-gated app-owned tools. Direct Codex has no corresponding native denylist boundary, so configurations containing `disallowedTools` are rejected rather than partially enforced.
+`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, `RunHistory`, `SessionHistory`, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …) on runtimes that expose those tools through mono-agent. The **Claude Code** CLI additionally receives `--disallowedTools`, so the denial reaches its native tools. Pi-native honors the list for built-ins and policy-gated app-owned tools. Direct Codex has no corresponding native denylist boundary, so configurations containing `disallowedTools` are rejected rather than partially enforced.
 
 :::caution
 **Known limitation — external MCP tools on pi.** Arbitrary tools advertised by an external MCP server are **not** deny-filtered on the pi-native runtime yet. Listing such a tool in `disallowedTools` has no effect there. To hard-restrict an external MCP tool on pi, **don't declare its server** in `mcp.json` / `tools.mcpServers` — server declaration, not the denylist, is what governs its availability. (The app-owned adapter send tools are exempt from this limitation: they are gated by the app, so their `disallowedTools` entries are honored everywhere.)
@@ -132,6 +132,10 @@ The adapter's own allowlist (channels/chats it may post to) remains the destinat
 - Direct OpenCode and other MCP-incompatible routes suppress it.
 
 The tool excludes the current/running run, unrelated conversations or threads, system prompts, reasoning, recalled memory, and raw artifact paths. See [MCP servers](/tools/mcp/#runhistory-prior-run-evidence) for its list/search/overview/timeline interface and [Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory) for its evidence boundary.
+
+## SessionHistory
+
+`SessionHistory` is the separate read-only, request-scoped tool for redacted and bounded managed-tool invocations/results retained in the current logical session. Under a specific allowlist, include `SessionHistory`; `session_history` is a deprecated policy alias, and deny still wins. Direct OpenCode and direct ACP routes suppress the model tool because they lack a compatible request-scoped host MCP seam, while persistence and cold projection continue. It excludes the current run and isolated/proactive records by default, keeps foreign conversations opaque, and cannot execute, mutate, or rerun anything. See [MCP servers](/tools/mcp/#sessionhistory-retained-tool-lifecycles) for search/get, cursor, tombstone, artifact, and untrusted-data bounds.
 
 ## Tools not gated by allowedTools
 

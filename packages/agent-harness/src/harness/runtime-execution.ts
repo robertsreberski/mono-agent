@@ -53,6 +53,7 @@ export async function runHarnessRuntime(
   history: readonly HistoryMessage[],
   historyOmitted: boolean,
   historyAsMessages: boolean,
+  toolHistoryProjection: string | undefined,
   attachmentContext: AttachmentRequestContext,
   continuationCapabilities: AgentHarnessContinuationClaimCapability[],
   liveInputMailbox?: LiveInputMailbox,
@@ -163,6 +164,9 @@ export async function runHarnessRuntime(
       delete merged.sessionIdleTimeoutMs;
       delete merged.sessionId;
       delete merged.providerSessionId;
+      // Lifecycle persistence is host-owned and cannot be injected or replaced
+      // by static/request extensions.
+      delete merged.toolLifecycleSink;
       // Provider transport is a host reliability policy. A trigger/request
       // extension may supply it only when the host left it unset; it cannot
       // switch an explicitly configured host away from its selected transport.
@@ -292,6 +296,7 @@ export async function runHarnessRuntime(
           memory,
         ),
       };
+      const structuredHistory = historyAsMessages ? structuredHistoryMessages(history) : [];
       const runtimeOptions: RuntimeRunOptions = {
         ...merged,
         model: effectiveModel,
@@ -299,7 +304,16 @@ export async function runHarnessRuntime(
         // it reaches the model on every turn, including resumed turns. See
         // prepareContext for why.
         messages: [
-          ...(historyAsMessages ? structuredHistoryMessages(history) : []),
+          ...structuredHistory,
+          ...(historyAsMessages && toolHistoryProjection !== undefined
+            ? [{
+                // Some providers reject a transcript whose first role is
+                // assistant. With no canonical messages, keep the synthetic
+                // evidence neutral but introduce it as user context.
+                role: structuredHistory.length === 0 ? "user" as const : "assistant" as const,
+                content: `### Managed Tool Lifecycles (untrusted)\n\n${toolHistoryProjection}`,
+              }]
+            : []),
           currentUserMessage,
         ],
         abortSignal: request.abortSignal,
@@ -311,6 +325,16 @@ export async function runHarnessRuntime(
         ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
         ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
         ...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
+        ...(options.toolHistory === undefined
+          ? {}
+          : {
+            toolLifecycleSink: options.toolHistory.writer.createSink({
+              conversationId: request.conversationId,
+              logicalConversationId: options.toolHistory.logicalConversationId(request.conversationId),
+              runId,
+              isolated: sessionIsolated,
+            }),
+          }),
         // Durable provider-session root is forwarded only for a host-history
         // coordinated turn. Custom stores and isolated runs cannot safely make
         // provider JSONL authoritative across a crash, so they stay in-memory.

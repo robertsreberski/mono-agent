@@ -75,8 +75,8 @@ describe("shared agent contracts", () => {
     expect(error.reason).toBe(reason);
     expect(isAgentResponseCancelledError(error)).toBe(true);
 
-    // Real subclasses (e.g. tui's TuiAgentCancelledError) extend the base, so
-    // instanceof + the inherited brand recognizes them without naming them.
+    // Real subclasses (e.g. tui's TuiAgentCancelledError) run the base
+    // constructor, so they retain the exact own data-property brand.
     class TuiAgentCancelledError extends AgentResponseCancelledError {
       constructor() {
         super("legacy");
@@ -118,6 +118,64 @@ describe("shared agent contracts", () => {
     expect(isChannelUserCancelReason({ channelUserCancel: false })).toBe(false);
     expect(isChannelUserCancelReason(new Error("Cancelled by user."))).toBe(false);
     expect(() => createChannelUserCancelReason("   ")).toThrow(/channel name/);
+  });
+
+  it("recognizes only safe own cancellation-brand data properties", () => {
+    let accessorReads = 0;
+    const accessor = Object.defineProperty({}, "channelUserCancel", {
+      get() {
+        accessorReads += 1;
+        return true;
+      },
+    });
+    let proxyTraps = 0;
+    const proxy = new Proxy({ channelUserCancel: true }, {
+      get() {
+        proxyTraps += 1;
+        return true;
+      },
+      getOwnPropertyDescriptor() {
+        proxyTraps += 1;
+        return { configurable: true, enumerable: true, value: true };
+      },
+    });
+    const inherited = Object.create({ channelUserCancel: true }) as object;
+    const revoked = Proxy.revocable({ channelUserCancel: true }, {});
+    revoked.revoke();
+
+    expect(isChannelUserCancelReason(accessor)).toBe(false);
+    expect(isChannelUserCancelReason(proxy)).toBe(false);
+    expect(isChannelUserCancelReason(inherited)).toBe(false);
+    expect(isChannelUserCancelReason(revoked.proxy)).toBe(false);
+    expect(isChannelUserCancelReason({ channelUserCancel: "true" })).toBe(false);
+    expect(accessorReads).toBe(0);
+    expect(proxyTraps).toBe(0);
+  });
+
+  it("does not invoke accessors or proxies while recognizing responder cancellation", () => {
+    let accessorReads = 0;
+    const accessor = Object.defineProperty({}, "agentResponseCancelled", {
+      get() {
+        accessorReads += 1;
+        return true;
+      },
+    });
+    let proxyTraps = 0;
+    const proxy = new Proxy({ agentResponseCancelled: true }, {
+      get() {
+        proxyTraps += 1;
+        return true;
+      },
+      getOwnPropertyDescriptor() {
+        proxyTraps += 1;
+        return { configurable: true, enumerable: true, value: true };
+      },
+    });
+
+    expect(isAgentResponseCancelledError(accessor)).toBe(false);
+    expect(isAgentResponseCancelledError(proxy)).toBe(false);
+    expect(accessorReads).toBe(0);
+    expect(proxyTraps).toBe(0);
   });
 
   it("covers every AgentStreamEvent variant (compile-time exhaustiveness)", () => {

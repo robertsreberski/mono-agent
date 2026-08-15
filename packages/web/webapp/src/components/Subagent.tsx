@@ -22,6 +22,7 @@ interface SubagentView {
   readonly result?: unknown;
   readonly executionMs?: number;
   readonly costUsd?: number;
+  readonly history?: Record<string, unknown>;
   readonly status: ToolCallStatus;
   readonly calls: readonly SubagentCallView[];
 }
@@ -99,6 +100,9 @@ const subagentView = (data: unknown): SubagentView | undefined => {
       : {}),
     ...(typeof record.costUsd === "number" && Number.isFinite(record.costUsd) && record.costUsd > 0
       ? { costUsd: record.costUsd }
+      : {}),
+    ...(record.history !== null && typeof record.history === "object" && !Array.isArray(record.history)
+      ? { history: record.history as Record<string, unknown> }
       : {}),
     status: toolCallStatus(record.status),
     calls: calls.flatMap((entry): SubagentCallView[] => {
@@ -184,6 +188,7 @@ export function SubagentPart({ data }: DataMessagePartProps) {
     // A delegation is the one part of a turn that can quietly cost more than
     // the turn itself, and the run total it folds into cannot say which one did.
     ...(view.costUsd === undefined ? [] : [formatUsd(view.costUsd)]),
+    ...(view.history?.persistence === "failed" ? ["history not persisted"] : []),
   ].join(" · ");
 
   return (
@@ -202,6 +207,7 @@ export function SubagentPart({ data }: DataMessagePartProps) {
           ? <p className="subagent-empty">No tool calls recorded.</p>
           : view.calls.map((call) => <SubagentCall key={call.toolCallId} call={call} />)}
         {view.result !== undefined && <SubagentNote title="Report">{safeJson(view.result)}</SubagentNote>}
+        {view.history !== undefined && <SubagentNote title="History">{safeJson(view.history)}</SubagentNote>}
       </div>
     </details>
   );

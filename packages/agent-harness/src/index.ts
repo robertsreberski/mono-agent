@@ -5,7 +5,40 @@ export { createLiveInputMailbox } from "./live-input.js";
 export type { AppliedLiveInput, LiveInputMailbox } from "./live-input.js";
 export { createInMemoryHistoryStore } from "./history.js";
 export { createDurableHistoryStore, DurableConversationHistoryStore } from "./durable-history.js";
+export { isProcessAlive } from "./history-process-liveness.js";
 export type { DurableHistoryStoreOptions, DurableHistoryStoreStats } from "./durable-history.js";
+export {
+  acquireToolHistoryWriter,
+  ToolHistoryReader,
+  ToolHistoryWriter,
+  ToolHistoryWriterError,
+  toolHistoryDiskUsage,
+  toolHistoryLogicalConversationId,
+  toolHistoryRecordId,
+  TOOL_HISTORY_APPLICATION_ID,
+  TOOL_HISTORY_DATABASE,
+  TOOL_HISTORY_DIRECTORY,
+  TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS,
+  TOOL_HISTORY_OWNER_DATABASE,
+  TOOL_HISTORY_PERSISTENCE_CEILING_MS,
+  TOOL_HISTORY_SCHEMA,
+  TOOL_HISTORY_USER_VERSION,
+} from "./tool-history-store.js";
+export type {
+  ToolHistoryArtifactReference,
+  ToolHistoryGetInput,
+  ToolHistoryGetResult,
+  ToolHistoryRecordProjection,
+  ToolHistoryRetentionOptions,
+  ToolHistoryRunBinding,
+  ToolHistorySearchInput,
+  ToolHistorySearchCursor,
+  ToolHistorySearchItem,
+  ToolHistorySearchPage,
+  ToolHistoryStats,
+  ToolHistoryWriterHandle,
+  ToolHistoryWriterOptions,
+} from "./tool-history-store.js";
 export { NoopRunRecorder } from "./recorder.js";
 export { createRuntimeSessionStore } from "./sessions.js";
 export {
@@ -47,6 +80,7 @@ export type {
   AgentHarnessSessionEventKind,
   AgentHarnessSessionSnapshot,
   AgentHarnessSessionOptions,
+  AgentHarnessToolHistoryOptions,
   AgentHarnessTurnHistoryEnricher,
   AgentSessionMode,
   ConversationHistoryProviderSessionTurn,

@@ -71,6 +71,14 @@ import { appendVerbatimHistoryTurn } from "./harness/verbatim-history.js";
 export { AgentHarnessError };
 export { requestOverridesModel, runSourceFromRequest };
 
+const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
+const SHUTDOWN_DRAIN_WARNING =
+  "Agent shutdown timed out while draining active runs; provider sessions and tool-history persistence were forcibly released.";
+
+interface MonoAgentHarnessInternalOptions {
+  /** Deterministic test seam; production callers use the bounded default. */
+  readonly shutdownDrainTimeoutMs?: number;
+}
 
 export class MonoAgentHarness implements AgentHarness {
   private readonly options: AgentHarnessOptions;
@@ -89,10 +97,21 @@ export class MonoAgentHarness implements AgentHarness {
   private readonly maxPendingRuns: number | undefined;
   private pendingRuns = 0;
   private supportsResumeCache: boolean | undefined;
+  private activeRuns = 0;
+  private readonly activeRunWaiters = new Set<() => void>();
+  private readonly activeRunWarningSinks = new Set<(event: RuntimeEventLike) => void>();
+  private readonly shutdownDrainTimeoutMs: number;
+  private disposed = false;
+  private disposePromise: Promise<void> | undefined;
 
-  constructor(options: AgentHarnessOptions) {
+  constructor(options: AgentHarnessOptions, internalOptions: MonoAgentHarnessInternalOptions = {}) {
     validateOptions(options);
     this.options = options;
+    const shutdownDrainTimeoutMs = internalOptions.shutdownDrainTimeoutMs ?? DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
+    if (!Number.isSafeInteger(shutdownDrainTimeoutMs) || shutdownDrainTimeoutMs <= 0) {
+      throw new TypeError("shutdownDrainTimeoutMs must be a positive safe integer.");
+    }
+    this.shutdownDrainTimeoutMs = shutdownDrainTimeoutMs;
     // Skills are otherwise re-read from disk every turn. A per-harness cache
     // (or a shared one passed in) skips unchanged reads across turns.
     this.skillsCache = options.skillsCache ?? createSkillsCache();
@@ -122,6 +141,7 @@ export class MonoAgentHarness implements AgentHarness {
   }
 
   async submit(request: AgentHarnessRequest): Promise<AgentHarnessResponse> {
+    this.assertAcceptingRuns();
     if (this.liveSessionManager !== undefined) {
       return this.liveSessionManager.enqueue(request.conversationId, request);
     }
@@ -144,14 +164,30 @@ export class MonoAgentHarness implements AgentHarness {
     }
     const normalized = conversationId.trim();
     const historyStore = this.options.historyStore;
-    if (historyStore !== undefined && historyStore.reset === undefined) {
+    const logicalConversationId = this.options.toolHistory?.logicalConversationId(normalized) ?? normalized;
+    if (
+      historyStore !== undefined
+      && logicalConversationId === normalized
+      && historyStore.reset === undefined
+    ) {
       throw new Error("The configured conversation history store does not support session reset.");
     }
+    if (
+      historyStore !== undefined
+      && logicalConversationId !== normalized
+      && historyStore.resetLogicalConversation === undefined
+    ) {
+      throw new Error("The configured conversation history store does not support logical session reset for rollover buckets.");
+    }
     // The responder serializes this behind the cancelled turn. Evict the warm
-    // handle first, then atomically replace only this conversation's canonical
-    // history. A reset failure is surfaced and never acknowledged as success.
+    // handle first, then clear canonical message history and tool history for
+    // the same logical session. The stores are deliberately separate (tool
+    // records can exist without messages), so a partial failure is surfaced and
+    // a retry is idempotent rather than acknowledged as success.
     await this.sessionStore?.evict(normalized, "stale");
-    await historyStore?.reset?.(normalized);
+    if (logicalConversationId === normalized) await historyStore?.reset?.(normalized);
+    else await historyStore?.resetLogicalConversation?.(logicalConversationId);
+    await this.options.toolHistory?.writer.resetConversation(logicalConversationId);
     // Identity/soul are already read per turn. Clearing the skill cache forces
     // installed skill metadata and content to be re-read on the next turn too.
     this.skillsCache.clear();
@@ -166,6 +202,23 @@ export class MonoAgentHarness implements AgentHarness {
   }
 
   async run(request: AgentHarnessRequest, lifecycle?: LiveSessionRunLifecycle): Promise<AgentHarnessResponse> {
+    this.assertAcceptingRuns();
+    this.activeRuns += 1;
+    try {
+      return await this.runActive(request, lifecycle);
+    } finally {
+      this.activeRuns -= 1;
+      if (this.activeRuns === 0) {
+        for (const resolve of this.activeRunWaiters) resolve();
+        this.activeRunWaiters.clear();
+      }
+    }
+  }
+
+  private async runActive(
+    request: AgentHarnessRequest,
+    lifecycle?: LiveSessionRunLifecycle,
+  ): Promise<AgentHarnessResponse> {
     validateRequest(request);
     const runId = this.options.createRunId?.() ?? createDefaultRunId();
     const runSource = runSourceFromRequest(request);
@@ -189,6 +242,7 @@ export class MonoAgentHarness implements AgentHarness {
     const isolated = proactiveIsolated || modelOverrideIsolated || continuationIsolated;
     let liveInputMailbox: LiveInputMailbox | undefined;
     let liveInputCloseReason: "closed" | "failed" = "failed";
+    let toolHistoryStatus: "succeeded" | "failed" | "cancelled" = "failed";
     const recorder = this.options.recorderFactory?.({
       runId,
       conversationId: request.conversationId,
@@ -242,6 +296,11 @@ export class MonoAgentHarness implements AgentHarness {
       recorder.onEvent(event);
       request.onEvent?.(event);
     };
+    const emitShutdownWarning = (event: RuntimeEventLike): void => {
+      try { recorder.onEvent(event); } catch { /* shutdown diagnostics are best-effort */ }
+      try { request.onEvent?.(event); } catch { /* an event sink cannot block shutdown */ }
+    };
+    this.activeRunWarningSinks.add(emitShutdownWarning);
     // Admitted: count this run as pending until it begins its provider call (via
     // leavePending, fired from runRuntime) or exits before getting there. `left`
     // makes the release idempotent so exactly one decrement happens per run, on
@@ -430,6 +489,7 @@ export class MonoAgentHarness implements AgentHarness {
           prepared.history,
           prepared.historyOmitted,
           prepared.historyAsMessages,
+          prepared.toolHistoryProjection,
           attachmentContext,
           continuationCapabilities,
           liveInputMailbox,
@@ -488,6 +548,7 @@ export class MonoAgentHarness implements AgentHarness {
           prepared.history,
           prepared.historyOmitted,
           prepared.historyAsMessages,
+          prepared.toolHistoryProjection,
           attachmentContext,
           continuationCapabilities,
           liveInputMailbox,
@@ -508,6 +569,7 @@ export class MonoAgentHarness implements AgentHarness {
       // evict/dispose any returned provider session (mirrors the empty-turn
       // retirement below), and return a cancelled failure instead.
       if (request.abortSignal.aborted) {
+        toolHistoryStatus = "cancelled";
         await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
           request.conversationId,
           sessionRecord,
@@ -597,6 +659,7 @@ export class MonoAgentHarness implements AgentHarness {
       // history/memory persistence starts, because those durable writes cannot be
       // rolled back safely.
       if (request.abortSignal.aborted) {
+        toolHistoryStatus = "cancelled";
         if (!isolated) {
           await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
             request.conversationId,
@@ -710,6 +773,7 @@ export class MonoAgentHarness implements AgentHarness {
       // Preparation above can perform bounded durable I/O. Cancellation still
       // wins until the synchronous commit marker below.
       if (request.abortSignal.aborted) {
+        toolHistoryStatus = "cancelled";
         if (!isolated) {
           await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
             request.conversationId,
@@ -804,12 +868,14 @@ export class MonoAgentHarness implements AgentHarness {
         }));
       }
       continuationOriginSettled = true;
+      toolHistoryStatus = "succeeded";
       liveInputCloseReason = "closed";
       return {
         text,
         metadata: responseMetadata(runId, request, context, summary, runtimeResult),
       };
     } catch (error) {
+      toolHistoryStatus = request.abortSignal.aborted ? "cancelled" : "failed";
       // A provider may already have persisted its transcript before any of the
       // host's pre-commit stages (recorder preparation, continuation binding,
       // or history staging) fail. Invalidate that cache generically so a later
@@ -834,65 +900,141 @@ export class MonoAgentHarness implements AgentHarness {
         failure,
       };
     } finally {
-      await preparedHistoryAppend?.abort().catch(() => undefined);
-      await providerHistoryTurn?.abort().catch(() => undefined);
-      if (!continuationOriginSettled && continuationCapabilities.length > 0) {
-        await Promise.allSettled(continuationCapabilities.map(async (capability) => {
-          await capability.abandonOriginContext();
-        }));
-      }
-      // App-owned retrieval services use this to discard the normalized query
-      // cache after the whole logical turn (including any resume retry), not
-      // after one provider attempt.
       try {
-        await this.options.memory?.releaseTurn?.(runId);
-      } catch {
-        // Cache cleanup is best-effort and must not change the turn outcome.
-      }
-      try {
-        await this.options.turnHistoryEnricher?.releaseRun({
-          runId,
+        await this.options.toolHistory?.writer.finishRun({
           conversationId: request.conversationId,
-        });
-      } catch {
-        // Interaction-journal cleanup is best-effort and must not change the turn outcome.
-      }
-      if (liveInputMailbox !== undefined) {
-        liveInputMailbox.close(liveInputCloseReason);
-        if (this.activeLiveInputs.get(request.conversationId) === liveInputMailbox) {
-          this.activeLiveInputs.delete(request.conversationId);
+          logicalConversationId: this.options.toolHistory.logicalConversationId(request.conversationId),
+          runId,
+          isolated,
+        }, toolHistoryStatus, toolHistoryStatus === "cancelled" ? cancellationFailureKind(request.abortSignal) : undefined);
+      } finally {
+        // A custom injected lifecycle writer may throw. It can retain its
+        // failure semantics, but must never strand mailbox/session cleanup.
+        await preparedHistoryAppend?.abort().catch(() => undefined);
+        await providerHistoryTurn?.abort().catch(() => undefined);
+        if (!continuationOriginSettled && continuationCapabilities.length > 0) {
+          await Promise.allSettled(continuationCapabilities.map(async (capability) => {
+            await capability.abandonOriginContext();
+          }));
         }
-      }
-      // Release the admission-pending slot if the run never reached its provider
-      // call (e.g. a throw in applyAttachments/prepareContext, or an aborted
-      // admission). No-op when onProviderStart already released it.
-      leavePending();
-      if (sessionRecord !== undefined) {
-        const released = this.sessionStore?.release(request.conversationId, sessionRecord);
-        if (released !== false) {
-          const snapshot = this.sessionStoreSnapshot();
-          const live = snapshot.find((entry) =>
-            entry.conversationId === sessionRecord.conversationId &&
-            entry.providerSessionId === sessionRecord.providerSessionId
-          );
-          if (live !== undefined || released === undefined) {
-            this.publishSessionEvent(sessionEventFromRecord("released", live ?? sessionRecord, undefined, snapshot));
+        // App-owned retrieval services use this to discard the normalized query
+        // cache after the whole logical turn (including any resume retry), not
+        // after one provider attempt.
+        try {
+          await this.options.memory?.releaseTurn?.(runId);
+        } catch {
+          // Cache cleanup is best-effort and must not change the turn outcome.
+        }
+        try {
+          await this.options.turnHistoryEnricher?.releaseRun({
+            runId,
+            conversationId: request.conversationId,
+          });
+        } catch {
+          // Interaction-journal cleanup is best-effort and must not change the turn outcome.
+        }
+        if (liveInputMailbox !== undefined) {
+          liveInputMailbox.close(liveInputCloseReason);
+          if (this.activeLiveInputs.get(request.conversationId) === liveInputMailbox) {
+            this.activeLiveInputs.delete(request.conversationId);
           }
         }
+        // Release the admission-pending slot if the run never reached its provider
+        // call (e.g. a throw in applyAttachments/prepareContext, or an aborted
+        // admission). No-op when onProviderStart already released it.
+        leavePending();
+        if (sessionRecord !== undefined) {
+          const released = this.sessionStore?.release(request.conversationId, sessionRecord);
+          if (released !== false) {
+            const snapshot = this.sessionStoreSnapshot();
+            const live = snapshot.find((entry) =>
+              entry.conversationId === sessionRecord.conversationId &&
+              entry.providerSessionId === sessionRecord.providerSessionId
+            );
+            if (live !== undefined || released === undefined) {
+              this.publishSessionEvent(sessionEventFromRecord("released", live ?? sessionRecord, undefined, snapshot));
+            }
+          }
+        }
+        this.activeRunWarningSinks.delete(emitShutdownWarning);
       }
     }
   }
 
-  async dispose(): Promise<void> {
-    // Reject any in-flight/queued turns first so callers stop waiting, then
-    // retire sessions. Only this harness's tracked sessions are retired (the
-    // store's onEvict disposes each provider session individually).
-    // runtime.disposeAllSessions is intentionally NOT called here: the provider
-    // registries are process-global and other harnesses may share them.
+  dispose(): Promise<void> {
+    if (this.disposePromise !== undefined) return this.disposePromise;
+    // Latch synchronously so a run cannot enter between shutdown admission and
+    // the first asynchronous cleanup boundary. Disposal is terminal and
+    // idempotent for this harness instance.
+    this.disposed = true;
+    this.disposePromise = this.disposeActiveResources();
+    return this.disposePromise;
+  }
+
+  private async disposeActiveResources(): Promise<void> {
+    // Reject queued work and cancel live input before draining every admitted
+    // run through its complete finishRun() boundary. Only then may provider
+    // sessions and the shared lifecycle writer be released.
     for (const mailbox of this.activeLiveInputs.values()) mailbox.cancel();
     this.activeLiveInputs.clear();
-    await this.liveSessionManager?.dispose();
-    await this.sessionStore?.disposeAll();
+    const liveSessionDisposal = this.liveSessionManager?.dispose();
+    void liveSessionDisposal?.catch(() => undefined);
+    const drained = await this.waitForActiveRuns();
+    const cleanupErrors: unknown[] = [];
+    if (drained) {
+      try {
+        await liveSessionDisposal;
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    } else {
+      const warning: RuntimeEventLike = {
+        type: "runtime_warning",
+        warning_kind: "harness_shutdown_degraded",
+        message: SHUTDOWN_DRAIN_WARNING,
+      };
+      for (const sink of this.activeRunWarningSinks) {
+        try { sink(warning); } catch { /* shutdown diagnostics are best-effort */ }
+      }
+    }
+
+    // On timeout this is a forced, harness-scoped provider cleanup. The runtime's
+    // process-global disposeAllSessions remains intentionally out of bounds.
+    try {
+      await this.sessionStore?.disposeAll();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      await this.options.toolHistory?.release?.();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (cleanupErrors.length === 1) throw cleanupErrors[0];
+    if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, "Agent harness shutdown cleanup failed.");
+  }
+
+  private async waitForActiveRuns(): Promise<boolean> {
+    if (this.activeRuns === 0) return true;
+    let resolveDrain!: () => void;
+    const drained = new Promise<void>((resolve) => { resolveDrain = resolve; });
+    this.activeRunWaiters.add(resolveDrain);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      drained.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), this.shutdownDrainTimeoutMs);
+      }),
+    ]);
+    if (timer !== undefined) clearTimeout(timer);
+    this.activeRunWaiters.delete(resolveDrain);
+    return outcome;
+  }
+
+  private assertAcceptingRuns(): void {
+    if (this.disposed) {
+      throw new AgentHarnessError("harness_disposed", "Agent harness has been disposed and cannot accept new runs.");
+    }
   }
 
   /**

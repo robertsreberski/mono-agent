@@ -1,7 +1,9 @@
 import { Text } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
+import type { SessionToolHistoryEventMetadata } from "@mono-agent/agent-contracts";
 
 import { formatDurationMs, lastLines, previewValue } from "../format.js";
+import { escapeTerminalControls } from "../terminal-text.js";
 import { styles } from "../theme.js";
 
 export type ToolPanelState = "pending" | "success" | "error";
@@ -38,13 +40,20 @@ export class ToolPanel implements Component {
   private resultPreview = "";
   private executionMs: number | undefined;
   private truncated = false;
+  private history: SessionToolHistoryEventMetadata | undefined;
   private expandedValue = false;
 
-  constructor(id: string, name: string, args?: unknown, options?: ToolPanelOptions) {
+  constructor(
+    id: string,
+    name: string,
+    args?: unknown,
+    options?: ToolPanelOptions & { readonly history?: SessionToolHistoryEventMetadata },
+  ) {
     this.id = id;
     this.name = name;
     this.argsPreview = previewValue(args, 240).replace(/\s+/gu, " ").trim();
     this.nested = options?.nested === true;
+    this.history = options?.history;
   }
 
   /** Adopt one subagent tool call so it renders inside this panel. */
@@ -56,8 +65,17 @@ export class ToolPanel implements Component {
     this.progressTail = lastLines(previewValue(partialResult, 4_000), 10);
   }
 
-  complete(input: { isError?: boolean; content?: unknown; executionMs?: number; truncated?: boolean }): void {
-    this.state = input.isError === true ? "error" : "success";
+  complete(input: {
+    isError?: boolean;
+    content?: unknown;
+    executionMs?: number;
+    truncated?: boolean;
+    history?: SessionToolHistoryEventMetadata;
+  }): void {
+    this.history = input.history ?? this.history;
+    this.state = input.isError === true || (
+      this.history?.terminalState !== undefined && this.history.terminalState !== "success"
+    ) ? "error" : "success";
     this.progressTail = "";
     this.resultPreview = previewValue(input.content, this.expandedValue ? 20_000 : 600);
     this.executionMs = input.executionMs;
@@ -102,6 +120,10 @@ export class ToolPanel implements Component {
         ).render(width),
       );
     }
+    const history = historySummary(this.history);
+    if (history !== undefined) {
+      lines.push(...new Text(styles.dim(history), 3 + indent, 0).render(width));
+    }
     for (const child of this.children) {
       lines.push(...child.render(width));
     }
@@ -111,4 +133,31 @@ export class ToolPanel implements Component {
   invalidate(): void {
     // Renders from plain state each frame; nothing cached.
   }
+}
+
+function historySummary(history: SessionToolHistoryEventMetadata | undefined): string | undefined {
+  if (history === undefined) return undefined;
+  const record = history.recordId === undefined
+    ? undefined
+    : `record ${escapeTerminalControls(history.recordId)}`;
+  const trust = "untrusted historical data";
+  if (history.persistence === "failed") {
+    return [
+      `history not persisted${history.errorCode === undefined ? "" : ` (${escapeTerminalControls(history.errorCode)})`}`,
+      record,
+      trust,
+    ].filter((part): part is string => part !== undefined).join(" · ");
+  }
+  const artifacts = history.artifactReferences ?? [];
+  const unavailable = artifacts.filter((artifact) => !artifact.available).length;
+  return [
+    "history persisted",
+    record,
+    history.terminalState,
+    history.sequence === undefined ? undefined : `seq ${String(history.sequence)}`,
+    history.truncated === true ? "bounded" : undefined,
+    artifacts.length === 0 ? undefined : `${String(artifacts.length)} artifact${artifacts.length === 1 ? "" : "s"}`,
+    unavailable === 0 ? undefined : `${String(unavailable)} unavailable`,
+    trust,
+  ].filter((part): part is string => part !== undefined).join(" · ");
 }

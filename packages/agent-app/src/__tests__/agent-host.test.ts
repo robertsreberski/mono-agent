@@ -23,6 +23,7 @@ import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 import {
   createToolPolicy,
+  ToolHistoryReader,
   type ConversationHistoryStore,
   type HistoryMessage,
 } from "@mono-agent/agent-harness";
@@ -1028,10 +1029,11 @@ describe("agent host composition helpers", () => {
       .filter((name) => name.endsWith(".history.json"))).toHaveLength(1);
   });
 
-  it("continues to honor a caller-supplied conversation history store", async () => {
+  it("keeps configured tool history with a caller-supplied conversation history store", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, ".mono-agent", "artifacts");
+    const historyRoot = join(dir, ".mono-agent", "history");
     await writeFile(identityPath, "You are Mono.", "utf8");
     const persisted: HistoryMessage[] = [];
     let loads = 0;
@@ -1044,24 +1046,57 @@ describe("agent host composition helpers", () => {
         persisted.push(...messages);
       },
     };
+    const runtime = createFakeRuntime(async (_prompt, options) => {
+      await options.toolLifecycleSink?.({
+        phase: "invocation",
+        toolCallId: "custom-store-read",
+        toolName: "Read",
+        arguments: { file_path: "/Users/example/repo/src/config.ts" },
+      });
+      await options.toolLifecycleSink?.({
+        phase: "result",
+        toolCallId: "custom-store-read",
+        state: "success",
+        content: "custom-store-tool-result",
+      });
+      return { text: "custom-store-answer" };
+    });
     const harness = await createConfiguredAgentHarness({
       config: monoConfig({ dir, identityPath, artifactDir }),
-      runtime: createFakeRuntime(async () => ({ text: "custom-store-answer" })).runtime,
+      runtime: runtime.runtime,
       historyStore,
+      createRunId: () => "run-custom-store",
     });
 
-    await harness.run({
-      conversationId: "custom-store",
-      userMessage: "custom-store-question",
-      abortSignal: new AbortController().signal,
-    });
+    try {
+      await harness.run({
+        conversationId: "custom-store",
+        userMessage: "custom-store-question",
+        abortSignal: new AbortController().signal,
+      });
 
-    expect(loads).toBeGreaterThan(0);
-    expect(persisted.map((message) => message.content)).toEqual([
-      "custom-store-question",
-      "custom-store-answer",
-    ]);
-    await expect(readdir(join(dir, ".mono-agent", "history"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(loads).toBeGreaterThan(0);
+      expect(persisted.map((message) => message.content)).toEqual([
+        "custom-store-question",
+        "custom-store-answer",
+      ]);
+      expect(new ToolHistoryReader(historyRoot).search({
+        logicalConversationId: "custom-store",
+        currentConversationId: "custom-store",
+        currentRunId: "later-run",
+      }).items).toEqual([
+        expect.objectContaining({
+          runId: "run-custom-store",
+          toolCallId: "custom-store-read",
+          toolName: "Read",
+          state: "success",
+        }),
+      ]);
+      expect((await readdir(historyRoot)).filter((name) => name.endsWith(".history.json")))
+        .toEqual([]);
+    } finally {
+      await harness.dispose?.();
+    }
   });
 
   it("overrides config model and executionMode when supplied at composition time", async () => {

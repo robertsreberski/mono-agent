@@ -4,7 +4,10 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import type { AgentResponder } from "@mono-agent/agent-contracts";
+import {
+  isChannelUserCancelReason,
+  type AgentResponder,
+} from "@mono-agent/agent-contracts";
 import type {
   A2AAdapterConfig,
   A2AProviderOptions,
@@ -402,11 +405,13 @@ describe("A2A adapter contract", () => {
 
   it("cancels active responder work through A2A task cancellation", async () => {
     let observedAbort = false;
+    let observedAbortReason: unknown;
     const responder: AgentResponder = {
       async respond(request) {
         await new Promise<void>((resolve) => {
           request.abortSignal.addEventListener("abort", () => {
             observedAbort = true;
+            observedAbortReason = request.abortSignal.reason;
             resolve();
           }, { once: true });
         });
@@ -438,6 +443,7 @@ describe("A2A adapter contract", () => {
       expect(taskId).toEqual(expect.any(String));
       await consumer.cancelTask(taskId as string);
       expect(observedAbort).toBe(true);
+      expect(isChannelUserCancelReason(observedAbortReason)).toBe(true);
     } finally {
       await provider.stop();
     }
@@ -476,6 +482,7 @@ describe("A2A adapter contract", () => {
     await firstStop;
 
     expect(requestSignal?.aborted).toBe(true);
+    expect(isChannelUserCancelReason(requestSignal?.reason)).toBe(false);
     expect(Date.now() - startedAt).toBeLessThan(1_500);
   });
 

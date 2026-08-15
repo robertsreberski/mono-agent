@@ -61,6 +61,7 @@ import {
 import { validateMonoAgentFolder } from "./doctor.js";
 import { ADAPTER_SEND_TOOL_NAMES, canonicalToolName } from "./modules/known-tools.js";
 import { RUN_HISTORY_MCP_SERVER_NAME, RUN_HISTORY_TOOL_NAME } from "./run-history.js";
+import { SESSION_HISTORY_MCP_SERVER_NAME, SESSION_HISTORY_TOOL_NAME } from "./session-history.js";
 import { configuredRuntimeFallbackModels } from "./runtime-routes.js";
 
 export const LOCAL_CONFIGURATION_PROMPT =
@@ -72,6 +73,7 @@ export const LOCAL_CONFIGURATION_OPERATOR_PROMPT =
 const CONFIGURATION_READ_ONLY_TOOLS = [
   "ReadSkill",
   "MemoryRecall",
+  SESSION_HISTORY_TOOL_NAME,
   CONFIGURATION_PROPOSAL_TOOL_NAME,
   `mcp__${CONFIGURATION_PROPOSAL_MCP_SERVER_NAME}__${CONFIGURATION_PROPOSAL_TOOL_NAME}`,
 ] as const;
@@ -372,7 +374,7 @@ export function createLocalConfigurationRuntimeExtension(
     if (request.phase === "invitation") {
       return {
         toolPolicyOverride: createToolPolicy({
-          allowedTools: allRoutesUseDirectCodex ? ["*"] : ["ReadSkill", "MemoryRecall"],
+          allowedTools: allRoutesUseDirectCodex ? ["*"] : ["ReadSkill", "MemoryRecall", SESSION_HISTORY_TOOL_NAME],
           disallowedTools: [],
           mcpServers: {},
         }),
@@ -1261,20 +1263,24 @@ function mcpQualifiedTool(pattern: string): { readonly server: string; readonly 
 function isAppOwnedMcpTool(server: string, tool: string): boolean {
   return server === ADAPTER_SEND_TOOLS_MCP_SERVER_NAME
     ? ADAPTER_SEND_TOOL_NAMES.some((name) => name === tool)
-    : server === RUN_HISTORY_MCP_SERVER_NAME && tool === RUN_HISTORY_TOOL_NAME;
+    : (server === RUN_HISTORY_MCP_SERVER_NAME && tool === RUN_HISTORY_TOOL_NAME)
+      || (server === SESSION_HISTORY_MCP_SERVER_NAME && tool === SESSION_HISTORY_TOOL_NAME);
 }
 
 function appOwnedMcpWildcardCovers(prefix: string, candidate: string): boolean {
   if (prefix === `mcp__${ADAPTER_SEND_TOOLS_MCP_SERVER_NAME}__`) {
     return ADAPTER_SEND_TOOL_NAMES.some((name) => name === candidate);
   }
-  return prefix === `mcp__${RUN_HISTORY_MCP_SERVER_NAME}__`
-    && candidate === RUN_HISTORY_TOOL_NAME;
+  return (prefix === `mcp__${RUN_HISTORY_MCP_SERVER_NAME}__`
+      && candidate === RUN_HISTORY_TOOL_NAME)
+    || (prefix === `mcp__${SESSION_HISTORY_MCP_SERVER_NAME}__`
+      && candidate === SESSION_HISTORY_TOOL_NAME);
 }
 
 function isAppOwnedTool(candidate: string): boolean {
   return ADAPTER_SEND_TOOL_NAMES.some((name) => name === candidate)
-    || candidate === RUN_HISTORY_TOOL_NAME;
+    || candidate === RUN_HISTORY_TOOL_NAME
+    || candidate === SESSION_HISTORY_TOOL_NAME;
 }
 
 function isMcpAuthorityTool(candidate: string): boolean {

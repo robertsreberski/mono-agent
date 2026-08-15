@@ -36,6 +36,10 @@ import type {
   RuntimeSubagentActivityEvent,
   RuntimeSubagentActivityPhase,
   RuntimeSubagentIdentity,
+  RuntimeToolLifecycleEvent,
+  RuntimeToolLifecyclePersistence,
+  RuntimeToolLifecycleSink,
+  RuntimeToolLifecycleTerminalState,
   RuntimeToolOptions,
 } from "../types.js";
 
@@ -43,6 +47,9 @@ type KernelRuntimeInstance = ReturnType<typeof createRuntime>;
 type KernelHostOptions = NonNullable<Parameters<typeof createRuntime>[0]>;
 type KernelRunOptions = Parameters<KernelRuntimeInstance["run"]>[1];
 type KernelRuntimeEvent = Parameters<NonNullable<KernelRunOptions["onEvent"]>>[0];
+type KernelToolLifecycleSink = NonNullable<KernelRunOptions["toolLifecycleSink"]>;
+type KernelToolLifecycleEvent = Parameters<KernelToolLifecycleSink>[0];
+type KernelToolLifecyclePersistence = Awaited<ReturnType<KernelToolLifecycleSink>>;
 type KernelSubagentActivityEvent = Extract<KernelRuntimeEvent, { type: "subagent_activity" }>;
 type KernelToolOptions = Parameters<KernelRuntimeInstance["configureTools"]>[0];
 type KernelRunResult = Awaited<ReturnType<KernelRuntimeInstance["run"]>>;
@@ -61,6 +68,7 @@ type RuntimeRunComparableKeys =
   | "abortSignal"
   | "executionMode"
   | "onEvent"
+  | "toolLifecycleSink"
   | "effort"
   | "cwd"
   | "mcpServers"
@@ -138,6 +146,35 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
       .toEqualTypeOf<"sdk" | "cli" | "acp" | undefined>();
     const facade = null as unknown as RuntimeRunComparableOptions;
     assertAssignable<KernelRunOptions>(facade);
+  });
+
+  it("keeps the public lifecycle sink exact for direct TypeScript consumers", () => {
+    expectTypeOf<KernelToolLifecycleEvent>().toEqualTypeOf<RuntimeToolLifecycleEvent>();
+    expectTypeOf<KernelToolLifecyclePersistence>()
+      .toEqualTypeOf<RuntimeToolLifecyclePersistence | undefined>();
+    expectTypeOf<KernelToolLifecycleSink>().toEqualTypeOf<RuntimeToolLifecycleSink>();
+
+    if (false) {
+      const runtime = createRuntime();
+      void runtime.run("SYSTEM", {
+        model: { sdk: "pi", provider: "faux", model: "lifecycle-type-contract" },
+        messages: [],
+        toolLifecycleSink: async (event) => {
+          if (event.phase === "invocation") {
+            expectTypeOf(event.toolName).toEqualTypeOf<string>();
+            // @ts-expect-error invocation events do not expose terminal state.
+            void event.state;
+          } else {
+            expectTypeOf(event.state).toEqualTypeOf<RuntimeToolLifecycleTerminalState>();
+            expectTypeOf(event.failureKind).toEqualTypeOf<string | undefined>();
+          }
+          return {
+            persistence: "persisted",
+            artifactReferences: [{ id: "artifact-1", available: true }],
+          };
+        },
+      });
+    }
   });
 
   it("keeps provider controls typed at the facade/kernel seam", () => {

@@ -87,6 +87,17 @@ actually being attempted. Other logical request fields, including
 `codexSandboxNetworkAccess`, remain protected and cannot be replaced through
 `resolveAttempt().options`.
 
+`RuntimeRunOptions.toolLifecycleSink` is the typed incremental persistence seam
+for managed tools. It receives an invocation with stable call id/name,
+and redaction-eligible arguments, then exactly one result
+with `success`, `rejected`, `error`, `exit_nonzero`, `timeout`, `signal`,
+`cancelled`, or `interrupted`, an existing observability failure kind, optional
+detail/duration, bounded-content input, and host artifact paths. The awaited
+return exposes only stable record/sequence, persistence and truncation/byte
+metadata, and opaque artifact references. Hosts should make this sink
+idempotent: a retry of an identical phase returns the same record and a
+conflicting retry fails rather than overwriting history.
+
 ## Architecture
 
 `runtime-adapter` is the typed boundary between harness code and the JavaScript
@@ -97,9 +108,9 @@ provider kernel:
 1. Model helpers parse and validate a canonical reference and execution mode.
 2. `createMonoRuntime()` injects the mono-agent sandbox implementation exactly
    once, then constructs either one runtime or an ordered fallback router.
-3. `MonoRuntimeLike` exposes `run()`, acknowledged live-input messages, tool
-   reconfiguration, and bounded provider session lifecycle methods to
-   `agent-harness`.
+3. `MonoRuntimeLike` exposes `run()`, acknowledged live-input messages, an
+   awaited incremental tool-lifecycle sink, tool reconfiguration, and bounded
+   provider session lifecycle methods to `agent-harness`.
 4. Local-provider and MCP helpers translate host config into provider-neutral
    runtime options without importing channel or application code.
 
@@ -126,6 +137,7 @@ provider kernel:
 | `createSandboxPolicy()` / `failClosedSandboxPolicy()` | Build explicit filesystem and network policy data |
 | `discoverLocalProviderModels()` / `runtimeOptionsForLocalProvider()` | Validate and project a configured local Pi provider |
 | `parseMcpServers()` | Normalize HTTP, SSE, and stdio MCP server definitions |
+| `RuntimeToolLifecycleSink` and event/persistence types | Bind one host-owned durable lifecycle writer without importing provider internals |
 
 The generated inventory below is exhaustive; the table above is the recommended
 consumer entry path.
@@ -206,6 +218,10 @@ RuntimeRunOptions
 RuntimeSubagentActivityEvent
 RuntimeSubagentActivityPhase
 RuntimeSubagentIdentity
+RuntimeToolLifecycleEvent
+RuntimeToolLifecyclePersistence
+RuntimeToolLifecycleSink
+RuntimeToolLifecycleTerminalState
 RuntimeToolLimits
 RuntimeToolOptions
 SANDBOX_FALLBACKS

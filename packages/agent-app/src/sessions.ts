@@ -1,5 +1,11 @@
-import { readdir, rm } from "node:fs/promises";
+import { lstat, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
+
+import {
+  ToolHistoryReader,
+  toolHistoryDiskUsage,
+  TOOL_HISTORY_OWNER_DATABASE,
+} from "@mono-agent/agent-harness";
 
 import { resolveAppArtifactDir, resolveAppSessionsRoot } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
@@ -19,8 +25,21 @@ export interface PurgeConversationHistoryResult {
   readonly root: string;
   /** True when an on-disk history store existed and was removed. */
   readonly removed: boolean;
-  /** Count of removed `*.history.json` conversation records. */
-  readonly files: number;
+  readonly messageHistory: {
+    /** Count of removed top-level `*.history.json` conversation records. */
+    readonly files: number;
+    readonly bytes: number;
+  };
+  readonly toolHistory: {
+    /** Content-sidecar files plus the owner database in `.locks`. */
+    readonly files: number;
+    readonly bytes: number;
+    /** False means counts could not be read and are deliberately not reported as zero. */
+    readonly countsKnown: boolean;
+    readonly calls?: number;
+    readonly records?: number;
+    readonly tombstones?: number;
+  };
 }
 
 export interface PurgeAcpSessionAuthorizationsResult {
@@ -79,15 +98,42 @@ export async function purgeConversationHistory(
 ): Promise<PurgeConversationHistoryResult> {
   const artifactDir = await resolveAppArtifactDir(input);
   const root = join(artifactDir, "..", "history");
-  let files = 0;
+  let messageHistory = { files: 0, bytes: 0 };
   try {
-    files = await countFilesWithSuffix(root, ".history.json");
+    messageHistory = await countTopLevelFilesWithSuffix(root, ".history.json");
   } catch (error) {
-    if (isErrno(error, "ENOENT")) return { root, removed: false, files: 0 };
+    if (isErrno(error, "ENOENT")) {
+      return {
+        root,
+        removed: false,
+        messageHistory,
+        toolHistory: { files: 0, bytes: 0, countsKnown: true, calls: 0, records: 0, tombstones: 0 },
+      };
+    }
     throw error;
   }
+  const sidecarUsage = await toolHistoryDiskUsage(root);
+  const ownerUsage = await optionalFileBytes(join(root, ".locks", TOOL_HISTORY_OWNER_DATABASE));
+  let toolCounts: Pick<NonNullable<ReturnType<ToolHistoryReader["stats"]>>, "calls" | "records" | "tombstones"> | undefined;
+  let countsKnown = true;
+  try {
+    const stats = new ToolHistoryReader(root).stats();
+    toolCounts = stats === undefined ? { calls: 0, records: 0, tombstones: 0 } : stats;
+  } catch {
+    countsKnown = false;
+  }
+  const toolHistory = {
+    files: sidecarUsage.files + ownerUsage.files,
+    bytes: sidecarUsage.bytes + ownerUsage.bytes,
+    countsKnown,
+    ...(toolCounts === undefined ? {} : {
+      calls: toolCounts.calls,
+      records: toolCounts.records,
+      tombstones: toolCounts.tombstones,
+    }),
+  };
   await rm(root, { recursive: true, force: true });
-  return { root, removed: true, files };
+  return { root, removed: true, messageHistory, toolHistory };
 }
 
 /** Revoke every durable ACP session id associated with the configured responder. */
@@ -134,6 +180,31 @@ async function countFilesWithSuffix(dir: string, suffix: string): Promise<number
     }
   }
   return total;
+}
+
+async function countTopLevelFilesWithSuffix(
+  dir: string,
+  suffix: string,
+): Promise<{ files: number; bytes: number }> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  let files = 0;
+  let bytes = 0;
+  for (const entry of entries) {
+    if (!entry.isFile() || entry.isSymbolicLink() || !entry.name.endsWith(suffix)) continue;
+    files += 1;
+    bytes += (await stat(join(dir, entry.name))).size;
+  }
+  return { files, bytes };
+}
+
+async function optionalFileBytes(path: string): Promise<{ files: number; bytes: number }> {
+  try {
+    const info = await lstat(path);
+    return info.isFile() && !info.isSymbolicLink() ? { files: 1, bytes: info.size } : { files: 0, bytes: 0 };
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return { files: 0, bytes: 0 };
+    throw error;
+  }
 }
 
 function isErrno(error: unknown, code: string): error is NodeJS.ErrnoException {

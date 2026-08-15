@@ -86,6 +86,23 @@ describe("SubagentPart", () => {
     expect(screen.getByText(/subagent: researcher/u)).toBeInTheDocument();
   });
 
+  it("shows durable history only for the parent delegation record", () => {
+    const { container } = render(part({
+      ...delegation,
+      history: {
+        persistence: "failed",
+        errorCode: "history_persistence_timeout",
+        untrusted: true,
+      },
+    }));
+
+    expect(screen.getByText("2 tools · 12.4s · history not persisted")).toBeVisible();
+    expect(screen.getByText("History")).toBeInTheDocument();
+    expect(screen.getByText(/history_persistence_timeout/u)).toBeInTheDocument();
+    expect(container.querySelectorAll("details.tool-call.is-nested")).toHaveLength(2);
+    expect(container.querySelectorAll("details.tool-call.subagent-note")).toHaveLength(3);
+  });
+
   it("omits the task row when the delegation carries no prompt", () => {
     render(part({ ...delegation, args: { name: "researcher" } }));
 

@@ -17,6 +17,7 @@ import {
   ownAcpSessionUpdateKind,
   sanitizeAcpHostValueWithStatus,
 } from "./acp-privacy.js";
+import { toolLifecycleMetadata } from "../tool-lifecycle.js";
 
 /** @param {any} callback @param {any} event */
 function emit(callback, event) {
@@ -189,6 +190,9 @@ function normalizeUpdate(update, state) {
               tool_use_id: publicValue(ownValue(protocolBody, "toolCallId")),
               content: typeof output === "string" ? output : JSON.stringify(jsonSafe(output)),
               is_error: ownValue(protocolBody, "status") === "failed",
+              tool_lifecycle: toolLifecycleMetadata(ownValue(protocolBody, "status") === "failed"
+                ? { state: "error", failure_kind: "runtime_error", detail_code: "acp_tool_failed" }
+                : { state: "success" }),
             }],
           },
         });

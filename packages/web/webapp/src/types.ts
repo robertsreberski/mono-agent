@@ -160,6 +160,19 @@ export interface ThreadSummary {
 
 export type ToolCallStatus = "running" | "complete" | "failed";
 
+export interface SessionToolHistoryMetadata {
+  readonly recordId?: string;
+  readonly sequence?: number;
+  readonly persistence: "persisted" | "failed";
+  readonly terminalState?: "success" | "rejected" | "error" | "exit_nonzero" | "timeout" | "signal" | "cancelled" | "interrupted";
+  readonly truncated?: boolean;
+  readonly originalBytes?: number;
+  readonly retainedBytes?: number;
+  readonly artifactReferences?: readonly { readonly id: string; readonly available: boolean }[];
+  readonly errorCode?: string;
+  readonly untrusted: true;
+}
+
 /** One tool call, whether the agent made it or one of its subagents did. */
 export interface ToolCall {
   readonly toolCallId: string;
@@ -167,6 +180,7 @@ export interface ToolCall {
   readonly args?: unknown;
   readonly result?: unknown;
   readonly status: ToolCallStatus;
+  readonly history?: SessionToolHistoryMetadata;
 }
 
 export type MessagePart =
@@ -184,6 +198,7 @@ export type MessagePart =
       readonly executionMs?: number;
       /** What this delegation cost, when the runtime priced its model. */
       readonly costUsd?: number;
+      readonly history?: SessionToolHistoryMetadata;
       readonly status: ToolCallStatus;
       readonly calls: readonly ToolCall[];
     }
