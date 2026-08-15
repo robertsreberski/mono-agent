@@ -1,4 +1,4 @@
-import { dirname, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -29,47 +29,44 @@ export function createProcessJobsRuntimeExtension(
   options: ProcessJobsRuntimeExtensionOptions,
 ): RuntimeOptionsExtension {
   return async (input) => {
+    if (!options.targetsPiNative(input.request.metadata)) {
+      throw new Error("Process-job private state requires a Pi-native runtime.");
+    }
+    const sandboxPolicy = processJobsSandboxPolicy(options);
     const origin = processJobOriginForRequest(input, options.channelId);
     const wake = processJobWakeContextForRequest(input.request);
     const chainDepth = wake.kind === "resolved" ? wake.context.chainDepth : 0;
     if (origin === undefined
       || wake.kind === "missed"
       || chainDepth >= options.service.settings.maxChainDepth
-      || !options.targetsPiNative(input.request.metadata)
       || !hasAllowedProcessTool(options.coreConfig)) {
-      return { runtimeOptions: {}, cleanup: async () => {} };
+      return { runtimeOptions: { sandboxPolicy }, cleanup: async () => {} };
     }
     return {
       runtimeOptions: {
         processJobs: options.service.controller(origin, chainDepth),
-        sandboxPolicy: processJobsSandboxPolicy(options),
+        sandboxPolicy,
       },
       cleanup: async () => {},
     };
   };
 }
 
-function processJobsSandboxPolicy(options: ProcessJobsRuntimeExtensionOptions): SandboxPolicy {
+export function processJobsSandboxPolicy(options: ProcessJobsRuntimeExtensionOptions): SandboxPolicy {
   const configured = options.coreConfig.sandbox;
   const base = configured?.mode === "native"
     ? { ...configured, fallback: "fail-closed" as const, unsafeAllowHostProcess: false }
-    : failClosedSandboxPolicy({ root: options.coreConfig.runtime.workspace });
-  return protectSandboxRoots(base, [processJobsPrivateRoot(
-    options.coreConfig.runtime.workspace,
-    options.service.settings.stateDir,
-  )]);
-}
-
-/**
- * Protect the immediate host-private container so renaming it cannot bypass
- * the state-root deny. A direct workspace child protects only itself; the
- * whole model workspace must remain usable.
- */
-function processJobsPrivateRoot(workspace: string, stateDir: string): string {
-  const root = resolve(workspace);
-  const state = resolve(stateDir);
-  const parent = dirname(state);
-  return parent === root || parent === state ? state : parent;
+    : failClosedSandboxPolicy({
+        root: options.coreConfig.runtime.workspace,
+        network: { mode: "all" },
+      });
+  const workspace = resolve(options.coreConfig.runtime.workspace);
+  const stateDir = resolve(options.service.settings.stateDir);
+  const fromState = relative(stateDir, workspace);
+  if (fromState === "" || (!fromState.startsWith("..") && !isAbsolute(fromState))) {
+    throw new Error("Process-job private state cannot contain the model workspace.");
+  }
+  return protectSandboxRoots(base, [stateDir]);
 }
 
 /** Strict host-origin classifier. Unsupported trigger surfaces never receive a controller. */

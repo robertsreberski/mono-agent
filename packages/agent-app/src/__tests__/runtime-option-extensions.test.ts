@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { failClosedSandboxPolicy, protectSandboxRoots } from "@mono-agent/runtime-adapter";
 
-import { composeRuntimeOptionExtensions } from "../runtime-option-extensions.js";
+import {
+  composeRuntimeOptionExtensions,
+  createClearSessionsRuntimeExtension,
+} from "../runtime-option-extensions.js";
 
 const INPUT = {
   request: {
@@ -16,6 +19,61 @@ const INPUT = {
 } as unknown as AgentHarnessRuntimeOptionsInput;
 
 describe("composeRuntimeOptionExtensions", () => {
+  it("attests recovery before inner extension work and rejects unresolved state", async () => {
+    const inner = vi.fn(async () => ({ runtimeOptions: {}, cleanup: async () => {} }));
+    const extension = createClearSessionsRuntimeExtension(inner, {
+      cwd: "/agent",
+      workspace: "/agent/workspace",
+      baseModel: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
+      assertRecoveryResolved: async () => { throw new Error("generic unresolved recovery"); },
+      registryRoot: () => "/agent/.mono-agent/clear-sessions-v1",
+    });
+
+    await expect(extension(INPUT)).rejects.toThrow("generic unresolved recovery");
+    expect(inner).not.toHaveBeenCalled();
+  });
+
+  it("protects the stable registry for Pi without restricting the inherited network posture", async () => {
+    const assertion = vi.fn(async () => {});
+    const extension = createClearSessionsRuntimeExtension(undefined, {
+      cwd: "/agent",
+      workspace: "/agent/workspace",
+      baseModel: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
+      assertRecoveryResolved: assertion,
+      registryRoot: () => "/agent/.mono-agent/clear-sessions-v1",
+    });
+
+    const result = await extension(INPUT);
+
+    expect(assertion).toHaveBeenCalledWith("/agent");
+    expect(result.runtimeOptions?.sandboxPolicy).toMatchObject({
+      mode: "native",
+      fallback: "fail-closed",
+      network: { mode: "all" },
+      protectedRoots: ["/agent/.mono-agent/clear-sessions-v1"],
+    });
+  });
+
+  it("keeps a clean accepted direct override free of Pi-only registry policy", async () => {
+    const directModel = { sdk: "opencode" as const, provider: "github-copilot", model: "gpt-5.1" };
+    const inner = vi.fn(async () => ({
+      runtimeOptions: { model: directModel },
+      cleanup: async () => {},
+    }));
+    const extension = createClearSessionsRuntimeExtension(inner, {
+      cwd: "/agent",
+      workspace: "/agent/workspace",
+      baseModel: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
+      assertRecoveryResolved: async () => {},
+      registryRoot: () => "/agent/.mono-agent/clear-sessions-v1",
+    });
+
+    const result = await extension(INPUT);
+
+    expect(result.runtimeOptions).toMatchObject({ model: directModel });
+    expect(result.runtimeOptions).not.toHaveProperty("sandboxPolicy");
+  });
+
   it("merges sandbox policies monotonically so later extensions cannot erase protected roots", async () => {
     const firstPolicy = protectSandboxRoots(
       failClosedSandboxPolicy({ root: "/agent" }),

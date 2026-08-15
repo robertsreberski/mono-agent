@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
+import { createSandboxPolicy, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
-import { createProcessJobsRuntimeExtension } from "../process-jobs-runtime.js";
+import {
+  createProcessJobsRuntimeExtension,
+  processJobsSandboxPolicy,
+} from "../process-jobs-runtime.js";
+import { requestModelOverrideTargetsPiNative } from "../request-model-override.js";
 
 function eligibleCoreConfig(sandbox?: ReturnType<typeof createSandboxPolicy>): never {
   return {
@@ -24,6 +28,29 @@ function eligibleInput(): never {
 }
 
 describe("process-job runtime sandbox protection", () => {
+  it("makes a direct provider override ineligible while process-job private state is active", () => {
+    const coreConfig = eligibleCoreConfig();
+    const service = {
+      settings: { maxChainDepth: 4, stateDir: "/agent/.mono-agent/process-jobs" },
+      controller: vi.fn(),
+    } as never;
+    const policy = processJobsSandboxPolicy({
+      service,
+      coreConfig,
+      channelId: "slack",
+      targetsPiNative: () => true,
+    });
+
+    expect(requestModelOverrideTargetsPiNative(
+      { tui: { model: "opencode:github-copilot:gpt-5.1" } },
+      {
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-sol"),
+        sandboxPolicy: policy,
+        toolPolicy: { allowedTools: ["*"], disallowedTools: [] },
+      },
+    )).toBe(true);
+  });
+
   it.each(["absent", "off"] as const)(
     "synthesizes fail-closed native protection when configured sandbox policy is %s",
     async (configuredPolicy) => {
@@ -45,8 +72,8 @@ describe("process-job runtime sandbox protection", () => {
         mode: "native",
         fallback: "fail-closed",
         unsafeAllowHostProcess: false,
-        network: { mode: "none" },
-        protectedRoots: ["/agent/private"],
+        network: { mode: "all" },
+        protectedRoots: ["/agent/private/process-jobs"],
       });
       expect(result.runtimeOptions?.processJobs).toEqual(expect.any(Object));
     },
@@ -83,7 +110,7 @@ describe("process-job runtime sandbox protection", () => {
     });
   });
 
-  it("protects the immediate private container for a custom state directory outside the workspace", async () => {
+  it("protects only the exact custom state directory outside the workspace", async () => {
     const extension = createProcessJobsRuntimeExtension({
       service: {
         settings: { maxChainDepth: 4, stateDir: "/host-private/process-jobs" },
@@ -97,11 +124,12 @@ describe("process-job runtime sandbox protection", () => {
     const result = await extension(eligibleInput());
 
     expect(result.runtimeOptions?.sandboxPolicy).toMatchObject({
-      protectedRoots: ["/host-private"],
+      network: { mode: "all" },
+      protectedRoots: ["/host-private/process-jobs"],
     });
   });
 
-  it("adds protection only on the same eligible Pi-native turns that receive the controller", async () => {
+  it("protects every Pi-native turn independently of controller eligibility", async () => {
     const controller = vi.fn(() => ({ start: vi.fn() }));
     const extension = createProcessJobsRuntimeExtension({
       service: {
@@ -116,7 +144,15 @@ describe("process-job runtime sandbox protection", () => {
     await expect(extension(eligibleInput())).resolves.toMatchObject({
       runtimeOptions: {
         processJobs: expect.any(Object),
-        sandboxPolicy: { protectedRoots: ["/agent/.mono-agent"] },
+        sandboxPolicy: { protectedRoots: ["/agent/.mono-agent/process-jobs"] },
+      },
+    });
+    await expect(extension({
+      runId: "run-without-origin",
+      request: { conversationId: "cron:job", text: "hello" },
+    } as never)).resolves.toMatchObject({
+      runtimeOptions: {
+        sandboxPolicy: { protectedRoots: ["/agent/.mono-agent/process-jobs"] },
       },
     });
     await expect(extension({
@@ -126,7 +162,37 @@ describe("process-job runtime sandbox protection", () => {
         text: "hello",
         metadata: { route: "direct-claude" },
       },
-    } as never)).resolves.toEqual({ runtimeOptions: {}, cleanup: expect.any(Function) });
+    } as never)).rejects.toThrow("Process-job private state requires a Pi-native runtime.");
     expect(controller).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a workspace nested beside the state directory readable", async () => {
+    const coreConfig = eligibleCoreConfig() as unknown as {
+      runtime: Record<string, unknown>;
+    };
+    const extension = createProcessJobsRuntimeExtension({
+      service: {
+        settings: { maxChainDepth: 4, stateDir: "/agent/.mono-agent/process-jobs" },
+        controller: vi.fn(() => ({ start: vi.fn() })),
+      } as never,
+      coreConfig: {
+        ...coreConfig,
+        runtime: {
+          ...coreConfig.runtime,
+          workspace: "/agent/.mono-agent/workspace",
+        },
+      } as never,
+      channelId: "slack",
+      targetsPiNative: () => true,
+    });
+
+    await expect(extension(eligibleInput())).resolves.toMatchObject({
+      runtimeOptions: {
+        sandboxPolicy: {
+          readableRoots: ["/agent/.mono-agent/workspace"],
+          protectedRoots: ["/agent/.mono-agent/process-jobs"],
+        },
+      },
+    });
   });
 });

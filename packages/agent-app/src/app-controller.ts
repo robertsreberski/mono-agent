@@ -377,7 +377,7 @@ export class MonoAgentAppController implements MonoAgentApp {
 
   sandboxEngineFor(coreConfig: MonoAgentConfig): SandboxEngine | undefined {
     if (this.sandboxEngine !== undefined) return this.sandboxEngine;
-    if (this.trustedRuntimeReadRoots.length === 0 || coreConfig.sandbox?.engine !== "srt") return undefined;
+    if (coreConfig.sandbox?.engine !== "srt") return undefined;
     this.trustedSrtSandboxEngine ??= createSrtSandboxEngine({
       trustedReadRoots: this.trustedRuntimeReadRoots,
     });

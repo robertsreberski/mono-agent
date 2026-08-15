@@ -136,7 +136,7 @@ input.once("end", () => {
  * or exceeds that cap.
  *
  * @param {{command: string, args?: string[], cwd?: string, env?: Record<string, string|undefined>}} commandSpec
- * @param {{timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number}} [options]
+ * @param {{timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, input?: string|Buffer}} [options]
  */
 export function runPreparedProcess(
   commandSpec,
@@ -144,12 +144,14 @@ export function runPreparedProcess(
     timeoutMs,
     signal,
     maxBufferBytes = DEFAULT_PROCESS_BUFFER_BYTES,
+    input,
   } = {},
 ) {
   return startPreparedProcess(commandSpec, {
     timeoutMs,
     signal,
     maxBufferBytes,
+    input,
   }).completion;
 }
 
@@ -162,7 +164,7 @@ export function runPreparedProcess(
  * descendant in the owned group is still alive.
  *
  * @param {{command: string, args?: string[], cwd?: string, env?: Record<string, string|undefined>}} commandSpec
- * @param {{timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, waitForProcessGroup?: boolean, exactEnvironment?: boolean, onStdout?: (chunk: Buffer) => void, onStderr?: (chunk: Buffer) => void}} [options]
+ * @param {{timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, input?: string|Buffer, waitForProcessGroup?: boolean, exactEnvironment?: boolean, onStdout?: (chunk: Buffer) => void, onStderr?: (chunk: Buffer) => void}} [options]
  * For process jobs, `release()` is the persistence fence: the target cannot
  * spawn until the host has durably recorded the returned ownership metadata.
  * Foreground handles expose a harmless no-op release for one structural shape.
@@ -175,6 +177,7 @@ export function startPreparedProcess(
     timeoutMs,
     signal,
     maxBufferBytes = DEFAULT_PROCESS_BUFFER_BYTES,
+    input,
     waitForProcessGroup = false,
     exactEnvironment = false,
     onStdout,
@@ -216,7 +219,7 @@ export function startPreparedProcess(
         env: gated ? {} : targetEnvironment,
         stdio: gated
           ? ["ignore", "pipe", "pipe", "pipe", "pipe"]
-          : ["ignore", "pipe", "pipe"],
+          : [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       },
       );
     } catch (error) {
@@ -235,6 +238,11 @@ export function startPreparedProcess(
         durationMs: Date.now() - startedAt,
       });
       return;
+    }
+
+    if (!gated && input !== undefined) {
+      child.stdin?.on("error", () => undefined);
+      child.stdin?.end(input);
     }
 
     const stdout = [];

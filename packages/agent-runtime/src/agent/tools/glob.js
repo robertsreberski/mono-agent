@@ -9,9 +9,14 @@ import {
 import { boundedInt, safeStat } from "./shared/dedup.js";
 import {
   isPathAllowed,
+  protectedRelativePaths,
   resolveToolPath,
   workspaceRoot,
 } from "./shared/path-resolver.js";
+import {
+  protectedFilesystemActive,
+  runProtectedFilesystemCommand,
+} from "./shared/protected-filesystem.js";
 import {
   capLines,
   excludedGlobArgs,
@@ -42,15 +47,41 @@ export async function globToolImpl({ pattern, path, limit, offset = 0, max_match
     normalizeGlobPattern(pattern),
     ...excludedGlobArgs(),
   ];
+  const protectedPaths = protectedRelativePaths(cwd, { sandboxPolicy, ctx });
+  const protectedExecution = protectedFilesystemActive({ sandboxPolicy, ctx });
+  for (const protectedPath of protectedPaths) {
+    args.push("--glob", `!${protectedPath}`, "--glob", `!${protectedPath}/**`);
+  }
   const rgPath = resolveRgPath({ ctx });
   if (!rgPath) return ripgrepMissingMessage(ctx);
   try {
-    const { stdout } = await execFileAsync(rgPath, args, { cwd, timeout: 15000, maxBuffer: SEARCH_MAX_BUFFER });
-    const lines = stdout.trim().split("\n").filter(Boolean).sort((a, b) => {
+    const protectedResult = await runProtectedFilesystemCommand({
+      command: rgPath,
+      args,
+      cwd,
+    }, { sandboxPolicy, ctx, maxBufferBytes: SEARCH_MAX_BUFFER });
+    let stdout;
+    if (protectedResult === null) {
+      ({ stdout } = await execFileAsync(rgPath, args, { cwd, timeout: 15000, maxBuffer: SEARCH_MAX_BUFFER }));
+    } else if (protectedResult.code === 1) {
+      return "No files found matching pattern.";
+    } else if (protectedResult.code !== 0 || protectedResult.bufferExceeded || protectedResult.timedOut) {
+      return "Error: Protected filesystem search was denied.";
+    } else {
+      stdout = protectedResult.stdout;
+    }
+    const lines = stdout.trim().split("\n")
+      .filter(Boolean)
+      .filter((line) => !protectedPaths.some((path) => line === path || line.startsWith(`${path}/`)))
+      .sort((a, b) => {
+      // Do not follow a model-controlled output symlink on the host merely to
+      // rank results: with protected roots active, the actual search already
+      // crossed SRT and lexical ordering avoids a post-search metadata race.
+      if (protectedExecution) return a.localeCompare(b);
       const aStat = safeStat(resolve(cwd, a));
       const bStat = safeStat(resolve(cwd, b));
       return (bStat?.mtimeMs || 0) - (aStat?.mtimeMs || 0) || a.localeCompare(b);
-    });
+      });
     const result = formatSearchLines(lines, {
       label: "Glob",
       noMatches: "No files found matching pattern.",
@@ -61,6 +92,7 @@ export async function globToolImpl({ pattern, path, limit, offset = 0, max_match
     });
     return result === "No files found matching pattern." ? result : `${result}\n\n${excludedPathSummary()}`;
   } catch (err) {
+    if (protectedExecution) return "Error: Protected filesystem search was denied.";
     if (err.code === 1) return "No files found matching pattern.";
     if (err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" || /maxBuffer/i.test(err.message || "")) {
       return `${capLines(err.stdout || "", {

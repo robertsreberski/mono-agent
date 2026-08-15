@@ -1,11 +1,11 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { loadAppCoreConfig } from "../app-config.js";
 import {
@@ -44,7 +44,15 @@ describe("reply artifact responder composition", () => {
     const soulPath = join(workspace, "SOUL.md");
     const sourcePath = join(workspace, "report.txt");
     const fillerPath = join(artifactDir, "reply-files", "capacity-probe", "content");
-    await mkdir(dirname(fillerPath), { recursive: true });
+    const registryRoot = join(workspace, ".mono-agent", "clear-sessions-v1");
+    await Promise.all([
+      mkdir(dirname(fillerPath), { recursive: true }),
+      mkdir(registryRoot, { recursive: true, mode: 0o700 }),
+    ]);
+    await Promise.all([
+      chmod(join(workspace, ".mono-agent"), 0o700),
+      chmod(registryRoot, 0o700),
+    ]);
     await Promise.all([
       writeFile(identityPath, "Disabled MCP Apps composition test"),
       writeFile(soulPath, "Keep the test deterministic"),
@@ -69,8 +77,10 @@ describe("reply artifact responder composition", () => {
     }, null, 2)}\n`);
     const coreConfig = await loadAppCoreConfig({ cwd: workspace, configPath, env: {} });
     let publicationResult: unknown;
+    let runtimeCalls = 0;
     const runtime = {
       async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        runtimeCalls += 1;
         expect(options.mcpApps).toBeUndefined();
         const servers = options.mcpServers as Readonly<Record<string, { readonly url: string }>> | undefined;
         const spec = servers?.[REPLY_ARTIFACT_MCP_SERVER_NAME];
@@ -126,14 +136,26 @@ describe("reply artifact responder composition", () => {
     };
 
     const responder = await buildResponder(controller, coreConfig, "telegram");
-    const response = await responder.respond({
-      conversationId: "composition-disabled-mcp-apps",
-      text: "Publish the report.",
-      abortSignal: new AbortController().signal,
-    }, { append: async () => {} }).finally(async () => {
+    let response;
+    try {
+      response = await responder.respond({
+        conversationId: "composition-disabled-mcp-apps",
+        text: "Publish the report.",
+        abortSignal: new AbortController().signal,
+      }, { append: async () => {} });
+      await writeFile(join(registryRoot, "pending"), "unresolved", { mode: 0o600 });
+      await expect(responder.respond({
+        conversationId: "composition-disabled-mcp-apps",
+        text: "Do not call the provider.",
+        abortSignal: new AbortController().signal,
+      }, { append: async () => {} })).rejects.toThrow(
+        "Clear-sessions recovery is unresolved; run restart --clear-sessions before model execution.",
+      );
+    } finally {
       await (responder as { dispose?: () => Promise<void> }).dispose?.();
-    });
+    }
 
+    expect(runtimeCalls).toBe(1);
     expect(publicationResult).toMatchObject({
       structuredContent: { published: true },
     });
@@ -236,8 +258,15 @@ describe("reply artifact responder composition", () => {
     expect(coreConfig.artifacts.dir).toBe(artifactDir);
     const publicationResults: Array<{ readonly label: string; readonly result: unknown }> = [];
     let authorizedPublicationResult: unknown;
+    const sandboxEngine = {
+      async isAvailable() { return true; },
+      async prepareCommand(command: never) { return command; },
+    };
+    const sandboxEngineFor = vi.fn(() => sandboxEngine as never);
+    let observedRuntimeOptions: RuntimeRunOptions | undefined;
     const runtime = {
       async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        observedRuntimeOptions = options;
         const servers = options.mcpServers as Readonly<Record<string, { readonly url: string }>> | undefined;
         const spec = servers?.[REPLY_ARTIFACT_MCP_SERVER_NAME];
         if (spec === undefined) throw new Error("Reply artifact MCP server was not composed.");
@@ -283,9 +312,12 @@ describe("reply artifact responder composition", () => {
       activeRuntimes: [],
       interactionBridge: undefined,
       continuationService: undefined,
-      processJobsService: undefined,
+      processJobsService: {
+        settings: { stateDir: processJobsStateDir, maxChainDepth: 4 },
+        controller: vi.fn(),
+      } as never,
       seenNotifyDestinations: createSeenNotifyDestinationCache(),
-      sandboxEngineFor: () => undefined,
+      sandboxEngineFor,
       memoryStore: async () => memory as never,
       ensureSharedMemoryRetrieval: () => undefined,
       reportMemoryRecallStatus: () => false,
@@ -295,7 +327,7 @@ describe("reply artifact responder composition", () => {
         extension: async () => ({ runtimeOptions: {}, cleanup: async () => {} }),
         targetsDirectOpenCode: () => false,
         targetsUnsupportedHistoryTool: () => false,
-        targetsPiNative: () => false,
+        targetsPiNative: () => true,
       }),
       buildRuntimeForModel: () => () => runtime,
       observabilityContext: async () => ({}),
@@ -311,8 +343,22 @@ describe("reply artifact responder composition", () => {
     }, { append: async () => {} }).finally(async () => {
       await (responder as { dispose?: () => Promise<void> }).dispose?.();
     });
+    const canonicalProcessJobsStateDir = await realpath(processJobsStateDir);
 
     expect(publicationResults.map(({ label }) => label)).toEqual(candidates.map(({ label }) => label));
+    expect(observedRuntimeOptions?.sandboxEngine).toBe(sandboxEngine);
+    expect(observedRuntimeOptions?.sandboxPolicy).toMatchObject({
+      mode: "native",
+      network: { mode: "all" },
+      protectedRoots: expect.arrayContaining([canonicalProcessJobsStateDir]),
+    });
+    expect(sandboxEngineFor).toHaveBeenCalledWith(expect.objectContaining({
+      sandbox: expect.objectContaining({
+        mode: "native",
+        network: { mode: "all", allowlist: [] },
+        protectedRoots: [canonicalProcessJobsStateDir],
+      }),
+    }));
     for (const { result } of publicationResults) {
       expect(result).toMatchObject({
         isError: true,

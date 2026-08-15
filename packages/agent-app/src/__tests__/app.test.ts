@@ -1363,7 +1363,7 @@ describe("startMonoAgentApp", () => {
     await app.stop();
   });
 
-  it("selects an app-owned SRT engine only for a verified managed runtime", async () => {
+  it("selects an app-owned SRT engine for every configured native policy", async () => {
     const configPath = await writeConfig({
       ...baseConfig(),
       sandbox: { mode: "native", fallback: "fail-closed" },
@@ -1392,7 +1392,7 @@ describe("startMonoAgentApp", () => {
 
     expect(managed.sandboxEngineFor(coreConfig)?.id).toBe("srt");
     expect(managed.sandboxEngineFor(coreConfig)).toBe(managed.sandboxEngineFor(coreConfig));
-    expect(unmanaged.sandboxEngineFor(coreConfig)).toBeUndefined();
+    expect(unmanaged.sandboxEngineFor(coreConfig)?.id).toBe("srt");
     expect(injected.sandboxEngineFor(coreConfig)).toBe(unavailableSandboxEngine);
   });
 

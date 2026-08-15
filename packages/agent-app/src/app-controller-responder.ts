@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { loadToolPolicyFromJsonFileSync } from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
-import { modelReferenceKey } from "@mono-agent/runtime-adapter";
+import { failClosedSandboxPolicy, modelReferenceKey } from "@mono-agent/runtime-adapter";
 import type {
   MonoRuntimeLike,
   RuntimeExecutionMode,
@@ -64,7 +64,10 @@ import type { ContinuationServiceHandle } from "./continuation-service.js";
 import type { MemoryRetrievalService } from "./memory-retrieval.js";
 import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
-import { createProcessJobsRuntimeExtension } from "./process-jobs-runtime.js";
+import {
+  createProcessJobsRuntimeExtension,
+  processJobsSandboxPolicy,
+} from "./process-jobs-runtime.js";
 import { loadProcessJobsSettings } from "./process-jobs-config.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import { bindProcessJobWakeContextToResponder } from "./process-jobs-context.js";
@@ -147,7 +150,27 @@ export async function buildResponder(
   coreConfig: MonoAgentConfig,
   channelId?: ChannelId,
 ): Promise<AgentResponder> {
-  const sandboxEngine = controller.sandboxEngineFor(coreConfig);
+  const modelBoundaryConfig = controller.processJobsService === undefined
+    ? coreConfig
+    : {
+        ...coreConfig,
+        sandbox: processJobsSandboxPolicy({
+          service: controller.processJobsService,
+          coreConfig,
+          channelId,
+          targetsPiNative: () => true,
+        }),
+      };
+  const sandboxEngineConfig = modelBoundaryConfig.sandbox?.mode === "native"
+    ? modelBoundaryConfig
+    : {
+        ...modelBoundaryConfig,
+        sandbox: failClosedSandboxPolicy({
+          root: coreConfig.runtime.workspace,
+          network: { mode: "all" },
+        }),
+      };
+  const sandboxEngine = controller.sandboxEngineFor(sandboxEngineConfig);
   const sessionRollover = sessionRolloverForChannel(channelId, coreConfig.runtime.session.rollover);
   const runtime = controller.runtime ?? createConfiguredAgentRuntime({
     config: coreConfig,
@@ -262,7 +285,7 @@ export async function buildResponder(
   if (adapterSendTools.blockingToolNames.length > 0) {
     mcpSources.push(`adapter send tools (${adapterSendTools.blockingToolNames.join(", ")})`);
   }
-  const requestModelOverride = controller.requestModelOverrideRuntimeOptions(coreConfig, {
+  const requestModelOverride = controller.requestModelOverrideRuntimeOptions(modelBoundaryConfig, {
     mcpSources,
     indexSkillsActive: coreConfig.context.skillDisclosure === "index"
       && coreConfig.context.skillsRoot !== undefined,

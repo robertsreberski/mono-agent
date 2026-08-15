@@ -589,7 +589,7 @@ describe("ai tool helpers", () => {
     expect(readResult).toContain("Path not allowed");
   });
 
-  it("rejects protected roots and their symlink aliases for reads, writes, and workdirs", async () => {
+  it("rejects protected roots and aliases while sibling reads, writes, and searches remain available", async () => {
     const root = tempWorkspace();
     const privateRoot = join(root, ".mono-agent");
     const stateDir = join(privateRoot, "process-jobs");
@@ -598,8 +598,17 @@ describe("ai tool helpers", () => {
     mkdirSync(stateDir, { recursive: true });
     writeFile(secretPath, "EXACT_PROCESS_JOB_SECRET");
     writeFile(siblingPath, "sibling-readable");
+    writeFile(join(privateRoot, "artifacts", "attachments", "input.txt"), "attachment-readable");
     symlinkSync(stateDir, join(root, "jobs-alias"));
-    const sandboxPolicy = failClosedSandboxPolicy({ root, protectedRoots: [privateRoot] });
+    configureToolRuntime({
+      sandboxEngine: {
+        async isAvailable() { return true; },
+        async prepareCommand(command) {
+          return { ...command, args: command.args ?? [], cwd: command.cwd ?? root, sandboxed: true };
+        },
+      },
+    });
+    const sandboxPolicy = failClosedSandboxPolicy({ root, protectedRoots: [stateDir] });
 
     const readResult = await readToolImpl({ file_path: secretPath }, { sandboxPolicy });
     const aliasReadResult = await readToolImpl({ file_path: "jobs-alias/process-jobs-secret" }, { sandboxPolicy });
@@ -608,6 +617,18 @@ describe("ai tool helpers", () => {
     const execResult = await execToolImpl({ executable: "/bin/pwd", workdir: stateDir }, { sandboxPolicy });
     const siblingRead = await readToolImpl({ file_path: siblingPath }, { sandboxPolicy });
     const siblingWrite = await writeToolImpl({ file_path: join(root, "sibling-output.txt"), content: "ok" }, { sandboxPolicy });
+    const attachmentRead = await readToolImpl({ file_path: join(privateRoot, "artifacts", "attachments", "input.txt") }, { sandboxPolicy });
+    const globResult = await globToolImpl({ pattern: "**/*", path: root }, { sandboxPolicy });
+    const grepResults = await Promise.all([
+      "content",
+      "files_with_matches",
+      "count",
+      undefined,
+    ].map(async (output_mode) => await grepToolImpl({
+      pattern: "EXACT_PROCESS_JOB_SECRET|sibling-readable",
+      path: root,
+      ...(output_mode === undefined ? {} : { output_mode }),
+    }, { sandboxPolicy })));
 
     expect(readResult).toContain("Path not allowed");
     expect(aliasReadResult).toContain("Path not allowed");
@@ -618,6 +639,40 @@ describe("ai tool helpers", () => {
       .not.toContain("EXACT_PROCESS_JOB_SECRET");
     expect(siblingRead).toContain("sibling-readable");
     expect(siblingWrite).toContain("Successfully wrote");
+    expect(attachmentRead).toContain("attachment-readable");
+    expect(globResult).not.toContain("process-jobs-secret");
+    expect(grepResults[0]).toContain("sibling-readable");
+    for (const grepResult of grepResults) {
+      expect(grepResult).toContain("notes.txt");
+      expect(grepResult).not.toContain("process-jobs-secret");
+      expect(grepResult).not.toContain("EXACT_PROCESS_JOB_SECRET");
+    }
+  });
+
+  it("fails host filesystem tools closed when protected roots lack a real sandbox engine", async () => {
+    const root = tempWorkspace();
+    const stateDir = join(root, ".mono-agent", "process-jobs");
+    const siblingPath = join(root, "notes.txt");
+    writeFile(join(stateDir, "process-jobs-secret"), "private");
+    writeFile(siblingPath, "unchanged");
+    const sandboxPolicy = failClosedSandboxPolicy({ root, protectedRoots: [stateDir] });
+
+    const readResult = await readToolImpl({ file_path: siblingPath }, { sandboxPolicy });
+    const writeResult = await writeToolImpl({ file_path: siblingPath, content: "changed" }, { sandboxPolicy });
+    const editResult = await editToolImpl({
+      file_path: siblingPath,
+      old_string: "unchanged",
+      new_string: "changed",
+    }, { sandboxPolicy });
+    const globResult = await globToolImpl({ pattern: "**/*", path: root }, { sandboxPolicy });
+    const grepResult = await grepToolImpl({ pattern: "unchanged", path: root }, { sandboxPolicy });
+
+    expect(readResult).toBe("Error: Protected filesystem read was denied.");
+    expect(writeResult).toBe("Error: Protected filesystem write was denied.");
+    expect(editResult).toBe("Error: Protected filesystem edit was denied.");
+    expect(globResult).toBe("Error: Protected filesystem search was denied.");
+    expect(grepResult).toBe("Error: Protected filesystem search was denied.");
+    expect(readFileSync(siblingPath, "utf8")).toBe("unchanged");
   });
 
   it("keeps following workspace symlinks when no sandbox policy is configured", async () => {

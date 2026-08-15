@@ -43,6 +43,7 @@ import {
   assertExecutionModeCompatible,
   createMonoRuntime,
   createPiOAuthApiKeyResolver,
+  createSrtSandboxEngine,
   defaultExecutionModeForModel,
   describeMonoRuntimeSupport,
   modelReferenceKey,
@@ -68,7 +69,10 @@ import {
   isSharedRecallStore,
   MemoryRetrievalService,
 } from "./memory-retrieval.js";
-import { composeRuntimeOptionExtensions } from "./runtime-option-extensions.js";
+import {
+  composeRuntimeOptionExtensions,
+  createClearSessionsRuntimeExtension,
+} from "./runtime-option-extensions.js";
 import { isReadSkillDenied } from "./skill-registry.js";
 import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 
@@ -760,11 +764,13 @@ async function createConfiguredAgentHarnessInternal(
   setToolActivityPathRoots({ workspaceRoot: config.runtime.workspace, homeDir: homedir() });
   const model = options.model ?? config.runtime.model;
   const executionMode = options.executionMode ?? config.runtime.executionMode;
+  const sandboxEngine = options.sandboxEngine
+    ?? (model.sdk === "pi" ? createSrtSandboxEngine() : undefined);
   const runtime = options.runtime ?? createConfiguredAgentRuntime({
     config,
     model,
     executionMode,
-    ...(options.sandboxEngine === undefined ? {} : { sandboxEngine: options.sandboxEngine }),
+    ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
   });
   // The memory LLM must NOT ride the channel `runtime`: that runtime carries the
   // channel fallback chain whose primary is `config.runtime.model`, and the
@@ -784,7 +790,7 @@ async function createConfiguredAgentHarnessInternal(
           ? {}
           : { onUnavailable: options.onMemoryRecallUnavailable }),
       });
-  const runtimeOptionsForRequest = composeRuntimeOptionExtensions([
+  const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([
     memoryRecall,
     options.runtimeOptionsForRequest,
   ], {
@@ -793,6 +799,15 @@ async function createConfiguredAgentHarnessInternal(
     // request override; arbitrary caller/action MCP extensions remain excluded.
     preserveMcpServersUnderOverride: memoryRecall === undefined ? [] : [memoryRecall],
   });
+  const runtimeOptionsForRequest = createClearSessionsRuntimeExtension(
+    composedRuntimeOptionsForRequest,
+    {
+      cwd: resolvePath(options.cwd ?? process.cwd()),
+      workspace: config.runtime.workspace,
+      baseModel: model,
+      ...(config.sandbox === undefined ? {} : { sandboxPolicy: config.sandbox }),
+    },
+  );
   const subagents = subagentsRuntimeOptions(config, {
     runtime,
     baseModel: model,
@@ -802,7 +817,7 @@ async function createConfiguredAgentHarnessInternal(
   const runtimeOptions = mergeStaticRuntimeOptions(
     runtimeOptionsForLocalProvider(model, config.providers?.local),
     configRuntimeFlags(config),
-    options.sandboxEngine === undefined ? undefined : { sandboxEngine: options.sandboxEngine },
+    sandboxEngine === undefined ? undefined : { sandboxEngine },
     subagents,
     options.runtimeOptions,
   );

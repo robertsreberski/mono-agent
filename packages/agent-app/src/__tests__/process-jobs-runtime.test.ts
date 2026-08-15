@@ -191,7 +191,9 @@ describe("process-job request availability", () => {
     }) as never;
     await expect(extension(input())).resolves.toMatchObject({ runtimeOptions: { processJobs: expect.any(Object) } });
     expect(controller).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "slack:C1:1.1" }), 0);
-    await expect(extension(input({ route: "claude" }))).resolves.toEqual({ runtimeOptions: {}, cleanup: expect.any(Function) });
+    await expect(extension(input({ route: "claude" }))).rejects.toThrow(
+      "Process-job private state requires a Pi-native runtime.",
+    );
 
   });
 
@@ -288,7 +290,12 @@ describe("process-job request availability", () => {
     expect(outcomes.get("parent-plus-one")).toMatchObject({
       runtimeOptions: { processJobs: expect.any(Object) },
     });
-    expect(outcomes.get("at-maximum")).toEqual({ runtimeOptions: {}, cleanup: expect.any(Function) });
+    expect(outcomes.get("at-maximum")).toMatchObject({
+      runtimeOptions: {
+        sandboxPolicy: { protectedRoots: ["/agent/.mono-agent/process-jobs"] },
+      },
+      cleanup: expect.any(Function),
+    });
     expect(controller).toHaveBeenCalledOnce();
     expect(controller).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: "slack:C1:1.1" }),
@@ -522,7 +529,12 @@ describe("process-job request availability", () => {
       },
       context: {},
     } as never);
-    expect(outcome).toEqual({ runtimeOptions: {}, cleanup: expect.any(Function) });
+    expect(outcome).toMatchObject({
+      runtimeOptions: {
+        sandboxPolicy: { protectedRoots: ["/agent/.mono-agent/process-jobs"] },
+      },
+      cleanup: expect.any(Function),
+    });
     expect(controller).not.toHaveBeenCalled();
     release();
     await Promise.all([first, second]);

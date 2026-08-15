@@ -70,16 +70,23 @@ at admission. The runtime deadline starts when the detached launch gate is
 spawned immediately before ownership is persisted, so waiting in a busy queue
 does not consume the runtime budget.
 
-Every eligible Pi-native turn that receives the background controller also
-receives a host-internal, fail-closed native sandbox protection for the job
-store. This applies even when the ordinary configured sandbox is absent or
-off: model `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, and `Exec` access
-cannot read, replace, rename, or use the protected directory as a workdir.
-With the default path, `.mono-agent/` is the protected host-private container.
-For a custom nested `stateDir`, its immediate containing directory becomes
-host-private and unavailable to model tools; use a dedicated container. A
-`stateDir` directly under the agent root protects only that directory so the
-workspace itself remains usable.
+Whenever the process-job service is active, every Pi-native model turn receives
+host-internal, fail-closed native protection for the exact configured
+`stateDir`, independently of whether that turn receives the background
+controller. Model `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, and `Exec`
+cannot read, replace, rename, search, or use that directory as a workdir. Host
+filesystem tools perform their actual file operation through the native
+sandbox, closing symlink swaps after path authorization. SRT also denies a
+rename of any ancestor that would move the protected leaf.
+
+Only the exact state directory is protected: workspace siblings such as
+`.mono-agent/artifacts/attachments` remain readable, including when the
+workspace itself is nested under `.mono-agent/`. When the configured sandbox
+is absent or off, this filesystem-only protection preserves unrestricted
+network behavior for commands, `WebFetch`, and `WebSearch`. A configured native
+network policy remains unchanged. Provider-owned non-Pi tool loops cannot
+enforce this host policy, so they are rejected while private process-job state
+is active; a request override remains on its protected Pi route.
 
 ## Availability and origins
 

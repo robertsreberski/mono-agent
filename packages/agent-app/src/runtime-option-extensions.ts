@@ -2,7 +2,18 @@ import type {
   AgentHarnessRuntimeOptionsExtension,
   AgentHarnessRuntimeOptionsInput,
 } from "@mono-agent/agent-harness";
-import { mergeSandboxPolicies, type SandboxPolicy } from "@mono-agent/runtime-adapter";
+import {
+  failClosedSandboxPolicy,
+  mergeSandboxPolicies,
+  protectSandboxRoots,
+  type RuntimeModelReference,
+  type SandboxPolicy,
+} from "@mono-agent/runtime-adapter";
+
+import {
+  assertClearSessionsRecoveryResolved,
+  clearSessionsRegistryRoot,
+} from "./sessions.js";
 
 export type RuntimeOptionsExtension = (
   input: AgentHarnessRuntimeOptionsInput,
@@ -16,6 +27,48 @@ export interface RuntimeOptionsCompositionOptions {
    * merely reusing a trusted server name.
    */
   readonly preserveMcpServersUnderOverride?: readonly RuntimeOptionsExtension[];
+}
+
+export interface ClearSessionsRuntimeBoundaryOptions {
+  readonly cwd: string;
+  readonly workspace: string;
+  readonly baseModel: RuntimeModelReference;
+  readonly sandboxPolicy?: SandboxPolicy;
+  /** Test seam; production always uses the sessions-owned attestation. */
+  readonly assertRecoveryResolved?: (cwd: string) => Promise<void>;
+  /** Test seam; production always uses the stable sessions-owned registry root. */
+  readonly registryRoot?: (cwd: string) => string;
+}
+
+/**
+ * Run the recovery attestation before any sibling extension/provider work,
+ * then protect the stable registry only for Pi-native host-tool execution.
+ */
+export function createClearSessionsRuntimeExtension(
+  next: RuntimeOptionsExtension | undefined,
+  options: ClearSessionsRuntimeBoundaryOptions,
+): RuntimeOptionsExtension {
+  return async (input) => {
+    await (options.assertRecoveryResolved ?? assertClearSessionsRecoveryResolved)(options.cwd);
+    const result = next === undefined
+      ? { runtimeOptions: {}, cleanup: async () => {} }
+      : await next(input);
+    const effectiveModel = runtimeModel(result.runtimeOptions?.model) ?? options.baseModel;
+    if (effectiveModel.sdk !== "pi") return result;
+    const base = options.sandboxPolicy?.mode === "native"
+      ? { ...options.sandboxPolicy, fallback: "fail-closed" as const, unsafeAllowHostProcess: false }
+      : failClosedSandboxPolicy({
+          root: options.workspace,
+          network: { mode: "all" },
+        });
+    const registryPolicy = protectSandboxRoots(base, [
+      (options.registryRoot ?? clearSessionsRegistryRoot)(options.cwd),
+    ]);
+    const runtimeOptions: Record<string, unknown> = {};
+    mergeRuntimeOptions(runtimeOptions, result.runtimeOptions);
+    mergeRuntimeOptions(runtimeOptions, { sandboxPolicy: registryPolicy });
+    return { ...result, runtimeOptions };
+  };
 }
 
 /** Compose request-scoped runtime extensions without dropping tools or cleanup hooks. */
@@ -123,4 +176,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function asSandboxPolicy(value: unknown): SandboxPolicy | undefined {
   return isRecord(value) ? value as unknown as SandboxPolicy : undefined;
+}
+
+function runtimeModel(value: unknown): RuntimeModelReference | undefined {
+  return isRecord(value)
+    && typeof value.sdk === "string"
+    && typeof value.model === "string"
+    ? value as unknown as RuntimeModelReference
+    : undefined;
 }

@@ -56,6 +56,24 @@ export function isWorkdirAllowed(workdir, options = {}) {
   return insideLegacyRoots([workspace, repoRoot, process.cwd(), "/tmp"], r);
 }
 
+/**
+ * Protected descendants of one search root, as normalized relative paths.
+ * Search tools use these both as ripgrep exclusions and as a defensive output
+ * filter; actual reads still cross the native sandbox boundary.
+ */
+export function protectedRelativePaths(directory, options = {}) {
+  const ctx = options.ctx;
+  const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), options.sandboxPolicy);
+  if (!policy || !Array.isArray(policy.protectedRoots)) return [];
+  const root = resolve(directory);
+  const out = new Set();
+  for (const protectedRoot of normalizeRoots(policy.protectedRoots)) {
+    const rel = relative(root, protectedRoot);
+    if (rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)) out.add(rel);
+  }
+  return [...out].sort();
+}
+
 // Sandbox roots also enforce realpath containment so a symlink inside an
 // allowed root cannot escape to a target outside the policy.
 function insideSandboxRoots(roots, target) {
