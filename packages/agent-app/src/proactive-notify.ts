@@ -119,10 +119,17 @@ export async function routeProactiveNotification(input: ProactiveNotifyInput): P
 }
 
 function processJobWebChannel(input: ProactiveNotifyInput): ChannelId | undefined {
-  return input.processJob?.origin.channel === "web"
+  const origin = input.processJob?.origin;
+  return origin?.channel === "web"
+    && baseConversationId(origin.conversationId) === baseConversationId(input.conversationId)
     && input.conversationId.startsWith("web:")
+    && input.conversationId !== "web:new"
     ? "tui"
     : undefined;
+}
+
+function baseConversationId(conversationId: string): string {
+  return conversationId.split("#", 1)[0] ?? conversationId;
 }
 
 function reasonOf(error: unknown): string {

@@ -176,12 +176,12 @@ function baseConversationId(conversationId: string): string {
 function settleProcessJobWake(result: NotifyDeliveryResult): NotifyDeliveryResult {
   if (result.delivered) return result;
   if (result.code === "conversation_busy") {
-    return { ...result, retryable: true };
+    return { ...result, retryable: result.retryable ?? true };
   }
   // Compatibility for older/custom Telegram starters that predate the stable
   // adapter code. Built-in adapters classify this refusal at their boundary.
   if (result.code === undefined && result.reason === "chat at concurrency cap") {
-    return { ...result, code: "conversation_busy", retryable: true };
+    return { ...result, code: "conversation_busy", retryable: result.retryable ?? true };
   }
   return { ...result, retryable: false, ambiguous: true };
 }

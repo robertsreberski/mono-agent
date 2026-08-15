@@ -35,6 +35,7 @@ import {
   loadOrCreateProcessJobSecret,
   openProcessJobStore,
   prepareProcessJobStateDirectory,
+  PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS,
   PROCESS_JOB_ENV_KEYS_CAPS,
   projectProcessJob,
   processJobOperatorToken,
@@ -42,6 +43,7 @@ import {
   type DurableProcessJobRecord,
   type ProcessJobOriginRecord,
   type ProcessJobStore,
+  type ProcessJobStoreMutationDraft,
 } from "./process-jobs-store.js";
 
 const PROCESS_JOB_OWNER_SCHEMA = "mono-agent.process-jobs-owner.v1";
@@ -67,6 +69,11 @@ interface PendingProcessJob {
 interface ActiveProcessJob extends PendingProcessJob {
   readonly handle: ProcessJobProcessHandle;
   groupExitConfirmed?: boolean;
+}
+
+interface ProcessJobMutationSnapshot {
+  readonly candidates: ReadonlyMap<string, DurableProcessJobRecord>;
+  readonly deletedKeys: readonly string[];
 }
 
 export interface ProcessJobsHealth {
@@ -377,26 +384,33 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     this.wakesActive = true;
     for (const record of await this.storeList("activate_wakes")) {
       if (isTerminalProcessJobState(record.state) && record.wake.state === "pending") {
-        if (record.wake.attempts === 0
-          || (record.wake.retrySafe === true && record.wake.attempts < MAX_WAKE_ATTEMPTS)) {
+        const destinationUnavailableExhausted = (record.wake.destinationUnavailableAttempts ?? 0)
+          >= PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS;
+        if (!destinationUnavailableExhausted && (record.wake.attempts === 0
+          || (record.wake.retrySafe === true && record.wake.attempts < MAX_WAKE_ATTEMPTS))) {
           this.scheduleWake(record.jobId);
         } else {
           await this.storeMutate("activate_wakes.fail", (records) => {
             const current = records.get(record.jobId);
-            if (current?.wake.state === "pending" && current.wake.attempts > 0) {
+            if (current?.wake.state === "pending") {
+              const unavailableExhausted = (current.wake.destinationUnavailableAttempts ?? 0)
+                >= PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS;
               const safeRetryExhausted = current.wake.retrySafe === true
                 && current.wake.attempts >= MAX_WAKE_ATTEMPTS;
               current.wake.state = "failed";
               current.wake.retrySafe = false;
               recordWakeFailure(
                 current,
-                safeRetryExhausted
-                  ? "Process-job wake delivery exhausted its safe retry budget."
-                  : "A prior wake attempt ended ambiguously; it was not replayed to avoid duplicate delivery.",
+                unavailableExhausted
+                  ? "The destination channel remained unavailable through its bounded pre-dispatch retry window."
+                  : safeRetryExhausted
+                    ? "Process-job wake delivery exhausted its safe retry budget."
+                    : "A prior wake attempt ended ambiguously; it was not replayed to avoid duplicate delivery.",
               );
             }
           });
-          this.scheduleSurfaceUpdate(record.jobId);
+          await this.updateSurfaceById(record.jobId);
+          await this.storeApplyRetention("activate_wakes.retention");
         }
       }
     }
@@ -528,6 +542,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             deliveryKey: `process-job:${jobId}`,
             lastAttemptAt: null,
             retrySafe: false,
+            destinationUnavailableAttempts: 0,
           },
           lastError: null,
         };
@@ -1009,6 +1024,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private async deliverWake(jobId: string): Promise<void> {
     for (;;) {
       let record: DurableProcessJobRecord | undefined;
+      let previousDelivery: { readonly attempts: number; readonly lastAttemptAt: string | null } | undefined;
       await this.withLock(async () => {
         await this.storeMutate("wake.attempt", (records) => {
           const current = records.get(jobId);
@@ -1016,6 +1032,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             || !isTerminalProcessJobState(current.state)
             || current.wake.state !== "pending"
             || current.wake.attempts >= MAX_WAKE_ATTEMPTS) return;
+          previousDelivery = {
+            attempts: current.wake.attempts,
+            lastAttemptAt: current.wake.lastAttemptAt,
+          };
           // Durably clear the safe-retry proof before crossing the external
           // delivery boundary. A crash from here through receipt persistence is
           // ambiguous and must never be replayed automatically.
@@ -1043,10 +1063,19 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         ambiguous: true,
       }));
       const attempt = record.wake.attempts;
-      const retryablePreDispatchRefusal = !result.delivered
-        && (result.code === "conversation_busy" || result.code === "destination_channel_unavailable")
+      const conversationBusy = !result.delivered
+        && result.code === "conversation_busy"
         && result.retryable === true
         && result.ambiguous !== true;
+      const destinationUnavailable = !result.delivered
+        && result.code === "destination_channel_unavailable"
+        && result.retryable === true
+        && result.ambiguous !== true;
+      const retryablePreDispatchRefusal = conversationBusy || destinationUnavailable;
+      const nextDestinationUnavailableAttempts = (record.wake.destinationUnavailableAttempts ?? 0)
+        + (destinationUnavailable ? 1 : 0);
+      const destinationUnavailableExhausted = destinationUnavailable
+        && nextDestinationUnavailableAttempts >= PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS;
       const safeRetry = !result.delivered
         && !retryablePreDispatchRefusal
         && result.retryable === true
@@ -1059,13 +1088,35 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           if (result.delivered) {
             current.wake.state = "delivered";
             current.wake.retrySafe = false;
-          } else if (retryablePreDispatchRefusal) {
-            // Busy admission and an absent destination channel are pre-dispatch
-            // refusals: no chat mutation or model turn happened, so they must
-            // not consume the bounded delivery budget.
-            current.wake.attempts = Math.max(0, current.wake.attempts - 1);
-            if (current.wake.attempts === 0) current.wake.lastAttemptAt = null;
+          } else if (conversationBusy) {
+            // Busy admission is budget-free: no chat mutation or model turn
+            // happened, so restore the exact delivery-attempt contract.
+            current.wake.attempts = previousDelivery?.attempts ?? current.wake.attempts;
+            current.wake.lastAttemptAt = previousDelivery === undefined
+              ? current.wake.lastAttemptAt
+              : previousDelivery.lastAttemptAt;
             current.wake.retrySafe = true;
+          } else if (destinationUnavailable) {
+            // Destination absence is also pre-dispatch, but unlike conversation
+            // capacity it has its own durable bound so disabled channels cannot
+            // retain terminal records and artifacts forever.
+            current.wake.attempts = previousDelivery?.attempts ?? current.wake.attempts;
+            current.wake.lastAttemptAt = previousDelivery === undefined
+              ? current.wake.lastAttemptAt
+              : previousDelivery.lastAttemptAt;
+            current.wake.destinationUnavailableAttempts = nextDestinationUnavailableAttempts;
+            if (destinationUnavailableExhausted) {
+              current.wake.state = "failed";
+              current.wake.retrySafe = false;
+              recordWakeFailure(
+                current,
+                `The destination channel remained unavailable through ${String(
+                  PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS,
+                )} pre-dispatch checks.`,
+              );
+            } else {
+              current.wake.retrySafe = true;
+            }
           } else if (safeRetry) {
             // This receipt proves no native delivery was accepted. Preserve
             // that fact so shutdown/restart can safely resume the same stable
@@ -1085,7 +1136,13 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         });
       });
       await this.updateSurfaceById(jobId);
-      if (retryablePreDispatchRefusal) {
+      const wakeSettled = result.delivered
+        || destinationUnavailableExhausted
+        || (!retryablePreDispatchRefusal && !safeRetry);
+      if (wakeSettled) {
+        await this.withLock(async () => await this.storeApplyRetention("wake.retention"));
+      }
+      if (conversationBusy || (destinationUnavailable && !destinationUnavailableExhausted)) {
         this.wakeRearmPending.add(jobId);
         return;
       }
@@ -1108,6 +1165,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       try {
         await this.withLock(async () => {
           await this.storeMutate("stop.cancel", (records) => {
+            // Deliberate shutdown cold path: cancellation must touch every live
+            // record once before process ownership can be released.
             for (const record of records.values()) {
               if (!isTerminalProcessJobState(record.state)) record.cancelRequested = true;
             }
@@ -1323,23 +1382,23 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     mutate: (records: Map<string, DurableProcessJobRecord>) => T | Promise<T>,
   ): Promise<T> {
     let callbackFailed = false;
-    let desired: Map<string, DurableProcessJobRecord> | undefined;
+    let desired: ProcessJobMutationSnapshot | undefined;
     try {
       const result = await this.store.mutate(async (records) => {
         try {
           const value = await mutate(records);
-          desired = cloneRecordMap(records);
+          desired = captureMutationSnapshot(records);
           return value;
         } catch (error) {
           callbackFailed = true;
           throw error;
         }
       });
-      if (desired !== undefined) this.reconcileRecords([...desired.values()]);
+      if (desired !== undefined) this.reconcileMutation(desired);
       return result;
     } catch (error) {
       if (!callbackFailed) {
-        if (desired !== undefined) this.rememberFailedTerminalMutations(desired);
+        if (desired !== undefined) this.rememberFailedTerminalMutations(desired.candidates);
         await this.degradeStorage(operation, error);
       }
       throw error;
@@ -1380,21 +1439,38 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   }
 
   private async storeApplyRetention(operation: string): Promise<void> {
+    let retentionFailed = false;
+    let retentionError: unknown;
     try {
       await this.store.applyRetention(this.settings, this.now());
     } catch (error) {
+      retentionFailed = true;
+      retentionError = error;
       await this.degradeStorage(operation, error);
-      throw error;
     }
-    // Retention completing does not prove which records remain. A guarded
-    // readback is the only event that may prune snapshots and terminal overlays.
-    await this.storeList(`${operation}.readback`);
+    // applyRetention may fail after its record transaction committed (for
+    // example during periodic orphan reconciliation). Always attempt readback
+    // so the cache reflects committed truth before propagating the degradation.
+    try {
+      await this.storeList(`${operation}.readback`);
+    } catch (readbackError) {
+      if (retentionFailed) {
+        throw new AggregateError(
+          [retentionError, readbackError],
+          "Process-job retention and its committed-state readback both failed.",
+        );
+      }
+      throw readbackError;
+    }
+    if (retentionFailed) throw retentionError;
   }
 
   private reconcileRecords(records: readonly DurableProcessJobRecord[]): void {
     const bounded = boundedNewestRecords(records);
     this.recordSnapshot.clear();
-    for (const record of bounded) this.recordSnapshot.set(record.jobId, structuredClone(record));
+    // ProcessJobStore.list() already returns caller-owned clones. Keep those
+    // isolated objects directly instead of cloning the bounded readback again.
+    for (const record of bounded) this.recordSnapshot.set(record.jobId, record);
     const durableIds = new Set(records.map((record) => record.jobId));
     for (const jobId of this.completionOverlays.keys()) {
       if (!durableIds.has(jobId)) this.completionOverlays.delete(jobId);
@@ -1409,13 +1485,18 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       return;
     }
     const ownedRecord = structuredClone(record);
-    this.recordSnapshot.delete(jobId);
-    const bounded = boundedNewestRecords([...this.recordSnapshot.values(), ownedRecord]);
-    this.recordSnapshot.clear();
-    for (const candidate of bounded) {
-      this.recordSnapshot.set(candidate.jobId, candidate);
+    // Normal admissions fit inside the compiled retention + queued + active
+    // headroom. A custom/oversized store read at the hard ceiling is returned
+    // to its caller but not cached, preserving the cap without an O(N) rebuild.
+    if (this.recordSnapshot.has(jobId) || this.recordSnapshot.size < MAX_IN_MEMORY_RECORDS) {
+      this.recordSnapshot.set(jobId, ownedRecord);
     }
     this.pruneConsistentOverlay(ownedRecord);
+  }
+
+  private reconcileMutation(snapshot: ProcessJobMutationSnapshot): void {
+    for (const jobId of snapshot.deletedKeys) this.reconcileRecord(jobId, undefined);
+    for (const [jobId, record] of snapshot.candidates) this.reconcileRecord(jobId, record);
   }
 
   private pruneConsistentOverlay(record: DurableProcessJobRecord): void {
@@ -1427,7 +1508,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     }
   }
 
-  private rememberFailedTerminalMutations(records: Map<string, DurableProcessJobRecord>): void {
+  private rememberFailedTerminalMutations(records: ReadonlyMap<string, DurableProcessJobRecord>): void {
     for (const record of records.values()) {
       if (isTerminalProcessJobState(record.state)) {
         this.completionOverlays.set(record.jobId, projectProcessJob(record));
@@ -1526,12 +1607,16 @@ function pendingRequest(request: ProcessJobStartRequest): PendingProcessJob {
   };
 }
 
-function cloneRecordMap(
-  records: Map<string, DurableProcessJobRecord>,
-): Map<string, DurableProcessJobRecord> {
-  return new Map(
-    [...records].map(([jobId, record]) => [jobId, structuredClone(record)]),
-  );
+function captureMutationSnapshot(draft: ProcessJobStoreMutationDraft): ProcessJobMutationSnapshot {
+  // Do not structuredClone(draft): the copy-on-read Map subclass deliberately
+  // keeps its base Map slots empty, so structuredClone would silently lose its
+  // private source/override entries. Clone only the exposed touched entries.
+  return {
+    candidates: new Map(
+      [...draft.candidateEntries()].map(([jobId, record]) => [jobId, structuredClone(record)]),
+    ),
+    deletedKeys: [...draft.deletedKeys()],
+  };
 }
 
 function enforceAdmission(

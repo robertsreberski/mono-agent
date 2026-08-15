@@ -79,7 +79,7 @@ describe("routeProactiveNotification", () => {
     expect(warn).toHaveBeenCalledOnce();
   });
 
-  it("rejects ordinary web notifications while ProcessJob web lifecycle wakes use TUI", async () => {
+  it("rejects ordinary and cross-thread web notifications while exact ProcessJob wakes use TUI", async () => {
     const notify = vi.fn(async () => ({ delivered: true }));
     const ordinary = await routeProactiveNotification({
       conversationId: "web:thread-1",
@@ -89,7 +89,7 @@ describe("routeProactiveNotification", () => {
     expect(ordinary.delivered).toBe(false);
     expect(notify).not.toHaveBeenCalled();
 
-    const processJob = jobProjection("web:thread-1", "web");
+    const processJob = jobProjection("web:thread-1#2026-08-15", "web");
     const lifecycle = await routeProactiveNotification({
       conversationId: "web:thread-1",
       text: "wake",
@@ -102,6 +102,15 @@ describe("routeProactiveNotification", () => {
       text: "wake",
       processJob,
     });
+
+    const mismatched = await routeProactiveNotification({
+      conversationId: "web:thread-2",
+      text: "wrong thread",
+      processJob,
+      running: running({ tui: { notify } }),
+    });
+    expect(mismatched.delivered).toBe(false);
+    expect(notify).toHaveBeenCalledOnce();
   });
 
   it("classifies an absent recognized channel as retryable before dispatch", async () => {

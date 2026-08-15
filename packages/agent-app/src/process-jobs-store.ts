@@ -43,6 +43,7 @@ export const PROCESS_JOB_ROLLBACK_GUARD = "PROCESS-JOBS-STORE-V1";
 export const PROCESS_JOB_ROLLBACK_GUARD_CONTENT =
   "This state directory uses mono-agent process-job records v1. Older runtimes must not open it.\n";
 export const PROCESS_JOB_ORPHAN_RECONCILIATION_INTERVAL = 64;
+export const PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS = 3;
 
 const MAX_RECORD_BYTES = 128 * 1024;
 const MAX_TRANSACTION_BYTES = 256 * 1024;
@@ -109,6 +110,8 @@ export interface DurableProcessJobRecord {
     lastAttemptAt: string | null;
     /** Private durable proof that the last adapter result explicitly permitted retry. */
     retrySafe?: boolean;
+    /** Optional in pre-integration record v1; omission means zero for older branch records. */
+    destinationUnavailableAttempts?: number;
   };
   lastError: { readonly code: ProcessJobErrorCode; readonly message: string } | null;
 }
@@ -162,8 +165,15 @@ interface ProcessJobRecordChange {
   readonly countDelta: -1 | 0 | 1;
 }
 
+/** Internal touched-entry view over one transactional mutation. */
+export interface ProcessJobStoreMutationDraft extends Map<string, DurableProcessJobRecord> {
+  candidateEntries(): IterableIterator<[string, DurableProcessJobRecord]>;
+  deletedKeys(): IterableIterator<string>;
+}
+
 /** Transactional copy-on-read Map that never exposes store-owned record objects. */
-class ProcessJobMutationDraft extends Map<string, DurableProcessJobRecord> {
+class ProcessJobMutationDraft extends Map<string, DurableProcessJobRecord>
+  implements ProcessJobStoreMutationDraft {
   readonly #source: ReadonlyMap<string, DurableProcessJobRecord>;
   readonly #overrides = new Map<string, DurableProcessJobRecord>();
   readonly #deleted = new Set<string>();
@@ -294,7 +304,7 @@ export interface ProcessJobStore {
   };
   get(jobId: string): Promise<DurableProcessJobRecord | undefined>;
   list(): Promise<readonly DurableProcessJobRecord[]>;
-  mutate<T>(operation: (records: Map<string, DurableProcessJobRecord>) => T | Promise<T>): Promise<T>;
+  mutate<T>(operation: (records: ProcessJobStoreMutationDraft) => T | Promise<T>): Promise<T>;
   ensureArtifacts(jobId: string): Promise<{ readonly stdoutRef: string; readonly stderrRef: string }>;
   discardArtifacts(jobId: string): Promise<void>;
   writeArtifact(jobId: string, stream: "stdout" | "stderr", contents: string): Promise<void>;
@@ -1070,7 +1080,8 @@ function validDurableLifecycle(value: Record<string, unknown>): boolean {
     if (wake.state !== "pending"
       || wake.attempts !== 0
       || wake.lastAttemptAt !== null
-      || wake.retrySafe === true) return false;
+      || wake.retrySafe === true
+      || (wake.destinationUnavailableAttempts ?? 0) !== 0) return false;
   }
   return true;
 }
@@ -1150,12 +1161,18 @@ function validWake(value: unknown): boolean {
     && hasExactKeys(value, [
       "state", "attempts", "deliveryKey", "lastAttemptAt",
       ...(Object.prototype.hasOwnProperty.call(value, "retrySafe") ? ["retrySafe"] : []),
+      ...(Object.prototype.hasOwnProperty.call(value, "destinationUnavailableAttempts")
+        ? ["destinationUnavailableAttempts"]
+        : []),
     ])
     && (value.state === "pending" || value.state === "delivered" || value.state === "failed")
     && nonNegativeInteger(value.attempts)
     && boundedNonEmptyString(value.deliveryKey, 512)
     && nullableIso(value.lastAttemptAt)
-    && (value.retrySafe === undefined || typeof value.retrySafe === "boolean");
+    && (value.retrySafe === undefined || typeof value.retrySafe === "boolean")
+    && (value.destinationUnavailableAttempts === undefined
+      || (nonNegativeInteger(value.destinationUnavailableAttempts)
+        && Number(value.destinationUnavailableAttempts) <= PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS));
 }
 
 function validLastError(value: unknown): boolean {

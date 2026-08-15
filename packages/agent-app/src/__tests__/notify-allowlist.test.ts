@@ -214,6 +214,50 @@ describe("telegram proactive notify allowlist", () => {
       retryable: true,
     });
   });
+
+  it("does not let legacy Telegram busy prose override explicit nonretryability", async () => {
+    const notify = vi.fn(async () => ({
+      delivered: false,
+      reason: "chat at concurrency cap",
+      retryable: false,
+    }));
+    const updateProcessJob = vi.fn(async () => ({ delivered: true }));
+    const processJob = projection("telegram:42", "telegram");
+    const running = await telegramDriver(notify, updateProcessJob).start(startInput(config({})));
+
+    await expect(running.notify!({
+      conversationId: "telegram:42",
+      text: "wake",
+      processJob,
+    })).resolves.toMatchObject({
+      delivered: false,
+      code: "conversation_busy",
+      retryable: false,
+    });
+  });
+
+  it("does not upgrade conflicting Telegram stable codes from busy-looking prose", async () => {
+    const notify = vi.fn(async () => ({
+      delivered: false,
+      code: "destination_rejected",
+      reason: "chat at concurrency cap",
+      retryable: true,
+    }));
+    const updateProcessJob = vi.fn(async () => ({ delivered: true }));
+    const processJob = projection("telegram:42", "telegram");
+    const running = await telegramDriver(notify, updateProcessJob).start(startInput(config({})));
+
+    await expect(running.notify!({
+      conversationId: "telegram:42",
+      text: "wake",
+      processJob,
+    })).resolves.toMatchObject({
+      delivered: false,
+      code: "destination_rejected",
+      retryable: false,
+      ambiguous: true,
+    });
+  });
 });
 
 describe("slack proactive notify allowlist", () => {

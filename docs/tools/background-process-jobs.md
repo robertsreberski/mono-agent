@@ -152,9 +152,20 @@ re-armed on a separate, longer timer; a restart can deliver it later. Once a
 turn is admitted, any ambiguous failure is nonretryable and exactly-once wins
 over automatic replay.
 
+An absent or disabled destination channel is also a proven pre-dispatch refusal,
+but it has a separate durable bound of three checks. Those checks do not change
+the delivery attempt count or timestamp and reuse the same stable delivery key.
+If the channel returns before exhaustion, delivery continues normally; otherwise
+the wake settles as `failed` so retention can reclaim its record and artifacts.
+Conversation-cap busy admission remains distinct and does not spend this
+absent-channel bound.
+
 Pending-wake records and their referenced artifacts remain live and are exempt
 from age, count, and artifact-byte pruning until delivery settles. Other
 terminal records and artifacts are pruned oldest-first with job-id tie-breaking.
+Retention runs at startup, after every terminal completion, and after each wake
+settles. Every 64 retention applications also reconcile orphan artifact
+directories, so long-running agents reach crash-cleanup work without restarting.
 
 Stdout and stderr are stored separately under the configured output budget.
 The model, CLI, operator API, and web card receive only bounded redacted
@@ -193,8 +204,9 @@ host lifecycle updates never enter the ordinary responder/model path. The
 terminal wake itself still uses the channel's normal proactive turn path. Web
 wakes through the operator driver without requiring a live browser or HTTP
 turn, commits one normal agent-history entry, and updates one durable job card
-in the originating thread; ordinary `web:<id>` notifications retain their
-existing TUI routing.
+in the exact originating thread. Ordinary `web:<id>` notifications are rejected;
+only a process-job lifecycle wake carrying that matching web origin routes to
+the TUI driver.
 
 ## Restart and cancellation
 

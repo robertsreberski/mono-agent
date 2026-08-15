@@ -1,6 +1,7 @@
 import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 
 import type { ProcessJobProjection } from "@mono-agent/agent-contracts";
 import type {
@@ -21,7 +22,9 @@ import {
 } from "../process-jobs-service.js";
 import {
   openProcessJobStore,
+  PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS,
   PROCESS_JOB_HEALTH_FILE,
+  PROCESS_JOB_MANIFEST_FILE,
   PROCESS_JOB_ORPHAN_RECONCILIATION_INTERVAL,
   PROCESS_JOB_QUARANTINE_DIRECTORY,
   PROCESS_JOB_TRANSACTION_FILE,
@@ -632,7 +635,7 @@ describe("process job service", () => {
   it("keeps the process failure when wake delivery also fails", async () => {
     const fixture = await createFixture();
     const completion = deferred<ProcessJobProcessResult>();
-    const wake = vi.fn(async () => ({
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({
       delivered: false as const,
       code: "channel_unavailable",
       reason: "Slack is unavailable.",
@@ -729,6 +732,7 @@ describe("process job service", () => {
         deliveryKey: `process-job:${jobId}`,
         lastAttemptAt: null,
         retrySafe: false,
+        destinationUnavailableAttempts: 0,
       },
       lastError: null,
     })));
@@ -747,7 +751,13 @@ describe("process job service", () => {
     await waitFor(() => busyWake.mock.calls.length === 1);
     await waitFor(async () => (await store.get(jobId))?.wake.attempts === 0);
     expect(await store.get(jobId)).toMatchObject({
-      wake: { state: "pending", attempts: 0, retrySafe: true, lastAttemptAt: null },
+      wake: {
+        state: "pending",
+        attempts: 0,
+        retrySafe: true,
+        lastAttemptAt: null,
+        destinationUnavailableAttempts: 0,
+      },
     });
     await first.stop();
 
@@ -784,7 +794,13 @@ describe("process job service", () => {
     await waitFor(async () => (await store.get(started.jobId))?.wake.retrySafe === true);
     expect(await store.get(started.jobId)).toMatchObject({
       state: "succeeded",
-      wake: { state: "pending", attempts: 0, retrySafe: true, lastAttemptAt: null },
+      wake: {
+        state: "pending",
+        attempts: 0,
+        retrySafe: true,
+        lastAttemptAt: null,
+        destinationUnavailableAttempts: 1,
+      },
     });
     const deliveryKey = routeWake.mock.calls[0]?.[0].deliveryKey;
     await first.stop();
@@ -807,12 +823,204 @@ describe("process job service", () => {
     expect(delivered).toHaveBeenCalledOnce();
     expect(delivered).toHaveBeenCalledWith(expect.objectContaining({ deliveryKey }));
     expect(await store.get(started.jobId)).toMatchObject({
-      wake: { state: "delivered", attempts: 1, retrySafe: false },
+      wake: {
+        state: "delivered",
+        attempts: 1,
+        retrySafe: false,
+        destinationUnavailableAttempts: 1,
+      },
     });
 
     await restarted.activateWakes();
     await Promise.resolve();
     expect(delivered).toHaveBeenCalledOnce();
+  });
+
+  it("fails a permanently absent destination after its durable bound and immediately applies retention", async () => {
+    const fixture = await createFixture({
+      retention: { ...PROCESS_JOBS_DEFAULTS.retention, maxAgeMs: 1 },
+    });
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "acacacac-1111-4111-8111-111111111111";
+    await store.ensureArtifacts(jobId);
+    await store.mutate((records) => records.set(jobId, durableRecord(jobId, {
+      state: "succeeded",
+      completedAt: "2026-08-14T10:00:02.000Z",
+      exitCode: 0,
+      durationMs: 1_000,
+      wake: {
+        state: "pending",
+        attempts: 0,
+        deliveryKey: `process-job:${jobId}`,
+        lastAttemptAt: null,
+        retrySafe: false,
+        destinationUnavailableAttempts: 0,
+      },
+      lastError: null,
+    })));
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({
+      delivered: false as const,
+      code: "destination_channel_unavailable",
+      reason: "slack channel is not running",
+      retryable: true,
+    }));
+    const surfaceUpdate = vi.fn(async (_projection: ProcessJobProjection) => undefined);
+    const service = await startService(fixture, {
+      store,
+      wake,
+      surfaceUpdate,
+      wakeBusyRearmMs: 0,
+      now: () => new Date("2026-08-15T00:00:00.000Z"),
+    });
+
+    await service.activateWakes();
+    await waitFor(() => wake.mock.calls.length === 3);
+    await waitFor(async () => await store.get(jobId) === undefined);
+
+    expect(new Set(wake.mock.calls.map(([input]) => input.deliveryKey))).toEqual(
+      new Set([`process-job:${jobId}`]),
+    );
+    expect(surfaceUpdate.mock.calls.some(([projection]) =>
+      projection.wake.state === "failed" && projection.wake.attempts === 0)).toBe(true);
+    expect(await pathExists(join(store.artifactsDir, jobId))).toBe(false);
+  });
+
+  it("preserves the destination-unavailable bound across restart without spending delivery attempts", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "adadadad-1111-4111-8111-111111111111";
+    await store.mutate((records) => records.set(jobId, durableRecord(jobId, {
+      state: "succeeded",
+      completedAt: "2026-08-14T10:00:02.000Z",
+      exitCode: 0,
+      durationMs: 1_000,
+      stdoutRef: null,
+      stderrRef: null,
+      wake: {
+        state: "pending",
+        attempts: 0,
+        deliveryKey: `process-job:${jobId}`,
+        lastAttemptAt: null,
+        retrySafe: false,
+        destinationUnavailableAttempts: 0,
+      },
+      lastError: null,
+    })));
+    const absentResult = {
+      delivered: false as const,
+      code: "destination_channel_unavailable",
+      reason: "slack channel is not running",
+      retryable: true,
+    };
+    const firstWake = vi.fn(async (_input: ProcessJobWakeInput) => absentResult);
+    const first = await startService(fixture, {
+      store,
+      wake: firstWake,
+      wakeBusyRearmMs: 60_000,
+    });
+    await first.activateWakes();
+    await waitFor(() => firstWake.mock.calls.length === 1);
+    await waitFor(async () => (await store.get(jobId))?.wake.destinationUnavailableAttempts === 1);
+    await first.stop();
+
+    const restartedWake = vi.fn(async (_input: ProcessJobWakeInput) => absentResult);
+    const restarted = await startService(fixture, {
+      store,
+      wake: restartedWake,
+      wakeBusyRearmMs: 0,
+    });
+    await restarted.activateWakes();
+    await waitFor(async () => (await restarted.get(jobId))?.wake.state === "failed");
+
+    expect(firstWake).toHaveBeenCalledOnce();
+    expect(restartedWake).toHaveBeenCalledTimes(2);
+    expect(new Set([...firstWake.mock.calls, ...restartedWake.mock.calls]
+      .map(([input]) => input.deliveryKey))).toEqual(new Set([`process-job:${jobId}`]));
+    expect(await restarted.get(jobId)).toMatchObject({
+      wake: {
+        state: "failed",
+        attempts: 0,
+        lastAttemptAt: null,
+      },
+      lastError: { message: expect.stringContaining("3 pre-dispatch checks") },
+    });
+    const durable = await store.get(jobId);
+    expect(durable?.wake.destinationUnavailableAttempts).toBe(3);
+    await restarted.activateWakes();
+    await Promise.resolve();
+    expect(restartedWake).toHaveBeenCalledTimes(2);
+  });
+
+  it("runs retention after terminal completion and wake settlement, making periodic orphan work reachable", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const applyRetention = vi.fn(async (settings: ProcessJobsSettings, now?: Date) => {
+      await baseStore.applyRetention(settings, now);
+    });
+    const store: ProcessJobStore = { ...baseStore, applyRetention };
+    const completion = deferred<ProcessJobProcessResult>();
+    const service = await startService(fixture, { store });
+    expect(applyRetention).toHaveBeenCalledOnce();
+    applyRetention.mockClear();
+    await service.activateWakes();
+
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    completion.resolve(processResult());
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "delivered");
+    await waitFor(() => applyRetention.mock.calls.length === 2);
+
+    expect(applyRetention).toHaveBeenCalledTimes(2);
+  });
+
+  it("reconciles committed retention state before propagating a post-commit failure", async () => {
+    const fixture = await createFixture({
+      retention: { ...PROCESS_JOBS_DEFAULTS.retention, maxAgeMs: 1 },
+    });
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    let failAfterCommit = false;
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async applyRetention(settings, now) {
+        await baseStore.applyRetention(settings, now);
+        if (failAfterCommit) throw new Error("periodic orphan reconciliation failed after commit");
+      },
+    };
+    const service = await startService(fixture, {
+      store,
+      now: () => new Date("2026-08-15T00:00:00.000Z"),
+    });
+    const jobId = "aeaeaeae-1111-4111-8111-111111111111";
+    await baseStore.mutate((records) => records.set(jobId, durableRecord(jobId, {
+      state: "succeeded",
+      completedAt: "2026-08-14T10:00:02.000Z",
+      exitCode: 0,
+      durationMs: 1_000,
+      stdoutRef: null,
+      stderrRef: null,
+      wake: {
+        state: "delivered",
+        attempts: 1,
+        deliveryKey: `process-job:${jobId}`,
+        lastAttemptAt: "2026-08-14T10:00:03.000Z",
+        destinationUnavailableAttempts: 0,
+      },
+      lastError: null,
+    })));
+    await expect(service.get(jobId)).resolves.toMatchObject({ jobId });
+    const retentionPort = service as unknown as {
+      applyRetention(): Promise<void>;
+      recordSnapshot: Map<string, DurableProcessJobRecord>;
+    };
+    expect(retentionPort.recordSnapshot.has(jobId)).toBe(true);
+
+    failAfterCommit = true;
+    await expect(retentionPort.applyRetention()).rejects.toThrow(
+      "periodic orphan reconciliation failed after commit",
+    );
+
+    expect(await baseStore.get(jobId)).toBeUndefined();
+    expect(retentionPort.recordSnapshot.has(jobId)).toBe(false);
+    expect(service.health).toMatchObject({ state: "degraded", failureOperation: "retention" });
   });
 
   it("degrades live health, closes admission, and releases the active slot when completion get rejects", async () => {
@@ -977,7 +1185,7 @@ describe("process job service", () => {
     expect(storedFirst).toMatchObject({ summary: "exec (values redacted)", preview: "" });
   });
 
-  it("reconciles one store record without recloning owned bounded snapshot entries", async () => {
+  it("reconciles one owned store record in place while preserving cache headroom", async () => {
     const fixture = await createFixture();
     const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
     const incoming = durableRecord("terminal-incoming", {
@@ -990,7 +1198,7 @@ describe("process job service", () => {
     const store: ProcessJobStore = {
       ...baseStore,
       async get(jobId) {
-        return jobId === incoming.jobId ? incoming : undefined;
+        return jobId === incoming.jobId ? structuredClone(incoming) : undefined;
       },
     };
     const service = await startService(fixture, { store });
@@ -1000,7 +1208,7 @@ describe("process job service", () => {
     const recordCeiling = PROCESS_JOBS_CAPS.retention.maxRecords
       + PROCESS_JOBS_CAPS.maxQueued
       + PROCESS_JOBS_CAPS.maxConcurrent;
-    const terminalRecords = Array.from({ length: recordCeiling - 1 }, (_, index) => {
+    const terminalRecords = Array.from({ length: recordCeiling - 2 }, (_, index) => {
       const jobId = `cached-terminal-${String(index).padStart(5, "0")}`;
       const admittedAt = new Date(Date.parse("2026-08-14T10:00:00.000Z") + index).toISOString();
       return durableRecord(jobId, {
@@ -1036,7 +1244,7 @@ describe("process job service", () => {
     incoming.preview = "mutated store preview";
     incoming.wake.attempts = 99;
     expect(ownedIncoming).toMatchObject({ preview: "", wake: { attempts: 0 } });
-    expect(snapshot.has(terminalRecords[0]!.jobId)).toBe(false);
+    expect(snapshot.has(terminalRecords[0]!.jobId)).toBe(true);
     expect(snapshot.has(active.jobId)).toBe(true);
     expect(snapshot.has(incoming.jobId)).toBe(true);
     const snapshotValues = [...snapshot.values()];
@@ -1044,7 +1252,7 @@ describe("process job service", () => {
     expect(snapshotValues.filter((record) => record.state === "succeeded")).toHaveLength(recordCeiling - 1);
   });
 
-  it("uses the active-preserving newest selector for incremental snapshot reconciliation", async () => {
+  it("does not grow a capped active-preserving snapshot for an uncached single read", async () => {
     const fixture = await createFixture();
     const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
     const recordCeiling = PROCESS_JOBS_CAPS.retention.maxRecords
@@ -1124,6 +1332,146 @@ describe("process job service", () => {
     expect(terminal.some((record) => record.jobId === "terminal-00000")).toBe(false);
     expect(terminal.every((record, index) =>
       index === 0 || terminal[index - 1]!.timestamps.admittedAt >= record.timestamps.admittedAt)).toBe(true);
+  });
+
+  it.each([1_000, 10_000])(
+    "keeps production service mutation work proportional with %i retained records",
+    async (retainedRecords) => {
+      const fixture = await createFixture({
+        retention: {
+          ...PROCESS_JOBS_DEFAULTS.retention,
+          maxRecords: PROCESS_JOBS_CAPS.retention.maxRecords,
+          maxAgeMs: PROCESS_JOBS_CAPS.retention.maxAgeMs,
+        },
+      });
+      await seedRetainedProcessJobStore(fixture, retainedRecords);
+      const workCounter = emptyStoreWorkCounter();
+      const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir, { workCounter });
+      const service = await startService(fixture, {
+        store,
+        now: () => new Date("2026-08-15T00:00:00.000Z"),
+      });
+      const mutationPort = service as unknown as {
+        storeMutate<T>(
+          operation: string,
+          mutate: (records: Map<string, DurableProcessJobRecord>) => T | Promise<T>,
+        ): Promise<T>;
+      };
+      const targetId = processJobScaleId(retainedRecords - 1);
+
+      resetStoreWorkCounter(workCounter);
+      const noOpStartedAt = performance.now();
+      await mutationPort.storeMutate("scale.noop", () => undefined);
+      const noOpDurationMs = performance.now() - noOpStartedAt;
+      expect(workCounter).toMatchObject({
+        mutationEntriesExamined: 0,
+        mutationRecordsValidated: 0,
+        mutationEntriesPersisted: 0,
+      });
+
+      resetStoreWorkCounter(workCounter);
+      const oneRecordStartedAt = performance.now();
+      await mutationPort.storeMutate("scale.one_record", (records) => {
+        const target = records.get(targetId);
+        if (target === undefined) throw new Error("missing retained service-scale record");
+        target.preview = "one touched record";
+      });
+      const oneRecordDurationMs = performance.now() - oneRecordStartedAt;
+      expect(workCounter).toMatchObject({
+        mutationEntriesExamined: 1,
+        mutationRecordsValidated: 1,
+        mutationEntriesPersisted: 1,
+      });
+      await expect(service.get(targetId)).resolves.toMatchObject({
+        output: { preview: "one touched record" },
+      });
+
+      if (process.env.MONO_AGENT_PROCESS_JOB_SCALE_REPORT === "1") {
+        console.info(
+          `[process-jobs-service-scale] records=${String(retainedRecords)}`
+          + ` noop_ms=${noOpDurationMs.toFixed(2)}`
+          + ` one_record_ms=${oneRecordDurationMs.toFixed(2)}`
+          + " noop_examined=0 noop_validated=0 noop_persisted=0"
+          + " one_examined=1 one_validated=1 one_persisted=1",
+        );
+      }
+
+      await service.stop();
+      await rm(fixture.cwd, { recursive: true, force: true });
+    },
+    120_000,
+  );
+
+  it("reconciles committed touched records and deletions without leaking rollback or whole-map overlays", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const records = Array.from({ length: 32 }, (_, index) => {
+      const jobId = processJobScaleId(index);
+      return durableRecord(jobId, {
+        state: "succeeded",
+        completedAt: new Date(Date.parse("2026-08-14T10:00:03.000Z") + index).toISOString(),
+        exitCode: 0,
+        durationMs: 2_000,
+        stdoutRef: null,
+        stderrRef: null,
+        wake: {
+          state: "delivered",
+          attempts: 1,
+          deliveryKey: `process-job:${jobId}`,
+          lastAttemptAt: "2026-08-14T10:00:04.000Z",
+          destinationUnavailableAttempts: 0,
+        },
+      });
+    });
+    await baseStore.mutate((draft) => {
+      for (const record of records) draft.set(record.jobId, record);
+    });
+    let failStoreCommit = false;
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async mutate(operation) {
+        return await baseStore.mutate(async (draft) => {
+          const result = await operation(draft);
+          if (failStoreCommit) throw new Error("simulated store commit failure");
+          return result;
+        });
+      },
+    };
+    const service = await startService(fixture, { store });
+    const mutationPort = service as unknown as {
+      storeMutate<T>(
+        operation: string,
+        mutate: (draft: Map<string, DurableProcessJobRecord>) => T | Promise<T>,
+      ): Promise<T>;
+      recordSnapshot: Map<string, DurableProcessJobRecord>;
+      completionOverlays: Map<string, ProcessJobProjection>;
+    };
+
+    const rollbackId = records[0]!.jobId;
+    await expect(mutationPort.storeMutate("test.rollback", (draft) => {
+      draft.get(rollbackId)!.preview = "must roll back";
+      throw new Error("abort service mutation");
+    })).rejects.toThrow("abort service mutation");
+    expect(service.health.state).toBe("ok");
+    expect(await baseStore.get(rollbackId)).toMatchObject({ preview: "" });
+    expect(mutationPort.recordSnapshot.get(rollbackId)).toMatchObject({ preview: "" });
+
+    const deletedId = records[1]!.jobId;
+    await mutationPort.storeMutate("test.delete", (draft) => draft.delete(deletedId));
+    expect(await baseStore.get(deletedId)).toBeUndefined();
+    expect(mutationPort.recordSnapshot.has(deletedId)).toBe(false);
+
+    const overlayId = records[2]!.jobId;
+    failStoreCommit = true;
+    await expect(mutationPort.storeMutate("test.failed_commit", (draft) => {
+      draft.get(overlayId)!.preview = "touched terminal overlay";
+    })).rejects.toThrow("simulated store commit failure");
+    expect(mutationPort.completionOverlays).toHaveLength(1);
+    expect(mutationPort.completionOverlays.has(overlayId)).toBe(true);
+    expect(await baseStore.get(overlayId)).toMatchObject({ preview: "" });
+    await expect(service.get(overlayId)).resolves.toMatchObject({
+      output: { preview: "touched terminal overlay" },
+    });
   });
 
   it("waits for an already-started wake before releasing service ownership", async () => {
@@ -1431,6 +1779,41 @@ describe("process job service", () => {
 });
 
 describe("process job store", () => {
+  it("treats the optional v1 destination-unavailable counter as zero and bounds new values", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "afafafaf-1111-4111-8111-111111111111";
+    const legacyV1 = durableRecord(jobId, {
+      state: "succeeded",
+      completedAt: "2026-08-14T10:00:02.000Z",
+      exitCode: 0,
+      durationMs: 1_000,
+      stdoutRef: null,
+      stderrRef: null,
+      wake: {
+        state: "pending",
+        attempts: 0,
+        deliveryKey: `process-job:${jobId}`,
+        lastAttemptAt: null,
+        retrySafe: false,
+      },
+      lastError: null,
+    });
+    await store.mutate((records) => records.set(jobId, legacyV1));
+    const reopened = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    expect((await reopened.get(jobId))?.wake.destinationUnavailableAttempts).toBeUndefined();
+
+    await reopened.mutate((records) => {
+      records.get(jobId)!.wake.destinationUnavailableAttempts = 1;
+    });
+    expect((await reopened.get(jobId))?.wake.destinationUnavailableAttempts).toBe(1);
+    await expect(reopened.mutate((records) => {
+      records.get(jobId)!.wake.destinationUnavailableAttempts =
+        PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS + 1;
+    })).rejects.toThrow("invalid durable record");
+    expect((await reopened.get(jobId))?.wake.destinationUnavailableAttempts).toBe(1);
+  });
+
   it("processes mutation work in proportion to touched records, not retained records", async () => {
     const fixture = await createFixture();
     const workCounter = emptyStoreWorkCounter();
@@ -1455,6 +1838,13 @@ describe("process job store", () => {
     });
     await store.mutate((draft) => {
       for (const record of records) draft.set(record.jobId, record);
+    });
+
+    await store.mutate((draft) => {
+      expect(draft.size).toBe(records.length);
+      // The lazy draft stores source/overrides outside the base Map slots;
+      // structuredClone(draft) is therefore intentionally not a snapshot API.
+      expect(structuredClone(draft)).toEqual(new Map());
     });
 
     resetStoreWorkCounter(workCounter);
@@ -1840,6 +2230,54 @@ async function createFixture(overrides: Partial<ProcessJobsSettings> = {}): Prom
     ...overrides,
   };
   return { cwd, settings };
+}
+
+async function seedRetainedProcessJobStore(
+  fixture: { readonly cwd: string; readonly settings: ProcessJobsSettings },
+  count: number,
+): Promise<void> {
+  const initialized = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+  const records = Array.from({ length: count }, (_, index) => {
+    const jobId = processJobScaleId(index);
+    const admittedAt = new Date(Date.parse("2026-08-14T10:00:00.000Z") + index).toISOString();
+    return durableRecord(jobId, {
+      state: "succeeded",
+      admittedAt,
+      completedAt: new Date(Date.parse(admittedAt) + 1).toISOString(),
+      exitCode: 0,
+      durationMs: 1,
+      stdoutRef: null,
+      stderrRef: null,
+      wake: {
+        state: "delivered",
+        attempts: 1,
+        deliveryKey: `process-job:${jobId}`,
+        lastAttemptAt: new Date(Date.parse(admittedAt) + 2).toISOString(),
+        destinationUnavailableAttempts: 0,
+      },
+    });
+  });
+  const batchSize = 256;
+  for (let offset = 0; offset < records.length; offset += batchSize) {
+    await Promise.all(records.slice(offset, offset + batchSize).map(async (record) => {
+      await writeFile(
+        join(initialized.recordsDir, `${record.jobId}.json`),
+        `${JSON.stringify(record)}\n`,
+        { mode: 0o600 },
+      );
+    }));
+  }
+  await writeFile(join(initialized.stateDir, PROCESS_JOB_MANIFEST_FILE), `${JSON.stringify({
+    schemaVersion: 1,
+    generation: "99999999-9999-4999-8999-999999999999",
+    updatedAt: "2026-08-15T00:00:00.000Z",
+    rollbackGuardRequired: true,
+    records: count,
+  })}\n`, { mode: 0o600 });
+}
+
+function processJobScaleId(index: number): string {
+  return `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`;
 }
 
 async function startService(
