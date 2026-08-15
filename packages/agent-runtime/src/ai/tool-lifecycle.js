@@ -315,12 +315,9 @@ function failureOutranksAbort(value) {
 
 /** @param {AbortSignal} signal */
 function cancellationFailureKind(signal) {
-  const reason = String(signal.reason?.kind || signal.reason?.code || signal.reason || "").toLocaleLowerCase();
-  if (reason.includes("shutdown")) return "cancelled_shutdown";
-  if (reason.includes("stale")) return "cancelled_stale";
-  if (reason.includes("signal")) return "cancelled_signal";
-  if (reason.includes("user")) return "cancelled_user";
-  return "cancelled";
+  return record(signal.reason) && signal.reason.channelUserCancel === true
+    ? "cancelled_user"
+    : "cancelled";
 }
 
 /** @param {any} value */

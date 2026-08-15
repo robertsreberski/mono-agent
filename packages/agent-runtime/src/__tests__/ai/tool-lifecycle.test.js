@@ -9,6 +9,14 @@ import { normalizeCodexItemEvent } from "../../ai/streaming/codex-events.js";
 import { toolResultEvent as normalizeOpenCodeResult } from "../../ai/streaming/opencode-events.js";
 import { normalizeCliEvent } from "../../ai/providers/claude-cli.js";
 
+function crossPackageChannelUserCancelReason(channel) {
+  return Object.assign(new Error(`Cancelled by ${channel} user.`), {
+    name: "ChannelUserCancelReason",
+    channelUserCancel: true,
+    channel,
+  });
+}
+
 describe("managed tool lifecycle classification", () => {
   it.each([
     [{ result: { details: { outcome: { status: "ok" } } } }, { state: "success" }],
@@ -301,8 +309,8 @@ describe("tool lifecycle persistence gate", () => {
 
   it.each([
     {
-      name: "classifies a generic provider failure as the outer user cancellation",
-      abortReason: { kind: "user" },
+      name: "classifies a generic provider failure as the branded outer channel-user cancellation",
+      abortReason: crossPackageChannelUserCancelReason("TUI"),
       lifecycle: { state: "error", failure_kind: "runtime_error", detail_code: "claude_sdk_tool_error" },
       expected: { state: "cancelled", failureKind: "cancelled_user", detailCode: "abort_signal" },
     },
@@ -325,32 +333,32 @@ describe("tool lifecycle persistence gate", () => {
       expected: { state: "error", failureKind: "usage_limit", detailCode: "quota" },
     },
     {
-      name: "keeps a cancellation-family failure coherent under an outer abort",
-      abortReason: { kind: "user" },
+      name: "does not confuse the branded Signal channel with process-signal provenance",
+      abortReason: crossPackageChannelUserCancelReason("Signal"),
       lifecycle: { state: "error", failure_kind: "cancelled_user", detail_code: "provider_cancelled" },
       expected: { state: "cancelled", failureKind: "cancelled_user", detailCode: "abort_signal" },
     },
     {
-      name: "uses generic host abort provenance for a trusted cancelled hint",
-      abortReason: "late cancellation",
+      name: "ignores user prose in a generic host abort reason for a trusted cancelled hint",
+      abortReason: new Error("Cancelled by user."),
       lifecycle: { state: "cancelled", failure_kind: "cancelled_user", detail_code: "pi_cancelled" },
       expected: { state: "cancelled", failureKind: "cancelled", detailCode: "pi_cancelled" },
     },
     {
-      name: "maps a trusted cancelled hint without a failure kind to cancellation",
-      abortReason: "late cancellation",
+      name: "does not treat undocumented structured reason kinds or codes as host provenance",
+      abortReason: { kind: "user", code: "coordinator_shutdown" },
       lifecycle: { state: "cancelled" },
       expected: { state: "cancelled", failureKind: "cancelled", detailCode: "cancelled" },
     },
     {
       name: "maps a trusted signal hint without a failure kind to process death",
-      abortReason: { kind: "signal" },
+      abortReason: "late cancellation",
       lifecycle: { state: "signal", detail_code: "SIGTERM" },
       expected: { state: "signal", failureKind: "process_death", detailCode: "SIGTERM" },
     },
     {
       name: "maps a trusted interrupted hint without a failure kind to process death",
-      abortReason: { kind: "shutdown" },
+      abortReason: "late cancellation",
       lifecycle: { state: "interrupted" },
       expected: { state: "interrupted", failureKind: "process_death", detailCode: "interrupted" },
     },

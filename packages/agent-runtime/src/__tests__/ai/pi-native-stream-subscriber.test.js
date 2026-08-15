@@ -227,16 +227,16 @@ describe("createStreamSubscriber — tool lifecycle + timing", () => {
 
   it.each([
     {
-      name: "user",
-      abortReason: { kind: "user" },
+      name: "branded channel-user",
+      abortReason: { channelUserCancel: true, channel: "TUI" },
       rawFailureKind: "cancelled_shutdown",
       expectedFailureKind: "cancelled_user",
     },
     {
-      name: "shutdown",
-      abortReason: { kind: "shutdown" },
+      name: "generic",
+      abortReason: new Error("Cancelled by user."),
       rawFailureKind: "cancelled_user",
-      expectedFailureKind: "cancelled_shutdown",
+      expectedFailureKind: "cancelled",
     },
   ])("derives $name cancellation provenance from the host signal on Pi's trusted-cancelled path", async ({
     abortReason,

@@ -102,7 +102,7 @@ actually supplies:
 | Bridge | Genuine tool-result distinctions | Conservative fallback |
 | --- | --- | --- |
 | Pi native | `success`, `error`, numeric `exit_nonzero`, structured `timeout`, structured `signal`, and abort-backed `cancelled`; host approval denial/expiry adds `rejected`/`timeout` | Unknown failed outcome → `error` |
-| Codex app-server | `success`, `error`, and numeric command `exit_nonzero` | Other failed item → `error`; no result before run end remains dangling for host closure/recovery |
+| Codex app-server | `success`, `error`, and numeric command `exit_nonzero`; shared host abort rules still apply | Other failed item → `error`; no result before run end remains dangling for host closure/recovery |
 | Claude SDK | `success` / `error`; shared host approval events can add `rejected`/`timeout` and an aborted error result can add `cancelled` | Undistinguished failed result → `error` |
 | Claude Code CLI | `success` / `error`; a Codex-shaped command item with an explicit non-zero code is `exit_nonzero`; shared approval/abort rules still apply | Undistinguished failed result → `error` |
 | OpenCode app-server | `success` / `error`; shared approval/abort rules still apply | Undistinguished failed result → `error` |
@@ -112,12 +112,24 @@ The runtime never derives a state from result prose. Structured timeout, signal,
 non-zero exit, completed success, and a specific non-runtime, non-cancellation
 provider failure win over a later outer abort. For a failed result with an
 aborted outer signal, cancellation wins over a provider bridge's otherwise
-generic `error` / `runtime_error` fallback. If the bridge already supplied a
-trusted `cancelled` state, that state is retained while its cancellation failure
-kind is derived from the host signal. A started call with no result is closed by
-the harness as `cancelled`, `error`, or `interrupted` from the run boundary;
-process-startup recovery specifically uses `interrupted` and does not rerun the
-tool.
+generic `error` / `runtime_error` fallback. Whenever that outer abort determines
+the result—including when the bridge supplied a trusted `cancelled` hint—the
+failure kind comes only from host abort provenance: the cross-package structural
+brand `channelUserCancel === true` maps to `cancelled_user`; every unbranded
+reason maps to generic `cancelled`. Error prose, channel names, reason `kind` or
+`code` strings, and raw provider result data never select host provenance.
+Without an outer abort, a trusted `cancelled` hint retains a known cancellation
+failure kind and otherwise falls back to `cancelled`.
+
+This outer-abort rule matches the harness run-level classifier. The standalone
+runtime keeps its zero-`@mono-agent/*` dependency boundary by recognizing the
+shared brand structurally rather than importing `@mono-agent/agent-contracts`.
+Its deliberate extra fidelity is tool-level only: a trusted bridge hint can
+retain a cancellation subtype when no outer abort exists. The run-level harness
+has no corresponding tool hint, so this does not widen a shared core contract.
+A started call with no result is closed by the harness as `cancelled`, `error`,
+or `interrupted` from the run boundary; process-startup recovery specifically
+uses `interrupted` and does not rerun the tool.
 
 Terminal states reuse the observability taxonomy: `success` has no failure kind;
 `signal` and `interrupted` map to `process_death`; `cancelled` preserves a known
