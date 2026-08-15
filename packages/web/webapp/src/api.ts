@@ -256,14 +256,6 @@ export const api = {
     );
   },
 
-  threadJobs: async (threadId: string, signal?: AbortSignal) => {
-    const result = await request<{ jobs: readonly ProcessJobProjection[] }>(
-      `/api/v1/threads/${encodeURIComponent(threadId)}/jobs`,
-      { signal },
-    );
-    return result.jobs;
-  },
-
   threadJob: async (threadId: string, jobId: string, signal?: AbortSignal) => {
     const result = await request<{ job: ProcessJobProjection }>(
       `/api/v1/threads/${encodeURIComponent(threadId)}/jobs/${encodeURIComponent(jobId)}`,

@@ -191,10 +191,6 @@ export function operatorFetch(options: {
       const interactionId = decodeURIComponent(url.slice(url.lastIndexOf("/") + 1));
       return Response.json({ ask: options.exactAsks?.[interactionId] ?? null });
     }
-    if (url.endsWith("/v1/jobs")) {
-      options.onJobsRequest?.(new Headers(init?.headers).get("authorization"));
-      return Response.json({ jobs: options.jobs ?? [] });
-    }
     const jobMatch = /\/v1\/jobs\/([^/?]+)$/u.exec(url);
     if (jobMatch?.[1] !== undefined) {
       const jobId = decodeURIComponent(jobMatch[1]);
