@@ -1778,7 +1778,7 @@ function startChild(
   mode: "close" | "hold" | "open-only" | "settle" = "close",
 ): ChildProcess {
   const fixture = fileURLToPath(new URL("./fixtures/tool-history-child.mjs", import.meta.url));
-  const child = spawn(process.execPath, [fixture, root, String(ceilingMs), mode], {
+  const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", fixture, root, String(ceilingMs), mode], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const buffers = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
