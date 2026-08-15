@@ -250,6 +250,13 @@ describe("startTuiAdapter", () => {
     let actionsEnabled = false;
     let degradedReason: string | undefined;
     const calls: unknown[] = [];
+    const replyPartOutcomes = [{
+      partIndex: 0,
+      partType: "attachment" as const,
+      status: "failed" as const,
+      code: "unsupported_destination" as const,
+      message: "Attachment reply parts are unsupported on this destination.",
+    }];
     const cron: CronOperatorService = {
       overview: () => ({
         generatedAt: "2026-08-14T10:00:00.000Z",
@@ -278,7 +285,9 @@ describe("startTuiAdapter", () => {
         orderedAt: "2026-08-14T10:00:00.000Z",
         sequence: 1,
         trigger: "manual",
-        status: "admitted",
+        status: "succeeded",
+        text: "  operator text\n",
+        replyPartOutcomes,
         eventCount: 0,
         events: [],
         eventsIncluded: 0,
@@ -365,6 +374,12 @@ describe("startTuiAdapter", () => {
       `${running.baseUrl}/v1/cron/jobs/${encodeURIComponent("daily:brief")}/runs?limit=5&before=cursor`,
       { headers },
     )).json()).resolves.toEqual({ runs: [], nextCursor: "older" });
+    await expect((await fetch(
+      `${running.baseUrl}/v1/cron/jobs/${encodeURIComponent("daily:brief")}/runs/${encodeURIComponent("run-one")}`,
+      { headers },
+    )).json()).resolves.toMatchObject({
+      run: { status: "succeeded", text: "  operator text\n", replyPartOutcomes },
+    });
     await expect((await fetch(`${running.baseUrl}/v1/cron/config-view`, { headers })).json()).resolves.toMatchObject({
       configView: { fields: [{ value: "set" }] },
     });

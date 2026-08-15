@@ -22,10 +22,13 @@ MCP Apps are not forwarded through the later notification hook and are never
 reported as delivered. The answer text stays byte-for-byte unchanged, while the
 run's `CronJobResult.replyPartOutcomes` retains one bounded sanitized terminal
 failure per part (`unsupported_destination` for attachments and apps). The
-scheduler and native-notification path log those outcomes. At most 20 records
-are emitted; an off-contract overflow becomes one explicit counted aggregate,
-and no path, URL, capability, integrity id, producer message, or payload byte is
-copied into it.
+config-first app persists them and writes one bounded outcome audit whether
+notification is enabled or disabled. It does not claim that notification was
+disabled, and the later notification attempt does not log the outcomes again.
+At most 20 records are emitted; an off-contract overflow becomes one explicit
+counted aggregate, and no path, URL, capability, integrity id, producer message,
+or payload byte is copied into it. Restarted operator/TUI/web reads project the
+same durable outcomes without changing the stored answer text.
 
 **Model-exhaustion failure notice.** For cron jobs only, `notify: true` also enables a short one-line error notice when the run fails because **all configured models failed** (`provider_unavailable_exhausted`). This notice is sent only when `notifyConversationId` is explicitly set; failure notices never infer a destination. They are delivered verbatim with no second LLM turn, best-effort, and rate-limited per job by `notifyFailureCooldownHours` (default `6`).
 

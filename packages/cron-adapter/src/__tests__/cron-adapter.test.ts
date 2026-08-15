@@ -43,12 +43,30 @@ function sensitiveReplyParts(): readonly AgentReplyPart[] {
   ];
 }
 
+function sparseReplyParts(length: number): readonly AgentReplyPart[] {
+  const parts = new Array<AgentReplyPart>(length);
+  parts[1] = {
+    type: "failure",
+    id: "known-sparse-one",
+    code: "artifact_missing",
+    message: "not copied",
+  };
+  if (length > 3) {
+    parts[length - 1] = {
+      type: "failure",
+      id: "known-sparse-last",
+      code: "artifact_expired",
+      message: "not copied",
+    };
+  }
+  return parts;
+}
+
 describe("Cron adapter", () => {
   it("keeps text verbatim and retains bounded sanitized failures for every unsupported rich part", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     const results: CronJobResult[] = [];
-    const warn = vi.fn();
     const parts = sensitiveReplyParts();
     const exactText = "  verbatim notification\n";
     const scheduler = startCronAdapter({
@@ -63,7 +81,6 @@ describe("Cron adapter", () => {
       jobs: [{ id: "verbatim", expression: "* * * * *", prompt: "run" }],
       now: () => new Date(Date.now()),
       onResult: (result) => { results.push(result); },
-      logger: { warn },
     });
     try {
       await vi.advanceTimersByTimeAsync(60_000);
@@ -86,10 +103,56 @@ describe("Cron adapter", () => {
       expect(serialized).not.toContain("private-report");
       expect(serialized).not.toContain("capability-secret");
       expect(serialized).not.toContain("deadbeef");
-      expect(warn).toHaveBeenCalledWith(
-        "Cron rich reply parts were not delivered by this destination.",
-        expect.objectContaining({ replyPartOutcomes: result.replyPartOutcomes }),
-      );
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("emits dense JSON-safe outcomes for sparse below- and above-cap reply arrays", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const results: CronJobResult[] = [];
+    const scheduler = startCronAdapter({
+      responder: {
+        async respond(request) {
+          return {
+            text: `  ${request.text}\n`,
+            parts: sparseReplyParts(request.text === "below" ? 4 : MAX_AGENT_REPLY_PARTS + 3),
+          };
+        },
+      },
+      jobs: [
+        { id: "below", expression: "* * * * *", prompt: "below" },
+        { id: "above", expression: "* * * * *", prompt: "above" },
+      ],
+      now: () => new Date(Date.now()),
+      onResult: (result) => { results.push(result); },
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect.poll(() => results.length).toBe(2);
+      for (const [jobId, expectedLength, affectedPartCount] of [
+        ["below", 4, undefined],
+        ["above", MAX_AGENT_REPLY_PARTS, 4],
+      ] as const) {
+        const result = results.find((candidate) => candidate.jobId === jobId);
+        expect(result?.kind).toBe("succeeded");
+        if (result?.kind !== "succeeded") throw new Error(`Expected ${jobId} to succeed.`);
+        expect(result.text).toBe(`  ${jobId}\n`);
+        expect(result.replyPartOutcomes).toHaveLength(expectedLength);
+        expect(result.replyPartOutcomes?.map((outcome) => outcome.partIndex))
+          .toEqual(Array.from({ length: expectedLength }, (_, index) => index));
+        if (affectedPartCount === undefined) {
+          expect(result.replyPartOutcomes?.at(-1)).not.toHaveProperty("affectedPartCount");
+        } else {
+          expect(result.replyPartOutcomes?.at(-1)).toMatchObject({ affectedPartCount });
+        }
+        const serialized = JSON.stringify(result.replyPartOutcomes);
+        expect(serialized).not.toContain("null");
+        expect(JSON.parse(serialized)).toEqual(result.replyPartOutcomes);
+        expect(result.replyPartOutcomes!.length).toBeLessThanOrEqual(MAX_AGENT_REPLY_PARTS);
+      }
     } finally {
       scheduler.stop();
       vi.useRealTimers();
@@ -385,7 +448,7 @@ describe("Cron adapter", () => {
       ],
       now: () => new Date(Date.now()),
       resolveNotifyFallbackConversationId,
-      onResult: (result) => {
+      onResult: (result: CronJobResult) => {
         results.push(result);
       },
       logger: { warn },
@@ -791,6 +854,7 @@ describe("Cron adapter", () => {
     // must still classify it as cancelled, not succeeded.
     const gates: Array<() => void> = [];
     let started = 0;
+    const lateText = "  done (ignored abort)\n";
     const responder: AgentResponder = {
       async respond() {
         started += 1;
@@ -799,17 +863,17 @@ describe("Cron adapter", () => {
         await new Promise<void>((resolve) => {
           gates.push(resolve);
         });
-        return { text: "done (ignored abort)" };
+        return { text: lateText, parts: sparseReplyParts(MAX_AGENT_REPLY_PARTS + 3) };
       },
     };
-    const results: Array<{ kind: string; scheduledAt?: string }> = [];
+    const results: CronJobResult[] = [];
 
     const options = {
       responder,
       overlap: "replace" as const,
       jobs: [{ id: "slow", expression: "* * * * *", prompt: "slow work" }],
       now: () => new Date(Date.now()),
-      onResult: (result: { kind: string; scheduledAt?: string }) => {
+      onResult: (result: CronJobResult) => {
         results.push(result);
       },
     };
@@ -843,6 +907,25 @@ describe("Cron adapter", () => {
         (r) => r.kind === "succeeded" && r.scheduledAt === "1970-01-01T00:00:00.000Z",
       ),
     ).toBe(false);
+    const firstTerminal = results.filter((result) =>
+      result.scheduledAt === "1970-01-01T00:00:00.000Z"
+      && ["succeeded", "failed", "cancelled"].includes(result.kind),
+    );
+    expect(firstTerminal).toHaveLength(1);
+    expect(firstTerminal[0]).toMatchObject({
+      kind: "cancelled",
+      error: "Cron job cancelled (responder resolved after abort).",
+      replyPartOutcomes: expect.arrayContaining([
+        expect.objectContaining({ partIndex: 0, partType: "unknown" }),
+        expect.objectContaining({ partIndex: 1, partType: "failure", code: "artifact_missing" }),
+      ]),
+    });
+    if (firstTerminal[0]?.kind !== "cancelled") throw new Error("Expected the replaced run to be cancelled.");
+    expect(firstTerminal[0]).not.toHaveProperty("text");
+    expect(firstTerminal[0].replyPartOutcomes).toHaveLength(MAX_AGENT_REPLY_PARTS);
+    expect(firstTerminal[0].replyPartOutcomes?.at(-1)).toMatchObject({ affectedPartCount: 4 });
+    expect(JSON.stringify(firstTerminal[0].replyPartOutcomes)).not.toContain("null");
+    expect(JSON.stringify(firstTerminal[0])).not.toContain(lateText.trim());
 
     // Drain the queued (newest) firing and let it complete normally.
     await expect.poll(() => started).toBe(2);

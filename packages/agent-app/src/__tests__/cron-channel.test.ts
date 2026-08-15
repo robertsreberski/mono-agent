@@ -295,12 +295,23 @@ describe("cron channel driver — native notification delivery", () => {
     expect(deliveredText).not.toContain("Do not call tools");
   });
 
-  it("keeps native notification text exact and logs retained rich-part failures", async () => {
+  it.each([
+    ["notify disabled", false, { delivered: true }, 0, 1],
+    ["notify enabled and delivered", true, { delivered: true }, 1, 1],
+    ["notify enabled but delivery failed", true, { delivered: false, reason: "blocked" }, 1, 2],
+  ] as const)("keeps one truthful bounded rich-part audit when %s", async (
+    _label,
+    notify,
+    delivery,
+    expectedDeliveries,
+    expectedWarnings,
+  ) => {
+    const info = vi.fn();
     const warn = vi.fn();
-    const notifyDestination = vi.fn(async (_conversationId: string, _text: string) => ({ delivered: true }));
+    const notifyDestination = vi.fn(async (_conversationId: string, _text: string) => delivery);
     const captured = await startCapturingCron({
       ...baseInput,
-      logger: { warn },
+      logger: { info, warn },
       notifyDestination,
       config: {
         jobs: [{
@@ -309,8 +320,8 @@ describe("cron channel driver — native notification delivery", () => {
           timezone: "UTC",
           prompt: "p",
           enabled: true,
-          notify: true,
-          notifyConversationId: "telegram:42",
+          notify,
+          ...(notify ? { notifyConversationId: "telegram:42" } : {}),
         }],
       },
     });
@@ -327,16 +338,29 @@ describe("cron channel driver — native notification delivery", () => {
 
     await captured.onResult?.(result);
 
-    await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledOnce());
-    expect(notifyDestination.mock.calls[0]?.[1]).toBe("  byte-for-byte\n");
-    expect(warn).toHaveBeenCalledWith(
-      "Cron rich reply parts were not delivered; native notification carries answer text only.",
+    await vi.waitFor(() => {
+      expect(notifyDestination).toHaveBeenCalledTimes(expectedDeliveries);
+      expect(warn).toHaveBeenCalledTimes(expectedWarnings);
+    });
+    if (notify) expect(notifyDestination.mock.calls[0]?.[1]).toBe("  byte-for-byte\n");
+    const outcomeWarnings = warn.mock.calls.filter((call) =>
+      call[1] !== null
+      && typeof call[1] === "object"
+      && "replyPartOutcomes" in call[1],
+    );
+    expect(outcomeWarnings).toEqual([[
+      "Cron rich reply delivery outcomes recorded.",
       {
         jobId: "j",
         cronRunId: "cron:j:2026-01-01T00:00:00.000Z",
         replyPartOutcomes: result.replyPartOutcomes,
       },
-    );
+    ]]);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("native notification carries");
+    expect(info).toHaveBeenCalledOnce();
+    expect(info.mock.calls[0]?.[0]).toBe("Cron job finished.");
+    expect(info.mock.calls[0]?.[1]).toMatchObject({ result: { text: "  byte-for-byte\n" } });
+    expect(info.mock.calls[0]?.[1]).not.toHaveProperty("result.replyPartOutcomes");
   });
 
   it("adds stable success and failure delivery keys only for web:new", async () => {

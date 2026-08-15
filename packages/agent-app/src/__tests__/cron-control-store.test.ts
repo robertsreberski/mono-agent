@@ -7,6 +7,7 @@ import { Worker } from "node:worker_threads";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { AgentStreamEvent } from "@mono-agent/agent-contracts";
 import {
   startCronAdapter,
   type CronFiringIdentity,
@@ -348,6 +349,250 @@ describe("cron control store", () => {
     database.close();
   });
 
+  it("sanitizes, persists, projects, and reopens successful and cancelled reply-part outcomes", async () => {
+    const { cwd, store } = await fixture();
+    const requestHash = cronActionRequestHash({ action: "run_now", jobId: "digest" });
+    const manual = store.runNowAction({
+      jobId: "digest",
+      idempotencyKey: "rich-outcome-run",
+      requestHash,
+      observedAt: "2026-08-14T10:00:00.000Z",
+    });
+    const sensitive = "/private/report.csv?token=secret";
+    const hostileOutcomes = new Array<unknown>(23);
+    hostileOutcomes[0] = {
+      partIndex: 999,
+      partType: "attachment",
+      status: "failed",
+      code: "artifact_missing",
+      message: sensitive,
+      localPath: sensitive,
+    };
+    store.recordResult({
+      ...succeeded(manual.firing, "  exact durable text\n"),
+      replyPartOutcomes: hostileOutcomes,
+    } as CronJobResult);
+
+    const cancelled = store.allocateFiring({
+      jobId: "digest",
+      scheduledAt: "2026-08-14T10:01:00.000Z",
+      observedAt: "2026-08-14T10:01:00.000Z",
+      trigger: "scheduled",
+    });
+    const cancelledOutcomes = [{
+      partIndex: 0,
+      partType: "failure" as const,
+      status: "failed" as const,
+      code: "artifact_missing" as const,
+      message: "Reply part failed before destination delivery.",
+    }];
+    store.recordResult({
+      kind: "cancelled",
+      cronRunId: cancelled.runId,
+      jobId: cancelled.jobId,
+      scheduledAt: cancelled.scheduledAt,
+      orderedAt: cancelled.orderedAt,
+      sequence: cancelled.sequence,
+      trigger: cancelled.trigger,
+      startedAt: cancelled.orderedAt,
+      completedAt: cancelled.orderedAt,
+      error: "Cron job cancelled (responder resolved after abort).",
+      replyPartOutcomes: cancelledOutcomes,
+    });
+
+    const succeededSummary = store.getRunSummary(manual.firing.runId);
+    expect(succeededSummary).toMatchObject({
+      status: "succeeded",
+      text: "  exact durable text\n",
+      replyPartOutcomes: expect.arrayContaining([
+        expect.objectContaining({ partIndex: 0, partType: "attachment", code: "unsupported_destination" }),
+      ]),
+    });
+    expect(succeededSummary?.replyPartOutcomes).toHaveLength(20);
+    expect(succeededSummary?.replyPartOutcomes?.at(-1)).toMatchObject({ partIndex: 19, affectedPartCount: 4 });
+    expect(JSON.stringify(succeededSummary?.replyPartOutcomes)).not.toContain("null");
+    expect(JSON.stringify(succeededSummary)).not.toContain(sensitive);
+    expect(store.getRun(manual.firing.runId)?.replyPartOutcomes).toEqual(succeededSummary?.replyPartOutcomes);
+    expect(store.runs("digest", 10).runs).toEqual([
+      expect.objectContaining({ status: "cancelled", replyPartOutcomes: cancelledOutcomes }),
+      expect.objectContaining({ status: "succeeded", replyPartOutcomes: succeededSummary?.replyPartOutcomes }),
+    ]);
+    expect(store.lastRun("digest")).toMatchObject({
+      status: "cancelled",
+      error: "Cron job cancelled (responder resolved after abort).",
+      replyPartOutcomes: cancelledOutcomes,
+    });
+    expect(store.replayRunNowAction({
+      jobId: "digest",
+      idempotencyKey: "rich-outcome-run",
+      requestHash,
+    })).toMatchObject({ replyPartOutcomes: succeededSummary?.replyPartOutcomes });
+
+    await store.close();
+    stores.splice(stores.indexOf(store), 1);
+    const database = new DatabaseSync(resolveCronControlPaths(await realpath(cwd)).database, { readOnly: true });
+    const persisted = database.prepare(
+      "SELECT reply_part_outcomes_json FROM cron_runs WHERE run_id = ?",
+    ).get(manual.firing.runId) as { reply_part_outcomes_json: string };
+    database.close();
+    expect(JSON.parse(persisted.reply_part_outcomes_json)).toMatchObject({
+      schemaVersion: 1,
+      replyPartOutcomes: succeededSummary?.replyPartOutcomes,
+    });
+    expect(persisted.reply_part_outcomes_json).not.toContain(sensitive);
+
+    const reopened = await openCronControlStore(cwd);
+    stores.push(reopened);
+    expect(reopened.getRun(manual.firing.runId)).toMatchObject({
+      text: "  exact durable text\n",
+      replyPartOutcomes: succeededSummary?.replyPartOutcomes,
+    });
+    expect(reopened.lastRun("digest")).toMatchObject({
+      status: "cancelled",
+      replyPartOutcomes: cancelledOutcomes,
+    });
+    expect(reopened.runs("digest", 10).runs).toEqual([
+      expect.objectContaining({ status: "cancelled", replyPartOutcomes: cancelledOutcomes }),
+      expect.objectContaining({ status: "succeeded", replyPartOutcomes: succeededSummary?.replyPartOutcomes }),
+    ]);
+    expect(reopened.replayRunNowAction({
+      jobId: "digest",
+      idempotencyKey: "rich-outcome-run",
+      requestHash,
+    })).toMatchObject({ replyPartOutcomes: succeededSummary?.replyPartOutcomes });
+  });
+
+  it("upgrades schema-1 stores without the additive outcome column and keeps older rows readable", async () => {
+    const { cwd, store } = await fixture();
+    const firing = store.allocateFiring({
+      jobId: "legacy",
+      scheduledAt: "2026-08-14T10:00:00.000Z",
+      observedAt: "2026-08-14T10:00:00.000Z",
+      trigger: "scheduled",
+    });
+    store.recordResult(succeeded(firing, "legacy text"));
+    const databasePath = store.paths.database;
+    await store.close();
+    stores.splice(stores.indexOf(store), 1);
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec("ALTER TABLE cron_runs DROP COLUMN reply_part_outcomes_json");
+    legacy.close();
+
+    expect(await inspectCronControlStore(cwd)).toMatchObject({ status: "ready" });
+    const reopened = await openCronControlStore(cwd);
+    stores.push(reopened);
+    expect(reopened.getRun(firing.runId)).toMatchObject({ status: "succeeded", text: "legacy text" });
+    expect(reopened.getRun(firing.runId)).not.toHaveProperty("replyPartOutcomes");
+    const upgraded = new DatabaseSync(reopened.paths.database, { readOnly: true });
+    expect((upgraded.prepare("PRAGMA table_info(cron_runs)").all() as Array<{ name: string }>)
+      .some((column) => column.name === "reply_part_outcomes_json")).toBe(true);
+    upgraded.close();
+  });
+
+  it("rejects corrupt and oversized persisted outcome envelopes before projection", async () => {
+    const { cwd, store } = await fixture();
+    const corrupt = store.allocateFiring({
+      jobId: "corrupt-outcomes",
+      scheduledAt: "2026-08-14T10:00:00.000Z",
+      observedAt: "2026-08-14T10:00:00.000Z",
+      trigger: "scheduled",
+    });
+    const oversized = store.allocateFiring({
+      jobId: "oversized-outcomes",
+      scheduledAt: "2026-08-14T10:01:00.000Z",
+      observedAt: "2026-08-14T10:01:00.000Z",
+      trigger: "scheduled",
+    });
+    store.recordResult(succeeded(corrupt));
+    store.recordResult(succeeded(oversized));
+    const databasePath = store.paths.database;
+    await store.close();
+    stores.splice(stores.indexOf(store), 1);
+
+    const database = new DatabaseSync(databasePath);
+    database.prepare("UPDATE cron_runs SET reply_part_outcomes_json = ? WHERE run_id = ?")
+      .run("{not-json", corrupt.runId);
+    database.prepare("UPDATE cron_runs SET reply_part_outcomes_json = ? WHERE run_id = ?")
+      .run(`${" ".repeat(20_000)}{\"schemaVersion\":1,\"replyPartOutcomes\":[]}`, oversized.runId);
+    database.close();
+
+    const reopened = await openCronControlStore(cwd);
+    stores.push(reopened);
+    expect(() => reopened.getRun(corrupt.runId)).toThrowError(
+      expect.objectContaining({ kind: "corrupt" }),
+    );
+    expect(() => reopened.getRunSummary(oversized.runId)).toThrowError(
+      expect.objectContaining({ kind: "corrupt" }),
+    );
+  });
+
+  it("keeps the first terminal result immutable against late results and stream events", async () => {
+    const { store } = await fixture();
+    const firing = store.allocateFiring({
+      jobId: "first-terminal-wins",
+      scheduledAt: "2026-08-14T10:00:00.000Z",
+      observedAt: "2026-08-14T10:00:00.000Z",
+      trigger: "scheduled",
+    });
+    store.markStarted(firing, firing.orderedAt);
+    store.appendEvent(firing, { type: "runtime_warning", message: "before terminal" });
+    const firstOutcomes = [{
+      partIndex: 0,
+      partType: "failure" as const,
+      status: "failed" as const,
+      code: "artifact_missing" as const,
+      message: "Reply part failed before destination delivery.",
+    }];
+    store.recordResult({
+      kind: "cancelled",
+      cronRunId: firing.runId,
+      jobId: firing.jobId,
+      scheduledAt: firing.scheduledAt,
+      orderedAt: firing.orderedAt,
+      sequence: firing.sequence,
+      trigger: firing.trigger,
+      startedAt: firing.orderedAt,
+      completedAt: firing.orderedAt,
+      error: "first terminal cancellation",
+      replyPartOutcomes: firstOutcomes,
+    });
+
+    const lateSensitive = "/private/late.txt?token=secret";
+    store.recordResult({
+      ...succeeded(firing, lateSensitive),
+      replyPartOutcomes: [{
+        partIndex: 99,
+        partType: "attachment",
+        status: "failed",
+        code: "artifact_missing",
+        message: lateSensitive,
+      }],
+    } as CronJobResult);
+    let lateEventSerialized = false;
+    const lateEvent = { type: "runtime_warning" } as Record<string, unknown>;
+    Object.defineProperty(lateEvent, "message", {
+      enumerable: true,
+      get() {
+        lateEventSerialized = true;
+        return lateSensitive;
+      },
+    });
+    expect(() => store.appendEvent(firing, lateEvent as unknown as AgentStreamEvent)).not.toThrow();
+
+    const projected = store.getRun(firing.runId);
+    expect(projected).toMatchObject({
+      status: "cancelled",
+      error: "first terminal cancellation",
+      eventCount: 1,
+      events: [{ type: "runtime_warning", message: "before terminal" }],
+      replyPartOutcomes: firstOutcomes,
+    });
+    expect(projected).not.toHaveProperty("text");
+    expect(JSON.stringify(projected)).not.toContain(lateSensitive);
+    expect(lateEventSerialized).toBe(false);
+  });
+
   it("allocates one durable sequence and immutable orderedAt for every visible firing state", async () => {
     const { store } = await fixture();
     const active = store.allocateFiring({
@@ -548,7 +793,17 @@ describe("cron control store", () => {
       requestHash,
       observedAt: "2026-08-14T10:00:00.000Z",
     });
-    store.recordResult(succeeded(manual.firing, "Manual terminal summary"));
+    const replayOutcomes = [{
+      partIndex: 0,
+      partType: "attachment" as const,
+      status: "failed" as const,
+      code: "unsupported_destination" as const,
+      message: "Attachment reply parts are unsupported on this destination.",
+    }];
+    store.recordResult({
+      ...succeeded(manual.firing, "Manual terminal summary"),
+      replyPartOutcomes: replayOutcomes,
+    } as CronJobResult);
 
     for (let index = 1; index <= 500; index += 1) {
       const at = new Date(Date.parse("2026-08-14T10:00:00.000Z") + index * 1_000).toISOString();
@@ -565,6 +820,7 @@ describe("cron control store", () => {
       runId: manual.firing.runId,
       status: "succeeded",
       text: "Manual terminal summary",
+      replyPartOutcomes: replayOutcomes,
     });
     expect(store.runNowAction({
       jobId: "digest",

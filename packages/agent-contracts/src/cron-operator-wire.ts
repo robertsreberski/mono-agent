@@ -1,4 +1,8 @@
 import type { AgentStreamEvent } from "./index.js";
+import {
+  isAgentReplyPartDeliveryOutcomes,
+  type AgentReplyPartDeliveryOutcome,
+} from "./reply-part-outcomes.js";
 
 /** Producer ceiling; consumers retain a separate 1 MiB defensive read cap. */
 export const MAX_CRON_OPERATOR_RESPONSE_BYTES = 768 * 1024;
@@ -59,6 +63,8 @@ export interface CronOperatorRunBase {
   readonly blockedByRunId?: string;
   readonly blockedByTrigger?: CronOperatorRunTrigger;
   readonly queueDepth?: number;
+  /** Bounded sanitized terminal outcomes for rich parts the cron destination could not deliver. */
+  readonly replyPartOutcomes?: readonly AgentReplyPartDeliveryOutcome[];
   readonly eventCount: number;
   readonly fieldsTruncated?: readonly CronOperatorRunTruncatedField[];
   readonly eventsTruncated?: true;
@@ -196,7 +202,7 @@ export function parseCronOperatorRunPage(value: unknown): CronOperatorRunPage {
 const RUN_BASE_KEYS = [
   "projection", "runId", "jobId", "scheduledAt", "orderedAt", "sequence", "trigger", "status",
   "startedAt", "completedAt", "artifactRunId", "text", "error", "failureKind", "blockedByRunId",
-  "blockedByTrigger", "queueDepth", "eventCount", "fieldsTruncated", "eventsTruncated",
+  "blockedByTrigger", "queueDepth", "replyPartOutcomes", "eventCount", "fieldsTruncated", "eventsTruncated",
 ] as const;
 
 function parseRunBase(
@@ -239,6 +245,7 @@ function parseRunBase(
       && run.blockedByTrigger !== "scheduled"
       && run.blockedByTrigger !== "manual")
     || (run.queueDepth !== undefined && (!Number.isSafeInteger(run.queueDepth) || Number(run.queueDepth) < 0))
+    || (run.replyPartOutcomes !== undefined && !isAgentReplyPartDeliveryOutcomes(run.replyPartOutcomes))
     || (run.eventsTruncated !== undefined && run.eventsTruncated !== true)) fail();
   const fields = run.fieldsTruncated;
   const allowedFields: readonly string[] = ["artifactRunId", "error", "failureKind", "text"];
@@ -246,7 +253,15 @@ function parseRunBase(
     && (!Array.isArray(fields)
       || new Set(fields).size !== fields.length
       || fields.some((field) => !allowedFields.includes(String(field))))) fail();
-  return run;
+  return {
+    ...run,
+    ...(run.replyPartOutcomes === undefined
+      ? {}
+      : {
+          replyPartOutcomes: (run.replyPartOutcomes as readonly AgentReplyPartDeliveryOutcome[])
+            .map((outcome) => ({ ...outcome })),
+        }),
+  };
 }
 
 function parseCronOperatorEvent(value: unknown): AgentStreamEvent {

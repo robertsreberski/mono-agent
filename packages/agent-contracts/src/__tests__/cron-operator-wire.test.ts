@@ -76,6 +76,35 @@ describe("cron operator wire contract", () => {
     }))).toThrowError(/invalid cron operator/iu);
   });
 
+  it("accepts only the exact bounded reply-part outcome machine schema and returns an independent copy", () => {
+    const outcome = {
+      partIndex: 0,
+      partType: "attachment",
+      status: "failed",
+      code: "unsupported_destination",
+      message: "Attachment reply parts are unsupported on this destination.",
+    };
+    const replyPartOutcomes = [outcome];
+    const input = summary({ replyPartOutcomes });
+    const parsed = parseCronOperatorRunSummary(input);
+
+    expect(parsed.replyPartOutcomes).toEqual([outcome]);
+    expect(parsed.replyPartOutcomes).not.toBe(replyPartOutcomes);
+    expect(parsed.replyPartOutcomes?.[0]).not.toBe(outcome);
+
+    for (const invalid of [
+      [{ ...outcome, code: "attacker_code" }],
+      [{ ...outcome, message: "/private/token" }],
+      [{ ...outcome, status: "succeeded" }],
+      [{ ...outcome, secret: "token" }],
+      [null],
+      Array.from({ length: 21 }, () => outcome),
+    ]) {
+      expect(() => parseCronOperatorRunSummary(summary({ replyPartOutcomes: invalid })))
+        .toThrowError(/invalid cron operator/iu);
+    }
+  });
+
   it("enforces collection and UTF-8 field ceilings at the parser boundary", () => {
     expect(() => parseCronOperatorRunPage({
       runs: Array.from({ length: MAX_CRON_OPERATOR_RUN_PAGE + 1 }, () => summary()),

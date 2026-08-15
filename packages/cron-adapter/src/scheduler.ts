@@ -745,13 +745,6 @@ function startRun(
           ...(response.metadata === undefined ? {} : { metadata: response.metadata }),
           ...(replyPartOutcomes === undefined ? {} : { replyPartOutcomes }),
         };
-        if (replyPartOutcomes !== undefined) {
-          options.logger?.warn?.("Cron rich reply parts were not delivered by this destination.", {
-            jobId: job.id,
-            cronRunId: firing.runId,
-            replyPartOutcomes,
-          });
-        }
         await emitResult(options, result);
       });
     })

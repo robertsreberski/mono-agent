@@ -26,6 +26,14 @@ const cronSummary = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+const replyPartOutcomes = [{
+  partIndex: 0,
+  partType: "attachment",
+  status: "failed",
+  code: "unsupported_destination",
+  message: "Attachment reply parts are unsupported on this destination.",
+}];
+
 describe("OperatorClient", () => {
   it("parses compact cron pages and bounded detail through distinct encoded routes", async () => {
     const requests: string[] = [];
@@ -35,10 +43,11 @@ describe("OperatorClient", () => {
         const url = String(input);
         requests.push(url);
         return url.includes("/runs?")
-          ? Response.json({ runs: [cronSummary()], nextCursor: "older" })
+          ? Response.json({ runs: [cronSummary({ replyPartOutcomes })], nextCursor: "older" })
           : Response.json({
               run: cronSummary({
                 projection: "detail",
+                replyPartOutcomes,
                 events: [{ type: "runtime_warning", message: "bounded" }],
                 eventsIncluded: 1,
               }),
@@ -47,12 +56,13 @@ describe("OperatorClient", () => {
     });
 
     await expect(client.cronRuns("daily:brief", { limit: 100 })).resolves.toMatchObject({
-      runs: [{ projection: "summary", eventCount: 1 }],
+      runs: [{ projection: "summary", eventCount: 1, replyPartOutcomes }],
       nextCursor: "older",
     });
     await expect(client.cronRun("daily:brief", cronSummary().runId)).resolves.toMatchObject({
       projection: "detail",
       eventsIncluded: 1,
+      replyPartOutcomes,
     });
     expect(requests).toEqual([
       "http://127.0.0.1:1234/gui/v1/cron/jobs/daily%3Abrief/runs?limit=100",

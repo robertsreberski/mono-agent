@@ -895,7 +895,11 @@ export {
   frameFeedingMessageStream,
 } from "./stream-wire.js";
 export type { AgentStreamWireFrame } from "./stream-wire.js";
-export { unsupportedReplyPartDeliveryOutcomes } from "./reply-part-outcomes.js";
+export {
+  isAgentReplyPartDeliveryOutcomes,
+  sanitizeReplyPartDeliveryOutcomes,
+  unsupportedReplyPartDeliveryOutcomes,
+} from "./reply-part-outcomes.js";
 export type {
   AgentReplyPartDeliveryOutcome,
   AgentReplyPartDeliveryType,

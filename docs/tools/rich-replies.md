@@ -57,15 +57,65 @@ cannot safely receive its MCP server.
 | OpenAI-compatible API | Keeps assistant `content` byte-for-byte unchanged and returns sanitized failures in `mono_agent.reply_part_outcomes`. | Non-stream JSON and a metadata-only SSE chunk use the same bounded shape. |
 | Webhook | Keeps `text` byte-for-byte unchanged and returns sanitized `replyPartOutcomes`. | Sync responses, async status reads, and result callbacks retain the outcomes. |
 | A2A | Keeps answer text byte-for-byte unchanged and adds an A2A structured data `Part` to the final artifact. | Attachments and MCP Apps become explicit `unsupported_destination` failures; no file bytes or private references cross A2A. |
-| Cron / verbatim notification | Keeps answer text byte-for-byte unchanged and retains sanitized `replyPartOutcomes` on `CronJobResult`. | The scheduler and app log the failures; native notification carries text only and never claims a file was sent. |
+| Cron / verbatim notification | Keeps answer text byte-for-byte unchanged and retains sanitized `replyPartOutcomes` on `CronJobResult`. | The app records one outcome audit for the run; native notification carries text only and never claims a file was sent. |
 
-Machine-facing outcome records contain only the source position, broad part
-type, terminal status, stable failure code, and a fixed safe message. They never
-copy part ids, filenames, local or host-only URLs, capability values, integrity
-ids, producer error messages, or payload bytes. The list shares the 20-part
-ceiling. If an off-contract responder exceeds it, the twentieth record is a
-bounded aggregate with the number of remaining parts, so overflow is explicit
-rather than silently discarded.
+## Machine delivery outcome wire contract
+
+Every machine adapter uses the shared
+`AgentReplyPartDeliveryOutcome` sanitizer. It emits a dense array with at most
+20 entries and this exact ordinary record shape:
+
+```json
+{
+  "partIndex": 0,
+  "partType": "attachment",
+  "status": "failed",
+  "code": "unsupported_destination",
+  "message": "Attachment reply parts are unsupported on this destination."
+}
+```
+
+- `partIndex` is rewritten to the dense zero-based output position.
+- `partType` is exactly `attachment`, `mcp_app`, `failure`, or `unknown`.
+- `status` is the terminal literal `failed`.
+- `code` is exactly one of `app_capability_mismatch`,
+  `app_connection_closed`, `app_resource_invalid`, `artifact_expired`,
+  `artifact_integrity_failed`, `artifact_missing`,
+  `artifact_publish_failed`, `artifact_too_large`, `reply_part_too_large`, or
+  `unsupported_destination`.
+- `message` is reconstructed from the accepted type/code. Producer text is
+  never copied.
+- `affectedPartCount` is forbidden on ordinary records. Only the final overflow
+  record has it: index 19, `partType: "unknown"`,
+  `code: "reply_part_too_large"`, and the fixed message "Additional reply parts
+  exceeded the bounded delivery outcome limit."
+
+Sparse holes, `undefined`, `null`, primitives, accessor-backed values, failed
+descriptor reads, extra fields, unknown types/codes, and non-terminal statuses
+cannot place unsafe values or literal JSON `null` into the array. Each malformed
+entry becomes an independent fixed `unknown` failure, so it cannot mutate or
+erase valid siblings. Non-array and empty inputs omit the field. An off-contract
+array above 20 entries becomes the first 19 individual records plus the counted
+aggregate; its count is the full source length minus 19.
+
+The response locations are exact and additive:
+
+| Producer or reader | Exact envelope / projection |
+| --- | --- |
+| OpenAI-compatible non-stream | Top-level `mono_agent.reply_part_outcomes` on the `chat.completion`; `choices[].message.content` is unchanged. |
+| OpenAI-compatible stream | One metadata-only `chat.completion.chunk` carries `mono_agent.reply_part_outcomes` before the ordinary `finish_reason: "stop"` chunk and `[DONE]`. |
+| Webhook | Top-level `replyPartOutcomes` on successful sync JSON, terminal async status JSON, programmatic `getStatus()`, and the result callback. Store, callback, and each read receive independent arrays. |
+| A2A | A final artifact data `Part` with media type `application/vnd.mono-agent.reply-part-outcomes+json` and value `{ "schemaVersion": 1, "replyPartOutcomes": [...] }`, beside the unchanged text `Part`. |
+| Cron adapter | Optional top-level `CronJobResult.replyPartOutcomes`; a cancelled responder that resolves late may retain sanitized part outcomes but never its late text. |
+| Cron durable/operator projection | Private SQLite column `cron_runs.reply_part_outcomes_json` stores `{ "schemaVersion": 1, "replyPartOutcomes": [...] }`. Legacy `NULL` rows mean absent outcomes. Summary/detail `CronOperatorRun.replyPartOutcomes` then crosses the operator/TUI HTTP lane and is strictly reparsed by the web client after restart. |
+
+The version applies to the A2A and SQLite envelopes. Direct OpenAI, webhook,
+cron result, operator, and web projections are unversioned additive fields and
+must be feature-detected. No outcome envelope copies part ids, filenames, local
+or host-only URLs, capability values, integrity ids, producer error messages,
+or payload bytes. Cron retention and run-now idempotency keep the same sanitized
+projection, and the first terminal cron state cannot be overwritten by a late
+callback or event.
 
 Slack and Telegram remove a file part from textual fallback only after the
 platform confirms its native upload. The deduplication key binds the file

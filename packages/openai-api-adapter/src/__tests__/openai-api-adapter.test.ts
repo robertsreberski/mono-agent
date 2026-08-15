@@ -50,6 +50,44 @@ function sensitiveReplyParts(): readonly AgentReplyPart[] {
   ];
 }
 
+function sparseReplyParts(length: number): readonly AgentReplyPart[] {
+  const parts = new Array<AgentReplyPart>(length);
+  parts[1] = {
+    type: "failure",
+    id: "known-sparse-one",
+    code: "artifact_missing",
+    message: "not copied",
+  };
+  if (length > 3) {
+    parts[length - 1] = {
+      type: "failure",
+      id: "known-sparse-last",
+      code: "artifact_expired",
+      message: "not copied",
+    };
+  }
+  return parts;
+}
+
+function expectSparseOutcomeWire(
+  outcomes: Array<Record<string, unknown>> | undefined,
+  expectedLength: number,
+  affectedPartCount: number | undefined,
+): void {
+  expect(outcomes).toHaveLength(expectedLength);
+  expect(outcomes?.map((outcome) => outcome.partIndex))
+    .toEqual(Array.from({ length: expectedLength }, (_, index) => index));
+  if (affectedPartCount === undefined) {
+    expect(outcomes?.at(-1)).not.toHaveProperty("affectedPartCount");
+  } else {
+    expect(outcomes?.at(-1)).toMatchObject({ affectedPartCount });
+  }
+  const serialized = JSON.stringify(outcomes);
+  expect(serialized).not.toContain("null");
+  expect(JSON.parse(serialized)).toEqual(outcomes);
+  expect(outcomes?.length).toBeLessThanOrEqual(MAX_AGENT_REPLY_PARTS);
+}
+
 describe("OpenAI API adapter", () => {
   it("keeps sync/stream content exact and emits bounded sanitized mono-agent part failures", async () => {
     const warn = vi.fn();
@@ -123,6 +161,65 @@ describe("OpenAI API adapter", () => {
         expect(Buffer.byteLength(`data: ${payload}\n\n`, "utf8")).toBeLessThanOrEqual(MAX_TOOL_SSE_FRAME_BYTES);
       }
       expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("round-trips sparse below-cap JSON and above-cap SSE outcomes without null holes", async () => {
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      responder: {
+        async respond(request) {
+          const label = request.text.endsWith("below") ? "below" : "above";
+          return {
+            text: `  ${label}\n`,
+            parts: sparseReplyParts(label === "below" ? 4 : MAX_AGENT_REPLY_PARTS + 3),
+          };
+        },
+      },
+    });
+    try {
+      const sync = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "agent", messages: [{ role: "user", content: "below" }] }),
+      });
+      const syncBody = await sync.json() as {
+        choices: Array<{ message: { content: string } }>;
+        mono_agent: { reply_part_outcomes: Array<Record<string, unknown>> };
+      };
+      expect(syncBody.choices[0]?.message.content).toBe("  below\n");
+      expectSparseOutcomeWire(syncBody.mono_agent.reply_part_outcomes, 4, undefined);
+
+      const streamed = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "agent",
+          stream: true,
+          messages: [{ role: "user", content: "above" }],
+        }),
+      });
+      const payloads = sseDataPayloads(await streamed.text());
+      const chunks = payloads
+        .filter((payload) => payload !== "[DONE]")
+        .map((payload) => JSON.parse(payload) as {
+          choices?: Array<{ delta?: { content?: string }; finish_reason?: string | null }>;
+          mono_agent?: { reply_part_outcomes?: Array<Record<string, unknown>> };
+        });
+      const outcomesChunkIndex = chunks.findIndex((chunk) => chunk.mono_agent?.reply_part_outcomes !== undefined);
+      const stopChunkIndex = chunks.findIndex((chunk) =>
+        chunk.choices?.some((choice) => choice.finish_reason === "stop") === true,
+      );
+      expect(outcomesChunkIndex).toBeGreaterThanOrEqual(0);
+      expect(outcomesChunkIndex).toBeLessThan(stopChunkIndex);
+      const streamedOutcomes = chunks[outcomesChunkIndex]?.mono_agent?.reply_part_outcomes;
+      expectSparseOutcomeWire(streamedOutcomes, MAX_AGENT_REPLY_PARTS, 4);
+      expect(chunks.flatMap((chunk) => chunk.choices ?? [])
+        .map((choice) => choice.delta?.content ?? "").join("")).toBe("  above\n");
+      expect(payloads.at(-1)).toBe("[DONE]");
     } finally {
       await server.stop();
     }

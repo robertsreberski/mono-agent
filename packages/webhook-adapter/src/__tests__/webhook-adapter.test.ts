@@ -47,6 +47,25 @@ function sensitiveReplyParts(): readonly AgentReplyPart[] {
   ];
 }
 
+function sparseReplyParts(length: number): readonly AgentReplyPart[] {
+  const parts = new Array<AgentReplyPart>(length);
+  parts[1] = {
+    type: "failure",
+    id: "known-sparse-one",
+    code: "artifact_missing",
+    message: "not copied",
+  };
+  if (length > 3) {
+    parts[length - 1] = {
+      type: "failure",
+      id: "known-sparse-last",
+      code: "artifact_expired",
+      message: "not copied",
+    };
+  }
+  return parts;
+}
+
 describe("Webhook adapter", () => {
   it("keeps sync/status text exact and exposes bounded sanitized rich-part failures", async () => {
     const warn = vi.fn();
@@ -104,6 +123,52 @@ describe("Webhook adapter", () => {
         expect(serialized).not.toContain("deadbeef");
       }
       expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("round-trips dense JSON-safe webhook outcomes for sparse below- and above-cap arrays", async () => {
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      responder: {
+        async respond(request) {
+          return {
+            text: `  ${request.text}\n`,
+            parts: sparseReplyParts(request.text === "below" ? 4 : MAX_AGENT_REPLY_PARTS + 3),
+          };
+        },
+      },
+    });
+    try {
+      for (const [text, expectedLength, affectedPartCount] of [
+        ["below", 4, undefined],
+        ["above", MAX_AGENT_REPLY_PARTS, 4],
+      ] as const) {
+        const response = await fetch(server.invokeUrl, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text, conversationId: `sparse-${text}`, mode: "sync" }),
+        });
+        const body = await response.json() as {
+          text: string;
+          replyPartOutcomes: Array<Record<string, unknown>>;
+        };
+        expect(body.text).toBe(`  ${text}\n`);
+        expect(body.replyPartOutcomes).toHaveLength(expectedLength);
+        expect(body.replyPartOutcomes.map((outcome) => outcome.partIndex))
+          .toEqual(Array.from({ length: expectedLength }, (_, index) => index));
+        if (affectedPartCount === undefined) {
+          expect(body.replyPartOutcomes.at(-1)).not.toHaveProperty("affectedPartCount");
+        } else {
+          expect(body.replyPartOutcomes.at(-1)).toMatchObject({ affectedPartCount });
+        }
+        const serialized = JSON.stringify(body.replyPartOutcomes);
+        expect(serialized).not.toContain("null");
+        expect(JSON.parse(serialized)).toEqual(body.replyPartOutcomes);
+        expect(body.replyPartOutcomes.length).toBeLessThanOrEqual(MAX_AGENT_REPLY_PARTS);
+      }
     } finally {
       await server.stop();
     }
@@ -794,11 +859,16 @@ describe("Webhook adapter", () => {
 
   it("logs and contains rejected async onResult hooks", async () => {
     const logger = { warn: vi.fn() };
+    const exactText = "  callback-safe text\n";
     const server = await startWebhookAdapter({
       host: "127.0.0.1",
       port: 0,
       path: "/webhook/invoke",
-      responder: echoResponder(),
+      responder: {
+        async respond() {
+          return { text: exactText, parts: sensitiveReplyParts().slice(0, 3) };
+        },
+      },
       logger,
       onResult: async () => {
         await Promise.resolve();
@@ -810,8 +880,20 @@ describe("Webhook adapter", () => {
       const response = await invokeSync(server.url, "payload", "conversation-hook");
 
       expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({ status: "succeeded", text: "echo: payload" });
-      await expect.poll(() => logger.warn.mock.calls.length).toBe(1);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body).toMatchObject({
+        status: "succeeded",
+        text: exactText,
+        replyPartOutcomes: [
+          expect.objectContaining({ partIndex: 0, partType: "attachment" }),
+          expect.objectContaining({ partIndex: 1, partType: "mcp_app" }),
+          expect.objectContaining({ partIndex: 2, partType: "failure", code: "artifact_missing" }),
+        ],
+      });
+      expect(JSON.stringify(body)).not.toContain("private-report");
+      await expect.poll(() => logger.warn.mock.calls.filter(
+        (call) => call[0] === "Webhook onResult callback failed.",
+      ).length).toBe(1);
       expect(logger.warn).toHaveBeenCalledWith(
         "Webhook onResult callback failed.",
         expect.objectContaining({
@@ -819,6 +901,9 @@ describe("Webhook adapter", () => {
           error: "async hook failure",
         }),
       );
+      expect(logger.warn.mock.calls.filter(
+        (call) => call[0] === "Webhook rich reply parts were not delivered by this destination.",
+      )).toHaveLength(1);
     } finally {
       await server.stop();
     }
@@ -827,6 +912,7 @@ describe("Webhook adapter", () => {
   it("accepts async invocations and exposes in-memory request status", async () => {
     let finish!: () => void;
     let onResultStatus: unknown;
+    let callbackOutcomes: readonly unknown[] | undefined;
     const responder: AgentResponder = {
       async respond(_request, stream) {
         await new Promise<void>((resolve) => {
@@ -834,6 +920,7 @@ describe("Webhook adapter", () => {
         });
         await stream.append("async done");
         return {
+          parts: sensitiveReplyParts().slice(0, 3),
           metadata: {
             summary: {
               status: "succeeded",
@@ -857,6 +944,12 @@ describe("Webhook adapter", () => {
       responder,
       onResult: (status) => {
         onResultStatus = structuredClone(status);
+        callbackOutcomes = status.replyPartOutcomes;
+        if (status.replyPartOutcomes !== undefined) {
+          const mutable = status.replyPartOutcomes as unknown as Array<{ message: string }>;
+          mutable[0]!.message = "mutation through onResult";
+          mutable.push({ message: "injected callback outcome" });
+        }
         if (status.status === "succeeded") {
           const custom = status.metadata?.custom;
           if (custom !== null && typeof custom === "object" && !Array.isArray(custom)) {
@@ -913,6 +1006,16 @@ describe("Webhook adapter", () => {
       });
 
       expect(statusBody).not.toHaveProperty("metadata.summary.systemPrompt");
+      expect(statusBody).toHaveProperty(
+        "replyPartOutcomes.0.message",
+        "Attachment reply parts are unsupported on this destination.",
+      );
+      expect(statusBody).toHaveProperty(
+        "replyPartOutcomes.1.message",
+        "MCP App reply parts are unsupported on this destination.",
+      );
+      expect(statusBody).toHaveProperty("replyPartOutcomes.length", 3);
+      expect(JSON.stringify(statusBody)).not.toContain("private-report");
       expect(onResultStatus).toMatchObject({
         status: "succeeded",
         metadata: { summary: { runId: "async-run" }, custom: { retained: true } },
@@ -921,7 +1024,14 @@ describe("Webhook adapter", () => {
 
       const programmaticStatus = server.getStatus(acceptedBody.requestId);
       expect(programmaticStatus).not.toHaveProperty("metadata.summary.systemPrompt");
+      expect(programmaticStatus?.replyPartOutcomes).not.toBe(callbackOutcomes);
+      expect(programmaticStatus).toHaveProperty(
+        "replyPartOutcomes.0.message",
+        "Attachment reply parts are unsupported on this destination.",
+      );
       if (programmaticStatus?.status === "succeeded") {
+        const mutableOutcomes = programmaticStatus.replyPartOutcomes as Array<{ message: string }> | undefined;
+        if (mutableOutcomes !== undefined) mutableOutcomes[0]!.message = "mutation through getStatus";
         const summary = programmaticStatus.metadata?.summary;
         if (summary !== null && typeof summary === "object" && !Array.isArray(summary)) {
           (summary as Record<string, unknown>).systemPrompt = "mutation through getStatus";
@@ -945,6 +1055,15 @@ describe("Webhook adapter", () => {
           custom: { retained: true },
         },
       });
+      expect(afterMutationBody).toHaveProperty(
+        "replyPartOutcomes.0.message",
+        "Attachment reply parts are unsupported on this destination.",
+      );
+      expect(afterMutationBody).toHaveProperty(
+        "replyPartOutcomes.1.message",
+        "MCP App reply parts are unsupported on this destination.",
+      );
+      expect(afterMutationBody).toHaveProperty("replyPartOutcomes.length", 3);
       expect(server.getStatus(acceptedBody.requestId)).toMatchObject({
         metadata: {
           summary: { cost: { totalUsd: 0.01 } },
@@ -1903,27 +2022,34 @@ describe("Webhook adapter", () => {
   });
 
   it("reports cancelled when a responder resolves after the run was aborted", async () => {
-    let resolveResult: ((status: { status: string }) => void) | undefined;
-    const resultPromise = new Promise<{ status: string }>((resolve) => { resolveResult = resolve; });
+    let resolveResult: ((status: Record<string, unknown>) => void) | undefined;
+    const resultPromise = new Promise<Record<string, unknown>>((resolve) => { resolveResult = resolve; });
     let abortObserved!: () => void;
     const abortSeen = new Promise<void>((resolve) => { abortObserved = resolve; });
+    let requestId: string | undefined;
+    const lateText = "  ignored the abort\n";
     // A responder that observes the abort but RESOLVES successfully anyway — the
     // success path must still classify the run as cancelled, not succeeded.
     const responder: AgentResponder = {
       async respond(request) {
+        const webhookMetadata = request.metadata?.webhook as { readonly requestId?: unknown } | undefined;
+        if (typeof webhookMetadata?.requestId !== "string") throw new Error("Expected webhook request id.");
+        requestId = webhookMetadata.requestId;
         await new Promise<void>((resolve) => {
           request.abortSignal.addEventListener("abort", () => { abortObserved(); resolve(); }, { once: true });
         });
-        return { text: "ignored the abort" };
+        return { text: lateText, parts: sparseReplyParts(MAX_AGENT_REPLY_PARTS + 3) };
       },
     };
+
+    const onResult = vi.fn((status: Record<string, unknown>) => { resolveResult?.(status); });
 
     const server = await startWebhookAdapter({
       host: "127.0.0.1",
       port: 0,
       path: "/webhook/invoke",
       responder,
-      onResult: (status) => { resolveResult?.(status as { status: string }); },
+      onResult: (status) => { onResult(status as unknown as Record<string, unknown>); },
     });
 
     try {
@@ -1942,7 +2068,23 @@ describe("Webhook adapter", () => {
       await settled;
 
       const result = await resultPromise;
-      expect(result.status).toBe("cancelled");
+      expect(result).toMatchObject({
+        status: "cancelled",
+        error: "Webhook run was aborted before completion.",
+        replyPartOutcomes: expect.arrayContaining([
+          expect.objectContaining({ partIndex: 0, partType: "unknown" }),
+          expect.objectContaining({ partIndex: 1, partType: "failure", code: "artifact_missing" }),
+        ]),
+      });
+      expect(result).not.toHaveProperty("text");
+      const outcomes = result.replyPartOutcomes as Array<Record<string, unknown>>;
+      expect(outcomes).toHaveLength(MAX_AGENT_REPLY_PARTS);
+      expect(outcomes.at(-1)).toMatchObject({ partIndex: 19, affectedPartCount: 4 });
+      expect(JSON.stringify(outcomes)).not.toContain("null");
+      expect(JSON.stringify(result)).not.toContain(lateText.trim());
+      expect(onResult).toHaveBeenCalledOnce();
+      expect(requestId).toBeDefined();
+      expect(server.getStatus(requestId!)).toEqual(result);
       await expect.poll(async () => server.activeRequestCount).toBe(0);
     } finally {
       await server.stop();

@@ -198,14 +198,17 @@ export function createCronChannelDriver(
         onResult: async (result) => {
           store?.recordResult(result);
           const level = result.kind === "failed" ? "error" : result.kind === "skipped" ? "warn" : "info";
-          input.logger?.[level]?.("Cron job finished.", { result });
-          if (result.kind === "succeeded" && result.replyPartOutcomes !== undefined) {
+          const replyPartOutcomes = "replyPartOutcomes" in result ? result.replyPartOutcomes : undefined;
+          const loggedResult = { ...result } as Record<string, unknown>;
+          delete loggedResult.replyPartOutcomes;
+          input.logger?.[level]?.("Cron job finished.", { result: loggedResult });
+          if (replyPartOutcomes !== undefined) {
             input.logger?.warn?.(
-              "Cron rich reply parts were not delivered; native notification carries answer text only.",
+              "Cron rich reply delivery outcomes recorded.",
               {
                 jobId: result.jobId,
                 cronRunId: result.cronRunId,
-                replyPartOutcomes: result.replyPartOutcomes,
+                replyPartOutcomes,
               },
             );
           }

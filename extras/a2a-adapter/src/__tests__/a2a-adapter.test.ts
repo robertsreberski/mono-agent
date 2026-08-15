@@ -64,6 +64,37 @@ function sensitiveReplyParts(): readonly AgentReplyPart[] {
   ];
 }
 
+function sparseReplyParts(length: number): readonly AgentReplyPart[] {
+  const parts = new Array<AgentReplyPart>(length);
+  parts[1] = {
+    type: "attachment",
+    id: "artifact",
+    reference: { scheme: "mono-agent-artifact", id: "artifact" },
+    name: "artifact.txt",
+    mediaType: "text/plain",
+    sizeBytes: 8,
+    integrityId: "sha256:artifact",
+  };
+  return parts;
+}
+
+function replyPartOutcomesFromA2AResponse(rawResponse: unknown): Array<Record<string, unknown>> {
+  const envelope = rawResponse as {
+    result?: {
+      task?: {
+        artifacts?: Array<{ parts?: Array<{ text?: string; data?: Record<string, unknown> }> }>;
+      };
+    };
+    task?: {
+      artifacts?: Array<{ parts?: Array<{ text?: string; data?: Record<string, unknown> }> }>;
+    };
+  };
+  const task = envelope.result?.task ?? envelope.task;
+  const data = task?.artifacts?.[0]?.parts?.find((part) => part.data)?.data;
+  expect(data).toEqual(expect.objectContaining({ schemaVersion: 1 }));
+  return data?.replyPartOutcomes as Array<Record<string, unknown>>;
+}
+
 describe("A2A adapter contract", () => {
   it("keeps text exact and replays bounded sanitized structured part failures idempotently", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "mono-agent-a2a-rich-parts-"));
@@ -152,6 +183,78 @@ describe("A2A adapter contract", () => {
     } finally {
       await provider.stop();
       await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("emits dense bounded A2A data-part outcomes for sparse reply arrays", async () => {
+    const exactText = {
+      below: "  below sparse text\n",
+      above: "  above sparse text\n",
+    } as const;
+    const rawResponses: unknown[] = [];
+    const provider = await startA2AProvider({
+      host: "127.0.0.1",
+      port: 0,
+      responder: {
+        async respond(request) {
+          const kind = request.text === "below" ? "below" : "above";
+          return {
+            text: exactText[kind],
+            parts: sparseReplyParts(kind === "below" ? 4 : 23),
+          };
+        },
+      },
+      agent: { name: "Sparse", description: "Sparse reply parts", version: "0.1.0" },
+      skill: { id: "sparse", name: "Sparse", description: "Sparse reply parts", tags: ["sparse"] },
+    });
+
+    try {
+      const fetchImpl: typeof fetch = async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        const response = await fetch(request);
+        if (request.method === "POST") {
+          rawResponses.push(await response.clone().json());
+        }
+        return response;
+      };
+
+      await expect(sendA2AMessage({ agentUrl: provider.agentCardUrl, fetchImpl, text: "below" }))
+        .resolves.toMatchObject({ text: "below sparse text" });
+      await expect(sendA2AMessage({ agentUrl: provider.agentCardUrl, fetchImpl, text: "above" }))
+        .resolves.toMatchObject({ text: "above sparse text" });
+
+      expect(rawResponses).toHaveLength(2);
+      const belowOutcomes = replyPartOutcomesFromA2AResponse(rawResponses[0]);
+      const aboveOutcomes = replyPartOutcomesFromA2AResponse(rawResponses[1]);
+
+      expect(belowOutcomes).toHaveLength(4);
+      expect(belowOutcomes.map((outcome) => outcome.partIndex)).toEqual([0, 1, 2, 3]);
+      expect(aboveOutcomes).toHaveLength(MAX_AGENT_REPLY_PARTS);
+      expect(aboveOutcomes.slice(0, -1).map((outcome) => outcome.partIndex)).toEqual(
+        Array.from({ length: MAX_AGENT_REPLY_PARTS - 1 }, (_, index) => index),
+      );
+      expect(aboveOutcomes.at(-1)).toEqual(expect.objectContaining({
+        partIndex: MAX_AGENT_REPLY_PARTS - 1,
+        code: "reply_part_too_large",
+        affectedPartCount: 4,
+      }));
+
+      for (const [index, rawResponse] of rawResponses.entries()) {
+        const outcomes = replyPartOutcomesFromA2AResponse(rawResponse);
+        const serialized = JSON.stringify(outcomes);
+        expect(serialized).not.toContain("null");
+        expect(JSON.parse(serialized)).toEqual(outcomes);
+        const envelope = rawResponse as {
+          result?: { task?: { artifacts?: Array<{ parts?: Array<{ text?: string }> }> } };
+          task?: { artifacts?: Array<{ parts?: Array<{ text?: string }> }> };
+        };
+        const task = envelope.result?.task ?? envelope.task;
+        expect(task?.artifacts?.[0]?.parts?.[0]?.text).toBe(
+          index === 0 ? exactText.below : exactText.above,
+        );
+      }
+    } finally {
+      await provider.stop();
     }
   });
 
@@ -532,6 +635,8 @@ describe("A2A adapter contract", () => {
   it("cancels active responder work through A2A task cancellation", async () => {
     let observedAbort = false;
     let observedAbortReason: unknown;
+    const warn = vi.fn();
+    const lateSensitive = "  /private/late-a2a.txt?token=secret\n";
     const responder: AgentResponder = {
       async respond(request) {
         await new Promise<void>((resolve) => {
@@ -541,7 +646,10 @@ describe("A2A adapter contract", () => {
             resolve();
           }, { once: true });
         });
-        return { text: "should not complete" };
+        return {
+          text: lateSensitive,
+          parts: sparseReplyParts(MAX_AGENT_REPLY_PARTS + 3),
+        };
       },
     };
 
@@ -549,6 +657,7 @@ describe("A2A adapter contract", () => {
       host: "127.0.0.1",
       port: 0,
       responder,
+      logger: { warn },
       agent: {
         name: "Cancelable Mono",
         description: "Can cancel",
@@ -567,9 +676,17 @@ describe("A2A adapter contract", () => {
       const task = await consumer.sendMessage({ text: "wait", returnImmediately: true });
       const taskId = task.metadata.a2a.taskId;
       expect(taskId).toEqual(expect.any(String));
-      await consumer.cancelTask(taskId as string);
+      const cancelled = await consumer.cancelTask(taskId as string);
       expect(observedAbort).toBe(true);
       expect(isChannelUserCancelReason(observedAbortReason)).toBe(true);
+      expect(cancelled).toMatchObject({
+        metadata: { a2a: { taskId, state: "TASK_STATE_CANCELED" } },
+      });
+      expect(JSON.stringify(cancelled)).not.toContain(lateSensitive.trim());
+      expect(JSON.stringify(cancelled)).not.toContain("replyPartOutcomes");
+      expect(warn.mock.calls.filter(
+        (call) => call[0] === "A2A rich reply parts were not delivered by this destination.",
+      )).toHaveLength(0);
     } finally {
       await provider.stop();
     }
