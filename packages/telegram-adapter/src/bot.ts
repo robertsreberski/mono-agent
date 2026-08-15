@@ -11,6 +11,8 @@ import {
   type ChannelAskSnapshot,
   type ChannelAskSubmission,
   type ChannelAskSubmissionResult,
+  type ProcessJobProjection,
+  type ProcessJobState,
 } from "@mono-agent/agent-contracts";
 import { run, type RunnerHandle, type RunOptions } from "@grammyjs/runner";
 import { Bot, type Context } from "grammy";
@@ -75,6 +77,9 @@ const REACTION_ERROR = "👎";
 // bot cannot grow it unbounded. A double-tap on an old question past this many
 // distinct answered questions would simply re-run (acceptable, very rare).
 const CALLBACK_DEDUPE_MAX = 200;
+const PROCESS_JOB_MESSAGE_REF_LIMIT = 256;
+const PROCESS_JOB_SURFACE_MAX_CHARS = 3_500;
+const PROCESS_JOB_WAKE_DELIVERY_METADATA = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");
 const RUNTIME_CALLBACK_PREFIX = "ma:";
 const MODEL_CALLBACK_PREFIX = `${RUNTIME_CALLBACK_PREFIX}m:`;
 const EFFORT_CALLBACK_PREFIX = `${RUNTIME_CALLBACK_PREFIX}e:`;
@@ -87,6 +92,15 @@ interface TelegramAskPresentation {
   readonly messageId: number;
   activeQuestionIndex: number;
   readonly selectedOptionIds: Set<string>;
+}
+
+interface TelegramProcessJobMessageRef {
+  readonly chatId: TelegramChatId;
+  readonly messageId: number;
+  readonly originConversationId: string;
+  readonly rank: number;
+  readonly terminal: boolean;
+  readonly terminalFallback: boolean;
 }
 
 function resolveTelegramAskAnswer(
@@ -246,6 +260,13 @@ function isSerialQueueFullError(error: unknown): error is SerialQueueFullError {
 export interface TelegramNotifyResult {
   readonly delivered: boolean;
   readonly reason?: string;
+  readonly code?: string;
+  readonly retryable?: boolean;
+  readonly ambiguous?: boolean;
+  readonly deliveryId?: string;
+  readonly channelId?: "telegram";
+  readonly historyRecorded?: boolean;
+  readonly historyErrorCode?: string;
 }
 
 /**
@@ -257,6 +278,8 @@ export interface TelegramNotifyResult {
  */
 export interface TelegramNotifyOptions {
   readonly verbatim?: boolean;
+  /** Stable host delivery identity carried out of band for process-job wake binding. */
+  readonly deliveryKey?: string;
   /**
    * Post the notification silently (`disable_notification`) so it arrives without
    * a push sound. Set by the channel driver during configured quiet hours.
@@ -459,6 +482,12 @@ export interface TelegramBotController {
    * call) and records it to history. Used by cron/webhook nudges.
    */
   notify(chatId: TelegramChatId, text: string, options?: TelegramNotifyOptions): Promise<TelegramNotifyResult>;
+  /** Host-only lifecycle card update; never invokes the responder. */
+  updateProcessJob(
+    chatId: TelegramChatId,
+    projection: ProcessJobProjection,
+    options?: { readonly silent?: boolean },
+  ): Promise<TelegramNotifyResult>;
   /**
    * Post (or edit in place) a short tool-progress status line, keyed per
    * `(chat, key)`. A terminal state (`done`/`failed`) writes the final text and
@@ -478,6 +507,8 @@ export interface TelegramBotController {
    * assert the over-cap busy path does not leak an eagerly-created controller.
    */
   activeControllerCount(): number;
+  /** Test/health seam proving process-job message refs remain bounded. */
+  processJobMessageRefCount(): number;
 }
 
 type TelegramControlCommand = "start" | "help" | "cancel" | "new";
@@ -788,6 +819,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   // bound concurrent same-chat downloads. /cancel stays out-of-band (it never
   // enters this queue, so a queued turn can never block cancellation).
   const admissionQueues = new Map<string, SerialQueue>();
+  const processJobMessages = new Map<string, TelegramProcessJobMessageRef>();
+  const processJobUpdateTails = new Map<string, Promise<TelegramNotifyResult>>();
+  const processJobTerminalFallbacks = new Set<string>();
   // Set in stop() so a pending album timer (or a late update) cannot fire a turn
   // after the channel was torn down. Mirrors the slack/whatsapp adapters.
   let stopped = false;
@@ -1981,6 +2015,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     controller: AbortController,
     silent: boolean,
     includeRuntimeSelection: boolean,
+    deliveryKey?: string,
   ): Promise<TelegramNotifyResult> {
     try {
       if (controller.signal.aborted) {
@@ -2004,6 +2039,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         text,
         abortSignal: controller.signal,
         metadata: {
+          ...(deliveryKey === undefined
+            ? {}
+            : { [PROCESS_JOB_WAKE_DELIVERY_METADATA]: deliveryKey }),
           telegram: telegramMetadata,
         },
       };
@@ -2099,6 +2137,155 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
    * chat through the same per-chat admission queue as inbound messages, so it
    * serializes with live traffic on the same conversation.
    */
+  function updateProcessJob(
+    chatId: TelegramChatId,
+    projection: ProcessJobProjection,
+    updateOptions?: { readonly silent?: boolean },
+  ): Promise<TelegramNotifyResult> {
+    const previous: Promise<TelegramNotifyResult> = processJobUpdateTails.get(projection.jobId)
+      ?? Promise.resolve({ delivered: true });
+    let task!: Promise<TelegramNotifyResult>;
+    task = previous.catch(() => ({ delivered: false })).then(async (): Promise<TelegramNotifyResult> => {
+      const expectedConversationId = `telegram:${String(chatId)}`;
+      const originConversationId = processJobBaseConversationId(projection.origin.conversationId);
+      if (projection.origin.channel !== "telegram" || originConversationId !== expectedConversationId) {
+        return {
+          delivered: false,
+          reason: "process-job origin does not match the Telegram destination",
+          code: "process_job_origin_mismatch",
+          retryable: false,
+        };
+      }
+      const rank = processJobStateRank(projection.state);
+      const terminal = isTerminalProcessJobState(projection.state);
+      const current = processJobMessages.get(projection.jobId);
+      if (current !== undefined) {
+        if (current.originConversationId !== originConversationId || String(current.chatId) !== String(chatId)) {
+          return {
+            delivered: false,
+            reason: "process-job message reference belongs to another Telegram destination",
+            code: "process_job_origin_mismatch",
+            retryable: false,
+          };
+        }
+        if (current.terminal || rank <= current.rank) {
+          rememberProcessJobMessage(projection.jobId, current);
+          return { delivered: true, code: "surface_unchanged", channelId: "telegram" };
+        }
+      }
+      const text = renderProcessJobSurface(projection);
+      if (current === undefined) {
+        if (terminal && !rememberTerminalFallbackAttempt(projection.jobId)) {
+          return {
+            delivered: false,
+            code: "surface_terminal_fallback_already_attempted",
+            reason: "Telegram terminal fallback was already attempted",
+            retryable: false,
+          };
+        }
+        return await postProcessJobSurface(chatId, projection, text, terminal, terminal, updateOptions?.silent === true);
+      }
+      try {
+        await sender.editMessageText({ chat_id: current.chatId, message_id: current.messageId, text });
+        rememberProcessJobMessage(projection.jobId, { ...current, rank, terminal });
+        return {
+          delivered: true,
+          code: "surface_updated",
+          channelId: "telegram",
+          deliveryId: `telegram:${String(current.chatId)}:${String(current.messageId)}`,
+        };
+      } catch (error) {
+        if (!terminal || current.terminalFallback) {
+          logger?.debug?.("Telegram process-job lifecycle edit failed (best-effort).", {
+            error: errorMessage(error),
+          });
+          return {
+            delivered: false,
+            reason: "Telegram process-job lifecycle edit failed",
+            code: "surface_update_failed",
+            retryable: false,
+          };
+        }
+        if (!rememberTerminalFallbackAttempt(projection.jobId)) {
+          return {
+            delivered: false,
+            code: "surface_terminal_fallback_already_attempted",
+            reason: "Telegram terminal fallback was already attempted",
+            retryable: false,
+          };
+        }
+        return await postProcessJobSurface(chatId, projection, text, true, true, updateOptions?.silent === true);
+      }
+    }).finally(() => {
+      if (processJobUpdateTails.get(projection.jobId) === task) processJobUpdateTails.delete(projection.jobId);
+    });
+    processJobUpdateTails.set(projection.jobId, task);
+    return task;
+  }
+
+  async function postProcessJobSurface(
+    chatId: TelegramChatId,
+    projection: ProcessJobProjection,
+    text: string,
+    terminal: boolean,
+    terminalFallback: boolean,
+    silent: boolean,
+  ): Promise<TelegramNotifyResult> {
+    try {
+      const sent = await sender.sendMessage({
+        chat_id: chatId,
+        text,
+        ...(silent ? { disable_notification: true } : {}),
+      });
+      rememberProcessJobMessage(projection.jobId, {
+        chatId,
+        messageId: sent.message_id,
+        originConversationId: processJobBaseConversationId(projection.origin.conversationId),
+        rank: processJobStateRank(projection.state),
+        terminal,
+        terminalFallback,
+      });
+      return {
+        delivered: true,
+        code: terminalFallback ? "surface_terminal_fallback" : "surface_posted",
+        channelId: "telegram",
+        deliveryId: `telegram:${String(chatId)}:${String(sent.message_id)}`,
+      };
+    } catch (error) {
+      logger?.debug?.("Telegram process-job lifecycle post failed (best-effort).", {
+        error: errorMessage(error),
+      });
+      return {
+        delivered: false,
+        reason: "Telegram process-job lifecycle post failed",
+        code: "surface_update_failed",
+        retryable: false,
+      };
+    }
+  }
+
+  function rememberProcessJobMessage(jobId: string, ref: TelegramProcessJobMessageRef): void {
+    processJobMessages.delete(jobId);
+    processJobMessages.set(jobId, ref);
+    while (processJobMessages.size > PROCESS_JOB_MESSAGE_REF_LIMIT) {
+      const oldest = processJobMessages.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      processJobMessages.delete(oldest);
+      processJobTerminalFallbacks.delete(oldest);
+    }
+  }
+
+  function rememberTerminalFallbackAttempt(jobId: string): boolean {
+    if (processJobTerminalFallbacks.has(jobId)) return false;
+    processJobTerminalFallbacks.add(jobId);
+    while (processJobTerminalFallbacks.size > PROCESS_JOB_MESSAGE_REF_LIMIT) {
+      const oldest = processJobTerminalFallbacks.values().next().value as string | undefined;
+      if (oldest === undefined) break;
+      processJobTerminalFallbacks.delete(oldest);
+    }
+    return true;
+  }
+
   async function notifyInternal(
     chatId: TelegramChatId,
     text: string,
@@ -2119,7 +2306,14 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       async () => {
         outcome = notifyOptions?.verbatim === true
           ? await runVerbatimDelivery(chatId, text, controller, silent)
-          : await runProactiveTurn(chatId, text, controller, silent, includeRuntimeSelection);
+          : await runProactiveTurn(
+              chatId,
+              text,
+              controller,
+              silent,
+              includeRuntimeSelection,
+              notifyOptions?.deliveryKey,
+            );
       },
       () => {
         unregisterController(chatId, controller);
@@ -2463,6 +2657,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   return {
     bot,
     notify,
+    updateProcessJob,
     async postStatus(chatId, text, statusOptions): Promise<void> {
       const key = `${String(chatId)}:${statusOptions.key}`;
       try {
@@ -2493,6 +2688,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         total += set.size;
       }
       return total;
+    },
+    processJobMessageRefCount(): number {
+      return processJobMessages.size;
     },
     async start(): Promise<void> {
       if (runnerHandle?.isRunning() === true) {
@@ -2932,4 +3130,47 @@ function controlCommandFromCaption(
   return command === "start" || command === "help" || command === "cancel" || command === "new"
     ? command
     : undefined;
+}
+
+function processJobBaseConversationId(conversationId: string): string {
+  return conversationId.split("#", 1)[0] ?? conversationId;
+}
+
+function isTerminalProcessJobState(state: ProcessJobState): boolean {
+  return state !== "queued" && state !== "starting" && state !== "running";
+}
+
+function processJobStateRank(state: ProcessJobState): number {
+  if (state === "queued") return 0;
+  if (state === "starting") return 1;
+  if (state === "running") return 2;
+  return 3;
+}
+
+function renderProcessJobSurface(projection: ProcessJobProjection): string {
+  const icon = projection.state === "succeeded"
+    ? "✅"
+    : projection.state === "running" || projection.state === "starting"
+      ? "⏳"
+      : projection.state === "queued"
+        ? "🕓"
+        : projection.state === "cancelled"
+          ? "⛔"
+          : projection.state === "timed_out"
+            ? "⌛"
+            : "❌";
+  const lines = [
+    `${icon} Background ${projection.tool} job ${projection.jobId}: ${projection.state.replaceAll("_", " ")}`,
+    projection.summary,
+  ];
+  if (projection.durationMs !== null) lines.push(`Duration: ${String(projection.durationMs)} ms`);
+  if (projection.exitCode !== null) lines.push(`Exit code: ${String(projection.exitCode)}`);
+  if (projection.signal !== null) lines.push(`Signal: ${projection.signal}`);
+  if (projection.lastError !== null) lines.push(`Status: ${projection.lastError.message}`);
+  if (projection.output.preview.trim().length > 0) lines.push(`Output preview:\n${projection.output.preview}`);
+  const text = lines.join("\n");
+  const codePoints = [...text];
+  return codePoints.length <= PROCESS_JOB_SURFACE_MAX_CHARS
+    ? text
+    : `${codePoints.slice(0, PROCESS_JOB_SURFACE_MAX_CHARS - 1).join("")}…`;
 }

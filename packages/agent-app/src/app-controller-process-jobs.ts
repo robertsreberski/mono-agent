@@ -1,12 +1,18 @@
 import { loadAppCoreConfig, isAppCoreConfigError } from "./app-config.js";
 import { deliverWebNotification } from "@mono-agent/web";
-import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
+import type {
+  ChannelId,
+  ChannelStatus,
+  MonoAgentAppLogger,
+  RunningChannel,
+} from "./channels.js";
 import { routeProactiveNotification } from "./proactive-notify.js";
 import { loadProcessJobsSettings } from "./process-jobs-config.js";
 import { runWithProcessJobWakeContext } from "./process-jobs-context.js";
 import {
   openProcessJobsService,
   ProcessJobServiceError,
+  type ProcessJobsHealth,
   type ProcessJobsServiceHandle,
 } from "./process-jobs-service.js";
 import { reasonOf } from "./app-controller-utils.js";
@@ -17,11 +23,14 @@ export interface ProcessJobsControllerPort {
   readonly env: Record<string, string | undefined>;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly running: Map<ChannelId, RunningChannel>;
+  readonly statuses: Map<ChannelId, ChannelStatus>;
   readonly stopped: boolean;
   processJobsService: ProcessJobsServiceHandle | undefined;
   processJobsServiceStart: Promise<ProcessJobsServiceHandle | undefined> | undefined;
   processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
   observabilityContext(): Promise<{ readonly sourceId?: string }>;
+  setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus;
+  refreshTraceSource(reason: string): Promise<void>;
 }
 
 export function ensureProcessJobsService(
@@ -51,20 +60,36 @@ export function ensureProcessJobsService(
             running: controller.running,
             ...(controller.logger === undefined ? {} : { logger: controller.logger }),
           }),
+          input.deliveryKey,
         ),
         surfaceUpdate: async (projection) => {
-          if (projection.origin.channel !== "web") return;
-          if (sourceId === undefined) throw new Error("The agent source identity is unavailable for a web job card.");
-          const threadId = webThreadId(projection.origin.conversationId);
-          if (threadId === undefined) throw new Error("The process job does not identify an existing web thread.");
-          await deliverWebNotification({
-            sourceId,
-            triggerKind: "job",
+          if (projection.origin.channel === "web") {
+            if (sourceId === undefined) throw new Error("The agent source identity is unavailable for a web job card.");
+            const threadId = webThreadId(projection.origin.conversationId);
+            if (threadId === undefined) throw new Error("The process job does not identify an existing web thread.");
+            await deliverWebNotification({
+              sourceId,
+              triggerKind: "job",
+              deliveryKey: projection.wake.deliveryKey,
+              threadId,
+              processJob: projection,
+            });
+            return;
+          }
+          const outcome = await routeProactiveNotification({
+            conversationId: projection.origin.conversationId,
+            text: "",
             deliveryKey: projection.wake.deliveryKey,
-            threadId,
             processJob: projection,
+            running: controller.running,
+            ...(controller.logger === undefined ? {} : { logger: controller.logger }),
           });
+          if (!outcome.delivered) {
+            throw new Error(outcome.reason ?? "The native process-job lifecycle update was not delivered.");
+          }
         },
+        onHealthChange: async (health) =>
+          await publishProcessJobsHealth(controller, settings.stateDir, health),
         ...(controller.logger === undefined ? {} : { logger: controller.logger }),
       });
       controller.processJobsService = service;
@@ -84,6 +109,36 @@ export function ensureProcessJobsService(
     }
   })();
   return controller.processJobsServiceStart;
+}
+
+/** Publish a later store-health transition to both live operator surfaces. */
+export async function publishProcessJobsHealth(
+  controller: ProcessJobsControllerPort,
+  stateDir: string,
+  health: ProcessJobsHealth,
+): Promise<void> {
+  const tui = controller.running.get("tui");
+  if (tui !== undefined) {
+    const summary = {
+      ...tui.summary,
+      processJobs: {
+        stateDir,
+        health: health.state,
+        quarantinedTransactions: health.quarantinedTransactions,
+        ...(health.failureOperation === undefined
+          ? {}
+          : { failureOperation: health.failureOperation }),
+        ...(health.failureDetectedAt === undefined
+          ? {}
+          : { failureDetectedAt: health.failureDetectedAt }),
+      },
+    };
+    controller.running.set("tui", { ...tui, summary });
+    if (controller.statuses.get("tui")?.kind === "running") {
+      controller.setStatus("tui", { kind: "running", summary });
+    }
+  }
+  await controller.refreshTraceSource("process-jobs-health");
 }
 
 function webThreadId(conversationId: string): string | undefined {

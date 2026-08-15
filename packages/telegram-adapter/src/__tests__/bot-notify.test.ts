@@ -1,6 +1,7 @@
 import { Bot } from "grammy";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import type { ProcessJobProjection, ProcessJobState } from "@mono-agent/agent-contracts";
 import type { AgentRequest, AgentResponder } from "../adapter.js";
 import { createTelegramBot } from "../bot.js";
 
@@ -29,7 +30,10 @@ function ok(result: unknown): never {
   return { ok: true, result } as never;
 }
 
-function buildNotifiableBot(responder: AgentResponder): {
+function buildNotifiableBot(
+  responder: AgentResponder,
+  behavior: { readonly failEdit?: boolean; readonly failSendAfter?: number } = {},
+): {
   controller: ReturnType<typeof createTelegramBot>;
   calls: RecordedCall[];
 } {
@@ -45,6 +49,10 @@ function buildNotifiableBot(responder: AgentResponder): {
         const typedPayload = payload as Record<string, unknown>;
         calls.push({ method, payload: typedPayload });
         if (method === "sendMessage") {
+          const sends = calls.filter((call) => call.method === "sendMessage").length;
+          if (behavior.failSendAfter !== undefined && sends > behavior.failSendAfter) {
+            throw new Error("send failed");
+          }
           return ok({
             message_id: nextMessageId++,
             date: 0,
@@ -53,6 +61,7 @@ function buildNotifiableBot(responder: AgentResponder): {
           });
         }
         if (method === "editMessageText") {
+          if (behavior.failEdit === true) throw new Error("message is not editable");
           return ok({
             message_id: typedPayload.message_id ?? 0,
             date: 0,
@@ -79,12 +88,17 @@ describe("createTelegramBot notify (proactive)", () => {
     };
     const { controller, calls } = buildNotifiableBot(responder);
 
-    const result = await controller.notify(42, "Compose and report the morning brief.");
+    const result = await controller.notify(42, "Compose and report the morning brief.", {
+      deliveryKey: "process-job:telegram-wake",
+    });
 
     expect(result).toEqual({ delivered: true });
     expect(captured?.conversationId).toBe("telegram:42");
     expect(captured?.replyTo).toEqual({ conversationId: "telegram:42" });
     expect(captured?.text).toBe("Compose and report the morning brief.");
+    expect(Reflect.get(captured?.metadata ?? {}, Symbol.for("mono-agent.process-job-wake.delivery-key.v1")))
+      .toBe("process-job:telegram-wake");
+    expect(JSON.stringify(captured?.metadata)).not.toContain("process-job:telegram-wake");
     const sent = calls.filter((call) => call.method === "sendMessage");
     expect(sent).toHaveLength(1);
     expect(calls.filter((call) => call.method === "editMessageText")).toEqual([]);
@@ -173,6 +187,75 @@ describe("createTelegramBot notify (proactive)", () => {
     expect(sent.at(-1)?.payload.disable_notification).toBeUndefined();
   });
 
+  it.each(["succeeded", "failed", "cancelled", "timed_out"] as const)(
+    "posts running then edits the same Telegram lifecycle message to %s",
+    async (state) => {
+      const respond = vi.fn(async () => ({ text: "must not run" }));
+      const { controller, calls } = buildNotifiableBot({ respond });
+      await controller.updateProcessJob(42, processJobProjection("running"));
+      await controller.updateProcessJob(42, processJobProjection(state));
+
+      expect(respond).not.toHaveBeenCalled();
+      expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(1);
+      const edits = calls.filter((call) => call.method === "editMessageText");
+      expect(edits).toHaveLength(1);
+      expect(edits[0]?.payload).toMatchObject({ chat_id: 42, message_id: 2000 });
+      expect(String(edits[0]?.payload.text)).toContain(state.replaceAll("_", " "));
+    },
+  );
+
+  it("serializes process-job updates so terminal wins over a late running update", async () => {
+    const { controller, calls } = buildNotifiableBot({
+      async respond() { return { text: "unused" }; },
+    });
+    await controller.updateProcessJob(42, processJobProjection("running"));
+    await Promise.all([
+      controller.updateProcessJob(42, processJobProjection("succeeded")),
+      controller.updateProcessJob(42, processJobProjection("running")),
+    ]);
+    const edits = calls.filter((call) => call.method === "editMessageText");
+    expect(edits).toHaveLength(1);
+    expect(String(edits[0]?.payload.text)).toContain("succeeded");
+  });
+
+  it("refuses cross-chat mutation and posts one same-chat fallback when the ref is uneditable", async () => {
+    const { controller, calls } = buildNotifiableBot({
+      async respond() { return { text: "unused" }; },
+    }, { failEdit: true });
+    await expect(controller.updateProcessJob(7, processJobProjection("running")))
+      .resolves.toMatchObject({ delivered: false, code: "process_job_origin_mismatch" });
+    expect(calls).toHaveLength(0);
+
+    await controller.updateProcessJob(42, processJobProjection("running"));
+    await expect(controller.updateProcessJob(42, processJobProjection("failed")))
+      .resolves.toMatchObject({ delivered: true, code: "surface_terminal_fallback" });
+    await controller.updateProcessJob(42, processJobProjection("failed"));
+    const sends = calls.filter((call) => call.method === "sendMessage");
+    expect(sends).toHaveLength(2);
+    expect(sends[1]?.payload.chat_id).toBe(42);
+  });
+
+  it("attempts a missing-ref terminal fallback only once even when Telegram rejects it", async () => {
+    const { controller, calls } = buildNotifiableBot({
+      async respond() { return { text: "unused" }; },
+    }, { failSendAfter: 0 });
+    await expect(controller.updateProcessJob(42, processJobProjection("failed")))
+      .resolves.toMatchObject({ delivered: false, code: "surface_update_failed" });
+    await expect(controller.updateProcessJob(42, processJobProjection("failed")))
+      .resolves.toMatchObject({ delivered: false, code: "surface_terminal_fallback_already_attempted" });
+    expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(1);
+  });
+
+  it("keeps Telegram process-job message references bounded", async () => {
+    const { controller } = buildNotifiableBot({
+      async respond() { return { text: "unused" }; },
+    });
+    for (let index = 0; index < 257; index += 1) {
+      await controller.updateProcessJob(42, processJobProjection("running", `pj_${String(index)}`));
+    }
+    expect(controller.processJobMessageRefCount()).toBe(256);
+  });
+
   it("posts nothing (and reports the reason) when the proactive turn produces no answer", async () => {
     const responder: AgentResponder = {
       async respond() {
@@ -213,3 +296,48 @@ describe("createTelegramBot notify (proactive)", () => {
     await Promise.all(inflight);
   });
 });
+
+function processJobProjection(
+  state: ProcessJobState,
+  jobId = "pj_telegram",
+): ProcessJobProjection {
+  const terminal = state !== "queued" && state !== "starting" && state !== "running";
+  return {
+    schema: "mono-agent.process-job-projection.v1",
+    jobId,
+    tool: "Exec",
+    state,
+    summary: "Exec command (values redacted)",
+    origin: {
+      conversationId: "telegram:42#2026-08-15",
+      channel: "telegram",
+      runId: "run",
+      historyBoundary: "run",
+      bucket: "2026-08-15",
+    },
+    timestamps: {
+      admittedAt: "2026-08-15T00:00:00.000Z",
+      queueDeadlineAt: "2026-08-15T00:05:00.000Z",
+      startedAt: "2026-08-15T00:00:01.000Z",
+      runtimeDeadlineAt: "2026-08-15T00:30:01.000Z",
+      completedAt: terminal ? "2026-08-15T00:00:02.000Z" : null,
+    },
+    limits: { maxRuntimeMs: 1_800_000, maxOutputBytes: 1024, previewChars: 100, chainDepth: 0 },
+    output: {
+      stdoutBytes: terminal ? 2 : 0,
+      stderrBytes: 0,
+      truncated: false,
+      preview: terminal ? "ok" : "",
+      stdoutRef: null,
+      stderrRef: null,
+    },
+    wake: { state: "pending", attempts: 0, deliveryKey: `process-job:${jobId}`, lastAttemptAt: null },
+    exitCode: state === "succeeded" ? 0 : null,
+    signal: null,
+    durationMs: terminal ? 1_000 : null,
+    cancelRequested: state === "cancelled",
+    lastError: state === "failed"
+      ? { code: "process_job_failed", message: "Process exited with code 1." }
+      : null,
+  };
+}

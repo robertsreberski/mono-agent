@@ -14,7 +14,10 @@ import { launchdLogsSectionFromInspection, validateMonoAgentFolder } from "../do
 import type { SdkAuthStatusExecFile } from "../doctor.js";
 import type { LaunchdLogInspection } from "../launchd-logs.js";
 import { agentAppPackageVersion } from "../package-version.js";
-import { PROCESS_JOB_QUARANTINE_DIRECTORY } from "../process-jobs-store.js";
+import {
+  PROCESS_JOB_QUARANTINE_DIRECTORY,
+  recordProcessJobHealthIncident,
+} from "../process-jobs-store.js";
 
 let dir: string;
 
@@ -502,6 +505,29 @@ describe("validateMonoAgentFolder", () => {
     const section = sectionById(report, "process-jobs");
     expect(section.status).toBe("error");
     expect(section.details).toContain("Quarantined unreplayable process-job transactions: 1.");
+  });
+
+  it("reports a later live process-job store degradation from its owner-only marker", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "process-jobs");
+    await mkdir(stateDir, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700);
+    await recordProcessJobHealthIncident(
+      stateDir,
+      "wake.settle",
+      new Date("2026-08-15T10:00:00.000Z"),
+    );
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      processJobs: { enabled: true },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const section = sectionById(report, "process-jobs");
+    expect(section.status).toBe("error");
+    expect(section.details.join("\n")).toContain("degraded during wake.settle");
+    expect(section.details.join("\n")).toContain("new admission is closed");
   });
 
   it("fails continuation doctor validation for ephemeral configured ports", async () => {

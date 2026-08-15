@@ -88,6 +88,8 @@ import { CONTINUATION_STATES, continuationDigest, type ContinuationState } from 
 import { isProcessJobState, PROCESS_JOB_STATES } from "@mono-agent/agent-contracts";
 import { loadProcessJobsSettings } from "./process-jobs-config.js";
 import {
+  MAX_PROCESS_JOB_HEALTH_BYTES,
+  PROCESS_JOB_HEALTH_FILE,
   PROCESS_JOB_QUARANTINE_DIRECTORY,
   PROCESS_JOB_RECORDS_DIRECTORY,
   PROCESS_JOB_SECRET_FILE,
@@ -2572,6 +2574,9 @@ async function inspectProcessJobState(cwd: string, stateDir: string): Promise<{
   const rootSecurity = processJobOwnershipError(root, "state directory", 0o700);
   if (rootSecurity !== undefined) return { status: "error", details: [rootSecurity] };
 
+  const healthInspection = await inspectProcessJobHealth(stateDir);
+  if (healthInspection !== undefined) return healthInspection;
+
   const quarantineInspection = await inspectProcessJobQuarantine(stateDir);
   if (quarantineInspection !== undefined) return quarantineInspection;
 
@@ -2630,6 +2635,48 @@ async function inspectProcessJobState(cwd: string, stateDir: string): Promise<{
       `States: ${PROCESS_JOB_STATES.map((state) => `${state}=${String(counts[state] ?? 0)}`).join(", ")}.`,
     ],
   };
+}
+
+async function inspectProcessJobHealth(stateDir: string): Promise<{
+  readonly status: "error";
+  readonly details: readonly string[];
+} | undefined> {
+  const path = join(stateDir, PROCESS_JOB_HEALTH_FILE);
+  try {
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink() || Number(info.nlink) !== 1) {
+      throw new Error("runtime health marker is not one regular file");
+    }
+    const security = processJobOwnershipError(info, "runtime health marker", 0o600);
+    if (security !== undefined) throw new Error(security);
+    if (Number(info.size) > MAX_PROCESS_JOB_HEALTH_BYTES) {
+      throw new Error(`runtime health marker exceeds ${String(MAX_PROCESS_JOB_HEALTH_BYTES)} bytes`);
+    }
+    const value = JSON.parse(await readFile(path, "utf8")) as unknown;
+    if (!isDoctorObject(value)
+      || Object.keys(value).sort().join(",") !== "detectedAt,operation,schemaVersion,state"
+      || value.schemaVersion !== 1
+      || value.state !== "degraded"
+      || typeof value.operation !== "string"
+      || !/^[a-z][a-z0-9_.-]{0,63}$/u.test(value.operation)
+      || typeof value.detectedAt !== "string"
+      || !Number.isFinite(Date.parse(value.detectedAt))) {
+      throw new Error("runtime health marker is malformed");
+    }
+    return {
+      status: "error",
+      details: [
+        `Process-job storage degraded during ${value.operation} at ${value.detectedAt}; new admission is closed until a clean restart recovery.`,
+      ],
+    };
+  } catch (error) {
+    return continuationFsCode(error) === "ENOENT"
+      ? undefined
+      : {
+          status: "error",
+          details: [`Process-job runtime health cannot be inspected: ${continuationReason(error)}`],
+        };
+  }
 }
 
 async function inspectProcessJobQuarantine(stateDir: string): Promise<{

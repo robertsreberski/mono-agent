@@ -37,6 +37,7 @@ export const PROCESS_JOB_MANIFEST_FILE = "process-jobs-store-v1.json";
 export const PROCESS_JOB_TRANSACTION_FILE = "process-jobs-transaction-v1.json";
 export const PROCESS_JOB_QUARANTINE_DIRECTORY = "quarantine-v1";
 export const PROCESS_JOB_SECRET_FILE = "process-jobs-secret";
+export const PROCESS_JOB_HEALTH_FILE = "process-jobs-health-v1.json";
 export const PROCESS_JOB_ROLLBACK_GUARD = "PROCESS-JOBS-STORE-V1";
 export const PROCESS_JOB_ROLLBACK_GUARD_CONTENT =
   "This state directory uses mono-agent process-job records v1. Older runtimes must not open it.\n";
@@ -45,6 +46,7 @@ const MAX_RECORD_BYTES = 128 * 1024;
 const MAX_TRANSACTION_BYTES = 256 * 1024;
 const MAX_MANIFEST_BYTES = 64 * 1024;
 const MAX_GUARD_BYTES = 4 * 1024;
+export const MAX_PROCESS_JOB_HEALTH_BYTES = 4 * 1024;
 export const PROCESS_JOB_ENV_KEYS_CAPS = Object.freeze({
   maxItems: 128,
   maxItemBytes: 256,
@@ -154,6 +156,13 @@ export interface ProcessJobStore {
   discardArtifacts(jobId: string): Promise<void>;
   writeArtifact(jobId: string, stream: "stdout" | "stderr", contents: string): Promise<void>;
   applyRetention(settings: ProcessJobsSettings, now?: Date): Promise<void>;
+}
+
+export interface ProcessJobHealthIncident {
+  readonly schemaVersion: 1;
+  readonly state: "degraded";
+  readonly operation: string;
+  readonly detectedAt: string;
 }
 
 /** Open and recover the independent per-record v1 process-job store. */
@@ -365,6 +374,34 @@ export async function loadOrCreateProcessJobSecret(stateDir: string): Promise<Bu
   await replacePrivateFile(path, `${secret.toString("base64url")}\n`, 0o600);
   await syncDirectory(stateDir);
   return secret;
+}
+
+/** Persist only a bounded, secret-free health fact for detached status/doctor readers. */
+export async function recordProcessJobHealthIncident(
+  stateDir: string,
+  operation: string,
+  detectedAt: Date = new Date(),
+): Promise<void> {
+  const normalizedOperation = /^[a-z][a-z0-9_.-]{0,63}$/u.test(operation)
+    ? operation
+    : "unknown";
+  const incident: ProcessJobHealthIncident = {
+    schemaVersion: 1,
+    state: "degraded",
+    operation: normalizedOperation,
+    detectedAt: detectedAt.toISOString(),
+  };
+  await writeBoundedJson(
+    join(stateDir, PROCESS_JOB_HEALTH_FILE),
+    incident,
+    MAX_PROCESS_JOB_HEALTH_BYTES,
+  );
+}
+
+/** Clear a prior runtime incident only after startup recovery and retention succeed. */
+export async function clearProcessJobHealthIncident(stateDir: string): Promise<void> {
+  await rm(join(stateDir, PROCESS_JOB_HEALTH_FILE), { force: true });
+  await syncDirectory(stateDir);
 }
 
 export function processJobOperatorToken(secret: Uint8Array): string {

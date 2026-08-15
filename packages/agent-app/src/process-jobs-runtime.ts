@@ -24,8 +24,9 @@ export function createProcessJobsRuntimeExtension(
   return async (input) => {
     const origin = processJobOriginForRequest(input, options.channelId);
     const wake = processJobWakeContextForRequest(input.request);
-    const chainDepth = wake?.chainDepth ?? 0;
+    const chainDepth = wake.kind === "resolved" ? wake.context.chainDepth : 0;
     if (origin === undefined
+      || wake.kind === "missed"
       || chainDepth >= options.service.settings.maxChainDepth
       || !options.targetsPiNative(input.request.metadata)
       || !hasAllowedProcessTool(options.coreConfig)) {

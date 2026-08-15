@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { ProcessJobProjection } from "@mono-agent/agent-contracts";
+
 import {
   createSlackChannelDriver,
   createTelegramChannelDriver,
@@ -28,9 +30,16 @@ function startInput<T>(config: T): ChannelStartInput<T> {
 }
 
 describe("telegram proactive notify allowlist", () => {
-  function telegramDriver(notify: ReturnType<typeof vi.fn>) {
+  function telegramDriver(
+    notify: ReturnType<typeof vi.fn>,
+    updateProcessJob?: ReturnType<typeof vi.fn>,
+  ) {
     return createTelegramChannelDriver({
-      startAdapter: async () => ({ stop: async () => undefined, notify }) as never,
+      startAdapter: async () => ({
+        stop: async () => undefined,
+        notify,
+        ...(updateProcessJob === undefined ? {} : { updateProcessJob }),
+      }) as never,
     });
   }
   const config = (over: Record<string, unknown>) =>
@@ -108,12 +117,76 @@ describe("telegram proactive notify allowlist", () => {
     })).resolves.toEqual({ recorded: false, code: "telegram_destination_not_allowlisted" });
     expect(deliverVerbatim).toHaveBeenCalledOnce();
   });
+
+  it("handles host-only lifecycle updates before notify and never turns empty text into a model turn", async () => {
+    const notify = vi.fn(async () => ({ delivered: true }));
+    const lifecycleCalls: unknown[][] = [];
+    const startResult = {
+      receiverState: "ready",
+      stop: async () => undefined,
+      notify,
+      async updateProcessJob(...args: unknown[]) {
+        if (this !== startResult || this.receiverState !== "ready") {
+          throw new Error("Telegram lifecycle updater lost its start-result receiver");
+        }
+        lifecycleCalls.push(args);
+        return {
+          delivered: true,
+          code: "surface_updated",
+          channelId: "telegram" as const,
+        };
+      },
+    };
+    const processJob = projection("telegram:42", "telegram");
+    const running = await createTelegramChannelDriver({
+      startAdapter: async () => startResult as never,
+    }).start(startInput(config({})));
+
+    await expect(running.notify!({ conversationId: "telegram:42", text: "", processJob }))
+      .resolves.toMatchObject({ delivered: true, code: "surface_updated" });
+    expect(lifecycleCalls).toEqual([[42, processJob, undefined]]);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("fails empty lifecycle updates closed on an unsupported adapter without invoking notify", async () => {
+    const notify = vi.fn(async () => ({ delivered: true }));
+    const running = await telegramDriver(notify).start(startInput(config({})));
+
+    await expect(running.notify!({
+      conversationId: "telegram:42",
+      text: "",
+      processJob: projection("telegram:42", "telegram"),
+    })).resolves.toMatchObject({ delivered: false, code: "background_unsupported_channel" });
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("marks a post-admission lifecycle wake failure ambiguous and nonretryable", async () => {
+    const notify = vi.fn(async () => ({ delivered: false, retryable: true, reason: "post failed" }));
+    const updateProcessJob = vi.fn(async () => ({ delivered: true }));
+    const processJob = projection("telegram:42", "telegram");
+    const running = await telegramDriver(notify, updateProcessJob).start(startInput(config({})));
+
+    await expect(running.notify!({
+      conversationId: "telegram:42",
+      text: "wake",
+      deliveryKey: processJob.wake.deliveryKey,
+      processJob,
+    }))
+      .resolves.toMatchObject({ delivered: false, retryable: false, ambiguous: true });
+    expect(notify).toHaveBeenCalledWith(42, "wake", { deliveryKey: processJob.wake.deliveryKey });
+  });
 });
 
 describe("slack proactive notify allowlist", () => {
-  function slackDriver(notify: ReturnType<typeof vi.fn>) {
+  function slackDriver(
+    notify: ReturnType<typeof vi.fn>,
+    updateProcessJob?: ReturnType<typeof vi.fn>,
+  ) {
     return createSlackChannelDriver({
-      startAdapter: async () => ({ stop: async () => undefined, adapter: { notify } }) as never,
+      startAdapter: async () => ({
+        stop: async () => undefined,
+        adapter: { notify, ...(updateProcessJob === undefined ? {} : { updateProcessJob }) },
+      }) as never,
     });
   }
   const config = (over: Record<string, unknown>) =>
@@ -160,4 +233,63 @@ describe("slack proactive notify allowlist", () => {
     expect(result).toEqual({ delivered: false, reason: "conversation at concurrency cap" });
     expect(notify).toHaveBeenCalledWith("C1", undefined, "hi", undefined);
   });
+
+  it("binds lifecycle updates to the exact Slack origin and preserves pre-turn busy retryability", async () => {
+    const notify = vi.fn(async () => ({
+      delivered: false,
+      code: "conversation_busy",
+      reason: "conversation at concurrency cap",
+      retryable: true,
+    }));
+    const updateProcessJob = vi.fn(async () => ({ delivered: true }));
+    const processJob = projection("slack:C1:171.5#bucket", "slack");
+    const running = await slackDriver(notify, updateProcessJob).start(startInput(config({})));
+
+    await expect(running.notify!({
+      conversationId: "slack:C1:171.5",
+      text: "wake",
+      processJob,
+    })).resolves.toMatchObject({
+      delivered: false,
+      code: "conversation_busy",
+      retryable: true,
+    });
+    expect(updateProcessJob).toHaveBeenCalledWith("C1", "171.5", processJob);
+
+    await expect(running.notify!({
+      conversationId: "slack:C1:other",
+      text: "",
+      processJob,
+    })).resolves.toMatchObject({ delivered: false, code: "process_job_origin_mismatch" });
+    expect(updateProcessJob).toHaveBeenCalledOnce();
+  });
 });
+
+function projection(
+  conversationId: string,
+  channel: "slack" | "telegram" | "web",
+): ProcessJobProjection {
+  return {
+    schema: "mono-agent.process-job-projection.v1",
+    jobId: "pj_native",
+    tool: "Exec",
+    state: "running",
+    summary: "Exec command (values redacted)",
+    origin: { conversationId, channel, runId: "run", historyBoundary: "run", bucket: null },
+    timestamps: {
+      admittedAt: "2026-08-15T00:00:00.000Z",
+      queueDeadlineAt: "2026-08-15T00:05:00.000Z",
+      startedAt: "2026-08-15T00:00:01.000Z",
+      runtimeDeadlineAt: "2026-08-15T00:30:01.000Z",
+      completedAt: null,
+    },
+    limits: { maxRuntimeMs: 1_800_000, maxOutputBytes: 1024, previewChars: 100, chainDepth: 0 },
+    output: { stdoutBytes: 0, stderrBytes: 0, truncated: false, preview: "", stdoutRef: null, stderrRef: null },
+    wake: { state: "pending", attempts: 0, deliveryKey: "process-job:pj_native", lastAttemptAt: null },
+    exitCode: null,
+    signal: null,
+    durationMs: null,
+    cancelRequested: false,
+    lastError: null,
+  };
+}

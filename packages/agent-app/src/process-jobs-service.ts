@@ -3,6 +3,7 @@ import { lstat, readdir, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { isDeepStrictEqual } from "node:util";
 
 import type {
   ProcessJobErrorCode,
@@ -18,7 +19,7 @@ import type {
 } from "@mono-agent/runtime-adapter";
 
 import type { NotifyDeliveryResult } from "./channels.js";
-import type { ProcessJobsSettings } from "./process-jobs-config.js";
+import { PROCESS_JOBS_CAPS, type ProcessJobsSettings } from "./process-jobs-config.js";
 import { acquireOwnerPrivateLock, type OwnerPrivateLock } from "./owner-private-lock.js";
 import { isSensitiveEnvironmentName } from "./redact-secrets.js";
 import {
@@ -30,12 +31,14 @@ import {
 import {
   isTerminalProcessJobState,
   isProcessJobOriginRecord,
+  clearProcessJobHealthIncident,
   loadOrCreateProcessJobSecret,
   openProcessJobStore,
   prepareProcessJobStateDirectory,
   PROCESS_JOB_ENV_KEYS_CAPS,
   projectProcessJob,
   processJobOperatorToken,
+  recordProcessJobHealthIncident,
   type DurableProcessJobRecord,
   type ProcessJobOriginRecord,
   type ProcessJobStore,
@@ -47,6 +50,11 @@ const RECOVERY_GROUP_EXIT_POLL_MS = 25;
 const RECOVERY_GROUP_EXIT_POLLS = 40;
 const MAX_WAKE_ATTEMPTS = 3;
 const WAKE_RETRY_BASE_MS = 100;
+const WAKE_BUSY_REARM_MS = 5_000;
+const INITIAL_SURFACE_UPDATE_WAIT_MS = 250;
+const MAX_IN_MEMORY_RECORDS = PROCESS_JOBS_CAPS.retention.maxRecords
+  + PROCESS_JOBS_CAPS.maxQueued
+  + PROCESS_JOBS_CAPS.maxConcurrent;
 const SHUTDOWN_INTERRUPTED_MESSAGE =
   "The owning agent stopped after process and sandbox ownership settled; a later start will deliver the recovery wake.";
 
@@ -61,9 +69,18 @@ interface ActiveProcessJob extends PendingProcessJob {
   groupExitConfirmed?: boolean;
 }
 
+export interface ProcessJobsHealth {
+  readonly state: "ok" | "degraded";
+  readonly quarantinedTransactions: number;
+  readonly failureOperation?: string;
+  readonly failureDetectedAt?: string;
+}
+
 interface MutableProcessJobsHealth {
   state: "ok" | "degraded";
   quarantinedTransactions: number;
+  failureOperation?: string;
+  failureDetectedAt?: string;
 }
 
 export interface ProcessJobWakeInput {
@@ -79,8 +96,9 @@ export interface OpenProcessJobsServiceOptions {
   readonly cwd: string;
   readonly settings: ProcessJobsSettings;
   readonly wake: (input: ProcessJobWakeInput) => Promise<NotifyDeliveryResult>;
-  /** Best-effort retained surface update; used only by an existing web origin. */
+  /** Best-effort retained lifecycle update for the exact originating surface. */
   readonly surfaceUpdate?: (projection: ProcessJobProjection) => Promise<void>;
+  readonly onHealthChange?: (health: ProcessJobsHealth) => void | Promise<void>;
   readonly logger?: {
     info?(message: string, details?: Readonly<Record<string, unknown>>): void;
     warn?(message: string, details?: Readonly<Record<string, unknown>>): void;
@@ -94,6 +112,7 @@ export interface OpenProcessJobsServiceOptions {
   readonly signalProcess?: (pid: number, signal: NodeJS.Signals) => void;
   readonly processGroupExists?: (pgid: number) => boolean;
   readonly sleep?: (milliseconds: number) => Promise<void>;
+  readonly wakeBusyRearmMs?: number;
   readonly acquireLock?: () => Promise<OwnerPrivateLock | undefined>;
   readonly store?: ProcessJobStore;
 }
@@ -101,7 +120,7 @@ export interface OpenProcessJobsServiceOptions {
 export interface ProcessJobsServiceHandle {
   readonly settings: ProcessJobsSettings;
   readonly operatorToken: string;
-  readonly health: ProcessJobStore["health"];
+  readonly health: ProcessJobsHealth;
   controller(origin: ProcessJobOriginRecord, chainDepth: number): ProcessJobsController;
   list(): Promise<readonly ProcessJobProjection[]>;
   get(jobId: string): Promise<ProcessJobProjection | undefined>;
@@ -175,7 +194,10 @@ export async function openProcessJobsService(
   }
   try {
     await service.recover();
-    await store.applyRetention(normalizedOptions.settings, (options.now ?? (() => new Date()))());
+    await service.applyRetention();
+    if (service.health.failureOperation === undefined) {
+      await clearProcessJobHealthIncident(stateDir);
+    }
     return service;
   } catch (error) {
     await service.stop().catch(() => undefined);
@@ -186,13 +208,16 @@ export async function openProcessJobsService(
 class ProcessJobsService implements ProcessJobsServiceHandle {
   readonly settings: ProcessJobsSettings;
   readonly operatorToken: string;
-  readonly health: ProcessJobStore["health"];
+  readonly health: ProcessJobsHealth;
   private readonly mutableHealth: MutableProcessJobsHealth;
   private readonly pending = new Map<string, PendingProcessJob>();
   private readonly active = new Map<string, ActiveProcessJob>();
   private readonly completionOverlays = new Map<string, ProcessJobProjection>();
+  private readonly recordSnapshot = new Map<string, DurableProcessJobRecord>();
   private readonly settlements = new Map<string, Promise<void>>();
   private readonly wakeTasks = new Map<string, Promise<void>>();
+  private readonly wakeRearmTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly wakeRearmPending = new Set<string>();
   private readonly shutdownFailures: unknown[] = [];
   private readonly now: () => Date;
   private readonly platform: NodeJS.Platform;
@@ -203,6 +228,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private readonly signalProcess: (pid: number, signal: NodeJS.Signals) => void;
   private readonly processGroupExists: (pgid: number) => boolean;
   private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly wakeBusyRearmMs: number;
   private tail: Promise<void> = Promise.resolve();
   private queueTimer: ReturnType<typeof setTimeout> | undefined;
   private queueTimerGeneration = 0;
@@ -244,6 +270,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       const timer = setTimeout(resolvePromise, milliseconds);
       timer.unref?.();
     }));
+    this.wakeBusyRearmMs = options.wakeBusyRearmMs ?? WAKE_BUSY_REARM_MS;
   }
 
   controller(origin: ProcessJobOriginRecord, chainDepth: number): ProcessJobsController {
@@ -254,16 +281,31 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   }
 
   async list(): Promise<readonly ProcessJobProjection[]> {
-    return [...await this.store.list()]
+    let records: readonly DurableProcessJobRecord[];
+    try {
+      records = await this.storeList("list");
+    } catch {
+      records = this.snapshotRecords();
+    }
+    return [...records]
       .sort((left, right) => right.admittedAt.localeCompare(left.admittedAt) || left.jobId.localeCompare(right.jobId))
       .map((record) => structuredClone(this.completionOverlays.get(record.jobId) ?? projectProcessJob(record)));
   }
 
   async get(jobId: string): Promise<ProcessJobProjection | undefined> {
-    const overlay = this.completionOverlays.get(jobId);
-    if (overlay !== undefined) return structuredClone(overlay);
-    const record = await this.store.get(jobId);
-    return record === undefined ? undefined : projectProcessJob(record);
+    try {
+      const record = await this.storeGet(jobId, "get");
+      if (record === undefined) return undefined;
+      return structuredClone(this.completionOverlays.get(jobId) ?? projectProcessJob(record));
+    } catch {
+      const record = this.recordSnapshot.get(jobId);
+      if (record === undefined) return undefined;
+      return structuredClone(this.completionOverlays.get(jobId) ?? projectProcessJob(record));
+    }
+  }
+
+  async applyRetention(): Promise<void> {
+    await this.storeApplyRetention("retention");
   }
 
   async cancel(jobId: string): Promise<ProcessJobProjection> {
@@ -274,7 +316,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     }
     return await this.withLock(async () => {
       let cancelled = false;
-      const record = await this.store.mutate((records) => {
+      const record = await this.storeMutate("cancel", (records) => {
         const current = requireRecord(records, jobId);
         if (isTerminalProcessJobState(current.state)) {
           if (current.state !== "cancelled") {
@@ -325,13 +367,13 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
 
   async activateWakes(): Promise<void> {
     this.wakesActive = true;
-    for (const record of await this.store.list()) {
+    for (const record of await this.storeList("activate_wakes")) {
       if (isTerminalProcessJobState(record.state) && record.wake.state === "pending") {
         if (record.wake.attempts === 0
           || (record.wake.retrySafe === true && record.wake.attempts < MAX_WAKE_ATTEMPTS)) {
           this.scheduleWake(record.jobId);
         } else {
-          await this.store.mutate((records) => {
+          await this.storeMutate("activate_wakes.fail", (records) => {
             const current = records.get(record.jobId);
             if (current?.wake.state === "pending" && current.wake.attempts > 0) {
               const safeRetryExhausted = current.wake.retrySafe === true
@@ -359,7 +401,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
 
   async recover(): Promise<void> {
     this.agentIncarnation = await this.currentIncarnation();
-    const records = await this.store.list();
+    const records = await this.storeList("recover");
     for (const record of records) {
       if (isTerminalProcessJobState(record.state)) continue;
       let matched = false;
@@ -406,7 +448,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         : terminated
           ? "The owning agent restarted; the verified process group exited before sandbox cleanup."
           : "The owning agent restarted without complete proof that the owned process group exited; cleanup was withheld and descendants may remain.";
-      await this.store.mutate((draft) => {
+      await this.storeMutate("recover.interrupt", (draft) => {
         const current = draft.get(record.jobId);
         if (current === undefined || isTerminalProcessJobState(current.state)) return;
         transitionTerminal(current, "interrupted", this.now(), "process_job_agent_restarted", message);
@@ -427,11 +469,11 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         this.assertAvailable(origin, chainDepth, request);
         const jobId = this.randomId();
         enforceAdmission(
-          new Map((await this.store.list()).map((record) => [record.jobId, record])),
+          new Map((await this.storeList("admission.list")).map((record) => [record.jobId, record])),
           origin.normalizedReplyTarget,
           this.settings,
         );
-        const artifacts = await this.store.ensureArtifacts(jobId);
+        const artifacts = await this.storeEnsureArtifacts(jobId);
         const admittedAt = this.now();
         const maxRuntimeMs = Math.min(this.settings.maxRuntimeMs, request.timeoutMs ?? this.settings.maxRuntimeMs);
         const previewChars = Math.min(this.settings.previewChars, request.maxOutputChars ?? this.settings.previewChars);
@@ -482,9 +524,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           lastError: null,
         };
         try {
-          await this.store.mutate((records) => records.set(jobId, record));
+          await this.storeMutate("admission.persist", (records) => records.set(jobId, record));
         } catch (error) {
-          await this.store.discardArtifacts(jobId).catch(() => undefined);
+          await this.storeDiscardArtifacts(jobId).catch(() => undefined);
           throw error;
         }
         this.pending.set(jobId, pending);
@@ -495,7 +537,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         this.armQueueTimer();
         return { jobId, state: "queued" as const, startedAt: null };
       });
-      await this.updateSurfaceById(result.jobId);
+      await this.updateInitialSurface(result.jobId);
       return result;
     } catch (error) {
       if (!handedOff) await pending.cleanup().catch(() => undefined);
@@ -508,7 +550,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     if (pending === undefined) {
       throw new ProcessJobServiceError("process_job_agent_restarted", "Queued process-job launch ownership was lost.");
     }
-    const current = await this.store.get(jobId);
+    const current = await this.storeGet(jobId, "launch.get");
     if (current === undefined || current.state !== "queued") {
       throw new ProcessJobServiceError("process_job_conflict", "Process job is no longer queued.");
     }
@@ -516,7 +558,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       await this.expireJob(jobId);
       throw new ProcessJobServiceError("process_job_queue_expired", "Process job expired before it could start.");
     }
-    await this.store.mutate((records) => {
+    await this.storeMutate("launch.starting", (records) => {
       const record = requireRecord(records, jobId);
       if (record.state !== "queued") throw new ProcessJobServiceError("process_job_conflict", "Process job is no longer queued.");
       record.state = "starting";
@@ -533,7 +575,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       await cancelMalformedHandle(handle);
       await pending.cleanup().catch(() => undefined);
       this.pending.delete(jobId);
-      await this.store.mutate((records) => {
+      await this.storeMutate("launch.spawn_failed", (records) => {
         const record = requireRecord(records, jobId);
         if (!isTerminalProcessJobState(record.state)) {
           transitionTerminal(
@@ -563,7 +605,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       // Phase one closes the spawn-to-persistence crash window: the durable
       // starting record owns only the command-agnostic gate. The raw target is
       // still blocked on its anonymous pipe at this point.
-      await this.store.mutate((records) => {
+      await this.storeMutate("launch.attest", (records) => {
         const record = requireRecord(records, jobId);
         if (record.state !== "starting") {
           throw new ProcessJobServiceError(
@@ -580,7 +622,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       await handle.release();
       // Only the durable owner can release the exact target. A crash after the
       // release remains recoverable through the already-recorded incarnation.
-      await this.store.mutate((records) => {
+      await this.storeMutate("launch.running", (records) => {
         const record = requireRecord(records, jobId);
         if (record.state === "starting") record.state = "running";
       });
@@ -605,7 +647,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       this.pending.delete(jobId);
       let failureRecorded = false;
       try {
-        await this.store.mutate((records) => {
+        await this.storeMutate("launch.rollback", (records) => {
           const record = records.get(jobId);
           if (record === undefined || isTerminalProcessJobState(record.state)) return;
           transitionTerminal(
@@ -652,6 +694,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     await this.withLock(async () => {
       const active = this.active.get(jobId);
       if (active === undefined) return;
+      try {
       let cleanupError: unknown;
       if (result.groupExitConfirmed === false) {
         cleanupError = new Error(
@@ -670,16 +713,16 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         Math.max(0, this.settings.maxOutputBytes - Buffer.byteLength(stdout.text, "utf8")),
       );
       const artifactWrites = await Promise.allSettled([
-        this.store.writeArtifact(jobId, "stdout", stdout.text),
-        this.store.writeArtifact(jobId, "stderr", stderr.text),
+        this.storeWriteArtifact(jobId, "stdout", stdout.text),
+        this.storeWriteArtifact(jobId, "stderr", stderr.text),
       ]);
       const artifactError = artifactWrites
         .filter((result): result is PromiseRejectedResult => result.status === "rejected")
         .map((result) => result.reason)[0];
-      const completionRecord = await this.store.get(jobId);
+      const completionRecord = await this.storeGet(jobId, "complete.get");
       let transitioned = false;
       try {
-        await this.store.mutate((records) => {
+        await this.storeMutate("complete.persist", (records) => {
           const record = records.get(jobId);
           if (record === undefined) return;
           const alreadyTerminal = isTerminalProcessJobState(record.state);
@@ -814,14 +857,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           completionRecord.wake.retrySafe = false;
           this.completionOverlays.set(jobId, projectProcessJob(completionRecord));
         }
-        this.storageOperational = false;
-        this.mutableHealth.state = "degraded";
-        this.disarmQueueTimer();
         this.scheduleSurfaceUpdate(jobId);
         throw error;
-      } finally {
-        this.active.delete(jobId);
-        this.pending.delete(jobId);
       }
       if (this.stopping) {
         if (cleanupError !== undefined) this.shutdownFailures.push(cleanupError);
@@ -831,14 +868,22 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         this.scheduleSurfaceUpdate(jobId);
         this.scheduleWake(jobId);
       }
-      await this.store.applyRetention(this.settings, this.now());
+      this.active.delete(jobId);
+      this.pending.delete(jobId);
+      await this.storeApplyRetention("complete.retention");
       await this.drainQueue();
+      } finally {
+        // Store reads can fail before terminal mutation begins. Ownership must
+        // still retire so one poisoned record cannot leak the global slot.
+        this.active.delete(jobId);
+        this.pending.delete(jobId);
+      }
     });
   }
 
   private async drainQueue(): Promise<void> {
     while (!this.stopping && this.storageOperational && this.active.size < this.settings.maxConcurrent) {
-      const queued = (await this.store.list())
+      const queued = (await this.storeList("queue.drain"))
         .filter((record) => record.state === "queued")
         .sort((left, right) => left.admittedAt.localeCompare(right.admittedAt) || left.jobId.localeCompare(right.jobId))[0];
       if (queued === undefined) break;
@@ -854,7 +899,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
 
   private async expireJob(jobId: string): Promise<void> {
     let transitioned = false;
-    await this.store.mutate((records) => {
+    await this.storeMutate("queue.expire", (records) => {
       const record = records.get(jobId);
       if (record?.state !== "queued") return;
       transitionTerminal(
@@ -878,7 +923,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     if (this.queueTimer !== undefined) clearTimeout(this.queueTimer);
     this.queueTimer = undefined;
     if (this.stopping || !this.storageOperational) return;
-    void this.store.list().then((records) => {
+    void this.storeList("queue.arm").then((records) => {
       if (generation !== this.queueTimerGeneration) return;
       const deadline = records
         .filter((record) => record.state === "queued")
@@ -889,7 +934,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         if (this.queueTimer === timer) this.queueTimer = undefined;
         if (generation !== this.queueTimerGeneration || this.stopping || !this.storageOperational) return;
         void this.withLock(async () => {
-          for (const record of await this.store.list()) {
+          for (const record of await this.storeList("queue.expiry")) {
             if (record.state === "queued" && Date.parse(record.queueDeadlineAt) <= this.now().getTime()) {
               await this.expireJob(record.jobId);
             }
@@ -929,16 +974,35 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         });
       })
       .finally(() => {
-        if (this.wakeTasks.get(jobId) === task) this.wakeTasks.delete(jobId);
+        if (this.wakeTasks.get(jobId) === task) {
+          this.wakeTasks.delete(jobId);
+          if (this.wakeRearmPending.delete(jobId)) this.armWakeRearm(jobId);
+        }
       });
     this.wakeTasks.set(jobId, task);
+  }
+
+  private armWakeRearm(jobId: string): void {
+    const previous = this.wakeRearmTimers.get(jobId);
+    if (previous !== undefined) clearTimeout(previous);
+    if (!this.wakesActive || this.stopping) {
+      this.wakeRearmTimers.delete(jobId);
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (this.wakeRearmTimers.get(jobId) !== timer) return;
+      this.wakeRearmTimers.delete(jobId);
+      this.scheduleWake(jobId);
+    }, this.wakeBusyRearmMs);
+    this.wakeRearmTimers.set(jobId, timer);
+    timer.unref?.();
   }
 
   private async deliverWake(jobId: string): Promise<void> {
     for (;;) {
       let record: DurableProcessJobRecord | undefined;
       await this.withLock(async () => {
-        await this.store.mutate((records) => {
+        await this.storeMutate("wake.attempt", (records) => {
           const current = records.get(jobId);
           if (current === undefined
             || !isTerminalProcessJobState(current.state)
@@ -971,17 +1035,28 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         ambiguous: true,
       }));
       const attempt = record.wake.attempts;
+      const conversationBusy = !result.delivered
+        && result.code === "conversation_busy"
+        && result.retryable === true
+        && result.ambiguous !== true;
       const safeRetry = !result.delivered
+        && !conversationBusy
         && result.retryable === true
         && result.ambiguous !== true
         && attempt < MAX_WAKE_ATTEMPTS;
       await this.withLock(async () => {
-        await this.store.mutate((records) => {
+        await this.storeMutate("wake.settle", (records) => {
           const current = records.get(jobId);
           if (current?.wake.state !== "pending") return;
           if (result.delivered) {
             current.wake.state = "delivered";
             current.wake.retrySafe = false;
+          } else if (conversationBusy) {
+            // Busy admission is a pre-turn refusal: no chat mutation or model
+            // turn happened, so it must not consume the bounded delivery budget.
+            current.wake.attempts = Math.max(0, current.wake.attempts - 1);
+            if (current.wake.attempts === 0) current.wake.lastAttemptAt = null;
+            current.wake.retrySafe = true;
           } else if (safeRetry) {
             // This receipt proves no native delivery was accepted. Preserve
             // that fact so shutdown/restart can safely resume the same stable
@@ -1001,6 +1076,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         });
       });
       await this.updateSurfaceById(jobId);
+      if (conversationBusy) {
+        this.wakeRearmPending.add(jobId);
+        return;
+      }
       if (!safeRetry) return;
       await this.sleep(WAKE_RETRY_BASE_MS * (2 ** Math.max(0, attempt - 1)));
       if (this.stopping) return;
@@ -1011,12 +1090,15 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     if (this.stopped) return;
     this.stopping = true;
     this.wakesActive = false;
+    this.wakeRearmPending.clear();
+    for (const timer of this.wakeRearmTimers.values()) clearTimeout(timer);
+    this.wakeRearmTimers.clear();
     this.disarmQueueTimer();
     const failures: unknown[] = [];
     try {
       try {
         await this.withLock(async () => {
-          await this.store.mutate((records) => {
+          await this.storeMutate("stop.cancel", (records) => {
             for (const record of records.values()) {
               if (!isTerminalProcessJobState(record.state)) record.cancelRequested = true;
             }
@@ -1040,7 +1122,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         if (cleaned) {
           try {
             await this.withLock(async () => {
-              await this.store.mutate((records) => {
+              await this.storeMutate("stop.interrupt_queued", (records) => {
                 const record = records.get(jobId);
                 if (record !== undefined && !isTerminalProcessJobState(record.state)) {
                   transitionTerminal(
@@ -1081,7 +1163,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             }
             if (cleaned) {
               try {
-                await this.store.mutate((records) => {
+                await this.storeMutate("stop.interrupt_active", (records) => {
                   const record = records.get(jobId);
                   if (record !== undefined && !isTerminalProcessJobState(record.state)) {
                     transitionTerminal(
@@ -1124,7 +1206,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     } catch (error) {
       const message = safeAmbientError(error, "Queued process-job sandbox cleanup failed.");
       this.options.logger?.warn?.("Queued process-job sandbox cleanup failed.", { jobId, reason: message });
-      await this.store.mutate((records) => {
+      await this.storeMutate("cleanup.record_failure", (records) => {
         const record = records.get(jobId);
         if (record !== undefined && isTerminalProcessJobState(record.state)) {
           record.lastError = { code: "process_job_store_error", message: boundedSummary(message) };
@@ -1202,13 +1284,191 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     finally { release(); }
   }
 
+  private async storeGet(
+    jobId: string,
+    operation: string,
+  ): Promise<DurableProcessJobRecord | undefined> {
+    try {
+      const record = await this.store.get(jobId);
+      this.reconcileRecord(jobId, record);
+      return record;
+    } catch (error) {
+      await this.degradeStorage(operation, error);
+      throw error;
+    }
+  }
+
+  private async storeList(operation: string): Promise<readonly DurableProcessJobRecord[]> {
+    try {
+      const records = await this.store.list();
+      this.reconcileRecords(records);
+      return records;
+    } catch (error) {
+      await this.degradeStorage(operation, error);
+      throw error;
+    }
+  }
+
+  private async storeMutate<T>(
+    operation: string,
+    mutate: (records: Map<string, DurableProcessJobRecord>) => T | Promise<T>,
+  ): Promise<T> {
+    let callbackFailed = false;
+    let desired: Map<string, DurableProcessJobRecord> | undefined;
+    try {
+      const result = await this.store.mutate(async (records) => {
+        try {
+          const value = await mutate(records);
+          desired = cloneRecordMap(records);
+          return value;
+        } catch (error) {
+          callbackFailed = true;
+          throw error;
+        }
+      });
+      if (desired !== undefined) this.reconcileRecords([...desired.values()]);
+      return result;
+    } catch (error) {
+      if (!callbackFailed) {
+        if (desired !== undefined) this.rememberFailedTerminalMutations(desired);
+        await this.degradeStorage(operation, error);
+      }
+      throw error;
+    }
+  }
+
+  private async storeEnsureArtifacts(
+    jobId: string,
+  ): Promise<{ readonly stdoutRef: string; readonly stderrRef: string }> {
+    try {
+      return await this.store.ensureArtifacts(jobId);
+    } catch (error) {
+      await this.degradeStorage("ensure_artifacts", error);
+      throw error;
+    }
+  }
+
+  private async storeDiscardArtifacts(jobId: string): Promise<void> {
+    try {
+      await this.store.discardArtifacts(jobId);
+    } catch (error) {
+      await this.degradeStorage("discard_artifacts", error);
+      throw error;
+    }
+  }
+
+  private async storeWriteArtifact(
+    jobId: string,
+    stream: "stdout" | "stderr",
+    contents: string,
+  ): Promise<void> {
+    try {
+      await this.store.writeArtifact(jobId, stream, contents);
+    } catch (error) {
+      await this.degradeStorage(`write_${stream}`, error);
+      throw error;
+    }
+  }
+
+  private async storeApplyRetention(operation: string): Promise<void> {
+    try {
+      await this.store.applyRetention(this.settings, this.now());
+    } catch (error) {
+      await this.degradeStorage(operation, error);
+      throw error;
+    }
+    // Retention completing does not prove which records remain. A guarded
+    // readback is the only event that may prune snapshots and terminal overlays.
+    await this.storeList(`${operation}.readback`);
+  }
+
+  private reconcileRecords(records: readonly DurableProcessJobRecord[]): void {
+    const bounded = [...records]
+      .sort((left, right) => right.admittedAt.localeCompare(left.admittedAt)
+        || left.jobId.localeCompare(right.jobId))
+      .slice(0, MAX_IN_MEMORY_RECORDS);
+    this.recordSnapshot.clear();
+    for (const record of bounded) this.recordSnapshot.set(record.jobId, structuredClone(record));
+    const durableIds = new Set(records.map((record) => record.jobId));
+    for (const jobId of this.completionOverlays.keys()) {
+      if (!durableIds.has(jobId)) this.completionOverlays.delete(jobId);
+    }
+    for (const record of records) this.pruneConsistentOverlay(record);
+  }
+
+  private reconcileRecord(jobId: string, record: DurableProcessJobRecord | undefined): void {
+    if (record === undefined) {
+      this.recordSnapshot.delete(jobId);
+      this.completionOverlays.delete(jobId);
+      return;
+    }
+    this.recordSnapshot.delete(jobId);
+    this.recordSnapshot.set(jobId, structuredClone(record));
+    while (this.recordSnapshot.size > MAX_IN_MEMORY_RECORDS) {
+      const oldest = this.recordSnapshot.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.recordSnapshot.delete(oldest);
+      this.completionOverlays.delete(oldest);
+    }
+    this.pruneConsistentOverlay(record);
+  }
+
+  private pruneConsistentOverlay(record: DurableProcessJobRecord): void {
+    const overlay = this.completionOverlays.get(record.jobId);
+    if (overlay !== undefined
+      && isTerminalProcessJobState(record.state)
+      && isDeepStrictEqual(overlay, projectProcessJob(record))) {
+      this.completionOverlays.delete(record.jobId);
+    }
+  }
+
+  private rememberFailedTerminalMutations(records: Map<string, DurableProcessJobRecord>): void {
+    for (const record of records.values()) {
+      if (isTerminalProcessJobState(record.state)) {
+        this.completionOverlays.set(record.jobId, projectProcessJob(record));
+      }
+    }
+  }
+
+  private snapshotRecords(): readonly DurableProcessJobRecord[] {
+    return [...this.recordSnapshot.values()].map((record) => structuredClone(record));
+  }
+
+  private async degradeStorage(operation: string, error: unknown): Promise<void> {
+    this.storageOperational = false;
+    this.mutableHealth.state = "degraded";
+    this.mutableHealth.failureOperation = operation;
+    this.mutableHealth.failureDetectedAt = this.now().toISOString();
+    this.disarmQueueTimer();
+    this.options.logger?.warn?.("Process-job storage degraded; new admission is closed.", {
+      operation,
+      reason: safeAmbientError(error, "unknown process-job store failure"),
+    });
+    try {
+      await recordProcessJobHealthIncident(this.store.stateDir, operation, this.now());
+    } catch (markerError) {
+      this.options.logger?.warn?.("Process-job health incident marker could not be persisted.", {
+        operation,
+        reason: safeAmbientError(markerError, "unknown health-marker failure"),
+      });
+    }
+    try {
+      await this.options.onHealthChange?.(structuredClone(this.mutableHealth));
+    } catch (healthError) {
+      this.options.logger?.warn?.("Process-job live health update could not be published.", {
+        operation,
+        reason: safeAmbientError(healthError, "unknown health-publication failure"),
+      });
+    }
+  }
+
   private scheduleSurfaceUpdate(jobId: string): void {
     if (this.options.surfaceUpdate === undefined) return;
     queueMicrotask(() => {
       void this.updateSurfaceById(jobId).catch((error: unknown) => {
-        this.options.logger?.warn?.("Process-job web card could not be loaded for update.", {
+        this.options.logger?.warn?.("Process-job lifecycle surface could not be loaded for update.", {
           jobId,
-          reason: safeAmbientError(error, "unknown web-card load failure"),
+          reason: safeAmbientError(error, "unknown lifecycle-surface load failure"),
         });
       });
     });
@@ -1219,14 +1479,31 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     if (projection !== undefined) await this.updateSurface(projection);
   }
 
+  private async updateInitialSurface(jobId: string): Promise<void> {
+    if (this.options.surfaceUpdate === undefined) return;
+    const update = this.updateSurfaceById(jobId).catch((error: unknown) => {
+      this.options.logger?.warn?.("Initial process-job lifecycle update failed.", {
+        jobId,
+        reason: safeAmbientError(error, "unknown initial lifecycle-surface failure"),
+      });
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>((resolvePromise) => {
+      timer = setTimeout(resolvePromise, INITIAL_SURFACE_UPDATE_WAIT_MS);
+      timer.unref?.();
+    });
+    await Promise.race([update, deadline]);
+    if (timer !== undefined) clearTimeout(timer);
+  }
+
   private async updateSurface(projection: ProcessJobProjection): Promise<void> {
-    if (projection.origin.channel !== "web" || this.options.surfaceUpdate === undefined) return;
+    if (this.options.surfaceUpdate === undefined) return;
     try {
       await this.options.surfaceUpdate(projection);
     } catch (error) {
-      this.options.logger?.warn?.("Process-job web card could not be updated.", {
+      this.options.logger?.warn?.("Process-job lifecycle surface could not be updated.", {
         jobId: projection.jobId,
-        reason: safeAmbientError(error, "unknown web-card failure"),
+        reason: safeAmbientError(error, "unknown lifecycle-surface failure"),
       });
     }
   }
@@ -1242,6 +1519,14 @@ function pendingRequest(request: ProcessJobStartRequest): PendingProcessJob {
       await cleanupPromise;
     },
   };
+}
+
+function cloneRecordMap(
+  records: Map<string, DurableProcessJobRecord>,
+): Map<string, DurableProcessJobRecord> {
+  return new Map(
+    [...records].map(([jobId, record]) => [jobId, structuredClone(record)]),
+  );
 }
 
 function enforceAdmission(
@@ -1387,7 +1672,10 @@ function processJobWakePrompt(projection: ProcessJobProjection): string {
     exitCode: projection.exitCode,
     signal: projection.signal,
     durationMs: projection.durationMs,
-    output: projection.output,
+    output: {
+      ...projection.output,
+      preview: neutralizeProcessJobWakeFence(projection.output.preview),
+    },
     error: projection.lastError,
   });
   return [
@@ -1398,6 +1686,12 @@ function processJobWakePrompt(projection: ProcessJobProjection): string {
     body,
     "</untrusted_process_job_result>",
   ].join("\n");
+}
+
+function neutralizeProcessJobWakeFence(value: string): string {
+  return value
+    .replaceAll("<untrusted_process_job_result>", "[untrusted_process_job_result>")
+    .replaceAll("</untrusted_process_job_result>", "[/untrusted_process_job_result>");
 }
 
 function redactOutput(text: string, secrets: readonly string[], truncatedAtEnd = false): string {

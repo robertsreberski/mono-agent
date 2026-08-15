@@ -94,6 +94,68 @@ describe("Exec", () => {
     expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
+  it("cleans an unlaunched prepared command once when the controller returns an invalid result", async () => {
+    const workspace = tempWorkspace();
+    const cleanup = vi.fn(async () => {});
+    const sandbox = {
+      ...passthroughSandbox,
+      async prepareCommand({ command }) {
+        return { ...command, args: command.args ?? [], cleanup };
+      },
+    };
+
+    const result = await execToolRun({
+      executable: process.execPath,
+      args: ["--eval", "process.stdout.write('must-not-run')"],
+      background: true,
+    }, {
+      ctx: { workspace, sandbox },
+      processJobsController: { start: vi.fn(async () => ({ invalid: true })) },
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: { code: "process_job_controller_invalid" },
+    });
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not clean underneath a launched handle when the controller result is invalid", async () => {
+    const workspace = tempWorkspace();
+    const cleanup = vi.fn(async () => {});
+    let handle;
+    let ownedPrepared;
+    const sandbox = {
+      ...passthroughSandbox,
+      async prepareCommand({ command }) {
+        return { ...command, args: command.args ?? [], cleanup };
+      },
+    };
+    const controller = {
+      async start(request) {
+        ownedPrepared = request.prepared;
+        handle = request.launch({ timeoutMs: 5_000 });
+        return { invalid: true };
+      },
+    };
+
+    const result = await execToolRun({
+      executable: process.execPath,
+      args: ["--eval", "process.stdout.write('owned')"],
+      background: true,
+    }, { ctx: { workspace, sandbox }, processJobsController: controller });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: { code: "process_job_controller_invalid" },
+    });
+    expect(cleanup).not.toHaveBeenCalled();
+    await handle.release();
+    await handle.completion;
+    await ownedPrepared.cleanup();
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
   it("does not spawn the target until the host releases its durable ownership gate", async () => {
     const workspace = tempWorkspace();
     const marker = resolve(workspace, "target-started");

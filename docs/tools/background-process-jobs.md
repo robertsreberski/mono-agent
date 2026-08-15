@@ -146,6 +146,12 @@ at most three attempts with the same delivery key, including across restart.
 Ambiguous wake attempts are not replayed automatically, because a second post
 could duplicate a real first delivery.
 
+A Slack or Telegram conversation that is already at its pre-turn admission cap
+does not spend that three-attempt budget. The wake stays durably pending and is
+re-armed on a separate, longer timer; a restart can deliver it later. Once a
+turn is admitted, any ambiguous failure is nonretryable and exactly-once wins
+over automatic replay.
+
 Pending-wake records and their referenced artifacts remain live and are exempt
 from age, count, and artifact-byte pruning until delivery settles. Other
 terminal records and artifacts are pruned oldest-first with job-id tie-breaking.
@@ -163,19 +169,32 @@ record size is checked before a recovery transaction marker is published. A
 legacy transaction that can never fit or validate is moved intact into the
 owner-only `quarantine-v1/` directory; the store opens in degraded health and
 `mono-agent validate` reports the incident for operator review. Other unsafe or
-transient store failures remain fail-closed. If a live process completes but
-its terminal record cannot be committed, the controller stops new admissions,
-reports degraded health, and exposes a failed in-memory projection with wake
-delivery withheld. It preserves the durable nonterminal record so the next
+transient failures from every store read, mutation, artifact, wake, recovery,
+retention, and shutdown boundary remain fail-closed. The controller closes new
+admission, publishes degraded health to the live TUI and trace source, persists
+a bounded secret-free health marker for `mono-agent validate`, and serves its
+bounded last-known in-memory record view where that is safe. If a live process
+completes but its terminal record cannot be committed, the controller exposes a
+failed in-memory projection with wake delivery withheld and still releases the
+process's active slot. It preserves the durable nonterminal record so the next
 owner restart can reconcile it to `interrupted` and deliver the recovery wake.
+A clean restart clears the marker only after recovery, retention, and durable
+readback succeed.
 Because process jobs are opt-in, an unavailable store disables only background
 jobs instead of aborting the whole agent.
 
-Slack and Telegram wake the original thread/chat through their normal proactive
-turn path and settle the existing in-thread running indicator once, without an
-extra completion post. Web wakes through the operator driver without requiring
-a live browser or HTTP turn, commits one normal agent-history entry, and updates
-one durable job card in the originating thread.
+Slack and Telegram start one host-owned lifecycle message before the tool call
+returns, without waiting indefinitely on chat API latency. Updates are
+serialized per job, edit that same exact-origin thread/chat message when
+possible, and never let a late running update overwrite a terminal state. After
+a restart or an uneditable/missing message reference, the adapter may publish
+one bounded self-contained terminal fallback in that same origin only. Empty
+host lifecycle updates never enter the ordinary responder/model path. The
+terminal wake itself still uses the channel's normal proactive turn path. Web
+wakes through the operator driver without requiring a live browser or HTTP
+turn, commits one normal agent-history entry, and updates one durable job card
+in the originating thread; ordinary `web:<id>` notifications retain their
+existing TUI routing.
 
 ## Restart and cancellation
 
@@ -224,5 +243,6 @@ clone or serialize the retained job list on every refresh.
 
 `mono-agent validate` / `doctor` reports whether the feature is disabled or
 unsupported on Windows, then inspects only bounded local record counts and
-owner-only modes, including any quarantined transaction count. It does not
-probe or mutate the live controller and never creates a missing store.
+owner-only modes, including any quarantined transaction count and the bounded
+runtime health marker. It does not probe or mutate the live controller and
+never creates a missing store.

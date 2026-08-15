@@ -7,6 +7,8 @@ import {
   type AgentLiveInputRequest,
   type AgentLiveInputSettlement,
   type ChannelAskSnapshot,
+  type ProcessJobProjection,
+  type ProcessJobState,
 } from "@mono-agent/agent-contracts";
 
 import {
@@ -864,6 +866,88 @@ describe("SlackAdapter", () => {
     expect(api.reactionsAddCalls).toEqual([]);
   });
 
+  it.each(["succeeded", "failed", "cancelled", "timed_out"] as const)(
+    "posts running then edits the same exact-thread process-job message to %s",
+    async (state) => {
+      const api = new FakeSlackApi();
+      const respond = vi.fn(async () => ({ text: "must not run" }));
+      const adapter = new SlackAdapter({
+        api,
+        allowAllChannels: true,
+        responder: responderFrom(respond),
+      });
+      const running = processJobProjection("running");
+      const terminal = processJobProjection(state);
+
+      await expect(adapter.updateProcessJob("C1", "171.5", running))
+        .resolves.toMatchObject({ delivered: true, code: "surface_posted" });
+      await expect(adapter.updateProcessJob("C1", "171.5", terminal))
+        .resolves.toMatchObject({ delivered: true, code: "surface_updated" });
+
+      expect(respond).not.toHaveBeenCalled();
+      expect(api.postMessageCalls).toHaveLength(1);
+      expect(api.postMessageCalls[0]).toMatchObject({ channel: "C1", thread_ts: "171.5" });
+      expect(api.updateCalls).toHaveLength(1);
+      expect(api.updateCalls[0]).toMatchObject({ channel: "C1", ts: "200.000001" });
+      expect(api.updateCalls[0]?.text).toContain(state.replaceAll("_", " "));
+    },
+  );
+
+  it("serializes lifecycle updates so a late running state cannot overwrite terminal", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: responderFrom(async () => ({ text: "unused" })),
+    });
+    await adapter.updateProcessJob("C1", "171.5", processJobProjection("running"));
+
+    const terminal = adapter.updateProcessJob("C1", "171.5", processJobProjection("succeeded"));
+    const lateRunning = adapter.updateProcessJob("C1", "171.5", processJobProjection("running"));
+    await Promise.all([terminal, lateRunning]);
+
+    expect(api.updateCalls).toHaveLength(1);
+    expect(api.updateCalls[0]?.text).toContain("succeeded");
+  });
+
+  it("refuses cross-conversation lifecycle mutation and uses one terminal fallback for an uneditable ref", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: responderFrom(async () => ({ text: "unused" })),
+    });
+    const running = processJobProjection("running");
+    await expect(adapter.updateProcessJob("C2", "171.5", running))
+      .resolves.toMatchObject({ delivered: false, code: "process_job_origin_mismatch" });
+    expect(api.postMessageCalls).toHaveLength(0);
+
+    await adapter.updateProcessJob("C1", "171.5", running);
+    api.updateFailure = new Error("message_not_found");
+    await expect(adapter.updateProcessJob("C1", "171.5", processJobProjection("failed")))
+      .resolves.toMatchObject({ delivered: true, code: "surface_terminal_fallback" });
+    await adapter.updateProcessJob("C1", "171.5", processJobProjection("failed"));
+    expect(api.postMessageCalls).toHaveLength(2);
+    expect(api.postMessageCalls[1]).toMatchObject({ channel: "C1", thread_ts: "171.5" });
+  });
+
+  it("keeps native process-job message references bounded", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: responderFrom(async () => ({ text: "unused" })),
+    });
+    for (let index = 0; index < 257; index += 1) {
+      await adapter.updateProcessJob(
+        "C1",
+        "171.5",
+        processJobProjection("running", `pj_${String(index)}`),
+      );
+    }
+    expect(adapter.processJobMessageRefCount()).toBe(256);
+  });
+
   it("notify() suppresses transient tool activity for proactive turns", async () => {
     const api = new FakeSlackApi();
     const adapter = new SlackAdapter({
@@ -1456,9 +1540,14 @@ describe("SlackAdapter", () => {
       }),
     });
 
-    await adapter.notify("C2", undefined, "Post an announcement");
+    await adapter.notify("C2", undefined, "Post an announcement", {
+      deliveryKey: "process-job:slack-wake",
+    });
 
     expect(captured?.conversationId).toBe("slack:C2");
+    expect(Reflect.get(captured?.metadata ?? {}, Symbol.for("mono-agent.process-job-wake.delivery-key.v1")))
+      .toBe("process-job:slack-wake");
+    expect(JSON.stringify(captured?.metadata)).not.toContain("process-job:slack-wake");
     const post = api.postMessageCalls.at(-1);
     expect(post?.channel).toBe("C2");
     expect(post?.thread_ts).toBeUndefined();
@@ -4299,6 +4388,51 @@ describe("SlackAdapter thread and channel context", () => {
     expect(captured?.sender).toBeUndefined();
   });
 });
+
+function processJobProjection(
+  state: ProcessJobState,
+  jobId = "pj_slack",
+): ProcessJobProjection {
+  const terminal = state !== "queued" && state !== "starting" && state !== "running";
+  return {
+    schema: "mono-agent.process-job-projection.v1",
+    jobId,
+    tool: "Exec",
+    state,
+    summary: "Exec command (values redacted)",
+    origin: {
+      conversationId: "slack:C1:171.5#2026-08-15",
+      channel: "slack",
+      runId: "run",
+      historyBoundary: "run",
+      bucket: "2026-08-15",
+    },
+    timestamps: {
+      admittedAt: "2026-08-15T00:00:00.000Z",
+      queueDeadlineAt: "2026-08-15T00:05:00.000Z",
+      startedAt: "2026-08-15T00:00:01.000Z",
+      runtimeDeadlineAt: "2026-08-15T00:30:01.000Z",
+      completedAt: terminal ? "2026-08-15T00:00:02.000Z" : null,
+    },
+    limits: { maxRuntimeMs: 1_800_000, maxOutputBytes: 1024, previewChars: 100, chainDepth: 0 },
+    output: {
+      stdoutBytes: terminal ? 2 : 0,
+      stderrBytes: 0,
+      truncated: false,
+      preview: terminal ? "ok" : "",
+      stdoutRef: null,
+      stderrRef: null,
+    },
+    wake: { state: "pending", attempts: 0, deliveryKey: `process-job:${jobId}`, lastAttemptAt: null },
+    exitCode: state === "succeeded" ? 0 : null,
+    signal: null,
+    durationMs: terminal ? 1_000 : null,
+    cancelRequested: state === "cancelled",
+    lastError: state === "failed"
+      ? { code: "process_job_failed", message: "Process exited with code 1." }
+      : null,
+  };
+}
 
 function responderFrom(respond: AgentResponder["respond"]): AgentResponder {
   return { respond };

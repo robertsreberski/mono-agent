@@ -138,6 +138,17 @@ same cumulative ledger so it becomes the newest bot message after the human
 follow-up. A failed delete edits the existing ledger in place; neither path can
 block or replace the final answer.
 
+### Host-owned process-job lifecycle
+
+The config-first host uses `SlackAdapter.updateProcessJob` for a background
+Exec/Bash job's lifecycle card. This path never invokes the responder. It binds
+the card to the exact channel/thread origin, serializes updates per job, edits
+the same message when possible, and ignores any nonterminal update that arrives
+after a terminal state. Message references and fallback-attempt identities are
+instance-local and bounded. When a terminal update has no editable reference,
+the adapter makes at most one self-contained terminal fallback post in that
+same thread. Ordinary proactive `notify` behavior is unchanged.
+
 ### Live follow-up steering
 
 When the responder exposes live input, another plain-text message in the same
@@ -401,7 +412,9 @@ The request lifecycle is:
 4. The host responder emits standard stream events. `message-stream.ts` converts
    them into Slack posts/updates/deletes, while `slack-markdown.ts` translates
    standard Markdown at the transport boundary.
-5. `stop()` aborts the runner and waits for the connection loop to settle.
+5. Host-owned process-job projections bypass the responder and use the
+   adapter-local monotonic lifecycle-message path.
+6. `stop()` aborts the runner and waits for the connection loop to settle.
 
 ### Event callback admission
 
@@ -447,6 +460,7 @@ at-most-once admission first.
 | `loadSlackAdapterConfig` | Load and validate the `slack` config/env surface. |
 | `startSlackAdapter` | Start the complete Web API + event adapter + Socket Mode lifecycle. |
 | `SlackAdapter` | Normalize and handle events with a custom connection runner. |
+| `SlackAdapter.updateProcessJob` | Post or monotonically update one exact-origin host lifecycle card without a model turn. |
 | `SlackSocketModeRunner` | Own Socket Mode transport and reconnect policy separately. |
 | `SlackWebApiClient` | Call the Slack Web API through the adapter's typed boundary. |
 | `SlackMessageStream` | Deliver a responder stream to one Slack destination. |
