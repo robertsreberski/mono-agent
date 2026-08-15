@@ -277,8 +277,8 @@ function mcpAppAuditStorageFor(
         const canonicalDirectory = resolve(directory);
         assertMcpAppAuditDirectory(state, canonicalDirectory);
         const tracked = state.owners.get(canonicalDirectory);
-        if (tracked?.poisoned === true && tracked.identity === undefined) {
-          throw new Error("MCP App audit cleanup refused an owner without a verified identity.");
+        if (tracked?.poisoned === true) {
+          throw new Error("MCP App audit cleanup refused a poisoned owner.");
         }
         const initial = await lstat(canonicalDirectory);
         if (!initial.isDirectory() || initial.isSymbolicLink()) {
@@ -1320,7 +1320,8 @@ async function appendMcpAppAudit(
 
   await initializeMcpAppAuditStorage(state, directory);
   let owner = await reconcileTargetMcpAppAuditOwner(state, directory);
-  await reinventoryPoisonedMcpAppAuditOwners(state, directory);
+  // Foreign poisoned owners retain their bounded reservation for this process.
+  // Only a fresh service process may inventory their filesystem paths again.
   const currentBytes = owner.files.get(0)?.size ?? 0;
   const rotates = currentBytes > 0 && currentBytes > state.fileMaxBytes - incomingBytes;
   const releasedFile = rotates ? owner.files.get(state.retainedFiles) : undefined;
@@ -1494,39 +1495,13 @@ async function initializeMcpAppAuditStorage(
   state.initialized = true;
 }
 
-async function reinventoryPoisonedMcpAppAuditOwners(
-  state: McpAppAuditStorageState,
-  targetDirectory: string,
-): Promise<void> {
-  const poisonedOwners = [...state.owners.values()]
-    .filter((owner) => owner.poisoned && owner.directory !== targetDirectory)
-    .sort((left, right) => left.directory.localeCompare(right.directory));
-  for (const poisonedOwner of poisonedOwners) {
-    // A directory that was unreadable may recover in place, but a replacement
-    // entry is a different owner. Never traverse it under the old accounting
-    // identity, even when the replacement happens to be another real directory.
-    if (poisonedOwner.identity === undefined) continue;
-    const owner = await inventoryMcpAppAuditOwner(
-      state,
-      poisonedOwner.directory,
-      false,
-      poisonedOwner.identity,
-    );
-    replaceMcpAppAuditOwner(
-      state,
-      poisonedOwner.directory,
-      mcpAppAuditOwnerBytes(owner) === 0 ? undefined : owner,
-    );
-  }
-}
-
 async function reconcileTargetMcpAppAuditOwner(
   state: McpAppAuditStorageState,
   directory: string,
 ): Promise<McpAppAuditOwner> {
   const tracked = state.owners.get(directory);
-  if (tracked?.poisoned === true && tracked.identity === undefined) {
-    throw new Error("MCP App audit target has no verified invocation-directory identity.");
+  if (tracked?.poisoned === true) {
+    throw new Error("MCP App audit target is quarantined for this process.");
   }
   const owner = await inventoryMcpAppAuditOwner(state, directory, true, tracked?.identity);
   replaceMcpAppAuditOwner(state, directory, owner);

@@ -1293,6 +1293,7 @@ describe("MCP Apps registry", () => {
     async (failedOperation) => {
     const artifactDir = await tempDir();
     let poisonedDirectory = "";
+    let failPoisonedOwner = true;
     const service = createMcpAppService({
       artifactDir,
       auditMaxBytes: 1_024,
@@ -1300,7 +1301,8 @@ describe("MCP Apps registry", () => {
       auditStorageMaxBytes: 4_096,
       beforeAuditStorageOperation(operation, path) {
         if (
-          operation === failedOperation
+          failPoisonedOwner
+          && operation === failedOperation
           && (path === poisonedDirectory || path.startsWith(`${poisonedDirectory}/`))
         ) throw fileSystemError("EACCES");
       },
@@ -1313,6 +1315,11 @@ describe("MCP Apps registry", () => {
     }))).part as AgentReplyMcpAppPart;
     poisonedDirectory = join(artifactDir, "mcp-apps", poisonedApp.invocationId);
     await writeFile(join(poisonedDirectory, "audit.1.jsonl"), "foreign history\n");
+    const replacementFiles = await Promise.all([
+      "manifest.json",
+      "resource.html",
+      "state.json",
+    ].map(async (name) => ({ name, contents: await readFile(join(poisonedDirectory, name)) })));
     const healthyLive = connection("connection-audit-read-healthy");
     const healthyHost = await hostFor(service, "run-audit-read-healthy", "conversation");
     const healthyApp = (await healthyHost.register(registration(healthyLive, {
@@ -1330,6 +1337,14 @@ describe("MCP Apps registry", () => {
     })).resolves.toMatchObject({ ok: true });
     expect(healthyLive.callTool).toHaveBeenCalledTimes(1);
 
+    failPoisonedOwner = false;
+    await rm(poisonedDirectory, { recursive: true, force: true });
+    await mkdir(poisonedDirectory);
+    await Promise.all(replacementFiles.map(async ({ name, contents }) => {
+      await writeFile(join(poisonedDirectory, name), contents);
+    }));
+    const sentinels = await auditSentinels(poisonedDirectory);
+
     await expect(service.request({
       conversationId: "conversation",
       invocationId: poisonedApp.invocationId,
@@ -1339,12 +1354,13 @@ describe("MCP Apps registry", () => {
       confirmed: true,
     })).rejects.toMatchObject({ code: "app_audit_failed" });
     expect(poisonedLive.callTool).not.toHaveBeenCalled();
+    await sentinels.assertUnchanged();
     await service.dispose();
     },
   );
 
   it.skipIf(process.platform === "win32")(
-    "preserves unrelated history when two real unreadable owners make admission impossible and recovers in place",
+    "preserves unrelated history when poisoned owners block admission until a process restart",
     async () => {
       const artifactDir = await tempDir();
       const service = createMcpAppService({
@@ -1399,15 +1415,46 @@ describe("MCP Apps registry", () => {
         method: "tools/call",
         params: { name: "refresh_chart" },
         confirmed: true,
-      })).resolves.toMatchObject({ ok: true });
-      expect(healthyLive.callTool).toHaveBeenCalledTimes(1);
+      })).rejects.toMatchObject({ code: "app_audit_failed" });
+      expect(healthyLive.callTool).not.toHaveBeenCalled();
       await expect(stat(unrelatedHistory)).resolves.toMatchObject({ size: 600 });
       for (const directory of poisonedDirectories) {
         await expect(stat(join(directory, "audit.jsonl"))).resolves.toMatchObject({ size: 128 });
       }
-      expect(await auditContents(join(root, healthyApp.invocationId)))
-        .toContain('"phase":"completed"');
       await service.dispose();
+
+      // Reload the module-scoped storage state to model a fresh service process.
+      vi.resetModules();
+      const { createMcpAppService: createRestartedMcpAppService } = await import("../mcp-apps.js");
+      const restartedService = createRestartedMcpAppService({
+        artifactDir,
+        auditMaxBytes: 1_024,
+        auditRetainedFiles: 1,
+        auditStorageMaxBytes: 3_072,
+      });
+      const restartedLive = connection("connection-audit-real-poison-restarted");
+      const restartedHost = await hostFor(
+        restartedService,
+        "run-audit-real-poison-restarted",
+        "conversation",
+      );
+      const restartedApp = (await restartedHost.register(registration(restartedLive, {
+        toolCallId: "call-audit-real-poison-restarted",
+        resourceUri: "ui://widgets/audit-real-poison-restarted",
+      }))).part as AgentReplyMcpAppPart;
+
+      await expect(restartedService.request({
+        conversationId: "conversation",
+        invocationId: restartedApp.invocationId,
+        connectionId: restartedApp.connectionId,
+        method: "tools/call",
+        params: { name: "refresh_chart" },
+        confirmed: true,
+      })).resolves.toMatchObject({ ok: true });
+      expect(restartedLive.callTool).toHaveBeenCalledTimes(1);
+      expect(await auditContents(join(root, restartedApp.invocationId)))
+        .toContain('"phase":"completed"');
+      await restartedService.dispose();
     },
   );
 
@@ -1480,6 +1527,13 @@ describe("MCP Apps registry", () => {
       const sentinels = await auditSentinels(poisonedDirectory);
 
       await expect(service.request(confirmedToolCall(app))).resolves.toMatchObject({ ok: true });
+      await sentinels.assertUnchanged();
+      const replacementIdentity = await lstat(poisonedDirectory);
+      await expect(service.cleanupExpired()).resolves.toBeUndefined();
+      await expect(lstat(poisonedDirectory)).resolves.toMatchObject({
+        dev: replacementIdentity.dev,
+        ino: replacementIdentity.ino,
+      });
       await sentinels.assertUnchanged();
       expect(live.callTool).toHaveBeenCalledTimes(2);
       await service.dispose();

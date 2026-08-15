@@ -215,9 +215,9 @@ rescanning every invocation. Reclamation removes rotated history first, then
 inactive and unprotected owners' active files only as a last resort. A live or
 protected owner's active `audit.jsonl`, including an in-flight confirmation, is
 never a candidate. Foreign owners that cannot be inspected are isolated under
-bounded conservative accounting and re-inventoried only when the same verified
-directory identity recovers; symlinked or replacement owners remain
-quarantined. Append, rotation, cleanup, and quota reclamation revalidate the
+bounded conservative accounting and remain quarantined for the process
+lifetime; recovery requires a process restart and fresh root inventory. Append,
+rotation, cleanup, and quota reclamation revalidate the
 audit root, owner directory, and singly linked file identities after the
 operation hook and before using a child path. Admission is rejected before
 deletion when the available candidates cannot safely create enough room,

@@ -691,8 +691,8 @@ maintains exact owner byte counts under a global append gate. Reclamation uses
 rotated history first, then inactive and unprotected owners' active files as a
 last resort; a live or protected owner's active `audit.jsonl` is never a
 candidate. Foreign read failures receive bounded conservative accounting and
-are re-inventoried only when the same verified directory identity recovers;
-symlinked or replacement owners remain quarantined. Every append, rotation,
+remain quarantined for the process lifetime; recovery requires a process
+restart and fresh root inventory. Every append, rotation,
 cleanup, and quota-reclamation mutation revalidates the audit root, owner
 directory, and singly linked file identities after the operation hook and before
 using the child path. Admission that cannot safely create room fails closed
