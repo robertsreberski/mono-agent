@@ -172,11 +172,14 @@ describe("process-job request availability", () => {
     const controller = vi.fn(() => ({ start: vi.fn() }));
     const extension = createProcessJobsRuntimeExtension({
       service: {
-        settings: { maxChainDepth: 4 },
+        settings: {
+          maxChainDepth: 4,
+          stateDir: "/agent/.mono-agent/process-jobs",
+        },
         controller,
       } as never,
       coreConfig: {
-        runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk" },
+        runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
         tools: { allowedTools: ["Exec", "Bash"], disallowedTools: [] },
       } as never,
       channelId: "slack",
@@ -195,9 +198,15 @@ describe("process-job request availability", () => {
   it("preserves parent-plus-one depth through a busy live-session queue and removes capability at max depth", async () => {
     const controller = vi.fn(() => ({ start: vi.fn() }));
     const extension = createProcessJobsRuntimeExtension({
-      service: { settings: { maxChainDepth: 4 }, controller } as never,
+      service: {
+        settings: {
+          maxChainDepth: 4,
+          stateDir: "/agent/.mono-agent/process-jobs",
+        },
+        controller,
+      } as never,
       coreConfig: {
-        runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk" },
+        runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
         tools: { allowedTools: ["Exec"], disallowedTools: [] },
       } as never,
       channelId: "slack",
@@ -294,9 +303,15 @@ describe("process-job request availability", () => {
       const conversationId = channel === "slack" ? "slack:C1:1.1" : "telegram:42";
       const controller = vi.fn((_request: unknown, _chainDepth: number) => ({ start: vi.fn() }));
       const extension = createProcessJobsRuntimeExtension({
-        service: { settings: { maxChainDepth: 4 }, controller } as never,
+        service: {
+          settings: {
+            maxChainDepth: 4,
+            stateDir: "/agent/.mono-agent/process-jobs",
+          },
+          controller,
+        } as never,
         coreConfig: {
-          runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk" },
+          runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
           tools: { allowedTools: ["Exec"], disallowedTools: [] },
         } as never,
         channelId: channel,
@@ -376,9 +391,15 @@ describe("process-job request availability", () => {
       await writeFile(identityPath, "You are Mono.", "utf8");
       const controller = vi.fn((_request: unknown, _chainDepth: number) => ({ start: vi.fn() }));
       const extension = createProcessJobsRuntimeExtension({
-        service: { settings: { maxChainDepth: 4 }, controller } as never,
+        service: {
+          settings: {
+            maxChainDepth: 4,
+            stateDir: "/agent/.mono-agent/process-jobs",
+          },
+          controller,
+        } as never,
         coreConfig: {
-          runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk" },
+          runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
           tools: { allowedTools: ["Exec"], disallowedTools: [] },
         } as never,
         channelId: "slack",
@@ -466,9 +487,15 @@ describe("process-job request availability", () => {
   it("fails closed when overlapping wake flights reuse one exact delivery discriminator", async () => {
     const controller = vi.fn(() => ({ start: vi.fn() }));
     const extension = createProcessJobsRuntimeExtension({
-      service: { settings: { maxChainDepth: 4 }, controller } as never,
+      service: {
+        settings: {
+          maxChainDepth: 4,
+          stateDir: "/agent/.mono-agent/process-jobs",
+        },
+        controller,
+      } as never,
       coreConfig: {
-        runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk" },
+        runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
         tools: { allowedTools: ["Exec"], disallowedTools: [] },
       } as never,
       channelId: "slack",
