@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CronOperatorWireError,
   MAX_AGENT_REPLY_PARTS,
   MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES,
   MAX_CRON_OPERATOR_JOBS,
@@ -426,6 +427,114 @@ describe("cron operator wire contract", () => {
     })).events).toEqual([{ type: "runtime_warning", message: "bounded" }]);
     expect(arrayOwnKeysReads).toBe(1);
     expect(eventOwnKeysReads).toBe(1);
+    expect(getReads).toBe(0);
+  });
+
+  it("rejects a shared-reference diamond within a bounded descriptor budget", () => {
+    const depth = 30;
+    let ownKeysReads = 0;
+    let descriptorReads = 0;
+    let getReads = 0;
+    const withObservedSnapshot = (record: Record<string, unknown>): Record<string, unknown> => new Proxy(record, {
+      get() {
+        getReads += 1;
+        throw new Error("wire parsing must not invoke Proxy get traps");
+      },
+      getOwnPropertyDescriptor(target, property) {
+        descriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+      ownKeys(target) {
+        ownKeysReads += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+    let shared = withObservedSnapshot({ leaf: "bounded" });
+    for (let index = 0; index < depth; index += 1) {
+      shared = withObservedSnapshot({ left: shared, right: shared });
+    }
+    const input = summary({
+      projection: "detail",
+      events: [{ type: "runtime_telemetry", kind: "diamond", data: shared }],
+      eventsIncluded: 1,
+    });
+
+    const startedAt = performance.now();
+    let thrown: unknown;
+    try {
+      parseCronOperatorRunDetail(input);
+    } catch (error) {
+      thrown = error;
+    }
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(thrown).toBeInstanceOf(CronOperatorWireError);
+    expect(thrown).toMatchObject({
+      name: "CronOperatorWireError",
+      message: "Invalid cron operator wire data.",
+    });
+    expect(ownKeysReads).toBe(depth + 1);
+    expect(descriptorReads).toBe((depth * 2) + 1);
+    expect(getReads).toBe(0);
+    expect(elapsedMs).toBeLessThan(2_000);
+  }, 5_000);
+
+  it("rejects cycles while preserving bounded aliases and independent control branches", () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(() => parseCronOperatorRunDetail(summary({
+      projection: "detail",
+      events: [{ type: "runtime_telemetry", kind: "cycle", data: cyclic }],
+      eventsIncluded: 1,
+    }))).toThrowError(CronOperatorWireError);
+
+    const shared = { value: "bounded" };
+    const aliased = parseCronOperatorRunDetail(summary({
+      projection: "detail",
+      events: [{ type: "runtime_telemetry", kind: "alias", data: { left: shared, right: shared } }],
+      eventsIncluded: 1,
+    }));
+    const aliasedData = (aliased.events[0] as { data: Record<string, unknown> }).data;
+    expect(aliasedData.left).toBe(aliasedData.right);
+    expect(aliasedData.left).not.toBe(shared);
+
+    const independent = parseCronOperatorRunDetail(summary({
+      projection: "detail",
+      events: [{
+        type: "runtime_telemetry",
+        kind: "independent",
+        data: { left: { value: "bounded" }, right: { value: "bounded" } },
+      }],
+      eventsIncluded: 1,
+    }));
+    const independentData = (independent.events[0] as { data: Record<string, unknown> }).data;
+    expect(independentData.left).toEqual(independentData.right);
+    expect(independentData.left).not.toBe(independentData.right);
+  });
+
+  it("bounds hostile Proxy key fan-out before invoking per-property descriptor traps", () => {
+    let ownKeysReads = 0;
+    let descriptorReads = 0;
+    let getReads = 0;
+    const keys = Array.from({ length: 32 }, (_, index) => `attacker${String(index)}`);
+    const oversized = new Proxy({}, {
+      get() {
+        getReads += 1;
+        throw new Error("wire parsing must not invoke Proxy get traps");
+      },
+      getOwnPropertyDescriptor() {
+        descriptorReads += 1;
+        return { configurable: true, enumerable: true, value: "bounded" };
+      },
+      ownKeys() {
+        ownKeysReads += 1;
+        return keys;
+      },
+    });
+
+    expect(() => parseCronOperatorRunSummary(oversized)).toThrowError(CronOperatorWireError);
+    expect(ownKeysReads).toBe(1);
+    expect(descriptorReads).toBe(0);
     expect(getReads).toBe(0);
   });
 

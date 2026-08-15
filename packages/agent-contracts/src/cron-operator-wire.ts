@@ -123,10 +123,24 @@ export class CronOperatorWireError extends TypeError {
   }
 }
 
+const OVERVIEW_KEYS = ["generatedAt", "actionsEnabled", "jobs", "degradedReason", "jobsTruncated"] as const;
+const JOB_KEYS = [
+  "jobId", "expression", "timezone", "conversationId", "configured", "declaredEnabled",
+  "effectiveEnabled", "nextRunAt", "health", "lastRun", "activeRunId",
+] as const;
+const RUN_BASE_KEYS = [
+  "projection", "runId", "jobId", "scheduledAt", "orderedAt", "sequence", "trigger", "status",
+  "startedAt", "completedAt", "artifactRunId", "text", "error", "failureKind", "blockedByRunId",
+  "blockedByTrigger", "queueDepth", "replyPartOutcomes", "eventCount", "fieldsTruncated", "eventsTruncated",
+] as const;
+const RUN_DETAIL_KEYS = [...RUN_BASE_KEYS, "events", "eventsIncluded"] as const;
+const RUN_PAGE_KEYS = ["runs", "nextCursor"] as const;
+const MAX_REPLY_PART_OUTCOME_FIELDS = 6;
+
 export function parseCronOperatorOverview(value: unknown): CronOperatorOverview {
-  const overview = snapshotOwnDataRecord(value);
+  const overview = snapshotOwnDataRecord(value, OVERVIEW_KEYS.length);
   const jobs = snapshotOwnDataArray(overview.jobs, MAX_CRON_OPERATOR_JOBS);
-  if (!hasOnlyKeys(overview, ["generatedAt", "actionsEnabled", "jobs", "degradedReason", "jobsTruncated"])
+  if (!hasOnlyKeys(overview, OVERVIEW_KEYS)
     || !validDate(overview.generatedAt)
     || typeof overview.actionsEnabled !== "boolean"
     || !optionalBoundedString(overview.degradedReason, MAX_CRON_OPERATOR_DEGRADED_REASON_BYTES)
@@ -141,11 +155,8 @@ export function parseCronOperatorOverview(value: unknown): CronOperatorOverview 
 }
 
 export function parseCronOperatorJob(value: unknown): CronOperatorJob {
-  const job = snapshotOwnDataRecord(value);
-  if (!hasOnlyKeys(job, [
-    "jobId", "expression", "timezone", "conversationId", "configured", "declaredEnabled",
-    "effectiveEnabled", "nextRunAt", "health", "lastRun", "activeRunId",
-  ])
+  const job = snapshotOwnDataRecord(value, JOB_KEYS.length);
+  if (!hasOnlyKeys(job, JOB_KEYS)
     || !boundedString(job.jobId, MAX_CRON_OPERATOR_JOB_ID_BYTES, true)
     || !optionalBoundedString(job.expression, MAX_CRON_OPERATOR_EXPRESSION_BYTES)
     || !optionalBoundedString(job.timezone, MAX_CRON_OPERATOR_TIMEZONE_BYTES)
@@ -176,13 +187,25 @@ export function parseCronOperatorRunSummary(value: unknown): CronOperatorRunSumm
 }
 
 export function parseCronOperatorRunDetail(value: unknown): CronOperatorRunDetail {
-  const run = parseRunBase(value, "detail", [...RUN_BASE_KEYS, "events", "eventsIncluded"]);
+  const run = parseRunBase(value, "detail", RUN_DETAIL_KEYS);
   const sourceEvents = snapshotOwnDataArray(run.events, MAX_CRON_OPERATOR_DETAIL_EVENTS);
-  const events = sourceEvents.map(parseCronOperatorEvent);
+  const context = createJsonSnapshotContext();
+  const events: AgentStreamEvent[] = [];
+  let eventBytes = 2;
+  for (let index = 0; index < sourceEvents.length; index += 1) {
+    if (index > 0) eventBytes = addJsonBytes(eventBytes, 1, MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES);
+    const parsed = parseCronOperatorEvent(
+      sourceEvents[index],
+      context,
+      MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES - eventBytes,
+    );
+    events.push(parsed.value);
+    eventBytes = addJsonBytes(eventBytes, parsed.bytes, MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES);
+  }
   if (!Number.isSafeInteger(run.eventsIncluded)
     || Number(run.eventsIncluded) !== events.length
     || Number(run.eventsIncluded) > Number(run.eventCount)
-    || serializedBytes(events) > MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES) fail();
+    || eventBytes > MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES) fail();
   return {
     ...run,
     projection: "detail",
@@ -192,9 +215,9 @@ export function parseCronOperatorRunDetail(value: unknown): CronOperatorRunDetai
 }
 
 export function parseCronOperatorRunPage(value: unknown): CronOperatorRunPage {
-  const page = snapshotOwnDataRecord(value);
+  const page = snapshotOwnDataRecord(value, RUN_PAGE_KEYS.length);
   const sourceRuns = snapshotOwnDataArray(page.runs, MAX_CRON_OPERATOR_RUN_PAGE);
-  if (!hasOnlyKeys(page, ["runs", "nextCursor"])
+  if (!hasOnlyKeys(page, RUN_PAGE_KEYS)
     || !optionalBoundedString(page.nextCursor, MAX_CRON_OPERATOR_CURSOR_BYTES)) fail();
   const parsed: CronOperatorRunPage = {
     runs: sourceRuns.map(parseCronOperatorRunSummary),
@@ -204,18 +227,12 @@ export function parseCronOperatorRunPage(value: unknown): CronOperatorRunPage {
   return parsed;
 }
 
-const RUN_BASE_KEYS = [
-  "projection", "runId", "jobId", "scheduledAt", "orderedAt", "sequence", "trigger", "status",
-  "startedAt", "completedAt", "artifactRunId", "text", "error", "failureKind", "blockedByRunId",
-  "blockedByTrigger", "queueDepth", "replyPartOutcomes", "eventCount", "fieldsTruncated", "eventsTruncated",
-] as const;
-
 function parseRunBase(
   value: unknown,
   projection: CronOperatorRun["projection"],
   allowedKeys: readonly string[],
 ): Record<string, unknown> {
-  const run = snapshotOwnDataRecord(value);
+  const run = snapshotOwnDataRecord(value, allowedKeys.length);
   const detail = projection === "detail";
   const sourceReplyPartOutcomes = run.replyPartOutcomes;
   if (!hasOnlyKeys(run, allowedKeys)
@@ -295,8 +312,13 @@ function parseRunBase(
     : parsed;
 }
 
-function parseCronOperatorEvent(value: unknown): AgentStreamEvent {
-  const event = snapshotJsonRecord(value);
+function parseCronOperatorEvent(
+  value: unknown,
+  context: JsonSnapshotContext,
+  maxBytes: number,
+): JsonEventSnapshot {
+  const parsed = snapshotJsonRecord(value, context, maxBytes);
+  const event = parsed.value;
   const metadataValid = event.metadata === undefined || isSnapshotRecord(event.metadata);
   if (!metadataValid || typeof event.type !== "string") fail();
   switch (event.type) {
@@ -371,7 +393,10 @@ function parseCronOperatorEvent(value: unknown): AgentStreamEvent {
     default:
       fail();
   }
-  return event as unknown as AgentStreamEvent;
+  return {
+    value: event as unknown as AgentStreamEvent,
+    bytes: parsed.bytes,
+  };
 }
 
 function validToolHistoryMetadata(value: unknown): boolean {
@@ -404,25 +429,36 @@ function parseReplyPartOutcomes(
   value: unknown,
   maxLength: number,
 ): readonly AgentReplyPartDeliveryOutcome[] {
-  const source = snapshotOwnDataArray(value, maxLength).map(snapshotOwnDataRecord);
+  const source = snapshotOwnDataArray(value, maxLength)
+    .map((outcome) => snapshotOwnDataRecord(outcome, MAX_REPLY_PART_OUTCOME_FIELDS));
   if (!isAgentReplyPartDeliveryOutcomes(source)) fail();
   const parsed = sanitizeReplyPartDeliveryOutcomes(source);
   if (parsed === undefined) fail();
   return parsed;
 }
 
-function snapshotOwnDataRecord(value: unknown): Record<string, unknown> {
-  let descriptors: ReturnType<typeof Object.getOwnPropertyDescriptors>;
+const MAX_CRON_OPERATOR_OWN_KEY_CODE_UNITS = MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES;
+
+function snapshotOwnDataRecord(value: unknown, maxProperties: number): Record<string, unknown> {
+  let record: object;
+  let keys: readonly PropertyKey[];
   try {
     if (value === null || typeof value !== "object" || Array.isArray(value)) fail();
-    descriptors = Object.getOwnPropertyDescriptors(value);
+    record = value;
+    keys = Reflect.ownKeys(record);
   } catch {
     fail();
   }
+  if (keys.length > maxProperties) fail();
   const snapshot = Object.create(null) as Record<string, unknown>;
-  for (const key of Reflect.ownKeys(descriptors)) {
-    if (typeof key !== "string") fail();
-    const descriptor = descriptors[key];
+  for (const key of keys) {
+    if (typeof key !== "string" || key.length > MAX_CRON_OPERATOR_OWN_KEY_CODE_UNITS) fail();
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Reflect.getOwnPropertyDescriptor(record, key);
+    } catch {
+      fail();
+    }
     if (descriptor === undefined || descriptor.enumerable !== true || !("value" in descriptor)) fail();
     snapshot[key] = descriptor.value;
   }
@@ -430,14 +466,29 @@ function snapshotOwnDataRecord(value: unknown): Record<string, unknown> {
 }
 
 function snapshotOwnDataArray(value: unknown, maxLength: number): readonly unknown[] {
-  let descriptors: ReturnType<typeof Object.getOwnPropertyDescriptors>;
+  let array: object;
+  let keys: readonly PropertyKey[];
   try {
     if (!Array.isArray(value)) fail();
-    descriptors = Object.getOwnPropertyDescriptors(value);
+    array = value;
+    keys = Reflect.ownKeys(array);
   } catch {
     fail();
   }
-  const lengthDescriptor = descriptors.length;
+  if (keys.length > maxLength + 1) fail();
+  const entries: Array<readonly [string, PropertyDescriptor]> = [];
+  for (const key of keys) {
+    if (typeof key !== "string" || key.length > MAX_CRON_OPERATOR_OWN_KEY_CODE_UNITS) fail();
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Reflect.getOwnPropertyDescriptor(array, key);
+    } catch {
+      fail();
+    }
+    if (descriptor === undefined) fail();
+    entries.push([key, descriptor]);
+  }
+  const lengthDescriptor = entries.find(([key]) => key === "length")?.[1];
   if (lengthDescriptor === undefined
     || !("value" in lengthDescriptor)
     || lengthDescriptor.enumerable !== false
@@ -447,14 +498,11 @@ function snapshotOwnDataArray(value: unknown, maxLength: number): readonly unkno
   const length = Number(lengthDescriptor.value);
   const snapshot = new Array<unknown>(length);
   let elementCount = 0;
-  for (const key of Reflect.ownKeys(descriptors)) {
-    if (typeof key !== "string") fail();
+  for (const [key, descriptor] of entries) {
     if (key === "length") continue;
     const index = canonicalArrayIndex(key);
-    const descriptor = descriptors[key];
     if (index === undefined
       || index >= length
-      || descriptor === undefined
       || descriptor.enumerable !== true
       || !("value" in descriptor)) fail();
     snapshot[index] = descriptor.value;
@@ -465,63 +513,169 @@ function snapshotOwnDataArray(value: unknown, maxLength: number): readonly unkno
 }
 
 function canonicalArrayIndex(key: string): number | undefined {
-  if (!/^(?:0|[1-9]\d*)$/u.test(key)) return undefined;
+  if (key.length > 16 || !/^(?:0|[1-9]\d*)$/u.test(key)) return undefined;
   const index = Number(key);
   return Number.isSafeInteger(index) ? index : undefined;
 }
 
+interface JsonValueSnapshot {
+  readonly value: unknown;
+  /** Undefined values are omitted in objects and serialized as null in arrays. */
+  readonly bytes: number | undefined;
+}
+
+interface JsonRecordSnapshot {
+  readonly value: Record<string, unknown>;
+  readonly bytes: number;
+}
+
+interface JsonEventSnapshot {
+  readonly value: AgentStreamEvent;
+  readonly bytes: number;
+}
+
 interface JsonSnapshotContext {
   readonly active: WeakSet<object>;
-  readonly snapshots: WeakMap<object, unknown>;
+  readonly snapshots: WeakMap<object, JsonValueSnapshot>;
+  remainingWork: number;
 }
 
 function createJsonSnapshotContext(): JsonSnapshotContext {
-  return { active: new WeakSet(), snapshots: new WeakMap() };
+  return {
+    active: new WeakSet(),
+    snapshots: new WeakMap(),
+    remainingWork: MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES,
+  };
 }
 
-function snapshotJsonRecord(value: unknown): Record<string, unknown> {
+function snapshotJsonRecord(
+  value: unknown,
+  context: JsonSnapshotContext,
+  maxBytes: number,
+): JsonRecordSnapshot {
   try {
-    const snapshot = snapshotJsonValue(value, createJsonSnapshotContext());
-    if (!isSnapshotRecord(snapshot)) fail();
-    return snapshot;
+    const snapshot = snapshotJsonValue(value, context, maxBytes);
+    if (snapshot.bytes === undefined || !isSnapshotRecord(snapshot.value)) fail();
+    return {
+      value: snapshot.value,
+      bytes: snapshot.bytes,
+    };
   } catch {
     fail();
   }
 }
 
-function snapshotJsonValue(value: unknown, context: JsonSnapshotContext): unknown {
-  if (value === undefined || value === null || typeof value === "string" || typeof value === "boolean") {
-    return value;
+function snapshotJsonValue(
+  value: unknown,
+  context: JsonSnapshotContext,
+  maxBytes: number,
+): JsonValueSnapshot {
+  consumeJsonWork(context, 1);
+  if (value === undefined) return { value, bytes: undefined };
+  if (value === null) return { value, bytes: requireJsonBytes(4, maxBytes) };
+  if (typeof value === "string") {
+    consumeJsonWork(context, value.length);
+    return { value, bytes: jsonStringBytes(value, maxBytes) };
+  }
+  if (typeof value === "boolean") {
+    return { value, bytes: requireJsonBytes(value ? 4 : 5, maxBytes) };
   }
   if (typeof value === "number") {
     if (!Number.isFinite(value)) fail();
-    return value;
+    const serialized = JSON.stringify(value);
+    return { value, bytes: requireJsonBytes(serialized.length, maxBytes) };
   }
   if (typeof value !== "object") fail();
   if (context.active.has(value)) fail();
   const cached = context.snapshots.get(value);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) {
+    if (cached.bytes === undefined || cached.bytes > maxBytes) fail();
+    return cached;
+  }
   context.active.add(value);
   try {
-    if (isArrayValue(value)) {
-      const source = snapshotOwnDataArray(value, MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES);
-      const snapshot = new Array<unknown>(source.length);
-      context.snapshots.set(value, snapshot);
-      for (let index = 0; index < source.length; index += 1) {
-        snapshot[index] = snapshotJsonValue(source[index], context);
-      }
-      return snapshot;
-    }
-    const source = snapshotOwnDataRecord(value);
-    const snapshot = Object.create(null) as Record<string, unknown>;
-    context.snapshots.set(value, snapshot);
-    for (const key of Object.keys(source)) {
-      snapshot[key] = snapshotJsonValue(source[key], context);
-    }
-    return snapshot;
+    const parsed = isArrayValue(value)
+      ? snapshotJsonArray(value, context, maxBytes)
+      : snapshotJsonObject(value, context, maxBytes);
+    context.snapshots.set(value, parsed);
+    return parsed;
   } finally {
     context.active.delete(value);
   }
+}
+
+function snapshotJsonArray(
+  value: object,
+  context: JsonSnapshotContext,
+  maxBytes: number,
+): JsonValueSnapshot {
+  requireJsonBytes(2, maxBytes);
+  const maxLength = Math.min(context.remainingWork, Math.max(0, maxBytes - 2));
+  const source = snapshotOwnDataArray(value, maxLength);
+  const snapshot = new Array<unknown>(source.length);
+  let bytes = 2;
+  for (let index = 0; index < source.length; index += 1) {
+    if (index > 0) bytes = addJsonBytes(bytes, 1, maxBytes);
+    const parsed = snapshotJsonValue(source[index], context, maxBytes - bytes);
+    snapshot[index] = parsed.value;
+    bytes = addJsonBytes(bytes, parsed.bytes ?? 4, maxBytes);
+  }
+  return { value: snapshot, bytes };
+}
+
+function snapshotJsonObject(
+  value: object,
+  context: JsonSnapshotContext,
+  maxBytes: number,
+): JsonValueSnapshot {
+  requireJsonBytes(2, maxBytes);
+  const source = snapshotOwnDataRecord(value, context.remainingWork);
+  const snapshot = Object.create(null) as Record<string, unknown>;
+  let bytes = 2;
+  let emittedProperties = 0;
+  for (const key of Object.keys(source)) {
+    consumeJsonWork(context, key.length + 1);
+    if (source[key] === undefined) {
+      snapshot[key] = snapshotJsonValue(source[key], context, maxBytes - bytes).value;
+      continue;
+    }
+    if (emittedProperties > 0) bytes = addJsonBytes(bytes, 1, maxBytes);
+    bytes = addJsonBytes(bytes, jsonStringBytes(key, maxBytes - bytes), maxBytes);
+    bytes = addJsonBytes(bytes, 1, maxBytes);
+    const parsed = snapshotJsonValue(source[key], context, maxBytes - bytes);
+    if (parsed.bytes === undefined) fail();
+    snapshot[key] = parsed.value;
+    bytes = addJsonBytes(bytes, parsed.bytes, maxBytes);
+    emittedProperties += 1;
+  }
+  return { value: snapshot, bytes };
+}
+
+function consumeJsonWork(context: JsonSnapshotContext, units: number): void {
+  if (!Number.isSafeInteger(units) || units < 0 || units > context.remainingWork) fail();
+  context.remainingWork -= units;
+}
+
+function jsonStringBytes(value: string, maxBytes: number): number {
+  if (maxBytes < 2 || value.length > maxBytes - 2) fail();
+  const serialized = JSON.stringify(value);
+  if (serialized.length > maxBytes) fail();
+  return requireJsonBytes(utf8Bytes(serialized), maxBytes);
+}
+
+function requireJsonBytes(bytes: number, maxBytes: number): number {
+  if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > maxBytes) fail();
+  return bytes;
+}
+
+function addJsonBytes(current: number, additional: number, maxBytes: number): number {
+  if (!Number.isSafeInteger(current)
+    || !Number.isSafeInteger(additional)
+    || current < 0
+    || additional < 0
+    || current > maxBytes
+    || additional > maxBytes - current) fail();
+  return current + additional;
 }
 
 function isSnapshotRecord(value: unknown): value is Record<string, unknown> {
@@ -546,7 +700,7 @@ function oneOf<const T extends string>(value: unknown, allowed: readonly T[]): v
 }
 
 function validDate(value: unknown): value is string {
-  if (typeof value !== "string" || value.length === 0) return false;
+  if (typeof value !== "string" || (value.length !== 24 && value.length !== 27)) return false;
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
@@ -554,6 +708,7 @@ function validDate(value: unknown): value is string {
 function boundedString(value: unknown, maxBytes: number, nonempty = false): value is string {
   return typeof value === "string"
     && (!nonempty || value.length > 0)
+    && value.length <= maxBytes
     && utf8Bytes(value) <= maxBytes;
 }
 
