@@ -326,49 +326,75 @@ export function truncateVisibleText(value: string, maxBytes: number): string {
 }
 
 function containsCredentialAssignment(text: string): boolean {
+  try {
+    return containsCredentialAssignmentInParsedJson(
+      JSON.parse(text),
+      0,
+      { remainingNodes: MAX_REDACTION_NODES },
+    );
+  } catch {
+    return containsTextualCredentialAssignment(text);
+  }
+}
+
+function containsCredentialAssignmentInParsedJson(
+  value: unknown,
+  depth: number,
+  budget: RedactionBudget,
+): boolean {
+  if (!consumeNode(budget)) return true;
+  if (typeof value === "string") return containsTextualCredentialAssignment(value);
+  if (value === null || typeof value === "boolean" || typeof value === "number") return false;
+  if (depth >= 12) return true;
+  if (Array.isArray(value)) {
+    if (value.length > MAX_ARRAY_ITEMS) return true;
+    for (const item of value) {
+      if (containsCredentialAssignmentInParsedJson(item, depth + 1, budget)) return true;
+    }
+    return false;
+  }
+  if (typeof value !== "object") return true;
+  const source = value as Record<string, unknown>;
+  let inspectedKeys = 0;
+  for (const key in source) {
+    if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+    inspectedKeys += 1;
+    if (inspectedKeys > MAX_OBJECT_KEYS) return true;
+    const entryValue = source[key];
+    if (isCredentialKey(key)) {
+      if (entryValue !== "[redacted]") return true;
+      continue;
+    }
+    if (containsCredentialAssignmentInParsedJson(entryValue, depth + 1, budget)) return true;
+  }
+  return false;
+}
+
+function containsTextualCredentialAssignment(text: string): boolean {
   const assignment = /(?:^|(?<=[^a-z0-9_.-]))(["'`]?)([a-z0-9_.-]+(?:[ \t]+[a-z0-9_.-]+){0,5})\1\s*[:=]\s*/giu;
-  let serializedJson: boolean | undefined;
   for (const match of text.matchAll(assignment)) {
     const key = match[2];
     if (key === undefined || !isCredentialKey(key)) continue;
     const value = text.slice((match.index ?? 0) + match[0].length).trimStart();
-    const boundary = redactedSentinelBoundary(value);
-    if (boundary === "exact") continue;
-    if (boundary === "serialized-delimiter") {
-      serializedJson ??= isSerializedJson(text);
-      if (serializedJson) continue;
-    }
+    if (hasExactTerminalRedactedSentinel(value)) continue;
     return true;
   }
   return false;
 }
 
-function redactedSentinelBoundary(value: string): "exact" | "serialized-delimiter" | undefined {
+function hasExactTerminalRedactedSentinel(value: string): boolean {
   const trimmed = value.trimStart();
   let remainder: string;
   if (trimmed.startsWith("[redacted]")) {
     remainder = trimmed.slice("[redacted]".length);
   } else {
     const quote = trimmed[0];
-    if (quote !== '"' && quote !== "'" && quote !== "`") return undefined;
+    if (quote !== '"' && quote !== "'" && quote !== "`") return false;
     const sentinel = `${quote}[redacted]${quote}`;
-    if (!trimmed.startsWith(sentinel)) return undefined;
+    if (!trimmed.startsWith(sentinel)) return false;
     remainder = trimmed.slice(sentinel.length);
   }
-  const trailing = remainder.trimStart();
-  if (trailing.length === 0) return "exact";
-  return trailing[0] === "," || trailing[0] === "}" || trailing[0] === "]"
-    ? "serialized-delimiter"
-    : undefined;
-}
-
-function isSerializedJson(value: string): boolean {
-  try {
-    JSON.parse(value);
-    return true;
-  } catch {
-    return false;
-  }
+  return remainder.trim().length === 0;
 }
 
 function isCredentialKey(key: string): boolean {

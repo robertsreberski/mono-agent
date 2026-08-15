@@ -1123,7 +1123,7 @@ describe("AgentHarness continuous sessions", () => {
     await inFlight;
   });
 
-  it("dispose retires this harness's tracked sessions without touching the process-global registries", async () => {
+  it("dispose retires this harness's tracked sessions, latches admission, and leaves process-global registries alone", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "ok", providerSessionId: "ps-1" }));
     const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
@@ -1135,9 +1135,8 @@ describe("AgentHarness continuous sessions", () => {
     // scoped to this harness's conversations.
     expect(fake.disposedAllCount()).toBe(0);
 
-    // After dispose the next run starts fresh.
-    await harness.run(request("conv-1"));
-    expect(fake.calls[1]?.options.sessionId).toBeUndefined();
+    await expect(harness.run(request("conv-1"))).rejects.toMatchObject({ failureKind: "harness_disposed" });
+    expect(fake.calls).toHaveLength(1);
   });
 
   it("the stale retry keeps sessionKeepAlive and the idle timeout so a fresh provider session is captured", async () => {

@@ -185,7 +185,7 @@ export interface AgentHarness {
     text: string,
     options?: { readonly idempotencyKey?: string },
   ): Promise<void>;
-  /** Retire all live provider sessions (graceful shutdown). */
+  /** Drain admitted work, retire live provider sessions, and permanently stop accepting turns. */
   dispose?(): Promise<void>;
 }
 

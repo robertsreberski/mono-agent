@@ -234,11 +234,30 @@ parentPort.on("message", (request: WorkerRequest) => {
           respond(request.id, workerStats(database));
           break;
         case "close":
-          closeDangling(database, undefined, "interrupted", "cancelled_shutdown", "writer_shutdown", false);
-          applyRetention(database, retention);
-          closed = true;
-          database.close();
-          owner.release();
+          {
+            const closeErrors: unknown[] = [];
+            try {
+              lifecycleTransaction(database, () => {
+                closeDanglingInTransaction(
+                  database,
+                  undefined,
+                  "interrupted",
+                  "cancelled_shutdown",
+                  "writer_shutdown",
+                  false,
+                );
+              }, () => applyRetention(database, retention));
+            } catch (error) {
+              closeErrors.push(error);
+            }
+            closed = true;
+            try { database.close(); } catch (error) { closeErrors.push(error); }
+            try { owner.release(); } catch (error) { closeErrors.push(error); }
+            if (closeErrors.length === 1) throw closeErrors[0];
+            if (closeErrors.length > 1) {
+              throw new AggregateError(closeErrors, "Tool history graceful close failed.");
+            }
+          }
           // Acknowledgement is the durability boundary: the content database is
           // closed and the ownership row is gone before the host can terminate.
           respond(request.id, null);
@@ -1233,7 +1252,9 @@ function securePayloadValue(value: unknown, budget: SecurePreprocessBudget, dept
       defineSecurePayloadProperty(
         retained,
         key,
-        securePayloadValue(source[rawKey], budget, depth + 1),
+        key === rawKey
+          ? securePayloadValue(source[rawKey], budget, depth + 1)
+          : PRE_REDACTION_OMISSION,
       );
       retainedItems += 1;
     }

@@ -306,30 +306,38 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   }
 
   private async resetDirtyFencesForLogicalConversation(logicalConversationId: string): Promise<void> {
+    const rootIdentity = await this.ensureRoot();
     const locksIdentity = await this.ensureLocksRoot();
-    const logicalConversationKey = historyKey(logicalConversationId);
-    const fences = await this.scanDirtyFences(locksIdentity, false);
-    const matching: Array<{ readonly fence: DirtyFence; readonly providerSessionId: string }> = [];
-    for (const fence of fences) {
-      if (
-        fence.conversationKey !== logicalConversationKey
-        && fence.logicalConversationKey !== logicalConversationKey
-      ) continue;
-      const providerSessionId = fence.providerSessionId
-        ?? (fence.conversationKey === logicalConversationKey
-          ? deriveProviderSessionId(logicalConversationId, fence.epoch)
-          : undefined);
-      if (providerSessionId === undefined) continue;
-      matching.push({ fence, providerSessionId });
+    const releaseRoot = await this.acquireRootTransaction(rootIdentity);
+    try {
+      const logicalConversationKey = historyKey(logicalConversationId);
+      const fences = await this.scanDirtyFences(locksIdentity, false);
+      const matching: Array<{ readonly fence: DirtyFence; readonly providerSessionId: string }> = [];
+      for (const fence of fences) {
+        if (
+          fence.conversationKey !== logicalConversationKey
+          && fence.logicalConversationKey !== logicalConversationKey
+        ) continue;
+        const providerSessionId = fence.providerSessionId
+          ?? (fence.conversationKey === logicalConversationKey
+            ? deriveProviderSessionId(logicalConversationId, fence.epoch)
+            : undefined);
+        if (providerSessionId === undefined) continue;
+        matching.push({ fence, providerSessionId });
+      }
+      // Every fence remains a crash-recovery journal until all matching provider
+      // retirements succeed. A failure therefore leaves the reset retryable and
+      // does not partially unlink its dirty-only membership evidence. Discovery,
+      // retirement, unlink, and directory durability share the root transaction
+      // so an unrelated maintenance sweep cannot consume the same journal.
+      await this.retireProviderSessionIds(matching.map((entry) => entry.providerSessionId));
+      for (const { fence } of matching) {
+        await rm(fence.path);
+      }
+      if (matching.length > 0) await fsyncDirectory(join(this.root, LOCKS_DIRECTORY), locksIdentity);
+    } finally {
+      await releaseRoot();
     }
-    // Every fence remains a crash-recovery journal until all matching provider
-    // retirements succeed. A failure therefore leaves the reset retryable and
-    // does not partially unlink its dirty-only membership evidence.
-    await this.retireProviderSessionIds(matching.map((entry) => entry.providerSessionId));
-    for (const { fence } of matching) {
-      await rm(fence.path);
-    }
-    if (matching.length > 0) await fsyncDirectory(join(this.root, LOCKS_DIRECTORY), locksIdentity);
   }
 
   private async resetPhysicalConversation(

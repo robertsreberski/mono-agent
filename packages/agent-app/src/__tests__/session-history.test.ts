@@ -48,13 +48,18 @@ async function writeCall(
   writer: ToolHistoryWriter,
   run: ToolHistoryRunBinding,
   toolCallId: string,
-  options: { readonly toolName?: string; readonly content?: unknown; readonly state?: "success" | "error" } = {},
+  options: {
+    readonly toolName?: string;
+    readonly arguments?: unknown;
+    readonly content?: unknown;
+    readonly state?: "success" | "error";
+  } = {},
 ): Promise<{ readonly invocationId: string; readonly resultId: string }> {
   const invocation = await writer.persist(run, {
     phase: "invocation",
     toolCallId,
     toolName: options.toolName ?? "Read",
-    arguments: { path: `/tmp/${toolCallId}`, needle: `needle-${toolCallId}` },
+    arguments: options.arguments ?? { path: `/tmp/${toolCallId}`, needle: `needle-${toolCallId}` },
   });
   const state = options.state ?? "success";
   const result = await writer.persist(run, {
@@ -526,6 +531,90 @@ describe("SessionHistory MCP tool", () => {
       await opened.close();
     }
   });
+
+  it("returns writer-sanitized JSON bypasses and oversized-key omissions through the actual MCP transport", async () => {
+    const root = await tempRoot();
+    const oversizedKey = `${"k".repeat(513)}password`;
+    const remainingBudgetKey = `${"r".repeat(292)}password`;
+    const largeSafeValue = `mcp-remaining-budget-safe-marker-${"s".repeat(65_267)}`;
+    expect(largeSafeValue).toHaveLength(65_300);
+    const writer = await ToolHistoryWriter.open({ root });
+    let stored: { readonly invocationId: string; readonly resultId: string };
+    try {
+      stored = await writeCall(writer, binding("serialized-json-mcp-run"), "serialized-json-mcp", {
+        toolName: "Inspect",
+        arguments: {
+          sentinelTail: JSON.stringify({ command: "TOKEN=[redacted],fixture-mcp-tail-secret" }),
+          escapedKeyDocument: '{"credenti\\u0061ls":"fixture-mcp-escaped-key-secret"}',
+          escapedOperatorDocument: '{"command":"TOKEN\\u003dfixture-mcp-escaped-operator-secret"}',
+          malformedTail: "credential=[redacted],fixture-mcp-malformed-secret",
+          stableSerialized: JSON.stringify({ token: "[redacted]", safe: "stable-mcp-json-negative" }),
+          terminalSentinel: "TOKEN=[redacted]",
+          sentinelObject: { token: "[redacted]", credentials: "[redacted]" },
+          benign: {
+            PUBLIC_KEY: "ssh-rsa-mcp-public-material",
+            DOCS_URL: "https://example.com/mcp/docs",
+            input_tokens: 37,
+            marker: "serialized-redaction-mcp-marker",
+          },
+          oversizedKeys: { [oversizedKey]: "fixture-mcp-oversized-key-secret" },
+        },
+        content: {
+          largeSafeValue,
+          [remainingBudgetKey]: "fixture-mcp-remaining-budget-secret",
+        },
+      });
+    } finally {
+      await writer.close();
+    }
+
+    const opened = await openClient(root, "chat:42#2026-08-14", "current-run");
+    try {
+      const search = await opened.client.callTool({
+        name: SESSION_HISTORY_TOOL_NAME,
+        arguments: { action: "search", query: "serialized-redaction-mcp-marker" },
+      });
+      const invocationGet = await opened.client.callTool({
+        name: SESSION_HISTORY_TOOL_NAME,
+        arguments: { action: "get", recordId: stored.invocationId, chunkBytes: 8 * 1024 },
+      });
+      const resultGet = await opened.client.callTool({
+        name: SESSION_HISTORY_TOOL_NAME,
+        arguments: { action: "get", recordId: stored.resultId, chunkBytes: 8 * 1024 },
+      });
+      const visible = JSON.stringify({ search, invocationGet, resultGet });
+
+      expect(body<{ readonly items: readonly unknown[] }>(search).items).toHaveLength(1);
+      for (const retained of [
+        "[tool payload omitted because it contained a private host path]",
+        "[oversized value omitted before redaction]",
+        "[redacted]",
+        "stable-mcp-json-negative",
+        "TOKEN=[redacted]",
+        "serialized-redaction-mcp-marker",
+        "ssh-rsa-mcp-public-material",
+        "https://example.com/mcp/docs",
+        "input_tokens",
+        "mcp-remaining-budget-safe-marker",
+      ]) {
+        expect(visible, retained).toContain(retained);
+      }
+      for (const hidden of [
+        "fixture-mcp-tail-secret",
+        "fixture-mcp-escaped-key-secret",
+        "fixture-mcp-escaped-operator-secret",
+        "fixture-mcp-malformed-secret",
+        "fixture-mcp-oversized-key-secret",
+        "fixture-mcp-remaining-budget-secret",
+        oversizedKey,
+        remainingBudgetKey,
+      ]) {
+        expect(visible, hidden).not.toContain(hidden);
+      }
+    } finally {
+      await opened.close();
+    }
+  }, 20_000);
 
   it("is capability-path and host bound, and keeps current-run and foreign-conversation records opaque", async () => {
     const root = await tempRoot();

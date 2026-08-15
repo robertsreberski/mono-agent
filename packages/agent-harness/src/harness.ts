@@ -71,6 +71,14 @@ import { appendVerbatimHistoryTurn } from "./harness/verbatim-history.js";
 export { AgentHarnessError };
 export { requestOverridesModel, runSourceFromRequest };
 
+const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
+const SHUTDOWN_DRAIN_WARNING =
+  "Agent shutdown timed out while draining active runs; provider sessions and tool-history persistence were forcibly released.";
+
+interface MonoAgentHarnessInternalOptions {
+  /** Deterministic test seam; production callers use the bounded default. */
+  readonly shutdownDrainTimeoutMs?: number;
+}
 
 export class MonoAgentHarness implements AgentHarness {
   private readonly options: AgentHarnessOptions;
@@ -90,12 +98,20 @@ export class MonoAgentHarness implements AgentHarness {
   private pendingRuns = 0;
   private supportsResumeCache: boolean | undefined;
   private activeRuns = 0;
-  private readonly activeRunWaiters: Array<() => void> = [];
+  private readonly activeRunWaiters = new Set<() => void>();
+  private readonly activeRunWarningSinks = new Set<(event: RuntimeEventLike) => void>();
+  private readonly shutdownDrainTimeoutMs: number;
+  private disposed = false;
   private disposePromise: Promise<void> | undefined;
 
-  constructor(options: AgentHarnessOptions) {
+  constructor(options: AgentHarnessOptions, internalOptions: MonoAgentHarnessInternalOptions = {}) {
     validateOptions(options);
     this.options = options;
+    const shutdownDrainTimeoutMs = internalOptions.shutdownDrainTimeoutMs ?? DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
+    if (!Number.isSafeInteger(shutdownDrainTimeoutMs) || shutdownDrainTimeoutMs <= 0) {
+      throw new TypeError("shutdownDrainTimeoutMs must be a positive safe integer.");
+    }
+    this.shutdownDrainTimeoutMs = shutdownDrainTimeoutMs;
     // Skills are otherwise re-read from disk every turn. A per-harness cache
     // (or a shared one passed in) skips unchanged reads across turns.
     this.skillsCache = options.skillsCache ?? createSkillsCache();
@@ -125,6 +141,7 @@ export class MonoAgentHarness implements AgentHarness {
   }
 
   async submit(request: AgentHarnessRequest): Promise<AgentHarnessResponse> {
+    this.assertAcceptingRuns();
     if (this.liveSessionManager !== undefined) {
       return this.liveSessionManager.enqueue(request.conversationId, request);
     }
@@ -185,17 +202,15 @@ export class MonoAgentHarness implements AgentHarness {
   }
 
   async run(request: AgentHarnessRequest, lifecycle?: LiveSessionRunLifecycle): Promise<AgentHarnessResponse> {
-    // Preserve the harness's established fresh-run-after-dispose contract, but
-    // do not admit a new direct run into the writer-release window.
-    const disposal = this.disposePromise;
-    if (disposal !== undefined) await disposal;
+    this.assertAcceptingRuns();
     this.activeRuns += 1;
     try {
       return await this.runActive(request, lifecycle);
     } finally {
       this.activeRuns -= 1;
       if (this.activeRuns === 0) {
-        for (const resolve of this.activeRunWaiters.splice(0)) resolve();
+        for (const resolve of this.activeRunWaiters) resolve();
+        this.activeRunWaiters.clear();
       }
     }
   }
@@ -281,6 +296,11 @@ export class MonoAgentHarness implements AgentHarness {
       recorder.onEvent(event);
       request.onEvent?.(event);
     };
+    const emitShutdownWarning = (event: RuntimeEventLike): void => {
+      try { recorder.onEvent(event); } catch { /* shutdown diagnostics are best-effort */ }
+      try { request.onEvent?.(event); } catch { /* an event sink cannot block shutdown */ }
+    };
+    this.activeRunWarningSinks.add(emitShutdownWarning);
     // Admitted: count this run as pending until it begins its provider call (via
     // leavePending, fired from runRuntime) or exits before getting there. `left`
     // makes the release idempotent so exactly one decrement happens per run, on
@@ -936,34 +956,85 @@ export class MonoAgentHarness implements AgentHarness {
             }
           }
         }
+        this.activeRunWarningSinks.delete(emitShutdownWarning);
       }
     }
   }
 
   dispose(): Promise<void> {
     if (this.disposePromise !== undefined) return this.disposePromise;
-    const operation = this.disposeActiveResources();
-    const wrapped = operation.finally(() => {
-      if (this.disposePromise === wrapped) this.disposePromise = undefined;
-    });
-    this.disposePromise = wrapped;
-    return wrapped;
+    // Latch synchronously so a run cannot enter between shutdown admission and
+    // the first asynchronous cleanup boundary. Disposal is terminal and
+    // idempotent for this harness instance.
+    this.disposed = true;
+    this.disposePromise = this.disposeActiveResources();
+    return this.disposePromise;
   }
 
   private async disposeActiveResources(): Promise<void> {
-    // Reject any in-flight/queued turns first so callers stop waiting, then
-    // retire sessions. Only this harness's tracked sessions are retired (the
-    // store's onEvict disposes each provider session individually).
-    // runtime.disposeAllSessions is intentionally NOT called here: the provider
-    // registries are process-global and other harnesses may share them.
+    // Reject queued work and cancel live input before draining every admitted
+    // run through its complete finishRun() boundary. Only then may provider
+    // sessions and the shared lifecycle writer be released.
     for (const mailbox of this.activeLiveInputs.values()) mailbox.cancel();
     this.activeLiveInputs.clear();
-    await this.liveSessionManager?.dispose();
-    await this.sessionStore?.disposeAll();
-    if (this.activeRuns > 0) {
-      await new Promise<void>((resolve) => this.activeRunWaiters.push(resolve));
+    const liveSessionDisposal = this.liveSessionManager?.dispose();
+    void liveSessionDisposal?.catch(() => undefined);
+    const drained = await this.waitForActiveRuns();
+    const cleanupErrors: unknown[] = [];
+    if (drained) {
+      try {
+        await liveSessionDisposal;
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    } else {
+      const warning: RuntimeEventLike = {
+        type: "runtime_warning",
+        warning_kind: "harness_shutdown_degraded",
+        message: SHUTDOWN_DRAIN_WARNING,
+      };
+      for (const sink of this.activeRunWarningSinks) {
+        try { sink(warning); } catch { /* shutdown diagnostics are best-effort */ }
+      }
     }
-    await this.options.toolHistory?.release?.();
+
+    // On timeout this is a forced, harness-scoped provider cleanup. The runtime's
+    // process-global disposeAllSessions remains intentionally out of bounds.
+    try {
+      await this.sessionStore?.disposeAll();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      await this.options.toolHistory?.release?.();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (cleanupErrors.length === 1) throw cleanupErrors[0];
+    if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, "Agent harness shutdown cleanup failed.");
+  }
+
+  private async waitForActiveRuns(): Promise<boolean> {
+    if (this.activeRuns === 0) return true;
+    let resolveDrain!: () => void;
+    const drained = new Promise<void>((resolve) => { resolveDrain = resolve; });
+    this.activeRunWaiters.add(resolveDrain);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      drained.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), this.shutdownDrainTimeoutMs);
+      }),
+    ]);
+    if (timer !== undefined) clearTimeout(timer);
+    this.activeRunWaiters.delete(resolveDrain);
+    return outcome;
+  }
+
+  private assertAcceptingRuns(): void {
+    if (this.disposed) {
+      throw new AgentHarnessError("harness_disposed", "Agent harness has been disposed and cannot accept new runs.");
+    }
   }
 
   /**

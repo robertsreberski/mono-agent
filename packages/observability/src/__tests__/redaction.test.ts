@@ -696,18 +696,31 @@ describe("redactJsonValue", () => {
     const serialized = JSON.stringify({
       token: "[redacted]",
       credential: "[redacted]",
-      safe: "visible",
+      nested: { credentials: "[redacted]" },
+      command: "TOKEN=[redacted]",
+      safe: "visible-json-negative",
     });
     const unsafe = JSON.stringify({ token: "[redacted]", credential: "still-secret" });
+    const sentinelTail = JSON.stringify({ command: "TOKEN=[redacted],fixture-secret-tail" });
+    const escapedCredentialKey = '{"credenti\\u0061ls":"fixture-escaped-key-secret"}';
+    const escapedAssignmentOperator = '{"command":"TOKEN\\u003dfixture-escaped-operator-secret"}';
     const nonJsonCommaTail = "credential=[redacted],fixture-secret-tail";
     const nonJsonClosingTail = 'credential="[redacted]"}fixture-secret-tail';
 
     expect(containsVisibleSensitiveText(serialized)).toBe(false);
     expect(sanitizeVisibleText(serialized)).toBe(serialized);
     expect(sanitizeVisibleText(sanitizeVisibleText(serialized))).toBe(serialized);
-    expect(containsVisibleSensitiveText(unsafe)).toBe(true);
-    expect(sanitizeVisibleText(nonJsonCommaTail)).not.toBe(nonJsonCommaTail);
-    expect(sanitizeVisibleText(nonJsonClosingTail)).not.toBe(nonJsonClosingTail);
+    for (const value of [
+      unsafe,
+      sentinelTail,
+      escapedCredentialKey,
+      escapedAssignmentOperator,
+      nonJsonCommaTail,
+      nonJsonClosingTail,
+    ]) {
+      expect(containsVisibleSensitiveText(value), value).toBe(true);
+      expect(sanitizeVisibleText(value), value).not.toBe(value);
+    }
   });
 });
 

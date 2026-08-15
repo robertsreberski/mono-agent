@@ -122,6 +122,17 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
   let clientSupportsFormElicitation = false;
   const app = agent({ name: `mono-agent ACP bridge (${options.sourceId})` });
 
+  // Register explicit session cancellation before request handlers. A final
+  // cancel notification followed immediately by EOF must claim user provenance
+  // synchronously before request-context teardown applies generic cancellation.
+  app.onNotification(methods.agent.session.cancel, async ({ params }) => {
+    validateSessionId(params.sessionId, options.sourceId);
+    if (!sessions.has(params.sessionId)) return;
+    const active = activeTurns.get(params.sessionId);
+    if (active === undefined) return;
+    await cancelActiveTurnAsUser(active, params.sessionId);
+  });
+
   app.onRequest(methods.agent.initialize, async ({ params, signal }) => {
     clientSupportsFormElicitation = params.clientCapabilities?.elicitation?.form != null;
     const target = await requestTarget(resolveTarget, signal);
@@ -172,14 +183,6 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
       sessions,
       clientSupportsFormElicitation: () => clientSupportsFormElicitation,
     });
-  });
-
-  app.onNotification(methods.agent.session.cancel, async ({ params }) => {
-    validateSessionId(params.sessionId, options.sourceId);
-    if (!sessions.has(params.sessionId)) return;
-    const active = activeTurns.get(params.sessionId);
-    if (active === undefined) return;
-    await cancelActiveTurnAsUser(active, params.sessionId);
   });
 
   const stream = ndJsonStream(
@@ -237,6 +240,7 @@ async function runPrompt(
       void cancelActiveTurnAsUser(active, params.sessionId);
       return;
     }
+    if (active.userCancellation !== undefined) return;
     controller.abort(context.signal.reason ?? new Error("ACP prompt request ended before completion."));
   };
   if (context.signal.aborted) {

@@ -789,6 +789,164 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     }
   });
 
+  it("blocks serialized-JSON sentinel bypasses and omits values whose structured keys cannot be retained", async () => {
+    const root = await tempRoot();
+    const run = binding("serialized-json-redaction");
+    const omission = "[tool payload omitted because it contained a private host path]";
+    const preprocessingOmission = "[oversized value omitted before redaction]";
+    const serializedTail = JSON.stringify({ command: "TOKEN=[redacted],fixture-secret-tail" });
+    const escapedCredentialKey = '{"credenti\\u0061ls":"fixture-escaped-key-secret"}';
+    const escapedOperator = '{"command":"TOKEN\\u003dfixture-escaped-operator-secret"}';
+    const malformedTail = "credential=[redacted],fixture-malformed-tail";
+    const stableSerialized = JSON.stringify({ token: "[redacted]", safe: "stable-json-negative" });
+    const oversizedKey = `${"k".repeat(513)}password`;
+    const remainingBudgetKey = `${"r".repeat(292)}password`;
+    const largeSafeValue = `remaining-budget-safe-marker-${"s".repeat(65_271)}`;
+    expect(largeSafeValue).toHaveLength(65_300);
+    expect(remainingBudgetKey).toHaveLength(300);
+
+    const invocationPayload = {
+      serializedTail,
+      escapedKeyDocument: escapedCredentialKey,
+      escapedOperatorDocument: escapedOperator,
+      malformedTail,
+      stableSerialized,
+      terminalSentinel: "TOKEN=[redacted]",
+      sentinelObject: { token: "[redacted]", credentials: "[redacted]" },
+      benign: {
+        PUBLIC_KEY: "ssh-rsa-public-material",
+        DOCS_URL: "https://example.com/docs/path",
+        input_tokens: 37,
+        marker: "serialized-redaction-reader-marker",
+      },
+      oversizedKeys: { [oversizedKey]: "fixture-oversized-key-secret" },
+    };
+    const resultPayload = {
+      largeSafeValue,
+      [remainingBudgetKey]: "fixture-remaining-budget-secret",
+    };
+    const expectedInvocation = {
+      serializedTail: omission,
+      escapedKeyDocument: omission,
+      escapedOperatorDocument: omission,
+      malformedTail: omission,
+      stableSerialized,
+      terminalSentinel: "TOKEN=[redacted]",
+      sentinelObject: { token: "[redacted]", credentials: "[redacted]" },
+      benign: invocationPayload.benign,
+      oversizedKeys: { __oversized_key_0__: preprocessingOmission },
+    };
+    const expectedResult = {
+      largeSafeValue: `${largeSafeValue.slice(0, 4_096)}…[truncated 61204 bytes]`,
+      __oversized_key_1__: preprocessingOmission,
+    };
+
+    const writer = await ToolHistoryWriter.open({ root });
+    const invocation = await writer.persist(run, {
+      phase: "invocation",
+      toolCallId: "serialized-json-redaction-call",
+      toolName: "Inspect",
+      arguments: invocationPayload,
+    });
+    const result = await writer.persist(run, {
+      phase: "result",
+      toolCallId: "serialized-json-redaction-call",
+      state: "success",
+      content: resultPayload,
+    });
+    await writer.finishRun(run, "succeeded");
+    await writer.close();
+    expect(invocation).toMatchObject({ persistence: "persisted", truncated: true });
+    expect(result).toMatchObject({ persistence: "persisted", truncated: true });
+    if (invocation.recordId === undefined || result.recordId === undefined) {
+      throw new Error("Serialized JSON redaction records were not persisted.");
+    }
+
+    const expectedInvocationJson = JSON.stringify(expectedInvocation);
+    const expectedResultJson = JSON.stringify(expectedResult);
+    const databasePath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+    const database = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      expect(database.prepare(`
+        SELECT phase,payload_json,search_text FROM tool_records
+        WHERE conversation_id=? AND run_id=? ORDER BY seq
+      `).all(run.conversationId, run.runId)).toEqual([
+        { phase: "invocation", payload_json: expectedInvocationJson, search_text: expectedInvocationJson.toLowerCase() },
+        { phase: "result", payload_json: expectedResultJson, search_text: expectedResultJson.toLowerCase() },
+      ]);
+    } finally {
+      database.close();
+    }
+
+    const rawBytes = await readFile(databasePath);
+    for (const hidden of [
+      "fixture-secret-tail",
+      "fixture-escaped-key-secret",
+      "fixture-escaped-operator-secret",
+      "fixture-malformed-tail",
+      "fixture-oversized-key-secret",
+      "fixture-remaining-budget-secret",
+      oversizedKey,
+      remainingBudgetKey,
+    ]) {
+      expect(rawBytes.includes(Buffer.from(hidden)), hidden).toBe(false);
+    }
+    for (const retained of [
+      "serialized-redaction-reader-marker",
+      "stable-json-negative",
+      "ssh-rsa-public-material",
+      "https://example.com/docs/path",
+      "remaining-budget-safe-marker",
+      preprocessingOmission,
+    ]) {
+      expect(rawBytes.includes(Buffer.from(retained)), retained).toBe(true);
+    }
+
+    const reader = new ToolHistoryReader(root);
+    const scope = {
+      logicalConversationId: run.logicalConversationId,
+      currentConversationId: "slack:C1#2026-08-15",
+      currentRunId: "current-run",
+    } as const;
+    const search = reader.search({ ...scope, query: "serialized-redaction-reader-marker" });
+    const invocationGet = reader.get({ ...scope, recordId: invocation.recordId, chunkBytes: 8 * 1024 });
+    const resultGet = reader.get({ ...scope, recordId: result.recordId, chunkBytes: 8 * 1024 });
+    expect(search.items).toHaveLength(1);
+    expect(invocationGet.record?.payload).toEqual(expectedInvocation);
+    expect(resultGet.record?.payload).toEqual(expectedResult);
+
+    const projection = buildToolHistoryProjection(
+      reader,
+      run.logicalConversationId,
+      scope.currentConversationId,
+      scope.currentRunId,
+    );
+    const visible = JSON.stringify({ search, invocationGet, resultGet, projection });
+    for (const retained of [
+      omission,
+      preprocessingOmission,
+      "serialized-redaction-reader-marker",
+      "stable-json-negative",
+      "TOKEN=[redacted]",
+      "ssh-rsa-public-material",
+      "remaining-budget-safe-marker",
+    ]) {
+      expect(visible, retained).toContain(retained);
+    }
+    for (const hidden of [
+      "fixture-secret-tail",
+      "fixture-escaped-key-secret",
+      "fixture-escaped-operator-secret",
+      "fixture-malformed-tail",
+      "fixture-oversized-key-secret",
+      "fixture-remaining-budget-secret",
+      oversizedKey,
+      remainingBudgetKey,
+    ]) {
+      expect(visible, hidden).not.toContain(hidden);
+    }
+  });
+
   it("preserves path-keyed values collision-safely across raw storage, reads, and cold projection", async () => {
     const root = await tempRoot();
     const run = binding("path-keyed-history");
@@ -2044,23 +2202,59 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     expect(new ToolHistoryReader(root).stats()).toMatchObject({ calls: 0, records: 0 });
   }, 10_000);
 
-  it("rejects a changed finish binding before closing dangling calls", async () => {
+  it("degrades logical-id and isolation finish binding conflicts independently until canonical retries resolve both incidents", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });
-    const run = binding("finish-binding-conflict");
-    await writer.persist(run, {
-      phase: "invocation", toolCallId: "dangling-binding-call", toolName: "Read", arguments: {},
-    });
+    const logicalMismatchRun = binding("finish-logical-conflict");
+    const isolationMismatchRun = binding("finish-isolation-conflict");
+    for (const [run, toolCallId] of [
+      [logicalMismatchRun, "dangling-logical-call"],
+      [isolationMismatchRun, "dangling-isolation-call"],
+    ] as const) {
+      await writer.persist(run, {
+        phase: "invocation", toolCallId, toolName: "Read", arguments: {},
+      });
+    }
 
     await expect(writer.finishRun({
-      ...run,
+      ...logicalMismatchRun,
       logicalConversationId: "slack:other",
+    }, "failed")).resolves.toBeUndefined();
+    await expect(writer.finishRun({
+      ...isolationMismatchRun,
       isolated: true,
-    }, "failed")).rejects.toMatchObject({ code: "history_idempotency_conflict" });
-    await expect(writer.stats()).resolves.toMatchObject({ dangling: 1, idempotencyConflicts: 1 });
+    }, "failed")).resolves.toBeUndefined();
+    await expect(writer.stats()).resolves.toMatchObject({
+      dangling: 2,
+      idempotencyConflicts: 2,
+      writeFailures: 2,
+    });
 
-    await writer.finishRun(run, "failed");
-    await expect(writer.stats()).resolves.toMatchObject({ dangling: 0, idempotencyConflicts: 0 });
+    const database = new DatabaseSync(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE), { readOnly: true });
+    try {
+      expect(database.prepare(`
+        SELECT run_id,status,terminal_at_ms FROM runs
+        WHERE run_id IN (?,?) ORDER BY run_id
+      `).all(logicalMismatchRun.runId, isolationMismatchRun.runId)).toEqual([
+        { run_id: "finish-isolation-conflict", status: "running", terminal_at_ms: null },
+        { run_id: "finish-logical-conflict", status: "running", terminal_at_ms: null },
+      ]);
+    } finally {
+      database.close();
+    }
+
+    await writer.finishRun(logicalMismatchRun, "failed");
+    await expect(writer.stats()).resolves.toMatchObject({
+      dangling: 1,
+      idempotencyConflicts: 1,
+      writeFailures: 1,
+    });
+    await writer.finishRun(isolationMismatchRun, "failed");
+    await expect(writer.stats()).resolves.toMatchObject({
+      dangling: 0,
+      idempotencyConflicts: 0,
+      writeFailures: 0,
+    });
     await writer.close();
   });
 
@@ -2083,6 +2277,82 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     });
     await closeWriter.close();
     expect(new ToolHistoryReader(closeRoot).stats()).toMatchObject({ calls: 0, records: 0, tombstones: 2 });
+    const reopened = await ToolHistoryWriter.open({ root: closeRoot, retention });
+    await expect(reopened.stats()).resolves.toMatchObject({ calls: 0, records: 0, tombstones: 2 });
+    await reopened.close();
+  });
+
+  it("records close-retention maintenance failure while still closing and releasing ownership for reopen", async () => {
+    const root = await tempRoot();
+    const retention = { maxCompletedCalls: 0, maxBytes: 1024 * 1024, maxTombstones: 10 } as const;
+    const writer = await ToolHistoryWriter.open({ root, retention });
+    await writer.persist(binding("close-retention-failure"), {
+      phase: "invocation",
+      toolCallId: "close-retention-failure-call",
+      toolName: "Read",
+      arguments: { marker: "close-retention-failure-marker" },
+    });
+    const databasePath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+    const injected = new DatabaseSync(databasePath);
+    try {
+      injected.exec(`
+        CREATE TRIGGER fail_close_retention BEFORE DELETE ON tool_calls
+        BEGIN SELECT RAISE(FAIL, 'injected close retention failure'); END
+      `);
+    } finally {
+      injected.close();
+    }
+
+    await expect(writer.close()).resolves.toBeUndefined();
+    const reader = new ToolHistoryReader(root);
+    expect(reader.stats()).toMatchObject({
+      calls: 1,
+      records: 2,
+      dangling: 0,
+      maintenanceFailures: 1,
+    });
+    expect(reader.search({
+      logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-15",
+      currentRunId: "current-run",
+    }).items).toMatchObject([{
+      toolCallId: "close-retention-failure-call",
+      state: "interrupted",
+    }]);
+    const ownerPath = join(root, ".locks", TOOL_HISTORY_OWNER_DATABASE);
+    const releasedOwner = new DatabaseSync(ownerPath, { readOnly: true });
+    try {
+      expect(releasedOwner.prepare("SELECT count(*) AS count FROM writer_owner").get()).toEqual({ count: 0 });
+    } finally {
+      releasedOwner.close();
+    }
+
+    const cleanupTrigger = new DatabaseSync(databasePath);
+    try {
+      cleanupTrigger.exec("DROP TRIGGER fail_close_retention");
+    } finally {
+      cleanupTrigger.close();
+    }
+    const reopened = await ToolHistoryWriter.open({ root, retention, ownerAcquireCeilingMs: 500 });
+    await expect(reopened.stats()).resolves.toMatchObject({
+      calls: 0,
+      records: 0,
+      tombstones: 2,
+      maintenanceFailures: 0,
+    });
+    const reacquiredOwner = new DatabaseSync(ownerPath, { readOnly: true });
+    try {
+      expect(reacquiredOwner.prepare("SELECT count(*) AS count FROM writer_owner").get()).toEqual({ count: 1 });
+    } finally {
+      reacquiredOwner.close();
+    }
+    await reopened.close();
+    const finallyReleasedOwner = new DatabaseSync(ownerPath, { readOnly: true });
+    try {
+      expect(finallyReleasedOwner.prepare("SELECT count(*) AS count FROM writer_owner").get()).toEqual({ count: 0 });
+    } finally {
+      finallyReleasedOwner.close();
+    }
   });
 
   it("keeps persist, finishRun, and close referenced until graceful ownership release settles", async () => {

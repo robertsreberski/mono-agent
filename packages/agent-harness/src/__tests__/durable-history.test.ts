@@ -146,6 +146,42 @@ describe("DurableConversationHistoryStore", () => {
     expect(await dirtyFenceKeys(root)).toEqual([]);
   });
 
+  it("serializes a dirty-only logical reset with an unrelated root-locked sweep", async () => {
+    const dir = await tempDir();
+    const root = join(dir, "history");
+    let releaseFirstRetirement!: () => void;
+    const firstRetirementReleased = new Promise<void>((resolve) => { releaseFirstRetirement = resolve; });
+    let markFirstRetirement!: () => void;
+    const firstRetirementStarted = new Promise<void>((resolve) => { markFirstRetirement = resolve; });
+    const retired: string[] = [];
+    const store = createDurableHistoryStore({
+      root,
+      retireProviderSession: async (providerSessionId) => {
+        retired.push(providerSessionId);
+        if (retired.length === 1) {
+          markFirstRetirement();
+          await firstRetirementReleased;
+        }
+      },
+    });
+    const dirty = await store.beginProviderSessionTurn("chat:42#2026-08-14", "dirty-race-run");
+    await dirty.abort();
+
+    const reset = store.resetLogicalConversation("chat:42");
+    await firstRetirementStarted;
+    const unrelatedSweep = store.append("chat:99", [{ role: "assistant", content: "root sweep" }]);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(retired).toEqual([dirty.providerSessionId]);
+    } finally {
+      releaseFirstRetirement();
+    }
+    await expect(Promise.all([reset, unrelatedSweep])).resolves.toEqual([undefined, undefined]);
+    expect(retired).toEqual([dirty.providerSessionId]);
+    expect(await dirtyFenceKeys(root)).toEqual([]);
+    await expect(store.load("chat:99")).resolves.toEqual([{ role: "assistant", content: "root sweep" }]);
+  });
+
   it("resets a date-shaped logical id and exactly one rollover generation without touching lookalikes", async () => {
     const dir = await tempDir();
     const store = createDurableHistoryStore({ root: join(dir, "history") });

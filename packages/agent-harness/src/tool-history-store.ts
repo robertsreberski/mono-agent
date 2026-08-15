@@ -387,9 +387,6 @@ export class ToolHistoryWriter {
   async finishRun(binding: ToolHistoryRunBinding, status: string, failureKind?: string): Promise<void> {
     await this.request("finish_run", { binding, status, failureKind }, this.persistenceCeilingMs).catch((error) => {
       this.warnOnce("run_finalize_failed", `Tool history run finalization failed: ${reasonOf(error)}`);
-      if (error instanceof ToolHistoryWriterError && error.code === "history_idempotency_conflict") {
-        throw error;
-      }
       this.postBestEffort("write_failure", {
         binding,
         phase: "finish_run",

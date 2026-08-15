@@ -18,6 +18,7 @@ import {
   toolHistoryLogicalConversationId,
   type ToolHistoryRunBinding,
 } from "../index.js";
+import { MonoAgentHarness } from "../harness.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
@@ -274,47 +275,183 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     });
   });
 
-  it("waits for an active run finalizer before releasing the tool-history writer", async () => {
+  it("drains multiple resumed runs through finalization before provider disposal and one writer release", async () => {
     const { identityPath, root } = await fixture();
-    let markRuntimeStarted!: () => void;
-    const runtimeStarted = new Promise<void>((resolve) => { markRuntimeStarted = resolve; });
-    let finishRuntime!: () => void;
-    const runtimeFinished = new Promise<void>((resolve) => { finishRuntime = resolve; });
     const lifecycle: string[] = [];
+    const writer = await ToolHistoryWriter.open({ root });
+    const gates = new Map<string, () => void>();
+    let activeStarted = 0;
+    let markActiveRunsStarted!: () => void;
+    const activeRunsStarted = new Promise<void>((resolve) => { markActiveRunsStarted = resolve; });
+    let coldCalls = 0;
     const runtime = {
-      async run(): Promise<RuntimeResult> {
-        markRuntimeStarted();
-        await runtimeFinished;
-        return { text: "answer" };
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        if (typeof options.sessionId !== "string") {
+          coldCalls += 1;
+          return { text: "seed", providerSessionId: `provider-${String(coldCalls)}` };
+        }
+        const providerSessionId = options.sessionId;
+        activeStarted += 1;
+        if (activeStarted === 2) markActiveRunsStarted();
+        await new Promise<void>((resolve) => { gates.set(providerSessionId, resolve); });
+        lifecycle.push(`runtime-finish:${providerSessionId}`);
+        return { text: "answer", providerSessionId };
+      },
+      async disposeSession(providerSessionId: string): Promise<boolean> {
+        lifecycle.push(`provider-dispose:${providerSessionId}`);
+        return true;
       },
     };
+    let runId = 0;
+    let releaseCount = 0;
     const harness = createAgentHarness({
       identityPath,
       runtime,
       model,
-      createRunId: () => "dispose-race-run",
+      session,
+      createRunId: () => `dispose-order-${String(++runId)}`,
       toolHistory: {
         reader: new ToolHistoryReader(root),
         logicalConversationId: (conversationId) => toolHistoryLogicalConversationId(conversationId, "daily"),
         writer: {
-          createSink: () => async () => ({ persistence: "persisted" }),
-          async finishRun() { lifecycle.push("finish"); },
-          async resetConversation() {},
+          createSink: (runBinding) => writer.createSink(runBinding),
+          async finishRun(runBinding, status, failureKind) {
+            await writer.finishRun(runBinding, status, failureKind);
+            lifecycle.push(`tool-finalize:${runBinding.runId}`);
+          },
+          async resetConversation(logicalConversationId) {
+            await writer.resetConversation(logicalConversationId);
+          },
         },
-        async release() { lifecycle.push("release"); },
+        async release() {
+          releaseCount += 1;
+          await writer.close();
+          lifecycle.push("writer-release");
+        },
       },
     });
 
-    const running = harness.run(request("chat:42#2026-08-14"));
-    await runtimeStarted;
-    const disposing = harness.dispose?.();
-    await Promise.resolve();
-    expect(lifecycle).toEqual([]);
+    await harness.run(request("chat:42#2026-08-14"));
+    await harness.run(request("chat:99#2026-08-14"));
+    lifecycle.length = 0;
+    const firstRun = harness.run(request("chat:42#2026-08-14"));
+    const secondRun = harness.run(request("chat:99#2026-08-14"));
+    await activeRunsStarted;
+    const disposing = harness.dispose!();
+    expect(harness.dispose!()).toBe(disposing);
+    await expect(harness.run(request("chat:100#2026-08-14")))
+      .rejects.toMatchObject({ failureKind: "harness_disposed" });
+    await expect(harness.submit!(request("chat:101#2026-08-14")))
+      .rejects.toMatchObject({ failureKind: "harness_disposed" });
 
-    finishRuntime();
-    await expect(running).resolves.toMatchObject({ text: "answer" });
+    gates.get("provider-1")?.();
+    await expect(firstRun).resolves.toMatchObject({ text: "answer" });
+    expect(lifecycle).not.toContain("writer-release");
+    gates.get("provider-2")?.();
+    await expect(secondRun).resolves.toMatchObject({ text: "answer" });
     await disposing;
-    expect(lifecycle).toEqual(["finish", "release"]);
+    expect(releaseCount).toBe(1);
+    const writerRelease = lifecycle.indexOf("writer-release");
+    for (const [providerSessionId, finalizedRunId] of [
+      ["provider-1", "dispose-order-3"],
+      ["provider-2", "dispose-order-4"],
+    ] as const) {
+      expect(lifecycle.indexOf(`runtime-finish:${providerSessionId}`))
+        .toBeLessThan(lifecycle.indexOf(`tool-finalize:${finalizedRunId}`));
+      expect(lifecycle.indexOf(`tool-finalize:${finalizedRunId}`))
+        .toBeLessThan(lifecycle.indexOf(`provider-dispose:${providerSessionId}`));
+      expect(lifecycle.indexOf(`provider-dispose:${providerSessionId}`)).toBeLessThan(writerRelease);
+    }
+    await harness.dispose!();
+    expect(releaseCount).toBe(1);
+  });
+
+  it("bounds shutdown when a resumed provider ignores abort and makes late persistence degradation observable", async () => {
+    const { identityPath, root } = await fixture();
+    const writerWarnings: string[] = [];
+    const writer = await ToolHistoryWriter.open({ root, onWarning: (message) => writerWarnings.push(message) });
+    const requestEvents: Array<Record<string, unknown>> = [];
+    const lifecycle: string[] = [];
+    let releaseRuntime!: () => void;
+    const runtimeReleased = new Promise<void>((resolve) => { releaseRuntime = resolve; });
+    let markRuntimeStarted!: () => void;
+    const runtimeStarted = new Promise<void>((resolve) => { markRuntimeStarted = resolve; });
+    let calls = 0;
+    let releases = 0;
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        calls += 1;
+        if (calls === 1) return { text: "seed", providerSessionId: "provider-timeout" };
+        await options.toolLifecycleSink?.({
+          phase: "invocation",
+          toolCallId: "shutdown-timeout-call",
+          toolName: "Bash",
+          arguments: { command: "wait forever" },
+        });
+        markRuntimeStarted();
+        await runtimeReleased;
+        lifecycle.push("runtime-finish");
+        return { text: "late answer", providerSessionId: "provider-timeout" };
+      },
+      async disposeSession(providerSessionId: string): Promise<boolean> {
+        lifecycle.push(`provider-dispose:${providerSessionId}`);
+        return true;
+      },
+    };
+    let runId = 0;
+    const harness = new MonoAgentHarness({
+      identityPath,
+      runtime,
+      model,
+      session,
+      createRunId: () => `timeout-run-${String(++runId)}`,
+      toolHistory: {
+        writer,
+        reader: new ToolHistoryReader(root),
+        logicalConversationId: (conversationId) => toolHistoryLogicalConversationId(conversationId, "daily"),
+        async release() {
+          releases += 1;
+          await writer.close();
+          lifecycle.push("writer-release");
+        },
+      },
+    }, { shutdownDrainTimeoutMs: 50 });
+
+    await harness.run(request("chat:42#2026-08-14"));
+    const running = harness.run({
+      ...request("chat:42#2026-08-14"),
+      onEvent: (event) => requestEvents.push(event as Record<string, unknown>),
+    });
+    await runtimeStarted;
+    const started = performance.now();
+    const disposing = harness.dispose();
+    expect(harness.dispose()).toBe(disposing);
+    await disposing;
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(requestEvents).toContainEqual(expect.objectContaining({
+      type: "runtime_warning",
+      warning_kind: "harness_shutdown_degraded",
+    }));
+    expect(lifecycle).toEqual(["provider-dispose:provider-timeout", "writer-release"]);
+    expect(releases).toBe(1);
+
+    const reader = new ToolHistoryReader(root);
+    expect(reader.search({
+      logicalConversationId: "chat:42",
+      currentConversationId: "chat:42#2026-08-15",
+      currentRunId: "later-run",
+    }).items).toMatchObject([{
+      toolCallId: "shutdown-timeout-call",
+      state: "interrupted",
+    }]);
+
+    releaseRuntime();
+    await expect(running).resolves.toMatchObject({ text: "late answer" });
+    expect(writerWarnings.join(" ")).toMatch(/finalization failed.*writer is closed/iu);
+    expect(releases).toBe(1);
+    expect(lifecycle.filter((entry) => entry === "writer-release")).toHaveLength(1);
+    await expect(harness.run(request("chat:42#2026-08-14")))
+      .rejects.toMatchObject({ failureKind: "harness_disposed" });
   });
 
   it("releases the live mailbox and warm session when an injected run finalizer throws", async () => {
