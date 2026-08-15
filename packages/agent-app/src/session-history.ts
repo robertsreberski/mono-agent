@@ -22,6 +22,7 @@ import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 export const SESSION_HISTORY_MCP_SERVER_NAME = "mono-agent-session-history";
 export const SESSION_HISTORY_TOOL_NAME = "SessionHistory";
 
+const SESSION_HISTORY_MCP_SURFACE_VERSION = "1.0.0";
 const SESSION_HISTORY_LEGACY_TOOL_NAME = "session_history";
 const SESSION_HISTORY_MCP_TOOL_NAME = `mcp__${SESSION_HISTORY_MCP_SERVER_NAME}__${SESSION_HISTORY_TOOL_NAME}`;
 const SESSION_HISTORY_MCP_SERVER_WILDCARD = `mcp__${SESSION_HISTORY_MCP_SERVER_NAME}__*`;
@@ -83,7 +84,10 @@ export function isSessionHistoryToolAllowed(policy: SessionHistoryToolPolicy | u
 }
 
 export function createSessionHistoryServer(binding: SessionHistoryBinding): McpServer {
-  const server = new McpServer({ name: SESSION_HISTORY_MCP_SERVER_NAME, version: "0.19.1" });
+  const server = new McpServer({
+    name: SESSION_HISTORY_MCP_SERVER_NAME,
+    version: SESSION_HISTORY_MCP_SURFACE_VERSION,
+  });
   server.registerTool(
     SESSION_HISTORY_TOOL_NAME,
     {

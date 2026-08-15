@@ -30,6 +30,21 @@
   operator-visible id, expression, timezone, or conversation id exceeds its
   documented UTF-8 byte limit.
 
+### Session tool history
+
+- Managed `tool_use` / `tool_result` stream blocks intentionally gain
+  host-authored `history` metadata with opaque record identity, persistence,
+  bounds, and terminal state; provider-authored lookalikes remain untrusted and
+  are removed.
+- A configured app intentionally keeps the canonical managed-tool sidecar and
+  `SessionHistory` capability when a programmatic caller supplies a custom
+  message-history store. The custom store remains the sole owner of messages;
+  the sidecar remains a separate lifecycle contract.
+- Lazy writer acquisition keeps one bounded restart-handoff attempt, then
+  fails fast for the rest of already-started turns and re-arms once at the next
+  new turn. A delayed real result safely supersedes a finalization/recovery
+  result for the same call without creating a permanent conflict.
+
 ## 0.19.1 — Web Push delivery fix (2026-08-13)
 
 ### Web Push reliability

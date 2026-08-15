@@ -302,25 +302,31 @@ process-global handle owns each root and a held owner transaction excludes other
 processes. Acquisition retries for at most 10 seconds, reaps a proven-dead PID
 using the durable-history liveness pattern, succeeds when a normal old writer
 releases in time, and otherwise fails deterministically with
-`history_writer_in_use`.
+`history_writer_in_use`. Configured lazy acquisition permits that bounded
+restart-handoff wait once, then caches the failure for every already-created
+turn; one sink from the next new turn re-arms acquisition. A successful handle
+remains process-shared.
 
 Incremental lifecycle writes retain their 250 ms streaming ceiling. Reset,
 statistics, and close are bounded maintenance operations with a separate 2 s
 deadline; reset still fails closed on a real worker error. Writer-health
 counters describe distinct unresolved incidents. Identical failed retries do
-not increment them, unrelated lifecycle success and run finalization do not
-clear them, and only the matching tool phase or canonical run-binding retry
-resolves a write/conflict incident. Retention and startup-recovery incidents
-clear after their corresponding pass succeeds.
+not increment them, and unrelated lifecycle success or run finalization does
+not clear them. Only the matching tool phase, its durable synthetic terminal
+closure, or canonical run-binding retry resolves a write/conflict incident.
+Retention and startup-recovery incidents clear after their corresponding pass
+succeeds.
 
 Keys are `(conversationId, runId, toolCallId)`; each run has monotonic
 writer-assigned start/end sequences, while timestamps remain metadata. Repeating
 the same phase returns its stable record id; conflicting payload or name,
 terminal classification, duration, or artifact identity is rejected. Startup
 closes a dangling invocation as `interrupted` with `process_death`, never reruns
-it, and never duplicates a completed phase. Results cover `success`, `rejected`,
-`error`, `exit_nonzero`, `timeout`, `signal`, `cancelled`, and `interrupted` using
-the observability failure-kind taxonomy.
+it, and never duplicates a completed phase. A real result observed after a
+synthetic finalization/recovery result supersedes that result in place while
+preserving its stable record id and sequence. Results cover `success`,
+`rejected`, `error`, `exit_nonzero`, `timeout`, `signal`, `cancelled`, and
+`interrupted` using the observability failure-kind taxonomy.
 
 Arguments retain at most 8 KiB, results 16 KiB, individual strings 4 KiB, and
 search text 8 KiB after secure pre-bounding and shared

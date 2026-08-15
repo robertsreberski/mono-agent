@@ -14,6 +14,7 @@ import {
   ToolHistoryWriter,
   TOOL_HISTORY_DATABASE,
   TOOL_HISTORY_DIRECTORY,
+  TOOL_HISTORY_USER_VERSION,
   toolHistoryLogicalConversationId,
   type ToolHistoryRunBinding,
 } from "../index.js";
@@ -53,7 +54,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     const initialized = await ToolHistoryWriter.open({ root });
     await initialized.close();
     const database = new DatabaseSync(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE));
-    database.exec("PRAGMA user_version=2");
+    database.exec(`PRAGMA user_version=${String(TOOL_HISTORY_USER_VERSION + 1)}`);
     database.close();
 
     const reader = new ToolHistoryReader(root);

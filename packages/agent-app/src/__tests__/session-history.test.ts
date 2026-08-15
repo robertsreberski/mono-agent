@@ -307,6 +307,10 @@ describe("SessionHistory MCP tool", () => {
 
     const opened = await openClient(root, "chat:42#2026-08-14", "current-run");
     try {
+      expect(opened.client.getServerVersion()).toEqual({
+        name: SESSION_HISTORY_MCP_SERVER_NAME,
+        version: "1.0.0",
+      });
       const wrongPath = new URL("/mcp/not-the-capability", opened.url);
       expect((await fetch(wrongPath)).status).toBe(404);
       // undici forbids overriding Host, so use node:http to prove the outer

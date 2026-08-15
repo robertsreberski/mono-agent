@@ -19,6 +19,8 @@ import {
   TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS,
   TOOL_HISTORY_OWNER_DATABASE,
   TOOL_HISTORY_PERSISTENCE_CEILING_MS,
+  TOOL_HISTORY_USER_VERSION,
+  toolHistoryRecordId,
   type ToolHistoryRunBinding,
 } from "../tool-history-store.js";
 import { buildToolHistoryProjection } from "../tool-history-projection.js";
@@ -725,6 +727,121 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     }
   });
 
+  it("resolves only the result incident durably closed by finalization and upgrades that synthetic result in place", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    const recoveredRun = binding("finalized-result-recovery");
+    const unrelatedRun = binding("unrelated-result-recovery");
+    const invalidResult = (toolCallId: string) => ({
+      phase: "result" as const,
+      toolCallId,
+      state: "success" as const,
+      executionMs: -1,
+      content: "invalid duration",
+    });
+    const recoveredEvent = {
+      phase: "result" as const,
+      toolCallId: "recovered-call",
+      state: "success" as const,
+      executionMs: 12,
+      content: { answer: "late durable result" },
+    };
+    try {
+      await writer.persist(recoveredRun, {
+        phase: "invocation", toolCallId: "recovered-call", toolName: "Read", arguments: {},
+      });
+      await writer.persist(unrelatedRun, {
+        phase: "invocation", toolCallId: "unrelated-call", toolName: "Read", arguments: {},
+      });
+      await expect(writer.persist(recoveredRun, invalidResult("recovered-call")))
+        .resolves.toEqual({ persistence: "failed", errorCode: "history_write_failed" });
+      await expect(writer.persist(unrelatedRun, invalidResult("unrelated-call")))
+        .resolves.toEqual({ persistence: "failed", errorCode: "history_write_failed" });
+      await expect(writer.stats()).resolves.toMatchObject({
+        calls: 2,
+        records: 2,
+        dangling: 2,
+        writeFailures: 2,
+        idempotencyConflicts: 0,
+      });
+
+      await writer.finishRun(recoveredRun, "succeeded");
+      await expect(writer.stats()).resolves.toMatchObject({
+        calls: 2,
+        records: 3,
+        dangling: 1,
+        writeFailures: 1,
+        idempotencyConflicts: 0,
+      });
+      expect(new ToolHistoryReader(root).search({
+        logicalConversationId: "slack:C1",
+        currentRunId: "current",
+        runIds: [recoveredRun.runId],
+      }).items).toMatchObject([{
+        toolCallId: "recovered-call",
+        state: "interrupted",
+        recovered: false,
+      }]);
+
+      const upgraded = await writer.persist(recoveredRun, recoveredEvent);
+      expect(upgraded).toMatchObject({ persistence: "persisted", sequence: 2 });
+      await expect(writer.persist(recoveredRun, recoveredEvent)).resolves.toMatchObject({
+        persistence: "persisted",
+        recordId: upgraded.recordId,
+        sequence: 2,
+      });
+      await expect(writer.stats()).resolves.toMatchObject({
+        records: 3,
+        dangling: 1,
+        writeFailures: 1,
+        idempotencyConflicts: 0,
+      });
+
+      await expect(writer.persist(unrelatedRun, {
+        phase: "result",
+        toolCallId: "unrelated-call",
+        state: "success",
+        executionMs: 1,
+        content: "unrelated recovered",
+      })).resolves.toMatchObject({ persistence: "persisted" });
+      await expect(writer.stats()).resolves.toMatchObject({
+        records: 4,
+        dangling: 0,
+        writeFailures: 0,
+        idempotencyConflicts: 0,
+      });
+    } finally {
+      await writer.close();
+    }
+
+    const reader = new ToolHistoryReader(root);
+    expect(reader.search({
+      logicalConversationId: "slack:C1",
+      currentRunId: "current",
+      runIds: [recoveredRun.runId],
+    }).items).toMatchObject([{
+      toolCallId: "recovered-call",
+      state: "success",
+      recovered: false,
+      resultRecordId: expect.any(String),
+    }]);
+    expect(reader.get({
+      logicalConversationId: "slack:C1",
+      currentRunId: "current",
+      recordId: toolHistoryRecordId(
+        recoveredRun.conversationId,
+        recoveredRun.runId,
+        "recovered-call",
+        "result",
+      ),
+    }).record).toMatchObject({
+      state: "success",
+      executionMs: 12,
+      payload: { answer: "late durable result" },
+      recovered: false,
+    });
+  });
+
   it("excludes isolated/proactive runs by default and includes them only when explicitly requested", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });
@@ -952,13 +1069,85 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     })).toThrow(/mode 0600/iu);
   });
 
+  it("migrates reviewed v1 synthetic terminals and their matching incidents before a delayed real result", async () => {
+    const root = await tempRoot();
+    const run = binding("v1-synthetic-result");
+    const resultId = toolHistoryRecordId(run.conversationId, run.runId, "v1-call", "result");
+    const initialized = await ToolHistoryWriter.open({ root });
+    await initialized.persist(run, {
+      phase: "invocation", toolCallId: "v1-call", toolName: "Read", arguments: {},
+    });
+    await initialized.finishRun(run, "succeeded");
+    await initialized.close();
+
+    const path = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+    const legacy = new DatabaseSync(path);
+    try {
+      legacy.exec("ALTER TABLE tool_calls DROP COLUMN synthetic_result");
+      legacy.exec("PRAGMA user_version=1");
+      legacy.prepare(`
+        INSERT INTO writer_stats (key,value,last_detail,updated_at_ms) VALUES (?,1,'legacy incident',?)
+      `).run(`write_failures:${resultId}`, Date.now());
+    } finally {
+      legacy.close();
+    }
+
+    const migrated = await ToolHistoryWriter.open({ root });
+    try {
+      await expect(migrated.stats()).resolves.toMatchObject({
+        records: 2,
+        dangling: 0,
+        writeFailures: 0,
+        idempotencyConflicts: 0,
+      });
+      await expect(migrated.persist(run, {
+        phase: "result",
+        toolCallId: "v1-call",
+        state: "success",
+        executionMs: 7,
+        content: "late v1 result",
+      })).resolves.toMatchObject({
+        persistence: "persisted",
+        recordId: resultId,
+        sequence: 2,
+      });
+      await expect(migrated.stats()).resolves.toMatchObject({
+        records: 2,
+        writeFailures: 0,
+        idempotencyConflicts: 0,
+      });
+    } finally {
+      await migrated.close();
+    }
+
+    const schema = new DatabaseSync(path, { readOnly: true });
+    try {
+      expect(Number((schema.prepare("PRAGMA user_version").get() as { readonly user_version: number }).user_version))
+        .toBe(TOOL_HISTORY_USER_VERSION);
+      expect((schema.prepare("PRAGMA table_info(tool_calls)").all() as Array<{ readonly name: string }>)
+        .map((column) => column.name)).toContain("synthetic_result");
+    } finally {
+      schema.close();
+    }
+    expect(new ToolHistoryReader(root).get({
+      logicalConversationId: run.logicalConversationId,
+      currentRunId: "current",
+      recordId: resultId,
+    }).record).toMatchObject({
+      state: "success",
+      executionMs: 7,
+      payload: "late v1 result",
+      recovered: false,
+    });
+  });
+
   it("hard-fails newer and unmarked foreign schemas instead of attempting downgrade or adoption", async () => {
     const newerRoot = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root: newerRoot });
     await writer.close();
     const newerPath = join(newerRoot, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
     const newer = new DatabaseSync(newerPath);
-    newer.exec("PRAGMA user_version=2");
+    newer.exec(`PRAGMA user_version=${String(TOOL_HISTORY_USER_VERSION + 1)}`);
     newer.close();
     await expect(ToolHistoryWriter.open({ root: newerRoot, ownerAcquireCeilingMs: 500 }))
       .rejects.toMatchObject({ code: "history_schema_unsupported" });

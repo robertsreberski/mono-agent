@@ -10,6 +10,7 @@ import {
   ToolHistoryWriter,
   TOOL_HISTORY_DATABASE,
   TOOL_HISTORY_DIRECTORY,
+  TOOL_HISTORY_USER_VERSION,
 } from "@mono-agent/agent-harness";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -210,7 +211,7 @@ describe("sessionToolHistorySection", () => {
     await writer.close();
     const path = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
     const database = new DatabaseSync(path);
-    database.exec("PRAGMA user_version=2");
+    database.exec(`PRAGMA user_version=${String(TOOL_HISTORY_USER_VERSION + 1)}`);
     database.close();
 
     const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });

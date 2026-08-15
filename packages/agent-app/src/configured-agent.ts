@@ -945,13 +945,35 @@ export function lazyConfiguredToolHistory(
   options: LazyConfiguredToolHistoryOptions,
 ): AgentHarnessToolHistoryOptions {
   let handlePromise: Promise<ToolHistoryWriterHandle> | undefined;
+  let latestTurnGeneration = 0;
+  let failedThroughGeneration: number | undefined;
+  const turnGenerations = new Map<string, number>();
   let acquisitionOutage = false;
   const reader = new ToolHistoryReader(options.root);
   const warn = (message: string): void => {
     try { options.onWarning?.(message); } catch { /* diagnostics are best-effort */ }
   };
-  const acquire = (): Promise<ToolHistoryWriterHandle> => {
-    if (handlePromise !== undefined) return handlePromise;
+  const turnKey = (conversationId: string, runId: string): string =>
+    JSON.stringify([conversationId, runId]);
+  const generationFor = (conversationId: string, runId: string): number => {
+    const key = turnKey(conversationId, runId);
+    const existing = turnGenerations.get(key);
+    if (existing !== undefined) return existing;
+    const generation = ++latestTurnGeneration;
+    turnGenerations.set(key, generation);
+    return generation;
+  };
+  const acquire = (turnGeneration: number): Promise<ToolHistoryWriterHandle> => {
+    if (handlePromise !== undefined) {
+      if (failedThroughGeneration === undefined || turnGeneration <= failedThroughGeneration) {
+        return handlePromise;
+      }
+      // The first sink created after the observed outage is the only retry
+      // boundary. All sinks that already existed when acquisition failed keep
+      // the cached rejection and cannot repay the owner-handoff window.
+      handlePromise = undefined;
+      failedThroughGeneration = undefined;
+    }
     let pending: Promise<ToolHistoryWriterHandle>;
     pending = (options.acquireWriter ?? acquireToolHistoryWriter)({
       root: options.root,
@@ -964,10 +986,10 @@ export function lazyConfiguredToolHistory(
       acquisitionOutage = false;
       return handle;
     }).catch((error: unknown) => {
-      if (handlePromise === pending) handlePromise = undefined;
+      if (handlePromise === pending) failedThroughGeneration = latestTurnGeneration;
       if (!acquisitionOutage) {
         acquisitionOutage = true;
-        warn(`Tool history writer acquisition failed (${toolHistoryAcquisitionErrorCode(error)}); the next lifecycle write will retry.`);
+        warn(`Tool history writer acquisition failed (${toolHistoryAcquisitionErrorCode(error)}); the next turn will retry.`);
       }
       throw error;
     });
@@ -976,16 +998,21 @@ export function lazyConfiguredToolHistory(
   };
   const writer: AgentHarnessToolHistoryOptions["writer"] = {
     createSink(binding) {
-      return async (event) => await (await acquire()).writer.persist(binding, event);
+      const turnGeneration = generationFor(binding.conversationId, binding.runId);
+      return async (event) => await (await acquire(turnGeneration)).writer.persist(binding, event);
     },
     async finishRun(binding, status, failureKind) {
-      if (handlePromise === undefined) return;
-      const handle = await handlePromise.catch(() => undefined);
-      await handle?.writer.finishRun(binding, status, failureKind);
+      try {
+        if (handlePromise === undefined) return;
+        const handle = await handlePromise.catch(() => undefined);
+        await handle?.writer.finishRun(binding, status, failureKind);
+      } finally {
+        turnGenerations.delete(turnKey(binding.conversationId, binding.runId));
+      }
     },
     async resetConversation(logicalConversationId) {
       if (!await reader.exists()) return;
-      await (await acquire()).writer.resetConversation(logicalConversationId);
+      await (await acquire(latestTurnGeneration)).writer.resetConversation(logicalConversationId);
     },
   };
   return {

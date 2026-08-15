@@ -509,8 +509,10 @@ reseed receives a bounded neutralized text projection; warm provider resume
 continues natively and receives no replay. A zero-byte fresh sidecar is absent
 for automatic projection; another corrupt/unsafe projection emits a structured
 warning and continues the turn, while explicit SessionHistory reads fail closed.
-Lazy writer acquisition retries on the next lifecycle write after a transient
-failure and emits only an outage warning plus a later recovery warning.
+Lazy writer acquisition keeps one at-most-10-second restart-handoff attempt.
+After failure, writes from every already-created turn reuse that rejection and
+fail immediately; the first sink from the next new turn re-arms one acquisition.
+The outage emits one warning plus one later recovery warning.
 
 Telegram `/new` clears message records and tool records across the same logical
 session, including prior daily rollover buckets that canonical replay,
@@ -521,9 +523,10 @@ tool history while reporting message/tool counts and bytes separately. Doctor
 audits schema, ownership, journal/integrity state, recovery, quota, and distinct
 unresolved fail-soft incidents. Repeating the same failed lifecycle retry does
 not inflate the count, and unrelated writes or run finalization cannot hide lost
-evidence; only the matching tool phase or canonical run-binding retry clears its
-incident. A newer tool-history schema hard-fails downgrade until persisted
-conversation state is purged.
+evidence; only the matching tool phase, its durable synthetic terminal closure,
+or canonical run-binding retry clears its incident. A delayed real result
+supersedes that synthetic terminal record in place. A newer tool-history schema
+hard-fails downgrade until persisted conversation state is purged.
 
 ### Channel interactions and conversation history
 

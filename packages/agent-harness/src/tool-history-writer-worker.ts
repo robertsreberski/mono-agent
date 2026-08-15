@@ -316,7 +316,7 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
       return { persistence: "failed", errorCode: "history_record_tombstoned" };
     }
     let call = database.prepare(`
-      SELECT tool_name,end_seq,state,failure_kind,detail_code,duration_ms
+      SELECT tool_name,end_seq,state,failure_kind,detail_code,duration_ms,synthetic_result
       FROM tool_calls WHERE conversation_id=? AND run_id=? AND tool_call_id=?
     `).get(binding.conversationId, binding.runId, toolCallId) as Record<string, unknown> | undefined;
     if (call === undefined) {
@@ -352,6 +352,42 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
       FROM tool_records WHERE conversation_id=? AND run_id=? AND tool_call_id=? AND phase='result'
     `).get(binding.conversationId, binding.runId, toolCallId) as Record<string, unknown> | undefined;
     if (existing !== undefined) {
+      if (Number(call.synthetic_result) === 1) {
+        const sequence = Number(existing.seq);
+        const now = Date.now();
+        database.prepare(`
+          UPDATE tool_records
+          SET payload_json=?,payload_sha256=?,search_text=?,original_bytes=?,retained_bytes=?,truncated=?
+          WHERE record_id=?
+        `).run(
+          bounded.json,
+          bounded.sha256,
+          bounded.searchText,
+          bounded.originalBytes,
+          bounded.retainedBytes,
+          bounded.truncated ? 1 : 0,
+          recordId,
+        );
+        database.prepare(`
+          UPDATE tool_calls
+          SET state=?,failure_kind=?,detail_code=?,ended_at_ms=?,duration_ms=?,recovered=0,synthetic_result=0
+          WHERE conversation_id=? AND run_id=? AND tool_call_id=?
+        `).run(
+          event.state,
+          failureKind,
+          detailCode,
+          now,
+          executionMs,
+          binding.conversationId,
+          binding.runId,
+          toolCallId,
+        );
+        database.prepare("DELETE FROM artifact_refs WHERE conversation_id=? AND run_id=? AND tool_call_id=?")
+          .run(binding.conversationId, binding.runId, toolCallId);
+        const artifacts = insertArtifacts(database, binding, toolCallId, event.artifacts ?? [], now);
+        resolveLifecycleIncidents(database, recordId);
+        return persistence(recordId, sequence, bounded, artifacts);
+      }
       const persistedArtifactIds = artifactRefs(database, binding, toolCallId).map((reference) => reference.id).sort();
       if (
         existing.payload_sha256 !== bounded.sha256
@@ -421,9 +457,10 @@ function closeDangling(
       const now = Date.now();
       insertRecord(database, { recordId, binding: rowBinding, toolCallId, phase: "result", sequence, bounded });
       database.prepare(`
-        UPDATE tool_calls SET end_seq=?,state=?,failure_kind=?,detail_code=?,ended_at_ms=?,recovered=?
+        UPDATE tool_calls SET end_seq=?,state=?,failure_kind=?,detail_code=?,ended_at_ms=?,recovered=?,synthetic_result=1
         WHERE conversation_id=? AND run_id=? AND tool_call_id=? AND end_seq IS NULL
       `).run(sequence, state, failureKind, detailCode, now, recovered ? 1 : 0, rowBinding.conversationId, rowBinding.runId, toolCallId);
+      resolveLifecycleIncidents(database, recordId);
       if (recovered) incrementStat(database, "recovered_calls", 1, `${rowBinding.runId}:${toolCallId}`);
     }
   });
@@ -657,7 +694,6 @@ function openContentDatabase(
   database.exec("PRAGMA busy_timeout=250");
   transaction(database, () => {
     database.exec(`PRAGMA application_id=${String(TOOL_HISTORY_APPLICATION_ID)}`);
-    database.exec(`PRAGMA user_version=${String(TOOL_HISTORY_USER_VERSION)}`);
     database.exec(`
     CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS runs (
@@ -686,6 +722,7 @@ function openContentDatabase(
       duration_ms INTEGER,
       recovered INTEGER NOT NULL DEFAULT 0 CHECK(recovered IN (0,1)),
       synthetic_start INTEGER NOT NULL DEFAULT 0 CHECK(synthetic_start IN (0,1)),
+      synthetic_result INTEGER NOT NULL DEFAULT 0 CHECK(synthetic_result IN (0,1)),
       PRIMARY KEY(conversation_id,run_id,tool_call_id),
       FOREIGN KEY(conversation_id,run_id) REFERENCES runs(conversation_id,run_id) ON DELETE CASCADE
     );
@@ -740,6 +777,8 @@ function openContentDatabase(
     CREATE INDEX IF NOT EXISTS tombstones_run_idx ON tombstones(conversation_id,run_id);
     CREATE INDEX IF NOT EXISTS tombstones_removed_idx ON tombstones(removed_at_ms);
     `);
+    migrateSyntheticResultMarker(database, existingVersion);
+    database.exec(`PRAGMA user_version=${String(TOOL_HISTORY_USER_VERSION)}`);
     const metadata = database.prepare("INSERT OR REPLACE INTO metadata (key,value) VALUES (?,?)");
     const existingArtifactRoot = database.prepare("SELECT value FROM metadata WHERE key='artifact_root'").get() as Record<string, unknown> | undefined;
     if (existingArtifactRoot !== undefined && existingArtifactRoot.value !== configuredArtifactRoot) {
@@ -764,6 +803,54 @@ function openContentDatabase(
   assertSecureFile(path);
   assertToolDirectoryEntries();
   return database;
+}
+
+function migrateSyntheticResultMarker(database: DatabaseSync, priorVersion: number): void {
+  const columns = database.prepare("PRAGMA table_info(tool_calls)").all() as Record<string, unknown>[];
+  if (!columns.some((column) => column.name === "synthetic_result")) {
+    database.exec(`
+      ALTER TABLE tool_calls
+      ADD COLUMN synthetic_result INTEGER NOT NULL DEFAULT 0 CHECK(synthetic_result IN (0,1))
+    `);
+  }
+  if (priorVersion >= 2) return;
+
+  // The reviewed v1 writer durably emitted this exact terminal payload before
+  // it had an explicit marker. Recognize only that byte-identical host shape so
+  // existing sidecars recover without reclassifying ordinary provider results.
+  const candidates = database.prepare(`
+    SELECT c.conversation_id,c.run_id,c.tool_call_id,c.state,c.detail_code,
+           tr.record_id,tr.payload_sha256
+    FROM tool_calls c
+    JOIN tool_records tr
+      ON tr.conversation_id=c.conversation_id
+     AND tr.run_id=c.run_id
+     AND tr.tool_call_id=c.tool_call_id
+     AND tr.phase='result'
+    WHERE c.synthetic_result=0
+      AND c.duration_ms IS NULL
+      AND c.detail_code IS NOT NULL
+      AND (c.detail_code IN ('recovered_after_writer_restart','writer_shutdown') OR c.detail_code GLOB 'run_*')
+      AND NOT EXISTS (
+        SELECT 1 FROM artifact_refs a
+        WHERE a.conversation_id=c.conversation_id AND a.run_id=c.run_id AND a.tool_call_id=c.tool_call_id
+      )
+  `).all() as Record<string, unknown>[];
+  for (const candidate of candidates) {
+    const state = stringField(candidate, "state");
+    const detailCode = stringField(candidate, "detail_code");
+    const expected = boundedPayload({ state, reason: detailCode }, RESULT_MAX_BYTES);
+    if (candidate.payload_sha256 !== expected.sha256) continue;
+    database.prepare(`
+      UPDATE tool_calls SET synthetic_result=1
+      WHERE conversation_id=? AND run_id=? AND tool_call_id=?
+    `).run(
+      stringField(candidate, "conversation_id"),
+      stringField(candidate, "run_id"),
+      stringField(candidate, "tool_call_id"),
+    );
+    resolveLifecycleIncidents(database, stringField(candidate, "record_id"));
+  }
 }
 
 async function acquireOwner(path: string, ceilingMs: number): Promise<{ release(): void }> {
