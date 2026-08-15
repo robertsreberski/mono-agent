@@ -917,6 +917,73 @@ describe("process job service", () => {
     expect(storedFirst).toMatchObject({ summary: "exec (values redacted)", preview: "" });
   });
 
+  it("reconciles one store record without recloning owned bounded snapshot entries", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const incoming = durableRecord("terminal-incoming", {
+      state: "succeeded",
+      admittedAt: "2026-08-14T12:00:00.000Z",
+      completedAt: "2026-08-14T12:00:00.001Z",
+      exitCode: 0,
+      durationMs: 1,
+    });
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async get(jobId) {
+        return jobId === incoming.jobId ? incoming : undefined;
+      },
+    };
+    const service = await startService(fixture, { store });
+    const snapshot = (service as unknown as {
+      recordSnapshot: Map<string, DurableProcessJobRecord>;
+    }).recordSnapshot;
+    const recordCeiling = PROCESS_JOBS_CAPS.retention.maxRecords
+      + PROCESS_JOBS_CAPS.maxQueued
+      + PROCESS_JOBS_CAPS.maxConcurrent;
+    const terminalRecords = Array.from({ length: recordCeiling - 1 }, (_, index) => {
+      const jobId = `cached-terminal-${String(index).padStart(5, "0")}`;
+      const admittedAt = new Date(Date.parse("2026-08-14T10:00:00.000Z") + index).toISOString();
+      return durableRecord(jobId, {
+        state: "succeeded",
+        admittedAt,
+        completedAt: new Date(Date.parse(admittedAt) + 1).toISOString(),
+        exitCode: 0,
+        durationMs: 1,
+      });
+    });
+    const active = durableRecord("cached-active", {
+      state: "queued",
+      admittedAt: "2026-08-14T09:00:00.000Z",
+      pid: null,
+      pgid: null,
+      startedAt: null,
+      runtimeDeadlineAt: null,
+    });
+    delete active.processIncarnation;
+    for (const record of [...terminalRecords, active]) snapshot.set(record.jobId, record);
+    const unaffectedTerminal = snapshot.get(terminalRecords.at(-1)!.jobId)!;
+    const unaffectedActive = snapshot.get(active.jobId)!;
+
+    await expect(service.get(incoming.jobId)).resolves.toMatchObject({ jobId: incoming.jobId });
+
+    expect(snapshot).toHaveLength(recordCeiling);
+    expect(snapshot.get(unaffectedTerminal.jobId)).toBe(unaffectedTerminal);
+    expect(snapshot.get(unaffectedActive.jobId)).toBe(unaffectedActive);
+    const ownedIncoming = snapshot.get(incoming.jobId)!;
+    expect(ownedIncoming).not.toBe(incoming);
+    expect(ownedIncoming.origin).not.toBe(incoming.origin);
+    expect(ownedIncoming.wake).not.toBe(incoming.wake);
+    incoming.preview = "mutated store preview";
+    incoming.wake.attempts = 99;
+    expect(ownedIncoming).toMatchObject({ preview: "", wake: { attempts: 0 } });
+    expect(snapshot.has(terminalRecords[0]!.jobId)).toBe(false);
+    expect(snapshot.has(active.jobId)).toBe(true);
+    expect(snapshot.has(incoming.jobId)).toBe(true);
+    const snapshotValues = [...snapshot.values()];
+    expect(snapshotValues.filter((record) => record.state === "queued")).toHaveLength(1);
+    expect(snapshotValues.filter((record) => record.state === "succeeded")).toHaveLength(recordCeiling - 1);
+  });
+
   it("uses the active-preserving newest selector for incremental snapshot reconciliation", async () => {
     const fixture = await createFixture();
     const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);

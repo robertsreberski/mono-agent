@@ -1407,13 +1407,14 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       this.completionOverlays.delete(jobId);
       return;
     }
+    const ownedRecord = structuredClone(record);
     this.recordSnapshot.delete(jobId);
-    const bounded = boundedNewestRecords([...this.recordSnapshot.values(), record]);
+    const bounded = boundedNewestRecords([...this.recordSnapshot.values(), ownedRecord]);
     this.recordSnapshot.clear();
     for (const candidate of bounded) {
-      this.recordSnapshot.set(candidate.jobId, structuredClone(candidate));
+      this.recordSnapshot.set(candidate.jobId, candidate);
     }
-    this.pruneConsistentOverlay(record);
+    this.pruneConsistentOverlay(ownedRecord);
   }
 
   private pruneConsistentOverlay(record: DurableProcessJobRecord): void {

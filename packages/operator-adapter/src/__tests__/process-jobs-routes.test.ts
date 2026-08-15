@@ -158,6 +158,10 @@ describe("process-job operator routes", () => {
     expect(returnedTerminal.map((projection) => projection.jobId)).toEqual(
       terminal.slice(0, returnedTerminal.length).map((projection) => projection.jobId),
     );
+    const returnedJobIds = new Set(jobs.map((projection) => projection.jobId));
+    expect(jobs.map((projection) => projection.jobId)).toEqual(
+      projections.filter((projection) => returnedJobIds.has(projection.jobId)).map((projection) => projection.jobId),
+    );
   });
 });
 
