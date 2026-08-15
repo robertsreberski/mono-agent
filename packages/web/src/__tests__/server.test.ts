@@ -105,11 +105,24 @@ describe("web HTTP server", () => {
     expect(proxy.headers.get("x-frame-options")).toBe("SAMEORIGIN");
     expect(proxy.headers.get("cross-origin-resource-policy")).toBe("same-origin");
     const proxyCsp = proxy.headers.get("content-security-policy") ?? "";
-    expect(proxyCsp).toContain("default-src 'none'");
-    expect(proxyCsp).toContain("script-src 'unsafe-inline'");
-    expect(proxyCsp).toContain("connect-src 'none'");
-    expect(proxyCsp).toContain("frame-src 'self'");
-    expect(proxyCsp).toContain("frame-ancestors 'self'");
+    const proxyDirectives = new Map(proxyCsp.split("; ").map((directive) => {
+      const separator = directive.indexOf(" ");
+      return separator < 0
+        ? [directive, ""] as const
+        : [directive.slice(0, separator), directive.slice(separator + 1)] as const;
+    }));
+    expect(proxyDirectives.get("script-src")).toBe("'unsafe-inline'");
+    expect(proxyDirectives.get("frame-ancestors")).toBe("'self'");
+    for (const omitted of [
+      "default-src",
+      "connect-src",
+      "img-src",
+      "font-src",
+      "media-src",
+      "frame-src",
+      "child-src",
+      "base-uri",
+    ]) expect(proxyDirectives.has(omitted)).toBe(false);
     expect(proxyCsp).not.toMatch(/script-src[^;]*(?:https?:|\*)/u);
     const document = await proxy.text();
     expect(document).toContain('type: "mono-agent:mcp-app-proxy-ready"');

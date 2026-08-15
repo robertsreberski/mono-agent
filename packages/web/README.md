@@ -246,11 +246,17 @@ offer an explicit refresh action if automatic recovery is exhausted.
 An advertised MCP App is stored as a structured message part and rendered only
 while its exact originating connection remains live. The PWA uses a
 nonce/identity-bound double iframe; both frames have opaque origins and
-`allow-scripts` without same-origin, popup, form, or top-navigation grants.
-The fixed outer proxy is a same-origin, no-store response with a route-local
-executable CSP, while the SPA shell retains `script-src 'self'`. A one-shot
-direct-parent message supplies invocation binding without placing it in the
-proxy document or URL.
+exactly `allow-scripts` without same-origin, popup, form, or top-navigation
+grants. An intersected clipboard grant adds `clipboard-write` to both levels
+and no other permission. The fixed outer proxy is a same-origin, no-store
+response with a route-local executable CSP, while the SPA shell retains
+`script-src 'self'`. Its response policy omits the capability directives owned
+by the canonical sanitized inner meta CSP, whose exact prefix is validated
+before `srcdoc` is assigned. The first direct-parent configuration supplies and
+locks invocation binding without placing it in the proxy document or URL;
+matching repeated configuration retires the inner frame and re-arms the bridge,
+while delayed host-ready remains ignored without accepting an identity, origin,
+parent, or permission replacement.
 Server origins are default-denied and intersected with a host allowlist, and
 resource origins never become script origins. Tool/link/context actions use an
 inert, focus-trapped confirmation dialog; tool arguments are bounded and

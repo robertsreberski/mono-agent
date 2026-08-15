@@ -17,9 +17,14 @@ import { ApiError, api, isReplyAccessExpired, sameOriginReplyUrl } from "../api"
 import { isMcpAppProtocolVersion } from "../mcp-app-protocol";
 import type { McpAppPart, McpAppResource, MessagePart } from "../types";
 import { Icon } from "./Icon";
+import {
+  mcpAppContentSecurityPolicy,
+  secureMcpAppHtml,
+} from "../../../src/mcp-app-document.js";
+
+export { mcpAppContentSecurityPolicy, secureMcpAppHtml };
 
 const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
-const APP_HTML_MAX_BYTES = 2 * 1024 * 1024;
 const APP_MIN_HEIGHT = 160;
 const APP_MAX_HEIGHT = 800;
 const MCP_APP_PROXY_PATH = "/api/v1/mcp-app-proxy";
@@ -187,46 +192,6 @@ export const safeMcpAppResourceMetadata = (
     ...(csp === undefined ? {} : { csp }),
     ...(permissions === undefined ? {} : { permissions }),
   };
-};
-
-/** Build the inner document policy from already intersected host grants. */
-export const mcpAppContentSecurityPolicy = (metadata: SafeResourceMetadata): string => {
-  const resources = metadata.csp?.resourceDomains ?? [];
-  const connects = metadata.csp?.connectDomains ?? [];
-  const frames = metadata.csp?.frameDomains ?? [];
-  const bases = metadata.csp?.baseUriDomains ?? [];
-  const sources = (items: readonly string[], extras: readonly string[] = []) =>
-    [...extras, ...items].join(" ") || "'none'";
-  return [
-    "default-src 'none'",
-    // Server-declared resource origins never become executable-script origins.
-    "script-src 'unsafe-inline'",
-    `style-src 'unsafe-inline'${resources.length > 0 ? ` ${resources.join(" ")}` : ""}`,
-    `img-src ${sources(resources, ["data:", "blob:"])}`,
-    `font-src ${sources(resources, ["data:"])}`,
-    `media-src ${sources(resources, ["blob:"])}`,
-    `connect-src ${sources(connects)}`,
-    `frame-src ${sources(frames)}`,
-    `base-uri ${sources(bases)}`,
-    "form-action 'none'",
-    "object-src 'none'",
-    "child-src 'none'",
-    "worker-src 'none'",
-    "manifest-src 'none'",
-    "navigate-to 'none'",
-  ].join("; ");
-};
-
-const htmlAttribute = (value: string): string => value
-  .replaceAll("&", "&amp;")
-  .replaceAll('"', "&quot;")
-  .replaceAll("<", "&lt;");
-
-/** Place the restrictive policy before any server-controlled markup executes. */
-export const secureMcpAppHtml = (html: string, metadata: SafeResourceMetadata): string => {
-  if (byteSize(html) > APP_HTML_MAX_BYTES) throw new Error("The MCP App resource is too large.");
-  const csp = htmlAttribute(mcpAppContentSecurityPolicy(metadata));
-  return `<!doctype html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="referrer" content="no-referrer"></head>${html}`;
 };
 
 const createNonce = (): string => {
@@ -933,7 +898,10 @@ export function McpAppPart({ data }: DataMessagePartProps) {
             openLinks: {},
             serverTools: {},
             serverResources: {},
-            sandbox: { permissions: { clipboardWrite: {} }, csp: {} },
+            sandbox: {
+              ...(clipboardWrite ? { permissions: { clipboardWrite: {} } } : {}),
+              csp: {},
+            },
             updateModelContext: {
               text: {},
               resource: {},
@@ -1045,6 +1013,9 @@ export function McpAppPart({ data }: DataMessagePartProps) {
     };
     const onReady = (event: MessageEvent) => { void ready(event); };
     window.addEventListener("message", onReady);
+    // A matching configuration is the re-arm request. Install onReady before
+    // sending it; onLoad remains the first-load fallback for a fresh document.
+    configureProxy();
     return () => {
       disposed = true;
       controller.abort();
@@ -1058,7 +1029,7 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   // The bridge lifecycle is one exact published app instance. Height updates
   // are sent through size notifications and must not recreate the transport.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessAvailable, accessExpired, adoptMcpAppAccess, cancelConfirmation, identity, metadata, nonce, part?.connectionId, part?.invocationId, reloadRevision, requestConfirmation, resource, securedHtml, status === "closed"]);
+  }, [accessAvailable, accessExpired, adoptMcpAppAccess, cancelConfirmation, configureProxy, identity, metadata, nonce, part?.connectionId, part?.invocationId, reloadRevision, requestConfirmation, resource, securedHtml, status === "closed"]);
 
   useEffect(() => {
     const syncHostContext = () => {
@@ -1131,6 +1102,7 @@ export function McpAppPart({ data }: DataMessagePartProps) {
           className="mcp-app-frame"
           title={`${part.title ?? part.toolName} interactive app`}
           sandbox="allow-scripts"
+          allow={clipboardWrite ? "clipboard-write" : undefined}
           referrerPolicy="no-referrer"
           inert={confirmation !== null}
           aria-hidden={confirmation !== null}

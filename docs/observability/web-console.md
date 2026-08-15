@@ -258,15 +258,19 @@ app card offers **Refresh app access**. A refreshed capability is neither a
 persisted credential nor a retention extension.
 
 MCP Apps run only while their exact originating MCP connection is live. The PWA
-uses a nonce-bound double iframe with opaque origins and `allow-scripts` only.
-Its fixed same-origin outer proxy has a no-store, route-local executable CSP and
-receives invocation binding through a one-shot direct-parent message; the SPA
-shell retains `script-src 'self'` and no invocation data enters the proxy URL.
-Remote CSP origins default to denied, resource domains never grant script
-execution, and a second inner-frame navigation removes the app. Tool calls,
-links, and context updates use an inert, focus-trapped confirmation dialog;
-tool arguments are bounded and secret-key-redacted. Resource reads are limited
-to the exact `ui://` URI registered for that invocation.
+uses a nonce-bound double iframe with opaque origins and exactly `allow-scripts`;
+an intersected clipboard grant adds only `clipboard-write` at both levels. Its
+fixed same-origin outer proxy has a no-store, route-local executable CSP and
+receives invocation binding from its direct parent; matching repeated
+configuration re-arms the bridge while delayed host-ready remains ignored,
+without allowing origin or identity replacement. Because inner `srcdoc`
+inherits the response policy, the proxy envelope omits the capability
+directives owned by the required canonical inner meta CSP. The SPA shell retains
+`script-src 'self'`, no invocation data enters the proxy URL, remote script
+origins remain denied, and a second inner-frame navigation removes the app.
+Tool calls, links, and context updates use an inert, focus-trapped confirmation
+dialog; tool arguments are bounded and secret-key-redacted. Resource reads are
+limited to the exact `ui://` URI registered for that invocation.
 
 See [Reply files and MCP Apps](/tools/rich-replies/) for native Slack/Telegram
 delivery, fallback behavior, producer/bridge limits, retention, and connection

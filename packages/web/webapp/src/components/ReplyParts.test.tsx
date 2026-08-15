@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const bridgeHarness = vi.hoisted(() => ({
   instances: [] as Array<Record<string, unknown>>,
+  capabilities: [] as unknown[],
   failures: {} as Record<string, Error | undefined>,
 }));
 const originalCreateObjectUrl = URL.createObjectURL;
@@ -22,7 +23,10 @@ vi.mock("@modelcontextprotocol/ext-apps/app-bridge", async (importOriginal) => {
     onsizechange?: (params: { height?: number }) => void;
     onrequestteardown?: () => void;
     onerror?: (error: Error) => void;
-    constructor() { bridgeHarness.instances.push(this as unknown as Record<string, unknown>); }
+    constructor(_client: unknown, _hostInfo: unknown, capabilities: unknown) {
+      bridgeHarness.instances.push(this as unknown as Record<string, unknown>);
+      bridgeHarness.capabilities.push(capabilities);
+    }
     async connect() {
       if (bridgeHarness.failures.connect !== undefined) throw bridgeHarness.failures.connect;
     }
@@ -139,6 +143,14 @@ const connectRenderedApp = async (
   part: McpAppPartValue,
 ): Promise<TestAppBridgeInstance> => {
   const config = await configureRenderedApp(frame);
+  return await connectConfiguredApp(frame, part, config);
+};
+
+const connectConfiguredApp = async (
+  frame: HTMLIFrameElement,
+  part: McpAppPartValue,
+  config: TestProxyConfiguration,
+): Promise<TestAppBridgeInstance> => {
   await waitFor(() => {
     window.dispatchEvent(new MessageEvent("message", {
       source: frame.contentWindow,
@@ -157,6 +169,7 @@ const connectRenderedApp = async (
 
 afterEach(() => {
   bridgeHarness.instances.length = 0;
+  bridgeHarness.capabilities.length = 0;
   for (const key of Object.keys(bridgeHarness.failures)) delete bridgeHarness.failures[key];
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -650,6 +663,60 @@ describe("MCP App sandbox", () => {
     expect(secured).toContain("navigate-to 'none'");
   });
 
+  it.each([
+    {
+      name: "empty metadata",
+      metadata: safeMcpAppResourceMetadata(undefined),
+    },
+    {
+      name: "capability-bearing metadata",
+      metadata: safeMcpAppResourceMetadata({
+        ui: {
+          csp: {
+            connectDomains: ["https://api.example.com"],
+            resourceDomains: ["https://cdn.example.com"],
+            frameDomains: ["https://frame.example.com"],
+            baseUriDomains: ["https://base.example.com"],
+          },
+          permissions: { clipboardWrite: {} },
+        },
+      }, {
+        connectOrigins: ["https://api.example.com"],
+        resourceOrigins: ["https://cdn.example.com"],
+        frameOrigins: ["https://frame.example.com"],
+        baseUriOrigins: ["https://base.example.com"],
+      }),
+    },
+  ])("bounds the final secured document exactly for $name", ({ metadata }) => {
+    const limit = 2 * 1024 * 1024;
+    const prefixBytes = new TextEncoder().encode(secureMcpAppHtml("", metadata)).byteLength;
+    const bodyBytesAtLimit = limit - prefixBytes;
+    expect(bodyBytesAtLimit).toBeGreaterThan(0);
+
+    const atLimit = secureMcpAppHtml("x".repeat(bodyBytesAtLimit), metadata);
+    expect(new TextEncoder().encode(atLimit).byteLength).toBe(limit);
+    expect(() => secureMcpAppHtml("x".repeat(bodyBytesAtLimit + 1), metadata))
+      .toThrow("The MCP App resource is too large.");
+  });
+
+  it("reports an oversized final document before constructing a bridge transport", async () => {
+    const metadata = safeMcpAppResourceMetadata(undefined);
+    const limit = 2 * 1024 * 1024;
+    const prefixBytes = new TextEncoder().encode(secureMcpAppHtml("", metadata)).byteLength;
+    vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "x".repeat(limit - prefixBytes + 1),
+      connected: true,
+    });
+
+    render(app(appPart));
+
+    await waitFor(() => expect(screen.getByRole("status"))
+      .toHaveTextContent("The MCP App resource is too large."));
+    expect(screen.queryByTitle("Quarterly report interactive app")).not.toBeInTheDocument();
+    expect(bridgeHarness.instances).toHaveLength(0);
+  });
+
   it("loads a fixed same-origin proxy and sends its per-instance binding only after load", async () => {
     vi.spyOn(api, "mcpAppResource").mockResolvedValue({
       app: appPart,
@@ -661,6 +728,9 @@ describe("MCP App sandbox", () => {
     const frame = await screen.findByTitle("Quarterly report interactive app") as HTMLIFrameElement;
     expect(frame).toHaveAttribute("src", "/api/v1/mcp-app-proxy");
     expect(frame).not.toHaveAttribute("srcdoc");
+    expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    expect(frame.getAttribute("sandbox")).not.toContain("allow-same-origin");
+    expect(frame).not.toHaveAttribute("allow");
     const config = await configureRenderedApp(frame);
 
     expect(config).toEqual({
@@ -673,6 +743,54 @@ describe("MCP App sandbox", () => {
     expect(config).not.toHaveProperty("hostOrigin");
     expect(config).not.toHaveProperty("resourceUrl");
     expect(config).not.toHaveProperty("bridgeUrl");
+    await connectConfiguredApp(frame, appPart, config);
+    const capabilities = bridgeHarness.capabilities[0] as {
+      readonly sandbox?: { readonly permissions?: { readonly clipboardWrite?: {} } };
+    };
+    expect(capabilities.sandbox?.permissions).toBeUndefined();
+  });
+
+  it("delegates only clipboard-write through the trusted outer frame when granted", async () => {
+    vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>interactive</p>",
+      resourceMetadata: { ui: { permissions: { clipboardWrite: {} } } },
+      connected: true,
+    });
+
+    render(app(appPart));
+    const frame = await screen.findByTitle("Quarterly report interactive app") as HTMLIFrameElement;
+    expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    expect(frame.getAttribute("sandbox")).not.toContain("allow-same-origin");
+    expect(frame).toHaveAttribute("allow", "clipboard-write");
+    const config = await configureRenderedApp(frame);
+    expect(config).toMatchObject({ clipboardWrite: true });
+    await connectConfiguredApp(frame, appPart, config);
+    const capabilities = bridgeHarness.capabilities[0] as {
+      readonly sandbox?: { readonly permissions?: { readonly clipboardWrite?: {} } };
+    };
+    expect(capabilities.sandbox?.permissions).toEqual({ clipboardWrite: {} });
+  });
+
+  it("sends matching configuration to re-arm an already-loaded proxy", async () => {
+    vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>interactive</p>",
+      connected: true,
+    });
+    const proxyWindow = { postMessage: vi.fn() };
+    vi.spyOn(HTMLIFrameElement.prototype, "contentWindow", "get")
+      .mockReturnValue(proxyWindow as unknown as Window);
+
+    render(app(appPart));
+    await screen.findByTitle("Quarterly report interactive app");
+    await waitFor(() => expect(proxyWindow.postMessage).toHaveBeenCalledWith({
+      type: "mono-agent:mcp-app-proxy-config",
+      nonce: expect.any(String),
+      invocationId: appPart.invocationId,
+      connectionId: appPart.connectionId,
+      clipboardWrite: false,
+    }, "*"));
   });
 
   it("fails closed on a ready message with the wrong window, origin, nonce, invocation, or connection", async () => {
@@ -754,6 +872,7 @@ describe("MCP App sandbox", () => {
     expect(region).toBeVisible();
     const frame = await screen.findByTitle("Quarterly report interactive app") as HTMLIFrameElement;
     expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    expect(frame.getAttribute("sandbox")).not.toContain("allow-same-origin");
     expect(frame).not.toHaveAttribute("allow", expect.stringContaining("camera"));
     expect(container.querySelector("img")).toBeNull();
     expect(container.querySelector("script")).toBeNull();

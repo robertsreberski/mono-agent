@@ -2,6 +2,10 @@ import { runInNewContext } from "node:vm";
 
 import { describe, expect, it, vi } from "vitest";
 
+import {
+  MCP_APP_SECURED_HTML_MAX_BYTES,
+  secureMcpAppHtml,
+} from "../mcp-app-document.js";
 import { MCP_APP_PROXY_DOCUMENT } from "../mcp-app-proxy.js";
 
 interface ProxyMessageEvent {
@@ -16,27 +20,89 @@ function proxyScript(): string {
   return match[1];
 }
 
+const metadataForOrigin = (origin: string | undefined) => origin === undefined ? {} : {
+  csp: {
+    connectDomains: [origin],
+    resourceDomains: [origin],
+    frameDomains: [origin],
+    baseUriDomains: [origin],
+  },
+};
+
 function createProxyHarness() {
   const parentWindow = { postMessage: vi.fn() };
   const unrelatedWindow = { postMessage: vi.fn() };
-  const innerWindow = { postMessage: vi.fn() };
-  const attributes = new Map<string, string>();
+  const operations: string[] = [];
+  const frames: Array<{
+    readonly attributes: Map<string, string>;
+    readonly element: {
+      readonly contentWindow: { readonly postMessage: ReturnType<typeof vi.fn> };
+      referrerPolicy: string;
+      srcdoc: string;
+      readonly setAttribute: ReturnType<typeof vi.fn>;
+      readonly addEventListener: ReturnType<typeof vi.fn>;
+      readonly remove: ReturnType<typeof vi.fn>;
+    };
+    readonly innerWindow: { readonly postMessage: ReturnType<typeof vi.fn> };
+    readonly load: () => void;
+    setConnected(value: boolean): void;
+  }> = [];
   let messageListener: ((event: ProxyMessageEvent) => void) | undefined;
-  let loadListener: (() => void) | undefined;
   let intervalCallback: (() => void) | undefined;
-  const frame = {
-    contentWindow: innerWindow,
-    referrerPolicy: "",
-    srcdoc: "",
-    setAttribute: vi.fn((name: string, value: string) => attributes.set(name, value)),
-    addEventListener: vi.fn((name: string, listener: () => void) => {
-      if (name === "load") loadListener = listener;
-    }),
-    remove: vi.fn(),
+  const createFrame = () => {
+    const index = frames.length;
+    const innerWindow = { postMessage: vi.fn() };
+    const attributes = new Map<string, string>();
+    let connected = false;
+    let loadListener: (() => void) | undefined;
+    let srcdoc = "";
+    const element = {
+      contentWindow: innerWindow,
+      referrerPolicy: "",
+      setAttribute: vi.fn((name: string, value: string) => attributes.set(name, value)),
+      addEventListener: vi.fn((name: string, listener: () => void) => {
+        if (name === "load") {
+          operations.push(`frame:${index}:listen-load`);
+          loadListener = listener;
+        }
+      }),
+      remove: vi.fn(() => {
+        operations.push(`frame:${index}:remove`);
+        connected = false;
+      }),
+    };
+    Object.defineProperty(element, "srcdoc", {
+      configurable: true,
+      get: () => srcdoc,
+      set: (value: string) => {
+        operations.push(`frame:${index}:srcdoc`);
+        srcdoc = value;
+        if (connected) loadListener?.();
+      },
+    });
+    const frame = {
+      attributes,
+      element: element as typeof element & { srcdoc: string },
+      innerWindow,
+      load: () => loadListener?.(),
+      setConnected: (value: boolean) => {
+        connected = value;
+      },
+    };
+    frames.push(frame);
+    return frame.element;
   };
   const root = {
     textContent: "",
-    replaceChildren: vi.fn(),
+    replaceChildren: vi.fn((...children: unknown[]) => {
+      operations.push("root:replaceChildren");
+      for (const frame of frames) frame.setConnected(false);
+      const mounted = frames.find((frame) => frame.element === children[0]);
+      if (mounted !== undefined) {
+        mounted.setConnected(true);
+        mounted.load();
+      }
+    }),
   };
   const windowObject = {
     parent: parentWindow,
@@ -53,7 +119,7 @@ function createProxyHarness() {
     getElementById: vi.fn((id: string) => id === "root" ? root : null),
     createElement: vi.fn((name: string) => {
       if (name !== "iframe") throw new Error(`Unexpected element: ${name}`);
-      return frame;
+      return createFrame();
     }),
   };
 
@@ -66,12 +132,11 @@ function createProxyHarness() {
   if (messageListener === undefined) throw new Error("The proxy did not install its message listener.");
 
   return {
-    attributes,
     dispatch: (event: ProxyMessageEvent) => messageListener?.(event),
-    frame,
-    innerWindow,
+    frames,
     interval: () => intervalCallback?.(),
-    load: () => loadListener?.(),
+    load: (index = frames.length - 1) => frames[index]?.load(),
+    operations,
     parentWindow,
     root,
     unrelatedWindow,
@@ -88,7 +153,7 @@ const configuration = {
 } as const;
 
 describe("MCP App proxy bootstrap", () => {
-  it("locks the first valid direct-parent configuration and rejects every mismatched handshake", () => {
+  it("locks the first valid configuration and idempotently ignores repeated host-ready", () => {
     const harness = createProxyHarness();
     const hostOrigin = "https://console.example";
     expect(harness.parentWindow.postMessage).not.toHaveBeenCalled();
@@ -155,7 +220,67 @@ describe("MCP App proxy bootstrap", () => {
     expect(harness.parentWindow.postMessage).toHaveBeenCalledTimes(settledCalls);
   });
 
-  it("mounts one allow-scripts srcdoc and forwards only source-bound opaque-origin RPC", () => {
+  it.each([
+    ["empty metadata", undefined],
+    ["capability-bearing metadata", "http://127.0.0.1:6060"],
+  ] as const)("accepts real secured-document producer output for %s", (_label, origin) => {
+    const harness = createProxyHarness();
+    const hostOrigin = "http://127.0.0.1:5050";
+    harness.dispatch({ source: harness.parentWindow, origin: hostOrigin, data: configuration });
+    harness.dispatch({
+      source: harness.parentWindow,
+      origin: hostOrigin,
+      data: { ...configuration, type: "mono-agent:mcp-app-host-ready" },
+    });
+    const html = secureMcpAppHtml("<p>producer contract</p>", metadataForOrigin(origin));
+
+    harness.dispatch({
+      source: harness.parentWindow,
+      origin: hostOrigin,
+      data: {
+        jsonrpc: "2.0",
+        method: "ui/notifications/sandbox-resource-ready",
+        params: { html },
+      },
+    });
+
+    expect(harness.frames).toHaveLength(1);
+    expect(harness.frames[0]?.element.srcdoc).toBe(html);
+  });
+
+  it("accepts the exact final byte cap and retains the proxy-side one-byte-over rejection", () => {
+    const hostOrigin = "http://127.0.0.1:5050";
+    const prefixBytes = new TextEncoder().encode(secureMcpAppHtml("", {})).byteLength;
+    const atLimit = secureMcpAppHtml(
+      "x".repeat(MCP_APP_SECURED_HTML_MAX_BYTES - prefixBytes),
+      {},
+    );
+    expect(new TextEncoder().encode(atLimit).byteLength).toBe(MCP_APP_SECURED_HTML_MAX_BYTES);
+    const mount = (html: string) => {
+      const harness = createProxyHarness();
+      harness.dispatch({ source: harness.parentWindow, origin: hostOrigin, data: configuration });
+      harness.dispatch({
+        source: harness.parentWindow,
+        origin: hostOrigin,
+        data: { ...configuration, type: "mono-agent:mcp-app-host-ready" },
+      });
+      harness.dispatch({
+        source: harness.parentWindow,
+        origin: hostOrigin,
+        data: {
+          jsonrpc: "2.0",
+          method: "ui/notifications/sandbox-resource-ready",
+          params: { html },
+        },
+      });
+      return harness;
+    };
+
+    expect(mount(atLimit).frames).toHaveLength(1);
+    expect(mount(`${atLimit}x`).frames).toHaveLength(0);
+  });
+
+  it("mounts only canonical secured HTML with srcdoc before the load listener and attachment", () => {
     const harness = createProxyHarness();
     const hostOrigin = "http://127.0.0.1:5050";
     const configured = { ...configuration, clipboardWrite: true };
@@ -167,44 +292,171 @@ describe("MCP App proxy bootstrap", () => {
     });
     harness.parentWindow.postMessage.mockClear();
 
-    const securedHtml = "<!doctype html><script>window.started=true<\/script>";
+    const html = secureMcpAppHtml(
+      "<script>window.started=true<\/script>",
+      metadataForOrigin("http://127.0.0.1:6060"),
+    );
     const resourceReady = {
       jsonrpc: "2.0",
       method: "ui/notifications/sandbox-resource-ready",
-      params: { html: securedHtml },
+      params: { html },
     };
     harness.dispatch({ source: harness.parentWindow, origin: hostOrigin, data: resourceReady });
-    expect(harness.root.replaceChildren).toHaveBeenCalledExactlyOnceWith(harness.frame);
-    expect(harness.attributes).toEqual(new Map([
+    const mounted = harness.frames[0];
+    if (mounted === undefined) throw new Error("Expected the canonical MCP App frame to mount.");
+    expect(harness.root.replaceChildren).toHaveBeenCalledExactlyOnceWith(mounted.element);
+    expect(mounted.attributes).toEqual(new Map([
       ["title", "MCP App content"],
       ["sandbox", "allow-scripts"],
       ["allow", "clipboard-write"],
     ]));
-    expect(harness.frame.srcdoc).toBe(securedHtml);
-    expect(harness.frame.referrerPolicy).toBe("no-referrer");
-    expect([...harness.attributes.values()]).not.toContain("allow-same-origin");
+    expect(mounted.element.srcdoc).toBe(html);
+    expect(mounted.element.referrerPolicy).toBe("no-referrer");
+    expect(mounted.attributes.get("sandbox")).toBe("allow-scripts");
+    expect([...mounted.attributes.values()].join(" ")).not.toContain("allow-same-origin");
+    const srcdocOperation = harness.operations.indexOf("frame:0:srcdoc");
+    const loadListenerOperation = harness.operations.indexOf("frame:0:listen-load");
+    const attachmentOperation = harness.operations.indexOf("root:replaceChildren");
+    expect(srcdocOperation).toBeGreaterThanOrEqual(0);
+    expect(loadListenerOperation).toBeGreaterThan(srcdocOperation);
+    expect(attachmentOperation).toBeGreaterThan(loadListenerOperation);
+    // The harness fires the attachment's initial load synchronously. Because
+    // srcdoc was already assigned, it consumes only the first-load allowance.
+    expect(mounted.element.remove).not.toHaveBeenCalled();
+    expect(harness.root.textContent).toBe("");
 
     const appRpc = { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "refresh" } };
     harness.dispatch({ source: harness.unrelatedWindow, origin: "null", data: appRpc });
-    harness.dispatch({ source: harness.innerWindow, origin: hostOrigin, data: appRpc });
+    harness.dispatch({ source: mounted.innerWindow, origin: hostOrigin, data: appRpc });
     harness.dispatch({
-      source: harness.innerWindow,
+      source: mounted.innerWindow,
       origin: "null",
       data: { jsonrpc: "2.0", method: "ui/notifications/sandbox-proxy-ready" },
     });
     expect(harness.parentWindow.postMessage).not.toHaveBeenCalled();
 
-    harness.dispatch({ source: harness.innerWindow, origin: "null", data: appRpc });
+    harness.dispatch({ source: mounted.innerWindow, origin: "null", data: appRpc });
     expect(harness.parentWindow.postMessage).toHaveBeenCalledExactlyOnceWith(appRpc, hostOrigin);
 
     const hostRpc = { jsonrpc: "2.0", id: 8, method: "ui/notifications/tool-input", params: {} };
     harness.dispatch({ source: harness.parentWindow, origin: hostOrigin, data: hostRpc });
-    expect(harness.innerWindow.postMessage).toHaveBeenCalledExactlyOnceWith(hostRpc, "*");
+    expect(mounted.innerWindow.postMessage).toHaveBeenCalledExactlyOnceWith(hostRpc, "*");
 
     harness.load();
-    expect(harness.frame.remove).not.toHaveBeenCalled();
-    harness.load();
-    expect(harness.frame.remove).toHaveBeenCalledOnce();
+    expect(mounted.element.remove).toHaveBeenCalledOnce();
     expect(harness.root.textContent).toBe("App navigation was blocked.");
+  });
+
+  it("rejects raw, missing, misplaced, weakened, and noncanonical CSP prefixes before srcdoc assignment", () => {
+    const harness = createProxyHarness();
+    const hostOrigin = "http://127.0.0.1:5050";
+    harness.dispatch({ source: harness.parentWindow, origin: hostOrigin, data: configuration });
+    harness.dispatch({
+      source: harness.parentWindow,
+      origin: hostOrigin,
+      data: { ...configuration, type: "mono-agent:mcp-app-host-ready" },
+    });
+
+    const canonical = secureMcpAppHtml("<p>safe</p>", {});
+    const invalid = [
+      "<p>raw app HTML</p>",
+      canonical.replace('<meta http-equiv="Content-Security-Policy"', '<meta name="not-csp"'),
+      canonical.replace("<!doctype html><head>", "<!doctype html><head><title>before policy</title>"),
+      canonical.replace('<meta http-equiv="Content-Security-Policy"', '<META  HTTP-EQUIV = "Content-Security-Policy"'),
+      canonical.replace("default-src 'none'", "default-src *"),
+      canonical.replace("connect-src 'none'", "connect-src https://example.com/path"),
+      `\n${canonical}`,
+      `${secureMcpAppHtml("", {})}${"x".repeat(MCP_APP_SECURED_HTML_MAX_BYTES)}`,
+    ];
+    for (const html of invalid) {
+      harness.dispatch({
+        source: harness.parentWindow,
+        origin: hostOrigin,
+        data: {
+          jsonrpc: "2.0",
+          method: "ui/notifications/sandbox-resource-ready",
+          params: { html },
+        },
+      });
+    }
+
+    expect(harness.frames).toHaveLength(0);
+    expect(harness.root.replaceChildren).not.toHaveBeenCalled();
+    expect(harness.operations).not.toContain("frame:0:srcdoc");
+  });
+
+  it("uses matching configuration to re-arm, while delayed host-ready leaves the live app intact", () => {
+    const harness = createProxyHarness();
+    const hostOrigin = "https://console.example";
+    harness.dispatch({ source: harness.parentWindow, origin: hostOrigin, data: configuration });
+    harness.dispatch({
+      source: harness.parentWindow,
+      origin: hostOrigin,
+      data: { ...configuration, type: "mono-agent:mcp-app-host-ready" },
+    });
+    const mount = (body: string) => harness.dispatch({
+      source: harness.parentWindow,
+      origin: hostOrigin,
+      data: {
+        jsonrpc: "2.0",
+        method: "ui/notifications/sandbox-resource-ready",
+        params: { html: secureMcpAppHtml(body, {}) },
+      },
+    });
+    mount("<p>first</p>");
+    const first = harness.frames[0];
+    if (first === undefined) throw new Error("Expected the first MCP App frame.");
+
+    harness.parentWindow.postMessage.mockClear();
+    harness.dispatch({
+      source: harness.parentWindow,
+      origin: hostOrigin,
+      data: { ...configuration, type: "mono-agent:mcp-app-host-ready" },
+    });
+    expect(first.element.remove).not.toHaveBeenCalled();
+    expect(harness.parentWindow.postMessage).not.toHaveBeenCalled();
+
+    harness.dispatch({
+      source: harness.parentWindow,
+      origin: hostOrigin,
+      data: { ...configuration, clipboardWrite: true },
+    });
+    expect(first.element.remove).not.toHaveBeenCalled();
+
+    harness.parentWindow.postMessage.mockClear();
+    harness.dispatch({ source: harness.parentWindow, origin: hostOrigin, data: configuration });
+    expect(first.element.remove).toHaveBeenCalledOnce();
+    expect(harness.root.textContent).toBe("");
+    expect(harness.parentWindow.postMessage).toHaveBeenCalledExactlyOnceWith({
+      type: "mono-agent:mcp-app-proxy-ready",
+      nonce: configuration.nonce,
+      invocationId: configuration.invocationId,
+      connectionId: configuration.connectionId,
+    }, hostOrigin);
+
+    const staleRpc = { jsonrpc: "2.0", id: 9, method: "tools/call" };
+    harness.parentWindow.postMessage.mockClear();
+    harness.dispatch({ source: first.innerWindow, origin: "null", data: staleRpc });
+    expect(harness.parentWindow.postMessage).not.toHaveBeenCalled();
+
+    harness.dispatch({
+      source: harness.parentWindow,
+      origin: hostOrigin,
+      data: { ...configuration, type: "mono-agent:mcp-app-host-ready" },
+    });
+    mount("<p>second</p>");
+    const second = harness.frames[1];
+    if (second === undefined) throw new Error("Expected the replacement MCP App frame.");
+    expect(second.attributes.get("sandbox")).toBe("allow-scripts");
+    expect(second.attributes.has("allow")).toBe(false);
+
+    harness.load(0);
+    harness.dispatch({ source: first.innerWindow, origin: "null", data: staleRpc });
+    expect(second.element.remove).not.toHaveBeenCalled();
+    expect(harness.root.textContent).toBe("");
+
+    const currentRpc = { ...staleRpc, id: 10 };
+    harness.dispatch({ source: second.innerWindow, origin: "null", data: currentRpc });
+    expect(harness.parentWindow.postMessage).toHaveBeenLastCalledWith(currentRpc, hostOrigin);
   });
 });

@@ -148,21 +148,31 @@ declared resource URI. It does not enumerate server resources. A later
 connection; cross-resource and cross-connection reads are denied.
 
 The web console uses two nested iframes. Both are opaque-origin sandboxes with
-`allow-scripts` only—no same-origin, popups, forms, or top navigation. The
-trusted outer proxy loads from a fixed, same-origin, no-store response with its
-own CSP; the console shell keeps `script-src 'self'`. Invocation data appears in
-neither the proxy document nor its URL. The direct parent supplies one bounded
-configuration message after load, the proxy derives the parent origin from that
-browser-authenticated event, and the first valid nonce/invocation/connection
-tuple permanently binds the instance. Parent and inner traffic then remains
-bound by exact source window, origin where available, that identity tuple, and
-bounded JSON-RPC messages. A second inner-frame navigation removes the frame.
+exactly `allow-scripts`—no same-origin, popups, forms, or top navigation. When
+the sanitized resource grant includes clipboard writes, and only then, both
+levels also delegate `clipboard-write`. The trusted outer proxy loads from a
+fixed, same-origin, no-store response with its own CSP; the console shell keeps
+`script-src 'self'`. Invocation data appears in neither the proxy document nor
+its URL. The direct parent supplies bounded configuration after load, the proxy
+derives the parent origin from that browser-authenticated event, and the first
+valid nonce/invocation/connection tuple permanently binds the instance. A
+matching repeated configuration re-arms the bridge and retires the prior inner
+frame; repeated host-ready remains an ignored one-shot acknowledgement. Origin,
+parent, identity, or permission replacement is rejected. Parent and inner
+traffic remains bound by exact source window, origin where available, that
+identity tuple, and bounded JSON-RPC messages. A second inner-frame navigation
+removes the frame, and callbacks from a retired frame cannot affect its
+replacement.
 
 The inner app remains `srcdoc`, so it inherits the proxy response policy. That
-route-local policy permits inline execution only inside this opaque proxy/app
-chain while denying remote script and network sources; the app's earlier
-per-resource policy further restricts its markup. The SPA shell policy is never
-relaxed to make an App executable.
+route-local envelope permits inline script and style for the fixed proxy/app
+bootstrap, retains non-clipping containment directives, and deliberately omits
+`default-src`, `connect-src`, `img-src`, `font-src`, `media-src`, `frame-src`,
+`child-src`, and `base-uri`. The canonical sanitized inner meta policy is
+therefore authoritative for those capabilities. Before assigning `srcdoc`, the
+proxy requires the bounded HTML to begin with that exact policy/referrer output
+shape. The SPA shell policy is never relaxed to make an App executable, and no
+remote origin ever enters `script-src`.
 
 Server-declared network, image, frame, and resource origins are intersected
 with a host allowlist; the default is empty. Resource origins never enter
