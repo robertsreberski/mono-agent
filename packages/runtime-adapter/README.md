@@ -295,6 +295,7 @@ parseMcpServers
 parseMonoRuntimeModelReference
 prepareSandboxedCommand
 probeAcpProfile
+protectSandboxRoots
 resolveModelEffortLevels
 resolveRuntimePolicies
 resolveSandboxEffectiveState

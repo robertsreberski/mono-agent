@@ -1,5 +1,12 @@
+import { dirname, resolve } from "node:path";
+
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
+import {
+  failClosedSandboxPolicy,
+  protectSandboxRoots,
+  type SandboxPolicy,
+} from "@mono-agent/runtime-adapter";
 
 import type { ChannelId } from "./channels.js";
 import { processJobWakeContextForRequest } from "./process-jobs-context.js";
@@ -33,10 +40,36 @@ export function createProcessJobsRuntimeExtension(
       return { runtimeOptions: {}, cleanup: async () => {} };
     }
     return {
-      runtimeOptions: { processJobs: options.service.controller(origin, chainDepth) },
+      runtimeOptions: {
+        processJobs: options.service.controller(origin, chainDepth),
+        sandboxPolicy: processJobsSandboxPolicy(options),
+      },
       cleanup: async () => {},
     };
   };
+}
+
+function processJobsSandboxPolicy(options: ProcessJobsRuntimeExtensionOptions): SandboxPolicy {
+  const configured = options.coreConfig.sandbox;
+  const base = configured?.mode === "native"
+    ? { ...configured, fallback: "fail-closed" as const, unsafeAllowHostProcess: false }
+    : failClosedSandboxPolicy({ root: options.coreConfig.runtime.workspace });
+  return protectSandboxRoots(base, [processJobsPrivateRoot(
+    options.coreConfig.runtime.workspace,
+    options.service.settings.stateDir,
+  )]);
+}
+
+/**
+ * Protect the immediate host-private container so renaming it cannot bypass
+ * the state-root deny. A direct workspace child protects only itself; the
+ * whole model workspace must remain usable.
+ */
+function processJobsPrivateRoot(workspace: string, stateDir: string): string {
+  const root = resolve(workspace);
+  const state = resolve(stateDir);
+  const parent = dirname(state);
+  return parent === root || parent === state ? state : parent;
 }
 
 /** Strict host-origin classifier. Unsupported trigger surfaces never receive a controller. */

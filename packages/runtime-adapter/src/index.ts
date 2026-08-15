@@ -66,6 +66,7 @@ export {
   mergeSandboxPolicies,
   networkPolicyAllowsUrl,
   prepareSandboxedCommand,
+  protectSandboxRoots,
   resolveSandboxEffectiveState,
   sandboxEffectiveStateWarning,
   sandboxPolicyToRuntimeOptions,

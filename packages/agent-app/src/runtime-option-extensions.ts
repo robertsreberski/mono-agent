@@ -2,6 +2,7 @@ import type {
   AgentHarnessRuntimeOptionsExtension,
   AgentHarnessRuntimeOptionsInput,
 } from "@mono-agent/agent-harness";
+import { mergeSandboxPolicies, type SandboxPolicy } from "@mono-agent/runtime-adapter";
 
 export type RuntimeOptionsExtension = (
   input: AgentHarnessRuntimeOptionsInput,
@@ -97,6 +98,10 @@ function mergeRuntimeOptions(
       };
       continue;
     }
+    if (key === "sandboxPolicy") {
+      target[key] = mergeSandboxPolicies(asSandboxPolicy(target[key]), asSandboxPolicy(value));
+      continue;
+    }
     target[key] = value;
   }
 }
@@ -114,4 +119,8 @@ function mergeStringLists(current: unknown, next: unknown): readonly string[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asSandboxPolicy(value: unknown): SandboxPolicy | undefined {
+  return isRecord(value) ? value as unknown as SandboxPolicy : undefined;
 }

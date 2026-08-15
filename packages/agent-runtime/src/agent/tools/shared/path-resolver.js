@@ -35,7 +35,8 @@ function isPathAllowedFor(path, workdir, access, options) {
   const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), options.sandboxPolicy);
   if (policy) {
     const field = access === "write" ? policy.writableRoots : policy.readableRoots;
-    return insideSandboxRoots(Array.isArray(field) ? field : [], r)
+    return !insideProtectedRoots(Array.isArray(policy.protectedRoots) ? policy.protectedRoots : [], r)
+      && insideSandboxRoots(Array.isArray(field) ? field : [], r)
       && (access !== "write" || !sandboxDeniesWrite(policy, r, ctx));
   }
   const { workspace, repoRoot } = configured(ctx);
@@ -48,7 +49,8 @@ export function isWorkdirAllowed(workdir, options = {}) {
   const r = resolve(workdir);
   const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), options.sandboxPolicy);
   if (policy) {
-    return insideSandboxRoots(Array.isArray(policy.readableRoots) ? policy.readableRoots : [], r);
+    return !insideProtectedRoots(Array.isArray(policy.protectedRoots) ? policy.protectedRoots : [], r)
+      && insideSandboxRoots(Array.isArray(policy.readableRoots) ? policy.readableRoots : [], r);
   }
   const { workspace, repoRoot } = configured(ctx);
   return insideLegacyRoots([workspace, repoRoot, process.cwd(), "/tmp"], r);
@@ -61,6 +63,16 @@ function insideSandboxRoots(roots, target) {
   const real = realTargetPath(target);
   return allowedRoots.some((root) => isInsidePath(root, target))
     && allowedRoots.some((root) => isInsidePath(root, real));
+}
+
+// A protected root rejects either spelling: the lexical request and its
+// existing/nearest-existing realpath. This closes symlink aliases in both
+// directions without weakening ordinary readable/writable root checks.
+function insideProtectedRoots(roots, target) {
+  const protectedRoots = normalizeRoots(roots);
+  const candidates = [...new Set([resolve(target), realTargetPath(target)])];
+  return candidates.some((candidate) =>
+    protectedRoots.some((root) => isInsidePath(root, candidate)));
 }
 
 // Without a sandbox policy, keep the historical literal containment check —

@@ -8,6 +8,7 @@ import sharp from "sharp";
 import { createFakeSandbox, testSandboxPolicy as failClosedSandboxPolicy } from "../helpers/fake-sandbox.js";
 import {
   bashToolImpl,
+  execToolImpl,
   editToolImpl,
   globToolImpl,
   grepToolImpl,
@@ -586,6 +587,37 @@ describe("ai tool helpers", () => {
     const readResult = await readToolImpl({ file_path: "linked-outside/secret.txt" });
 
     expect(readResult).toContain("Path not allowed");
+  });
+
+  it("rejects protected roots and their symlink aliases for reads, writes, and workdirs", async () => {
+    const root = tempWorkspace();
+    const privateRoot = join(root, ".mono-agent");
+    const stateDir = join(privateRoot, "process-jobs");
+    const secretPath = join(stateDir, "process-jobs-secret");
+    const siblingPath = join(root, "notes.txt");
+    mkdirSync(stateDir, { recursive: true });
+    writeFile(secretPath, "EXACT_PROCESS_JOB_SECRET");
+    writeFile(siblingPath, "sibling-readable");
+    symlinkSync(stateDir, join(root, "jobs-alias"));
+    const sandboxPolicy = failClosedSandboxPolicy({ root, protectedRoots: [privateRoot] });
+
+    const readResult = await readToolImpl({ file_path: secretPath }, { sandboxPolicy });
+    const aliasReadResult = await readToolImpl({ file_path: "jobs-alias/process-jobs-secret" }, { sandboxPolicy });
+    const writeResult = await writeToolImpl({ file_path: join(stateDir, "records", "job.json"), content: "bad" }, { sandboxPolicy });
+    const bashResult = await bashToolImpl({ command: "pwd", workdir: stateDir }, { sandboxPolicy });
+    const execResult = await execToolImpl({ executable: "/bin/pwd", workdir: stateDir }, { sandboxPolicy });
+    const siblingRead = await readToolImpl({ file_path: siblingPath }, { sandboxPolicy });
+    const siblingWrite = await writeToolImpl({ file_path: join(root, "sibling-output.txt"), content: "ok" }, { sandboxPolicy });
+
+    expect(readResult).toContain("Path not allowed");
+    expect(aliasReadResult).toContain("Path not allowed");
+    expect(writeResult).toContain("Path not allowed");
+    expect(bashResult).toContain("Working directory not allowed");
+    expect(execResult).toContain("Working directory not allowed");
+    expect([readResult, aliasReadResult, writeResult, bashResult, execResult].join("\n"))
+      .not.toContain("EXACT_PROCESS_JOB_SECRET");
+    expect(siblingRead).toContain("sibling-readable");
+    expect(siblingWrite).toContain("Successfully wrote");
   });
 
   it("keeps following workspace symlinks when no sandbox policy is configured", async () => {

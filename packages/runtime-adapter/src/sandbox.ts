@@ -115,6 +115,8 @@ export interface SandboxPolicy {
   readonly root: string;
   readonly readableRoots: readonly string[];
   readonly writableRoots: readonly string[];
+  /** Host-internal canonical roots that model tools must never read or mutate. */
+  readonly protectedRoots?: readonly string[];
   readonly denyWrite: readonly string[];
   readonly tempRoot: string;
   readonly network: SandboxNetworkPolicy;
@@ -243,6 +245,7 @@ export function createSandboxPolicy(input: SandboxPolicyInput = {}): SandboxPoli
     root,
     readableRoots,
     writableRoots,
+    protectedRoots: [],
     denyWrite,
     tempRoot,
     network,
@@ -269,6 +272,33 @@ export function sandboxPolicyToRuntimeOptions(policy: SandboxPolicy): SandboxPol
   return { sandboxPolicy: policy };
 }
 
+/** Add host-owned canonical roots without exposing a configuration surface. */
+export function protectSandboxRoots(
+  policy: SandboxPolicy,
+  roots: readonly string[],
+): SandboxPolicy {
+  if (!Array.isArray(roots)) {
+    throw new SandboxPolicyError("invalid_sandbox_policy", "protected roots must be an array.", {
+      field: "protectedRoots",
+    });
+  }
+  const canonicalRoots = roots.map((root, index) => {
+    if (typeof root !== "string" || root.trim().length === 0 || !isAbsolute(root)) {
+      throw new SandboxPolicyError(
+        "invalid_sandbox_policy",
+        `protected root ${index} must be a non-empty absolute path.`,
+        { field: `protectedRoots[${index}]` },
+      );
+    }
+    return canonicalPolicyPath(root);
+  });
+  const protectedRoots = removeCoveredRoots([
+    ...(policy.protectedRoots ?? []),
+    ...canonicalRoots,
+  ].sort());
+  return { ...policy, protectedRoots };
+}
+
 /**
  * Monotonic merge: the result is never more permissive than `configured`.
  * A request-scoped policy can only tighten roots, network access, and the
@@ -285,16 +315,17 @@ export function mergeSandboxPolicies(
     return configured;
   }
   if (configured.mode === "off") {
-    return request.mode === "native" ? request : configured;
+    return withMergedProtectedRoots(request.mode === "native" ? request : configured, configured, request);
   }
   if (request.mode === "off") {
-    return configured;
+    return withMergedProtectedRoots(configured, configured, request);
   }
   return {
     ...configured,
     readableRoots: intersectRoots(configured.readableRoots, request.readableRoots),
     writableRoots: intersectRoots(configured.writableRoots, request.writableRoots),
     denyWrite: [...new Set([...(configured.denyWrite ?? []), ...(request.denyWrite ?? [])])],
+    protectedRoots: mergedProtectedRoots(configured, request),
     network: mergeNetworkPolicies(configured.network, request.network),
     fallback: configured.fallback === "fail-closed" || request.fallback === "fail-closed"
       ? "fail-closed"
@@ -583,12 +614,15 @@ export function srtSettingsForPolicy(
   commandCapabilities: { readonly allowLocalBinding?: boolean } = {},
   trustedReadOnlyRoots: readonly string[] = [],
 ): SrtSettings {
+  const protectedRoots = protectedPathAliases(policy);
   const filesystem: SrtFilesystemSettings = {
-    denyRead: ["/"],
-    allowRead: allowReadRootsForPolicy(policy, [...runtimeReadRoots, ...trustedReadOnlyRoots]),
+    denyRead: ["/", ...protectedRoots],
+    allowRead: allowReadRootsForPolicy(policy, [...runtimeReadRoots, ...trustedReadOnlyRoots])
+      .filter((root) => !protectedRoots.some((protectedRoot) => pathContains(protectedRoot, root))),
     allowWrite: removeCoveredRoots(policy.writableRoots.map(canonicalPolicyPath).sort()),
     denyWrite: [
       ...serializeDenyWrite(policy),
+      ...protectedRoots,
       ...(protectedSettingsPath === undefined ? [] : [protectedSettingsPath]),
       ...trustedReadOnlyRoots,
     ],
@@ -752,6 +786,24 @@ function intersectRoots(configured: readonly string[], request: readonly string[
   return removeCoveredRoots([...out].sort());
 }
 
+function mergedProtectedRoots(
+  configured: SandboxPolicy,
+  request: SandboxPolicy,
+): readonly string[] {
+  return removeCoveredRoots([
+    ...(configured.protectedRoots ?? []),
+    ...(request.protectedRoots ?? []),
+  ].map(canonicalPolicyPath).sort());
+}
+
+function withMergedProtectedRoots(
+  policy: SandboxPolicy,
+  configured: SandboxPolicy,
+  request: SandboxPolicy,
+): SandboxPolicy {
+  return { ...policy, protectedRoots: mergedProtectedRoots(configured, request) };
+}
+
 function domainsForNetworkPolicy(policy: SandboxNetworkPolicy): readonly string[] {
   if (policy.mode === "all") {
     throw new SandboxPolicyError(
@@ -777,6 +829,12 @@ function allowReadRootsForPolicy(policy: SandboxPolicy, runtimeReadRoots: readon
     ...SRT_IMMUTABLE_RUNTIME_READ_ROOTS,
     ...policy.readableRoots.flatMap(readPathAliases),
     ...runtimeReadRoots.map((root) => resolve(root)),
+  ].sort());
+}
+
+function protectedPathAliases(policy: SandboxPolicy): readonly string[] {
+  return removeCoveredRoots([
+    ...(policy.protectedRoots ?? []).flatMap((root) => [resolve(root), canonicalPolicyPath(root)]),
   ].sort());
 }
 

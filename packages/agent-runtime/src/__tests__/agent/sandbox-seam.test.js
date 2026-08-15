@@ -135,13 +135,14 @@ describe("passthroughSandbox (zero-dependency default)", () => {
   });
 
   it("mergePolicies keeps the monotonic guarantee (I13): a request cannot weaken a native host policy", () => {
-    const hostNative = { mode: "native", network: { mode: "none" } };
-    const requestOff = { mode: "off", network: { mode: "all" } };
+    const hostNative = { mode: "native", network: { mode: "none" }, protectedRoots: ["/repo/private-a"] };
+    const requestOff = { mode: "off", network: { mode: "all" }, protectedRoots: ["/repo/private-b"] };
 
     const merged = passthroughSandbox.mergePolicies(hostNative, requestOff);
 
     expect(merged.mode).toBe("native");
     expect(merged.network.mode).toBe("none");
+    expect(merged.protectedRoots).toEqual(["/repo/private-a", "/repo/private-b"]);
     expect(passthroughSandbox.mergePolicies(undefined, hostNative)).toBe(hostNative);
     expect(passthroughSandbox.mergePolicies(hostNative, undefined)).toBe(hostNative);
   });

@@ -1,6 +1,8 @@
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
 import { describe, expect, it, vi } from "vitest";
 
+import { failClosedSandboxPolicy, protectSandboxRoots } from "@mono-agent/runtime-adapter";
+
 import { composeRuntimeOptionExtensions } from "../runtime-option-extensions.js";
 
 const INPUT = {
@@ -14,6 +16,30 @@ const INPUT = {
 } as unknown as AgentHarnessRuntimeOptionsInput;
 
 describe("composeRuntimeOptionExtensions", () => {
+  it("merges sandbox policies monotonically so later extensions cannot erase protected roots", async () => {
+    const firstPolicy = protectSandboxRoots(
+      failClosedSandboxPolicy({ root: "/agent" }),
+      ["/agent/.mono-agent"],
+    );
+    const laterPolicy = protectSandboxRoots(
+      failClosedSandboxPolicy({ root: "/agent", network: { mode: "all" } }),
+      ["/agent/private/jobs"],
+    );
+    const composed = composeRuntimeOptionExtensions([
+      async () => ({ runtimeOptions: { sandboxPolicy: firstPolicy } }),
+      async () => ({ runtimeOptions: { sandboxPolicy: laterPolicy } }),
+      async () => ({ runtimeOptions: { sandboxPolicy: { ...laterPolicy, protectedRoots: [] } } }),
+    ]);
+
+    const result = await composed!(INPUT);
+
+    expect(result.runtimeOptions?.sandboxPolicy).toMatchObject({
+      mode: "native",
+      network: { mode: "none" },
+      protectedRoots: ["/agent/.mono-agent", "/agent/private/jobs"],
+    });
+  });
+
   it("preserves the exact listed extension's MCP server under an authoritative override", async () => {
     const memoryRecall = vi.fn(async () => ({
       runtimeOptions: {
