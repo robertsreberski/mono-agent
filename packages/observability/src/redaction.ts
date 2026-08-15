@@ -459,40 +459,64 @@ interface OpaqueFilesystemMatch {
   readonly replacement: string;
 }
 
+interface FilesystemRedactionWorkCounter {
+  scannerIterations: number;
+  urlSchemeCodeUnits: number;
+  sliceCalls: number;
+  slicedCodeUnits: number;
+  largestSliceCodeUnits: number;
+}
+
+/** @internal Narrow deterministic seam for scanner-complexity regression tests. */
+export function inspectFilesystemRedactionWorkForTest(text: string): Readonly<
+  FilesystemRedactionWorkCounter & { readonly sanitized: string }
+> {
+  const work: FilesystemRedactionWorkCounter = {
+    scannerIterations: 0,
+    urlSchemeCodeUnits: 0,
+    sliceCalls: 0,
+    slicedCodeUnits: 0,
+    largestSliceCodeUnits: 0,
+  };
+  const sanitized = redactFilesystemPaths(text, work);
+  return { ...work, sanitized };
+}
+
 /**
  * Replace only filesystem-shaped spans. The stable token carries no host root,
  * account name, drive, UNC authority, artifact root, or run directory; up to
  * two non-sensitive trailing components remain useful for later inspection.
  */
-function redactFilesystemPaths(text: string): string {
+function redactFilesystemPaths(text: string, work?: FilesystemRedactionWorkCounter): string {
   let sanitized = "";
   let index = 0;
   while (index < text.length) {
-    const opaqueMatch = opaqueFilesystemPathAt(text, index);
+    if (work !== undefined) work.scannerIterations += 1;
+    const opaqueMatch = opaqueFilesystemPathAt(text, index, work);
     if (opaqueMatch !== undefined) {
       sanitized += opaqueMatch.replacement;
       index = opaqueMatch.end;
       continue;
     }
 
-    const urlEnd = nonFileUrlEndAt(text, index);
+    const urlEnd = nonFileUrlEndAt(text, index, work);
     if (urlEnd !== undefined) {
-      sanitized += text.slice(index, urlEnd);
+      sanitized += filesystemSlice(text, index, urlEnd, work);
       index = urlEnd;
       continue;
     }
 
-    const kind = filesystemPathKindAt(text, index);
-    const requestTargetEnd = httpRequestTargetEndAt(text, index, kind);
+    const kind = filesystemPathKindAt(text, index, work);
+    const requestTargetEnd = httpRequestTargetEndAt(text, index, kind, work);
     if (requestTargetEnd !== undefined) {
-      sanitized += text.slice(index, requestTargetEnd);
+      sanitized += filesystemSlice(text, index, requestTargetEnd, work);
       index = requestTargetEnd;
       continue;
     }
 
     if (kind !== undefined) {
       const end = filesystemPathEnd(text, index, kind);
-      sanitized += opaqueFilesystemPath(text.slice(index, end), kind);
+      sanitized += opaqueFilesystemPath(filesystemSlice(text, index, end, work), kind);
       index = end;
       continue;
     }
@@ -503,7 +527,28 @@ function redactFilesystemPaths(text: string): string {
   return sanitized;
 }
 
-function opaqueFilesystemPathAt(text: string, index: number): OpaqueFilesystemMatch | undefined {
+function filesystemSlice(
+  text: string,
+  start: number,
+  end: number,
+  work?: FilesystemRedactionWorkCounter,
+): string {
+  if (work !== undefined) {
+    const boundedStart = Math.max(0, Math.min(text.length, start));
+    const boundedEnd = Math.max(boundedStart, Math.min(text.length, end));
+    const codeUnits = boundedEnd - boundedStart;
+    work.sliceCalls += 1;
+    work.slicedCodeUnits += codeUnits;
+    work.largestSliceCodeUnits = Math.max(work.largestSliceCodeUnits, codeUnits);
+  }
+  return text.slice(start, end);
+}
+
+function opaqueFilesystemPathAt(
+  text: string,
+  index: number,
+  work?: FilesystemRedactionWorkCounter,
+): OpaqueFilesystemMatch | undefined {
   for (const token of OPAQUE_FILESYSTEM_PATH_TOKENS) {
     if (!text.startsWith(token, index)) continue;
     const tokenEnd = index + token.length;
@@ -511,7 +556,7 @@ function opaqueFilesystemPathAt(text: string, index: number): OpaqueFilesystemMa
       return { end: tokenEnd, replacement: token };
     }
     const suffixEnd = filesystemPathEnd(text, tokenEnd, "posix");
-    const suffix = text.slice(tokenEnd, suffixEnd);
+    const suffix = filesystemSlice(text, tokenEnd, suffixEnd, work);
     if (opaqueSuffixNeedsResanitization(suffix)) {
       const sanitizedSuffix = opaqueFilesystemPath(
         suffix,
@@ -524,7 +569,7 @@ function opaqueFilesystemPathAt(text: string, index: number): OpaqueFilesystemMa
           : sanitizedSuffix,
       };
     }
-    return { end: suffixEnd, replacement: text.slice(index, suffixEnd) };
+    return { end: suffixEnd, replacement: filesystemSlice(text, index, suffixEnd, work) };
   }
   return undefined;
 }
@@ -546,7 +591,11 @@ function opaqueSuffixNeedsResanitization(suffix: string): boolean {
  * for host paths, including after URL punctuation that also separates shell
  * paths outside a URL.
  */
-function nonFileUrlEndAt(text: string, index: number): number | undefined {
+function nonFileUrlEndAt(
+  text: string,
+  index: number,
+  work?: FilesystemRedactionWorkCounter,
+): number | undefined {
   if (!isTokenBoundaryBefore(text, index)) return undefined;
   let cursor: number;
   if (text.startsWith("//", index) && isAsciiLetterOrDigit(text[index + 2])) {
@@ -560,7 +609,11 @@ function nonFileUrlEndAt(text: string, index: number): number | undefined {
     if (!isAsciiLetter(text[index])) return undefined;
     cursor = index + 1;
     const schemeLimit = Math.min(text.length, index + MAX_URL_SCHEME_CODE_UNITS);
-    while (cursor < schemeLimit && isUrlSchemeCharacter(text[cursor]!)) cursor += 1;
+    while (cursor < schemeLimit) {
+      if (work !== undefined) work.urlSchemeCodeUnits += 1;
+      if (!isUrlSchemeCharacter(text[cursor]!)) break;
+      cursor += 1;
+    }
     if (cursor === schemeLimit
       && text[cursor] !== undefined
       && isUrlSchemeCharacter(text[cursor]!)) {
@@ -576,9 +629,13 @@ function nonFileUrlEndAt(text: string, index: number): number | undefined {
   return cursor;
 }
 
-function filesystemPathKindAt(text: string, index: number): FilesystemPathKind | undefined {
+function filesystemPathKindAt(
+  text: string,
+  index: number,
+  work?: FilesystemRedactionWorkCounter,
+): FilesystemPathKind | undefined {
   const boundary = isTokenBoundaryBefore(text, index);
-  if (boundary && text.slice(index, index + 7).toLocaleLowerCase("en-US") === "file://") {
+  if (boundary && filesystemSlice(text, index, index + 7, work).toLocaleLowerCase("en-US") === "file://") {
     return "file-url";
   }
   // `./` and `../` are intentionally not candidates: they are portable,
@@ -597,7 +654,7 @@ function filesystemPathKindAt(text: string, index: number): FilesystemPathKind |
   }
   if (boundary && text[index] === "\\" && text[index + 1] === "\\") return "windows-unc";
   if (isPrivateRelativePathAt(text, index)) return "private-relative";
-  if (isHostIdentifyingPosixPathAt(text, index)) return "posix";
+  if (isHostIdentifyingPosixPathAt(text, index, work)) return "posix";
   return undefined;
 }
 
@@ -605,6 +662,7 @@ function httpRequestTargetEndAt(
   text: string,
   index: number,
   pathKind: FilesystemPathKind | undefined,
+  work?: FilesystemRedactionWorkCounter,
 ): number | undefined {
   if (text[index] !== "/") return undefined;
   if (!hasHttpRequestMethodBefore(text, index)) return undefined;
@@ -618,6 +676,7 @@ function httpRequestTargetEndAt(
     index,
     targetEnd,
     pathKind,
+    work,
   );
   if (filesystemPathStart === undefined) return targetEnd;
   return filesystemPathStart === index ? undefined : filesystemPathStart;
@@ -628,21 +687,22 @@ function filesystemPathStartInRange(
   start: number,
   end: number,
   initialKind: FilesystemPathKind | undefined,
+  work?: FilesystemRedactionWorkCounter,
 ): number | undefined {
   let cursor = start;
   while (cursor < end) {
-    const opaqueMatch = opaqueFilesystemPathAt(text, cursor);
+    const opaqueMatch = opaqueFilesystemPathAt(text, cursor, work);
     if (opaqueMatch !== undefined) {
-      if (opaqueMatch.replacement !== text.slice(cursor, opaqueMatch.end)) return cursor;
+      if (opaqueMatch.replacement !== filesystemSlice(text, cursor, opaqueMatch.end, work)) return cursor;
       cursor = Math.min(end, opaqueMatch.end);
       continue;
     }
-    const urlEnd = nonFileUrlEndAt(text, cursor);
+    const urlEnd = nonFileUrlEndAt(text, cursor, work);
     if (urlEnd !== undefined) {
       cursor = Math.min(end, urlEnd);
       continue;
     }
-    const kind = cursor === start ? initialKind : filesystemPathKindAt(text, cursor);
+    const kind = cursor === start ? initialKind : filesystemPathKindAt(text, cursor, work);
     if (kind === undefined) {
       cursor += 1;
       continue;
@@ -724,16 +784,20 @@ function filesystemPathEnd(text: string, start: number, kind: FilesystemPathKind
   return end;
 }
 
-function isHostIdentifyingPosixPathAt(text: string, index: number): boolean {
+function isHostIdentifyingPosixPathAt(
+  text: string,
+  index: number,
+  work?: FilesystemRedactionWorkCounter,
+): boolean {
   if (text[index] !== "/" || text[index + 1] === "/") return false;
   if (text[index - 1] === "<") return false;
   if (!isTokenBoundaryBefore(text, index)
     && !isAttachedPathOptionBefore(text, index)
-    && text.slice(Math.max(0, index - 3), index) !== "...") {
+    && filesystemSlice(text, Math.max(0, index - 3), index, work) !== "...") {
     return false;
   }
   const segmentEnd = firstPathSegmentEnd(text, index + 1);
-  const root = text.slice(index + 1, segmentEnd).toLocaleLowerCase("en-US");
+  const root = filesystemSlice(text, index + 1, segmentEnd, work).toLocaleLowerCase("en-US");
   if (!HOST_POSIX_ROOTS.has(root)) return false;
   return segmentEnd === text.length || isPathSegmentBoundary(text[segmentEnd]);
 }

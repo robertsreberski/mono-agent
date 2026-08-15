@@ -3766,17 +3766,17 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
     return;
   }
   if (event.type === "tool_call_started") {
+    const historyUpdate = canonicalEventHistoryUpdate(event.history);
     const subagent = subagentOf(event);
     if (subagent !== undefined) {
       const group = ensureSubagentPart(parts, subagent);
       // The bookend only announces the subagent; the group it belongs to is the
       // whole of its contribution here.
       if (event.metadata?.subagentLifecycle === true) {
-        replaceSubagentPart(parts, {
+        replaceSubagentPart(parts, withEventHistoryUpdate({
           ...group,
           ...(event.arguments === undefined ? {} : { args: event.arguments }),
-          ...(event.history === undefined ? {} : { history: event.history }),
-        });
+        }, historyUpdate));
         return;
       }
       upsertSubagentCall(parts, group, {
@@ -3784,7 +3784,7 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
         toolName: subagentToolName(event.name),
         ...(event.arguments === undefined ? {} : { args: event.arguments }),
         status: "running",
-      });
+      }, historyUpdate);
       return;
     }
     upsertToolCall(parts, {
@@ -3792,9 +3792,8 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
       toolCallId: event.id,
       toolName: event.name,
       ...(event.arguments === undefined ? {} : { args: event.arguments }),
-      ...(event.history === undefined ? {} : { history: event.history }),
       status: "running",
-    });
+    }, historyUpdate);
     return;
   }
   if (event.type === "tool_call_progress") {
@@ -3809,17 +3808,17 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
   }
   if (event.type === "tool_call_completed") {
     const status = event.isError === true ? "failed" : "complete";
+    const historyUpdate = canonicalEventHistoryUpdate(event.history);
     const subagent = subagentOf(event);
     if (subagent !== undefined) {
       const group = ensureSubagentPart(parts, subagent);
       if (event.metadata?.subagentLifecycle === true) {
-        replaceSubagentPart(parts, {
+        replaceSubagentPart(parts, withEventHistoryUpdate({
           ...group,
           status,
-          ...(event.history === undefined ? {} : { history: event.history }),
           ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }),
           ...(subagent.costUsd === undefined ? {} : { costUsd: subagent.costUsd }),
-        });
+        }, historyUpdate));
         return;
       }
       upsertSubagentCall(parts, group, {
@@ -3827,22 +3826,20 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
         toolName: subagentToolName(event.name ?? existingSubagentToolName(group, event.id) ?? "Tool"),
         ...(event.arguments === undefined ? {} : { args: event.arguments }),
         ...(event.content === undefined ? {} : { result: event.content }),
-        ...(event.history === undefined ? {} : { history: event.history }),
         status,
-      });
+      }, historyUpdate);
       return;
     }
     // The parent `Agent` call completes against the group that replaced its
     // tool-call part, so its answer and outcome are not lost to the conversion.
     const group = findSubagentPart(parts, event.id);
     if (group !== undefined) {
-      replaceSubagentPart(parts, {
+      replaceSubagentPart(parts, withEventHistoryUpdate({
         ...group,
         status,
-        ...(event.history === undefined ? {} : { history: event.history }),
         ...(event.content === undefined ? {} : { result: event.content }),
         ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }),
-      });
+      }, historyUpdate));
       return;
     }
     upsertToolCall(parts, {
@@ -3851,9 +3848,8 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
       toolName: event.name ?? existingToolName(parts, event.id) ?? "Tool",
       ...(event.arguments === undefined ? {} : { args: event.arguments }),
       ...(event.content === undefined ? {} : { result: event.content }),
-      ...(event.history === undefined ? {} : { history: event.history }),
       status,
-    });
+    }, historyUpdate);
     return;
   }
   if (event.type === "runtime_telemetry" && event.kind === "context_compaction") {
@@ -3896,6 +3892,24 @@ function existingToolName(parts: readonly WebMessagePart[], id: string): string 
 }
 
 type SubagentPart = Extract<WebMessagePart, { type: "subagent" }>;
+type SessionToolHistoryMetadata = NonNullable<WebToolCall["history"]>;
+
+interface EventHistoryUpdate {
+  readonly value: SessionToolHistoryMetadata | undefined;
+}
+
+function canonicalEventHistoryUpdate(value: unknown): EventHistoryUpdate | undefined {
+  return value === undefined
+    ? undefined
+    : { value: canonicalSessionToolHistoryMetadata(value) };
+}
+
+function withEventHistoryUpdate<T extends WebToolCall | SubagentPart>(
+  value: T,
+  update: EventHistoryUpdate | undefined,
+): T {
+  return update === undefined ? value : withSessionToolHistory(value, update.value);
+}
 
 /**
  * The subagent this tool event belongs to, or undefined for the agent's own
@@ -3996,22 +4010,37 @@ function upsertSubagentCall(
   parts: WebMessagePart[],
   group: SubagentPart,
   next: WebToolCall,
+  historyUpdate?: EventHistoryUpdate,
 ): void {
   const index = group.calls.findIndex((call) => call.toolCallId === next.toolCallId);
+  const merged = index < 0
+    ? next
+    : { ...group.calls[index]!, ...next };
+  const updated = historyUpdate === undefined
+    ? merged
+    : withSessionToolHistory(merged, historyUpdate.value);
   const calls = index < 0
-    ? [...group.calls, next]
-    : group.calls.map((call, at) => at === index ? { ...call, ...next } : call);
+    ? [...group.calls, updated]
+    : group.calls.map((call, at) => at === index ? updated : call);
   replaceSubagentPart(parts, { ...group, calls });
 }
 
-function upsertToolCall(parts: WebMessagePart[], next: Extract<WebMessagePart, { type: "tool-call" }>): void {
+function upsertToolCall(
+  parts: WebMessagePart[],
+  next: Extract<WebMessagePart, { type: "tool-call" }>,
+  historyUpdate?: EventHistoryUpdate,
+): void {
   const index = parts.findIndex((part) => part.type === "tool-call" && part.toolCallId === next.toolCallId);
+  const previous = index < 0 ? undefined : parts[index];
+  const merged = previous?.type === "tool-call" ? { ...previous, ...next } : next;
+  const updated = historyUpdate === undefined
+    ? merged
+    : withSessionToolHistory(merged, historyUpdate.value);
   if (index < 0) {
-    parts.push(next);
+    parts.push(updated);
     return;
   }
-  const previous = parts[index];
-  if (previous?.type === "tool-call") parts[index] = { ...previous, ...next };
+  if (previous?.type === "tool-call") parts[index] = updated;
 }
 
 /**
@@ -4167,11 +4196,14 @@ function parseParts(value: string): WebMessagePart[] {
   } catch {
     throw new WebConsoleError("storage_corrupt", "Persisted message parts are not valid JSON.", 500);
   }
-  if (!Array.isArray(parsed) || !parsed.every(isWebMessagePart)) {
+  const parts = Array.isArray(parsed)
+    ? parsed.map(canonicalizePersistedPartHistory)
+    : parsed;
+  if (!Array.isArray(parts) || !parts.every(isWebMessagePart)) {
     throw new WebConsoleError("storage_corrupt", "Persisted message parts have an invalid shape.", 500);
   }
-  quoteFromParts(parsed);
-  return parsed;
+  quoteFromParts(parts);
+  return parts;
 }
 
 const QUOTE_TELEMETRY_EVENT = "quote";
@@ -4252,18 +4284,29 @@ function isWebToolCall(value: unknown): boolean {
     && (call.history === undefined || isSessionToolHistoryMetadata(call.history));
 }
 
-function isSessionToolHistoryMetadata(value: unknown): boolean {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+const SESSION_TOOL_HISTORY_TERMINAL_STATES = new Set<
+  NonNullable<SessionToolHistoryMetadata["terminalState"]>
+>([
+  "success", "rejected", "error", "exit_nonzero", "timeout", "signal", "cancelled", "interrupted",
+]);
+
+/**
+ * Canonicalize the open wire record before it reaches SQLite or rendering.
+ * Unknown fields are deliberately omitted so a future/stale producer cannot
+ * turn this bounded display record into an unbounded persistence side channel.
+ */
+function canonicalSessionToolHistoryMetadata(value: unknown): SessionToolHistoryMetadata | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const history = value as Record<string, unknown>;
-  const states = new Set([
-    "success", "rejected", "error", "exit_nonzero", "timeout", "signal", "cancelled", "interrupted",
-  ]);
-  return (history.persistence === "persisted" || history.persistence === "failed")
+  const valid = (history.persistence === "persisted" || history.persistence === "failed")
     && history.untrusted === true
     && (history.recordId === undefined || boundedHistoryString(history.recordId, 4_096))
     && (history.sequence === undefined || positiveSafeInteger(history.sequence))
     && (history.terminalState === undefined || (
-      typeof history.terminalState === "string" && states.has(history.terminalState)
+      typeof history.terminalState === "string"
+      && SESSION_TOOL_HISTORY_TERMINAL_STATES.has(
+        history.terminalState as NonNullable<SessionToolHistoryMetadata["terminalState"]>,
+      )
     ))
     && (history.truncated === undefined || typeof history.truncated === "boolean")
     && (history.originalBytes === undefined || nonNegativeSafeInteger(history.originalBytes))
@@ -4278,6 +4321,78 @@ function isSessionToolHistoryMetadata(value: unknown): boolean {
         return boundedHistoryString(artifact.id, 4_096) && typeof artifact.available === "boolean";
       })
     ));
+  if (!valid) return undefined;
+
+  return {
+    persistence: history.persistence as SessionToolHistoryMetadata["persistence"],
+    untrusted: true,
+    ...(history.recordId === undefined ? {} : { recordId: history.recordId as string }),
+    ...(history.sequence === undefined ? {} : { sequence: history.sequence as number }),
+    ...(history.terminalState === undefined
+      ? {}
+      : { terminalState: history.terminalState as NonNullable<SessionToolHistoryMetadata["terminalState"]> }),
+    ...(history.truncated === undefined ? {} : { truncated: history.truncated as boolean }),
+    ...(history.originalBytes === undefined ? {} : { originalBytes: history.originalBytes as number }),
+    ...(history.retainedBytes === undefined ? {} : { retainedBytes: history.retainedBytes as number }),
+    ...(history.errorCode === undefined ? {} : { errorCode: history.errorCode as string }),
+    ...(history.artifactReferences === undefined
+      ? {}
+      : {
+          artifactReferences: (history.artifactReferences as unknown[]).map((entry) => {
+            const artifact = entry as Record<string, unknown>;
+            return { id: artifact.id as string, available: artifact.available as boolean };
+          }),
+        }),
+  };
+}
+
+function isSessionToolHistoryMetadata(value: unknown): boolean {
+  return canonicalSessionToolHistoryMetadata(value) !== undefined;
+}
+
+/** An explicitly supplied invalid frame replaces, rather than retaining, stale metadata. */
+function withSessionToolHistory<T extends WebToolCall | SubagentPart>(
+  value: T,
+  history: SessionToolHistoryMetadata | undefined,
+): T {
+  const { history: _staleHistory, ...withoutHistory } = value;
+  return {
+    ...withoutHistory,
+    ...(history === undefined ? {} : { history }),
+  } as T;
+}
+
+/**
+ * Older builds could persist an unchecked history record. Salvage the otherwise
+ * valid message by dropping only that optional record; unrelated corruption
+ * remains a storage error.
+ */
+function canonicalizePersistedPartHistory(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+  const part = value as Record<string, unknown>;
+  if (part.type === "tool-call") return canonicalizePersistedHistoryRecord(part);
+  if (part.type !== "subagent") return value;
+  const canonicalPart = canonicalizePersistedObjectHistory(part);
+  return {
+    ...canonicalPart,
+    ...(Array.isArray(part.calls)
+      ? { calls: part.calls.map((call) => canonicalizePersistedHistoryRecord(call)) }
+      : {}),
+  };
+}
+
+function canonicalizePersistedHistoryRecord(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+  return canonicalizePersistedObjectHistory(value as Record<string, unknown>);
+}
+
+function canonicalizePersistedObjectHistory(record: Record<string, unknown>): Record<string, unknown> {
+  const { history: rawHistory, ...withoutHistory } = record;
+  const history = canonicalSessionToolHistoryMetadata(rawHistory);
+  return {
+    ...withoutHistory,
+    ...(history === undefined ? {} : { history }),
+  };
 }
 
 function boundedHistoryString(value: unknown, maxBytes: number): value is string {

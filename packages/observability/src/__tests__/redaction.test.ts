@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   containsVisibleSensitiveText,
+  inspectFilesystemRedactionWorkForTest,
   redactJsonValue,
   sanitizeVisibleText,
   truncateString,
@@ -427,43 +428,15 @@ describe("redactJsonValue", () => {
         content,
       },
     });
-    const nativeSlice = String.prototype.slice;
-    let slicedCodeUnits = 0;
-    let largestSliceCodeUnits = 0;
-    const sliceSpy = vi.spyOn(String.prototype, "slice").mockImplementation(function (
-      this: string,
-      start?: number,
-      end?: number,
-    ): string {
-      const source = String(this);
-      if (source === serialized) {
-        const normalizedStart = start === undefined
-          ? 0
-          : start < 0
-            ? Math.max(0, source.length + start)
-            : Math.min(source.length, start);
-        const normalizedEnd = end === undefined
-          ? source.length
-          : end < 0
-            ? Math.max(0, source.length + end)
-            : Math.min(source.length, end);
-        const codeUnits = Math.max(0, normalizedEnd - normalizedStart);
-        slicedCodeUnits += codeUnits;
-        largestSliceCodeUnits = Math.max(largestSliceCodeUnits, codeUnits);
-      }
-      return nativeSlice.call(this, start, end);
-    });
-    let sanitized: string;
-    try {
-      sanitized = sanitizeVisibleText(serialized, { omitFilesystemPaths: true });
-    } finally {
-      sliceSpy.mockRestore();
-    }
+    const work = inspectFilesystemRedactionWorkForTest(serialized);
 
     expect(serialized.length).toBeGreaterThanOrEqual(contentBytes);
-    expect(sanitized).toContain('"file_path":"[host-path]/repo/blob.bin"');
-    expect(largestSliceCodeUnits).toBeLessThanOrEqual(128);
-    expect(slicedCodeUnits).toBeLessThanOrEqual(serialized.length * 2);
+    expect(work.sanitized).toContain('"file_path":"[host-path]/repo/blob.bin"');
+    expect(sanitizeVisibleText(serialized, { omitFilesystemPaths: true }))
+      .toContain('"file_path":"[host-path]/repo/blob.bin"');
+    expect(work.largestSliceCodeUnits).toBeLessThanOrEqual(128);
+    expect(work.slicedCodeUnits).toBeLessThanOrEqual(serialized.length * 2);
+    expect(work.scannerIterations + work.urlSchemeCodeUnits).toBeLessThanOrEqual(serialized.length * 2);
 
     const redacted = redactJsonValue(
       { file_path: "/users/PrivateAccount/repo/blob.bin", content },
@@ -477,26 +450,13 @@ describe("redactJsonValue", () => {
   it("keeps URL-scheme classification work linear on plus-dense input", () => {
     const countClassificationWork = (codeUnits: number): number => {
       const input = "a+".repeat(codeUnits / 2);
-      const nativeCharCodeAt = String.prototype.charCodeAt;
-      let calls = 0;
-      const charCodeAtSpy = vi.spyOn(String.prototype, "charCodeAt").mockImplementation(function (
-        this: string,
-        position: number,
-      ): number {
-        calls += 1;
-        return nativeCharCodeAt.call(this, position);
-      });
-      let sanitized: string;
-      try {
-        sanitized = sanitizeVisibleText(input, {
-          omitFilesystemPaths: true,
-          maxBytes: codeUnits,
-        });
-      } finally {
-        charCodeAtSpy.mockRestore();
-      }
-      expect(sanitized).toBe(input);
-      return calls;
+      const work = inspectFilesystemRedactionWorkForTest(input);
+      expect(work.sanitized).toBe(input);
+      expect(sanitizeVisibleText(input, {
+        omitFilesystemPaths: true,
+        maxBytes: codeUnits,
+      })).toBe(input);
+      return work.scannerIterations + work.urlSchemeCodeUnits;
     };
 
     const sizes = [512, 1_024, 2_048] as const;
@@ -504,7 +464,7 @@ describe("redactJsonValue", () => {
 
     expect(counts[1]).toBeLessThanOrEqual(counts[0]! * 2.5);
     expect(counts[2]).toBeLessThanOrEqual(counts[1]! * 2.5);
-    expect(counts[2]).toBeLessThanOrEqual(sizes[2] * 80);
+    expect(counts[2]).toBeLessThanOrEqual(sizes[2] * 2);
   });
 
   it.each([
