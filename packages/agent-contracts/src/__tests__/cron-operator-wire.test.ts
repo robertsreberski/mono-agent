@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  MAX_AGENT_REPLY_PARTS,
   MAX_CRON_OPERATOR_JOBS,
   MAX_CRON_OPERATOR_RUN_PAGE,
+  MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES,
   parseCronOperatorOverview,
   parseCronOperatorRunDetail,
   parseCronOperatorRunPage,
@@ -103,6 +105,58 @@ describe("cron operator wire contract", () => {
       expect(() => parseCronOperatorRunSummary(summary({ replyPartOutcomes: invalid })))
         .toThrowError(/invalid cron operator/iu);
     }
+  });
+
+  it("canonicalizes descriptor-backed outcome arrays without invoking proxy getters", () => {
+    const sensitive = "/private/report.csv?capabilityToken=secret";
+    const safeOutcome = {
+      partIndex: 0,
+      partType: "attachment",
+      status: "failed",
+      code: "unsupported_destination",
+      message: "Attachment reply parts are unsupported on this destination.",
+    };
+    let getterReads = 0;
+    const descriptorBacked = new Proxy([safeOutcome], {
+      get(_target, property) {
+        getterReads += 1;
+        if (property === "0") {
+          return { ...safeOutcome, message: sensitive, localPath: sensitive, capabilityToken: sensitive };
+        }
+        throw new Error("outcome arrays must be canonicalized through data descriptors");
+      },
+    });
+
+    const parsed = parseCronOperatorRunSummary(summary({ replyPartOutcomes: descriptorBacked }));
+
+    expect(parsed.replyPartOutcomes).toEqual([safeOutcome]);
+    expect(getterReads).toBe(0);
+    expect(JSON.stringify(parsed)).not.toContain(sensitive);
+    expect(parsed.replyPartOutcomes?.[0]).not.toHaveProperty("localPath");
+    expect(parsed.replyPartOutcomes?.[0]).not.toHaveProperty("capabilityToken");
+  });
+
+  it("caps summary outcomes deterministically while detail retains the shared boundary", () => {
+    const outcomes = Array.from({ length: MAX_AGENT_REPLY_PARTS }, (_, partIndex) => ({
+      partIndex,
+      partType: "failure",
+      status: "failed",
+      code: "artifact_integrity_failed",
+      message: "Reply part failed before destination delivery.",
+    }));
+    const summaryBoundary = outcomes.slice(0, MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES);
+
+    expect(parseCronOperatorRunSummary(summary({ replyPartOutcomes: summaryBoundary })).replyPartOutcomes)
+      .toEqual(summaryBoundary);
+    expect(() => parseCronOperatorRunSummary(summary({
+      replyPartOutcomes: outcomes.slice(0, MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES + 1),
+    }))).toThrowError(/invalid cron operator/iu);
+    expect(parseCronOperatorRunDetail(summary({
+      projection: "detail",
+      replyPartOutcomes: outcomes,
+      events: [],
+      eventsIncluded: 0,
+    })).replyPartOutcomes).toEqual(outcomes);
   });
 
   it("enforces collection and UTF-8 field ceilings at the parser boundary", () => {

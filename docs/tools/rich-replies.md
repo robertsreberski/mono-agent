@@ -107,15 +107,16 @@ The response locations are exact and additive:
 | Webhook | Top-level `replyPartOutcomes` on successful sync JSON, terminal async status JSON, programmatic `getStatus()`, and the result callback. Store, callback, and each read receive independent arrays. |
 | A2A | A final artifact data `Part` with media type `application/vnd.mono-agent.reply-part-outcomes+json` and value `{ "schemaVersion": 1, "replyPartOutcomes": [...] }`, beside the unchanged text `Part`. |
 | Cron adapter | Optional top-level `CronJobResult.replyPartOutcomes`; a cancelled responder that resolves late may retain sanitized part outcomes but never its late text. |
-| Cron durable/operator projection | Private SQLite column `cron_runs.reply_part_outcomes_json` stores `{ "schemaVersion": 1, "replyPartOutcomes": [...] }`. Legacy `NULL` rows mean absent outcomes. Summary/detail `CronOperatorRun.replyPartOutcomes` then crosses the operator/TUI HTTP lane and is strictly reparsed by the web client after restart. |
+| Cron durable/operator projection | Private SQLite column `cron_runs.reply_part_outcomes_json` stores `{ "schemaVersion": 1, "replyPartOutcomes": [...] }`. Legacy `NULL` rows mean absent outcomes. Detail `CronOperatorRun.replyPartOutcomes` retains all 20 records; compact summaries retain the first eight in stable part order so a 100-run page stays below the operator response ceiling. The web client strictly reparses both projections after restart. |
 
 The version applies to the A2A and SQLite envelopes. Direct OpenAI, webhook,
 cron result, operator, and web projections are unversioned additive fields and
 must be feature-detected. No outcome envelope copies part ids, filenames, local
 or host-only URLs, capability values, integrity ids, producer error messages,
-or payload bytes. Cron retention and run-now idempotency keep the same sanitized
-projection, and the first terminal cron state cannot be overwritten by a late
-callback or event.
+or payload bytes. Cron run rows retain the sanitized outcomes, while rollback-safe
+run-now idempotency receipts omit them. Replay derives outcomes from a retained
+row and accepts their absence after row eviction. The first terminal cron state
+cannot be overwritten by a late callback or event.
 
 Slack and Telegram remove a file part from textual fallback only after the
 platform confirms its native upload. The deduplication key binds the file

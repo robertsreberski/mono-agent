@@ -1,6 +1,7 @@
 import type { AgentStreamEvent } from "./index.js";
 import {
   isAgentReplyPartDeliveryOutcomes,
+  sanitizeReplyPartDeliveryOutcomes,
   type AgentReplyPartDeliveryOutcome,
 } from "./reply-part-outcomes.js";
 
@@ -19,6 +20,8 @@ export const MAX_CRON_OPERATOR_SUMMARY_TEXT_BYTES = 2 * 1024;
 export const MAX_CRON_OPERATOR_SUMMARY_ERROR_BYTES = 512;
 export const MAX_CRON_OPERATOR_SUMMARY_ARTIFACT_ID_BYTES = 512;
 export const MAX_CRON_OPERATOR_SUMMARY_FAILURE_KIND_BYTES = 128;
+/** Compact projections retain the first ordered outcomes; detail retains the full shared 20-outcome contract. */
+export const MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES = 8;
 export const MAX_CRON_OPERATOR_DETAIL_TEXT_BYTES = 128 * 1024;
 export const MAX_CRON_OPERATOR_DETAIL_ERROR_BYTES = 32 * 1024;
 export const MAX_CRON_OPERATOR_DETAIL_ARTIFACT_ID_BYTES = 4 * 1024;
@@ -63,7 +66,7 @@ export interface CronOperatorRunBase {
   readonly blockedByRunId?: string;
   readonly blockedByTrigger?: CronOperatorRunTrigger;
   readonly queueDepth?: number;
-  /** Bounded sanitized terminal outcomes for rich parts the cron destination could not deliver. */
+  /** Bounded sanitized terminal outcomes; summary keeps 8 ordered records and detail keeps the shared 20. */
   readonly replyPartOutcomes?: readonly AgentReplyPartDeliveryOutcome[];
   readonly eventCount: number;
   readonly fieldsTruncated?: readonly CronOperatorRunTruncatedField[];
@@ -212,6 +215,7 @@ function parseRunBase(
 ): Record<string, unknown> {
   const run = requireRecord(value);
   const detail = projection === "detail";
+  const sourceReplyPartOutcomes = run.replyPartOutcomes;
   if (!hasOnlyKeys(run, allowedKeys)
     || run.projection !== projection
     || !boundedString(run.runId, MAX_CRON_OPERATOR_RUN_ID_BYTES, true)
@@ -245,7 +249,7 @@ function parseRunBase(
       && run.blockedByTrigger !== "scheduled"
       && run.blockedByTrigger !== "manual")
     || (run.queueDepth !== undefined && (!Number.isSafeInteger(run.queueDepth) || Number(run.queueDepth) < 0))
-    || (run.replyPartOutcomes !== undefined && !isAgentReplyPartDeliveryOutcomes(run.replyPartOutcomes))
+    || (sourceReplyPartOutcomes !== undefined && !isAgentReplyPartDeliveryOutcomes(sourceReplyPartOutcomes))
     || (run.eventsTruncated !== undefined && run.eventsTruncated !== true)) fail();
   const fields = run.fieldsTruncated;
   const allowedFields: readonly string[] = ["artifactRunId", "error", "failureKind", "text"];
@@ -253,14 +257,15 @@ function parseRunBase(
     && (!Array.isArray(fields)
       || new Set(fields).size !== fields.length
       || fields.some((field) => !allowedFields.includes(String(field))))) fail();
+  const replyPartOutcomes = sourceReplyPartOutcomes === undefined
+    ? undefined
+    : sanitizeReplyPartDeliveryOutcomes(sourceReplyPartOutcomes);
+  if (sourceReplyPartOutcomes !== undefined
+    && (replyPartOutcomes === undefined
+      || (!detail && replyPartOutcomes.length > MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES))) fail();
   return {
     ...run,
-    ...(run.replyPartOutcomes === undefined
-      ? {}
-      : {
-          replyPartOutcomes: (run.replyPartOutcomes as readonly AgentReplyPartDeliveryOutcome[])
-            .map((outcome) => ({ ...outcome })),
-        }),
+    ...(replyPartOutcomes === undefined ? {} : { replyPartOutcomes }),
   };
 }
 

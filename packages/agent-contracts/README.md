@@ -101,6 +101,9 @@ fields. A2A and cron's private durable SQLite copy wrap the same array as
 `{ "schemaVersion": 1, "replyPartOutcomes": [...] }`. Exact adapter field and
 projection names are documented in
 [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/#machine-delivery-outcome-wire-contract).
+Cron detail projections retain all 20 records. Compact cron summaries retain
+the first eight in stable part order so a maximum 100-run page remains below
+the operator response ceiling.
 
 ## Architecture
 
@@ -307,6 +310,7 @@ MAX_CRON_OPERATOR_RUN_PAGE
 MAX_CRON_OPERATOR_SUMMARY_ARTIFACT_ID_BYTES
 MAX_CRON_OPERATOR_SUMMARY_ERROR_BYTES
 MAX_CRON_OPERATOR_SUMMARY_FAILURE_KIND_BYTES
+MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES
 MAX_CRON_OPERATOR_SUMMARY_TEXT_BYTES
 MAX_CRON_OPERATOR_TIMEZONE_BYTES
 MCP_APPS_EXTENSION_ID

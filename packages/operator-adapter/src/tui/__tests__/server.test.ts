@@ -6,6 +6,7 @@ import {
   AgentResponseCancelledError,
   CodedError,
   MAX_AGENT_REPLY_PARTS,
+  MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES,
   isChannelUserCancelReason,
   parseAgentStreamFrame,
   serializeAgentStreamFrame,
@@ -409,6 +410,13 @@ describe("startTuiAdapter", () => {
   });
 
   it("serializes adversarial overview, 100-run pages, older pages, and detail below the cron wire ceiling", async () => {
+    const replyPartOutcomes = Array.from({ length: MAX_AGENT_REPLY_PARTS }, (_, partIndex) => ({
+      partIndex,
+      partType: "failure" as const,
+      status: "failed" as const,
+      code: "artifact_integrity_failed" as const,
+      message: "Reply part failed before destination delivery.",
+    }));
     const summary = (index: number) => ({
       projection: "summary" as const,
       runId: `cron:${"r".repeat(700)}:${String(index)}`,
@@ -425,6 +433,7 @@ describe("startTuiAdapter", () => {
       error: "e".repeat(512),
       failureKind: "f".repeat(128),
       blockedByRunId: `cron:${"b".repeat(700)}`,
+      replyPartOutcomes: replyPartOutcomes.slice(0, MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES),
       eventCount: 30,
       fieldsTruncated: ["text" as const],
     });
@@ -438,6 +447,7 @@ describe("startTuiAdapter", () => {
       ...summary(0),
       projection: "detail" as const,
       text: "d".repeat(128 * 1024),
+      replyPartOutcomes,
       eventCount: 30,
       events: Array.from({ length: 30 }, (_, index) => ({
         type: "runtime_warning" as const,
@@ -446,6 +456,10 @@ describe("startTuiAdapter", () => {
       })),
       eventsIncluded: 30,
     };
+    expect(runs.every((run) =>
+      run.replyPartOutcomes.length === MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES)).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify({ runs, nextCursor: "older-page" }), "utf8"))
+      .toBeLessThan(MAX_CRON_OPERATOR_RESPONSE_BYTES);
     const cron: CronOperatorService = {
       overview: () => ({
         generatedAt: "2026-08-14T10:00:00.000Z",

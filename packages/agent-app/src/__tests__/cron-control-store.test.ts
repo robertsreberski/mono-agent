@@ -7,7 +7,11 @@ import { Worker } from "node:worker_threads";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentStreamEvent } from "@mono-agent/agent-contracts";
+import {
+  MAX_AGENT_REPLY_PARTS,
+  MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES,
+  type AgentStreamEvent,
+} from "@mono-agent/agent-contracts";
 import {
   startCronAdapter,
   type CronFiringIdentity,
@@ -401,6 +405,7 @@ describe("cron control store", () => {
     });
 
     const succeededSummary = store.getRunSummary(manual.firing.runId);
+    const succeededDetail = store.getRun(manual.firing.runId);
     expect(succeededSummary).toMatchObject({
       status: "succeeded",
       text: "  exact durable text\n",
@@ -408,11 +413,13 @@ describe("cron control store", () => {
         expect.objectContaining({ partIndex: 0, partType: "attachment", code: "unsupported_destination" }),
       ]),
     });
-    expect(succeededSummary?.replyPartOutcomes).toHaveLength(20);
-    expect(succeededSummary?.replyPartOutcomes?.at(-1)).toMatchObject({ partIndex: 19, affectedPartCount: 4 });
+    expect(succeededSummary?.replyPartOutcomes).toHaveLength(MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES);
+    expect(succeededDetail?.replyPartOutcomes).toHaveLength(MAX_AGENT_REPLY_PARTS);
+    expect(succeededDetail?.replyPartOutcomes?.at(-1)).toMatchObject({ partIndex: 19, affectedPartCount: 4 });
+    expect(succeededDetail?.replyPartOutcomes?.slice(0, MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES))
+      .toEqual(succeededSummary?.replyPartOutcomes);
     expect(JSON.stringify(succeededSummary?.replyPartOutcomes)).not.toContain("null");
     expect(JSON.stringify(succeededSummary)).not.toContain(sensitive);
-    expect(store.getRun(manual.firing.runId)?.replyPartOutcomes).toEqual(succeededSummary?.replyPartOutcomes);
     expect(store.runs("digest", 10).runs).toEqual([
       expect.objectContaining({ status: "cancelled", replyPartOutcomes: cancelledOutcomes }),
       expect.objectContaining({ status: "succeeded", replyPartOutcomes: succeededSummary?.replyPartOutcomes }),
@@ -434,18 +441,23 @@ describe("cron control store", () => {
     const persisted = database.prepare(
       "SELECT reply_part_outcomes_json FROM cron_runs WHERE run_id = ?",
     ).get(manual.firing.runId) as { reply_part_outcomes_json: string };
+    const receipt = database.prepare(
+      "SELECT response_json FROM action_idempotency WHERE idempotency_key = ?",
+    ).get("rich-outcome-run") as { response_json: string };
     database.close();
     expect(JSON.parse(persisted.reply_part_outcomes_json)).toMatchObject({
       schemaVersion: 1,
-      replyPartOutcomes: succeededSummary?.replyPartOutcomes,
+      replyPartOutcomes: succeededDetail?.replyPartOutcomes,
     });
+    expect(Buffer.byteLength(persisted.reply_part_outcomes_json, "utf8")).toBeLessThanOrEqual(8 * 1024);
     expect(persisted.reply_part_outcomes_json).not.toContain(sensitive);
+    expect(JSON.parse(receipt.response_json)).not.toHaveProperty("run.replyPartOutcomes");
 
     const reopened = await openCronControlStore(cwd);
     stores.push(reopened);
     expect(reopened.getRun(manual.firing.runId)).toMatchObject({
       text: "  exact durable text\n",
-      replyPartOutcomes: succeededSummary?.replyPartOutcomes,
+      replyPartOutcomes: succeededDetail?.replyPartOutcomes,
     });
     expect(reopened.lastRun("digest")).toMatchObject({
       status: "cancelled",
@@ -788,18 +800,33 @@ describe("cron control store", () => {
       warningKind: "fixture",
       message: `activity ${"x".repeat(320)}`,
     };
+    const replyPartOutcomes = Array.from({ length: MAX_AGENT_REPLY_PARTS }, (_, partIndex) => ({
+      partIndex,
+      partType: "failure" as const,
+      status: "failed" as const,
+      code: "artifact_integrity_failed" as const,
+      message: "Reply part failed before destination delivery.",
+    }));
     for (let index = 0; index < 101; index += 1) {
       const at = new Date(Date.parse("2026-08-14T10:00:00.000Z") + index * 1_000).toISOString();
       const firing = store.allocateFiring({ jobId: "digest", scheduledAt: at, observedAt: at, trigger: "scheduled" });
       if (index === 100) {
         for (let position = 0; position < 30; position += 1) store.appendEvent(firing, event);
       }
-      store.recordResult(succeeded(firing, `Result ${String(index)}`));
+      store.recordResult({
+        ...succeeded(firing, `Result ${String(index)}`),
+        replyPartOutcomes,
+      } as CronJobResult);
     }
 
     const first = store.runs("digest", 100);
     expect(first.runs).toHaveLength(100);
     expect(first.runs.every((run) => run.projection === "summary" && !("events" in run))).toBe(true);
+    expect(first.runs.every((run) =>
+      run.replyPartOutcomes?.length === MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES)).toBe(true);
+    expect(first.runs[0]?.replyPartOutcomes).toEqual(
+      replyPartOutcomes.slice(0, MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES),
+    );
     expect(Buffer.byteLength(JSON.stringify(first), "utf8")).toBeLessThan(MAX_CRON_OPERATOR_RESPONSE_BYTES);
     expect(first.nextCursor).toBeDefined();
 
@@ -813,6 +840,7 @@ describe("cron control store", () => {
     expect(older.nextCursor).toBeUndefined();
     const detail = store.getRun(first.runs[0]!.runId);
     expect(detail).toMatchObject({ projection: "detail", eventCount: 30, eventsIncluded: 30 });
+    expect(detail?.replyPartOutcomes).toEqual(replyPartOutcomes);
     expect(Buffer.byteLength(JSON.stringify({ run: detail }), "utf8")).toBeLessThan(MAX_CRON_OPERATOR_RESPONSE_BYTES);
   });
 
@@ -845,8 +873,8 @@ describe("cron control store", () => {
     expect(Buffer.byteLength(JSON.stringify({ run: detail }), "utf8")).toBeLessThan(MAX_CRON_OPERATOR_RESPONSE_BYTES);
   });
 
-  it("replays an evicted manual run from its bounded receipt without admitting it twice", async () => {
-    const { store } = await fixture();
+  it("reopens and replays an evicted manual run from a rollback-safe receipt without admitting it twice", async () => {
+    const { cwd, store } = await fixture();
     const requestHash = cronActionRequestHash({ action: "run_now", jobId: "digest" });
     const manual = store.runNowAction({
       jobId: "digest",
@@ -873,23 +901,45 @@ describe("cron control store", () => {
     }
 
     expect(store.getRun(manual.firing.runId)).toBeUndefined();
-    expect(store.replayRunNowAction({
+    await store.close();
+    stores.splice(stores.indexOf(store), 1);
+
+    const database = new DatabaseSync(resolveCronControlPaths(await realpath(cwd)).database, { readOnly: true });
+    const persisted = database.prepare(
+      "SELECT response_json FROM action_idempotency WHERE idempotency_key = ?",
+    ).get("manual-evicted") as { response_json: string };
+    database.close();
+    const receipt = JSON.parse(persisted.response_json) as { run: Record<string, unknown> };
+    const rollbackRunKeys = new Set([
+      "projection", "runId", "jobId", "scheduledAt", "orderedAt", "sequence", "trigger", "status",
+      "startedAt", "completedAt", "artifactRunId", "text", "error", "failureKind", "blockedByRunId",
+      "blockedByTrigger", "queueDepth", "eventCount", "fieldsTruncated", "eventsTruncated",
+    ]);
+    expect(Object.keys(receipt)).toEqual(["run"]);
+    expect(Object.keys(receipt.run).every((key) => rollbackRunKeys.has(key))).toBe(true);
+    expect(receipt.run).not.toHaveProperty("replyPartOutcomes");
+
+    const reopened = await openCronControlStore(cwd);
+    stores.push(reopened);
+    expect(reopened.getRun(manual.firing.runId)).toBeUndefined();
+    const replay = reopened.replayRunNowAction({
       jobId: "digest",
       idempotencyKey: "manual-evicted",
       requestHash,
-    })).toMatchObject({
+    });
+    expect(replay).toMatchObject({
       runId: manual.firing.runId,
       status: "succeeded",
       text: "Manual terminal summary",
-      replyPartOutcomes: replayOutcomes,
     });
-    expect(store.runNowAction({
+    expect(replay).not.toHaveProperty("replyPartOutcomes");
+    expect(reopened.runNowAction({
       jobId: "digest",
       idempotencyKey: "manual-evicted",
       requestHash,
       observedAt: "2026-08-14T11:00:00.000Z",
     })).toMatchObject({ replayed: true, firing: { runId: manual.firing.runId } });
-    expect(store.runs("digest", 500).runs).toHaveLength(500);
+    expect(reopened.runs("digest", 500).runs).toHaveLength(500);
   });
 
   it("retains same-timestamp idempotency receipts deterministically by key", async () => {
