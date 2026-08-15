@@ -534,6 +534,36 @@ describe("process-job request availability", () => {
     expect(processJobWakeContextForRequest(request)).toEqual({ kind: "none" });
   });
 
+  it("preserves rich-reply host methods with their original responder binding", async () => {
+    let owner: object;
+    const openReplyArtifact = vi.fn(async function (this: object) {
+      expect(this).toBe(owner);
+      return {} as never;
+    });
+    const loadMcpApp = vi.fn(async function (this: object) {
+      expect(this).toBe(owner);
+      return {} as never;
+    });
+    const requestMcpApp = vi.fn(async function (this: object) {
+      expect(this).toBe(owner);
+      return { accepted: true };
+    });
+    owner = {
+      respond: async () => ({ text: "ok" }),
+      openReplyArtifact,
+      loadMcpApp,
+      requestMcpApp,
+    };
+    const responder = bindProcessJobWakeContextToResponder(owner as never);
+
+    await expect(responder.openReplyArtifact?.({} as never)).resolves.toEqual({});
+    await expect(responder.loadMcpApp?.({} as never)).resolves.toEqual({});
+    await expect(responder.requestMcpApp?.({} as never)).resolves.toEqual({ accepted: true });
+    expect(openReplyArtifact).toHaveBeenCalledOnce();
+    expect(loadMcpApp).toHaveBeenCalledOnce();
+    expect(requestMcpApp).toHaveBeenCalledOnce();
+  });
+
   it("fails closed when a host wake lacks the private request-identity seam", async () => {
     const respond = vi.fn(async () => ({ text: "unexpected" }));
     const responder = bindProcessJobWakeContextToResponder({ respond });

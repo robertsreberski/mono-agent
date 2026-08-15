@@ -107,6 +107,15 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
     ...(responder.deliverVerbatim === undefined
       ? {}
       : { deliverVerbatim: responder.deliverVerbatim.bind(responder) }),
+    ...(responder.openReplyArtifact === undefined
+      ? {}
+      : { openReplyArtifact: responder.openReplyArtifact.bind(responder) }),
+    ...(responder.loadMcpApp === undefined
+      ? {}
+      : { loadMcpApp: responder.loadMcpApp.bind(responder) }),
+    ...(responder.requestMcpApp === undefined
+      ? {}
+      : { requestMcpApp: responder.requestMcpApp.bind(responder) }),
     ...(startNewSession === undefined
       ? {}
       : { startNewSession: startNewSession.bind(responder) }),
