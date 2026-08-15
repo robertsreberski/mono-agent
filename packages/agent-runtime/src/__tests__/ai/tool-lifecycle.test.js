@@ -15,6 +15,9 @@ describe("managed tool lifecycle classification", () => {
     [{ approval: { decision: "deny", reason: "policy_denied" } }, { state: "rejected", failureKind: "runtime_error", detailCode: "policy_denied" }],
     [{ approval: { reason: "approval_timeout" } }, { state: "timeout", failureKind: "runtime_error", detailCode: "approval_timeout" }],
     [{ result: { details: { outcome: { status: "error", code: "bad_auth", failureKind: "provider_auth" } } }, isError: true }, { state: "error", failureKind: "provider_auth", detailCode: "bad_auth" }],
+    [{ result: { details: { outcome: { status: "error", code: "bad_auth", failureKind: "provider_auth" } } }, isError: true, aborted: true }, { state: "error", failureKind: "provider_auth", detailCode: "bad_auth" }],
+    [{ result: { details: { outcome: { status: "error", code: "context_window", failureKind: "context_limit" } } }, isError: true, aborted: true }, { state: "error", failureKind: "context_limit", detailCode: "context_window" }],
+    [{ result: { details: { outcome: { status: "error", code: "provider_error", failureKind: "runtime_error" } } }, isError: true, aborted: true }, { state: "cancelled", failureKind: "cancelled", detailCode: "abort_signal" }],
     [{ result: { details: { outcome: { status: "error", exitCode: 7 } } }, isError: true }, { state: "exit_nonzero", failureKind: "runtime_error", detailCode: "exit_7" }],
     [{ result: { details: { outcome: { status: "error", timedOut: true } } }, isError: true }, { state: "timeout", failureKind: "runtime_error", detailCode: "tool_timeout" }],
     [{ result: { details: { outcome: { status: "error", code: "aborted", timedOut: true } } }, isError: true, aborted: true }, { state: "timeout", failureKind: "runtime_error", detailCode: "tool_timeout" }],
@@ -292,9 +295,40 @@ describe("tool lifecycle persistence gate", () => {
     expect(forged.message.content[0]).not.toHaveProperty("tool_lifecycle");
   });
 
-  it("classifies a host-aborted generic provider failure as user cancellation", async () => {
+  it.each([
+    {
+      name: "classifies a generic provider failure as the outer user cancellation",
+      abortReason: { kind: "user" },
+      lifecycle: { state: "error", failure_kind: "runtime_error", detail_code: "claude_sdk_tool_error" },
+      expected: { state: "cancelled", failureKind: "cancelled_user", detailCode: "abort_signal" },
+    },
+    {
+      name: "keeps provider authentication failure ahead of a later outer abort",
+      abortReason: "late cancellation",
+      lifecycle: { state: "error", failure_kind: "provider_auth", detail_code: "provider_auth" },
+      expected: { state: "error", failureKind: "provider_auth", detailCode: "provider_auth" },
+    },
+    {
+      name: "keeps another specific terminal failure ahead of a later outer abort",
+      abortReason: "late cancellation",
+      lifecycle: { state: "error", failure_kind: "context_limit", detail_code: "context_window" },
+      expected: { state: "error", failureKind: "context_limit", detailCode: "context_window" },
+    },
+    {
+      name: "maps a trusted signal hint without a failure kind to process death",
+      abortReason: { kind: "signal" },
+      lifecycle: { state: "signal", detail_code: "SIGTERM" },
+      expected: { state: "signal", failureKind: "process_death", detailCode: "SIGTERM" },
+    },
+    {
+      name: "maps a trusted interrupted hint without a failure kind to process death",
+      abortReason: { kind: "shutdown" },
+      lifecycle: { state: "interrupted" },
+      expected: { state: "interrupted", failureKind: "process_death", detailCode: "interrupted" },
+    },
+  ])("$name", async ({ abortReason, lifecycle, expected }) => {
     const abort = new AbortController();
-    abort.abort({ kind: "user" });
+    abort.abort(abortReason);
     const persisted = [];
     const gate = createToolLifecycleEventGate({
       abortSignal: abort.signal,
@@ -307,50 +341,17 @@ describe("tool lifecycle persistence gate", () => {
       type: "user",
       message: { content: [{
         type: "tool_result",
-        tool_use_id: "call-cancelled",
-        content: "provider stopped after host cancellation",
+        tool_use_id: "call-terminal-precedence",
+        content: "terminal result",
         is_error: true,
-        tool_lifecycle: toolLifecycleMetadata({ state: "error", failure_kind: "runtime_error", detail_code: "claude_sdk_tool_error" }),
+        tool_lifecycle: toolLifecycleMetadata(lifecycle),
       }] },
     });
     await gate.flush();
 
     expect(persisted).toMatchObject([{
       phase: "result",
-      state: "cancelled",
-      failureKind: "cancelled_user",
-      detailCode: "abort_signal",
-    }]);
-  });
-
-  it("keeps a specific explicit provider error when a later host abort is also visible", async () => {
-    const abort = new AbortController();
-    abort.abort("late cancellation");
-    const persisted = [];
-    const gate = createToolLifecycleEventGate({
-      abortSignal: abort.signal,
-      sink: async (event) => {
-        persisted.push(event);
-        return { persistence: "persisted", recordId: "result-record", sequence: 2 };
-      },
-    });
-    gate.emit({
-      type: "user",
-      message: { content: [{
-        type: "tool_result",
-        tool_use_id: "call-error",
-        content: "provider failed first",
-        is_error: true,
-        tool_lifecycle: toolLifecycleMetadata({ state: "error", failure_kind: "provider_auth", detail_code: "provider_auth" }),
-      }] },
-    });
-    await gate.flush();
-
-    expect(persisted).toMatchObject([{
-      phase: "result",
-      state: "error",
-      failureKind: "provider_auth",
-      detailCode: "provider_auth",
+      ...expected,
     }]);
   });
 });

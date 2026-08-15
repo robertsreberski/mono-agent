@@ -79,6 +79,7 @@ function eventNeedsPersistence(event) {
  */
 export function classifyPiToolResult(input) {
   const outcome = input.result?.details?.outcome;
+  const outcomeFailureKind = failureKind(outcome?.failureKind);
   if (input.approval?.reason === "approval_timeout") {
     return terminal("timeout", "runtime_error", "approval_timeout");
   }
@@ -95,11 +96,11 @@ export function classifyPiToolResult(input) {
   if (Number.isFinite(exitCode) && exitCode !== 0) {
     return terminal("exit_nonzero", "runtime_error", `exit_${String(exitCode)}`);
   }
-  if (outcome?.code === "aborted" || input.aborted && input.isError) {
+  if (outcome?.code === "aborted" || input.aborted && input.isError && outcomeFailureKind === "runtime_error") {
     return terminal("cancelled", "cancelled", "abort_signal");
   }
   if (input.isError || outcome?.status === "error") {
-    return terminal("error", failureKind(outcome?.failureKind), boundedCode(outcome?.code || "runtime_error"));
+    return terminal("error", outcomeFailureKind, boundedCode(outcome?.code || "runtime_error"));
   }
   return terminal("success", undefined, undefined);
 }
@@ -170,7 +171,7 @@ function classifyGenericResult(block, timing, approval, abortSignal) {
   if (record(explicit) && terminalState(explicit.state) && explicit.state !== "error") {
     return explicit.state === "success"
       ? terminal("success", undefined, undefined)
-      : terminal(explicit.state, failureKind(explicit.failure_kind), boundedCode(explicit.detail_code || explicit.state));
+      : terminal(explicit.state, lifecycleFailureKind(explicit.state, explicit.failure_kind), boundedCode(explicit.detail_code || explicit.state));
   }
   if (timing?.timed_out === true) return terminal("timeout", "runtime_error", "tool_timeout");
   if (typeof timing?.signal === "string" && timing.signal.length > 0) return terminal("signal", "process_death", boundedCode(timing.signal));
@@ -286,6 +287,12 @@ function terminal(state, failureKindValue, detailCode) {
 /** @param {any} value */
 function failureKind(value) {
   return typeof value === "string" && FAILURE_KINDS.has(value) ? value : "runtime_error";
+}
+
+/** @param {string} state @param {any} value */
+function lifecycleFailureKind(state, value) {
+  if (typeof value === "string" && FAILURE_KINDS.has(value)) return value;
+  return state === "signal" || state === "interrupted" ? "process_death" : "runtime_error";
 }
 
 /** @param {AbortSignal} signal */

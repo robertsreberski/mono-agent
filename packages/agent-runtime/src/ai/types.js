@@ -116,6 +116,55 @@
  * provider_failover_started, context_compaction, ...) adds its own fields.
  */
 
+/** @typedef {"success"|"rejected"|"error"|"exit_nonzero"|"timeout"|"signal"|"cancelled"|"interrupted"} RuntimeToolLifecycleTerminalState */
+
+/**
+ * @typedef {Readonly<{
+ *   phase: "invocation",
+ *   toolCallId: string,
+ *   toolName: string,
+ *   arguments?: unknown,
+ * }>} RuntimeToolLifecycleInvocationEvent
+ * Provider-neutral invocation half sent to the host-owned lifecycle sink.
+ */
+
+/**
+ * @typedef {Readonly<{
+ *   phase: "result",
+ *   toolCallId: string,
+ *   toolName?: string,
+ *   content?: unknown,
+ *   state: RuntimeToolLifecycleTerminalState,
+ *   failureKind?: string,
+ *   detailCode?: string,
+ *   executionMs?: number,
+ *   artifacts?: ReadonlyArray<Readonly<{path: string, available?: boolean}>>,
+ * }>} RuntimeToolLifecycleResultEvent
+ * Provider-neutral terminal half sent to the host-owned lifecycle sink.
+ */
+
+/** @typedef {RuntimeToolLifecycleInvocationEvent | RuntimeToolLifecycleResultEvent} RuntimeToolLifecycleEvent */
+
+/**
+ * @typedef {Readonly<{
+ *   recordId?: string,
+ *   sequence?: number,
+ *   persistence: "persisted"|"failed",
+ *   truncated?: boolean,
+ *   originalBytes?: number,
+ *   retainedBytes?: number,
+ *   artifactReferences?: ReadonlyArray<Readonly<{id: string, available: boolean}>>,
+ *   errorCode?: string,
+ * }>} RuntimeToolLifecyclePersistence
+ * Bounded metadata returned after one lifecycle half becomes durable.
+ */
+
+/**
+ * @callback RuntimeToolLifecycleSink
+ * @param {RuntimeToolLifecycleEvent} event
+ * @returns {Promise<RuntimeToolLifecyclePersistence|undefined>}
+ */
+
 /** @typedef {"uniform"|"per-route-native"} RuntimeRouteSafetyMode */
 
 /**
@@ -212,7 +261,7 @@
  * @property {AsyncIterable<{body: string, id?: string, receivedAt?: string, acknowledge?: () => void, reject?: (error?: unknown) => void}>} [liveInput] Stream of in-flight user messages for steering an active run. Providers acknowledge only after accepting a message into the active turn.
  * @property {ReadonlyArray<*>} [observers]               Per-call observers (see RuntimeObserver) merged with host-level (createRuntime) observers.
  * @property {(event: RuntimeEvent) => void} [onEvent]
- * @property {(event: Object) => Promise<Object|undefined>} [toolLifecycleSink] Awaited host-owned incremental lifecycle persistence boundary.
+ * @property {RuntimeToolLifecycleSink} [toolLifecycleSink] Awaited host-owned incremental lifecycle persistence boundary.
  * @property {ReadonlyArray<Object>} [messages]
  * @property {string} [effort]
  * @property {boolean} [fastMode]
