@@ -66,7 +66,16 @@ export interface ProactiveNotifyInput {
  * succeeded), so the caller can report the outcome to the model.
  */
 export async function routeProactiveNotification(input: ProactiveNotifyInput): Promise<NotifyDeliveryResult> {
-  const channelId = processJobWebChannel(input) ?? channelIdForConversation(input.conversationId);
+  const webProcessJobChannel = processJobWebChannel(input);
+  if (input.processJob?.origin.channel === "web" && webProcessJobChannel === undefined) {
+    return {
+      delivered: false,
+      code: "process_job_origin_mismatch",
+      reason: "The process-job origin does not match the web destination.",
+      retryable: false,
+    };
+  }
+  const channelId = webProcessJobChannel ?? channelIdForConversation(input.conversationId);
   if (channelId === undefined) {
     input.logger?.warn?.("Proactive notification skipped: unrecognized destination.", {
       conversationId: input.conversationId,
@@ -121,7 +130,7 @@ export async function routeProactiveNotification(input: ProactiveNotifyInput): P
 function processJobWebChannel(input: ProactiveNotifyInput): ChannelId | undefined {
   const origin = input.processJob?.origin;
   return origin?.channel === "web"
-    && baseConversationId(origin.conversationId) === baseConversationId(input.conversationId)
+    && baseConversationId(origin.conversationId) === input.conversationId
     && input.conversationId.startsWith("web:")
     && input.conversationId !== "web:new"
     ? "tui"

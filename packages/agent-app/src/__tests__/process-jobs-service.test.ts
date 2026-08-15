@@ -21,6 +21,7 @@ import {
   type ProcessJobsServiceHandle,
 } from "../process-jobs-service.js";
 import {
+  isTerminalProcessJobState,
   openProcessJobStore,
   PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS,
   PROCESS_JOB_HEALTH_FILE,
@@ -1202,9 +1203,12 @@ describe("process job service", () => {
       },
     };
     const service = await startService(fixture, { store });
-    const snapshot = (service as unknown as {
+    const snapshotPort = service as unknown as {
       recordSnapshot: Map<string, DurableProcessJobRecord>;
-    }).recordSnapshot;
+      terminalSnapshotIds: Set<string>;
+      reconcileRecords(records: readonly DurableProcessJobRecord[]): void;
+    };
+    const snapshot = snapshotPort.recordSnapshot;
     const recordCeiling = PROCESS_JOBS_CAPS.retention.maxRecords
       + PROCESS_JOBS_CAPS.maxQueued
       + PROCESS_JOBS_CAPS.maxConcurrent;
@@ -1228,7 +1232,7 @@ describe("process job service", () => {
       runtimeDeadlineAt: null,
     });
     delete active.processIncarnation;
-    for (const record of [...terminalRecords, active]) snapshot.set(record.jobId, record);
+    snapshotPort.reconcileRecords([...terminalRecords, active]);
     const unaffectedTerminal = snapshot.get(terminalRecords.at(-1)!.jobId)!;
     const unaffectedActive = snapshot.get(active.jobId)!;
 
@@ -1250,6 +1254,11 @@ describe("process job service", () => {
     const snapshotValues = [...snapshot.values()];
     expect(snapshotValues.filter((record) => record.state === "queued")).toHaveLength(1);
     expect(snapshotValues.filter((record) => record.state === "succeeded")).toHaveLength(recordCeiling - 1);
+    expect(new Set(snapshotPort.terminalSnapshotIds)).toEqual(new Set(
+      snapshotValues
+        .filter((record) => isTerminalProcessJobState(record.state))
+        .map((record) => record.jobId),
+    ));
   });
 
   it("does not grow a capped active-preserving snapshot for an uncached single read", async () => {
@@ -1333,6 +1342,136 @@ describe("process job service", () => {
     expect(terminal.every((record, index) =>
       index === 0 || terminal[index - 1]!.timestamps.admittedAt >= record.timestamps.admittedAt)).toBe(true);
   });
+
+  it("fails closed without changing a full snapshot when no terminal eviction candidate exists", async () => {
+    const fixture = await createFixture();
+    const warn = vi.fn();
+    const service = await startService(fixture, { logger: { warn } });
+    const snapshotPort = service as unknown as {
+      recordSnapshot: Map<string, DurableProcessJobRecord>;
+      terminalSnapshotIds: Set<string>;
+      reconcileRecords(records: readonly DurableProcessJobRecord[]): void;
+      reconcileRecord(jobId: string, record: DurableProcessJobRecord): void;
+    };
+    const recordCeiling = PROCESS_JOBS_CAPS.retention.maxRecords
+      + PROCESS_JOBS_CAPS.maxQueued
+      + PROCESS_JOBS_CAPS.maxConcurrent;
+    const activeRecords = Array.from({ length: recordCeiling }, (_, index) => durableRecord(
+      processJobScaleId(index),
+      { state: "running" },
+    ));
+    snapshotPort.reconcileRecords(activeRecords);
+    const snapshotIds = [...snapshotPort.recordSnapshot.keys()];
+    const incoming = durableRecord("edededed-eded-4ded-8ded-edededededed", { state: "running" });
+
+    expect(() => snapshotPort.reconcileRecord(incoming.jobId, incoming))
+      .toThrow(expect.objectContaining({ code: "process_job_store_error" }));
+    expect([...snapshotPort.recordSnapshot.keys()]).toEqual(snapshotIds);
+    expect(snapshotPort.recordSnapshot.has(incoming.jobId)).toBe(false);
+    expect(snapshotPort.terminalSnapshotIds).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("without a terminal eviction candidate"),
+      expect.objectContaining({ jobId: incoming.jobId, snapshotRecords: recordCeiling }),
+    );
+  });
+
+  it("keeps a newly admitted live job visible at the saturated fallback boundary after completion storage fails", async () => {
+    const fixture = await createFixture();
+    const recordCeiling = PROCESS_JOBS_CAPS.retention.maxRecords
+      + PROCESS_JOBS_CAPS.maxQueued
+      + PROCESS_JOBS_CAPS.maxConcurrent;
+    await seedRetainedProcessJobStore(fixture, recordCeiling, { pendingWakes: true });
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    let failNextMutation = false;
+    let poisonReads = false;
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async get(jobId) {
+        if (poisonReads) throw new Error("poisoned saturation get");
+        return await baseStore.get(jobId);
+      },
+      async list() {
+        if (poisonReads) throw new Error("poisoned saturation list");
+        return await baseStore.list();
+      },
+      async mutate(operation) {
+        return await baseStore.mutate(async (draft) => {
+          const result = await operation(draft);
+          if (failNextMutation) {
+            failNextMutation = false;
+            poisonReads = true;
+            throw new Error("simulated complete.persist failure at saturation");
+          }
+          return result;
+        });
+      },
+    };
+    const completion = deferred<ProcessJobProcessResult>();
+    const surfaceUpdate = vi.fn(async (_projection: ProcessJobProjection) => undefined);
+    const healthChanges: ProcessJobsHealth[] = [];
+    const service = await startService(fixture, {
+      store,
+      randomId: () => "abababab-abab-4bab-8bab-abababababab",
+      surfaceUpdate,
+      onHealthChange: (health) => { healthChanges.push(health); },
+    });
+    expect(await baseStore.list()).toHaveLength(recordCeiling);
+
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    try {
+      const snapshotPort = service as unknown as {
+        recordSnapshot: Map<string, DurableProcessJobRecord>;
+        terminalSnapshotIds: Set<string>;
+      };
+      expect(snapshotPort.recordSnapshot).toHaveLength(recordCeiling);
+      expect(snapshotPort.recordSnapshot.get(started.jobId)).toMatchObject({ state: "running" });
+      expect(snapshotPort.recordSnapshot.has(processJobScaleId(0))).toBe(false);
+      expect(snapshotPort.terminalSnapshotIds).toHaveLength(recordCeiling - 1);
+      expect(new Set(snapshotPort.terminalSnapshotIds)).toEqual(new Set(
+        [...snapshotPort.recordSnapshot.values()]
+          .filter((record) => isTerminalProcessJobState(record.state))
+          .map((record) => record.jobId),
+      ));
+
+      failNextMutation = true;
+      completion.resolve(processResult({ stdout: "saturated completion\n" }));
+      await waitFor(() => surfaceUpdate.mock.calls.some(([projection]) =>
+        projection.jobId === started.jobId
+        && projection.state === "failed"
+        && projection.lastError?.code === "process_job_store_error"));
+
+      expect(healthChanges).toContainEqual(expect.objectContaining({
+        state: "degraded",
+        failureOperation: "complete.persist",
+      }));
+      expect(await baseStore.get(started.jobId)).toMatchObject({ state: "running" });
+      await expect(service.get(started.jobId)).resolves.toMatchObject({
+        jobId: started.jobId,
+        state: "failed",
+        lastError: { code: "process_job_store_error" },
+        output: { preview: expect.stringContaining("saturated completion") },
+      });
+      const degraded = await service.list();
+      expect(degraded).toHaveLength(recordCeiling);
+      expect(degraded.find((record) => record.jobId === started.jobId)).toMatchObject({
+        state: "failed",
+        lastError: { code: "process_job_store_error" },
+      });
+      expect(surfaceUpdate.mock.calls.some(([projection]) =>
+        projection.jobId === started.jobId && projection.state === "failed")).toBe(true);
+      expect(snapshotPort.recordSnapshot).toHaveLength(recordCeiling);
+      expect(snapshotPort.terminalSnapshotIds).toHaveLength(recordCeiling - 1);
+      expect(new Set(snapshotPort.terminalSnapshotIds)).toEqual(new Set(
+        [...snapshotPort.recordSnapshot.values()]
+          .filter((record) => isTerminalProcessJobState(record.state))
+          .map((record) => record.jobId),
+      ));
+    } finally {
+      completion.resolve(processResult());
+      await service.stop();
+      await rm(fixture.cwd, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it.each([1_000, 10_000])(
     "keeps production service mutation work proportional with %i retained records",
@@ -1444,6 +1583,7 @@ describe("process job service", () => {
         mutate: (draft: Map<string, DurableProcessJobRecord>) => T | Promise<T>,
       ): Promise<T>;
       recordSnapshot: Map<string, DurableProcessJobRecord>;
+      terminalSnapshotIds: Set<string>;
       completionOverlays: Map<string, ProcessJobProjection>;
     };
 
@@ -1460,9 +1600,31 @@ describe("process job service", () => {
     await mutationPort.storeMutate("test.delete", (draft) => draft.delete(deletedId));
     expect(await baseStore.get(deletedId)).toBeUndefined();
     expect(mutationPort.recordSnapshot.has(deletedId)).toBe(false);
+    expect(mutationPort.terminalSnapshotIds.has(deletedId)).toBe(false);
+
+    const failedAdmissionId = "99999999-9999-4999-8999-999999999999";
+    const snapshotIdsBeforeFailedAdmission = [...mutationPort.recordSnapshot.keys()];
+    const terminalIdsBeforeFailedAdmission = [...mutationPort.terminalSnapshotIds];
+    failStoreCommit = true;
+    await expect(mutationPort.storeMutate("test.failed_admission", (draft) => {
+      const queued = durableRecord(failedAdmissionId, {
+        state: "queued",
+        pid: null,
+        pgid: null,
+        startedAt: null,
+        runtimeDeadlineAt: null,
+        stdoutRef: null,
+        stderrRef: null,
+      });
+      delete queued.processIncarnation;
+      draft.set(failedAdmissionId, queued);
+    })).rejects.toThrow("simulated store commit failure");
+    expect(await baseStore.get(failedAdmissionId)).toBeUndefined();
+    expect([...mutationPort.recordSnapshot.keys()]).toEqual(snapshotIdsBeforeFailedAdmission);
+    expect([...mutationPort.terminalSnapshotIds]).toEqual(terminalIdsBeforeFailedAdmission);
+    expect(mutationPort.completionOverlays.has(failedAdmissionId)).toBe(false);
 
     const overlayId = records[2]!.jobId;
-    failStoreCommit = true;
     await expect(mutationPort.storeMutate("test.failed_commit", (draft) => {
       draft.get(overlayId)!.preview = "touched terminal overlay";
     })).rejects.toThrow("simulated store commit failure");
@@ -2235,6 +2397,7 @@ async function createFixture(overrides: Partial<ProcessJobsSettings> = {}): Prom
 async function seedRetainedProcessJobStore(
   fixture: { readonly cwd: string; readonly settings: ProcessJobsSettings },
   count: number,
+  options: { readonly pendingWakes?: boolean } = {},
 ): Promise<void> {
   const initialized = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
   const records = Array.from({ length: count }, (_, index) => {
@@ -2248,13 +2411,22 @@ async function seedRetainedProcessJobStore(
       durationMs: 1,
       stdoutRef: null,
       stderrRef: null,
-      wake: {
-        state: "delivered",
-        attempts: 1,
-        deliveryKey: `process-job:${jobId}`,
-        lastAttemptAt: new Date(Date.parse(admittedAt) + 2).toISOString(),
-        destinationUnavailableAttempts: 0,
-      },
+      wake: options.pendingWakes === true
+        ? {
+            state: "pending",
+            attempts: 0,
+            deliveryKey: `process-job:${jobId}`,
+            lastAttemptAt: null,
+            retrySafe: false,
+            destinationUnavailableAttempts: 0,
+          }
+        : {
+            state: "delivered",
+            attempts: 1,
+            deliveryKey: `process-job:${jobId}`,
+            lastAttemptAt: new Date(Date.parse(admittedAt) + 2).toISOString(),
+            destinationUnavailableAttempts: 0,
+          },
     });
   });
   const batchSize = 256;

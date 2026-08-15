@@ -256,6 +256,15 @@ export function createTuiChannelDriver(
               retryable: false,
             };
           }
+          if (processJob.origin.channel !== "web"
+            || conversationId !== baseConversationId(processJob.origin.conversationId)) {
+            return {
+              delivered: false,
+              code: "process_job_origin_mismatch",
+              reason: "The process-job origin does not match the web destination.",
+              retryable: false,
+            };
+          }
           const controller = new AbortController();
           try {
             const response = await input.responder.respond({
@@ -300,10 +309,14 @@ export function createTuiChannelDriver(
 }
 
 function webThreadId(conversationId: string): string | undefined {
-  const base = conversationId.split("#", 1)[0];
+  const base = baseConversationId(conversationId);
   if (base === undefined || !base.startsWith("web:") || base === "web:new") return undefined;
   const threadId = base.slice("web:".length).trim();
   return threadId.length === 0 ? undefined : threadId;
+}
+
+function baseConversationId(conversationId: string): string {
+  return conversationId.split("#", 1)[0] ?? conversationId;
 }
 
 function boundedProcessJobResponse(value: string): string {

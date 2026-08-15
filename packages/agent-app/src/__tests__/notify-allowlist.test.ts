@@ -137,7 +137,7 @@ describe("telegram proactive notify allowlist", () => {
         };
       },
     };
-    const processJob = projection("telegram:42", "telegram");
+    const processJob = projection("telegram:42#bucket", "telegram");
     const running = await createTelegramChannelDriver({
       startAdapter: async () => startResult as never,
     }).start(startInput(config({})));
@@ -146,6 +146,13 @@ describe("telegram proactive notify allowlist", () => {
       .resolves.toMatchObject({ delivered: true, code: "surface_updated" });
     expect(lifecycleCalls).toEqual([[42, processJob, undefined]]);
     expect(notify).not.toHaveBeenCalled();
+
+    await expect(running.notify!({
+      conversationId: "telegram:42#wrong-bucket",
+      text: "",
+      processJob,
+    })).resolves.toMatchObject({ delivered: false, code: "process_job_origin_mismatch" });
+    expect(lifecycleCalls).toHaveLength(1);
   });
 
   it("fails empty lifecycle updates closed on an unsupported adapter without invoking notify", async () => {
@@ -341,6 +348,13 @@ describe("slack proactive notify allowlist", () => {
 
     await expect(running.notify!({
       conversationId: "slack:C1:other",
+      text: "",
+      processJob,
+    })).resolves.toMatchObject({ delivered: false, code: "process_job_origin_mismatch" });
+    expect(updateProcessJob).toHaveBeenCalledOnce();
+
+    await expect(running.notify!({
+      conversationId: "slack:C1:171.5#wrong-bucket",
       text: "",
       processJob,
     })).resolves.toMatchObject({ delivered: false, code: "process_job_origin_mismatch" });

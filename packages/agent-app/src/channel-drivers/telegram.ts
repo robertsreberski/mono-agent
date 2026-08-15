@@ -86,6 +86,16 @@ export function createTelegramChannelDriver(
         stop: () => result.stop(),
         notify: async (request) => {
           const { conversationId, text, verbatim, deliveryKey, processJob } = request;
+          if (processJob !== undefined
+            && (processJob.origin.channel !== "telegram"
+              || conversationId !== baseConversationId(processJob.origin.conversationId))) {
+            return {
+              delivered: false,
+              code: "process_job_origin_mismatch",
+              reason: "The process-job origin does not match the Telegram destination.",
+              retryable: false,
+            };
+          }
           const chatId = telegramChatIdFromConversation(conversationId);
           if (chatId === undefined) {
             input.logger?.warn?.("Telegram proactive notify skipped: unparseable destination.", { conversationId });
@@ -98,15 +108,6 @@ export function createTelegramChannelDriver(
           const silent = input.config.quietHours !== undefined
             && adapter.isWithinQuietHours(new Date(), input.config.quietHours);
           if (processJob !== undefined) {
-            if (processJob.origin.channel !== "telegram"
-              || baseConversationId(processJob.origin.conversationId) !== baseConversationId(conversationId)) {
-              return {
-                delivered: false,
-                code: "process_job_origin_mismatch",
-                reason: "The process-job origin does not match the Telegram destination.",
-                retryable: false,
-              };
-            }
             const updater = result.updateProcessJob;
             if (typeof updater !== "function") {
               return {

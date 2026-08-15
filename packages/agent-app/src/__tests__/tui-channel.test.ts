@@ -393,6 +393,14 @@ describe("tui channel driver — process jobs", () => {
       text: "Job finished safely.",
     });
 
+    await expect(running.notify?.({
+      conversationId: "web:thread-1#wrong-bucket",
+      text: "wrong bucket",
+      deliveryKey: PROCESS_JOB.wake.deliveryKey,
+      processJob: PROCESS_JOB,
+    })).resolves.toMatchObject({ delivered: false, code: "process_job_origin_mismatch" });
+    expect(respond).toHaveBeenCalledOnce();
+
     respond.mockResolvedValueOnce({ text: "x".repeat(8_100) });
     await expect(running.notify?.({
       conversationId: "web:thread-1",
@@ -419,7 +427,13 @@ const PROCESS_JOB: ProcessJobProjection = {
   tool: "Exec",
   state: "succeeded",
   summary: "worker",
-  origin: { conversationId: "web:thread-1", channel: "web", runId: "run-1", historyBoundary: "web:thread-1", bucket: null },
+  origin: {
+    conversationId: "web:thread-1#2026-07-21",
+    channel: "web",
+    runId: "run-1",
+    historyBoundary: "web:thread-1",
+    bucket: "2026-07-21",
+  },
   timestamps: {
     admittedAt: "2026-07-21T09:00:00.000Z",
     queueDeadlineAt: "2026-07-21T09:05:00.000Z",

@@ -191,6 +191,16 @@ export function createSlackChannelDriver(
         stop: () => result.stop(),
         notify: async (request) => {
           const { conversationId, text, verbatim, deliveryKey, processJob } = request;
+          if (processJob !== undefined
+            && (processJob.origin.channel !== "slack"
+              || conversationId !== baseConversationId(processJob.origin.conversationId))) {
+            return {
+              delivered: false,
+              code: "process_job_origin_mismatch",
+              reason: "The process-job origin does not match the Slack destination.",
+              retryable: false,
+            };
+          }
           const target = slackTargetFromConversation(conversationId);
           if (target === undefined) {
             input.logger?.warn?.("Slack proactive notify skipped: unparseable destination.", { conversationId });
@@ -204,15 +214,6 @@ export function createSlackChannelDriver(
             return { delivered: false, reason: "slack channel is not in the adapter allowlist" };
           }
           if (processJob !== undefined) {
-            if (processJob.origin.channel !== "slack"
-              || baseConversationId(processJob.origin.conversationId) !== baseConversationId(conversationId)) {
-              return {
-                delivered: false,
-                code: "process_job_origin_mismatch",
-                reason: "The process-job origin does not match the Slack destination.",
-                retryable: false,
-              };
-            }
             const updater = (result.adapter as unknown as {
               updateProcessJob?: (
                 channelId: string,

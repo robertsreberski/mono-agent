@@ -221,6 +221,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private readonly active = new Map<string, ActiveProcessJob>();
   private readonly completionOverlays = new Map<string, ProcessJobProjection>();
   private readonly recordSnapshot = new Map<string, DurableProcessJobRecord>();
+  /** Cached terminal IDs in oldest-first eviction order. Membership mirrors recordSnapshot exactly. */
+  private readonly terminalSnapshotIds = new Set<string>();
   private readonly settlements = new Map<string, Promise<void>>();
   private readonly wakeTasks = new Map<string, Promise<void>>();
   private readonly wakeRearmTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -490,11 +492,13 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       const result = await this.withLock(async () => {
         this.assertAvailable(origin, chainDepth, request);
         const jobId = this.randomId();
+        const admissionRecords = await this.storeList("admission.list");
         enforceAdmission(
-          new Map((await this.storeList("admission.list")).map((record) => [record.jobId, record])),
+          new Map(admissionRecords.map((record) => [record.jobId, record])),
           origin.normalizedReplyTarget,
           this.settings,
         );
+        this.assertLiveSnapshotAdmissionCapacity();
         const artifacts = await this.storeEnsureArtifacts(jobId);
         const admittedAt = this.now();
         const maxRuntimeMs = Math.min(this.settings.maxRuntimeMs, request.timeoutMs ?? this.settings.maxRuntimeMs);
@@ -1468,9 +1472,16 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private reconcileRecords(records: readonly DurableProcessJobRecord[]): void {
     const bounded = boundedNewestRecords(records);
     this.recordSnapshot.clear();
+    this.terminalSnapshotIds.clear();
     // ProcessJobStore.list() already returns caller-owned clones. Keep those
     // isolated objects directly instead of cloning the bounded readback again.
     for (const record of bounded) this.recordSnapshot.set(record.jobId, record);
+    // boundedNewestRecords is newest-first. Reverse only this bounded rebuild
+    // so the Set's O(1) first entry is the oldest cached terminal victim.
+    for (let index = bounded.length - 1; index >= 0; index -= 1) {
+      const record = bounded[index]!;
+      if (isTerminalProcessJobState(record.state)) this.terminalSnapshotIds.add(record.jobId);
+    }
     const durableIds = new Set(records.map((record) => record.jobId));
     for (const jobId of this.completionOverlays.keys()) {
       if (!durableIds.has(jobId)) this.completionOverlays.delete(jobId);
@@ -1481,17 +1492,44 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private reconcileRecord(jobId: string, record: DurableProcessJobRecord | undefined): void {
     if (record === undefined) {
       this.recordSnapshot.delete(jobId);
+      this.terminalSnapshotIds.delete(jobId);
       this.completionOverlays.delete(jobId);
       return;
     }
     const ownedRecord = structuredClone(record);
-    // Normal admissions fit inside the compiled retention + queued + active
-    // headroom. A custom/oversized store read at the hard ceiling is returned
-    // to its caller but not cached, preserving the cap without an O(N) rebuild.
-    if (this.recordSnapshot.has(jobId) || this.recordSnapshot.size < MAX_IN_MEMORY_RECORDS) {
-      this.recordSnapshot.set(jobId, ownedRecord);
+    const cached = this.recordSnapshot.has(jobId);
+    if (!cached && this.recordSnapshot.size >= MAX_IN_MEMORY_RECORDS) {
+      // An uncached terminal read cannot displace the bounded fallback view.
+      if (isTerminalProcessJobState(ownedRecord.state)) {
+        this.pruneConsistentOverlay(ownedRecord);
+        return;
+      }
+      const terminalVictim = this.terminalSnapshotIds.values().next().value;
+      if (terminalVictim === undefined) throw this.snapshotCapacityError(jobId);
+      this.recordSnapshot.delete(terminalVictim);
+      this.terminalSnapshotIds.delete(terminalVictim);
+      this.completionOverlays.delete(terminalVictim);
     }
+    this.recordSnapshot.set(jobId, ownedRecord);
+    if (isTerminalProcessJobState(ownedRecord.state)) this.terminalSnapshotIds.add(jobId);
+    else this.terminalSnapshotIds.delete(jobId);
     this.pruneConsistentOverlay(ownedRecord);
+  }
+
+  private assertLiveSnapshotAdmissionCapacity(): void {
+    if (this.recordSnapshot.size < MAX_IN_MEMORY_RECORDS || this.terminalSnapshotIds.size > 0) return;
+    throw this.snapshotCapacityError("admission");
+  }
+
+  private snapshotCapacityError(jobId: string): ProcessJobServiceError {
+    this.options.logger?.warn?.(
+      "Process-job fallback snapshot reached its hard ceiling without a terminal eviction candidate.",
+      { jobId, snapshotRecords: this.recordSnapshot.size },
+    );
+    return new ProcessJobServiceError(
+      "process_job_store_error",
+      "Process-job fallback snapshot cannot admit live work without exceeding its hard ceiling.",
+    );
   }
 
   private reconcileMutation(snapshot: ProcessJobMutationSnapshot): void {

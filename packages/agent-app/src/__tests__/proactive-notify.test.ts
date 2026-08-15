@@ -79,7 +79,7 @@ describe("routeProactiveNotification", () => {
     expect(warn).toHaveBeenCalledOnce();
   });
 
-  it("rejects ordinary and cross-thread web notifications while exact ProcessJob wakes use TUI", async () => {
+  it("rejects ordinary and inexact web notifications while canonical ProcessJob wakes use TUI", async () => {
     const notify = vi.fn(async () => ({ delivered: true }));
     const ordinary = await routeProactiveNotification({
       conversationId: "web:thread-1",
@@ -110,6 +110,19 @@ describe("routeProactiveNotification", () => {
       running: running({ tui: { notify } }),
     });
     expect(mismatched.delivered).toBe(false);
+    expect(notify).toHaveBeenCalledOnce();
+
+    const wrongBucket = await routeProactiveNotification({
+      conversationId: "web:thread-1#wrong-bucket",
+      text: "wrong bucket",
+      processJob,
+      running: running({ tui: { notify } }),
+    });
+    expect(wrongBucket).toMatchObject({
+      delivered: false,
+      code: "process_job_origin_mismatch",
+      retryable: false,
+    });
     expect(notify).toHaveBeenCalledOnce();
   });
 
