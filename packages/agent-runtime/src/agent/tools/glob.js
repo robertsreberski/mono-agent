@@ -14,8 +14,11 @@ import {
   workspaceRoot,
 } from "./shared/path-resolver.js";
 import {
-  protectedFilesystemActive,
+  normalizeProtectedSearchLine,
+  protectedDirectorySearchTarget,
+  protectedFilesystemTargetPlan,
   runProtectedFilesystemCommand,
+  scopeProtectedSearchGlob,
 } from "./shared/protected-filesystem.js";
 import {
   capLines,
@@ -36,43 +39,57 @@ const execFileAsync = promisify(execFile);
 export async function globToolImpl({ pattern, path, limit, offset = 0, max_matches, max_output_chars, workdir }, { sandboxPolicy, ctx } = {}) {
   const cwd = resolveToolPath(path || workspaceRoot(workdir, ctx), workdir, ctx);
   if (!isPathAllowed(cwd, workdir, { sandboxPolicy, ctx })) return `Error: Path not allowed: ${cwd}`;
-  const stat = safeStat(cwd);
-  if (!stat?.isDirectory()) return `Error: Glob path is not a directory: ${cwd}`;
+  const protectedSearch = protectedFilesystemTargetPlan(cwd, { sandboxPolicy, ctx });
+  const protectedExecution = protectedSearch !== null;
+  if (!protectedExecution) {
+    const stat = safeStat(cwd);
+    if (!stat?.isDirectory()) return `Error: Glob path is not a directory: ${cwd}`;
+  }
   const resultLimit = boundedInt(limit ?? max_matches, DEFAULT_MAX_SEARCH_LINES, { min: 1, max: 1000 });
+  const normalizedPattern = normalizeGlobPattern(pattern);
   const args = [
     "--files",
     "--hidden",
     "--color=never",
     "--glob",
-    normalizeGlobPattern(pattern),
+    protectedExecution
+      ? scopeProtectedSearchGlob(normalizedPattern, protectedSearch.searchTarget)
+      : normalizedPattern,
     ...excludedGlobArgs(),
   ];
-  const protectedPaths = protectedRelativePaths(cwd, { sandboxPolicy, ctx });
-  const protectedExecution = protectedFilesystemActive({ sandboxPolicy, ctx });
+  const searchCwd = protectedSearch?.cwd ?? cwd;
+  const protectedPaths = protectedRelativePaths(searchCwd, { sandboxPolicy, ctx });
   for (const protectedPath of protectedPaths) {
     args.push("--glob", `!${protectedPath}`, "--glob", `!${protectedPath}/**`);
   }
+  if (protectedExecution) args.push("--", protectedDirectorySearchTarget(protectedSearch.searchTarget));
   const rgPath = resolveRgPath({ ctx });
   if (!rgPath) return ripgrepMissingMessage(ctx);
   try {
-    const protectedResult = await runProtectedFilesystemCommand({
-      command: rgPath,
-      args,
-      cwd,
-    }, { sandboxPolicy, ctx, maxBufferBytes: SEARCH_MAX_BUFFER });
     let stdout;
-    if (protectedResult === null) {
+    if (!protectedExecution) {
       ({ stdout } = await execFileAsync(rgPath, args, { cwd, timeout: 15000, maxBuffer: SEARCH_MAX_BUFFER }));
-    } else if (protectedResult.code === 1) {
-      return "No files found matching pattern.";
-    } else if (protectedResult.code !== 0 || protectedResult.bufferExceeded || protectedResult.timedOut) {
-      return "Error: Protected filesystem search was denied.";
     } else {
+      const protectedResult = await runProtectedFilesystemCommand({
+        command: rgPath,
+        args,
+        cwd: searchCwd,
+      }, { sandboxPolicy, ctx, maxBufferBytes: SEARCH_MAX_BUFFER });
+      if (protectedResult?.code === 1) return "No files found matching pattern.";
+      if (protectedResult === null
+        || protectedResult.code !== 0
+        || protectedResult.bufferExceeded
+        || protectedResult.timedOut) {
+        return "Error: Protected filesystem search was denied.";
+      }
       stdout = protectedResult.stdout;
     }
     const lines = stdout.trim().split("\n")
       .filter(Boolean)
       .filter((line) => !protectedPaths.some((path) => line === path || line.startsWith(`${path}/`)))
+      .map((line) => protectedExecution
+        ? normalizeProtectedSearchLine(line, protectedSearch.searchTarget)
+        : line)
       .sort((a, b) => {
       // Do not follow a model-controlled output symlink on the host merely to
       // rank results: with protected roots active, the actual search already

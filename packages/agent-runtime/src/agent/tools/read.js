@@ -12,6 +12,7 @@ import { capChars } from "./shared/output-truncation.js";
 import { isPathAllowed, resolveToolPath } from "./shared/path-resolver.js";
 import {
   protectedCommandSucceeded,
+  protectedFilesystemTargetPlan,
   runProtectedFilesystemCommand,
 } from "./shared/protected-filesystem.js";
 
@@ -114,15 +115,17 @@ async function readImageForModel(source, filePath, imageMime) {
 export async function readToolImpl({ file_path, offset = 0, start_line, limit, max_output_chars, workdir }, { sandboxPolicy, ctx } = {}) {
   const target = resolveToolPath(file_path, workdir, ctx);
   if (!isPathAllowed(target, workdir, { sandboxPolicy, ctx })) return `Error: Path not allowed: ${file_path}`;
-  if (!existsSync(target)) return `Error: File not found: ${file_path}`;
+  const protectedTarget = protectedFilesystemTargetPlan(target, { sandboxPolicy, ctx });
+  const protectedExecution = protectedTarget !== null;
+  if (!protectedExecution && !existsSync(target)) return `Error: File not found: ${file_path}`;
   let source;
   try {
-    const protectedResult = await runProtectedFilesystemCommand({
-      command: process.execPath,
-      args: ["--input-type=commonjs", "--eval", PROTECTED_READ_SOURCE, target],
-      cwd: workdir,
-    }, { sandboxPolicy, ctx, maxBufferBytes: PROTECTED_READ_MAX_BUFFER_BYTES });
-    if (protectedResult !== null) {
+    if (protectedExecution) {
+      const protectedResult = await runProtectedFilesystemCommand({
+        command: process.execPath,
+        args: ["--input-type=commonjs", "--eval", PROTECTED_READ_SOURCE, target],
+        cwd: protectedTarget.cwd,
+      }, { sandboxPolicy, ctx, maxBufferBytes: PROTECTED_READ_MAX_BUFFER_BYTES });
       if (!protectedCommandSucceeded(protectedResult)) {
         return "Error: Protected filesystem read was denied.";
       }

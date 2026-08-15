@@ -14,8 +14,10 @@ import {
   workspaceRoot,
 } from "./shared/path-resolver.js";
 import {
-  protectedFilesystemActive,
+  normalizeProtectedSearchLine,
+  protectedFilesystemTargetPlan,
   runProtectedFilesystemCommand,
+  scopeProtectedSearchGlob,
 } from "./shared/protected-filesystem.js";
 import {
   capLines,
@@ -48,10 +50,18 @@ export async function grepToolImpl({
 }, { sandboxPolicy, ctx } = {}) {
   const target = resolveToolPath(path || workspaceRoot(workdir, ctx), workdir, ctx);
   if (!isPathAllowed(target, workdir, { sandboxPolicy, ctx })) return `Error: Path not allowed: ${target}`;
-  const stat = safeStat(target);
-  if (!stat) return `Error: Path not found: ${target}`;
-  const cwd = stat.isDirectory() ? target : dirname(target);
-  const searchTarget = stat.isDirectory() ? "." : basename(target);
+  const protectedSearch = protectedFilesystemTargetPlan(target, { sandboxPolicy, ctx });
+  const protectedExecution = protectedSearch !== null;
+  let cwd;
+  let searchTarget;
+  if (protectedExecution) {
+    ({ cwd, searchTarget } = protectedSearch);
+  } else {
+    const stat = safeStat(target);
+    if (!stat) return `Error: Path not found: ${target}`;
+    cwd = stat.isDirectory() ? target : dirname(target);
+    searchTarget = stat.isDirectory() ? "." : basename(target);
+  }
   const mode = ["content", "count", "files_with_matches"].includes(output_mode) ? output_mode : "files_with_matches";
   const args = ["--no-config", "--hidden", "--color=never"];
   if (mode === "files_with_matches") args.push("--files-with-matches");
@@ -60,11 +70,13 @@ export async function grepToolImpl({
   if (case_insensitive) args.push("-i");
   if (mode === "content" && context) args.push(`-C${boundedInt(context, 0, { min: 0, max: 20 })}`);
   if (multiline) args.push("-U", "--multiline-dotall");
-  if (glob) args.push("--glob", glob);
+  if (glob) args.push(
+    "--glob",
+    protectedExecution ? scopeProtectedSearchGlob(glob, searchTarget) : glob,
+  );
   if (type) args.push("--type", type);
   args.push(...excludedGlobArgs());
   const protectedPaths = protectedRelativePaths(cwd, { sandboxPolicy, ctx });
-  const protectedExecution = protectedFilesystemActive({ sandboxPolicy, ctx });
   for (const protectedPath of protectedPaths) {
     args.push("--glob", `!${protectedPath}`, "--glob", `!${protectedPath}/**`);
   }
@@ -73,27 +85,32 @@ export async function grepToolImpl({
   const rgPath = resolveRgPath({ ctx });
   if (!rgPath) return ripgrepMissingMessage(ctx);
   try {
-    const protectedResult = await runProtectedFilesystemCommand({
-      command: rgPath,
-      args,
-      cwd,
-    }, { sandboxPolicy, ctx, maxBufferBytes: SEARCH_MAX_BUFFER });
     let stdout;
-    if (protectedResult === null) {
+    if (!protectedExecution) {
       ({ stdout } = await execFileAsync(rgPath, args, { cwd, timeout: 15000, maxBuffer: SEARCH_MAX_BUFFER }));
-    } else if (protectedResult.code === 1) {
-      return "No matches found.";
-    } else if (protectedResult.code !== 0 || protectedResult.bufferExceeded || protectedResult.timedOut) {
-      return "Error: Protected filesystem search was denied.";
     } else {
+      const protectedResult = await runProtectedFilesystemCommand({
+        command: rgPath,
+        args,
+        cwd,
+      }, { sandboxPolicy, ctx, maxBufferBytes: SEARCH_MAX_BUFFER });
+      if (protectedResult?.code === 1) return "No matches found.";
+      if (protectedResult === null
+        || protectedResult.code !== 0
+        || protectedResult.bufferExceeded
+        || protectedResult.timedOut) {
+        return "Error: Protected filesystem search was denied.";
+      }
       stdout = protectedResult.stdout;
     }
     const normalized = stdout.trim().split("\n")
       .filter(Boolean)
-      .map((line) => line.replace(/^\.\//, ""))
       .filter((line) => !protectedPaths.some((path) => (
         line === path || line.startsWith(`${path}/`) || line.startsWith(`${path}:`)
-      )));
+      )))
+      .map((line) => protectedExecution
+        ? normalizeProtectedSearchLine(line, searchTarget)
+        : line.replace(/^\.\//, ""));
     const formatted = capLines(normalized.join("\n"), {
       label: "Grep",
       noMatches: "No matches found.",
