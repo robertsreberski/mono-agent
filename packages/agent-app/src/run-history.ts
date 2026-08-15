@@ -8,6 +8,7 @@ import {
   listRecordedRuns,
   readRecordedRun,
   redactJsonValue,
+  sanitizeVisibleObjectEntries as sanitizeSharedVisibleObjectEntries,
   sanitizeVisibleText as sanitizeSharedVisibleText,
   truncateVisibleText,
   type RecordedRunEvent,
@@ -1283,17 +1284,17 @@ function sanitizeProjectedValue(value: unknown, artifactDir: string): unknown {
   ) {
     return "[private context omitted]";
   }
-  const out: Record<string, unknown> = {};
+  const entries: Array<readonly [string, unknown]> = [];
   for (const [key, nested] of Object.entries(value)) {
     const normalizedKey = key.replace(/[^a-z0-9]/giu, "").toLocaleLowerCase("en-US");
     if (FORBIDDEN_PROJECTED_KEYS.has(normalizedKey)) continue;
     if (isCredentialKey(key)) {
-      out[key] = "[redacted]";
+      entries.push([key, "[redacted]"]);
       continue;
     }
-    out[key] = sanitizeProjectedValue(nested, artifactDir);
+    entries.push([key, sanitizeProjectedValue(nested, artifactDir)]);
   }
-  return out;
+  return sanitizeSharedVisibleObjectEntries(entries, visibleTextSanitizationOptions(artifactDir));
 }
 
 function normalizeToolResultContent(content: unknown, artifactDir: string): unknown {
@@ -1392,13 +1393,20 @@ function sanitizeVisibleText(
   artifactDir: string,
   maxBytes = MAX_PROJECTED_STRING_BYTES,
 ): string {
-  return sanitizeSharedVisibleText(text, {
+  return sanitizeSharedVisibleText(text, visibleTextSanitizationOptions(artifactDir, maxBytes));
+}
+
+function visibleTextSanitizationOptions(
+  artifactDir: string,
+  maxBytes = MAX_PROJECTED_STRING_BYTES,
+) {
+  return {
     artifactDir,
     recalledMemoryMarker: RECALLED_MEMORY_MARKER,
     omitFilesystemPaths: true,
     omission: PRIVATE_DIAGNOSTIC_OMISSION,
     maxBytes,
-  });
+  } as const;
 }
 
 function messageContent(payload: Record<string, unknown>): readonly Record<string, unknown>[] | undefined {

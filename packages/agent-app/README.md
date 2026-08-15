@@ -455,7 +455,8 @@ projected values first pass through the shared observability redactor:
 non-numeric values under sensitive-looking object keys
 are redacted; numeric values under matched keys are retained; free text is not
 content-scanned or scrubbed. `RunHistory` then applies an additional projection
-sanitizer. In that second pass, numeric values under `credential`, `private_key`,
+sanitizer to object keys as well as string values, with deterministic
+collision-safe key disambiguation. In that second pass, numeric values under `credential`, `private_key`,
 and `bearer` can remain visible; numeric values under `apiKey`, `token`,
 `client_secret`, `password`, `authorization`, and `cookie` are redacted.
 Assignment-shaped password or secret prose is content-scanned and replaced with
@@ -490,7 +491,7 @@ canonical message-history entry. Stable conversation/run/tool-call keys and
 writer-assigned per-run start/end sequences make retries idempotent; process
 recovery closes dangling starts as `interrupted` without rerunning a tool.
 Arguments/results are securely pre-bounded, redacted, and byte-bounded, with truncation metadata and
-opaque artifact ids. Filesystem-shaped spans use an opaque host-root token plus
+opaque artifact ids. Filesystem-shaped spans in object keys and string values use an opaque host-root token plus
 at most two non-sensitive trailing components, so commands and results remain
 inspectable without exposing an absolute root, account/home prefix, artifact
 root, or private run path. Only regular files beneath the configured run-specific

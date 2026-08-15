@@ -1305,6 +1305,118 @@ describe("RunHistory MCP tool", () => {
     }
   });
 
+  it("sanitizes structured object keys collision-safely at the RunHistory projection boundary", async () => {
+    const artifactDir = await tempDir();
+    const conversationId = "webhook:run-history-path-keys";
+    const macPath = "/Users/example/work/repo/src/a.ts";
+    const linuxPath = "/home/example/work/repo/src/a.ts";
+    const privatePath = "/Users/example/.ssh/id_rsa";
+    const safeOpaqueKey = "[host-path]/src/a.ts";
+    const inputNested = Object.fromEntries([
+      ["ordinary", "ordinary-input"],
+      [safeOpaqueKey, "safe-opaque-input"],
+      [macPath, "mac-input"],
+      [linuxPath, "linux-input"],
+      [privatePath, "private-input"],
+      ["__proto__", "proto-input"],
+      ["constructor", "constructor-input"],
+      ["prototype", "prototype-input"],
+    ]);
+    const resultNested = Object.fromEntries([
+      ["ordinary", "ordinary-result"],
+      [safeOpaqueKey, "safe-opaque-result"],
+      [macPath, "mac-result"],
+      [linuxPath, "linux-result"],
+      [privatePath, "private-result"],
+    ]);
+    await writeRun({
+      artifactDir,
+      runId: "path-keyed-run",
+      conversationId,
+      startedAt: "2026-07-12T08:00:00.000Z",
+      events: [
+        {
+          type: "assistant",
+          message: {
+            content: [{
+              type: "tool_use",
+              id: "path-keyed-tool",
+              name: "Inspect",
+              input: { nested: inputNested },
+            }],
+          },
+        },
+        {
+          type: "user",
+          message: {
+            content: [{
+              type: "tool_result",
+              tool_use_id: "path-keyed-tool",
+              content: [{ type: "text", text: JSON.stringify({ nested: resultNested }) }],
+            }],
+          },
+        },
+        {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Path-key projection complete." }] },
+        },
+      ],
+    });
+
+    const history = await openHistoryClient(artifactDir, conversationId);
+    try {
+      const inspected = await inspectWithTimeline(history.client, "path-keyed-run");
+      const tool = inspected.timeline.find((entry) => entry.toolUseId === "path-keyed-tool") as {
+        readonly input: { readonly nested: Record<string, unknown> };
+        readonly result: { readonly content: { readonly nested: Record<string, unknown> } };
+      };
+      const inputHostKeys = Object.keys(tool.input.nested).filter((key) => key.startsWith(safeOpaqueKey));
+      const resultHostKeys = Object.keys(tool.result.content.nested).filter((key) => key.startsWith(safeOpaqueKey));
+
+      expect(tool.input.nested.ordinary).toBe("ordinary-input");
+      expect(tool.input.nested[safeOpaqueKey]).toBe("safe-opaque-input");
+      expect(inputHostKeys).toHaveLength(3);
+      expect(new Set(inputHostKeys).size).toBe(3);
+      expect(Object.prototype.hasOwnProperty.call(tool.input.nested, "__proto__")).toBe(true);
+      expect(tool.input.nested.__proto__).toBe("proto-input");
+      expect(tool.input.nested.constructor).toBe("constructor-input");
+      expect(tool.input.nested.prototype).toBe("prototype-input");
+      expect(tool.result.content.nested.ordinary).toBe("ordinary-result");
+      expect(tool.result.content.nested[safeOpaqueKey]).toBe("safe-opaque-result");
+      expect(resultHostKeys).toHaveLength(3);
+      expect(new Set(resultHostKeys).size).toBe(3);
+
+      const serialized = JSON.stringify([
+        inspected.overviewResult,
+        ...inspected.pageResults,
+        tool,
+      ]);
+      for (const value of [
+        "ordinary-input",
+        "safe-opaque-input",
+        "mac-input",
+        "linux-input",
+        "private-input",
+        "proto-input",
+        "constructor-input",
+        "prototype-input",
+        "ordinary-result",
+        "safe-opaque-result",
+        "mac-result",
+        "linux-result",
+        "private-result",
+      ]) {
+        expect(serialized, value).toContain(value);
+      }
+      expect(serialized).toContain("[private-path]");
+      for (const hidden of [macPath, linuxPath, privatePath, "/Users/example", "/home/example"]) {
+        expect(serialized, hidden).not.toContain(hidden);
+      }
+    } finally {
+      await history.close();
+    }
+  });
+
   it("only exempts a complete exact [redacted] assignment sentinel in real MCP projections", async () => {
     const artifactDir = await tempDir();
     const conversationId = "webhook:run-history-redacted-sentinel";

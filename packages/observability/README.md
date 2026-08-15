@@ -303,6 +303,7 @@ readTraceRun
 reconcileStaleRunArtifacts
 redactJsonValue
 registerTraceSource
+sanitizeVisibleObjectEntries
 sanitizeVisibleText
 segmentTimelineTurns
 spanKindHint

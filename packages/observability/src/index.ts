@@ -10,6 +10,7 @@ export type {
 } from "./recorder.js";
 export {
   containsVisibleSensitiveText,
+  sanitizeVisibleObjectEntries,
   sanitizeVisibleText,
   truncateVisibleText,
 } from "./redaction.js";

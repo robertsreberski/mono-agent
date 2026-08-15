@@ -150,12 +150,12 @@ function redact(
     }
     return out;
   }
-  const out: Record<string, unknown> = {};
   const entries = Object.entries(value as Record<string, unknown>);
   const limit = Math.min(entries.length, MAX_OBJECT_KEYS);
+  const redactedEntries: Array<readonly [string, unknown]> = [];
   for (let index = 0; index < limit; index += 1) {
     const [entryKey, entryValue] = entries[index]!;
-    out[entryKey] = redact(
+    redactedEntries.push([entryKey, redact(
       entryValue,
       maxStringBytes,
       options,
@@ -163,12 +163,17 @@ function redact(
       entryKey,
       seen,
       budget,
-    );
+    )]);
   }
   if (entries.length > limit) {
-    out.__truncated__ = "[max-keys]";
+    redactedEntries.push(["__truncated__", "[max-keys]"]);
   }
-  return out;
+  return options.visibleTextSanitization === undefined
+    ? defineObjectEntries(redactedEntries, maxStringBytes)
+    : sanitizeVisibleObjectEntries(redactedEntries, {
+        ...options.visibleTextSanitization,
+        maxBytes: maxStringBytes,
+      }, options.contentPatternRedaction === true);
 }
 
 /**
@@ -188,6 +193,107 @@ export function sanitizeVisibleText(
   options: VisibleTextSanitizationOptions = {},
 ): string {
   return sanitizedVisibleText(text, options, inspectVisibleText(text, options));
+}
+
+/**
+ * Shallow-copy already-bounded object entries while applying the visible-text
+ * policy to their keys. Safe keys are reserved first so they retain their
+ * spelling even when a private key folds onto the same token. Transformed-key
+ * collisions receive deterministic bounded suffixes, and every property is
+ * defined explicitly so `__proto__` and the other prototype-shaped names are
+ * ordinary own data properties rather than mutation hooks.
+ */
+export function sanitizeVisibleObjectEntries(
+  entries: readonly (readonly [string, unknown])[],
+  options: VisibleTextSanitizationOptions = {},
+  contentPatternRedaction = false,
+): Record<string, unknown> {
+  const sanitized = entries.map(([sourceKey, value]) => ({
+    sourceKey,
+    sanitizedKey: contentPatternRedaction
+      ? redactStringContent(sanitizeVisibleText(sourceKey, options), options.maxBytes ?? DEFAULT_MAX_STRING_BYTES)
+      : sanitizeVisibleText(sourceKey, options),
+    value,
+  }));
+  const reservedSafeKeys = new Set(
+    sanitized
+      .filter((entry) => entry.sourceKey === entry.sanitizedKey)
+      .map((entry) => entry.sourceKey),
+  );
+  const occupiedKeys = new Set<string>();
+  const out: Record<string, unknown> = {};
+  for (const entry of sanitized) {
+    const mustDisambiguate = occupiedKeys.has(entry.sanitizedKey)
+      || entry.sourceKey !== entry.sanitizedKey && reservedSafeKeys.has(entry.sanitizedKey);
+    const outputKey = mustDisambiguate
+      ? disambiguateVisibleObjectKey(
+          entry.sanitizedKey,
+          reservedSafeKeys,
+          occupiedKeys,
+          options.maxBytes ?? DEFAULT_MAX_STRING_BYTES,
+        )
+      : entry.sanitizedKey;
+    defineEnumerableOwnProperty(out, outputKey, entry.value);
+    occupiedKeys.add(outputKey);
+  }
+  return out;
+}
+
+function defineObjectEntries(
+  entries: readonly (readonly [string, unknown])[],
+  maxKeyBytes: number,
+): Record<string, unknown> {
+  const occupiedKeys = new Set<string>();
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of entries) {
+    const outputKey = occupiedKeys.has(key)
+      ? disambiguateVisibleObjectKey(key, new Set(), occupiedKeys, maxKeyBytes)
+      : key;
+    defineEnumerableOwnProperty(out, outputKey, value);
+    occupiedKeys.add(outputKey);
+  }
+  return out;
+}
+
+function disambiguateVisibleObjectKey(
+  base: string,
+  reservedKeys: ReadonlySet<string>,
+  occupiedKeys: ReadonlySet<string>,
+  maxKeyBytes: number,
+): string {
+  const blockedKeyCount = reservedKeys.size + occupiedKeys.size;
+  for (let offset = 0; offset <= blockedKeyCount; offset += 1) {
+    const ordinal = blockedKeyCount + offset + 2;
+    const suffix = ` [key-${String(ordinal)}]`;
+    const candidate = appendBoundedKeySuffix(base, suffix, maxKeyBytes);
+    if (!reservedKeys.has(candidate) && !occupiedKeys.has(candidate)) return candidate;
+  }
+  // There are more candidates than blocked keys and each retains its complete
+  // ordinal suffix, so this is unreachable unless the invariants above change.
+  throw new Error("Unable to allocate a collision-safe sanitized object key.");
+}
+
+function appendBoundedKeySuffix(base: string, suffix: string, maxKeyBytes: number): string {
+  const suffixBytes = TEXT_ENCODER.encode(suffix);
+  const effectiveMaxBytes = Math.max(32, maxKeyBytes);
+  const baseBytes = TEXT_ENCODER.encode(base);
+  if (baseBytes.length + suffixBytes.length <= effectiveMaxBytes) return `${base}${suffix}`;
+  let end = Math.max(0, effectiveMaxBytes - suffixBytes.length);
+  while (end > 0 && (baseBytes[end]! & 0b1100_0000) === 0b1000_0000) end -= 1;
+  return `${TEXT_DECODER.decode(baseBytes.subarray(0, end))}${suffix}`;
+}
+
+function defineEnumerableOwnProperty(
+  target: Record<string, unknown>,
+  key: string,
+  value: unknown,
+): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
 }
 
 /** Match RunHistory's stable model-text truncation contract. */

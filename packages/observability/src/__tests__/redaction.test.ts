@@ -109,6 +109,55 @@ describe("redactJsonValue", () => {
     expect(redacted.object.__truncated__).toBe("[max-keys]");
   });
 
+  it("sanitizes object keys without collisions or prototype mutation", () => {
+    const macPath = "/Users/example/work/repo/src/a.ts";
+    const linuxPath = "/home/example/work/repo/src/a.ts";
+    const privatePath = "/Users/example/.ssh/id_rsa";
+    const safeOpaqueKey = "[host-path]/src/a.ts";
+    const value = Object.fromEntries([
+      ["ordinary", "ordinary-value"],
+      [safeOpaqueKey, "safe-opaque-value"],
+      [macPath, "mac-value"],
+      [linuxPath, "linux-value"],
+      [privatePath, "private-path-value"],
+      ["__proto__", { prototypeValue: "proto-value" }],
+      ["constructor", "constructor-value"],
+      ["prototype", "prototype-value"],
+    ]);
+    const options = {
+      visibleTextSanitization: { omitFilesystemPaths: true },
+    } as const;
+
+    const redacted = redactJsonValue(value, 4_096, options) as Record<string, unknown>;
+    const serialized = JSON.stringify(redacted);
+    const hostPathEntries = Object.entries(redacted)
+      .filter(([key]) => key.startsWith(safeOpaqueKey));
+
+    expect(Object.keys(redacted)).toHaveLength(8);
+    expect(redacted.ordinary).toBe("ordinary-value");
+    expect(redacted[safeOpaqueKey]).toBe("safe-opaque-value");
+    expect(hostPathEntries).toHaveLength(3);
+    expect(new Set(hostPathEntries.map(([key]) => key)).size).toBe(3);
+    expect(hostPathEntries.map(([, entryValue]) => entryValue)).toEqual(expect.arrayContaining([
+      "safe-opaque-value",
+      "mac-value",
+      "linux-value",
+    ]));
+    expect(redacted["[private-path]"]).toBe("private-path-value");
+    expect(Object.prototype.hasOwnProperty.call(redacted, "__proto__")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(redacted, "constructor")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(redacted, "prototype")).toBe(true);
+    expect(redacted.__proto__).toEqual({ prototypeValue: "proto-value" });
+    expect(redacted.constructor).toBe("constructor-value");
+    expect(redacted.prototype).toBe("prototype-value");
+    expect(Object.getPrototypeOf(redacted)).toBe(Object.prototype);
+    expect(({} as { readonly prototypeValue?: unknown }).prototypeValue).toBeUndefined();
+    for (const privateKey of [macPath, linuxPath, privatePath, "/Users/example", "/home/example"]) {
+      expect(serialized, privateKey).not.toContain(privateKey);
+    }
+    expect(redactJsonValue(redacted, 4_096, options)).toEqual(redacted);
+  });
+
   it("redacts high-confidence secret-shaped substrings from plain strings when opted in", () => {
     const fixtures = [
       ["sk", "-", "A".repeat(48)].join(""),
@@ -171,17 +220,28 @@ describe("redactJsonValue", () => {
 
   it("applies content-pattern scanning recursively without weakening key redaction", () => {
     const fixture = ["xox", "p-", "A".repeat(24)].join("");
-    expect(
+    const redacted =
       redactJsonValue(
-        { note: `credential: ${fixture}`, nested: [`again ${fixture}`], apiKey: "not-shape-dependent" },
+        Object.fromEntries([
+          ["note", `credential: ${fixture}`],
+          ["nested", [`again ${fixture}`]],
+          ["apiKey", "not-shape-dependent"],
+          [`evidence-${fixture}`, "key-value-survives"],
+        ]),
         4_096,
-        { contentPatternRedaction: true },
-      ),
-    ).toEqual({
+        {
+          contentPatternRedaction: true,
+          visibleTextSanitization: {},
+        },
+      ) as Record<string, unknown>;
+
+    expect(redacted).toEqual({
       note: "credential: [redacted]",
       nested: ["again [redacted]"],
       apiKey: "[redacted]",
+      "evidence-[redacted]": "key-value-survives",
     });
+    expect(JSON.stringify(redacted)).not.toContain(fixture);
   });
 
   it.each([

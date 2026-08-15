@@ -247,6 +247,65 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     expect(databaseBytes.includes(Buffer.from(secret))).toBe(false);
   }, 10_000);
 
+  it("sanitizes and bounds writer incident detail before raw SQLite persistence", async () => {
+    const root = await tempRoot();
+    const privatePath = "/Users/example/.ssh/id_rsa";
+    const writer = await ToolHistoryWriter.open({ root });
+    const failed = await writer.persist(binding("writer-detail-path"), {
+      phase: "invocation",
+      toolCallId: "uncloneable-detail",
+      toolName: "Inspect",
+      arguments: { uncloneable: Symbol(privatePath) },
+    });
+    await writer.close();
+
+    expect(failed).toEqual({ persistence: "failed", errorCode: "history_write_failed" });
+    const databasePath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+    const legacyDatabase = new DatabaseSync(databasePath);
+    try {
+      legacyDatabase.prepare("DELETE FROM metadata WHERE key='writer_stat_detail_policy'").run();
+      legacyDatabase.prepare(`
+        INSERT INTO writer_stats (key,value,last_detail,updated_at_ms) VALUES (?,?,?,?)
+      `).run(
+        "write_failures:legacy-oversized",
+        1,
+        `history_write_failed:${"x".repeat(4_080)}${privatePath}`,
+        Date.now(),
+      );
+    } finally {
+      legacyDatabase.close();
+    }
+    expect((await readFile(databasePath)).includes(Buffer.from(privatePath)), "seeded legacy detail").toBe(true);
+
+    const reopenedWriter = await ToolHistoryWriter.open({ root });
+    await reopenedWriter.close();
+    const rawBytes = await readFile(databasePath);
+    expect(rawBytes.includes(Buffer.from(privatePath)), "raw private writer detail").toBe(false);
+    expect(rawBytes.includes(Buffer.from("/Users/example")), "raw private writer prefix").toBe(false);
+
+    const database = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      const incidents = database.prepare(`
+        SELECT key,value,last_detail FROM writer_stats WHERE key GLOB 'write_failures:*'
+      `).all() as Array<{ readonly key: string; readonly value: number; readonly last_detail: string }>;
+      expect(incidents).toHaveLength(2);
+      for (const incident of incidents) {
+        expect(incident).toMatchObject({
+          key: expect.stringMatching(/^write_failures:/u),
+          value: 1,
+          last_detail: expect.stringContaining("history_write_failed"),
+        });
+        expect(incident.last_detail).not.toContain(privatePath);
+        expect(Buffer.byteLength(incident.last_detail, "utf8")).toBeLessThanOrEqual(1_000);
+      }
+      expect(incidents.some(({ last_detail: detail }) => detail.includes("[private-path]"))).toBe(true);
+      expect(incidents.some(({ last_detail: detail }) => detail.includes("could not be cloned"))).toBe(true);
+      expect(incidents.some(({ last_detail: detail }) => detail.includes("exceeded the inspection bound"))).toBe(true);
+    } finally {
+      database.close();
+    }
+  });
+
   it("drops out-of-root and symlinked provider artifact paths without probing or persisting them", async () => {
     const root = await tempRoot();
     const artifactRoot = artifactRootForHistory(root);
@@ -366,6 +425,109 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
     const databaseBytes = await readFile(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE));
     for (const hidden of [sourcePath, outputPath, windowsPath, privateArtifact, secret]) {
+      expect(databaseBytes.includes(Buffer.from(hidden)), hidden).toBe(false);
+    }
+  });
+
+  it("preserves path-keyed values collision-safely across raw storage, reads, and cold projection", async () => {
+    const root = await tempRoot();
+    const run = binding("path-keyed-history");
+    const macPath = "/Users/example/work/repo/src/a.ts";
+    const linuxPath = "/home/example/work/repo/src/a.ts";
+    const privatePath = "/Users/example/.ssh/id_rsa";
+    const safeOpaqueKey = "[host-path]/src/a.ts";
+    const nested = Object.fromEntries([
+      ["ordinary", "ordinary-value"],
+      [safeOpaqueKey, "safe-opaque-value"],
+      [macPath, ["mac-value", "needle"]],
+      [linuxPath, ["linux-value", "needle"]],
+      [privatePath, "private-path-value"],
+      ["__proto__", "proto-value"],
+      ["constructor", "constructor-value"],
+      ["prototype", "prototype-value"],
+    ]);
+    const writer = await ToolHistoryWriter.open({ root });
+    const invocation = await writer.persist(run, {
+      phase: "invocation",
+      toolCallId: "path-keyed-call",
+      toolName: "Inspect",
+      arguments: { nested },
+    });
+    await writer.persist(run, {
+      phase: "result",
+      toolCallId: "path-keyed-call",
+      state: "success",
+      content: { status: "complete-value" },
+    });
+    await writer.close();
+    expect(invocation.recordId).toMatch(/^sth1_/u);
+
+    const reader = new ToolHistoryReader(root);
+    const search = reader.search({
+      logicalConversationId: "slack:C1",
+      currentRunId: "current",
+      query: "needle",
+    });
+    expect(search.items).toHaveLength(1);
+
+    let chunkOffset = 0;
+    let pagedJson = "";
+    for (let pageCount = 0; pageCount < 100; pageCount += 1) {
+      const page = reader.get({
+        logicalConversationId: "slack:C1",
+        currentRunId: "current",
+        recordId: invocation.recordId!,
+        chunkOffset,
+        chunkBytes: 48,
+      });
+      expect(page.chunk).toEqual(expect.any(String));
+      pagedJson += page.chunk ?? "";
+      if (page.nextOffset === undefined) break;
+      expect(page.nextOffset).toBeGreaterThan(chunkOffset);
+      chunkOffset = page.nextOffset;
+    }
+    const pagedPayload = JSON.parse(pagedJson) as { readonly nested: Record<string, unknown> };
+    const projection = buildToolHistoryProjection(reader, "slack:C1", "current");
+    const visible = JSON.stringify({ search, pagedPayload, projection });
+    const hostPathEntries = Object.entries(pagedPayload.nested)
+      .filter(([key]) => key.startsWith(safeOpaqueKey));
+
+    expect(pagedPayload.nested.ordinary).toBe("ordinary-value");
+    expect(pagedPayload.nested[safeOpaqueKey]).toBe("safe-opaque-value");
+    expect(hostPathEntries).toHaveLength(3);
+    expect(new Set(hostPathEntries.map(([key]) => key)).size).toBe(3);
+    expect(Object.values(pagedPayload.nested)).toEqual(expect.arrayContaining([
+      "ordinary-value",
+      "safe-opaque-value",
+      ["mac-value", "needle"],
+      ["linux-value", "needle"],
+      "private-path-value",
+      "proto-value",
+      "constructor-value",
+      "prototype-value",
+    ]));
+    expect(Object.prototype.hasOwnProperty.call(pagedPayload.nested, "__proto__")).toBe(true);
+    expect(visible).toContain("[private-path]");
+    expect(visible).toContain("complete-value");
+    for (const value of [
+      "ordinary-value",
+      "safe-opaque-value",
+      "mac-value",
+      "linux-value",
+      "private-path-value",
+      "proto-value",
+      "constructor-value",
+      "prototype-value",
+    ]) {
+      expect(search.items[0]!.preview, value).toContain(value);
+      expect(visible, value).toContain(value);
+    }
+    for (const hidden of [macPath, linuxPath, privatePath, "/Users/example", "/home/example"]) {
+      expect(visible, hidden).not.toContain(hidden);
+    }
+
+    const databaseBytes = await readFile(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE));
+    for (const hidden of [macPath, linuxPath, privatePath, "/Users/example", "/home/example"]) {
       expect(databaseBytes.includes(Buffer.from(hidden)), hidden).toBe(false);
     }
   });

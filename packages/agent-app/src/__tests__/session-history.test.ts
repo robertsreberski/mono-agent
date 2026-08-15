@@ -195,6 +195,86 @@ describe("SessionHistory request handler", () => {
     }
   });
 
+  it("keeps path-key collisions opaque and lossless through SessionHistory get pagination", async () => {
+    const root = await tempRoot();
+    const macPath = "/Users/example/work/repo/src/a.ts";
+    const linuxPath = "/home/example/work/repo/src/a.ts";
+    const privatePath = "/Users/example/.ssh/id_rsa";
+    const safeOpaqueKey = "[host-path]/src/a.ts";
+    const nested = Object.fromEntries([
+      ["ordinary", "ordinary-value"],
+      [safeOpaqueKey, "safe-opaque-value"],
+      [macPath, ["mac-value", "needle"]],
+      [linuxPath, ["linux-value", "needle"]],
+      [privatePath, "private-path-value"],
+    ]);
+    const writer = await ToolHistoryWriter.open({ root });
+    const invocation = await writer.persist(binding("path-keyed-run"), {
+      phase: "invocation",
+      toolCallId: "path-keyed-call",
+      toolName: "Inspect",
+      arguments: { nested },
+    });
+    await writer.persist(binding("path-keyed-run"), {
+      phase: "result",
+      toolCallId: "path-keyed-call",
+      state: "success",
+      content: "complete-value",
+    });
+    await writer.close();
+    if (invocation.recordId === undefined) throw new Error("Path-keyed invocation was not persisted.");
+
+    const requestBinding = {
+      reader: new ToolHistoryReader(root),
+      logicalConversationId: "chat:42",
+      runId: "current-run",
+    };
+    const search = body<{
+      readonly items: ReadonlyArray<{ readonly preview: string }>;
+    }>(handleSessionHistoryRequest(requestBinding, { action: "search", query: "needle" }));
+    expect(search.items).toHaveLength(1);
+
+    let cursor: string | undefined;
+    let pagedJson = "";
+    const pages: unknown[] = [];
+    for (let pageCount = 0; pageCount < 100; pageCount += 1) {
+      const result = handleSessionHistoryRequest(requestBinding, cursor === undefined
+        ? { action: "get", recordId: invocation.recordId, chunkBytes: 48 }
+        : { action: "get", cursor, chunkBytes: 48 });
+      pages.push(result);
+      const page = body<{
+        readonly record: { readonly chunk: string; readonly nextCursor?: string };
+      }>(result);
+      pagedJson += page.record.chunk;
+      cursor = page.record.nextCursor;
+      if (cursor === undefined) break;
+    }
+    expect(cursor).toBeUndefined();
+
+    const payload = JSON.parse(pagedJson) as { readonly nested: Record<string, unknown> };
+    const serialized = JSON.stringify({ search, pages, payload });
+    const hostPathEntries = Object.entries(payload.nested)
+      .filter(([key]) => key.startsWith(safeOpaqueKey));
+    expect(payload.nested.ordinary).toBe("ordinary-value");
+    expect(payload.nested[safeOpaqueKey]).toBe("safe-opaque-value");
+    expect(hostPathEntries).toHaveLength(3);
+    expect(new Set(hostPathEntries.map(([key]) => key)).size).toBe(3);
+    for (const value of [
+      "ordinary-value",
+      "safe-opaque-value",
+      "mac-value",
+      "linux-value",
+      "private-path-value",
+    ]) {
+      expect(search.items[0]!.preview, value).toContain(value);
+      expect(serialized, value).toContain(value);
+    }
+    expect(serialized).toContain("[private-path]");
+    for (const hidden of [macPath, linuxPath, privatePath, "/Users/example", "/home/example"]) {
+      expect(serialized, hidden).not.toContain(hidden);
+    }
+  });
+
   it("enforces current-run, logical-session, isolated, filter, and cursor authorization without a transport", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });

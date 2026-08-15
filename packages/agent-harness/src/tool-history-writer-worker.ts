@@ -17,7 +17,11 @@ import { parentPort, workerData } from "node:worker_threads";
 import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 
-import { isKnownArtifactFailureKind, redactJsonValue } from "@mono-agent/observability";
+import {
+  isKnownArtifactFailureKind,
+  redactJsonValue,
+  sanitizeVisibleText,
+} from "@mono-agent/observability";
 import type {
   RuntimeToolLifecycleEvent,
   RuntimeToolLifecyclePersistence,
@@ -79,6 +83,11 @@ const PRE_REDACTION_MAX_STRING_BYTES = 64 * 1024;
 const PRE_REDACTION_MAX_COLLECTION_ITEMS = 512;
 const PRE_REDACTION_MAX_KEY_BYTES = 512;
 const PRE_REDACTION_OMISSION = "[oversized value omitted before redaction]";
+const WRITER_STAT_DETAIL_MAX_BYTES = 1_000;
+const WRITER_STAT_DETAIL_MAX_INSPECTION_CODE_UNITS = 4_096;
+const WRITER_STAT_DETAIL_POLICY_VERSION = "visible-text-v1";
+const WRITER_STAT_DETAIL_OMISSION = "[writer detail omitted because it contained private data]";
+const WRITER_STAT_DETAIL_OVERSIZED_OMISSION = "[writer detail omitted because it exceeded the inspection bound]";
 const TOOL_DIR_ALLOWED = new Set([TOOL_HISTORY_DATABASE, `${TOOL_HISTORY_DATABASE}-journal`]);
 const TERMINAL_STATES = new Set<RuntimeToolLifecycleTerminalState>([
   "success", "rejected", "error", "exit_nonzero", "timeout", "signal", "cancelled", "interrupted",
@@ -732,6 +741,7 @@ function openContentDatabase(
   }
   database.exec("PRAGMA journal_mode=DELETE");
   database.exec("PRAGMA synchronous=FULL");
+  database.exec("PRAGMA secure_delete=ON");
   database.exec("PRAGMA foreign_keys=ON");
   database.exec("PRAGMA busy_timeout=250");
   transaction(database, () => {
@@ -819,6 +829,7 @@ function openContentDatabase(
     CREATE INDEX IF NOT EXISTS tombstones_run_idx ON tombstones(conversation_id,run_id);
     CREATE INDEX IF NOT EXISTS tombstones_removed_idx ON tombstones(removed_at_ms);
     `);
+    sanitizePersistedWriterStatDetails(database);
     migrateSyntheticResultMarker(database, existingVersion);
     migrateLegacyIncidentKeys(database);
     database.exec(`PRAGMA user_version=${String(TOOL_HISTORY_USER_VERSION)}`);
@@ -906,6 +917,32 @@ function migrateSyntheticResultMarker(database: DatabaseSync, priorVersion: numb
   }
 }
 
+function sanitizePersistedWriterStatDetails(database: DatabaseSync): void {
+  const policy = database.prepare("SELECT value FROM metadata WHERE key='writer_stat_detail_policy'")
+    .get() as Record<string, unknown> | undefined;
+  if (policy?.value === WRITER_STAT_DETAIL_POLICY_VERSION) return;
+
+  const select = database.prepare(`
+    SELECT key,last_detail FROM writer_stats
+    WHERE last_detail IS NOT NULL AND key > ?
+    ORDER BY key LIMIT 256
+  `);
+  const update = database.prepare("UPDATE writer_stats SET last_detail=? WHERE key=?");
+  let afterKey = "";
+  for (;;) {
+    const rows = select.all(afterKey) as Record<string, unknown>[];
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      const key = stringField(row, "key");
+      const detail = typeof row.last_detail === "string" ? writerStatDetail(row.last_detail) : null;
+      if (detail !== row.last_detail) update.run(detail, key);
+      afterKey = key;
+    }
+  }
+  database.prepare("INSERT OR REPLACE INTO metadata (key,value) VALUES ('writer_stat_detail_policy',?)")
+    .run(WRITER_STAT_DETAIL_POLICY_VERSION);
+}
+
 function migrateLegacyIncidentKeys(database: DatabaseSync): void {
   const legacy = database.prepare(`
     SELECT key,value,last_detail,updated_at_ms FROM writer_stats
@@ -939,7 +976,7 @@ function migrateLegacyIncidentKeys(database: DatabaseSync): void {
         migrate.run(
           scopedKey,
           Number(incident.value),
-          typeof incident.last_detail === "string" ? incident.last_detail : null,
+          typeof incident.last_detail === "string" ? writerStatDetail(incident.last_detail) : null,
           Number(incident.updated_at_ms),
         );
       }
@@ -1126,7 +1163,7 @@ function securePayloadValue(value: unknown, budget: SecurePreprocessBudget, dept
       if (!Object.prototype.hasOwnProperty.call(source, rawKey)) continue;
       if (retainedItems >= PRE_REDACTION_MAX_COLLECTION_ITEMS || budget.remainingNodes <= 0) {
         budget.truncated = true;
-        retained.__preprocessing_omitted__ = PRE_REDACTION_OMISSION;
+        defineSecurePayloadProperty(retained, "__preprocessing_omitted__", PRE_REDACTION_OMISSION);
         break;
       }
       // UTF-8 bytes are never fewer than JavaScript code units. Reject an
@@ -1142,13 +1179,37 @@ function securePayloadValue(value: unknown, budget: SecurePreprocessBudget, dept
         : rawKey;
       if (key !== rawKey) budget.truncated = true;
       else budget.remainingStringBytes -= keyBytes!;
-      retained[key] = securePayloadValue(source[rawKey], budget, depth + 1);
+      defineSecurePayloadProperty(
+        retained,
+        key,
+        securePayloadValue(source[rawKey], budget, depth + 1),
+      );
       retainedItems += 1;
     }
     return retained;
   } finally {
     budget.seen.delete(value);
   }
+}
+
+function defineSecurePayloadProperty(
+  target: Record<string, unknown>,
+  requestedKey: string,
+  value: unknown,
+): void {
+  let key = requestedKey;
+  for (let ordinal = 2; Object.prototype.hasOwnProperty.call(target, key); ordinal += 1) {
+    key = `${requestedKey} [key-${String(ordinal)}]`;
+    if (ordinal > PRE_REDACTION_MAX_COLLECTION_ITEMS + 1) {
+      throw new WorkerHistoryError("history_payload_invalid", "Tool history payload keys could not be bounded safely.");
+    }
+  }
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
 }
 
 function securePayloadString(value: string, budget: SecurePreprocessBudget): string {
@@ -1328,7 +1389,7 @@ function incrementStat(database: DatabaseSync, key: string, amount: number, deta
   database.prepare(`
     INSERT INTO writer_stats (key,value,last_detail,updated_at_ms) VALUES (?,?,?,?)
     ON CONFLICT(key) DO UPDATE SET value=value+excluded.value,last_detail=excluded.last_detail,updated_at_ms=excluded.updated_at_ms
-  `).run(key, amount, detail?.slice(0, 1_000) ?? null, Date.now());
+  `).run(key, amount, writerStatDetail(detail, key), Date.now());
 }
 
 function recordIncident(
@@ -1340,7 +1401,20 @@ function recordIncident(
   database.prepare(`
     INSERT INTO writer_stats (key,value,last_detail,updated_at_ms) VALUES (?,1,?,?)
     ON CONFLICT(key) DO UPDATE SET value=1,last_detail=excluded.last_detail,updated_at_ms=excluded.updated_at_ms
-  `).run(`${kind}:${incidentKey}`, detail?.slice(0, 1_000) ?? null, Date.now());
+  `).run(`${kind}:${incidentKey}`, writerStatDetail(detail, kind), Date.now());
+}
+
+function writerStatDetail(detail: string | undefined, fallbackClass = "writer_detail"): string | null {
+  if (detail === undefined) return null;
+  if (detail.length > WRITER_STAT_DETAIL_MAX_INSPECTION_CODE_UNITS) {
+    const detailClass = /^([a-z][a-z0-9_-]{0,63}):/iu.exec(detail)?.[1] ?? fallbackClass;
+    return `${detailClass}: ${WRITER_STAT_DETAIL_OVERSIZED_OMISSION}`;
+  }
+  return sanitizeVisibleText(detail, {
+    omitFilesystemPaths: true,
+    omission: WRITER_STAT_DETAIL_OMISSION,
+    maxBytes: WRITER_STAT_DETAIL_MAX_BYTES,
+  });
 }
 
 function clearIncident(

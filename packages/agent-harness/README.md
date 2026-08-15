@@ -338,8 +338,10 @@ preserving its stable record id and sequence. Results cover `success`,
 
 Arguments retain at most 8 KiB, results 16 KiB, individual strings 4 KiB, and
 search text 8 KiB after secure pre-bounding and shared
-structured/content-pattern redaction. Oversized values are omitted wholesale
-before redaction instead of exposing a possibly unmatched raw prefix. Records
+structured/content-pattern redaction. Filesystem-shaped object keys and string
+values are sanitized by the same bounded policy, with collision-safe keys that
+preserve every admitted value. Oversized values are omitted wholesale before
+redaction instead of exposing a possibly unmatched raw prefix. Records
 carry exact original byte counts for fully admitted payloads, a saturated
 over-limit count after secure omission, retained byte counts, and truncation,
 plus opaque artifact ids;
