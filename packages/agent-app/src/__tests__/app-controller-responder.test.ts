@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -33,6 +33,110 @@ describe("reply artifact responder composition", () => {
     expect(replyArtifactStorageMaxBytesForMcpApps(true)).toBe(
       DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES - DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
     );
+  });
+
+  it("builds a disabled-MCP-Apps responder with the full physical reply-artifact budget", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-app-responder-disabled-mcp-apps-"));
+    tempDirs.push(workspace);
+    const artifactDir = join(workspace, "artifacts");
+    const configPath = join(workspace, "mono-agent.config.json");
+    const identityPath = join(workspace, "IDENTITY.md");
+    const soulPath = join(workspace, "SOUL.md");
+    const sourcePath = join(workspace, "report.txt");
+    const fillerPath = join(artifactDir, "reply-files", "capacity-probe", "content");
+    await mkdir(dirname(fillerPath), { recursive: true });
+    await Promise.all([
+      writeFile(identityPath, "Disabled MCP Apps composition test"),
+      writeFile(soulPath, "Keep the test deterministic"),
+      writeFile(sourcePath, "publish me"),
+      writeFile(fillerPath, ""),
+    ]);
+    await truncate(
+      fillerPath,
+      DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES - DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES + 1,
+    );
+    await writeFile(configPath, `${JSON.stringify({
+      agent: { name: "disabled-mcp-apps-composition" },
+      runtime: { model: "codex:gpt-5.6-terra", workspace: "." },
+      context: {
+        identityPath: "./IDENTITY.md",
+        soulPath: "./SOUL.md",
+        selectedSkills: [],
+      },
+      tools: { allowedTools: [PUBLISH_REPLY_FILE_TOOL_NAME], disallowedTools: [] },
+      artifacts: { dir: "./artifacts" },
+      continuations: { enabled: false },
+    }, null, 2)}\n`);
+    const coreConfig = await loadAppCoreConfig({ cwd: workspace, configPath, env: {} });
+    let publicationResult: unknown;
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        expect(options.mcpApps).toBeUndefined();
+        const servers = options.mcpServers as Readonly<Record<string, { readonly url: string }>> | undefined;
+        const spec = servers?.[REPLY_ARTIFACT_MCP_SERVER_NAME];
+        if (spec === undefined) throw new Error("Reply artifact MCP server was not composed.");
+        const client = new Client({ name: "disabled-mcp-apps-budget-test", version: "1.0.0" });
+        try {
+          await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+          publicationResult = await client.callTool({
+            name: PUBLISH_REPLY_FILE_TOOL_NAME,
+            arguments: { path: sourcePath },
+          });
+        } finally {
+          await client.close().catch(() => undefined);
+        }
+        return { text: "composition complete" };
+      },
+      async disposeAllSessions() {},
+    };
+    const memory = {
+      async load() { return undefined; },
+      async appendHostSummary(conversationId: string) {
+        return { conversationId, source: "composition-test", bytesWritten: 0 };
+      },
+    };
+    const controller: ResponderControllerPort = {
+      cwd: workspace,
+      configPath,
+      configReadPath: configPath,
+      env: {},
+      logger: undefined,
+      runtime,
+      activeRuntimes: [],
+      interactionBridge: undefined,
+      continuationService: undefined,
+      seenNotifyDestinations: createSeenNotifyDestinationCache(),
+      sandboxEngineFor: () => undefined,
+      memoryStore: async () => memory as never,
+      ensureSharedMemoryRetrieval: () => undefined,
+      reportMemoryRecallStatus: () => false,
+      supermemoryMcpRuntimeOptions: () => undefined,
+      adapterSendToolsRuntimeOptions: async () => ({ blockingToolNames: [] }),
+      requestModelOverrideRuntimeOptions: () => ({
+        extension: async () => ({ runtimeOptions: {}, cleanup: async () => {} }),
+        targetsDirectOpenCode: () => false,
+      }),
+      buildRuntimeForModel: () => () => runtime,
+      observabilityContext: async () => ({}),
+      recordExporterWarning() {},
+      recordSessionEvent() {},
+    };
+
+    const responder = await buildResponder(controller, coreConfig, "telegram");
+    const response = await responder.respond({
+      conversationId: "composition-disabled-mcp-apps",
+      text: "Publish the report.",
+      abortSignal: new AbortController().signal,
+    }, { append: async () => {} }).finally(async () => {
+      await (responder as { dispose?: () => Promise<void> }).dispose?.();
+    });
+
+    expect(publicationResult).toMatchObject({
+      structuredContent: { published: true },
+    });
+    expect(response.parts).toEqual([
+      expect.objectContaining({ type: "attachment" }),
+    ]);
   });
 
   it("refuses every configured host-private root, including relocated durable history", async () => {

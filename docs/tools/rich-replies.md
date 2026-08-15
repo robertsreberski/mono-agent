@@ -126,23 +126,26 @@ reserves 1 MiB for independently admitted audit records and uses fair-share,
 oldest-segment reclamation when that reserve fills. One bounded inventory per
 artifact-root lifecycle restores accounting after a restart; later appends
 update exact in-memory ownership under one process-wide gate instead of
-rescanning every invocation. Reclamation can remove only rotated history. An
-owner's active `audit.jsonl`, including an in-flight confirmation, is never a
-candidate. A foreign owner that cannot be inspected or reclaimed is isolated
-and conservatively charged; the affected owner fails closed without disabling a
-healthy app that still fits the reserve. Audit entries contain only host-owned
-identity, method, timestamp, and phase fields—never model-filled tool names,
-arguments, resource URIs, URLs, or tool results.
+rescanning every invocation. Reclamation removes rotated history first, then
+inactive and unprotected owners' active files only as a last resort. A live or
+protected owner's active `audit.jsonl`, including an in-flight confirmation, is
+never a candidate. Foreign owners that cannot be inspected are isolated under
+bounded conservative accounting and opportunistically re-inventoried after
+recovery. Admission is rejected before deletion when the available candidates
+cannot create enough room, preserving unrelated healthy history. Audit entries
+contain only host-owned identity, method, timestamp, and phase fields—never
+model-filled tool names, arguments, resource URIs, URLs, or tool results.
 
 Filling the model-visible budget fails only the new rich-reply part without
 evicting retained content or blocking a later audited bridge action. Stable
 errors distinguish oversize, rate-limited, forbidden, confirmation-required,
 audit-failed, audit-incomplete, expired, and closed connection outcomes. Failure
-to persist the pre-action confirmation returns `app_audit_failed` and refuses
-execution. If a tool runs but its completion record fails, the operator and web
-transports preserve `app_audit_incomplete` as a conflict outcome rather than a
-generic gateway failure. The side effect may have happened, so callers must not
-retry automatically.
+to admit the pre-action confirmation and its bounded completion record returns
+`app_audit_failed` and refuses execution. The completion bytes remain reserved
+until the tool returns. If their real filesystem write then fails, the operator
+and web transports preserve `app_audit_incomplete` as a conflict outcome rather
+than a generic gateway failure. The side effect may have happened, so callers
+must not retry automatically.
 
 The operator producer continues to cap each NDJSON frame at 256 KiB. The web
 consumer accepts up to the legacy 8 MiB boundary so a new console remains

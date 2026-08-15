@@ -687,17 +687,21 @@ cancellation, or missing run metadata removes uncommitted state. The sealed
 local self-configuration override excludes this publisher.
 
 Audit storage performs one root inventory for a process/root lifecycle, then
-maintains exact owner byte counts under a global append gate. Only rotated
-history is reclaimable; every owner's active `audit.jsonl` remains protected,
-including while a confirmed tool call is in flight. Foreign read or reclamation
-failures are conservatively isolated, while an unsafe target file, symlink, or
-directory fails that owner closed. Audit records contain host identity, method,
+maintains exact owner byte counts under a global append gate. Reclamation uses
+rotated history first, then inactive and unprotected owners' active files as a
+last resort; a live or protected owner's active `audit.jsonl` is never a
+candidate. Foreign read failures receive bounded conservative accounting and
+are re-inventoried when they recover; admission that cannot possibly succeed
+does not erase unrelated history. Unsafe target files, symlinks, and directories
+fail that owner closed, while oversized target rotations receive the same safe
+bounded cleanup as foreign history. Audit records contain host identity, method,
 timestamp, and phase only—not model-filled tool names, arguments, resource URIs,
-URLs, or results. A failed pre-execution confirmation record returns
-`app_audit_failed` and refuses the tool call. A failed completion record after a
-successful tool call remains `app_audit_incomplete` through operator and web
-transport: the side effect may have occurred and must not be retried
-automatically.
+URLs, or results. Tool confirmation reserves both its confirmation and bounded
+completion record before execution. A failed pre-execution admission returns
+`app_audit_failed` and refuses the tool call; a real completion write failure
+after a successful tool call remains `app_audit_incomplete` through operator
+and web transport because the side effect may have occurred and must not be
+retried automatically.
 
 Pi-native routes can retain MCP App resources negotiated at either supported
 ext-apps revision. The whole primary/fallback route must support the bridge;

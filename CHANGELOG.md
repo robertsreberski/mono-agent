@@ -84,11 +84,14 @@
   model-fillable publication budget is full, only the new rich part fails
   safely and retained content is not evicted.
 - MCP App audit admission inventories each artifact root once per lifecycle,
-  maintains exact gated byte accounting thereafter, and reclaims only rotated
-  history—never another invocation's active confirmation. Foreign storage
-  faults are isolated, model-filled values never enter audit records, and an
-  unrecorded post-tool completion remains the non-retryable
-  `app_audit_incomplete` outcome through operator and web transport.
+  maintains exact gated byte accounting thereafter, reclaims rotated history
+  before inactive owners' active files, and never reclaims a live or protected
+  active confirmation. Poisoned foreign owners use bounded conservative
+  accounting, recover in place, and cannot trigger futile deletion. Tool calls
+  reserve confirmation and completion bytes before execution; model-filled
+  values never enter audit records, and a real unrecorded post-tool completion
+  remains the non-retryable `app_audit_incomplete` outcome through operator and
+  web transport.
 
 ### Operator compatibility
 

@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -148,6 +148,13 @@ async function auditContents(directory: string): Promise<string> {
     .filter((name) => /^audit(?:\.[1-9][0-9]*)?\.jsonl$/u.test(name))
     .map(async (name) => await readFile(join(directory, name), "utf8"))))
     .join("\n");
+}
+
+async function auditFileBytes(directory: string): Promise<number> {
+  const sizes = await Promise.all((await readdir(directory))
+    .filter((name) => /^audit(?:\.[1-9][0-9]*)?\.jsonl$/u.test(name))
+    .map(async (name) => (await stat(join(directory, name))).size));
+  return sizes.reduce((sum, size) => sum + size, 0);
 }
 
 describe("MCP Apps registry", () => {
@@ -909,6 +916,250 @@ describe("MCP Apps registry", () => {
     await service.dispose();
   });
 
+  it("reclaims inactive active files only after restart so stale owners cannot exhaust the reserve", async () => {
+    const artifactDir = await tempDir();
+    const auditMaxBytes = 1_024;
+    const auditRetainedFiles = 1;
+    const auditStorageMaxBytes = 4_096;
+    const removedPaths: string[] = [];
+    const observeRemoval: NonNullable<Parameters<typeof createMcpAppService>[0]["beforeAuditStorageOperation"]> = (
+      operation,
+      path,
+    ) => {
+      if (operation === "remove") removedPaths.push(path);
+    };
+    const firstService = createMcpAppService({
+      artifactDir,
+      auditMaxBytes,
+      auditRetainedFiles,
+      auditStorageMaxBytes,
+      beforeAuditStorageOperation: observeRemoval,
+    });
+    const staleApps = await Promise.all(Array.from({ length: 12 }, async (_, index) => {
+      const live = connection(`connection-audit-stale-${String(index)}`);
+      const host = await hostFor(firstService, `run-audit-stale-${String(index)}`, "conversation");
+      return (await host.register(registration(live, {
+        toolCallId: `call-audit-stale-${String(index)}`,
+        resourceUri: `ui://widgets/audit-stale-${String(index)}`,
+      }))).part as AgentReplyMcpAppPart;
+    }));
+    await Promise.all(staleApps.map(async (app, index) => await writeFile(
+      join(artifactDir, "mcp-apps", app.invocationId, "audit.jsonl"),
+      Buffer.alloc(900, 0x61 + (index % 20)),
+    )));
+    const staleRotatedPath = join(artifactDir, "mcp-apps", staleApps[0]!.invocationId, "audit.1.jsonl");
+    await writeFile(staleRotatedPath, Buffer.alloc(500, 0x72));
+    await firstService.dispose();
+
+    const restartedService = createMcpAppService({
+      artifactDir,
+      auditMaxBytes,
+      auditRetainedFiles,
+      auditStorageMaxBytes,
+      beforeAuditStorageOperation: observeRemoval,
+    });
+    const freshLive = connection("connection-audit-fresh-after-restart");
+    const freshHost = await hostFor(restartedService, "run-audit-fresh-after-restart", "conversation");
+    const freshApp = (await freshHost.register(registration(freshLive, {
+      toolCallId: "call-audit-fresh-after-restart",
+      resourceUri: "ui://widgets/audit-fresh-after-restart",
+    }))).part as AgentReplyMcpAppPart;
+
+    await expect(restartedService.request({
+      conversationId: "conversation",
+      invocationId: freshApp.invocationId,
+      connectionId: freshApp.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    })).resolves.toMatchObject({ ok: true });
+    expect(freshLive.callTool).toHaveBeenCalledTimes(1);
+    expect(removedPaths[0]).toBe(staleRotatedPath);
+    const staleActiveFiles = await Promise.all(staleApps.map(async (app) => await stat(
+      join(artifactDir, "mcp-apps", app.invocationId, "audit.jsonl"),
+    ).then(() => true, () => false)));
+    expect(staleActiveFiles.filter(Boolean).length).toBeLessThan(staleApps.length);
+    const aggregateBytes = (await Promise.all([...staleApps, freshApp].map(async (app) => (
+      await auditFileBytes(join(artifactDir, "mcp-apps", app.invocationId))
+    )))).reduce((sum, bytes) => sum + bytes, 0);
+    expect(aggregateBytes).toBeLessThanOrEqual(auditStorageMaxBytes);
+    expect(await auditContents(join(artifactDir, "mcp-apps", freshApp.invocationId)))
+      .toContain('"phase":"completed"');
+    await restartedService.dispose();
+  });
+
+  it("remedies an oversized target rotation during initialization without deleting its active audit", async () => {
+    const artifactDir = await tempDir();
+    const service = createMcpAppService({
+      artifactDir,
+      auditMaxBytes: 1_024,
+      auditRetainedFiles: 1,
+      auditStorageMaxBytes: 4_096,
+    });
+    const live = connection("connection-audit-oversized-rotation");
+    const host = await hostFor(service, "run-audit-oversized-rotation", "conversation");
+    const app = (await host.register(registration(live))).part as AgentReplyMcpAppPart;
+    const directory = join(artifactDir, "mcp-apps", app.invocationId);
+    await Promise.all([
+      writeFile(join(directory, "audit.jsonl"), "existing active audit\n"),
+      writeFile(join(directory, "audit.1.jsonl"), Buffer.alloc(1_025, 0x78)),
+    ]);
+
+    await expect(service.request({
+      conversationId: "conversation",
+      invocationId: app.invocationId,
+      connectionId: app.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    })).resolves.toMatchObject({ ok: true });
+    expect(live.callTool).toHaveBeenCalledTimes(1);
+    await expect(access(join(directory, "audit.1.jsonl"))).rejects.toMatchObject({ code: "ENOENT" });
+    const audit = await readFile(join(directory, "audit.jsonl"), "utf8");
+    expect(audit).toContain("existing active audit");
+    expect(audit).toContain('"phase":"completed"');
+    await service.dispose();
+  });
+
+  it("reserves completion capacity before an irreversible tool call under deterministic contention", async () => {
+    const artifactDir = await tempDir();
+    const clock = new Date("2026-08-15T12:00:00.000Z");
+    const service = createMcpAppService({
+      artifactDir,
+      now: () => clock,
+      auditMaxBytes: 1_024,
+      auditRetainedFiles: 1,
+      auditStorageMaxBytes: 2_048,
+    });
+    const entered = deferred();
+    const release = deferred();
+    const irreversibleLive = connection("a");
+    irreversibleLive.callTool.mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      return { ok: true };
+    });
+    const pressureLive = connection("b");
+    const irreversibleHost = await hostFor(service, "run-audit-reserved-completion", "conversation");
+    const pressureHost = await hostFor(service, "run-audit-reserved-pressure", "conversation");
+    const irreversibleApp = (await irreversibleHost.register(registration(irreversibleLive, {
+      toolCallId: "call-audit-reserved-completion",
+      resourceUri: "ui://widgets/audit-reserved-completion",
+    }))).part as AgentReplyMcpAppPart;
+    const pressureApp = (await pressureHost.register(registration(pressureLive, {
+      toolCallId: "call-audit-reserved-pressure",
+      resourceUri: "ui://widgets/audit-reserved-pressure",
+    }))).part as AgentReplyMcpAppPart;
+    const irreversibleDirectory = join(artifactDir, "mcp-apps", irreversibleApp.invocationId);
+    const pressureDirectory = join(artifactDir, "mcp-apps", pressureApp.invocationId);
+    await Promise.all([
+      writeFile(join(irreversibleDirectory, "audit.jsonl"), Buffer.alloc(850, 0x61)),
+      writeFile(join(pressureDirectory, "audit.jsonl"), Buffer.alloc(650, 0x62)),
+    ]);
+
+    const irreversibleRequest = service.request({
+      conversationId: "conversation",
+      invocationId: irreversibleApp.invocationId,
+      connectionId: irreversibleApp.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart", arguments: { irreversible: true } },
+      confirmed: true,
+    }).then((value) => ({ status: "resolved" as const, value }), (error: unknown) => ({
+      status: "rejected" as const,
+      code: (error as { code?: string }).code,
+    }));
+    await entered.promise;
+    const pressureResult = await service.request({
+      conversationId: "conversation",
+      invocationId: pressureApp.invocationId,
+      connectionId: pressureApp.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    }).then((value) => ({ status: "resolved" as const, value }), (error: unknown) => ({
+      status: "rejected" as const,
+      code: (error as { code?: string }).code,
+    }));
+    release.resolve();
+    const irreversibleResult = await irreversibleRequest;
+
+    expect(pressureResult).toEqual({ status: "rejected", code: "app_audit_failed" });
+    expect(pressureLive.callTool).not.toHaveBeenCalled();
+    expect(irreversibleResult).toMatchObject({ status: "resolved", value: { ok: true } });
+    expect(irreversibleLive.callTool).toHaveBeenCalledTimes(1);
+    const records = await auditContents(irreversibleDirectory);
+    expect(records).toContain('"phase":"confirmed"');
+    expect(records).toContain('"phase":"completed"');
+    await service.dispose();
+  });
+
+  it("releases exactly the reserved completion bytes when the tool fails before completion", async () => {
+    const artifactDir = await tempDir();
+    const clock = new Date("2026-08-15T12:00:00.000Z");
+    const service = createMcpAppService({
+      artifactDir,
+      now: () => clock,
+      auditMaxBytes: 1_024,
+      auditRetainedFiles: 1,
+      auditStorageMaxBytes: 2_048,
+    });
+    const failedLive = connection("c");
+    failedLive.callTool.mockRejectedValueOnce(new Error("tool transport closed"));
+    const healthyLive = connection("d");
+    const failedHost = await hostFor(service, "run-audit-release-failed", "conversation");
+    const healthyHost = await hostFor(service, "run-audit-release-healthy", "conversation");
+    const failedApp = (await failedHost.register(registration(failedLive, {
+      toolCallId: "call-audit-release-failed",
+      resourceUri: "ui://widgets/audit-release-failed",
+    }))).part as AgentReplyMcpAppPart;
+    const healthyApp = (await healthyHost.register(registration(healthyLive, {
+      toolCallId: "call-audit-release-healthy",
+      resourceUri: "ui://widgets/audit-release-healthy",
+    }))).part as AgentReplyMcpAppPart;
+    const auditLineBytes = (app: AgentReplyMcpAppPart, phase: "confirmed" | "completed") => Buffer.byteLength(
+      `${JSON.stringify({
+        at: clock.toISOString(),
+        invocationId: app.invocationId,
+        connectionId: app.connectionId,
+        method: "tools/call",
+        details: { phase },
+      })}\n`,
+      "utf8",
+    );
+    const failedLineBytes = auditLineBytes(failedApp, "confirmed");
+    const healthyPairBytes = auditLineBytes(healthyApp, "confirmed")
+      + auditLineBytes(healthyApp, "completed");
+    const failedDirectory = join(artifactDir, "mcp-apps", failedApp.invocationId);
+    const healthyDirectory = join(artifactDir, "mcp-apps", healthyApp.invocationId);
+    await Promise.all([
+      writeFile(join(failedDirectory, "audit.jsonl"), Buffer.alloc(1_024 - failedLineBytes, 0x66)),
+      writeFile(join(healthyDirectory, "audit.jsonl"), Buffer.alloc(1_024 - healthyPairBytes, 0x68)),
+    ]);
+
+    await expect(service.request({
+      conversationId: "conversation",
+      invocationId: failedApp.invocationId,
+      connectionId: failedApp.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    })).rejects.toMatchObject({ code: "app_connection_closed" });
+    await expect(service.request({
+      conversationId: "conversation",
+      invocationId: healthyApp.invocationId,
+      connectionId: healthyApp.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    })).resolves.toMatchObject({ ok: true });
+
+    expect(failedLive.callTool).toHaveBeenCalledTimes(1);
+    expect(healthyLive.callTool).toHaveBeenCalledTimes(1);
+    await expect(stat(join(failedDirectory, "audit.jsonl"))).resolves.toMatchObject({ size: 1_024 });
+    await expect(stat(join(healthyDirectory, "audit.jsonl"))).resolves.toMatchObject({ size: 1_024 });
+    await service.dispose();
+  });
+
   it("never reclaims another app's active confirmation while its tool call is in flight", async () => {
     const artifactDir = await tempDir();
     const clock = new Date("2026-08-15T12:00:00.000Z");
@@ -1037,6 +1288,74 @@ describe("MCP Apps registry", () => {
     })).rejects.toMatchObject({ code: "app_audit_failed" });
     expect(poisonedLive.callTool).not.toHaveBeenCalled();
     await service.dispose();
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "preserves unrelated history when two real unreadable owners make admission impossible and recovers in place",
+    async () => {
+      const artifactDir = await tempDir();
+      const service = createMcpAppService({
+        artifactDir,
+        auditMaxBytes: 1_024,
+        auditRetainedFiles: 1,
+        auditStorageMaxBytes: 3_072,
+      });
+      const healthyLive = connection("connection-audit-real-poison-healthy");
+      const healthyHost = await hostFor(service, "run-audit-real-poison-healthy", "conversation");
+      const healthyApp = (await healthyHost.register(registration(healthyLive, {
+        toolCallId: "call-audit-real-poison-healthy",
+        resourceUri: "ui://widgets/audit-real-poison-healthy",
+      }))).part as AgentReplyMcpAppPart;
+      const root = join(artifactDir, "mcp-apps");
+      const poisonedDirectories = [
+        join(root, "10000000-0000-4000-8000-000000000001"),
+        join(root, "10000000-0000-4000-8000-000000000002"),
+      ];
+      const unrelatedDirectory = join(root, "10000000-0000-4000-8000-000000000003");
+      const unrelatedHistory = join(unrelatedDirectory, "audit.1.jsonl");
+      await Promise.all([...poisonedDirectories, unrelatedDirectory]
+        .map(async (directory) => await mkdir(directory)));
+      await Promise.all([
+        ...poisonedDirectories.map(async (directory) => await writeFile(
+          join(directory, "audit.jsonl"),
+          Buffer.alloc(128, 0x70),
+        )),
+        writeFile(unrelatedHistory, Buffer.alloc(600, 0x68)),
+      ]);
+      await Promise.all(poisonedDirectories.map(async (directory) => await chmod(directory, 0o000)));
+
+      try {
+        await expect(service.request({
+          conversationId: "conversation",
+          invocationId: healthyApp.invocationId,
+          connectionId: healthyApp.connectionId,
+          method: "tools/call",
+          params: { name: "refresh_chart" },
+          confirmed: true,
+        })).rejects.toMatchObject({ code: "app_audit_failed" });
+        expect(healthyLive.callTool).not.toHaveBeenCalled();
+        await expect(stat(unrelatedHistory)).resolves.toMatchObject({ size: 600 });
+      } finally {
+        await Promise.all(poisonedDirectories.map(async (directory) => await chmod(directory, 0o700)));
+      }
+
+      await expect(service.request({
+        conversationId: "conversation",
+        invocationId: healthyApp.invocationId,
+        connectionId: healthyApp.connectionId,
+        method: "tools/call",
+        params: { name: "refresh_chart" },
+        confirmed: true,
+      })).resolves.toMatchObject({ ok: true });
+      expect(healthyLive.callTool).toHaveBeenCalledTimes(1);
+      await expect(stat(unrelatedHistory)).resolves.toMatchObject({ size: 600 });
+      for (const directory of poisonedDirectories) {
+        await expect(stat(join(directory, "audit.jsonl"))).resolves.toMatchObject({ size: 128 });
+      }
+      expect(await auditContents(join(root, healthyApp.invocationId)))
+        .toContain('"phase":"completed"');
+      await service.dispose();
     },
   );
 

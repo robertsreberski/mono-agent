@@ -139,22 +139,39 @@ interface McpAppAuditStorageState extends McpAppAuditStorageOptions {
   readonly root: string;
   readonly beforeOperation: McpAppServiceOptions["beforeAuditStorageOperation"];
   readonly owners: Map<string, McpAppAuditOwner>;
-  totalBytes: number;
+  readonly reservations: Map<symbol, { readonly directory: string; readonly bytes: number }>;
+  readonly protectionPredicates: Set<(directory: string) => boolean>;
   initialized: boolean;
   gate: Promise<void>;
 }
 
-interface McpAppAuditStorage {
-  append(directory: string, line: string): Promise<void>;
-  remove(directory: string, operation: () => Promise<void>): Promise<void>;
+interface McpAppAuditCompletionReservation {
+  append(line: string): Promise<void>;
+  release(): Promise<void>;
 }
 
+interface McpAppAuditStorage {
+  append(directory: string, line: string): Promise<void>;
+  reserveAppend(
+    directory: string,
+    line: string,
+    reservedBytes: number,
+  ): Promise<McpAppAuditCompletionReservation>;
+  remove(directory: string, operation: () => Promise<void>): Promise<void>;
+  dispose(): void;
+}
+
+// Intentionally process-global: services sharing one root must share the same
+// append gate and exactly one initialization inventory. Disposing/re-creating a
+// service unregisters only its live/protected-owner predicate; clearing this
+// state would split serialization and repeat the bounded root inventory.
 const mcpAppAuditStorageStates = new Map<string, McpAppAuditStorageState>();
 
 function mcpAppAuditStorageFor(
   root: string,
   options: McpAppAuditStorageOptions,
   beforeOperation: McpAppServiceOptions["beforeAuditStorageOperation"],
+  isOwnerProtected: (directory: string) => boolean,
 ): McpAppAuditStorage {
   const canonicalRoot = resolve(root);
   const existing = mcpAppAuditStorageStates.get(canonicalRoot);
@@ -174,16 +191,57 @@ function mcpAppAuditStorageFor(
     ...options,
     beforeOperation,
     owners: new Map<string, McpAppAuditOwner>(),
-    totalBytes: 0,
+    reservations: new Map<symbol, { readonly directory: string; readonly bytes: number }>(),
+    protectionPredicates: new Set<(directory: string) => boolean>(),
     initialized: false,
     gate: Promise.resolve(),
   };
   mcpAppAuditStorageStates.set(canonicalRoot, state);
+  state.protectionPredicates.add(isOwnerProtected);
+  let disposed = false;
   return {
     append: async (directory, line) => await runMcpAppAuditExclusive(
       state,
       async () => await appendMcpAppAudit(state, resolve(directory), line),
     ),
+    reserveAppend: async (directory, line, reservedBytes) => {
+      if (!Number.isSafeInteger(reservedBytes) || reservedBytes < 0 || reservedBytes > state.fileMaxBytes) {
+        throw new RangeError("MCP App audit completion reservation is invalid.");
+      }
+      const canonicalDirectory = resolve(directory);
+      const token = Symbol("mcp-app-audit-completion");
+      await runMcpAppAuditExclusive(state, async () => {
+        await appendMcpAppAudit(state, canonicalDirectory, line, reservedBytes);
+        state.reservations.set(token, { directory: canonicalDirectory, bytes: reservedBytes });
+      });
+      let settled = false;
+      return {
+        append: async (completionLine) => {
+          if (settled) throw new Error("MCP App audit completion reservation was already released.");
+          settled = true;
+          await runMcpAppAuditExclusive(state, async () => {
+            const reservation = state.reservations.get(token);
+            if (reservation === undefined) {
+              throw new Error("MCP App audit completion reservation is unavailable.");
+            }
+            const incomingBytes = Buffer.byteLength(completionLine, "utf8");
+            if (incomingBytes > reservation.bytes) {
+              state.reservations.delete(token);
+              throw new Error("MCP App audit completion exceeded its reserved bytes.");
+            }
+            state.reservations.delete(token);
+            await appendMcpAppAudit(state, canonicalDirectory, completionLine);
+          });
+        },
+        release: async () => {
+          if (settled) return;
+          settled = true;
+          await runMcpAppAuditExclusive(state, async () => {
+            state.reservations.delete(token);
+          });
+        },
+      };
+    },
     remove: async (directory, operation) => await runMcpAppAuditExclusive(
       state,
       async () => {
@@ -194,6 +252,11 @@ function mcpAppAuditStorageFor(
         replaceMcpAppAuditOwner(state, canonicalDirectory, undefined);
       },
     ),
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      state.protectionPredicates.delete(isOwnerProtected);
+    },
   };
 }
 
@@ -218,10 +281,12 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
   const invocationProtectionsByRun = new Map<string, Map<string, ReplyArtifactStorageProtection>>();
   const liveByInvocation = new Map<string, LiveInvocation>();
   const connections = new Map<string, RetainedConnection>();
+  const auditProtectionCounts = new Map<string, number>();
   const responseContext = new AsyncLocalStorage<{ readonly runIds: Set<string> }>();
   const runOwners = new Map<string, { readonly runIds: Set<string> } | undefined>();
   const bridgeRates = new Map<string, { startedAtMs: number; count: number }>();
   const auditQueues = new Map<string, Promise<void>>();
+  const pendingAuditCompletions = new Set<{ complete(): Promise<void>; release(): Promise<void> }>();
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
   if (!Number.isFinite(retentionDays) || retentionDays <= 0) {
@@ -261,7 +326,14 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
     maxBytes: auditStorageMaxBytes,
     fileMaxBytes: auditMaxBytes,
     retainedFiles: auditRetainedFiles,
-  }, options.beforeAuditStorageOperation);
+  }, options.beforeAuditStorageOperation, (directory) => {
+    const invocationId = basename(directory);
+    if (liveByInvocation.has(invocationId) || auditProtectionCounts.has(invocationId)) return true;
+    for (const protections of invocationProtectionsByRun.values()) {
+      if (protections.has(invocationId)) return true;
+    }
+    return false;
+  });
 
   const createExtension: RuntimeOptionsExtension = async ({ request, runId }) => {
     await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
@@ -428,9 +500,23 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
     partsByIdentityByRun.set(runId, byIdentity);
   }
 
+  function protectAuditInvocation(invocationId: string): () => void {
+    auditProtectionCounts.set(invocationId, (auditProtectionCounts.get(invocationId) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const count = auditProtectionCounts.get(invocationId) ?? 0;
+      if (count <= 1) auditProtectionCounts.delete(invocationId);
+      else auditProtectionCounts.set(invocationId, count - 1);
+    };
+  }
+
   async function load(request: AgentMcpAppLoadRequest): Promise<AgentMcpAppResource> {
-    const protection = await storage.protect("mcp-apps", request.invocationId);
+    const releaseAuditProtection = protectAuditInvocation(request.invocationId);
+    let protection: ReplyArtifactStorageProtection | undefined;
     try {
+      protection = await storage.protect("mcp-apps", request.invocationId);
       await evictIdleConnections();
       const manifest = await readManifest(root, request.invocationId);
       authorizeApp(manifest, request);
@@ -455,13 +541,16 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
         connected,
       };
     } finally {
-      await protection.release();
+      await protection?.release();
+      releaseAuditProtection();
     }
   }
 
   async function request(input: AgentMcpAppHostRequest): Promise<unknown> {
-    const protection = await storage.protect("mcp-apps", input.invocationId);
+    const releaseAuditProtection = protectAuditInvocation(input.invocationId);
+    let protection: ReplyArtifactStorageProtection | undefined;
     try {
+      protection = await storage.protect("mcp-apps", input.invocationId);
       await evictIdleConnections();
       const manifest = await readManifest(root, input.invocationId);
       authorizeApp(manifest, input);
@@ -489,17 +578,18 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
         if (name === undefined || !live.appVisibleTools.has(name)) {
           throw new CodedError("app_tool_forbidden", "The MCP App requested a tool that is not visible to apps.");
         }
-        await appendAudit(manifest, input.method, "confirmed");
+        const completionAudit = await reserveAuditCompletion(manifest, input.method);
         let result: unknown;
         try {
           result = await retained.connection.callTool(name, params?.arguments ?? {});
         } catch {
+          await completionAudit.release().catch(() => undefined);
           await closeConnection(manifest.connectionId);
           throw new CodedError("app_connection_closed", "The originating MCP connection closed during the tool call.");
         }
         touchConnection(manifest.connectionId);
         try {
-          await appendAudit(manifest, input.method, "completed");
+          await completionAudit.complete();
         } catch {
           throw new CodedError(
             "app_audit_incomplete",
@@ -545,7 +635,8 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
         reason: "Model-context updates require a new user-authorized turn and are not applied to a completed run.",
       };
     } finally {
-      await protection.release();
+      await protection?.release();
+      releaseAuditProtection();
     }
   }
 
@@ -679,37 +770,96 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
     method: string,
     phase: "confirmed" | "completed" | "requested" | "rejected",
   ): Promise<void> {
-    const previous = auditQueues.get(manifest.invocationId) ?? Promise.resolve();
-    const next = previous.catch(() => undefined).then(async () => {
-      const baseEntry = {
-        at: now().toISOString(),
-        invocationId: manifest.invocationId,
-        connectionId: manifest.connectionId,
-        method,
-      };
-      const line = `${JSON.stringify({
-        ...baseEntry,
-        details: { phase },
-      })}\n`;
-      if (Buffer.byteLength(line, "utf8") > auditMaxBytes) {
-        throw new Error("MCP App audit entry exceeded its configured file ceiling.");
-      }
-      const directory = join(root, manifest.invocationId);
-      await auditStorage.append(directory, line);
+    const line = mcpAppAuditLine(manifest, method, phase);
+    await enqueueAudit(manifest.invocationId, async () => {
+      await auditStorage.append(join(root, manifest.invocationId), line);
     });
-    auditQueues.set(manifest.invocationId, next);
+  }
+
+  async function reserveAuditCompletion(
+    manifest: McpAppManifest,
+    method: string,
+  ): Promise<{ complete(): Promise<void>; release(): Promise<void> }> {
+    const confirmedLine = mcpAppAuditLine(manifest, method, "confirmed");
+    const completionBytes = Buffer.byteLength(mcpAppAuditLine(manifest, method, "completed"), "utf8");
+    const storageReservation = await enqueueAudit(manifest.invocationId, async () => (
+      await auditStorage.reserveAppend(
+        join(root, manifest.invocationId),
+        confirmedLine,
+        completionBytes,
+      )
+    ));
+    let settled = false;
+    let reservation!: { complete(): Promise<void>; release(): Promise<void> };
+    reservation = {
+      complete: async () => {
+        if (settled) throw new Error("MCP App audit completion was already settled.");
+        settled = true;
+        try {
+          const line = mcpAppAuditLine(manifest, method, "completed");
+          await enqueueAudit(manifest.invocationId, async () => await storageReservation.append(line));
+        } catch (error) {
+          await storageReservation.release().catch(() => undefined);
+          throw error;
+        } finally {
+          pendingAuditCompletions.delete(reservation);
+        }
+      },
+      release: async () => {
+        if (settled) return;
+        settled = true;
+        try {
+          await storageReservation.release();
+        } finally {
+          pendingAuditCompletions.delete(reservation);
+        }
+      },
+    };
+    pendingAuditCompletions.add(reservation);
+    return reservation;
+  }
+
+  function mcpAppAuditLine(
+    manifest: McpAppManifest,
+    method: string,
+    phase: "confirmed" | "completed" | "requested" | "rejected",
+  ): string {
+    const line = `${JSON.stringify({
+      at: now().toISOString(),
+      invocationId: manifest.invocationId,
+      connectionId: manifest.connectionId,
+      method,
+      details: { phase },
+    })}\n`;
+    if (Buffer.byteLength(line, "utf8") > auditMaxBytes) {
+      throw new Error("MCP App audit entry exceeded its configured file ceiling.");
+    }
+    return line;
+  }
+
+  async function enqueueAudit<T>(invocationId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = auditQueues.get(invocationId) ?? Promise.resolve();
+    let result!: T;
+    const next = previous.catch(() => undefined).then(async () => {
+      result = await operation();
+    });
+    auditQueues.set(invocationId, next);
     try {
       await next;
+      return result;
     } catch {
       throw new CodedError("app_audit_failed", "The MCP App action could not be recorded safely.");
     } finally {
-      if (auditQueues.get(manifest.invocationId) === next) auditQueues.delete(manifest.invocationId);
+      if (auditQueues.get(invocationId) === next) auditQueues.delete(invocationId);
     }
   }
 
   async function dispose(): Promise<void> {
     if (idleTimer !== undefined) clearTimeout(idleTimer);
     idleTimer = undefined;
+    await Promise.allSettled([...pendingAuditCompletions].map(async (reservation) => {
+      await reservation.release();
+    }));
     await Promise.allSettled([...connections.keys()].map(async (id) => await closeConnection(id)));
     await Promise.allSettled([...invocationProtectionsByRun.values()].flatMap((protections) => (
       [...protections.values()].map(async (protection) => await protection.release())
@@ -719,9 +869,12 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
     partsByIdentityByRun.clear();
     invocationIdsByRun.clear();
     invocationProtectionsByRun.clear();
+    auditProtectionCounts.clear();
     runOwners.clear();
     bridgeRates.clear();
     auditQueues.clear();
+    pendingAuditCompletions.clear();
+    auditStorage.dispose();
   }
 
   function wrapResponder(responder: AgentResponder): AgentResponder {
@@ -1089,6 +1242,7 @@ async function appendMcpAppAudit(
   state: McpAppAuditStorageState,
   directory: string,
   line: string,
+  additionalReservedBytes = 0,
 ): Promise<void> {
   assertMcpAppAuditDirectory(state, directory);
   const incomingBytes = Buffer.byteLength(line, "utf8");
@@ -1098,33 +1252,17 @@ async function appendMcpAppAudit(
 
   await initializeMcpAppAuditStorage(state, directory);
   let owner = await reconcileTargetMcpAppAuditOwner(state, directory);
+  await reinventoryPoisonedMcpAppAuditOwners(state, directory);
   const currentBytes = owner.files.get(0)?.size ?? 0;
   const rotates = currentBytes > 0 && currentBytes > state.fileMaxBytes - incomingBytes;
   const releasedFile = rotates ? owner.files.get(state.retainedFiles) : undefined;
-  const attempted = new Set<string>();
-  while (projectedMcpAppAuditBytes(state, releasedFile, incomingBytes) > state.maxBytes) {
-    const candidate = nextMcpAppAuditReclamationCandidate(
-      state,
-      directory,
-      releasedFile,
-      incomingBytes,
-      attempted,
-    );
-    if (candidate === undefined) break;
-    attempted.add(candidate.path);
-    try {
-      await removeMcpAppAuditPath(state, candidate.path, { force: true });
-      removeTrackedMcpAppAuditFile(state, candidate);
-    } catch {
-      markMcpAppAuditFileUnreclaimable(state, candidate);
-      if (candidate.directory === directory) {
-        throw new Error("MCP App audit history could not be reclaimed safely.");
-      }
-    }
-  }
-  if (projectedMcpAppAuditBytes(state, releasedFile, incomingBytes) > state.maxBytes) {
-    throw new Error("MCP App audit storage is full.");
-  }
+  await admitMcpAppAuditAppend(
+    state,
+    directory,
+    releasedFile,
+    incomingBytes,
+    additionalReservedBytes,
+  );
 
   if (rotates) await rotateTrackedMcpAppAuditFiles(state, directory);
   owner = state.owners.get(directory) ?? emptyMcpAppAuditOwner(directory);
@@ -1160,8 +1298,88 @@ async function appendMcpAppAudit(
     reservedBytes: 0,
     poisoned: false,
   });
-  if (state.totalBytes > state.maxBytes) {
+  if (projectedMcpAppAuditBytes(state, undefined, 0, additionalReservedBytes) > state.maxBytes) {
     throw new Error("MCP App audit storage exceeded its aggregate ceiling.");
+  }
+}
+
+async function admitMcpAppAuditAppend(
+  state: McpAppAuditStorageState,
+  targetDirectory: string,
+  naturallyReleased: McpAppAuditFile | undefined,
+  incomingBytes: number,
+  additionalReservedBytes: number,
+): Promise<void> {
+  if (
+    projectedMcpAppAuditBytes(
+      state,
+      naturallyReleased,
+      incomingBytes,
+      additionalReservedBytes,
+    ) <= state.maxBytes
+  ) return;
+
+  const attempted = new Set<string>();
+  while (
+    projectedMcpAppAuditBytes(
+      state,
+      naturallyReleased,
+      incomingBytes,
+      additionalReservedBytes,
+    ) > state.maxBytes
+  ) {
+    const reclaimablePaths = mcpAppAuditReclaimablePaths(
+      state,
+      targetDirectory,
+      naturallyReleased,
+      attempted,
+    );
+    if (
+      projectedMcpAppAuditBytes(
+        state,
+        naturallyReleased,
+        incomingBytes,
+        additionalReservedBytes,
+        reclaimablePaths,
+      ) > state.maxBytes
+    ) {
+      throw new Error("MCP App audit storage is full.");
+    }
+    const candidate = nextMcpAppAuditReclamationCandidate(
+      state,
+      targetDirectory,
+      naturallyReleased,
+      incomingBytes,
+      attempted,
+    );
+    if (candidate === undefined) break;
+    attempted.add(candidate.path);
+    try {
+      const removed = await removeMcpAppAuditPathUnlessProtected(
+        state,
+        candidate.path,
+        { force: true },
+        candidate.directory,
+        candidate.index,
+      );
+      if (!removed) continue;
+      removeTrackedMcpAppAuditFile(state, candidate);
+    } catch {
+      markMcpAppAuditFileUnreclaimable(state, candidate);
+      if (candidate.directory === targetDirectory) {
+        throw new Error("MCP App audit history could not be reclaimed safely.");
+      }
+    }
+  }
+  if (
+    projectedMcpAppAuditBytes(
+      state,
+      naturallyReleased,
+      incomingBytes,
+      additionalReservedBytes,
+    ) > state.maxBytes
+  ) {
+    throw new Error("MCP App audit storage is full.");
   }
 }
 
@@ -1183,11 +1401,30 @@ async function initializeMcpAppAuditStorage(
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (!entry.isDirectory() || !APP_ID.test(entry.name)) continue;
     const directory = join(state.root, entry.name);
-    if (directory === targetDirectory) continue;
-    const owner = await inventoryMcpAppAuditOwner(state, directory, false);
-    if (mcpAppAuditOwnerBytes(owner) > 0) replaceMcpAppAuditOwner(state, directory, owner);
+    const owner = await inventoryMcpAppAuditOwner(state, directory, directory === targetDirectory);
+    if (directory === targetDirectory || mcpAppAuditOwnerBytes(owner) > 0) {
+      replaceMcpAppAuditOwner(state, directory, owner);
+    }
   }
   state.initialized = true;
+}
+
+async function reinventoryPoisonedMcpAppAuditOwners(
+  state: McpAppAuditStorageState,
+  targetDirectory: string,
+): Promise<void> {
+  const poisonedDirectories = [...state.owners.values()]
+    .filter((owner) => owner.poisoned && owner.directory !== targetDirectory)
+    .map((owner) => owner.directory)
+    .sort((left, right) => left.localeCompare(right));
+  for (const directory of poisonedDirectories) {
+    const owner = await inventoryMcpAppAuditOwner(state, directory, false);
+    replaceMcpAppAuditOwner(
+      state,
+      directory,
+      mcpAppAuditOwnerBytes(owner) === 0 ? undefined : owner,
+    );
+  }
 }
 
 async function reconcileTargetMcpAppAuditOwner(
@@ -1231,17 +1468,40 @@ async function inventoryMcpAppAuditOwner(
     }
     if (!fileStat.isFile() || fileStat.isSymbolicLink()) {
       if (strict) throw new Error("MCP App audit storage contains an unsafe file.");
+      if (index === 0 && isMcpAppAuditOwnerProtected(state, directory)) {
+        return poisonedMcpAppAuditOwner(state, directory, mcpAppAuditFilesBytes(files));
+      }
       try {
-        await removeMcpAppAuditPath(state, path, { recursive: true, force: true });
+        const removed = await removeMcpAppAuditPathUnlessProtected(
+          state,
+          path,
+          { recursive: true, force: true },
+          directory,
+          index,
+        );
+        if (!removed) {
+          return poisonedMcpAppAuditOwner(state, directory, mcpAppAuditFilesBytes(files));
+        }
       } catch {
         return poisonedMcpAppAuditOwner(state, directory, mcpAppAuditFilesBytes(files));
       }
       continue;
     }
-    if (index > state.retainedFiles || fileStat.size > state.fileMaxBytes) {
-      if (strict && fileStat.size > state.fileMaxBytes) {
+    if (index === 0 && fileStat.size > state.fileMaxBytes) {
+      if (strict) {
         throw new Error("MCP App audit file exceeded its configured ceiling.");
       }
+      files.set(index, {
+        directory,
+        index,
+        size: fileStat.size,
+        path,
+        modifiedAtMs: fileStat.mtimeMs,
+        reclaimable: true,
+      });
+      continue;
+    }
+    if (index > state.retainedFiles || fileStat.size > state.fileMaxBytes) {
       try {
         await removeMcpAppAuditPath(state, path, { force: true });
       } catch {
@@ -1274,13 +1534,26 @@ function nextMcpAppAuditReclamationCandidate(
   attempted: ReadonlySet<string>,
 ): McpAppAuditFile | undefined {
   const fairShare = Math.floor(state.maxBytes / Math.max(1, state.owners.size));
+  const eligible = [...state.owners.values()].flatMap((owner) => [...owner.files.values()])
+    .filter((candidate) => isMcpAppAuditReclamationCandidate(
+      state,
+      candidate,
+      targetDirectory,
+      naturallyReleased,
+      attempted,
+    ));
+  const tier = eligible.some((candidate) => candidate.index > 0) ? "rotated" : "inactive-active";
   const candidates = [...state.owners.entries()].flatMap(([directory, owner]) => {
     const file = [...owner.files.values()]
       .filter((candidate) => (
-        candidate.index > 0
-        && candidate.reclaimable
-        && candidate.path !== naturallyReleased?.path
-        && !attempted.has(candidate.path)
+        isMcpAppAuditReclamationCandidate(
+          state,
+          candidate,
+          targetDirectory,
+          naturallyReleased,
+          attempted,
+        )
+        && (tier === "rotated" ? candidate.index > 0 : candidate.index === 0)
       ))
       .sort(compareMcpAppAuditAge)[0];
     if (file === undefined) return [];
@@ -1303,18 +1576,77 @@ function nextMcpAppAuditReclamationCandidate(
   return pool[0]!.file;
 }
 
+function mcpAppAuditReclaimablePaths(
+  state: McpAppAuditStorageState,
+  targetDirectory: string,
+  naturallyReleased: McpAppAuditFile | undefined,
+  attempted: ReadonlySet<string>,
+): ReadonlySet<string> {
+  return new Set([...state.owners.values()].flatMap((owner) => [...owner.files.values()])
+    .filter((candidate) => isMcpAppAuditReclamationCandidate(
+      state,
+      candidate,
+      targetDirectory,
+      naturallyReleased,
+      attempted,
+    ))
+    .map((candidate) => candidate.path));
+}
+
+function isMcpAppAuditReclamationCandidate(
+  state: McpAppAuditStorageState,
+  candidate: McpAppAuditFile,
+  targetDirectory: string,
+  naturallyReleased: McpAppAuditFile | undefined,
+  attempted: ReadonlySet<string>,
+): boolean {
+  if (
+    !candidate.reclaimable
+    || candidate.path === naturallyReleased?.path
+    || attempted.has(candidate.path)
+  ) return false;
+  if (candidate.index > 0) return true;
+  return candidate.directory !== targetDirectory
+    && !isMcpAppAuditOwnerProtected(state, candidate.directory);
+}
+
+function isMcpAppAuditOwnerProtected(state: McpAppAuditStorageState, directory: string): boolean {
+  for (const reservation of state.reservations.values()) {
+    if (reservation.directory === directory) return true;
+  }
+  for (const predicate of state.protectionPredicates) {
+    try {
+      if (predicate(directory)) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
 function projectedMcpAppAuditBytes(
   state: McpAppAuditStorageState,
   naturallyReleased: McpAppAuditFile | undefined,
   incomingBytes: number,
+  additionalReservedBytes = 0,
+  excludedPaths: ReadonlySet<string> = new Set<string>(),
 ): number {
-  const trackedReleased = naturallyReleased === undefined
-    ? undefined
-    : state.owners.get(naturallyReleased.directory)?.files.get(naturallyReleased.index);
-  const releasedBytes = naturallyReleased !== undefined && trackedReleased?.path === naturallyReleased.path
-    ? trackedReleased.size
-    : 0;
-  return addMcpAppAuditBytes(Math.max(0, state.totalBytes - releasedBytes), incomingBytes);
+  const ceiling = state.maxBytes + 1;
+  let total = 0;
+  const add = (bytes: number): void => {
+    total = Math.min(ceiling, addMcpAppAuditBytes(total, bytes));
+  };
+  for (const owner of state.owners.values()) {
+    if (owner.poisoned) add(Math.min(state.maxBytes, owner.reservedBytes));
+    for (const file of owner.files.values()) {
+      if (file.path === naturallyReleased?.path || excludedPaths.has(file.path)) continue;
+      add(file.size);
+    }
+  }
+  for (const reservation of state.reservations.values()) add(reservation.bytes);
+  add(incomingBytes);
+  add(additionalReservedBytes);
+  return total;
 }
 
 function emptyMcpAppAuditOwner(directory: string): McpAppAuditOwner {
@@ -1330,7 +1662,10 @@ function poisonedMcpAppAuditOwner(
   return {
     directory,
     files: new Map(),
-    reservedBytes: Math.max(ownerCapacity, minimumBytes),
+    // Unknown owners consume their full safe owner capacity, while the
+    // aggregate projection saturates just above maxBytes. More poisoned owners
+    // can therefore never overflow accounting or create admission headroom.
+    reservedBytes: Math.min(state.maxBytes, Math.max(ownerCapacity, minimumBytes)),
     poisoned: true,
   };
 }
@@ -1358,16 +1693,11 @@ function replaceMcpAppAuditOwner(
   directory: string,
   owner: McpAppAuditOwner | undefined,
 ): void {
-  const previous = state.owners.get(directory);
-  if (previous !== undefined) {
-    state.totalBytes = Math.max(0, state.totalBytes - mcpAppAuditOwnerBytes(previous));
-  }
   if (owner === undefined) {
     state.owners.delete(directory);
     return;
   }
   state.owners.set(directory, owner);
-  state.totalBytes = addMcpAppAuditBytes(state.totalBytes, mcpAppAuditOwnerBytes(owner));
 }
 
 function removeTrackedMcpAppAuditFile(
@@ -1490,6 +1820,33 @@ async function removeMcpAppAuditPath(
 ): Promise<void> {
   await beforeMcpAppAuditOperation(state, "remove", path);
   await rm(path, options);
+}
+
+async function removeMcpAppAuditPathUnlessProtected(
+  state: McpAppAuditStorageState,
+  path: string,
+  options: { readonly recursive?: boolean; readonly force?: boolean },
+  directory: string,
+  index: number,
+): Promise<boolean> {
+  await beforeMcpAppAuditOperation(state, "remove", path);
+  if (options.recursive !== true) {
+    const [directoryStat, fileStat] = await Promise.all([
+      lstatMcpAppAuditPath(state, directory),
+      lstatMcpAppAuditPath(state, path),
+    ]);
+    if (
+      !directoryStat.isDirectory()
+      || directoryStat.isSymbolicLink()
+      || !fileStat.isFile()
+      || fileStat.isSymbolicLink()
+    ) {
+      throw new Error("MCP App audit reclamation target changed unexpectedly.");
+    }
+  }
+  if (index === 0 && isMcpAppAuditOwnerProtected(state, directory)) return false;
+  await rm(path, options);
+  return true;
 }
 
 async function renameMcpAppAuditPath(
