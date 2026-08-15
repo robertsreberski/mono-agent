@@ -23,6 +23,22 @@ interface SessionToolHistoryDoctorOptions {
 export async function sessionToolHistorySection(
   options: SessionToolHistoryDoctorOptions,
 ): Promise<ValidationSection> {
+  try {
+    return await inspectSessionToolHistorySection(options);
+  } catch (error) {
+    const details = [
+      `Session tool history could not be inspected (${boundedInspectionErrorCode(error)}).`,
+    ];
+    if (!options.requestScopedToolSupported) {
+      details.push("unsupported_route: lifecycle records persist and cold-project, but this direct OpenCode/ACP route cannot expose SessionHistory.");
+    }
+    return { id: "session-tool-history", label: "Session tool history", status: "error", details };
+  }
+}
+
+async function inspectSessionToolHistorySection(
+  options: SessionToolHistoryDoctorOptions,
+): Promise<ValidationSection> {
   const details: string[] = [];
   let status: ValidationStatus = "ok";
   const worsen = (next: ValidationStatus, detail: string): void => {
@@ -78,7 +94,16 @@ export async function sessionToolHistorySection(
     && contentInfo.nlink === 1
     && ownerOnly(contentInfo, 0o600);
   if (!contentSecure) {
-    worsen("error", "Tool history database must be a single-link regular current-user file with mode 0600.");
+    if (contentInfo === undefined && (owner.live === true || owner.initializing === true)) {
+      worsen(
+        "waiting",
+        owner.live === true
+          ? "A live writer owns the sidecar and is still initializing the tool-history database."
+          : "The zero-byte owner database is still initializing before the tool-history database is published.",
+      );
+    } else {
+      worsen("error", "Tool history database must be a single-link regular current-user file with mode 0600.");
+    }
   }
   const journalInfo = await optionalLstat(journalPath);
   let journalSecure = false;
@@ -218,7 +243,7 @@ function inspectOwner(
   path: string,
   info: Awaited<ReturnType<typeof lstat>> | undefined,
   worsen: (status: ValidationStatus, detail: string) => void,
-): { pid?: number; live?: boolean } {
+): { pid?: number; live?: boolean; initializing?: boolean } {
   if (info === undefined) return {};
   if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || !ownerOnly(info, 0o600)) {
     worsen("error", "Tool history owner database must be a single-link regular current-user file with mode 0600.");
@@ -229,7 +254,7 @@ function inspectOwner(
       "waiting",
       "Tool history owner database is a pristine zero-byte file; a writer may still be initializing it, otherwise the next writer can resume initialization safely.",
     );
-    return {};
+    return { initializing: true };
   }
   let database: DatabaseSync | undefined;
   try {
@@ -277,6 +302,11 @@ function pragmaNumber(database: DatabaseSync, name: string): number {
 
 function errno(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : undefined;
+}
+
+function boundedInspectionErrorCode(error: unknown): string {
+  const code = errno(error);
+  return code !== undefined && /^[A-Z][A-Z0-9_]{0,31}$/u.test(code) ? code : "INSPECTION_FAILED";
 }
 
 function reasonOf(error: unknown): string {

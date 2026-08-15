@@ -1,4 +1,4 @@
-import { lstatSync, realpathSync } from "node:fs";
+import { accessSync, constants, lstatSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /** Canonicalize the configured tool-output root without creating it. */
@@ -6,16 +6,13 @@ export function canonicalToolArtifactRoot(path: string): string {
   if (!isAbsolute(path)) throw new TypeError("tool history artifact root must be absolute.");
   const normalized = resolve(path);
   try {
-    const info = lstatSync(normalized);
-    if (info.isSymbolicLink()) return realpathSync(normalized);
-    if (!info.isDirectory()) throw new TypeError("tool history artifact root must be a directory.");
-    return realpathSync(normalized);
+    lstatSync(normalized);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       let existing = dirname(normalized);
       for (;;) {
         try {
-          return resolve(realpathSync(existing), relative(existing, normalized));
+          return resolve(canonicalAccessibleDirectory(existing), relative(existing, normalized));
         } catch (parentError) {
           if ((parentError as NodeJS.ErrnoException).code !== "ENOENT") throw parentError;
           const parent = dirname(existing);
@@ -26,6 +23,19 @@ export function canonicalToolArtifactRoot(path: string): string {
     }
     throw error;
   }
+  // Keep a configured directory alias usable, but resolve it before accepting
+  // the root so a file target, dangling/cyclic link, or inaccessible directory
+  // cannot become a trusted containment boundary.
+  return canonicalAccessibleDirectory(normalized);
+}
+
+function canonicalAccessibleDirectory(path: string): string {
+  const canonical = realpathSync(path);
+  if (!statSync(canonical).isDirectory()) {
+    throw new TypeError("tool history artifact root must be a directory.");
+  }
+  accessSync(canonical, constants.R_OK | constants.X_OK);
+  return canonical;
 }
 
 /** Validate a newly reported artifact without following provider-controlled symlinks. */

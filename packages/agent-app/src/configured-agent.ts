@@ -1179,20 +1179,29 @@ export function lazyConfiguredToolHistory(
         if (observedAttempt !== undefined && !observedAttempt.failed) {
           await observedAttempt.promise.catch(() => undefined);
         }
-        let attempt = selectAttempt(true);
-        let handle = await attempt.promise;
-        try {
-          await handle.writer.resetConversation(logicalConversationId);
-        } catch (error) {
-          const terminalCode = terminalToolHistoryWriterFailureCode(error, handle);
-          if (terminalCode === undefined || attempt !== observedAttempt) throw error;
+        let recoveryRetriesRemaining = 1;
+        for (;;) {
+          const attempt = selectAttempt(true);
+          const handle = await attempt.promise;
+          try {
+            await handle.writer.resetConversation(logicalConversationId);
+          } catch (error) {
+            const terminalCode = terminalToolHistoryWriterFailureCode(error, handle);
+            if (terminalCode === undefined) throw error;
+            invalidate(attempt, terminalCode);
+            if (recoveryRetriesRemaining === 0) throw error;
+            recoveryRetriesRemaining -= 1;
+            continue;
+          }
+          const terminalCode = terminalToolHistoryWriterFailureCode(undefined, handle);
+          if (terminalCode === undefined) return;
           invalidate(attempt, terminalCode);
-          attempt = selectAttempt(true);
-          handle = await attempt.promise;
-          await handle.writer.resetConversation(logicalConversationId);
+          // The reset itself completed, but a closure racing its response still
+          // earns the same single idempotent recovery attempt. A second closure
+          // is left invalidated for the next explicit boundary without looping.
+          if (recoveryRetriesRemaining === 0) return;
+          recoveryRetriesRemaining -= 1;
         }
-        const terminalCode = terminalToolHistoryWriterFailureCode(undefined, handle);
-        if (terminalCode !== undefined) invalidate(attempt, terminalCode);
       });
       resetTail = reset.then(
         () => undefined,

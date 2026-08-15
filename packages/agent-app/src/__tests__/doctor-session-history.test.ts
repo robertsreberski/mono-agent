@@ -66,6 +66,50 @@ describe("sessionToolHistorySection", () => {
     expect(section.details.join("\n")).toMatch(/Tool history: 1 calls, 2 records, 0 tombstones, \d+ retained payload bytes, \d+ database bytes/iu);
   });
 
+  it("returns a bounded path-safe diagnostic when the configured history parent is not a directory", async () => {
+    const root = await tempRoot();
+    await writeFile(root, "private-content-must-not-escape");
+    const configuredHistory = join(root, "private-history-child");
+
+    const section = await sessionToolHistorySection({
+      historyRoot: configuredHistory,
+      requestScopedToolSupported: true,
+    });
+
+    expect(section).toEqual({
+      id: "session-tool-history",
+      label: "Session tool history",
+      status: "error",
+      details: ["Session tool history could not be inspected (ENOTDIR)."],
+    });
+    expect(section.details.join("\n")).not.toContain(configuredHistory);
+    expect(section.details.join("\n")).not.toContain("private-content-must-not-escape");
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "returns a bounded path-safe diagnostic when configured history is inaccessible",
+    async () => {
+      const root = await tempRoot();
+      await mkdir(root, { mode: 0o700 });
+      await chmod(root, 0o000);
+      const section = await (async () => {
+        try {
+          return await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+        } finally {
+          await chmod(root, 0o700);
+        }
+      })();
+
+      expect(section).toEqual({
+        id: "session-tool-history",
+        label: "Session tool history",
+        status: "error",
+        details: ["Session tool history could not be inspected (EACCES)."],
+      });
+      expect(section.details.join("\n")).not.toContain(root);
+    },
+  );
+
   it("treats a crash-stale zero-byte content database as pristine and writer-recoverable", async () => {
     const root = await tempRoot();
     const initialized = await ToolHistoryWriter.open({ root });
@@ -150,6 +194,46 @@ describe("sessionToolHistorySection", () => {
       "An in-flight DELETE journal is present while the live writer initializes the pristine tool-history database.",
     );
     expect(live.details.join("\n")).not.toMatch(/cannot be inspected|foreign tool-history schema|purge/iu);
+  });
+
+  it("treats owner-before-content publication races as waiting but keeps a dead owner fail-visible", async () => {
+    const root = await tempRoot();
+    const toolDirectory = join(root, TOOL_HISTORY_DIRECTORY);
+    const locksDirectory = join(root, ".locks");
+    const ownerPath = join(locksDirectory, TOOL_HISTORY_OWNER_DATABASE);
+    await mkdir(toolDirectory, { recursive: true, mode: 0o700 });
+    await mkdir(locksDirectory, { recursive: true, mode: 0o700 });
+    await writeFile(ownerPath, "", { mode: 0o600 });
+
+    const zeroByteOwner = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(zeroByteOwner.status, zeroByteOwner.details.join("\n")).toBe("waiting");
+    expect(zeroByteOwner.details).toContain(
+      "The zero-byte owner database is still initializing before the tool-history database is published.",
+    );
+    expect(zeroByteOwner.details.join("\n")).not.toContain("Tool history database must be");
+
+    const owner = new DatabaseSync(ownerPath);
+    owner.exec("CREATE TABLE writer_owner (singleton INTEGER PRIMARY KEY CHECK(singleton=1), pid INTEGER NOT NULL, token TEXT NOT NULL, acquired_at_ms INTEGER NOT NULL)");
+    owner.prepare("INSERT INTO writer_owner (singleton,pid,token,acquired_at_ms) VALUES (1,?,?,?)")
+      .run(process.pid, "doctor-owner-before-content", Date.now());
+    owner.close();
+
+    const liveOwner = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(liveOwner.status, liveOwner.details.join("\n")).toBe("waiting");
+    expect(liveOwner.details).toContain(
+      "A live writer owns the sidecar and is still initializing the tool-history database.",
+    );
+    expect(liveOwner.details.join("\n")).not.toContain("Tool history database must be");
+
+    const staleOwner = new DatabaseSync(ownerPath);
+    staleOwner.prepare("UPDATE writer_owner SET pid=? WHERE singleton=1").run(2_147_483_647);
+    staleOwner.close();
+    const stale = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(stale.status, stale.details.join("\n")).toBe("error");
+    expect(stale.details).toContain(
+      "Tool history database must be a single-link regular current-user file with mode 0600.",
+    );
+    expect(stale.details.join("\n")).toContain("Recorded writer owner PID 2147483647 is dead");
   });
 
   it("reports unresolved writer incidents and returns to healthy after matching operations succeed", async () => {

@@ -139,6 +139,7 @@ describe("TurnPresenter", () => {
       name: "Bash",
       content: "bounded output",
       history: {
+        ...({ privatePayload: "persisted-history-secret" } as object),
         recordId: "sth1_result",
         sequence: 2,
         persistence: "persisted",
@@ -149,8 +150,36 @@ describe("TurnPresenter", () => {
       },
     });
 
-    expect(rendered()).toContain("✗ Bash");
-    expect(rendered()).toContain("history persisted · timeout · seq 2 · bounded · 1 artifact · 1 unavailable");
+    const text = rendered();
+    expect(text).toContain("✗ Bash");
+    expect(text.replace(/\s+/gu, " ")).toContain(
+      "history persisted · record sth1_result · timeout · seq 2 · bounded · 1 artifact · 1 unavailable · untrusted historical data",
+    );
+    expect(text).not.toContain("persisted-history-secret");
+  });
+
+  it("renders correlation and trust metadata for failed history persistence without leaking unrelated fields", async () => {
+    const { presenter, rendered } = setup();
+    await presenter.event({ type: "tool_call_started", id: "failed-history-tool", name: "Read" });
+    await presenter.event({
+      type: "tool_call_completed",
+      id: "failed-history-tool",
+      name: "Read",
+      content: "bounded result",
+      history: {
+        ...({ privatePayload: "failed-history-secret" } as object),
+        recordId: "sth1_failed",
+        persistence: "failed",
+        errorCode: "history_writer_closed",
+        untrusted: true,
+      },
+    });
+
+    const text = rendered();
+    expect(text.replace(/\s+/gu, " ")).toContain(
+      "history not persisted (history_writer_closed) · record sth1_failed · untrusted historical data",
+    );
+    expect(text).not.toContain("failed-history-secret");
   });
 
   it("expands thinking on demand with the full text", async () => {
