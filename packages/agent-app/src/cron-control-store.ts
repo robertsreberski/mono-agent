@@ -1330,6 +1330,7 @@ function parseRunNowReceipt(serialized: string): CronOperatorRunSummary | string
     if (legacyRunId !== undefined) return legacyRunId;
     throw new CronControlStoreError("corrupt", "Stored cron run-now idempotency result is invalid.");
   }
+  const sourceReplyPartOutcomes = run.replyPartOutcomes;
   const allowed = new Set([
     "projection", "runId", "jobId", "scheduledAt", "orderedAt", "sequence", "trigger", "status",
     "startedAt", "completedAt", "artifactRunId", "text", "error", "failureKind", "blockedByRunId",
@@ -1347,7 +1348,7 @@ function parseRunNowReceipt(serialized: string): CronOperatorRunSummary | string
       .includes(String(run.status))
     || !Number.isSafeInteger(run.eventCount)
     || Number(run.eventCount) < 0
-    || (run.replyPartOutcomes !== undefined && !isAgentReplyPartDeliveryOutcomes(run.replyPartOutcomes))
+    || (sourceReplyPartOutcomes !== undefined && !isAgentReplyPartDeliveryOutcomes(sourceReplyPartOutcomes))
     || (run.eventsTruncated !== undefined && run.eventsTruncated !== true)) {
     throw new CronControlStoreError("corrupt", "Stored cron run-now idempotency result is invalid.");
   }
@@ -1372,7 +1373,15 @@ function parseRunNowReceipt(serialized: string): CronOperatorRunSummary | string
       || run.fieldsTruncated.some((field) => !truncatedFields.includes(String(field))))) {
     throw new CronControlStoreError("corrupt", "Stored cron run-now idempotency result is invalid.");
   }
-  return run as unknown as CronOperatorRunSummary;
+  const replyPartOutcomes = sourceReplyPartOutcomes === undefined
+    ? undefined
+    : (sourceReplyPartOutcomes as readonly AgentReplyPartDeliveryOutcome[])
+        .slice(0, MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES)
+        .map((outcome) => ({ ...outcome }));
+  return {
+    ...run,
+    ...(replyPartOutcomes === undefined ? {} : { replyPartOutcomes }),
+  } as unknown as CronOperatorRunSummary;
 }
 
 function updateRunNowReceipt(database: DatabaseSync, row: RunRow): void {

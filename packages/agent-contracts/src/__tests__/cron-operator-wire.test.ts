@@ -136,6 +136,92 @@ describe("cron operator wire contract", () => {
     expect(parsed.replyPartOutcomes?.[0]).not.toHaveProperty("capabilityToken");
   });
 
+  it("rejects undefined-then-secret and valid-then-oversized run accessors without invoking them", () => {
+    const sensitive = "/private/report.csv?capabilityToken=secret";
+    const attacks: readonly (readonly unknown[])[] = [
+      [undefined, sensitive],
+      ["bounded", "🙂".repeat(513)],
+    ];
+
+    for (const values of attacks) {
+      let getterReads = 0;
+      const input = summary();
+      Object.defineProperty(input, "text", {
+        configurable: true,
+        enumerable: true,
+        get() {
+          const value = values[Math.min(getterReads, values.length - 1)];
+          getterReads += 1;
+          return value;
+        },
+      });
+
+      expect(() => parseCronOperatorRunSummary(input)).toThrowError(/invalid cron operator/iu);
+      expect(getterReads).toBe(0);
+    }
+  });
+
+  it("uses one Proxy descriptor snapshot without get or prototype access and rebuilds only allowed fields", () => {
+    const sensitive = "/private/report.csv?capabilityToken=secret";
+    let inheritedGetterReads = 0;
+    const prototype = {};
+    Object.defineProperty(prototype, "inheritedSecret", {
+      enumerable: true,
+      get() {
+        inheritedGetterReads += 1;
+        return sensitive;
+      },
+    });
+    const target = Object.assign(Object.create(prototype) as Record<string, unknown>, summary());
+    Object.defineProperty(target, "lateSecret", {
+      configurable: true,
+      enumerable: true,
+      value: sensitive,
+    });
+    let descriptorReads = 0;
+    let getReads = 0;
+    let ownKeysReads = 0;
+    let prototypeTrapReads = 0;
+    const proxied = new Proxy(target, {
+      get(current, property, receiver) {
+        getReads += 1;
+        return Reflect.get(current, property, receiver);
+      },
+      getOwnPropertyDescriptor(current, property) {
+        descriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(current, property);
+      },
+      getPrototypeOf() {
+        prototypeTrapReads += 1;
+        throw new Error("run parsing must not inspect a hostile prototype");
+      },
+      ownKeys(current) {
+        ownKeysReads += 1;
+        const keys = Reflect.ownKeys(current);
+        return ownKeysReads === 1 ? keys.filter((key) => key !== "lateSecret") : keys;
+      },
+    });
+
+    const parsed = parseCronOperatorRunSummary(proxied);
+
+    expect(ownKeysReads).toBe(1);
+    expect(descriptorReads).toBeGreaterThan(0);
+    expect(getReads).toBe(0);
+    expect(prototypeTrapReads).toBe(0);
+    expect(inheritedGetterReads).toBe(0);
+    expect(parsed).not.toHaveProperty("lateSecret");
+    expect(parsed).not.toHaveProperty("inheritedSecret");
+    expect(JSON.stringify(parsed)).not.toContain(sensitive);
+
+    const throwingDescriptorTrap = new Proxy(summary(), {
+      getOwnPropertyDescriptor() {
+        throw new Error(sensitive);
+      },
+    });
+    expect(() => parseCronOperatorRunSummary(throwingDescriptorTrap))
+      .toThrowError(/invalid cron operator/iu);
+  });
+
   it("caps summary outcomes deterministically while detail retains the shared boundary", () => {
     const outcomes = Array.from({ length: MAX_AGENT_REPLY_PARTS }, (_, partIndex) => ({
       partIndex,

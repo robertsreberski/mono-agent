@@ -213,7 +213,7 @@ function parseRunBase(
   projection: CronOperatorRun["projection"],
   allowedKeys: readonly string[],
 ): Record<string, unknown> {
-  const run = requireRecord(value);
+  const run = snapshotOwnDataRecord(value);
   const detail = projection === "detail";
   const sourceReplyPartOutcomes = run.replyPartOutcomes;
   if (!hasOnlyKeys(run, allowedKeys)
@@ -263,10 +263,34 @@ function parseRunBase(
   if (sourceReplyPartOutcomes !== undefined
     && (replyPartOutcomes === undefined
       || (!detail && replyPartOutcomes.length > MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES))) fail();
-  return {
-    ...run,
+  const parsed: Record<string, unknown> = {
+    projection,
+    runId: run.runId as string,
+    jobId: run.jobId as string,
+    scheduledAt: run.scheduledAt as string,
+    orderedAt: run.orderedAt as string,
+    sequence: run.sequence as number,
+    trigger: run.trigger as CronOperatorRunTrigger,
+    status: run.status as CronOperatorRunStatus,
+    ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt as string }),
+    ...(run.completedAt === undefined ? {} : { completedAt: run.completedAt as string }),
+    ...(run.artifactRunId === undefined ? {} : { artifactRunId: run.artifactRunId as string }),
+    ...(run.text === undefined ? {} : { text: run.text as string }),
+    ...(run.error === undefined ? {} : { error: run.error as string }),
+    ...(run.failureKind === undefined ? {} : { failureKind: run.failureKind as string }),
+    ...(run.blockedByRunId === undefined ? {} : { blockedByRunId: run.blockedByRunId as string }),
+    ...(run.blockedByTrigger === undefined
+      ? {}
+      : { blockedByTrigger: run.blockedByTrigger as CronOperatorRunTrigger }),
+    ...(run.queueDepth === undefined ? {} : { queueDepth: run.queueDepth as number }),
     ...(replyPartOutcomes === undefined ? {} : { replyPartOutcomes }),
+    eventCount: run.eventCount as number,
+    ...(fields === undefined ? {} : { fieldsTruncated: fields }),
+    ...(run.eventsTruncated === true ? { eventsTruncated: true as const } : {}),
   };
+  return detail
+    ? { ...parsed, events: run.events, eventsIncluded: run.eventsIncluded }
+    : parsed;
 }
 
 function parseCronOperatorEvent(value: unknown): AgentStreamEvent {
@@ -376,6 +400,24 @@ function validToolHistoryMetadata(value: unknown): boolean {
 function requireRecord(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) fail();
   return value;
+}
+
+function snapshotOwnDataRecord(value: unknown): Record<string, unknown> {
+  let descriptors: ReturnType<typeof Object.getOwnPropertyDescriptors>;
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) fail();
+    descriptors = Object.getOwnPropertyDescriptors(value);
+  } catch {
+    fail();
+  }
+  const snapshot = Object.create(null) as Record<string, unknown>;
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (typeof key !== "string") fail();
+    const descriptor = descriptors[key];
+    if (descriptor === undefined || !("value" in descriptor)) fail();
+    snapshot[key] = descriptor.value;
+  }
+  return snapshot;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
