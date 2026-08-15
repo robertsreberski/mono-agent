@@ -102,21 +102,22 @@ export interface PurgeConversationStateOptions {
  * not writing sessions while they are deleted.
  */
 export async function purgeSessions(input: MonoAgentAppConfigInput): Promise<PurgeSessionsResult> {
+  const registry = await prepareClearSessionsRecovery(input.cwd);
   const root = (await resolveConversationStatePurgeRoots(input)).sessions;
   return await purgeSessionsRoot(
-    input,
     root === undefined
       ? undefined
       : await resolveAndAttestConversationStatePurgeRoot("Pi provider sessions", root),
+    registry,
   );
 }
 
 async function purgeSessionsRoot(
-  input: MonoAgentAppConfigInput,
   root: ResolvedConversationStatePurgeRoot | undefined,
+  registry: AttestedPrivateDirectory,
 ): Promise<PurgeSessionsResult> {
   const inspected = await inspectSessionsRoot(root);
-  await securelyRemoveStandaloneRoots(input, root?.target === undefined ? [] : [root]);
+  await securelyRemoveStandaloneRoots(registry, root?.target === undefined ? [] : [root]);
   return inspected;
 }
 
@@ -128,19 +129,20 @@ async function purgeSessionsRoot(
 export async function purgeConversationHistory(
   input: MonoAgentAppConfigInput,
 ): Promise<PurgeConversationHistoryResult> {
+  const registry = await prepareClearSessionsRecovery(input.cwd);
   const root = (await resolveConversationStatePurgeRoots(input)).history;
   return await purgeConversationHistoryRoot(
-    input,
     await resolveAndAttestConversationStatePurgeRoot("durable session/tool history", root),
+    registry,
   );
 }
 
 async function purgeConversationHistoryRoot(
-  input: MonoAgentAppConfigInput,
   root: ResolvedConversationStatePurgeRoot,
+  registry: AttestedPrivateDirectory,
 ): Promise<PurgeConversationHistoryResult> {
   const inspected = await inspectConversationHistoryRoot(root);
-  await securelyRemoveStandaloneRoots(input, root.target === undefined ? [] : [root]);
+  await securelyRemoveStandaloneRoots(registry, root.target === undefined ? [] : [root]);
   return inspected;
 }
 
@@ -184,19 +186,20 @@ async function inspectConversationHistoryRoot(
 export async function purgeAcpSessionAuthorizations(
   input: MonoAgentAppConfigInput,
 ): Promise<PurgeAcpSessionAuthorizationsResult> {
+  const registry = await prepareClearSessionsRecovery(input.cwd);
   const root = (await resolveConversationStatePurgeRoots(input)).acpSessions;
   return await purgeAcpSessionAuthorizationsRoot(
-    input,
     await resolveAndAttestConversationStatePurgeRoot("ACP sessions", root),
+    registry,
   );
 }
 
 async function purgeAcpSessionAuthorizationsRoot(
-  input: MonoAgentAppConfigInput,
   root: ResolvedConversationStatePurgeRoot,
+  registry: AttestedPrivateDirectory,
 ): Promise<PurgeAcpSessionAuthorizationsResult> {
   const inspected = await inspectAcpSessionAuthorizationsRoot(root);
-  await securelyRemoveStandaloneRoots(input, root.target === undefined ? [] : [root]);
+  await securelyRemoveStandaloneRoots(registry, root.target === undefined ? [] : [root]);
   return inspected;
 }
 
@@ -207,8 +210,7 @@ export async function purgeConversationState(
 ): Promise<PurgeConversationStateResult> {
   // Recovery is config-independent: settle already-published manifests before
   // an unsafe replacement config can reject its own new purge plan.
-  const registry = await ensureClearSessionsRegistry(input.cwd);
-  await reconcileClearSessionsRecovery(registry);
+  const registry = await prepareClearSessionsRecovery(input.cwd);
   const snapshot = await readProcessJobsConfigSnapshot(input);
   const frozenInput = { ...input, env: { ...snapshot.env } };
   const plan = await resolveConversationStatePurgePlan(frozenInput, snapshot);
@@ -349,17 +351,21 @@ export async function assertClearSessionsRecoveryResolved(cwd: string): Promise<
 }
 
 async function securelyRemoveStandaloneRoots(
-  input: MonoAgentAppConfigInput,
+  registry: AttestedPrivateDirectory,
   roots: readonly ResolvedConversationStatePurgeRoot[],
 ): Promise<void> {
-  const registry = await ensureClearSessionsRegistry(input.cwd);
-  await reconcileClearSessionsRecovery(registry);
   for (const root of roots) {
     if (pathsContainEachOther(registry.canonicalPath, root.canonicalPath)) {
       throw new Error("Clear-sessions registry must be disjoint from every purge root.");
     }
   }
   await securelyRemovePurgeRoots(roots, registry, {});
+}
+
+async function prepareClearSessionsRecovery(cwd: string): Promise<AttestedPrivateDirectory> {
+  const registry = await ensureClearSessionsRegistry(cwd);
+  await reconcileClearSessionsRecovery(registry);
+  return registry;
 }
 
 async function securelyRemovePurgeRoots(

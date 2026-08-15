@@ -429,6 +429,80 @@ describe("purgeConversationState", () => {
     await expect(readdir(clearSessionsRegistryRoot(dir))).resolves.toEqual([]);
   });
 
+  it.skipIf(process.platform === "win32")("standalone sessions recovery settles before rejecting an invalid replacement root", async () => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.old/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.old/sessions" } },
+    });
+    const oldSessionsRoot = join(dir, ".old", "sessions");
+    const outsideRoot = join(dir, "outside-standalone-sessions");
+    const replacementRoot = join(dir, "replacement-sessions");
+    await Promise.all([
+      mkdir(oldSessionsRoot, { recursive: true }),
+      mkdir(outsideRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(oldSessionsRoot, "session.jsonl"), "old session\n"),
+      writeFile(join(outsideRoot, "sentinel.txt"), "outside\n"),
+    ]);
+    let quarantine = "";
+    await expect(purgeConversationState(inputFor(configPath), {
+      hooks: {
+        afterRootQuarantined: (path) => {
+          quarantine = path;
+          throw new Error("simulated standalone sessions crash");
+        },
+      },
+    })).rejects.toThrow(/simulated standalone sessions crash/u);
+    await symlink(outsideRoot, replacementRoot, "dir");
+    await writeFile(configPath, JSON.stringify({
+      providers: { piNative: { piSessionsRoot: "./replacement-sessions" } },
+    }));
+
+    await expect(purgeSessions(inputFor(configPath))).rejects.toThrow(/must be a real directory/u);
+
+    await expect(stat(quarantine)).rejects.toThrow();
+    await expect(readFile(join(outsideRoot, "sentinel.txt"), "utf8")).resolves.toBe("outside\n");
+    await expect(readdir(clearSessionsRegistryRoot(dir))).resolves.toEqual([]);
+  });
+
+  it.skipIf(process.platform === "win32")("standalone history recovery settles before replacement-root attestation", async () => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.old/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.old/sessions" } },
+    });
+    const oldSessionsRoot = join(dir, ".old", "sessions");
+    const outsideRoot = join(dir, "outside-standalone-history");
+    const newArtifactParent = join(dir, ".new");
+    const replacementHistoryRoot = join(newArtifactParent, "history");
+    await Promise.all([
+      mkdir(oldSessionsRoot, { recursive: true }),
+      mkdir(outsideRoot, { recursive: true }),
+      mkdir(newArtifactParent, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(oldSessionsRoot, "session.jsonl"), "old session\n"),
+      writeFile(join(outsideRoot, "sentinel.txt"), "outside\n"),
+    ]);
+    let quarantine = "";
+    await expect(purgeConversationState(inputFor(configPath), {
+      hooks: {
+        afterRootQuarantined: (path) => {
+          quarantine = path;
+          throw new Error("simulated standalone history crash");
+        },
+      },
+    })).rejects.toThrow(/simulated standalone history crash/u);
+    await symlink(outsideRoot, replacementHistoryRoot, "dir");
+    await writeFile(configPath, JSON.stringify({ artifacts: { dir: "./.new/artifacts" } }));
+
+    await expect(purgeConversationHistory(inputFor(configPath))).rejects.toThrow(/must be a real directory/u);
+
+    await expect(stat(quarantine)).rejects.toThrow();
+    await expect(readFile(join(outsideRoot, "sentinel.txt"), "utf8")).resolves.toBe("outside\n");
+    await expect(readdir(clearSessionsRegistryRoot(dir))).resolves.toEqual([]);
+  });
+
   it("reconciles an old quarantine before rejecting a replacement root that contains the registry", async () => {
     const configPath = await writeConfig({
       artifacts: { dir: "./.old/artifacts" },
