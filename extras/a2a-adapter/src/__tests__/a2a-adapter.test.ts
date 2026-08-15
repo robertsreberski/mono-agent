@@ -149,15 +149,31 @@ describe("A2A adapter contract", () => {
         const envelope = rawResponse as {
           result?: {
             task?: {
-              artifacts?: Array<{ parts?: Array<{ text?: string; data?: Record<string, unknown> }> }>;
+              artifacts?: Array<{
+                artifactId?: string;
+                name?: string;
+                description?: string;
+                parts?: Array<{ text?: string; data?: Record<string, unknown> }>;
+              }>;
             };
           };
           task?: {
-            artifacts?: Array<{ parts?: Array<{ text?: string; data?: Record<string, unknown> }> }>;
+            artifacts?: Array<{
+              artifactId?: string;
+              name?: string;
+              description?: string;
+              parts?: Array<{ text?: string; data?: Record<string, unknown> }>;
+            }>;
           };
         };
         const result = envelope.result?.task ?? envelope.task;
-        const parts = result?.artifacts?.[0]?.parts;
+        const artifact = result?.artifacts?.[0];
+        expect(artifact).toMatchObject({
+          artifactId: "final-text",
+          name: "Final text response",
+          description: "Text response returned by the responder.",
+        });
+        const parts = artifact?.parts;
         expect(parts?.[0]?.text).toBe(exactText);
         const data = parts?.[1]?.data as {
           schemaVersion?: number;

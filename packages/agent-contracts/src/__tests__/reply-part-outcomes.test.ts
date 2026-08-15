@@ -172,6 +172,26 @@ describe("rich reply part delivery outcomes", () => {
     expect(isAgentReplyPartDeliveryOutcomes([{ ...sanitized?.[0], future: true }])).toBe(false);
   });
 
+  it("validates JSON-parsed outcome arrays without invoking array property getters", () => {
+    const parsed = JSON.parse(JSON.stringify([{
+      partIndex: 0,
+      partType: "attachment",
+      status: "failed",
+      code: "unsupported_destination",
+      message: "Attachment reply parts are unsupported on this destination.",
+    }])) as unknown[];
+    let propertyReads = 0;
+    const descriptorBacked = new Proxy(parsed, {
+      get() {
+        propertyReads += 1;
+        throw new Error("array properties must be read through data descriptors");
+      },
+    });
+
+    expect(isAgentReplyPartDeliveryOutcomes(descriptorBacked)).toBe(true);
+    expect(propertyReads).toBe(0);
+  });
+
   it("isolates holes, accessors, proxies, and non-array values without disturbing safe siblings", () => {
     let accessorReads = 0;
     const accessorBacked = Object.create(null) as Record<string, unknown>;

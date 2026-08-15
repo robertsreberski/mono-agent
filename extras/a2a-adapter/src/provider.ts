@@ -355,8 +355,8 @@ export class MonoA2AExecutor implements AgentExecutor {
           contextId: requestContext.contextId,
           artifact: {
             artifactId: "final-text",
-            name: "Final response",
-            description: "Text and sanitized reply-part outcomes returned by the responder.",
+            name: "Final text response",
+            description: "Text response returned by the responder.",
             parts: artifactParts,
             metadata: {},
             extensions: [],

@@ -102,11 +102,16 @@ export function isAgentReplyPartDeliveryOutcomes(
   value: unknown,
 ): value is readonly AgentReplyPartDeliveryOutcome[] {
   try {
-    if (!Array.isArray(value) || value.length === 0 || value.length > MAX_AGENT_REPLY_PARTS) {
+    const source = arrayValue(value);
+    const sourceLength = source === undefined ? undefined : arrayDataLength(source);
+    if (source === undefined
+      || sourceLength === undefined
+      || sourceLength === 0
+      || sourceLength > MAX_AGENT_REPLY_PARTS) {
       return false;
     }
-    return Array.from({ length: value.length }, (_, position) => {
-      const outcome = arrayDataValue(value, position);
+    return Array.from({ length: sourceLength }, (_, position) => {
+      const outcome = arrayDataValue(source, position);
       if (!isRecord(outcome)
         || objectDataValue(outcome, "partIndex") !== position
         || objectDataValue(outcome, "status") !== "failed") {
@@ -122,7 +127,7 @@ export function isAgentReplyPartDeliveryOutcomes(
       }
       if (aggregate) {
         return position === MAX_AGENT_REPLY_PARTS - 1
-          && value.length === MAX_AGENT_REPLY_PARTS
+          && sourceLength === MAX_AGENT_REPLY_PARTS
           && objectDataValue(outcome, "partType") === "unknown"
           && objectDataValue(outcome, "code") === "reply_part_too_large"
           && objectDataValue(outcome, "message") === aggregateOutcome(affectedPartCount as number).message

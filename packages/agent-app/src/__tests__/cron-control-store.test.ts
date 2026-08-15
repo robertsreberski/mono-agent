@@ -462,6 +462,55 @@ describe("cron control store", () => {
     })).toMatchObject({ replyPartOutcomes: succeededSummary?.replyPartOutcomes });
   });
 
+  it("treats future persisted outcome schemas as unavailable across reopened public projections", async () => {
+    const { cwd, store } = await fixture();
+    const firing = store.allocateFiring({
+      jobId: "future-outcomes",
+      scheduledAt: "2026-08-14T10:00:00.000Z",
+      observedAt: "2026-08-14T10:00:00.000Z",
+      trigger: "scheduled",
+    });
+    store.recordResult({
+      ...succeeded(firing, "future-compatible text"),
+      replyPartOutcomes: [{
+        partIndex: 0,
+        partType: "attachment",
+        status: "failed",
+        code: "unsupported_destination",
+        message: "Attachment reply parts are unsupported on this destination.",
+      }],
+    } as CronJobResult);
+    const databasePath = store.paths.database;
+    await store.close();
+    stores.splice(stores.indexOf(store), 1);
+
+    const database = new DatabaseSync(databasePath);
+    database.prepare("UPDATE cron_runs SET reply_part_outcomes_json = ? WHERE run_id = ?")
+      .run(JSON.stringify({
+        schemaVersion: 2,
+        replyPartOutcomes: { futureShape: true },
+        futureMetadata: "not interpreted after rollback",
+      }), firing.runId);
+    database.close();
+
+    const reopened = await openCronControlStore(cwd);
+    stores.push(reopened);
+    const projections = [
+      reopened.getRun(firing.runId),
+      reopened.getRunSummary(firing.runId),
+      reopened.lastRun("future-outcomes"),
+      reopened.runs("future-outcomes", 10).runs[0],
+    ];
+    for (const projection of projections) {
+      expect(projection).toMatchObject({
+        runId: firing.runId,
+        status: "succeeded",
+        text: "future-compatible text",
+      });
+      expect(projection).not.toHaveProperty("replyPartOutcomes");
+    }
+  });
+
   it("upgrades schema-1 stores without the additive outcome column and keeps older rows readable", async () => {
     const { cwd, store } = await fixture();
     const firing = store.allocateFiring({
@@ -490,7 +539,7 @@ describe("cron control store", () => {
     upgraded.close();
   });
 
-  it("rejects corrupt and oversized persisted outcome envelopes before projection", async () => {
+  it("rejects malformed, oversized, and invalid current-schema outcome envelopes before projection", async () => {
     const { cwd, store } = await fixture();
     const corrupt = store.allocateFiring({
       jobId: "corrupt-outcomes",
@@ -504,8 +553,15 @@ describe("cron control store", () => {
       observedAt: "2026-08-14T10:01:00.000Z",
       trigger: "scheduled",
     });
+    const invalidCurrent = store.allocateFiring({
+      jobId: "invalid-current-outcomes",
+      scheduledAt: "2026-08-14T10:02:00.000Z",
+      observedAt: "2026-08-14T10:02:00.000Z",
+      trigger: "scheduled",
+    });
     store.recordResult(succeeded(corrupt));
     store.recordResult(succeeded(oversized));
+    store.recordResult(succeeded(invalidCurrent));
     const databasePath = store.paths.database;
     await store.close();
     stores.splice(stores.indexOf(store), 1);
@@ -515,6 +571,8 @@ describe("cron control store", () => {
       .run("{not-json", corrupt.runId);
     database.prepare("UPDATE cron_runs SET reply_part_outcomes_json = ? WHERE run_id = ?")
       .run(`${" ".repeat(20_000)}{\"schemaVersion\":1,\"replyPartOutcomes\":[]}`, oversized.runId);
+    database.prepare("UPDATE cron_runs SET reply_part_outcomes_json = ? WHERE run_id = ?")
+      .run(JSON.stringify({ schemaVersion: 1, replyPartOutcomes: [] }), invalidCurrent.runId);
     database.close();
 
     const reopened = await openCronControlStore(cwd);
@@ -523,6 +581,9 @@ describe("cron control store", () => {
       expect.objectContaining({ kind: "corrupt" }),
     );
     expect(() => reopened.getRunSummary(oversized.runId)).toThrowError(
+      expect.objectContaining({ kind: "corrupt" }),
+    );
+    expect(() => reopened.getRun(invalidCurrent.runId)).toThrowError(
       expect.objectContaining({ kind: "corrupt" }),
     );
   });

@@ -1263,9 +1263,14 @@ function parseStoredReplyPartOutcomes(
     throw new CronControlStoreError("corrupt", "Stored cron reply-part outcomes are invalid.", { cause: error });
   }
   const envelope = record(value);
+  const schemaVersion = envelope?.schemaVersion;
+  if (Number.isSafeInteger(schemaVersion)
+    && Number(schemaVersion) > REPLY_PART_OUTCOMES_STORAGE_SCHEMA) {
+    return undefined;
+  }
   if (envelope === undefined
     || Object.keys(envelope).some((key) => key !== "schemaVersion" && key !== "replyPartOutcomes")
-    || envelope.schemaVersion !== REPLY_PART_OUTCOMES_STORAGE_SCHEMA
+    || schemaVersion !== REPLY_PART_OUTCOMES_STORAGE_SCHEMA
     || !isAgentReplyPartDeliveryOutcomes(envelope.replyPartOutcomes)) {
     throw new CronControlStoreError("corrupt", "Stored cron reply-part outcomes are invalid.");
   }
