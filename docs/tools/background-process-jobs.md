@@ -259,11 +259,15 @@ routes and unavailable native protection fail before provider invocation.
 Slack and Telegram start one host-owned lifecycle message before the tool call
 returns, without waiting indefinitely on chat API latency. Updates are
 serialized per job, edit that same exact-origin thread/chat message when
-possible, and never let a late running update overwrite a terminal state. After
-a restart or an uneditable/missing message reference, the adapter may publish
-one bounded self-contained terminal fallback in that same origin only. Empty
-host lifecycle updates never enter the ordinary responder/model path. The
-terminal wake itself still uses the channel's normal proactive turn path. Web
+possible, and never let a late running update overwrite a terminal state. Each
+adapter retains the shared compiled maximum of 10,096 outstanding lifecycle
+identities, refuses unsafe overflow, and evicts only a terminal identity whose
+wake has settled. After a restart or an uneditable/missing message reference,
+the adapter may publish one bounded self-contained terminal fallback in that
+same origin only. Adapter identity state is deliberately instance-local rather
+than durable across restart. Empty host lifecycle updates never enter the
+ordinary responder/model path. The terminal wake itself still uses the
+channel's normal proactive turn path. Web
 wakes through the operator driver without requiring a live browser or HTTP
 turn, commits one normal agent-history entry, and updates one durable job card
 in the exact originating thread. Ordinary `web:<id>` notifications are rejected;

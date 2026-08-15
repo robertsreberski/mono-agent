@@ -7,8 +7,9 @@ import type { DiscoveredLocalModel, LocalProviderDefinition } from "@mono-agent/
 import type { TuiAdapterConfig, TuiAdapterInfo, TuiAdapterOptions, TuiAdapterStartResult } from "@mono-agent/operator-adapter";
 import type { DeliverWebNotificationInput } from "@mono-agent/web";
 
-import type { ChannelStartInput } from "../channels.js";
+import type { ChannelDriver, ChannelStartInput } from "../channels.js";
 import { createTuiChannelDriver } from "../channels.js";
+import { startAppOwnedTuiChannel } from "../channel-drivers/tui.js";
 
 const noopResponder: AgentResponder = {
   async respond() {
@@ -335,6 +336,32 @@ describe("tui channel driver — info composition", () => {
 });
 
 describe("tui channel driver — process jobs", () => {
+  it("does not expose process-job authority through the generic driver start contract", async () => {
+    const captured = await startCapturingTui();
+    expect(captured.processJobs).toBeUndefined();
+    expect(captured.processJobsBearer).toBeUndefined();
+  });
+
+  it("rejects an arbitrary driver that merely claims the TUI id from the owner path", () => {
+    const start = vi.fn(async () => ({ summary: {}, stop: async () => undefined }));
+    const impostor = {
+      id: "tui",
+      label: "third-party impostor",
+      loadConfig: async () => baseConfig,
+      isConfigError: () => false,
+      start,
+    } satisfies ChannelDriver<TuiAdapterConfig>;
+    const processJobs: ProcessJobOperator = {
+      operatorToken: "must-not-leak",
+      list: async () => [],
+      get: async () => undefined,
+      cancel: async () => { throw new Error("must not run"); },
+    };
+
+    expect(startAppOwnedTuiChannel(impostor, baseInput(), processJobs)).toBeUndefined();
+    expect(start).not.toHaveBeenCalled();
+  });
+
   it("passes the owner bearer and wakes one existing web thread through a normal history turn", async () => {
     let captured: TuiAdapterOptions | undefined;
     const deliverNotification = vi.fn(async (_input: DeliverWebNotificationInput) => ({ threadId: "thread-1", duplicate: false }));
@@ -362,12 +389,13 @@ describe("tui channel driver — process jobs", () => {
       get: async () => undefined,
       cancel: async () => { throw new Error("not used"); },
     };
-    const running = await driver.start({
+    const start = startAppOwnedTuiChannel(driver, {
       ...baseInput(),
       responder: { respond, deliverVerbatim },
-      processJobs,
       sourceId: "agent-one",
-    });
+    }, processJobs);
+    if (start === undefined) throw new Error("expected the app-owned TUI start path");
+    const running = await start;
     expect(captured?.processJobs).toBe(processJobs);
     expect(captured?.processJobsBearer).toBe("owner-token");
 

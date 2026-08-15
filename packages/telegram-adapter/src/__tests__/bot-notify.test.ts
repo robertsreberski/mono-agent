@@ -1,7 +1,11 @@
 import { Bot } from "grammy";
 import { describe, expect, it, vi } from "vitest";
 
-import type { ProcessJobProjection, ProcessJobState } from "@mono-agent/agent-contracts";
+import {
+  MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES,
+  type ProcessJobProjection,
+  type ProcessJobState,
+} from "@mono-agent/agent-contracts";
 import type { AgentRequest, AgentResponder } from "../adapter.js";
 import { createTelegramBot } from "../bot.js";
 
@@ -30,9 +34,21 @@ function ok(result: unknown): never {
   return { ok: true, result } as never;
 }
 
+function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
 function buildNotifiableBot(
   responder: AgentResponder,
-  behavior: { readonly failEdit?: boolean; readonly failSendAfter?: number } = {},
+  behavior: {
+    readonly failEdit?: boolean;
+    readonly failSendAfter?: number;
+    readonly beforeSend?: () => Promise<void>;
+  } = {},
 ): {
   controller: ReturnType<typeof createTelegramBot>;
   calls: RecordedCall[];
@@ -49,6 +65,7 @@ function buildNotifiableBot(
         const typedPayload = payload as Record<string, unknown>;
         calls.push({ method, payload: typedPayload });
         if (method === "sendMessage") {
+          await behavior.beforeSend?.();
           const sends = calls.filter((call) => call.method === "sendMessage").length;
           if (behavior.failSendAfter !== undefined && sends > behavior.failSendAfter) {
             throw new Error("send failed");
@@ -246,14 +263,82 @@ describe("createTelegramBot notify (proactive)", () => {
     expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(1);
   });
 
-  it("keeps Telegram process-job message references bounded", async () => {
-    const { controller } = buildNotifiableBot({
+  it("does not republish an original terminal card after the former 256-entry eviction pressure", async () => {
+    const { controller, calls } = buildNotifiableBot({
       async respond() { return { text: "unused" }; },
     });
+    const original = processJobProjection("succeeded", "pj_original_terminal");
+    await expect(controller.updateProcessJob(42, original))
+      .resolves.toMatchObject({ delivered: true, code: "surface_terminal_fallback" });
     for (let index = 0; index < 257; index += 1) {
+      await controller.updateProcessJob(
+        42,
+        processJobProjection("running", `pj_pressure_${String(index)}`),
+      );
+    }
+    const nativePostsBeforeSettlement = calls.filter((call) => call.method === "sendMessage").length;
+    const wakeSettlement: ProcessJobProjection = {
+      ...original,
+      wake: {
+        ...original.wake,
+        state: "delivered",
+        attempts: 1,
+        lastAttemptAt: "2026-08-15T00:00:03.000Z",
+      },
+    };
+
+    await expect(controller.updateProcessJob(42, wakeSettlement))
+      .resolves.toMatchObject({ delivered: true, code: "surface_unchanged" });
+    expect(calls.filter((call) => call.method === "sendMessage"))
+      .toHaveLength(nativePostsBeforeSettlement);
+  });
+
+  it("retains the full shared outstanding population and refuses unsafe overflow", async () => {
+    const terminalPostStarted = createDeferred<void>();
+    const releaseTerminalPost = createDeferred<void>();
+    let holdNextSend = true;
+    const { controller, calls } = buildNotifiableBot(
+      { async respond() { return { text: "unused" }; } },
+      {
+        beforeSend: async () => {
+          if (!holdNextSend) return;
+          holdNextSend = false;
+          terminalPostStarted.resolve(undefined);
+          await releaseTerminalPost.promise;
+        },
+      },
+    );
+    holdNextSend = false;
+    for (let index = 0; index < MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES - 1; index += 1) {
       await controller.updateProcessJob(42, processJobProjection("running", `pj_${String(index)}`));
     }
-    expect(controller.processJobMessageRefCount()).toBe(256);
+    holdNextSend = true;
+    const settledTerminal = processJobProjection("succeeded", "pj_settled_in_flight");
+    const terminalPost = controller.updateProcessJob(42, {
+      ...settledTerminal,
+      wake: { ...settledTerminal.wake, state: "delivered", attempts: 1 },
+    });
+    await terminalPostStarted.promise;
+    expect(controller.processJobMessageRefCount()).toBe(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES - 1);
+    expect(controller.processJobLifecycleStateCount()).toBe(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES);
+    await expect(controller.updateProcessJob(
+      42,
+      processJobProjection("running", "pj_unsafe_overflow"),
+    )).resolves.toMatchObject({ delivered: false, code: "surface_capacity_exceeded" });
+    expect(controller.processJobLifecycleStateCount()).toBe(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES);
+    expect(calls.filter((call) => call.method === "sendMessage"))
+      .toHaveLength(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES);
+
+    releaseTerminalPost.resolve(undefined);
+    await expect(terminalPost)
+      .resolves.toMatchObject({ delivered: true, code: "surface_terminal_fallback" });
+    await expect(controller.updateProcessJob(
+      42,
+      processJobProjection("running", "pj_after_safe_settlement"),
+    )).resolves.toMatchObject({ delivered: true, code: "surface_posted" });
+    expect(controller.processJobLifecycleStateCount()).toBe(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES);
+    expect(calls.filter((call) => call.method === "sendMessage"))
+      .toHaveLength(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES + 1);
   });
 
   it("posts nothing (and reports the reason) when the proactive turn produces no answer", async () => {

@@ -140,6 +140,10 @@ Primary modules:
 `ChannelId` is intentionally open so third-party drivers can choose an id.
 `isDeliverableConversation` only checks a conversation scheme against the ids a
 caller supplies; concrete delivery policy remains with the adapter or host.
+`ChannelStartInput` deliberately carries no process-job operator authority.
+Owner applications that expose authenticated job routes must compose that
+capability through their own private operator path rather than through the
+generic third-party channel contract.
 
 `ResilientMessageStream` can keep answer deltas final-only while exposing tool
 starts in one transient cumulative status. Its shared formatter uses friendly
@@ -183,7 +187,7 @@ editing in place and never changes final-answer delivery.
 | Format safe applied-steering activity | `formatLiveInputActivityLine` |
 | Sanitize or validate reply-part delivery outcomes | `sanitizeReplyPartDeliveryOutcomes`, `isAgentReplyPartDeliveryOutcomes` |
 | Carry stream events across a process boundary | `AgentStreamWireFrame`, `serializeAgentStreamFrame`, `parseAgentStreamFrame` |
-| Exchange process-job state without kernel/app coupling | `ProcessJobProjection`, `ProcessJobState`, `ProcessJobErrorCode`, `parseProcessJobProjection`, `ProcessJobOperator` |
+| Exchange process-job state without kernel/app coupling | `ProcessJobProjection`, `ProcessJobState`, `ProcessJobErrorCode`, `parseProcessJobProjection`, `ProcessJobOperator`, `MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES` |
 | Load adapter settings safely | `readSettingsJson`, `writeSettingsJson`, `layerJsonOntoEnv` |
 | Protect an HTTP listener | `assertSafeBind`, `listen`, `generateBearerToken`, `readAuthorizationBearer` |
 
@@ -315,6 +319,7 @@ MAX_CRON_OPERATOR_SUMMARY_FAILURE_KIND_BYTES
 MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES
 MAX_CRON_OPERATOR_SUMMARY_TEXT_BYTES
 MAX_CRON_OPERATOR_TIMEZONE_BYTES
+MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES
 MCP_APPS_EXTENSION_ID
 MCP_APP_RESOURCE_MIME_TYPE
 MCP_APP_SUPPORTED_VERSIONS

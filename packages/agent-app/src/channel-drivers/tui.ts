@@ -1,7 +1,7 @@
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import type { AgentMessageStream } from "@mono-agent/agent-contracts";
+import type { AgentMessageStream, ProcessJobOperator } from "@mono-agent/agent-contracts";
 
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
@@ -29,7 +29,7 @@ import {
 } from "@mono-agent/web";
 
 import { buildChannelConfigView } from "../channel-config-view.js";
-import type { ChannelDriver } from "../channels.js";
+import type { ChannelDriver, ChannelStartInput, RunningChannel } from "../channels.js";
 import { agentAppPackageVersion } from "../package-version.js";
 import { configuredRuntimeModels } from "../runtime-routes.js";
 import { createSkillRegistryMonitor } from "../skill-registry.js";
@@ -86,6 +86,34 @@ export interface TuiChannelOverrides {
   readonly deliverNotification?: typeof deliverWebNotification;
 }
 
+const APP_OWNED_TUI_START = Symbol("app-owned-tui-start");
+
+interface AppOwnedTuiChannelDriver extends ChannelDriver<TuiAdapterConfig> {
+  [APP_OWNED_TUI_START](
+    input: ChannelStartInput<TuiAdapterConfig>,
+    processJobs: ProcessJobOperator | undefined,
+  ): Promise<RunningChannel>;
+}
+
+const appOwnedTuiDrivers = new WeakSet<ChannelDriver>();
+
+/**
+ * Start only a driver created by this module with app-owner capabilities. The
+ * private symbol plus exact object identity prevents a plugin or arbitrary
+ * driver named `tui` from opting into the owner path.
+ */
+export function startAppOwnedTuiChannel(
+  driver: ChannelDriver,
+  input: ChannelStartInput<unknown>,
+  processJobs: ProcessJobOperator | undefined,
+): Promise<RunningChannel> | undefined {
+  if (!appOwnedTuiDrivers.has(driver)) return undefined;
+  return (driver as AppOwnedTuiChannelDriver)[APP_OWNED_TUI_START](
+    input as ChannelStartInput<TuiAdapterConfig>,
+    processJobs,
+  );
+}
+
 /**
  * The TUI stream endpoint deviates from the channels-off convention: with no
  * `tui` section it is enabled on loopback with an ephemeral port. An explicit
@@ -95,7 +123,7 @@ export function createTuiChannelDriver(
   overrides: TuiChannelOverrides = {},
   cronOperator?: CronOperatorRegistry,
 ): ChannelDriver<TuiAdapterConfig> {
-  return {
+  const driver: AppOwnedTuiChannelDriver = {
     id: "tui",
     label: "TUI",
     async configView(input) {
@@ -113,6 +141,9 @@ export function createTuiChannelDriver(
       return config.enabled ? undefined : "TUI stream endpoint is disabled.";
     },
     async start(input) {
+      return await this[APP_OWNED_TUI_START](input, undefined);
+    },
+    async [APP_OWNED_TUI_START](input, processJobs) {
       const adapterModule = await loadTuiModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
       const deliverNotification = overrides.deliverNotification ?? deliverWebNotification;
@@ -217,9 +248,9 @@ export function createTuiChannelDriver(
           ? {}
           : { requestToolEnvironment: input.config.requestToolEnvironment }),
         responder: input.responder,
-        ...(input.processJobs === undefined
+        ...(processJobs === undefined
           ? {}
-          : { processJobs: input.processJobs, processJobsBearer: input.processJobs.operatorToken }),
+          : { processJobs, processJobsBearer: processJobs.operatorToken }),
         ...(input.interaction === undefined ? {} : { interaction: input.interaction }),
         ...(cronOperator?.configured === true ? { cron: cronOperator } : {}),
         info: buildInfo,
@@ -309,6 +340,8 @@ export function createTuiChannelDriver(
       };
     },
   };
+  appOwnedTuiDrivers.add(driver);
+  return driver;
 }
 
 function webThreadId(conversationId: string): string | undefined {

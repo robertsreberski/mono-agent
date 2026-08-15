@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   AgentResponseCancelledError,
+  MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES,
   isChannelUserCancelReason,
   type AgentReplyAttachmentPart,
   type AgentLiveInputRequest,
@@ -63,6 +64,7 @@ class FakeSlackApi implements SlackWebApi {
   failPostMessageWhenTextIncludes: string | undefined = undefined;
   /** Fail every post after this many successful calls. */
   failPostMessageAfter: number | undefined = undefined;
+  beforePostMessage: (() => Promise<void>) | undefined = undefined;
   postFailure: unknown = undefined;
   updateFailure: unknown = undefined;
   nextTs = 200;
@@ -142,6 +144,7 @@ class FakeSlackApi implements SlackWebApi {
 
   async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
     this.postMessageCalls.push(params);
+    await this.beforePostMessage?.();
     if (this.failPostMessageAfter !== undefined && this.postMessageCalls.length > this.failPostMessageAfter) {
       throw this.postFailure ?? new Error("post_failed_after_partial_delivery");
     }
@@ -931,21 +934,88 @@ describe("SlackAdapter", () => {
     expect(api.postMessageCalls[1]).toMatchObject({ channel: "C1", thread_ts: "171.5" });
   });
 
-  it("keeps native process-job message references bounded", async () => {
+  it("does not republish an original terminal card after the former 256-entry eviction pressure", async () => {
     const api = new FakeSlackApi();
     const adapter = new SlackAdapter({
       api,
       allowAllChannels: true,
       responder: responderFrom(async () => ({ text: "unused" })),
     });
+    const original = processJobProjection("succeeded", "pj_original_terminal");
+    await expect(adapter.updateProcessJob("C1", "171.5", original))
+      .resolves.toMatchObject({ delivered: true, code: "surface_terminal_fallback" });
     for (let index = 0; index < 257; index += 1) {
+      await adapter.updateProcessJob(
+        "C1",
+        "171.5",
+        processJobProjection("running", `pj_pressure_${String(index)}`),
+      );
+    }
+    const nativePostsBeforeSettlement = api.postMessageCalls.length;
+    const wakeSettlement: ProcessJobProjection = {
+      ...original,
+      wake: {
+        ...original.wake,
+        state: "delivered",
+        attempts: 1,
+        lastAttemptAt: "2026-08-15T00:00:03.000Z",
+      },
+    };
+
+    await expect(adapter.updateProcessJob("C1", "171.5", wakeSettlement))
+      .resolves.toMatchObject({ delivered: true, code: "surface_unchanged" });
+    expect(api.postMessageCalls).toHaveLength(nativePostsBeforeSettlement);
+  });
+
+  it("retains the full shared outstanding population and refuses unsafe overflow", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: responderFrom(async () => ({ text: "unused" })),
+    });
+    for (let index = 0; index < MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES - 1; index += 1) {
       await adapter.updateProcessJob(
         "C1",
         "171.5",
         processJobProjection("running", `pj_${String(index)}`),
       );
     }
-    expect(adapter.processJobMessageRefCount()).toBe(256);
+    const terminalPostStarted = createDeferred<void>();
+    const releaseTerminalPost = createDeferred<void>();
+    let holdNextPost = true;
+    api.beforePostMessage = async () => {
+      if (!holdNextPost) return;
+      holdNextPost = false;
+      terminalPostStarted.resolve(undefined);
+      await releaseTerminalPost.promise;
+    };
+    const settledTerminal = processJobProjection("succeeded", "pj_settled_in_flight");
+    const terminalPost = adapter.updateProcessJob("C1", "171.5", {
+      ...settledTerminal,
+      wake: { ...settledTerminal.wake, state: "delivered", attempts: 1 },
+    });
+    await terminalPostStarted.promise;
+    expect(adapter.processJobMessageRefCount()).toBe(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES - 1);
+    expect(adapter.processJobLifecycleStateCount()).toBe(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES);
+    await expect(adapter.updateProcessJob(
+      "C1",
+      "171.5",
+      processJobProjection("running", "pj_unsafe_overflow"),
+    )).resolves.toMatchObject({ delivered: false, code: "surface_capacity_exceeded" });
+    expect(adapter.processJobLifecycleStateCount()).toBe(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES);
+    expect(api.postMessageCalls).toHaveLength(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES);
+
+    releaseTerminalPost.resolve(undefined);
+    await expect(terminalPost)
+      .resolves.toMatchObject({ delivered: true, code: "surface_terminal_fallback" });
+    await expect(adapter.updateProcessJob(
+      "C1",
+      "171.5",
+      processJobProjection("running", "pj_after_safe_settlement"),
+    )).resolves.toMatchObject({ delivered: true, code: "surface_posted" });
+    expect(adapter.processJobLifecycleStateCount()).toBe(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES);
+    expect(api.postMessageCalls).toHaveLength(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES + 1);
   });
 
   it("notify() suppresses transient tool activity for proactive turns", async () => {

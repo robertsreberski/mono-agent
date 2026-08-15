@@ -12,6 +12,13 @@ export const PROCESS_JOB_STATES = [
   "interrupted",
 ] as const;
 
+/**
+ * Maximum process-job lifecycle identities a channel adapter must retain at
+ * once. Hosts may keep fewer, but must not expose a larger simultaneously
+ * outstanding population through the shared projection contract.
+ */
+export const MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES = 10_096;
+
 export type ProcessJobState = (typeof PROCESS_JOB_STATES)[number];
 
 /** Stable machine-readable failures exposed at the runtime/operator boundary. */
@@ -176,11 +183,6 @@ const PROJECTION_KEYS = [
   "lastError",
 ] as const;
 
-// The host can transiently retain its 10,000 terminal-record maximum alongside
-// all 32 running and 64 queued records. The separate byte bound still governs
-// serialized operator responses.
-const MAX_PROCESS_JOB_PROJECTION_LIST_ITEMS = 10_096;
-
 /** Strictly parse one projection, rejecting unknown keys at every depth. */
 export function parseProcessJobProjection(value: unknown): ProcessJobProjection {
   if (!isRecord(value) || !hasExactlyKeys(value, PROJECTION_KEYS)) {
@@ -217,7 +219,7 @@ export function parseProcessJobProjection(value: unknown): ProcessJobProjection 
 
 /** Strictly parse a bounded operator list response. */
 export function parseProcessJobProjections(value: unknown): readonly ProcessJobProjection[] {
-  if (!Array.isArray(value) || value.length > MAX_PROCESS_JOB_PROJECTION_LIST_ITEMS) {
+  if (!Array.isArray(value) || value.length > MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES) {
     throw new TypeError("Process-job projection list is invalid.");
   }
   return value.map((entry) => parseProcessJobProjection(entry));

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES,
   parseProcessJobProjections,
   type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
@@ -104,10 +105,11 @@ describe("loadProcessJobsSettings", () => {
     await expect(loadProcessJobsSettings(input)).rejects.toThrow(/cannot exceed 32/u);
   });
 
-  it("keeps the shared operator parser at or above the host record ceiling", () => {
+  it("keeps the shared lifecycle and operator parser ceilings aligned with the host", () => {
     const hostRecordCeiling = PROCESS_JOBS_CAPS.retention.maxRecords
       + PROCESS_JOBS_CAPS.maxQueued
       + PROCESS_JOBS_CAPS.maxConcurrent;
+    expect(hostRecordCeiling).toBe(MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES);
     const projection: ProcessJobProjection = {
       schema: "mono-agent.process-job-projection.v1",
       jobId: "pj_capacity_0",

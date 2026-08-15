@@ -740,8 +740,10 @@ path:
    the shared request/stream contract and returns a `RunningChannel` handle. The
    cron driver registers configured and disabled jobs but arms only their
    effective runtime-enabled subset; its operator service feeds the TUI/web
-   capability lane. The TUI driver primes its skill registry before binding and
-   refreshes changed `SKILL.md` metadata in memory while it runs.
+   capability lane. Process-job operator authority bypasses the generic channel
+   input and enters only the exact app-owned TUI driver through a private
+   composition hook. The TUI driver primes its skill registry before binding
+   and refreshes changed `SKILL.md` metadata in memory while it runs.
 4. Publish traceability, exporter, sandbox, process-job, continuation, and memory-health
    state while the controller tracks channel states as `disabled`,
    `waiting_for_config`, `running`, `degraded`, or `failed`.

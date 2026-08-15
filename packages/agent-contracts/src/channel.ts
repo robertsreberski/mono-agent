@@ -1,5 +1,5 @@
 import type { AgentResponder } from "./index.js";
-import type { ProcessJobOperator, ProcessJobProjection } from "./process-jobs.js";
+import type { ProcessJobProjection } from "./process-jobs.js";
 
 /**
  * Identifier of one communication channel. Open by design: hosts ship a set of
@@ -297,8 +297,6 @@ export interface ChannelStartInput<TConfig, TCore = unknown> {
    * supports it registers a sink and wires reply interception/cancellation.
    */
   readonly interaction?: ChannelInteractionHub;
-  /** Owner-only process-job operator API, present only when its controller is ready. */
-  readonly processJobs?: ProcessJobOperator;
 }
 
 /**

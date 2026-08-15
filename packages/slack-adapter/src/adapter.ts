@@ -1,5 +1,6 @@
 import {
   DEFAULT_MAX_MESSAGE_CHARS,
+  MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES,
   createChannelUserCancelReason,
   type AgentAttachment,
   type ChannelAskSnapshot,
@@ -295,7 +296,12 @@ interface SlackProcessJobMessageRef {
   readonly terminalFallback: boolean;
 }
 
-const PROCESS_JOB_MESSAGE_REF_LIMIT = 256;
+interface SlackProcessJobLifecycleState {
+  ref: SlackProcessJobMessageRef | undefined;
+  terminalAttempted: boolean;
+  retireable: boolean;
+}
+
 const PROCESS_JOB_SURFACE_MAX_CHARS = 3_500;
 
 export interface SlackContinuationSynthesisInput {
@@ -1012,10 +1018,9 @@ export class SlackAdapter {
    * /cancel stays out-of-band (handled before this queue).
    */
   private readonly admissionQueues = new Map<string, SerialQueue>();
-  /** Bounded exact-origin refs and per-job tails for host-owned lifecycle cards. */
-  private readonly processJobMessages = new Map<string, SlackProcessJobMessageRef>();
+  /** Bounded exact-origin state and per-job tails for host-owned lifecycle cards. */
+  private readonly processJobLifecycles = new Map<string, SlackProcessJobLifecycleState>();
   private readonly processJobUpdateTails = new Map<string, Promise<SlackNotifyResult>>();
-  private readonly processJobTerminalFallbacks = new Set<string>();
   /** Speaker-name resolver. Undefined when `resolveUserNames` is off. */
   private readonly userDirectory: SlackUserDirectory | undefined;
   /** Surface-name resolver. Undefined when `resolveChannelNames` is off. */
@@ -1535,7 +1540,16 @@ export class SlackAdapter {
 
   /** Test/health seam proving job-id message references remain bounded. */
   processJobMessageRefCount(): number {
-    return this.processJobMessages.size;
+    let count = 0;
+    for (const state of this.processJobLifecycles.values()) {
+      if (state.ref !== undefined) count += 1;
+    }
+    return count;
+  }
+
+  /** Test/health seam proving all lifecycle identity state remains bounded. */
+  processJobLifecycleStateCount(): number {
+    return this.processJobLifecycles.size;
   }
 
   private async updateProcessJobNow(
@@ -1558,7 +1572,16 @@ export class SlackAdapter {
 
     const rank = processJobStateRank(projection.state);
     const terminal = isTerminalProcessJobState(projection.state);
-    const current = this.processJobMessages.get(projection.jobId);
+    const lifecycle = this.reserveProcessJobLifecycle(projection.jobId);
+    if (lifecycle === undefined) {
+      return {
+        delivered: false,
+        code: "surface_capacity_exceeded",
+        reason: "Slack process-job lifecycle identity capacity was exceeded",
+        retryable: false,
+      };
+    }
+    const current = lifecycle.ref;
     if (current !== undefined) {
       if (current.originConversationId !== originConversationId
         || current.channelId !== channelId
@@ -1571,14 +1594,14 @@ export class SlackAdapter {
         };
       }
       if (current.terminal || rank <= current.rank) {
-        this.rememberProcessJobMessage(projection.jobId, current);
+        this.rememberProcessJobMessage(lifecycle, current, projection, current.terminal);
         return { delivered: true, code: "surface_unchanged", channelId: "slack" };
       }
     }
 
     const text = renderProcessJobSurface(projection);
     if (current === undefined) {
-      if (terminal && !this.rememberTerminalFallbackAttempt(projection.jobId)) {
+      if (terminal && !this.rememberTerminalFallbackAttempt(lifecycle)) {
         return {
           delivered: false,
           code: "surface_terminal_fallback_already_attempted",
@@ -1586,15 +1609,23 @@ export class SlackAdapter {
           retryable: false,
         };
       }
-      return await this.postProcessJobSurface(channelId, threadTs, projection, text, terminal, terminal);
+      return await this.postProcessJobSurface(
+        channelId,
+        threadTs,
+        projection,
+        text,
+        terminal,
+        terminal,
+        lifecycle,
+      );
     }
     try {
       await this.api.chatUpdate({ channel: current.channelId, ts: current.messageTs, text });
-      this.rememberProcessJobMessage(projection.jobId, {
+      this.rememberProcessJobMessage(lifecycle, {
         ...current,
         rank,
         terminal,
-      });
+      }, projection, terminal);
       return {
         delivered: true,
         code: "surface_updated",
@@ -1616,7 +1647,7 @@ export class SlackAdapter {
       // After restart or an uneditable ref, publish exactly one bounded terminal
       // fallback in the same physical thread. Its stable client id is distinct
       // from the initial running card.
-      if (!this.rememberTerminalFallbackAttempt(projection.jobId)) {
+      if (!this.rememberTerminalFallbackAttempt(lifecycle)) {
         return {
           delivered: false,
           code: "surface_terminal_fallback_already_attempted",
@@ -1624,7 +1655,15 @@ export class SlackAdapter {
           retryable: false,
         };
       }
-      return await this.postProcessJobSurface(channelId, threadTs, projection, text, true, true);
+      return await this.postProcessJobSurface(
+        channelId,
+        threadTs,
+        projection,
+        text,
+        true,
+        true,
+        lifecycle,
+      );
     }
   }
 
@@ -1635,6 +1674,7 @@ export class SlackAdapter {
     text: string,
     terminal: boolean,
     terminalFallback: boolean,
+    lifecycle: SlackProcessJobLifecycleState,
   ): Promise<SlackNotifyResult> {
     try {
       const sent = await this.api.chatPostMessage({
@@ -1654,7 +1694,7 @@ export class SlackAdapter {
         terminal,
         terminalFallback,
       };
-      this.rememberProcessJobMessage(projection.jobId, ref);
+      this.rememberProcessJobMessage(lifecycle, ref, projection, terminal);
       return {
         delivered: true,
         code: terminalFallback ? "surface_terminal_fallback" : "surface_posted",
@@ -1671,28 +1711,48 @@ export class SlackAdapter {
         code: "surface_update_failed",
         retryable: false,
       };
+    } finally {
+      lifecycle.retireable ||= terminal && projection.wake.state !== "pending";
     }
   }
 
-  private rememberProcessJobMessage(jobId: string, ref: SlackProcessJobMessageRef): void {
-    this.processJobMessages.delete(jobId);
-    this.processJobMessages.set(jobId, ref);
-    while (this.processJobMessages.size > PROCESS_JOB_MESSAGE_REF_LIMIT) {
-      const oldest = this.processJobMessages.keys().next().value as string | undefined;
-      if (oldest === undefined) break;
-      this.processJobMessages.delete(oldest);
-      this.processJobTerminalFallbacks.delete(oldest);
+  private reserveProcessJobLifecycle(jobId: string): SlackProcessJobLifecycleState | undefined {
+    const existing = this.processJobLifecycles.get(jobId);
+    if (existing !== undefined) return existing;
+    if (this.processJobLifecycles.size >= MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES) {
+      let retireable: string | undefined;
+      for (const [candidateId, state] of this.processJobLifecycles) {
+        if (!state.retireable) continue;
+        retireable = candidateId;
+        break;
+      }
+      if (retireable === undefined) return undefined;
+      this.processJobLifecycles.delete(retireable);
     }
+    const lifecycle: SlackProcessJobLifecycleState = {
+      ref: undefined,
+      terminalAttempted: false,
+      retireable: false,
+    };
+    this.processJobLifecycles.set(jobId, lifecycle);
+    return lifecycle;
   }
 
-  private rememberTerminalFallbackAttempt(jobId: string): boolean {
-    if (this.processJobTerminalFallbacks.has(jobId)) return false;
-    this.processJobTerminalFallbacks.add(jobId);
-    while (this.processJobTerminalFallbacks.size > PROCESS_JOB_MESSAGE_REF_LIMIT) {
-      const oldest = this.processJobTerminalFallbacks.values().next().value as string | undefined;
-      if (oldest === undefined) break;
-      this.processJobTerminalFallbacks.delete(oldest);
-    }
+  private rememberProcessJobMessage(
+    lifecycle: SlackProcessJobLifecycleState,
+    ref: SlackProcessJobMessageRef,
+    projection: ProcessJobProjection,
+    terminalAttempted: boolean,
+  ): void {
+    lifecycle.ref = ref;
+    lifecycle.terminalAttempted ||= terminalAttempted;
+    lifecycle.retireable ||= isTerminalProcessJobState(projection.state)
+      && projection.wake.state !== "pending";
+  }
+
+  private rememberTerminalFallbackAttempt(lifecycle: SlackProcessJobLifecycleState): boolean {
+    if (lifecycle.terminalAttempted) return false;
+    lifecycle.terminalAttempted = true;
     return true;
   }
 

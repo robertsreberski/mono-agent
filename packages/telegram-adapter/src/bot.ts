@@ -5,6 +5,7 @@ import { Agent as HttpsAgent } from "node:https";
 import { isAbsolute } from "node:path";
 
 import {
+  MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES,
   createChannelUserCancelReason,
   isAgentResponseCancelledError,
   isChannelUserCancelReason,
@@ -77,7 +78,6 @@ const REACTION_ERROR = "👎";
 // bot cannot grow it unbounded. A double-tap on an old question past this many
 // distinct answered questions would simply re-run (acceptable, very rare).
 const CALLBACK_DEDUPE_MAX = 200;
-const PROCESS_JOB_MESSAGE_REF_LIMIT = 256;
 const PROCESS_JOB_SURFACE_MAX_CHARS = 3_500;
 const PROCESS_JOB_WAKE_DELIVERY_METADATA = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");
 const RUNTIME_CALLBACK_PREFIX = "ma:";
@@ -101,6 +101,12 @@ interface TelegramProcessJobMessageRef {
   readonly rank: number;
   readonly terminal: boolean;
   readonly terminalFallback: boolean;
+}
+
+interface TelegramProcessJobLifecycleState {
+  ref: TelegramProcessJobMessageRef | undefined;
+  terminalAttempted: boolean;
+  retireable: boolean;
 }
 
 function resolveTelegramAskAnswer(
@@ -511,6 +517,8 @@ export interface TelegramBotController {
   activeControllerCount(): number;
   /** Test/health seam proving process-job message refs remain bounded. */
   processJobMessageRefCount(): number;
+  /** Test/health seam proving all lifecycle identity state remains bounded. */
+  processJobLifecycleStateCount(): number;
 }
 
 type TelegramControlCommand = "start" | "help" | "cancel" | "new";
@@ -821,9 +829,8 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   // bound concurrent same-chat downloads. /cancel stays out-of-band (it never
   // enters this queue, so a queued turn can never block cancellation).
   const admissionQueues = new Map<string, SerialQueue>();
-  const processJobMessages = new Map<string, TelegramProcessJobMessageRef>();
+  const processJobLifecycles = new Map<string, TelegramProcessJobLifecycleState>();
   const processJobUpdateTails = new Map<string, Promise<TelegramNotifyResult>>();
-  const processJobTerminalFallbacks = new Set<string>();
   // Set in stop() so a pending album timer (or a late update) cannot fire a turn
   // after the channel was torn down. Mirrors the slack/whatsapp adapters.
   let stopped = false;
@@ -2160,7 +2167,16 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       }
       const rank = processJobStateRank(projection.state);
       const terminal = isTerminalProcessJobState(projection.state);
-      const current = processJobMessages.get(projection.jobId);
+      const lifecycle = reserveProcessJobLifecycle(projection.jobId);
+      if (lifecycle === undefined) {
+        return {
+          delivered: false,
+          code: "surface_capacity_exceeded",
+          reason: "Telegram process-job lifecycle identity capacity was exceeded",
+          retryable: false,
+        };
+      }
+      const current = lifecycle.ref;
       if (current !== undefined) {
         if (current.originConversationId !== originConversationId || String(current.chatId) !== String(chatId)) {
           return {
@@ -2171,13 +2187,13 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           };
         }
         if (current.terminal || rank <= current.rank) {
-          rememberProcessJobMessage(projection.jobId, current);
+          rememberProcessJobMessage(lifecycle, current, projection, current.terminal);
           return { delivered: true, code: "surface_unchanged", channelId: "telegram" };
         }
       }
       const text = renderProcessJobSurface(projection);
       if (current === undefined) {
-        if (terminal && !rememberTerminalFallbackAttempt(projection.jobId)) {
+        if (terminal && !rememberTerminalFallbackAttempt(lifecycle)) {
           return {
             delivered: false,
             code: "surface_terminal_fallback_already_attempted",
@@ -2185,11 +2201,24 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
             retryable: false,
           };
         }
-        return await postProcessJobSurface(chatId, projection, text, terminal, terminal, updateOptions?.silent === true);
+        return await postProcessJobSurface(
+          chatId,
+          projection,
+          text,
+          terminal,
+          terminal,
+          updateOptions?.silent === true,
+          lifecycle,
+        );
       }
       try {
         await sender.editMessageText({ chat_id: current.chatId, message_id: current.messageId, text });
-        rememberProcessJobMessage(projection.jobId, { ...current, rank, terminal });
+        rememberProcessJobMessage(
+          lifecycle,
+          { ...current, rank, terminal },
+          projection,
+          terminal,
+        );
         return {
           delivered: true,
           code: "surface_updated",
@@ -2208,7 +2237,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
             retryable: false,
           };
         }
-        if (!rememberTerminalFallbackAttempt(projection.jobId)) {
+        if (!rememberTerminalFallbackAttempt(lifecycle)) {
           return {
             delivered: false,
             code: "surface_terminal_fallback_already_attempted",
@@ -2216,7 +2245,15 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
             retryable: false,
           };
         }
-        return await postProcessJobSurface(chatId, projection, text, true, true, updateOptions?.silent === true);
+        return await postProcessJobSurface(
+          chatId,
+          projection,
+          text,
+          true,
+          true,
+          updateOptions?.silent === true,
+          lifecycle,
+        );
       }
     }).finally(() => {
       if (processJobUpdateTails.get(projection.jobId) === task) processJobUpdateTails.delete(projection.jobId);
@@ -2232,6 +2269,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     terminal: boolean,
     terminalFallback: boolean,
     silent: boolean,
+    lifecycle: TelegramProcessJobLifecycleState,
   ): Promise<TelegramNotifyResult> {
     try {
       const sent = await sender.sendMessage({
@@ -2239,14 +2277,14 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         text,
         ...(silent ? { disable_notification: true } : {}),
       });
-      rememberProcessJobMessage(projection.jobId, {
+      rememberProcessJobMessage(lifecycle, {
         chatId,
         messageId: sent.message_id,
         originConversationId: processJobBaseConversationId(projection.origin.conversationId),
         rank: processJobStateRank(projection.state),
         terminal,
         terminalFallback,
-      });
+      }, projection, terminal);
       return {
         delivered: true,
         code: terminalFallback ? "surface_terminal_fallback" : "surface_posted",
@@ -2263,28 +2301,48 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         code: "surface_update_failed",
         retryable: false,
       };
+    } finally {
+      lifecycle.retireable ||= terminal && projection.wake.state !== "pending";
     }
   }
 
-  function rememberProcessJobMessage(jobId: string, ref: TelegramProcessJobMessageRef): void {
-    processJobMessages.delete(jobId);
-    processJobMessages.set(jobId, ref);
-    while (processJobMessages.size > PROCESS_JOB_MESSAGE_REF_LIMIT) {
-      const oldest = processJobMessages.keys().next().value as string | undefined;
-      if (oldest === undefined) break;
-      processJobMessages.delete(oldest);
-      processJobTerminalFallbacks.delete(oldest);
+  function reserveProcessJobLifecycle(jobId: string): TelegramProcessJobLifecycleState | undefined {
+    const existing = processJobLifecycles.get(jobId);
+    if (existing !== undefined) return existing;
+    if (processJobLifecycles.size >= MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES) {
+      let retireable: string | undefined;
+      for (const [candidateId, state] of processJobLifecycles) {
+        if (!state.retireable) continue;
+        retireable = candidateId;
+        break;
+      }
+      if (retireable === undefined) return undefined;
+      processJobLifecycles.delete(retireable);
     }
+    const lifecycle: TelegramProcessJobLifecycleState = {
+      ref: undefined,
+      terminalAttempted: false,
+      retireable: false,
+    };
+    processJobLifecycles.set(jobId, lifecycle);
+    return lifecycle;
   }
 
-  function rememberTerminalFallbackAttempt(jobId: string): boolean {
-    if (processJobTerminalFallbacks.has(jobId)) return false;
-    processJobTerminalFallbacks.add(jobId);
-    while (processJobTerminalFallbacks.size > PROCESS_JOB_MESSAGE_REF_LIMIT) {
-      const oldest = processJobTerminalFallbacks.values().next().value as string | undefined;
-      if (oldest === undefined) break;
-      processJobTerminalFallbacks.delete(oldest);
-    }
+  function rememberProcessJobMessage(
+    lifecycle: TelegramProcessJobLifecycleState,
+    ref: TelegramProcessJobMessageRef,
+    projection: ProcessJobProjection,
+    terminalAttempted: boolean,
+  ): void {
+    lifecycle.ref = ref;
+    lifecycle.terminalAttempted ||= terminalAttempted;
+    lifecycle.retireable ||= isTerminalProcessJobState(projection.state)
+      && projection.wake.state !== "pending";
+  }
+
+  function rememberTerminalFallbackAttempt(lifecycle: TelegramProcessJobLifecycleState): boolean {
+    if (lifecycle.terminalAttempted) return false;
+    lifecycle.terminalAttempted = true;
     return true;
   }
 
@@ -2697,7 +2755,14 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       return total;
     },
     processJobMessageRefCount(): number {
-      return processJobMessages.size;
+      let count = 0;
+      for (const state of processJobLifecycles.values()) {
+        if (state.ref !== undefined) count += 1;
+      }
+      return count;
+    },
+    processJobLifecycleStateCount(): number {
+      return processJobLifecycles.size;
     },
     async start(): Promise<void> {
       if (runnerHandle?.isRunning() === true) {

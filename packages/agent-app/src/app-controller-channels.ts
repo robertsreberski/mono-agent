@@ -10,6 +10,7 @@ import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type {
   ChannelDriver,
   ChannelId,
+  ChannelStartInput,
   MonoAgentAppLogger,
   RunningChannel,
   ChannelStatus,
@@ -23,6 +24,7 @@ import type { ContinuationServiceHandle } from "./continuation-service.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
+import { startAppOwnedTuiChannel } from "./channel-drivers/tui.js";
 
 export interface ChannelsControllerPort {
   readonly env: Record<string, string | undefined>;
@@ -131,7 +133,7 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
     const observability = driver.id === "tui"
       ? await controller.observabilityContext()
       : {};
-    const runningChannel = await driver.start({
+    const channelStartInput: ChannelStartInput<unknown> = {
       config,
       coreConfig,
       responder,
@@ -142,7 +144,6 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       listNotifyDestinations: () => controller.listNotifyDestinations(),
       postedMessageIndexPath,
       ...(interactionBridge === undefined ? {} : { interaction: interactionBridge }),
-      ...(controller.processJobsService === undefined ? {} : { processJobs: controller.processJobsService }),
       ...(controller.logger === undefined ? {} : { logger: controller.logger }),
       onFailure: (failureReason) => {
         controller.running.delete(driver.id);
@@ -211,7 +212,13 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
           });
         });
       },
-    });
+    };
+    const appOwnedTuiStart = startAppOwnedTuiChannel(
+      driver,
+      channelStartInput,
+      controller.processJobsService,
+    );
+    const runningChannel = await (appOwnedTuiStart ?? driver.start(channelStartInput));
     const summary = driver.id !== "tui"
       ? runningChannel.summary
       : controller.processJobsService !== undefined
