@@ -2096,6 +2096,50 @@ describe("process job service", () => {
     expect(wake.mock.calls[0]?.[0].projection.jobId).toBe(jobId);
   });
 
+  it("serializes wake activation with a completion after its deferred list snapshot", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const activationListRead = deferred<void>();
+    const releaseActivationList = deferred<void>();
+    let deferNextList = false;
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async list() {
+        const snapshot = await baseStore.list();
+        if (deferNextList) {
+          deferNextList = false;
+          activationListRead.resolve();
+          await releaseActivationList.promise;
+        }
+        return snapshot;
+      },
+    };
+    const completion = deferred<ProcessJobProcessResult>();
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const service = await startService(fixture, { store, wake });
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+
+    deferNextList = true;
+    const activation = service.activateWakes();
+    await activationListRead.promise;
+    completion.resolve(processResult());
+    try {
+      await Promise.resolve();
+
+      // The completion is queued behind activation's serialized snapshot-to-publish
+      // transition, so it cannot observe wakes inactive and fall through the gap.
+      expect(await service.get(started.jobId)).toMatchObject({ state: "running" });
+      expect(wake).not.toHaveBeenCalled();
+    } finally {
+      releaseActivationList.resolve();
+    }
+    await activation;
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "delivered");
+
+    expect(wake).toHaveBeenCalledOnce();
+    expect(wake.mock.calls[0]?.[0].projection.jobId).toBe(started.jobId);
+  });
+
   it("retains terminal output and reports sandbox cleanup failure during shutdown", async () => {
     const fixture = await createFixture();
     const completion = deferred<ProcessJobProcessResult>();

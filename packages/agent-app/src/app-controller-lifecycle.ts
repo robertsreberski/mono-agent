@@ -94,13 +94,20 @@ export async function startChannelIfConfigured(controller: LifecycleControllerPo
     return await inFlight;
   }
 
-  const start = controller.startChannel(driver, reason).finally(() => {
-    controller.startsInFlight.delete(id);
-  });
+  const start = (async (): Promise<ChannelStatus> => {
+    const status = await controller.startChannel(driver, reason);
+    await controller.refreshTraceSource(reason);
+    return status;
+  })();
   controller.startsInFlight.set(id, start);
-  const status = await start;
-  await controller.refreshTraceSource(reason);
-  return status;
+  try {
+    return await start;
+  } finally {
+    // A superseded start must never clear a newer generation's flight.
+    if (controller.startsInFlight.get(id) === start) {
+      controller.startsInFlight.delete(id);
+    }
+  }
 }
 
 export async function stop(controller: LifecycleControllerPort): Promise<void> {
