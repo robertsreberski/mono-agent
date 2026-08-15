@@ -32,6 +32,7 @@ import {
   type ChannelAskAnswer,
   type ChannelInteractionHub,
   type ProcessJobOperator,
+  type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
 import {
   assertSafeBind,
@@ -1791,8 +1792,8 @@ function sendJsonError(res: Response, status: number, error: unknown): void {
 }
 
 function sendBoundedJobs(res: Response, jobs: readonly unknown[]): void {
-  const body = JSON.stringify({ jobs: parseProcessJobProjections(jobs) });
-  if (Buffer.byteLength(body, "utf8") > MAX_PROCESS_JOBS_RESPONSE_BYTES) {
+  const body = serializeBoundedJobs(jobs);
+  if (body === undefined) {
     sendJsonError(
       res,
       413,
@@ -1804,6 +1805,50 @@ function sendBoundedJobs(res: Response, jobs: readonly unknown[]): void {
     return;
   }
   res.status(200).type("application/json").send(body);
+}
+
+function serializeBoundedJobs(jobs: readonly unknown[]): string | undefined {
+  const parsed = parseProcessJobProjections(jobs);
+  const selected = new Map<number, string>();
+  let selectedCount = 0;
+  let bodyBytes = Buffer.byteLength('{"jobs":[]}', "utf8");
+
+  const add = (index: number, projection: ProcessJobProjection): boolean => {
+    const serialized = JSON.stringify(projection);
+    const nextBytes = bodyBytes
+      + Buffer.byteLength(serialized, "utf8")
+      + (selectedCount === 0 ? 0 : 1);
+    if (nextBytes > MAX_PROCESS_JOBS_RESPONSE_BYTES) return false;
+    selected.set(index, serialized);
+    selectedCount += 1;
+    bodyBytes = nextBytes;
+    return true;
+  };
+
+  // The app can retain up to 32 starting/running and 64 queued records
+  // alongside its terminal ceiling. Keep that complete control-plane view
+  // even when large terminal projections require a smaller HTTP representation.
+  for (const [index, projection] of parsed.entries()) {
+    if (isActiveProcessJobProjection(projection) && !add(index, projection)) return undefined;
+  }
+
+  // Service lists are already newest-first. Select one deterministic terminal
+  // prefix so a larger byte budget can only extend, never reshuffle, history.
+  for (const [index, projection] of parsed.entries()) {
+    if (isActiveProcessJobProjection(projection)) continue;
+    if (!add(index, projection)) break;
+  }
+
+  const serialized = [...selected.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, projection]) => projection);
+  return `{"jobs":[${serialized.join(",")}]}`;
+}
+
+function isActiveProcessJobProjection(projection: ProcessJobProjection): boolean {
+  return projection.state === "queued"
+    || projection.state === "starting"
+    || projection.state === "running";
 }
 
 function sendBoundedJob(res: Response, job: unknown): void {

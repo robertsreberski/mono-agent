@@ -235,9 +235,11 @@ from the selected agent's private store, and exits `1` with
 An enabled local operator endpoint exposes bearer-protected
 `GET /gui/v1/jobs`, `GET /gui/v1/jobs/:jobId`, and
 `POST /gui/v1/jobs/:jobId/cancel`. Its info response advertises `jobs: true`
-only while the controller and its owner bearer are present. The web console
-keeps running and terminal job cards in the transcript. Each nonterminal card
-polls only its exact authenticated, source- and thread-bound
+only while the controller and its owner bearer are present. List responses keep
+every queued, starting, and running projection and add a deterministic
+newest-terminal prefix within the 16 MiB response ceiling. The web console keeps
+running and terminal job cards in the transcript. Each nonterminal card polls
+only its exact authenticated, source- and thread-bound
 `GET /api/v1/threads/:id/jobs/:jobId` proxy with bounded backoff; it does not
 clone or serialize the retained job list on every refresh.
 

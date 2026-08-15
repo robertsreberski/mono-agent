@@ -348,6 +348,12 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   }
 
   async counts(): Promise<Readonly<Record<ProcessJobState, number>>> {
+    let records: readonly DurableProcessJobRecord[];
+    try {
+      records = await this.storeList("counts");
+    } catch {
+      records = this.snapshotRecords();
+    }
     const counts: Record<ProcessJobState, number> = {
       queued: 0,
       starting: 0,
@@ -360,7 +366,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       queue_expired: 0,
       interrupted: 0,
     };
-    for (const record of await this.list()) counts[record.state] += 1;
+    for (const record of records) {
+      const state = this.completionOverlays.get(record.jobId)?.state ?? record.state;
+      counts[state] += 1;
+    }
     return counts;
   }
 
@@ -1399,12 +1408,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       return;
     }
     this.recordSnapshot.delete(jobId);
-    this.recordSnapshot.set(jobId, structuredClone(record));
-    while (this.recordSnapshot.size > MAX_IN_MEMORY_RECORDS) {
-      const oldest = this.recordSnapshot.keys().next().value as string | undefined;
-      if (oldest === undefined) break;
-      this.recordSnapshot.delete(oldest);
-      this.completionOverlays.delete(oldest);
+    const bounded = boundedNewestRecords([...this.recordSnapshot.values(), record]);
+    this.recordSnapshot.clear();
+    for (const candidate of bounded) {
+      this.recordSnapshot.set(candidate.jobId, structuredClone(candidate));
     }
     this.pruneConsistentOverlay(record);
   }

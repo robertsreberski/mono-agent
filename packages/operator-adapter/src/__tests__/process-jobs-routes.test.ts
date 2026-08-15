@@ -1,4 +1,8 @@
-import type { ProcessJobProjection, ProcessJobOperator } from "@mono-agent/agent-contracts";
+import {
+  parseProcessJobProjections,
+  type ProcessJobProjection,
+  type ProcessJobOperator,
+} from "@mono-agent/agent-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { startTuiAdapter, type TuiAdapterStartResult } from "../index.js";
@@ -65,6 +69,95 @@ describe("process-job operator routes", () => {
       processJobs,
       responder: { respond: async () => ({ text: "ok" }) },
     })).rejects.toThrow(/configured together/u);
+  });
+
+  it("byte-bounds a parser-cap service list while preserving every possible active record", async () => {
+    const escapedBytes = "\0".repeat(8_000);
+    const escapedCharacters = "\ud800".repeat(8_000);
+    const active = Array.from({ length: 64 + 32 }, (_, index): ProcessJobProjection => {
+      const state = index < 64 ? "queued" : index < 80 ? "starting" : "running";
+      const jobId = `active-${String(index).padStart(3, "0")}`;
+      const projection = job();
+      return {
+        ...projection,
+        jobId,
+        state,
+        summary: escapedBytes,
+        timestamps: {
+          ...projection.timestamps,
+          admittedAt: "2026-08-14T09:00:00.000Z",
+          ...(state === "queued"
+            ? { startedAt: null, runtimeDeadlineAt: null }
+            : {}),
+        },
+        limits: { ...projection.limits, previewChars: 8_000 },
+        output: { ...projection.output, preview: escapedCharacters },
+        wake: { ...projection.wake, deliveryKey: `process-job:${jobId}` },
+      };
+    });
+    const terminal = Array.from({ length: 10_000 }, (_, index): ProcessJobProjection => {
+      const jobId = `terminal-${String(index).padStart(5, "0")}`;
+      const projection = job();
+      return {
+        ...projection,
+        jobId,
+        state: "failed",
+        summary: escapedBytes,
+        timestamps: {
+          ...projection.timestamps,
+          admittedAt: "2026-08-14T10:00:00.000Z",
+          completedAt: "2026-08-14T10:00:02.000Z",
+        },
+        limits: { ...projection.limits, previewChars: 8_000 },
+        output: { ...projection.output, preview: escapedCharacters },
+        wake: {
+          state: "delivered",
+          attempts: 1,
+          deliveryKey: `process-job:${jobId}`,
+          lastAttemptAt: "2026-08-14T10:00:03.000Z",
+        },
+        exitCode: 1,
+        durationMs: 2_000,
+        lastError: { code: "process_job_failed", message: escapedBytes },
+      };
+    });
+    const projections = [...terminal, ...active];
+    expect(projections).toHaveLength(10_096);
+    const processJobs: ProcessJobOperator = {
+      operatorToken: "owner-jobs-token",
+      list: async () => projections,
+      get: async () => undefined,
+      cancel: async () => { throw new Error("not used"); },
+    };
+    const server = await startTuiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      processJobs,
+      processJobsBearer: "owner-jobs-token",
+      responder: { respond: async () => ({ text: "ok" }) },
+    });
+    servers.push(server);
+
+    const response = await fetch(`${server.baseUrl}/v1/jobs`, { headers: bearer("owner-jobs-token") });
+    expect(response.status).toBe(200);
+    const raw = await response.text();
+    const responseBytes = Buffer.byteLength(raw, "utf8");
+    const body = JSON.parse(raw) as { jobs?: unknown };
+    const jobs = parseProcessJobProjections(body.jobs);
+    const returnedActive = jobs.filter((projection) =>
+      projection.state === "queued" || projection.state === "starting" || projection.state === "running");
+    const returnedTerminal = jobs.filter((projection) => projection.state === "failed");
+
+    expect(responseBytes).toBeGreaterThan(15 * 1024 * 1024);
+    expect(responseBytes).toBeLessThanOrEqual(16 * 1024 * 1024);
+    expect(returnedActive.map((projection) => projection.jobId).sort()).toEqual(
+      active.map((projection) => projection.jobId).sort(),
+    );
+    expect(returnedTerminal.length).toBeGreaterThan(0);
+    expect(returnedTerminal.length).toBeLessThan(terminal.length);
+    expect(returnedTerminal.map((projection) => projection.jobId)).toEqual(
+      terminal.slice(0, returnedTerminal.length).map((projection) => projection.jobId),
+    );
   });
 });
 

@@ -572,11 +572,13 @@ operator URLs and uses a process-job-specific bearer derived from the selected
 agent's owner-only state secret; it does not reuse the conversational TUI API
 key or accept a remote token.
 
-`list` prints retained jobs newest-first. `get` prints one strict secret-free
-projection. `cancel` requests cancellation of the owned process group and
-returns the resulting projection. JSON output is the same bounded operator
-projection (or `{ "jobs": [...] }` for `list`); it never contains raw argv,
-environment values, process ids, sandbox paths, or the private normalized
+`list` prints retained jobs newest-first. If their projections would exceed the
+16 MiB response ceiling, the result keeps every queued, starting, and running
+job plus a deterministic newest-terminal prefix. `get` prints one strict
+secret-free projection. `cancel` requests cancellation of the owned process
+group and returns the resulting projection. JSON output is the same bounded
+operator projection (or `{ "jobs": [...] }` for `list`); it never contains raw
+argv, environment values, process ids, sandbox paths, or the private normalized
 reply-target fields. `origin.conversationId` is intentionally present: it is
 the exact bound originating conversation and reply route, including any
 host-owned rollover bucket.

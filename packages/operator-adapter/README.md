@@ -127,7 +127,9 @@ keys, credentials, or the console host's copy of the config file. If the cron
 overview itself fails, `/v1/info` remains a `200` liveness response and advertises
 cron as degraded with reads and actions unavailable.
 - `GET {basePath}/v1/jobs` and `GET {basePath}/v1/jobs/:jobId` - strict bounded
-  process-job projections through an independent owner bearer.
+  process-job projections through an independent owner bearer. An app-hosted
+  list keeps every queued, starting, and running projection plus a
+  deterministic newest-terminal prefix within the 16 MiB response ceiling.
 - `POST {basePath}/v1/jobs/:jobId/cancel` - cancel an owned process job and
   return its resulting projection. This route uses the same independent bearer.
 

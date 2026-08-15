@@ -838,7 +838,7 @@ describe("process job service", () => {
       expect.objectContaining({ jobId, state: "succeeded" }),
     ]);
     await expect(service.counts()).resolves.toMatchObject({ succeeded: 1, running: 0 });
-    expect(service.health).toMatchObject({ state: "degraded", failureOperation: "list" });
+    expect(service.health).toMatchObject({ state: "degraded", failureOperation: "counts" });
     expect(onHealthChange.mock.calls.length).toBeGreaterThanOrEqual(3);
   });
 
@@ -884,8 +884,10 @@ describe("process job service", () => {
     const service = await startService(fixture, { store });
 
     const listed = await service.list();
+    const counts = await service.counts();
 
     expect(listed).toHaveLength(recordCeiling);
+    expect(listed.filter((record) => record.state === "succeeded")).toHaveLength(recordCeiling - 2);
     expect(listed[0]?.jobId).toBe(`pending-${String(recordCeiling - 1).padStart(5, "0")}`);
     expect(listed.slice(-3).map((record) => record.jobId)).toEqual([
       "pending-00002",
@@ -894,6 +896,18 @@ describe("process job service", () => {
     ]);
     expect(listed.some((record) => record.jobId === "pending-00000")).toBe(false);
     expect(listed.some((record) => record.jobId === "pending-00001")).toBe(false);
+    expect(counts).toEqual({
+      queued: 1,
+      starting: 0,
+      running: 1,
+      succeeded: recordCeiling,
+      failed: 0,
+      timed_out: 0,
+      cancelled: 0,
+      spawn_failed: 0,
+      queue_expired: 0,
+      interrupted: 0,
+    });
     expect(storedRecords.map((record) => record.jobId)).toEqual(originalOrder);
 
     const first = listed[0] as unknown as { summary: string; output: { preview: string } };
@@ -901,6 +915,88 @@ describe("process job service", () => {
     first.output.preview = "mutated operator preview";
     const storedFirst = storedRecords.find((record) => record.jobId === listed[0]?.jobId);
     expect(storedFirst).toMatchObject({ summary: "exec (values redacted)", preview: "" });
+  });
+
+  it("uses the active-preserving newest selector for incremental snapshot reconciliation", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const recordCeiling = PROCESS_JOBS_CAPS.retention.maxRecords
+      + PROCESS_JOBS_CAPS.maxQueued
+      + PROCESS_JOBS_CAPS.maxConcurrent;
+    const terminalRecords = Array.from({ length: recordCeiling }, (_, index) => {
+      const jobId = `terminal-${String(index).padStart(5, "0")}`;
+      const admittedAt = new Date(Date.parse("2026-08-14T10:00:00.000Z") + index).toISOString();
+      return durableRecord(jobId, {
+        state: "succeeded",
+        admittedAt,
+        completedAt: new Date(Date.parse(admittedAt) + 1).toISOString(),
+        exitCode: 0,
+        durationMs: 1,
+      });
+    });
+    const activeRecords = Array.from(
+      { length: PROCESS_JOBS_CAPS.maxQueued + PROCESS_JOBS_CAPS.maxConcurrent },
+      (_, index) => {
+        const jobId = `active-${String(index).padStart(3, "0")}`;
+        const state = index < PROCESS_JOBS_CAPS.maxQueued
+          ? "queued"
+          : index < PROCESS_JOBS_CAPS.maxQueued + (PROCESS_JOBS_CAPS.maxConcurrent / 2)
+            ? "starting"
+            : "running";
+        const record = durableRecord(jobId, {
+          state,
+          admittedAt: new Date(Date.parse("2026-08-14T11:00:00.000Z") + index).toISOString(),
+          ...(state === "queued"
+            ? { pid: null, pgid: null, startedAt: null, runtimeDeadlineAt: null }
+            : {}),
+        });
+        if (state === "queued") delete record.processIncarnation;
+        return record;
+      },
+    );
+    const storedRecords = [...terminalRecords, ...activeRecords];
+    let listCalls = 0;
+    let poisonReads = false;
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async list() {
+        if (poisonReads) throw new Error("list poisoned");
+        listCalls += 1;
+        return listCalls <= 2 ? [] : storedRecords;
+      },
+      async get(jobId) {
+        if (poisonReads) throw new Error("get poisoned");
+        return jobId === terminalRecords[0]?.jobId
+          ? structuredClone(terminalRecords[0])
+          : undefined;
+      },
+    };
+    const service = await startService(fixture, { store });
+    const healthy = await service.list();
+    expect(healthy).toHaveLength(recordCeiling);
+
+    await expect(service.get("terminal-00000")).resolves.toMatchObject({ jobId: "terminal-00000" });
+    poisonReads = true;
+    await expect(service.get(activeRecords[0]!.jobId)).resolves.toMatchObject({
+      jobId: activeRecords[0]!.jobId,
+      state: "queued",
+    });
+    const degraded = await service.list();
+    const active = degraded.filter((record) =>
+      record.state === "queued" || record.state === "starting" || record.state === "running");
+    const terminal = degraded.filter((record) =>
+      record.state !== "queued" && record.state !== "starting" && record.state !== "running");
+
+    expect(degraded).toHaveLength(recordCeiling);
+    expect(active.map((record) => record.jobId).sort()).toEqual(
+      activeRecords.map((record) => record.jobId).sort(),
+    );
+    expect(terminal).toHaveLength(PROCESS_JOBS_CAPS.retention.maxRecords);
+    expect(terminal[0]?.jobId).toBe(`terminal-${String(recordCeiling - 1).padStart(5, "0")}`);
+    expect(terminal.at(-1)?.jobId).toBe("terminal-00096");
+    expect(terminal.some((record) => record.jobId === "terminal-00000")).toBe(false);
+    expect(terminal.every((record, index) =>
+      index === 0 || terminal[index - 1]!.timestamps.admittedAt >= record.timestamps.admittedAt)).toBe(true);
   });
 
   it("waits for an already-started wake before releasing service ownership", async () => {
