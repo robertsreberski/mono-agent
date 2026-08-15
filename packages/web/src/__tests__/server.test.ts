@@ -116,6 +116,7 @@ describe("web HTTP server", () => {
     for (const omitted of [
       "default-src",
       "connect-src",
+      "style-src",
       "img-src",
       "font-src",
       "media-src",

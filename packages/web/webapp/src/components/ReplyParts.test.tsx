@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const bridgeHarness = vi.hoisted(() => ({
   instances: [] as Array<Record<string, unknown>>,
   capabilities: [] as unknown[],
+  resources: [] as unknown[],
   failures: {} as Record<string, Error | undefined>,
 }));
 const originalCreateObjectUrl = URL.createObjectURL;
@@ -30,7 +31,8 @@ vi.mock("@modelcontextprotocol/ext-apps/app-bridge", async (importOriginal) => {
     async connect() {
       if (bridgeHarness.failures.connect !== undefined) throw bridgeHarness.failures.connect;
     }
-    async sendSandboxResourceReady() {
+    async sendSandboxResourceReady(params: unknown) {
+      bridgeHarness.resources.push(params);
       if (bridgeHarness.failures.sandbox !== undefined) throw bridgeHarness.failures.sandbox;
     }
     async sendToolInput() {
@@ -170,6 +172,7 @@ const connectConfiguredApp = async (
 afterEach(() => {
   bridgeHarness.instances.length = 0;
   bridgeHarness.capabilities.length = 0;
+  bridgeHarness.resources.length = 0;
   for (const key of Object.keys(bridgeHarness.failures)) delete bridgeHarness.failures[key];
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -697,6 +700,39 @@ describe("MCP App sandbox", () => {
     expect(new TextEncoder().encode(atLimit).byteLength).toBe(limit);
     expect(() => secureMcpAppHtml("x".repeat(bodyBytesAtLimit + 1), metadata))
       .toThrow("The MCP App resource is too large.");
+  });
+
+  it("sends escaping-heavy shared-producer output at the exact cap to the sandbox bridge", async () => {
+    const metadata = safeMcpAppResourceMetadata(undefined);
+    const limit = 2 * 1024 * 1024;
+    const prefixBytes = new TextEncoder().encode(secureMcpAppHtml("", metadata)).byteLength;
+    const bodyBytes = limit - prefixBytes;
+    const escapingPattern = ['"', "\\", "\n", "\t"].join("");
+    const html = escapingPattern.repeat(Math.floor(bodyBytes / escapingPattern.length))
+      + "x".repeat(bodyBytes % escapingPattern.length);
+    vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html,
+      connected: true,
+    });
+
+    render(app(appPart));
+    const frame = await screen.findByTitle("Quarterly report interactive app") as HTMLIFrameElement;
+    const bridge = await connectRenderedApp(frame, appPart);
+    await act(async () => {
+      bridge.onsandboxready?.();
+      await Promise.resolve();
+    });
+
+    expect(bridgeHarness.resources).toHaveLength(1);
+    const params = bridgeHarness.resources[0] as { readonly html: string; readonly sandbox: string };
+    expect(params.sandbox).toBe("allow-scripts");
+    expect(new TextEncoder().encode(params.html).byteLength).toBe(limit);
+    expect(new TextEncoder().encode(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "ui/notifications/sandbox-resource-ready",
+      params,
+    })).byteLength).toBeGreaterThan(limit + 64 * 1024);
   });
 
   it("reports an oversized final document before constructing a bridge transport", async () => {

@@ -7,12 +7,12 @@ const BRIDGE_MESSAGE_MAX_BYTES = 1024 * 1024 + 64 * 1024;
 /**
  * This policy applies only to the fixed, opaque-origin proxy document. The
  * nested app srcdoc inherits it, so capability directives belong exclusively
- * to the canonical inner meta policy. This envelope admits only the proxy/app
- * inline bootstrap and style while retaining non-clipping containment.
+ * to the canonical inner meta policy. With no default-src, the fixed proxy's
+ * inline bootstrap and layout style still work while this envelope retains
+ * non-clipping containment.
  */
 export const MCP_APP_PROXY_CONTENT_SECURITY_POLICY = [
   "script-src 'unsafe-inline'",
-  "style-src 'unsafe-inline'",
   "form-action 'none'",
   "object-src 'none'",
   "worker-src 'none'",
@@ -121,6 +121,24 @@ export const MCP_APP_PROXY_DOCUMENT = `<!doctype html>
       && sources.length <= 64
       && new Set(sources).size === sources.length
       && sources.every(isSanitizedOrigin);
+  const hasOnlyKeys = (value, required, optional = []) => {
+    if (!isRecord(value)) return false;
+    const keys = Object.keys(value);
+    return keys.length >= required.length
+      && keys.length <= required.length + optional.length
+      && required.every((key) => keys.includes(key))
+      && keys.every((key) => required.includes(key) || optional.includes(key));
+  };
+  const isOriginList = (value) => Array.isArray(value)
+    && value.length <= 64
+    && new Set(value).size === value.length
+    && value.every(isSanitizedOrigin);
+  const isSandboxCsp = (value) => hasOnlyKeys(value, [], [
+    "connectDomains", "resourceDomains", "frameDomains", "baseUriDomains",
+  ]) && Object.values(value).every(isOriginList);
+  const isSandboxPermissions = (value) => hasOnlyKeys(value, [], ["clipboardWrite"])
+    && (!("clipboardWrite" in value)
+      || hasOnlyKeys(value.clipboardWrite, []));
   const isCanonicalSecuredHtml = (html) => {
     const start = '<!doctype html><head><meta http-equiv="Content-Security-Policy" content="';
     const end = '"><meta name="referrer" content="no-referrer"></head>';
@@ -157,6 +175,23 @@ export const MCP_APP_PROXY_DOCUMENT = `<!doctype html>
       && isOriginSources(connects)
       && isOriginSources(frames)
       && isOriginSources(bases);
+  };
+  const isSandboxResourceReady = (value) => {
+    if (!hasOnlyKeys(value, ["jsonrpc", "method", "params"])) return false;
+    const params = value.params;
+    if (value.jsonrpc !== "2.0"
+      || value.method !== "ui/notifications/sandbox-resource-ready"
+      || !hasOnlyKeys(params, ["html", "sandbox"], ["csp", "permissions"])
+      || typeof params.html !== "string"
+      || new TextEncoder().encode(params.html).byteLength > ${MCP_APP_SECURED_HTML_MAX_BYTES}
+      || params.sandbox !== "allow-scripts"
+      || ("csp" in params && !isSandboxCsp(params.csp))
+      || ("permissions" in params && !isSandboxPermissions(params.permissions))) return false;
+    const clipboardDeclared = isRecord(params.permissions)
+      && "clipboardWrite" in params.permissions;
+    return config !== null
+      && clipboardDeclared === config.clipboardWrite
+      && isCanonicalSecuredHtml(params.html);
   };
   const sendHost = (value) => {
     if (config === null) return;
@@ -218,10 +253,13 @@ export const MCP_APP_PROXY_DOCUMENT = `<!doctype html>
     retireAppFrame();
     armReadiness();
   };
-  const mountResource = (params) => {
-    if (config === null || appFrame !== null || !isRecord(params) || typeof params.html !== "string"
-      || new TextEncoder().encode(params.html).byteLength > ${MCP_APP_SECURED_HTML_MAX_BYTES}
-      || !isCanonicalSecuredHtml(params.html)) return;
+  const mountResource = (message) => {
+    if (config === null || appFrame !== null) return;
+    if (!isSandboxResourceReady(message)) {
+      root.textContent = "The app resource was rejected.";
+      return;
+    }
+    const params = message.params;
     const frame = document.createElement("iframe");
     frame.setAttribute("title", "MCP App content");
     frame.setAttribute("sandbox", "allow-scripts");
@@ -256,21 +294,21 @@ export const MCP_APP_PROXY_DOCUMENT = `<!doctype html>
       if (event.data?.type === "mono-agent:mcp-app-host-ready") {
         // Host-ready acknowledges only the current configuration arm. Repeated
         // or delayed copies are idempotently ignored while the app stays live.
-        if (!identityMatches(event.data) || hostReady) return;
+        if (!identityMatches(event.data) || byteLength(event.data) > 4096 || hostReady) return;
         hostReady = true;
         stopReadyAnnouncements();
         sendHost({ jsonrpc: "2.0", method: "ui/notifications/sandbox-proxy-ready", params: {} });
         return;
       }
       if (!hostReady || !isRpc(event.data)) return;
-      const max = event.data.method === "ui/notifications/sandbox-resource-ready"
-        ? ${MCP_APP_SECURED_HTML_MAX_BYTES + 64 * 1024}
-        : ${BRIDGE_MESSAGE_MAX_BYTES};
-      if (byteLength(event.data) > max) return;
       if (event.data.method === "ui/notifications/sandbox-resource-ready") {
-        mountResource(event.data.params);
+        // The secured HTML is already bounded by decoded UTF-8 bytes. Validate
+        // its small companion fields structurally so JSON escaping cannot make
+        // a producer-accepted document disappear behind a generic wire cap.
+        mountResource(event.data);
         return;
       }
+      if (byteLength(event.data) > ${BRIDGE_MESSAGE_MAX_BYTES}) return;
       appFrame?.contentWindow?.postMessage(event.data, "*");
       return;
     }

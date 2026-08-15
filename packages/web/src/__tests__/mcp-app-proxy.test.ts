@@ -6,7 +6,10 @@ import {
   MCP_APP_SECURED_HTML_MAX_BYTES,
   secureMcpAppHtml,
 } from "../mcp-app-document.js";
-import { MCP_APP_PROXY_DOCUMENT } from "../mcp-app-proxy.js";
+import {
+  MCP_APP_PROXY_CONTENT_SECURITY_POLICY,
+  MCP_APP_PROXY_DOCUMENT,
+} from "../mcp-app-proxy.js";
 
 interface ProxyMessageEvent {
   readonly source: unknown;
@@ -28,6 +31,21 @@ const metadataForOrigin = (origin: string | undefined) => origin === undefined ?
     baseUriDomains: [origin],
   },
 };
+
+const sandboxResourceReady = (
+  html: string,
+  metadata: ReturnType<typeof metadataForOrigin> = {},
+  clipboardWrite = false,
+) => ({
+  jsonrpc: "2.0",
+  method: "ui/notifications/sandbox-resource-ready",
+  params: {
+    html,
+    sandbox: "allow-scripts",
+    ...(metadata.csp === undefined ? {} : { csp: metadata.csp }),
+    ...(clipboardWrite ? { permissions: { clipboardWrite: {} } } : {}),
+  },
+});
 
 function createProxyHarness() {
   const parentWindow = { postMessage: vi.fn() };
@@ -153,6 +171,24 @@ const configuration = {
 } as const;
 
 describe("MCP App proxy bootstrap", () => {
+  it("leaves inner capability directives to the canonical meta policy", () => {
+    const directives = new Set(MCP_APP_PROXY_CONTENT_SECURITY_POLICY
+      .split("; ")
+      .map((directive) => directive.split(" ", 1)[0]));
+    for (const omitted of [
+      "default-src",
+      "connect-src",
+      "style-src",
+      "img-src",
+      "font-src",
+      "media-src",
+      "frame-src",
+      "child-src",
+      "base-uri",
+    ]) expect(directives.has(omitted)).toBe(false);
+    expect(MCP_APP_PROXY_DOCUMENT).toContain("<style>html,body,#root");
+  });
+
   it("locks the first valid configuration and idempotently ignores repeated host-ready", () => {
     const harness = createProxyHarness();
     const hostOrigin = "https://console.example";
@@ -232,30 +268,34 @@ describe("MCP App proxy bootstrap", () => {
       origin: hostOrigin,
       data: { ...configuration, type: "mono-agent:mcp-app-host-ready" },
     });
-    const html = secureMcpAppHtml("<p>producer contract</p>", metadataForOrigin(origin));
+    const metadata = metadataForOrigin(origin);
+    const html = secureMcpAppHtml("<p>producer contract</p>", metadata);
 
     harness.dispatch({
       source: harness.parentWindow,
       origin: hostOrigin,
-      data: {
-        jsonrpc: "2.0",
-        method: "ui/notifications/sandbox-resource-ready",
-        params: { html },
-      },
+      data: sandboxResourceReady(html, metadata),
     });
 
     expect(harness.frames).toHaveLength(1);
     expect(harness.frames[0]?.element.srcdoc).toBe(html);
   });
 
-  it("accepts the exact final byte cap and retains the proxy-side one-byte-over rejection", () => {
+  it("mounts escaping-heavy producer output at the exact byte cap and visibly rejects one byte over", () => {
     const hostOrigin = "http://127.0.0.1:5050";
     const prefixBytes = new TextEncoder().encode(secureMcpAppHtml("", {})).byteLength;
+    const bodyBytes = MCP_APP_SECURED_HTML_MAX_BYTES - prefixBytes;
+    const escapingPattern = ['"', "\\", "\n", "\t"].join("");
+    const escapingBody = escapingPattern.repeat(Math.floor(bodyBytes / escapingPattern.length))
+      + "x".repeat(bodyBytes % escapingPattern.length);
     const atLimit = secureMcpAppHtml(
-      "x".repeat(MCP_APP_SECURED_HTML_MAX_BYTES - prefixBytes),
+      escapingBody,
       {},
     );
     expect(new TextEncoder().encode(atLimit).byteLength).toBe(MCP_APP_SECURED_HTML_MAX_BYTES);
+    const atLimitPayload = sandboxResourceReady(atLimit);
+    expect(new TextEncoder().encode(JSON.stringify(atLimitPayload)).byteLength)
+      .toBeGreaterThan(MCP_APP_SECURED_HTML_MAX_BYTES + 64 * 1024);
     const mount = (html: string) => {
       const harness = createProxyHarness();
       harness.dispatch({ source: harness.parentWindow, origin: hostOrigin, data: configuration });
@@ -267,17 +307,15 @@ describe("MCP App proxy bootstrap", () => {
       harness.dispatch({
         source: harness.parentWindow,
         origin: hostOrigin,
-        data: {
-          jsonrpc: "2.0",
-          method: "ui/notifications/sandbox-resource-ready",
-          params: { html },
-        },
+        data: sandboxResourceReady(html),
       });
       return harness;
     };
 
     expect(mount(atLimit).frames).toHaveLength(1);
-    expect(mount(`${atLimit}x`).frames).toHaveLength(0);
+    const rejected = mount(`${atLimit}x`);
+    expect(rejected.frames).toHaveLength(0);
+    expect(rejected.root.textContent).toBe("The app resource was rejected.");
   });
 
   it("mounts only canonical secured HTML with srcdoc before the load listener and attachment", () => {
@@ -296,11 +334,11 @@ describe("MCP App proxy bootstrap", () => {
       "<script>window.started=true<\/script>",
       metadataForOrigin("http://127.0.0.1:6060"),
     );
-    const resourceReady = {
-      jsonrpc: "2.0",
-      method: "ui/notifications/sandbox-resource-ready",
-      params: { html },
-    };
+    const resourceReady = sandboxResourceReady(
+      html,
+      metadataForOrigin("http://127.0.0.1:6060"),
+      true,
+    );
     harness.dispatch({ source: harness.parentWindow, origin: hostOrigin, data: resourceReady });
     const mounted = harness.frames[0];
     if (mounted === undefined) throw new Error("Expected the canonical MCP App frame to mount.");
@@ -341,6 +379,16 @@ describe("MCP App proxy bootstrap", () => {
     const hostRpc = { jsonrpc: "2.0", id: 8, method: "ui/notifications/tool-input", params: {} };
     harness.dispatch({ source: harness.parentWindow, origin: hostOrigin, data: hostRpc });
     expect(mounted.innerWindow.postMessage).toHaveBeenCalledExactlyOnceWith(hostRpc, "*");
+    mounted.innerWindow.postMessage.mockClear();
+    harness.dispatch({
+      source: harness.parentWindow,
+      origin: hostOrigin,
+      data: {
+        ...hostRpc,
+        params: { text: "x".repeat(1024 * 1024 + 64 * 1024) },
+      },
+    });
+    expect(mounted.innerWindow.postMessage).not.toHaveBeenCalled();
 
     harness.load();
     expect(mounted.element.remove).toHaveBeenCalledOnce();
@@ -372,17 +420,14 @@ describe("MCP App proxy bootstrap", () => {
       harness.dispatch({
         source: harness.parentWindow,
         origin: hostOrigin,
-        data: {
-          jsonrpc: "2.0",
-          method: "ui/notifications/sandbox-resource-ready",
-          params: { html },
-        },
+        data: sandboxResourceReady(html),
       });
     }
 
     expect(harness.frames).toHaveLength(0);
     expect(harness.root.replaceChildren).not.toHaveBeenCalled();
     expect(harness.operations).not.toContain("frame:0:srcdoc");
+    expect(harness.root.textContent).toBe("The app resource was rejected.");
   });
 
   it("uses matching configuration to re-arm, while delayed host-ready leaves the live app intact", () => {
@@ -397,11 +442,7 @@ describe("MCP App proxy bootstrap", () => {
     const mount = (body: string) => harness.dispatch({
       source: harness.parentWindow,
       origin: hostOrigin,
-      data: {
-        jsonrpc: "2.0",
-        method: "ui/notifications/sandbox-resource-ready",
-        params: { html: secureMcpAppHtml(body, {}) },
-      },
+      data: sandboxResourceReady(secureMcpAppHtml(body, {})),
     });
     mount("<p>first</p>");
     const first = harness.frames[0];
