@@ -157,6 +157,86 @@ describe("WebSearch", () => {
     expect(autoFetch).toHaveBeenCalledTimes(2);
   });
 
+  it("reports an all-engines-unresponsive SearXNG answer as a failure, not an empty result set", async () => {
+    // A SearXNG whose engines are all captcha'd or suspended still answers
+    // `HTTP 200 {"results": []}`. Reading only `results` turned a completely
+    // dead instance into a confident "No results." on every single query.
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      results: [],
+      unresponsive_engines: [["duckduckgo", "CAPTCHA"], ["brave", "too many requests"]],
+    }), { headers: { "content-type": "application/json" } }));
+
+    const result = await performWebSearch({ query: "best time to visit japan" }, {
+      searchConfig: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: { status: "error", code: "rate_limited", rateLimited: true, retryable: true },
+    });
+    expect(result.text).not.toContain("No results.");
+    // Naming each engine and its reason is the whole point: it turns "search is
+    // broken" into "these engines are blocked" without reading any logs.
+    expect(result.text).toContain("duckduckgo: CAPTCHA");
+    expect(result.text).toContain("brave: too many requests");
+  });
+
+  it("treats a SearXNG response without a results array as a failure", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ detail: "not found" }), {
+      headers: { "content-type": "application/json" },
+    }));
+
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    expect(result).toMatchObject({ error: true, outcome: { status: "error" } });
+    expect(result.text).toContain("SearXNG returned no results array.");
+  });
+
+  it("keeps a genuinely empty SearXNG answer an empty answer when its engines responded", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      results: [],
+      unresponsive_engines: [],
+    }), { headers: { "content-type": "application/json" } }));
+
+    const result = await performWebSearch({ query: "zzzz no such thing zzzz" }, {
+      searchConfig: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    expect(result).toMatchObject({
+      error: false,
+      outcome: { status: "ok", code: "no_results", resultCount: 0 },
+    });
+    expect(result.text).toContain("No results.");
+  });
+
+  it("lets keyless results rescue an empty SearXNG answer in auto mode", async () => {
+    // `auto` used to return the moment SearXNG answered `ok`, however empty, so
+    // the keyless chain below it could never rescue the query.
+    const fetchImpl = vi.fn(async (url) => (String(url).startsWith("http://127.0.0.1")
+      ? new Response(JSON.stringify({ results: [] }), { headers: { "content-type": "application/json" } })
+      : new Response('<div class="result"><a class="result__a" href="https://example.com/guide">Guide</a></div>')));
+
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "auto", endpoint: "http://127.0.0.1:8088" },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    expect(result).toMatchObject({
+      error: false,
+      outcome: { status: "ok", backend: "duckduckgo", resultCount: 1 },
+    });
+    expect(result.text).toContain("https://example.com/guide");
+  });
+
   it("treats an empty successful keyless search as a result, not a transport failure", async () => {
     const fetchImpl = vi.fn(async () => new Response("<html><body>No matches</body></html>"));
     const result = await performWebSearch({ query: "no such result" }, {
@@ -249,6 +329,30 @@ describe("WebSearch", () => {
     expect(result.text).not.toContain("No results.");
     expect(result.text).toContain("DuckDuckGo rate-limited");
     expect(result.text).toContain("Startpage rate-limited");
+  });
+
+  it("detects a proof-of-work interstitial that carries none of the classic block wording", async () => {
+    // Startpage now fronts its results with Anubis, which answers HTTP 200 and
+    // says only "Verifying your request..." — no captcha, no anomaly, no
+    // "are you a robot". It parsed to zero rows and passed as an empty success.
+    const anubis = `<html><head>
+      <script id="anubis_version" type="application/json">"v1.25.0"</script>
+      <script id="anubis_challenge" type="application/json">{"rules":{"difficulty":4}}</script>
+      </head><body><div class="sp-message">Verifying your request...</div></body></html>`;
+    const fetchImpl = vi.fn(async () => new Response(anubis, { status: 200 }));
+
+    const result = await performWebSearch({ query: "kyoto" }, {
+      searchConfig: { backend: "keyless" },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: { status: "error", code: "rate_limited", rateLimited: true },
+    });
+    expect(result.text).not.toContain("No results.");
+    expect(result.outcome.cooldownBackends).toContain("startpage");
   });
 
   it("puts a backend into cooldown on a 403 block, not just a 202 challenge", async () => {
