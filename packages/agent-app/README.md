@@ -691,10 +691,15 @@ maintains exact owner byte counts under a global append gate. Reclamation uses
 rotated history first, then inactive and unprotected owners' active files as a
 last resort; a live or protected owner's active `audit.jsonl` is never a
 candidate. Foreign read failures receive bounded conservative accounting and
-are re-inventoried when they recover; admission that cannot possibly succeed
-does not erase unrelated history. Unsafe target files, symlinks, and directories
-fail that owner closed, while oversized target rotations receive the same safe
-bounded cleanup as foreign history. Audit records contain host identity, method,
+are re-inventoried only when the same verified directory identity recovers;
+symlinked or replacement owners remain quarantined. Every append, rotation,
+cleanup, and quota-reclamation mutation revalidates the audit root, owner
+directory, and singly linked file identities after the operation hook and before
+using the child path. Admission that cannot safely create room fails closed
+without changing unrelated or out-of-root history. Unsafe target files,
+symlinks, hard links, and directories fail that owner closed, while oversized
+target rotations receive the same safe bounded cleanup as foreign history.
+Audit records contain host identity, method,
 timestamp, and phase only—not model-filled tool names, arguments, resource URIs,
 URLs, or results. Tool confirmation reserves both its confirmation and bounded
 completion record before execution. A failed pre-execution admission returns

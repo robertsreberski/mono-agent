@@ -1,4 +1,19 @@
-import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -155,6 +170,43 @@ async function auditFileBytes(directory: string): Promise<number> {
     .filter((name) => /^audit(?:\.[1-9][0-9]*)?\.jsonl$/u.test(name))
     .map(async (name) => (await stat(join(directory, name))).size));
   return sizes.reduce((sum, size) => sum + size, 0);
+}
+
+function confirmedToolCall(app: AgentReplyMcpAppPart) {
+  return {
+    conversationId: "conversation",
+    invocationId: app.invocationId,
+    connectionId: app.connectionId,
+    method: "tools/call" as const,
+    params: { name: "refresh_chart" },
+    confirmed: true,
+  };
+}
+
+async function auditSentinels(
+  directory: string,
+  rotationName = "audit.5.jsonl",
+): Promise<{
+  readonly activePath: string;
+  readonly rotationPath: string;
+  assertUnchanged(): Promise<void>;
+}> {
+  const activePath = join(directory, "audit.jsonl");
+  const rotationPath = join(directory, rotationName);
+  const active = Buffer.from("outside active audit must stay byte-identical\n");
+  const rotation = Buffer.from("outside rotated audit must stay byte-identical\n");
+  await Promise.all([
+    writeFile(activePath, active),
+    writeFile(rotationPath, rotation),
+  ]);
+  return {
+    activePath,
+    rotationPath,
+    async assertUnchanged() {
+      await expect(readFile(activePath)).resolves.toEqual(active);
+      await expect(readFile(rotationPath)).resolves.toEqual(rotation);
+    },
+  };
 }
 
 describe("MCP Apps registry", () => {
@@ -1358,6 +1410,357 @@ describe("MCP Apps registry", () => {
       await service.dispose();
     },
   );
+
+  it.skipIf(process.platform === "win32")(
+    "never follows a poisoned owner replaced by a symlink or changes outside audit files",
+    async () => {
+      const artifactDir = await tempDir();
+      const outsideDirectory = await tempDir();
+      const service = createMcpAppService({
+        artifactDir,
+        auditMaxBytes: 1_024,
+        auditRetainedFiles: 1,
+        auditStorageMaxBytes: 4_096,
+      });
+      const live = connection("connection-audit-poisoned-symlink-target");
+      const host = await hostFor(service, "run-audit-poisoned-symlink-target", "conversation");
+      const app = (await host.register(registration(live))).part as AgentReplyMcpAppPart;
+      const root = join(artifactDir, "mcp-apps");
+      const poisonedDirectory = join(root, "10000000-0000-4000-8000-000000000001");
+      await mkdir(poisonedDirectory);
+      await writeFile(join(poisonedDirectory, "audit.jsonl"), Buffer.alloc(128, 0x70));
+      await chmod(poisonedDirectory, 0o000);
+
+      try {
+        await expect(service.request(confirmedToolCall(app))).resolves.toMatchObject({ ok: true });
+      } finally {
+        await chmod(poisonedDirectory, 0o700);
+      }
+      await rm(poisonedDirectory, { recursive: true, force: true });
+      const sentinels = await auditSentinels(outsideDirectory);
+      await symlink(outsideDirectory, poisonedDirectory, "dir");
+
+      const outcome = await service.request(confirmedToolCall(app))
+        .then(() => "resolved", (error: unknown) => (error as { code?: string }).code);
+      expect(["resolved", "app_audit_failed"]).toContain(outcome);
+      await sentinels.assertUnchanged();
+      expect(live.callTool).toHaveBeenCalledTimes(outcome === "resolved" ? 2 : 1);
+      await service.dispose();
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "keeps a poisoned owner quarantined when a different real directory replaces it",
+    async () => {
+      const artifactDir = await tempDir();
+      const service = createMcpAppService({
+        artifactDir,
+        auditMaxBytes: 1_024,
+        auditRetainedFiles: 1,
+        auditStorageMaxBytes: 4_096,
+      });
+      const live = connection("connection-audit-poisoned-replacement-target");
+      const host = await hostFor(service, "run-audit-poisoned-replacement-target", "conversation");
+      const app = (await host.register(registration(live))).part as AgentReplyMcpAppPart;
+      const poisonedDirectory = join(
+        artifactDir,
+        "mcp-apps",
+        "10000000-0000-4000-8000-000000000002",
+      );
+      await mkdir(poisonedDirectory);
+      await writeFile(join(poisonedDirectory, "audit.jsonl"), Buffer.alloc(128, 0x70));
+      await chmod(poisonedDirectory, 0o000);
+      try {
+        await service.request(confirmedToolCall(app));
+      } finally {
+        await chmod(poisonedDirectory, 0o700);
+      }
+      await rm(poisonedDirectory, { recursive: true, force: true });
+      await mkdir(poisonedDirectory);
+      const sentinels = await auditSentinels(poisonedDirectory);
+
+      await expect(service.request(confirmedToolCall(app))).resolves.toMatchObject({ ok: true });
+      await sentinels.assertUnchanged();
+      expect(live.callTool).toHaveBeenCalledTimes(2);
+      await service.dispose();
+    },
+  );
+
+  it.each(["append", "rename"] as const)(
+    "fails closed when the target owner parent is swapped before audit %s",
+    async (attackedOperation) => {
+      const artifactDir = await tempDir();
+      const outsideDirectory = await tempDir();
+      let targetDirectory = "";
+      let attackedPath = "";
+      let swapped = false;
+      const parkedDirectory = join(artifactDir, "mcp-apps", ".swapped-audit-owner");
+      const outsideActivePath = join(outsideDirectory, "audit.jsonl");
+      const outsideRotationPath = join(outsideDirectory, "audit.1.jsonl");
+      const outsideActive = Buffer.from("outside target active audit\n");
+      const outsideRotation = Buffer.from("outside target rotated audit\n");
+      await Promise.all([
+        writeFile(outsideActivePath, outsideActive),
+        writeFile(outsideRotationPath, outsideRotation),
+      ]);
+      const service = createMcpAppService({
+        artifactDir,
+        auditMaxBytes: 1_024,
+        auditRetainedFiles: 1,
+        auditStorageMaxBytes: 4_096,
+        async beforeAuditStorageOperation(operation, path) {
+          if (swapped || operation !== attackedOperation || path !== attackedPath) return;
+          swapped = true;
+          await rename(targetDirectory, parkedDirectory);
+          await symlink(outsideDirectory, targetDirectory, "dir");
+        },
+      });
+      const live = connection(`connection-audit-parent-swap-${attackedOperation}`);
+      const host = await hostFor(service, `run-audit-parent-swap-${attackedOperation}`, "conversation");
+      const app = (await host.register(registration(live))).part as AgentReplyMcpAppPart;
+      targetDirectory = join(artifactDir, "mcp-apps", app.invocationId);
+      attackedPath = join(targetDirectory, "audit.jsonl");
+      if (attackedOperation === "rename") {
+        await writeFile(attackedPath, Buffer.alloc(1_000, 0x61));
+      }
+
+      await expect(service.request({
+        conversationId: "conversation",
+        invocationId: app.invocationId,
+        connectionId: app.connectionId,
+        method: "tools/call",
+        params: { name: "refresh_chart" },
+        confirmed: true,
+      })).rejects.toMatchObject({ code: "app_audit_failed" });
+      expect(swapped).toBe(true);
+      expect(live.callTool).not.toHaveBeenCalled();
+      await expect(readFile(outsideActivePath)).resolves.toEqual(outsideActive);
+      await expect(readFile(outsideRotationPath)).resolves.toEqual(outsideRotation);
+      await service.dispose();
+    },
+  );
+
+  it.each(["readdir", "lstat"] as const)(
+    "fails closed when target inventory sees a parent swap before %s",
+    async (attackedOperation) => {
+      const artifactDir = await tempDir();
+      const outsideDirectory = await tempDir();
+      let targetDirectory = "";
+      let attackedPath = "";
+      let swapped = false;
+      const parkedDirectory = join(artifactDir, "mcp-apps", ".swapped-inventory-owner");
+      const outsideActivePath = join(outsideDirectory, "audit.jsonl");
+      const outsideRotationPath = join(outsideDirectory, "audit.5.jsonl");
+      const outsideActive = Buffer.from("outside inventory active audit\n");
+      const outsideRotation = Buffer.from("outside inventory rotated audit\n");
+      await Promise.all([
+        writeFile(outsideActivePath, outsideActive),
+        writeFile(outsideRotationPath, outsideRotation),
+      ]);
+      const service = createMcpAppService({
+        artifactDir,
+        async beforeAuditStorageOperation(operation, path) {
+          if (swapped || operation !== attackedOperation || path !== attackedPath) return;
+          swapped = true;
+          await rename(targetDirectory, parkedDirectory);
+          await symlink(outsideDirectory, targetDirectory, "dir");
+        },
+      });
+      const live = connection(`connection-audit-inventory-swap-${attackedOperation}`);
+      const host = await hostFor(service, `run-audit-inventory-swap-${attackedOperation}`, "conversation");
+      const app = (await host.register(registration(live))).part as AgentReplyMcpAppPart;
+      targetDirectory = join(artifactDir, "mcp-apps", app.invocationId);
+      const activePath = join(targetDirectory, "audit.jsonl");
+      await writeFile(activePath, "existing audit\n");
+      attackedPath = attackedOperation === "readdir" ? targetDirectory : activePath;
+
+      await expect(service.request({
+        conversationId: "conversation",
+        invocationId: app.invocationId,
+        connectionId: app.connectionId,
+        method: "tools/call",
+        params: { name: "refresh_chart" },
+        confirmed: true,
+      })).rejects.toMatchObject({ code: "app_audit_failed" });
+      expect(swapped).toBe(true);
+      expect(live.callTool).not.toHaveBeenCalled();
+      await expect(readFile(outsideActivePath)).resolves.toEqual(outsideActive);
+      await expect(readFile(outsideRotationPath)).resolves.toEqual(outsideRotation);
+      await service.dispose();
+    },
+  );
+
+  it("fails closed when the verified audit root is swapped before inventory", async () => {
+    const artifactDir = await tempDir();
+    const outsideDirectory = await tempDir();
+    const root = join(artifactDir, "mcp-apps");
+    const parkedRoot = join(artifactDir, ".swapped-mcp-apps-root");
+    let swapped = false;
+    const outsideActive = Buffer.from("outside root active audit\n");
+    const outsideRotation = Buffer.from("outside root rotated audit\n");
+    const service = createMcpAppService({
+      artifactDir,
+      async beforeAuditStorageOperation(operation, path) {
+        if (swapped || operation !== "readdir" || path !== root) return;
+        swapped = true;
+        await rename(root, parkedRoot);
+        await symlink(outsideDirectory, root, "dir");
+      },
+    });
+    const live = connection("connection-audit-root-swap");
+    const host = await hostFor(service, "run-audit-root-swap", "conversation");
+    const app = (await host.register(registration(live))).part as AgentReplyMcpAppPart;
+    const targetOutsideDirectory = join(outsideDirectory, app.invocationId);
+    const outsideActivePath = join(targetOutsideDirectory, "audit.jsonl");
+    const outsideRotationPath = join(targetOutsideDirectory, "audit.5.jsonl");
+    await mkdir(targetOutsideDirectory);
+    await Promise.all([
+      writeFile(outsideActivePath, outsideActive),
+      writeFile(outsideRotationPath, outsideRotation),
+    ]);
+
+    await expect(service.request({
+      conversationId: "conversation",
+      invocationId: app.invocationId,
+      connectionId: app.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    })).rejects.toMatchObject({ code: "app_audit_failed" });
+    expect(swapped).toBe(true);
+    expect(live.callTool).not.toHaveBeenCalled();
+    await expect(readFile(outsideActivePath)).resolves.toEqual(outsideActive);
+    await expect(readFile(outsideRotationPath)).resolves.toEqual(outsideRotation);
+    await service.dispose();
+  });
+
+  it.each(["symlink", "directory"] as const)(
+    "refuses expired-owner cleanup after its parent is replaced by a %s",
+    async (replacementKind) => {
+      const artifactDir = await tempDir();
+      const outsideDirectory = await tempDir();
+      let clock = new Date("2026-08-15T12:00:00.000Z");
+      let targetDirectory = "";
+      let swapped = false;
+      let sentinels = replacementKind === "symlink"
+        ? await auditSentinels(outsideDirectory)
+        : undefined;
+      const parkedDirectory = join(artifactDir, "mcp-apps", ".swapped-cleanup-owner");
+      const service = createMcpAppService({
+        artifactDir,
+        retentionDays: 1,
+        now: () => clock,
+        async beforeAuditStorageOperation(operation, path) {
+          if (swapped || operation !== "remove" || path !== targetDirectory) return;
+          swapped = true;
+          await rename(targetDirectory, parkedDirectory);
+          if (replacementKind === "symlink") {
+            await symlink(outsideDirectory, targetDirectory, "dir");
+          } else {
+            await mkdir(targetDirectory);
+            sentinels = await auditSentinels(targetDirectory);
+          }
+        },
+      });
+      const runId = `run-audit-cleanup-parent-swap-${replacementKind}`;
+      const live = connection(`connection-audit-cleanup-parent-swap-${replacementKind}`);
+      const host = await hostFor(service, runId, "conversation");
+      const app = (await host.register(registration(live))).part as AgentReplyMcpAppPart;
+      targetDirectory = join(artifactDir, "mcp-apps", app.invocationId);
+      await service.wrapResponder(responder(runId)).respond({
+        conversationId: "conversation",
+        text: "retain app",
+        abortSignal: new AbortController().signal,
+      }, stream);
+      clock = new Date("2026-08-17T12:00:00.000Z");
+
+      await expect(service.cleanupExpired()).resolves.toBeUndefined();
+      expect(swapped).toBe(true);
+      expect((await lstat(targetDirectory)).isSymbolicLink()).toBe(replacementKind === "symlink");
+      expect(sentinels).toBeDefined();
+      await sentinels!.assertUnchanged();
+      await service.dispose();
+    },
+  );
+
+  it("refuses quota reclamation after a foreign owner parent swap", async () => {
+    const artifactDir = await tempDir();
+    const outsideDirectory = await tempDir();
+    const foreignDirectory = join(
+      artifactDir,
+      "mcp-apps",
+      "10000000-0000-4000-8000-000000000003",
+    );
+    const parkedDirectory = join(artifactDir, "mcp-apps", ".swapped-foreign-audit-owner");
+    const foreignHistoryPath = join(foreignDirectory, "audit.1.jsonl");
+    const outsideActivePath = join(outsideDirectory, "audit.jsonl");
+    const outsideHistoryPath = join(outsideDirectory, "audit.1.jsonl");
+    const outsideActive = Buffer.from("outside foreign active audit\n");
+    const outsideHistory = Buffer.from("outside foreign rotated audit\n");
+    let swapped = false;
+    const service = createMcpAppService({
+      artifactDir,
+      auditMaxBytes: 1_024,
+      auditRetainedFiles: 1,
+      auditStorageMaxBytes: 2_048,
+      async beforeAuditStorageOperation(operation, path) {
+        if (swapped || operation !== "remove" || path !== foreignHistoryPath) return;
+        swapped = true;
+        await rename(foreignDirectory, parkedDirectory);
+        await symlink(outsideDirectory, foreignDirectory, "dir");
+      },
+    });
+    const live = connection("connection-audit-foreign-parent-swap");
+    const host = await hostFor(service, "run-audit-foreign-parent-swap", "conversation");
+    const app = (await host.register(registration(live))).part as AgentReplyMcpAppPart;
+    const targetActivePath = join(artifactDir, "mcp-apps", app.invocationId, "audit.jsonl");
+    await mkdir(foreignDirectory);
+    await Promise.all([
+      writeFile(targetActivePath, Buffer.alloc(900, 0x61)),
+      writeFile(foreignHistoryPath, Buffer.alloc(900, 0x62)),
+      writeFile(outsideActivePath, outsideActive),
+      writeFile(outsideHistoryPath, outsideHistory),
+    ]);
+
+    await expect(service.request({
+      conversationId: "conversation",
+      invocationId: app.invocationId,
+      connectionId: app.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    })).rejects.toMatchObject({ code: "app_audit_failed" });
+    expect(swapped).toBe(true);
+    expect(live.callTool).not.toHaveBeenCalled();
+    await expect(readFile(outsideActivePath)).resolves.toEqual(outsideActive);
+    await expect(readFile(outsideHistoryPath)).resolves.toEqual(outsideHistory);
+    await service.dispose();
+  });
+
+  it("rejects a multiply linked audit file without changing its outside alias", async () => {
+    const artifactDir = await tempDir();
+    const outsideDirectory = await tempDir();
+    const service = createMcpAppService({ artifactDir });
+    const live = connection("connection-audit-hardlink");
+    const host = await hostFor(service, "run-audit-hardlink", "conversation");
+    const app = (await host.register(registration(live))).part as AgentReplyMcpAppPart;
+    const outsidePath = join(outsideDirectory, "outside-audit-alias.jsonl");
+    const outsideBytes = Buffer.from("outside hardlink alias must not change\n");
+    await writeFile(outsidePath, outsideBytes);
+    await link(outsidePath, join(artifactDir, "mcp-apps", app.invocationId, "audit.jsonl"));
+
+    await expect(service.request({
+      conversationId: "conversation",
+      invocationId: app.invocationId,
+      connectionId: app.connectionId,
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    })).rejects.toMatchObject({ code: "app_audit_failed" });
+    expect(live.callTool).not.toHaveBeenCalled();
+    await expect(readFile(outsidePath)).resolves.toEqual(outsideBytes);
+    await service.dispose();
+  });
 
   it("skips a foreign removal failure and reclaims another safe history candidate", async () => {
     const artifactDir = await tempDir();

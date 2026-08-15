@@ -1,8 +1,32 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants, type Dirent, type Stats } from "node:fs";
-import { lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeSync,
+  type Dirent,
+  type Stats,
+} from "node:fs";
+import {
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+  type FileHandle,
+} from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 
 import {
   CodedError,
@@ -54,6 +78,9 @@ const DEFAULT_BRIDGE_RATE_WINDOW_MS = 60 * 1000;
 const DEFAULT_AUDIT_MAX_BYTES = 256 * 1024;
 const DEFAULT_AUDIT_RETAINED_FILES = 2;
 export const DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES = 1024 * 1024;
+// Darwin's O_NOFOLLOW_ANY rejects symbolic links in every path component.
+// Node does not expose it, but openSync accepts the stable fcntl.h value.
+const DARWIN_O_NOFOLLOW_ANY = 0x20000000;
 const BIDI_CONTROL = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu;
 
 interface McpAppManifest {
@@ -141,6 +168,8 @@ interface McpAppAuditStorageState extends McpAppAuditStorageOptions {
   readonly owners: Map<string, McpAppAuditOwner>;
   readonly reservations: Map<symbol, { readonly directory: string; readonly bytes: number }>;
   readonly protectionPredicates: Set<(directory: string) => boolean>;
+  rootIdentity?: McpAppAuditDirectoryIdentity;
+  rootRealPath?: string;
   initialized: boolean;
   gate: Promise<void>;
 }
@@ -157,7 +186,7 @@ interface McpAppAuditStorage {
     line: string,
     reservedBytes: number,
   ): Promise<McpAppAuditCompletionReservation>;
-  remove(directory: string, operation: () => Promise<void>): Promise<void>;
+  remove(directory: string): Promise<void>;
   dispose(): void;
 }
 
@@ -242,12 +271,47 @@ function mcpAppAuditStorageFor(
         },
       };
     },
-    remove: async (directory, operation) => await runMcpAppAuditExclusive(
+    remove: async (directory) => await runMcpAppAuditExclusive(
       state,
       async () => {
         const canonicalDirectory = resolve(directory);
         assertMcpAppAuditDirectory(state, canonicalDirectory);
-        await operation();
+        const tracked = state.owners.get(canonicalDirectory);
+        if (tracked?.poisoned === true && tracked.identity === undefined) {
+          throw new Error("MCP App audit cleanup refused an owner without a verified identity.");
+        }
+        const initial = await lstat(canonicalDirectory);
+        if (!initial.isDirectory() || initial.isSymbolicLink()) {
+          throw new Error("MCP App audit cleanup refused an unsafe owner directory.");
+        }
+        const expectedIdentity = tracked?.identity ?? mcpAppAuditIdentity(initial);
+        if (!sameMcpAppAuditIdentity(mcpAppAuditIdentity(initial), expectedIdentity)) {
+          throw new Error("MCP App audit cleanup refused a replaced owner directory.");
+        }
+        await beforeMcpAppAuditOperation(state, "remove", canonicalDirectory);
+        const current = await lstat(canonicalDirectory);
+        if (
+          !current.isDirectory()
+          || current.isSymbolicLink()
+          || !sameMcpAppAuditIdentity(mcpAppAuditIdentity(current), expectedIdentity)
+        ) {
+          throw new Error("MCP App audit cleanup refused an unsafe owner directory.");
+        }
+        const opened = await openMcpAppAuditOwner(
+          state,
+          canonicalDirectory,
+          expectedIdentity,
+        );
+        try {
+          assertOpenedMcpAppAuditOwnerSync(state, opened);
+          rmSync(mcpAppAuditChildPath(opened.root, basename(canonicalDirectory)), {
+            recursive: true,
+            force: true,
+          });
+          assertOpenedMcpAppAuditDirectorySync(state, opened.root);
+        } finally {
+          await closeOpenedMcpAppAuditOwner(opened);
+        }
         if (!state.initialized) return;
         replaceMcpAppAuditOwner(state, canonicalDirectory, undefined);
       },
@@ -655,18 +719,9 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
         try {
           const manifest = await readManifest(root, entry);
           if (Date.parse(manifest.expiresAt) > cutoff) continue;
-          await dropInvocation(entry);
-          await auditStorage.remove(
-            join(root, entry),
-            async () => await rm(join(root, entry), { recursive: true, force: true }),
-          );
-        } catch {
-          await dropInvocation(entry);
-          await auditStorage.remove(
-            join(root, entry),
-            async () => await rm(join(root, entry), { recursive: true, force: true }),
-          ).catch(() => undefined);
-        }
+        } catch {}
+        await dropInvocation(entry);
+        await auditStorage.remove(join(root, entry)).catch(() => undefined);
       }
       await cleanupStaging(
         stagingRoot,
@@ -952,10 +1007,7 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
         const failure = replaceAppWithDeliveryFailure(runId, part);
         invocationIdsByRun.get(runId)?.delete(part.invocationId);
         await dropInvocation(part.invocationId);
-        await auditStorage.remove(
-          join(root, part.invocationId),
-          async () => await rm(join(root, part.invocationId), { recursive: true, force: true }),
-        ).catch(() => undefined);
+        await auditStorage.remove(join(root, part.invocationId)).catch(() => undefined);
         finalized.push(failure);
       } finally {
         await protection.release();
@@ -996,10 +1048,7 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
     await retainRun(runId);
     await Promise.all(invocationIds.map(async (invocationId) => {
       await dropInvocation(invocationId);
-      await auditStorage.remove(
-        join(root, invocationId),
-        async () => await rm(join(root, invocationId), { recursive: true, force: true }),
-      ).catch(() => undefined);
+      await auditStorage.remove(join(root, invocationId)).catch(() => undefined);
     }));
   }
 
@@ -1222,17 +1271,36 @@ async function cleanupStaging(
   }));
 }
 
+interface McpAppAuditDirectoryIdentity {
+  readonly dev: number;
+  readonly ino: number;
+}
+
+interface OpenedMcpAppAuditDirectory {
+  readonly path: string;
+  readonly identity: McpAppAuditDirectoryIdentity;
+  readonly realPath: string;
+  readonly handle: FileHandle;
+}
+
+interface OpenedMcpAppAuditOwner {
+  readonly root: OpenedMcpAppAuditDirectory;
+  readonly owner: OpenedMcpAppAuditDirectory;
+}
+
 interface McpAppAuditFile {
   readonly directory: string;
   readonly index: number;
   readonly size: number;
   readonly path: string;
   readonly modifiedAtMs: number;
+  readonly identity: McpAppAuditDirectoryIdentity;
   readonly reclaimable: boolean;
 }
 
 interface McpAppAuditOwner {
   readonly directory: string;
+  readonly identity?: McpAppAuditDirectoryIdentity;
   readonly files: Map<number, McpAppAuditFile>;
   readonly reservedBytes: number;
   readonly poisoned: boolean;
@@ -1266,15 +1334,24 @@ async function appendMcpAppAudit(
 
   if (rotates) await rotateTrackedMcpAppAuditFiles(state, directory);
   owner = state.owners.get(directory) ?? emptyMcpAppAuditOwner(directory);
+  if (owner.identity === undefined) {
+    throw new Error("MCP App audit owner identity is unavailable.");
+  }
   const active = owner.files.get(0);
   const expectedBytes = active?.size ?? 0;
-  let committed: { readonly size: number; readonly modifiedAtMs: number };
+  let committed: {
+    readonly size: number;
+    readonly modifiedAtMs: number;
+    readonly identity: McpAppAuditDirectoryIdentity;
+  };
   try {
     committed = await appendMcpAppAuditLine(
       state,
+      owner,
       join(directory, "audit.jsonl"),
       line,
       expectedBytes,
+      active,
     );
   } catch (error) {
     quarantineMcpAppAuditOwner(state, directory, addMcpAppAuditBytes(
@@ -1290,10 +1367,12 @@ async function appendMcpAppAudit(
     size: committed.size,
     path: join(directory, "audit.jsonl"),
     modifiedAtMs: committed.modifiedAtMs,
+    identity: committed.identity,
     reclaimable: true,
   });
   replaceMcpAppAuditOwner(state, directory, {
     directory,
+    identity: owner.identity,
     files,
     reservedBytes: 0,
     poisoned: false,
@@ -1357,10 +1436,8 @@ async function admitMcpAppAuditAppend(
     try {
       const removed = await removeMcpAppAuditPathUnlessProtected(
         state,
-        candidate.path,
+        candidate,
         { force: true },
-        candidate.directory,
-        candidate.index,
       );
       if (!removed) continue;
       removeTrackedMcpAppAuditFile(state, candidate);
@@ -1388,15 +1465,23 @@ async function initializeMcpAppAuditStorage(
   targetDirectory: string,
 ): Promise<void> {
   if (state.initialized) return;
+  let root: OpenedMcpAppAuditDirectory | undefined;
   let entries: Dirent[];
   try {
-    entries = await readMcpAppAuditDirectory(state, state.root);
+    root = await openMcpAppAuditRoot(state);
+    entries = await readMcpAppAuditDirectory(
+      state,
+      state.root,
+      async () => await assertOpenedMcpAppAuditDirectory(state, root!),
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       state.initialized = true;
       return;
     }
     throw error;
+  } finally {
+    await root?.handle.close().catch(() => undefined);
   }
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (!entry.isDirectory() || !APP_ID.test(entry.name)) continue;
@@ -1413,15 +1498,23 @@ async function reinventoryPoisonedMcpAppAuditOwners(
   state: McpAppAuditStorageState,
   targetDirectory: string,
 ): Promise<void> {
-  const poisonedDirectories = [...state.owners.values()]
+  const poisonedOwners = [...state.owners.values()]
     .filter((owner) => owner.poisoned && owner.directory !== targetDirectory)
-    .map((owner) => owner.directory)
-    .sort((left, right) => left.localeCompare(right));
-  for (const directory of poisonedDirectories) {
-    const owner = await inventoryMcpAppAuditOwner(state, directory, false);
+    .sort((left, right) => left.directory.localeCompare(right.directory));
+  for (const poisonedOwner of poisonedOwners) {
+    // A directory that was unreadable may recover in place, but a replacement
+    // entry is a different owner. Never traverse it under the old accounting
+    // identity, even when the replacement happens to be another real directory.
+    if (poisonedOwner.identity === undefined) continue;
+    const owner = await inventoryMcpAppAuditOwner(
+      state,
+      poisonedOwner.directory,
+      false,
+      poisonedOwner.identity,
+    );
     replaceMcpAppAuditOwner(
       state,
-      directory,
+      poisonedOwner.directory,
       mcpAppAuditOwnerBytes(owner) === 0 ? undefined : owner,
     );
   }
@@ -1431,11 +1524,11 @@ async function reconcileTargetMcpAppAuditOwner(
   state: McpAppAuditStorageState,
   directory: string,
 ): Promise<McpAppAuditOwner> {
-  const directoryStat = await lstatMcpAppAuditPath(state, directory);
-  if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
-    throw new Error("MCP App audit target is not a safe invocation directory.");
+  const tracked = state.owners.get(directory);
+  if (tracked?.poisoned === true && tracked.identity === undefined) {
+    throw new Error("MCP App audit target has no verified invocation-directory identity.");
   }
-  const owner = await inventoryMcpAppAuditOwner(state, directory, true);
+  const owner = await inventoryMcpAppAuditOwner(state, directory, true, tracked?.identity);
   replaceMcpAppAuditOwner(state, directory, owner);
   return owner;
 }
@@ -1444,86 +1537,110 @@ async function inventoryMcpAppAuditOwner(
   state: McpAppAuditStorageState,
   directory: string,
   strict: boolean,
+  expectedIdentity?: McpAppAuditDirectoryIdentity,
 ): Promise<McpAppAuditOwner> {
+  let observedIdentity = expectedIdentity;
+  let opened: OpenedMcpAppAuditOwner | undefined;
   let entries: Dirent[];
   try {
-    entries = await readMcpAppAuditDirectory(state, directory);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyMcpAppAuditOwner(directory);
-    if (strict) throw error;
-    return poisonedMcpAppAuditOwner(state, directory);
-  }
-  const files = new Map<number, McpAppAuditFile>();
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    const index = mcpAppAuditFileIndex(entry.name);
-    if (index === undefined) continue;
-    const path = join(directory, entry.name);
-    let fileStat: Stats;
-    try {
-      fileStat = await lstatMcpAppAuditPath(state, path);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      if (strict) throw error;
-      return poisonedMcpAppAuditOwner(state, directory, mcpAppAuditFilesBytes(files));
+    const initial = await lstatMcpAppAuditPath(state, directory);
+    if (!initial.isDirectory() || initial.isSymbolicLink()) {
+      throw new Error("MCP App audit target is not a safe invocation directory.");
     }
-    if (!fileStat.isFile() || fileStat.isSymbolicLink()) {
-      if (strict) throw new Error("MCP App audit storage contains an unsafe file.");
-      if (index === 0 && isMcpAppAuditOwnerProtected(state, directory)) {
-        return poisonedMcpAppAuditOwner(state, directory, mcpAppAuditFilesBytes(files));
-      }
+    const initialIdentity = mcpAppAuditIdentity(initial);
+    if (expectedIdentity !== undefined && !sameMcpAppAuditIdentity(initialIdentity, expectedIdentity)) {
+      throw new Error("MCP App audit invocation directory identity changed.");
+    }
+    observedIdentity = initialIdentity;
+    opened = await openMcpAppAuditOwner(state, directory, expectedIdentity ?? initialIdentity);
+    entries = await readMcpAppAuditDirectory(
+      state,
+      directory,
+      async () => await assertOpenedMcpAppAuditOwner(state, opened!),
+    );
+  } catch (error) {
+    if (opened !== undefined) await closeOpenedMcpAppAuditOwner(opened);
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && expectedIdentity === undefined) {
+      return emptyMcpAppAuditOwner(directory);
+    }
+    if (strict) throw error;
+    return poisonedMcpAppAuditOwner(state, directory, 0, observedIdentity);
+  }
+  const identity = opened.owner.identity;
+  const files = new Map<number, McpAppAuditFile>();
+  try {
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const index = mcpAppAuditFileIndex(entry.name);
+      if (index === undefined) continue;
+      const path = join(directory, entry.name);
+      let fileStat: Stats;
       try {
-        const removed = await removeMcpAppAuditPathUnlessProtected(
+        fileStat = await lstatMcpAppAuditPath(
           state,
           path,
-          { recursive: true, force: true },
-          directory,
-          index,
+          async () => await assertOpenedMcpAppAuditOwner(state, opened!),
         );
-        if (!removed) {
-          return poisonedMcpAppAuditOwner(state, directory, mcpAppAuditFilesBytes(files));
-        }
-      } catch {
-        return poisonedMcpAppAuditOwner(state, directory, mcpAppAuditFilesBytes(files));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        if (strict) throw error;
+        return poisonedMcpAppAuditOwner(
+          state,
+          directory,
+          mcpAppAuditFilesBytes(files),
+          identity,
+        );
       }
-      continue;
-    }
-    if (index === 0 && fileStat.size > state.fileMaxBytes) {
-      if (strict) {
-        throw new Error("MCP App audit file exceeded its configured ceiling.");
+      if (!fileStat.isFile() || fileStat.isSymbolicLink() || fileStat.nlink !== 1) {
+        if (strict) throw new Error("MCP App audit storage contains an unsafe file.");
+        return poisonedMcpAppAuditOwner(
+          state,
+          directory,
+          addMcpAppAuditBytes(
+            mcpAppAuditFilesBytes(files),
+            fileStat.isFile() && Number.isSafeInteger(fileStat.size) ? fileStat.size : 0,
+          ),
+          identity,
+        );
       }
-      files.set(index, {
+      const file: McpAppAuditFile = {
         directory,
         index,
         size: fileStat.size,
         path,
         modifiedAtMs: fileStat.mtimeMs,
+        identity: mcpAppAuditIdentity(fileStat),
         reclaimable: true,
-      });
-      continue;
-    }
-    if (index > state.retainedFiles || fileStat.size > state.fileMaxBytes) {
-      try {
-        await removeMcpAppAuditPath(state, path, { force: true });
-      } catch {
-        if (strict) throw new Error("MCP App audit history could not be bounded safely.");
-        return poisonedMcpAppAuditOwner(
-          state,
-          directory,
-          addMcpAppAuditBytes(mcpAppAuditFilesBytes(files), fileStat.size),
-        );
+      };
+      if (index === 0 && fileStat.size > state.fileMaxBytes) {
+        if (strict) {
+          throw new Error("MCP App audit file exceeded its configured ceiling.");
+        }
+        files.set(index, file);
+        continue;
       }
-      continue;
+      if (index > state.retainedFiles || fileStat.size > state.fileMaxBytes) {
+        try {
+          await removeMcpAppAuditPath(state, file, { force: true }, opened);
+        } catch {
+          if (strict) throw new Error("MCP App audit history could not be bounded safely.");
+          return poisonedMcpAppAuditOwner(
+            state,
+            directory,
+            addMcpAppAuditBytes(mcpAppAuditFilesBytes(files), fileStat.size),
+            identity,
+          );
+        }
+        continue;
+      }
+      files.set(index, {
+        ...file,
+      });
     }
-    files.set(index, {
-      directory,
-      index,
-      size: fileStat.size,
-      path,
-      modifiedAtMs: fileStat.mtimeMs,
-      reclaimable: true,
-    });
+    await assertOpenedMcpAppAuditOwner(state, opened);
+    return { directory, identity, files, reservedBytes: 0, poisoned: false };
+  } finally {
+    await closeOpenedMcpAppAuditOwner(opened);
   }
-  return { directory, files, reservedBytes: 0, poisoned: false };
 }
 
 function nextMcpAppAuditReclamationCandidate(
@@ -1657,10 +1774,12 @@ function poisonedMcpAppAuditOwner(
   state: McpAppAuditStorageState,
   directory: string,
   minimumBytes = 0,
+  identity?: McpAppAuditDirectoryIdentity,
 ): McpAppAuditOwner {
   const ownerCapacity = state.fileMaxBytes * (state.retainedFiles + 1);
   return {
     directory,
+    ...(identity === undefined ? {} : { identity }),
     files: new Map(),
     // Unknown owners consume their full safe owner capacity, while the
     // aggregate projection saturates just above maxBytes. More poisoned owners
@@ -1675,7 +1794,11 @@ function quarantineMcpAppAuditOwner(
   directory: string,
   minimumBytes: number,
 ): void {
-  replaceMcpAppAuditOwner(state, directory, poisonedMcpAppAuditOwner(state, directory, minimumBytes));
+  replaceMcpAppAuditOwner(
+    state,
+    directory,
+    poisonedMcpAppAuditOwner(state, directory, minimumBytes, state.owners.get(directory)?.identity),
+  );
 }
 
 function mcpAppAuditFilesBytes(files: ReadonlyMap<number, McpAppAuditFile>): number {
@@ -1734,7 +1857,7 @@ async function rotateTrackedMcpAppAuditFiles(
   let owner = state.owners.get(directory) ?? emptyMcpAppAuditOwner(directory);
   const released = owner.files.get(state.retainedFiles);
   if (released !== undefined) {
-    await removeMcpAppAuditPath(state, released.path, { force: true });
+    await removeMcpAppAuditPath(state, released, { force: true });
     removeTrackedMcpAppAuditFile(state, released);
   }
   for (let index = state.retainedFiles; index >= 1; index -= 1) {
@@ -1742,7 +1865,7 @@ async function rotateTrackedMcpAppAuditFiles(
     const source = owner.files.get(index - 1);
     if (source === undefined) continue;
     const destinationPath = join(directory, `audit.${index}.jsonl`);
-    await renameMcpAppAuditPath(state, source.path, destinationPath);
+    await renameMcpAppAuditPath(state, source, destinationPath);
     const files = new Map(owner.files);
     files.delete(index - 1);
     files.set(index, {
@@ -1756,30 +1879,81 @@ async function rotateTrackedMcpAppAuditFiles(
 
 async function appendMcpAppAuditLine(
   state: McpAppAuditStorageState,
+  owner: McpAppAuditOwner,
   path: string,
   line: string,
   expectedBytes: number,
-): Promise<{ readonly size: number; readonly modifiedAtMs: number }> {
+  expectedFile: McpAppAuditFile | undefined,
+): Promise<{
+  readonly size: number;
+  readonly modifiedAtMs: number;
+  readonly identity: McpAppAuditDirectoryIdentity;
+}> {
+  if (owner.identity === undefined) throw new Error("MCP App audit owner identity is unavailable.");
   await beforeMcpAppAuditOperation(state, "append", path);
+  const opened = await openMcpAppAuditOwner(state, owner.directory, owner.identity);
+  const childPath = mcpAppAuditChildPath(opened.owner, basename(path));
   const flags = fsConstants.O_APPEND
-    | fsConstants.O_CREAT
     | fsConstants.O_WRONLY
-    | (fsConstants.O_NOFOLLOW ?? 0);
-  const handle = await open(path, flags, 0o600);
+    | (expectedFile === undefined ? fsConstants.O_CREAT | fsConstants.O_EXCL : 0)
+    | (process.platform === "darwin" ? DARWIN_O_NOFOLLOW_ANY : (fsConstants.O_NOFOLLOW ?? 0));
+  let descriptor: number | undefined;
   try {
-    const before = await handle.stat();
-    if (!before.isFile() || before.size !== expectedBytes) {
+    assertOpenedMcpAppAuditOwnerSync(state, opened);
+    descriptor = openSync(childPath, flags, 0o600);
+    const before = fstatSync(descriptor);
+    const current = lstatSync(childPath);
+    if (
+      !before.isFile()
+      || before.nlink !== 1
+      || before.size !== expectedBytes
+      || !sameMcpAppAuditFileIdentity(before, current)
+      || (expectedFile !== undefined && !sameMcpAppAuditIdentity(
+        mcpAppAuditIdentity(before),
+        expectedFile.identity,
+      ))
+    ) {
       throw new Error("MCP App audit storage changed during append admission.");
     }
-    await handle.appendFile(line, { encoding: "utf8" });
-    const after = await handle.stat();
-    const lineBytes = Buffer.byteLength(line, "utf8");
-    if (!after.isFile() || after.size !== expectedBytes + lineBytes || after.size > state.fileMaxBytes) {
+    assertOpenedMcpAppAuditOwnerSync(state, opened);
+    const lineBuffer = Buffer.from(line, "utf8");
+    let written = 0;
+    while (written < lineBuffer.length) {
+      const bytesWritten = writeSync(
+        descriptor,
+        lineBuffer,
+        written,
+        lineBuffer.length - written,
+        null,
+      );
+      if (bytesWritten === 0) throw new Error("MCP App audit append made no forward progress.");
+      written += bytesWritten;
+    }
+    const after = fstatSync(descriptor);
+    const currentAfter = lstatSync(childPath);
+    const lineBytes = lineBuffer.length;
+    if (
+      written !== lineBytes
+      || !after.isFile()
+      || after.nlink !== 1
+      || after.size !== expectedBytes + lineBytes
+      || after.size > state.fileMaxBytes
+      || !sameMcpAppAuditFileIdentity(after, currentAfter)
+    ) {
       throw new Error("MCP App audit append did not preserve its physical file ceiling.");
     }
-    return { size: after.size, modifiedAtMs: after.mtimeMs };
+    assertOpenedMcpAppAuditOwnerSync(state, opened);
+    return {
+      size: after.size,
+      modifiedAtMs: after.mtimeMs,
+      identity: mcpAppAuditIdentity(after),
+    };
   } finally {
-    await handle.close();
+    try {
+      if (descriptor !== undefined) closeSync(descriptor);
+    } finally {
+      await closeOpenedMcpAppAuditOwner(opened);
+    }
   }
 }
 
@@ -1800,62 +1974,292 @@ async function beforeMcpAppAuditOperation(
 async function readMcpAppAuditDirectory(
   state: McpAppAuditStorageState,
   path: string,
+  assertParent?: () => Promise<void>,
 ): Promise<Dirent[]> {
   await beforeMcpAppAuditOperation(state, "readdir", path);
-  return await readdir(path, { withFileTypes: true });
+  await assertParent?.();
+  const entries = await readdir(path, { withFileTypes: true });
+  await assertParent?.();
+  return entries;
 }
 
 async function lstatMcpAppAuditPath(
   state: McpAppAuditStorageState,
   path: string,
+  assertParent?: () => Promise<void>,
 ): Promise<Stats> {
   await beforeMcpAppAuditOperation(state, "lstat", path);
-  return await lstat(path);
+  await assertParent?.();
+  const details = await lstat(path);
+  await assertParent?.();
+  return details;
 }
 
 async function removeMcpAppAuditPath(
   state: McpAppAuditStorageState,
-  path: string,
+  file: McpAppAuditFile,
   options: { readonly recursive?: boolean; readonly force?: boolean },
+  existingOwner?: OpenedMcpAppAuditOwner,
 ): Promise<void> {
-  await beforeMcpAppAuditOperation(state, "remove", path);
-  await rm(path, options);
+  await removeMcpAppAuditFile(state, file, options, false, existingOwner);
 }
 
 async function removeMcpAppAuditPathUnlessProtected(
   state: McpAppAuditStorageState,
-  path: string,
+  file: McpAppAuditFile,
   options: { readonly recursive?: boolean; readonly force?: boolean },
-  directory: string,
-  index: number,
 ): Promise<boolean> {
-  await beforeMcpAppAuditOperation(state, "remove", path);
-  if (options.recursive !== true) {
-    const [directoryStat, fileStat] = await Promise.all([
-      lstatMcpAppAuditPath(state, directory),
-      lstatMcpAppAuditPath(state, path),
-    ]);
-    if (
-      !directoryStat.isDirectory()
-      || directoryStat.isSymbolicLink()
-      || !fileStat.isFile()
-      || fileStat.isSymbolicLink()
-    ) {
-      throw new Error("MCP App audit reclamation target changed unexpectedly.");
-    }
-  }
-  if (index === 0 && isMcpAppAuditOwnerProtected(state, directory)) return false;
-  await rm(path, options);
-  return true;
+  return await removeMcpAppAuditFile(state, file, options, true);
 }
 
 async function renameMcpAppAuditPath(
   state: McpAppAuditStorageState,
-  source: string,
+  source: McpAppAuditFile,
   destination: string,
 ): Promise<void> {
-  await beforeMcpAppAuditOperation(state, "rename", source);
-  await rename(source, destination);
+  const owner = state.owners.get(source.directory);
+  if (owner?.identity === undefined) throw new Error("MCP App audit owner identity is unavailable.");
+  await beforeMcpAppAuditOperation(state, "rename", source.path);
+  const opened = await openMcpAppAuditOwner(state, source.directory, owner.identity);
+  try {
+    const sourcePath = mcpAppAuditChildPath(opened.owner, basename(source.path));
+    const destinationPath = mcpAppAuditChildPath(opened.owner, basename(destination));
+    assertOpenedMcpAppAuditOwnerSync(state, opened);
+    const currentSource = lstatSync(sourcePath);
+    assertMcpAppAuditFileSnapshot(currentSource, source);
+    try {
+      lstatSync(destinationPath);
+      throw new Error("MCP App audit rotation destination changed unexpectedly.");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    assertOpenedMcpAppAuditOwnerSync(state, opened);
+    renameSync(sourcePath, destinationPath);
+    const currentDestination = lstatSync(destinationPath);
+    assertMcpAppAuditFileSnapshot(currentDestination, source);
+    assertOpenedMcpAppAuditOwnerSync(state, opened);
+  } finally {
+    await closeOpenedMcpAppAuditOwner(opened);
+  }
+}
+
+async function removeMcpAppAuditFile(
+  state: McpAppAuditStorageState,
+  file: McpAppAuditFile,
+  options: { readonly recursive?: boolean; readonly force?: boolean },
+  respectProtection: boolean,
+  existingOwner?: OpenedMcpAppAuditOwner,
+): Promise<boolean> {
+  if (options.recursive === true) {
+    throw new Error("MCP App audit reclamation never recursively removes an owner entry.");
+  }
+  const trackedOwner = state.owners.get(file.directory);
+  const identity = existingOwner?.owner.identity ?? trackedOwner?.identity;
+  if (identity === undefined) throw new Error("MCP App audit owner identity is unavailable.");
+  await beforeMcpAppAuditOperation(state, "remove", file.path);
+  const opened = existingOwner ?? await openMcpAppAuditOwner(state, file.directory, identity);
+  try {
+    const childPath = mcpAppAuditChildPath(opened.owner, basename(file.path));
+    assertOpenedMcpAppAuditOwnerSync(state, opened);
+    const current = lstatSync(childPath);
+    assertMcpAppAuditFileSnapshot(current, file);
+    if (respectProtection && file.index === 0 && isMcpAppAuditOwnerProtected(state, file.directory)) {
+      return false;
+    }
+    // Keep the final validation and unlink in one synchronous critical section:
+    // no in-process task can swap the parent between check and use. Linux child
+    // paths are descriptor-relative; Darwin append opens also use NOFOLLOW_ANY.
+    assertOpenedMcpAppAuditOwnerSync(state, opened);
+    rmSync(childPath, options);
+    assertOpenedMcpAppAuditOwnerSync(state, opened);
+    return true;
+  } finally {
+    if (existingOwner === undefined) await closeOpenedMcpAppAuditOwner(opened);
+  }
+}
+
+async function openMcpAppAuditRoot(
+  state: McpAppAuditStorageState,
+): Promise<OpenedMcpAppAuditDirectory> {
+  const opened = await openVerifiedMcpAppAuditDirectory(
+    state.root,
+    state.rootIdentity,
+    state.rootRealPath,
+  );
+  if (state.rootIdentity === undefined) {
+    state.rootIdentity = opened.identity;
+    state.rootRealPath = opened.realPath;
+  }
+  return opened;
+}
+
+async function openMcpAppAuditOwner(
+  state: McpAppAuditStorageState,
+  directory: string,
+  expectedIdentity: McpAppAuditDirectoryIdentity,
+): Promise<OpenedMcpAppAuditOwner> {
+  assertMcpAppAuditDirectory(state, directory);
+  const root = await openMcpAppAuditRoot(state);
+  try {
+    const owner = await openVerifiedMcpAppAuditDirectory(
+      directory,
+      expectedIdentity,
+      join(root.realPath, basename(directory)),
+    );
+    const opened = { root, owner };
+    await assertOpenedMcpAppAuditOwner(state, opened);
+    return opened;
+  } catch (error) {
+    await root.handle.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function openVerifiedMcpAppAuditDirectory(
+  path: string,
+  expectedIdentity?: McpAppAuditDirectoryIdentity,
+  expectedRealPath?: string,
+): Promise<OpenedMcpAppAuditDirectory> {
+  const initial = await lstat(path);
+  if (!initial.isDirectory() || initial.isSymbolicLink()) {
+    throw new Error("MCP App audit storage traversed an unsafe directory entry.");
+  }
+  const handle = await open(
+    path,
+    fsConstants.O_RDONLY
+      | (fsConstants.O_DIRECTORY ?? 0)
+      | (fsConstants.O_NOFOLLOW ?? 0)
+      | (fsConstants.O_NONBLOCK ?? 0),
+  );
+  try {
+    const [opened, current, currentRealPath] = await Promise.all([
+      handle.stat(),
+      lstat(path),
+      realpath(path),
+    ]);
+    const identity = mcpAppAuditIdentity(opened);
+    if (
+      !opened.isDirectory()
+      || !current.isDirectory()
+      || current.isSymbolicLink()
+      || !sameMcpAppAuditIdentity(mcpAppAuditIdentity(initial), identity)
+      || !sameMcpAppAuditIdentity(mcpAppAuditIdentity(current), identity)
+      || (expectedIdentity !== undefined && !sameMcpAppAuditIdentity(identity, expectedIdentity))
+      || (expectedRealPath !== undefined && currentRealPath !== expectedRealPath)
+    ) {
+      throw new Error("MCP App audit directory identity changed during verification.");
+    }
+    return { path, identity, realPath: currentRealPath, handle };
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function assertOpenedMcpAppAuditDirectory(
+  state: McpAppAuditStorageState,
+  opened: OpenedMcpAppAuditDirectory,
+): Promise<void> {
+  assertOpenedMcpAppAuditDirectorySync(state, opened);
+}
+
+async function assertOpenedMcpAppAuditOwner(
+  state: McpAppAuditStorageState,
+  opened: OpenedMcpAppAuditOwner,
+): Promise<void> {
+  assertOpenedMcpAppAuditOwnerSync(state, opened);
+}
+
+function assertOpenedMcpAppAuditDirectorySync(
+  state: McpAppAuditStorageState,
+  opened: OpenedMcpAppAuditDirectory,
+): void {
+  const retained = fstatSync(opened.handle.fd);
+  const current = lstatSync(opened.path);
+  const currentRealPath = realpathSync(opened.path);
+  const rootIdentityChanged = opened.path === state.root
+    && state.rootIdentity !== undefined
+    && !sameMcpAppAuditIdentity(opened.identity, state.rootIdentity);
+  const rootRealPathChanged = opened.path === state.root
+    && state.rootRealPath !== undefined
+    && opened.realPath !== state.rootRealPath;
+  if (
+    !retained.isDirectory()
+    || !current.isDirectory()
+    || current.isSymbolicLink()
+    || !sameMcpAppAuditIdentity(mcpAppAuditIdentity(retained), opened.identity)
+    || !sameMcpAppAuditIdentity(mcpAppAuditIdentity(current), opened.identity)
+    || currentRealPath !== opened.realPath
+    || rootIdentityChanged
+    || rootRealPathChanged
+  ) {
+    throw new Error("MCP App audit directory changed while in use.");
+  }
+}
+
+function assertOpenedMcpAppAuditOwnerSync(
+  state: McpAppAuditStorageState,
+  opened: OpenedMcpAppAuditOwner,
+): void {
+  assertOpenedMcpAppAuditDirectorySync(state, opened.root);
+  assertOpenedMcpAppAuditDirectorySync(state, opened.owner);
+  if (
+    dirname(opened.owner.realPath) !== opened.root.realPath
+    || basename(opened.owner.path) !== basename(opened.owner.realPath)
+  ) {
+    throw new Error("MCP App audit owner escaped its verified audit root.");
+  }
+}
+
+function mcpAppAuditChildPath(
+  opened: OpenedMcpAppAuditDirectory,
+  name: string,
+): string {
+  if (basename(name) !== name || name === "." || name === "..") {
+    throw new Error("MCP App audit child name is unsafe.");
+  }
+  return process.platform === "linux"
+    ? `/proc/self/fd/${String(opened.handle.fd)}/${name}`
+    : join(opened.realPath, name);
+}
+
+async function closeOpenedMcpAppAuditOwner(opened: OpenedMcpAppAuditOwner): Promise<void> {
+  await Promise.all([
+    opened.owner.handle.close().catch(() => undefined),
+    opened.root.handle.close().catch(() => undefined),
+  ]);
+}
+
+function mcpAppAuditIdentity(details: Stats): McpAppAuditDirectoryIdentity {
+  return { dev: details.dev, ino: details.ino };
+}
+
+function sameMcpAppAuditIdentity(
+  left: McpAppAuditDirectoryIdentity,
+  right: McpAppAuditDirectoryIdentity,
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameMcpAppAuditFileIdentity(opened: Stats, current: Stats): boolean {
+  return opened.isFile()
+    && opened.nlink === 1
+    && current.isFile()
+    && !current.isSymbolicLink()
+    && current.nlink === 1
+    && sameMcpAppAuditIdentity(mcpAppAuditIdentity(opened), mcpAppAuditIdentity(current));
+}
+
+function assertMcpAppAuditFileSnapshot(current: Stats, expected: McpAppAuditFile): void {
+  if (
+    !current.isFile()
+    || current.isSymbolicLink()
+    || current.nlink !== 1
+    || current.size !== expected.size
+    || !sameMcpAppAuditIdentity(mcpAppAuditIdentity(current), expected.identity)
+  ) {
+    throw new Error("MCP App audit file identity changed before mutation.");
+  }
 }
 
 function compareMcpAppAuditAge(left: McpAppAuditFile, right: McpAppAuditFile): number {

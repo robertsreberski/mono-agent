@@ -87,8 +87,11 @@
   maintains exact gated byte accounting thereafter, reclaims rotated history
   before inactive owners' active files, and never reclaims a live or protected
   active confirmation. Poisoned foreign owners use bounded conservative
-  accounting, recover in place, and cannot trigger futile deletion. Tool calls
-  reserve confirmation and completion bytes before execution; model-filled
+  accounting, recover only at the same verified directory identity, and cannot
+  redirect reinventory or reclamation through a symlink or replacement owner.
+  Audit mutations revalidate the root, parent, and singly linked file identities
+  immediately before use. Tool calls reserve confirmation and completion bytes
+  before execution; model-filled
   values never enter audit records, and a real unrecorded post-tool completion
   remains the non-retryable `app_audit_incomplete` outcome through operator and
   web transport.
