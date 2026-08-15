@@ -3,7 +3,10 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const bridgeHarness = vi.hoisted(() => ({ instances: [] as Array<Record<string, unknown>> }));
+const bridgeHarness = vi.hoisted(() => ({
+  instances: [] as Array<Record<string, unknown>>,
+  failures: {} as Record<string, Error | undefined>,
+}));
 const originalCreateObjectUrl = URL.createObjectURL;
 const originalRevokeObjectUrl = URL.revokeObjectURL;
 
@@ -20,9 +23,15 @@ vi.mock("@modelcontextprotocol/ext-apps/app-bridge", async (importOriginal) => {
     onrequestteardown?: () => void;
     onerror?: (error: Error) => void;
     constructor() { bridgeHarness.instances.push(this as unknown as Record<string, unknown>); }
-    async connect() {}
-    async sendSandboxResourceReady() {}
-    async sendToolInput() {}
+    async connect() {
+      if (bridgeHarness.failures.connect !== undefined) throw bridgeHarness.failures.connect;
+    }
+    async sendSandboxResourceReady() {
+      if (bridgeHarness.failures.sandbox !== undefined) throw bridgeHarness.failures.sandbox;
+    }
+    async sendToolInput() {
+      if (bridgeHarness.failures.initialize !== undefined) throw bridgeHarness.failures.initialize;
+    }
     async sendToolResult() {}
     setHostContext() {}
     async teardownResource() {}
@@ -45,6 +54,7 @@ import {
   openExternalMcpAppLink,
   safeMcpAppResourceMetadata,
   secureMcpAppHtml,
+  startReplyAttachmentDownload,
 } from "./ReplyParts";
 
 type AttachmentProps = Parameters<typeof ReplyAttachmentPart>[0];
@@ -96,6 +106,9 @@ interface TestAppBridgeInstance {
   readonly onreadresource?: (params: unknown) => Promise<unknown>;
   readonly onopenlink?: (params: unknown) => Promise<unknown>;
   readonly onupdatemodelcontext?: (params: unknown) => Promise<unknown>;
+  readonly onsandboxready?: () => void;
+  readonly oninitialized?: () => void;
+  readonly onerror?: (error: Error) => void;
   readonly teardownResource: () => Promise<void>;
 }
 
@@ -122,6 +135,8 @@ const connectRenderedApp = async (
 
 afterEach(() => {
   bridgeHarness.instances.length = 0;
+  for (const key of Object.keys(bridgeHarness.failures)) delete bridgeHarness.failures[key];
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   Object.defineProperty(URL, "createObjectURL", { configurable: true, value: originalCreateObjectUrl });
@@ -129,6 +144,31 @@ afterEach(() => {
 });
 
 describe("assistant reply files", () => {
+  it("revokes the object URL after the attachment download timer settles", async () => {
+    vi.useFakeTimers();
+    const createObjectUrl = vi.fn(() => "blob:reply-file");
+    const revokeObjectUrl = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectUrl });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectUrl });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    const blob = new Blob(["report"]);
+
+    startReplyAttachmentDownload(blob, "report.txt");
+
+    expect(createObjectUrl).toHaveBeenCalledExactlyOnceWith(blob);
+    expect(click).toHaveBeenCalledTimes(1);
+    expect(click.mock.instances[0]).toMatchObject({
+      download: "report.txt",
+      href: "blob:reply-file",
+    });
+    expect(document.querySelector('a[href="blob:reply-file"]')).toBeNull();
+    expect(revokeObjectUrl).not.toHaveBeenCalled();
+
+    await vi.runAllTimersAsync();
+
+    expect(revokeObjectUrl).toHaveBeenCalledExactlyOnceWith("blob:reply-file");
+  });
+
   it("renders an accessible download-only reference without inlining active content", () => {
     const value = {
       type: "attachment",
@@ -850,6 +890,38 @@ describe("MCP App sandbox", () => {
     expect(document.body).not.toHaveTextContent("/private/agents");
     expect(document.body).not.toHaveTextContent("must-not-leak");
     expect(document.body).not.toHaveTextContent("hostile detail");
+  });
+
+  it.each([
+    { path: "sandbox", message: "The app sandbox rejected its resource." },
+    { path: "initialize", message: "The app could not be initialized." },
+    { path: "reported", message: "The app bridge reported an error." },
+    { path: "connect", message: "The app bridge could not start." },
+  ] as const)("renders a canned $path bridge failure without exposing untrusted text", async ({ path, message }) => {
+    const privateError = new Error(
+      `read /private/agents/report.html?token=must-not-leak: ${path} library secret`,
+    );
+    if (path !== "reported") bridgeHarness.failures[path] = privateError;
+    vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>interactive</p>",
+      connected: true,
+    });
+
+    render(app(appPart));
+    const frame = await screen.findByTitle("Quarterly report interactive app") as HTMLIFrameElement;
+    const bridge = await connectRenderedApp(frame, appPart);
+    await act(async () => {
+      if (path === "sandbox") bridge.onsandboxready?.();
+      if (path === "initialize") bridge.oninitialized?.();
+      if (path === "reported") bridge.onerror?.(privateError);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(message));
+    expect(document.body).not.toHaveTextContent("/private/agents");
+    expect(document.body).not.toHaveTextContent("must-not-leak");
+    expect(document.body).not.toHaveTextContent("library secret");
   });
 
   it("keeps StrictMode resource fetches generation-owned across identity change and unmount", async () => {

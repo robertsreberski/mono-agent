@@ -1049,10 +1049,10 @@ export function McpAppPart({ data }: DataMessagePartProps) {
             sandbox: "allow-scripts",
             ...(metadata.csp === undefined ? {} : { csp: metadata.csp }),
             ...(metadata.permissions === undefined ? {} : { permissions: metadata.permissions }),
-          }).catch((error: unknown) => {
+          }).catch(() => {
             if (!isActive()) return;
             setStatus("error");
-            setStatusText(error instanceof Error ? error.message : "The app sandbox rejected its resource.");
+            setStatusText("The app sandbox rejected its resource.");
           });
         };
         bridge.oninitialized = () => {
@@ -1065,10 +1065,10 @@ export function McpAppPart({ data }: DataMessagePartProps) {
               setStatus("ready");
               setStatusText("Interactive app ready.");
             }
-          })().catch((error: unknown) => {
+          })().catch(() => {
             if (!isActive()) return;
             setStatus("error");
-            setStatusText(error instanceof Error ? error.message : "The app could not be initialized.");
+            setStatusText("The app could not be initialized.");
           });
         };
         bridge.onsizechange = ({ height: requestedHeight }) => {
@@ -1121,10 +1121,10 @@ export function McpAppPart({ data }: DataMessagePartProps) {
           setStatus("closed");
           setStatusText("The interactive app closed.");
         };
-        bridge.onerror = (error) => {
+        bridge.onerror = () => {
           if (!isActive()) return;
           setStatus("error");
-          setStatusText(error.message || "The app bridge reported an error.");
+          setStatusText("The app bridge reported an error.");
         };
         await bridge.connect(transport);
         if (!isActive()) return;
@@ -1135,10 +1135,10 @@ export function McpAppPart({ data }: DataMessagePartProps) {
           invocationId: part.invocationId,
           connectionId: part.connectionId,
         }, "*");
-      } catch (error) {
+      } catch {
         if (!isActive()) return;
         setStatus("error");
-        setStatusText(error instanceof Error ? error.message : "The app bridge could not start.");
+        setStatusText("The app bridge could not start.");
       }
     };
     const onReady = (event: MessageEvent) => { void ready(event); };

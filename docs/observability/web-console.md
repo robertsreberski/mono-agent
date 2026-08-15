@@ -246,6 +246,17 @@ a message-bound download action; the service reauthorizes the exact
 thread/message/part and the agent rechecks size and SHA-256 integrity before any
 bytes stream. No host path or agent capability URL enters the browser DTO.
 
+Each browser capability is projected for an exact thread/message/part with a
+ten-minute access window that never extends the reply part's retention deadline.
+An authentic capability used after that window returns `reply_access_expired`;
+forged, cross-thread, unknown, and otherwise invalid references retain the
+generic not-found response. On `reply_access_expired`, the PWA automatically
+asks the exact-origin access route to re-project the authoritative retained part
+and retries the attachment download, app resource, or app bridge request once.
+If that recovery is exhausted, the file card offers **Refresh access** and the
+app card offers **Refresh app access**. A refreshed capability is neither a
+persisted credential nor a retention extension.
+
 MCP Apps run only while their exact originating MCP connection is live. The PWA
 uses a nonce-bound double iframe with opaque origins and `allow-scripts` only.
 Remote CSP origins default to denied, resource domains never grant script
