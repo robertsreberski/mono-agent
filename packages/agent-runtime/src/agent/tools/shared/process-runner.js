@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 export const DEFAULT_PROCESS_BUFFER_BYTES = 8 * 1024 * 1024;
 const KILL_GRACE_MS = 1_000;
 const KILL_EXIT_CONFIRM_MS = 1_000;
+const PROCESS_GROUP_REATTEST_POLL_MS = 25;
 const PROCESS_GROUP_REATTEST_MAX_GAP_MS = 250;
 const PROCESS_JOB_LAUNCH_PAYLOAD_BYTES = 8 * 1024 * 1024;
 const PROCESS_JOB_STATUS_BYTES = 64 * 1024;
@@ -308,6 +309,10 @@ export function startPreparedProcess(
     const probeOwnedGroup = () => {
       groupProbeTimer = null;
       if (settled || !child?.pid || !waitForProcessGroup || process.platform === "win32") return;
+      // A definitely live, unreaped self-led ChildProcess prevents its numeric
+      // PGID from being reused. Start continuity polling only after that exact
+      // leader reports exit; long-running jobs need no periodic re-attestation.
+      if (ownedGroup !== null && !ownedGroup.leaderExited) return;
       const presence = ownedProcessGroupPresence(child.pid);
       if (presence === "absent") {
         groupAbsentObserved = true;
@@ -318,7 +323,8 @@ export function startPreparedProcess(
       if (ownedGroup !== null) {
         if (presence === "present") {
           const observedAt = Date.now();
-          if (observedAt - ownedGroup.lastObservedAt > PROCESS_GROUP_REATTEST_MAX_GAP_MS) {
+          if (ownedGroup.lastObservedAt === null
+            || observedAt - ownedGroup.lastObservedAt > PROCESS_GROUP_REATTEST_MAX_GAP_MS) {
             // A missed observation window can hide group disappearance and
             // numeric reuse. Once continuity is lost, later presence can never
             // restore authority over that PGID.
@@ -332,12 +338,12 @@ export function startPreparedProcess(
           ownedGroup.ownershipLost = true;
         }
       }
-      groupProbeTimer = setTimeout(probeOwnedGroup, 25);
+      groupProbeTimer = setTimeout(probeOwnedGroup, PROCESS_GROUP_REATTEST_POLL_MS);
       groupProbeTimer.unref?.();
     };
 
     function terminate() {
-      if (terminationRequested) return;
+      if (settled || terminationRequested) return;
       terminationRequested = true;
       const term = signalAttestedProcessGroup(child, ownedGroup, "SIGTERM");
       if (term === "absent") {
@@ -465,7 +471,12 @@ export function startPreparedProcess(
     child.once("exit", (code, childExitSignal) => {
       closeCode = code;
       closeSignal = childExitSignal;
-      if (ownedGroup !== null) ownedGroup.leaderExited = true;
+      if (ownedGroup !== null) {
+        ownedGroup.leaderExited = true;
+        // The reuse hazard begins only when the exact self-led ChildProcess
+        // exits. Spawn-to-exit event-loop gaps cannot revoke live authority.
+        ownedGroup.lastObservedAt = Date.now();
+      }
       if (groupProbeTimer !== null) clearTimeout(groupProbeTimer);
       groupProbeTimer = null;
       probeOwnedGroup();
@@ -482,10 +493,6 @@ export function startPreparedProcess(
       if (groupAbsentObserved) finish(true);
       else if (groupProbeTimer === null) probeOwnedGroup();
     });
-    // Observe the exact self-led group continuously while the known leader is
-    // alive so the first post-exit observation has an unbroken provenance
-    // chain. This is intentionally limited to process-job group ownership.
-    if (ownedGroup !== null) probeOwnedGroup();
   });
   return {
     pid: child?.pid ?? null,
@@ -520,14 +527,16 @@ function createOwnedProcessGroupAttestation(pgid) {
     leaderExited: false,
     observedAfterLeaderExit: false,
     ownershipLost: false,
-    lastObservedAt: Date.now(),
+    /** @type {number|null} */
+    lastObservedAt: null,
   };
 }
 
 function reattestOwnedProcessGroup(attestation) {
   if (attestation.ownershipLost
     || !attestation.leaderExited
-    || !attestation.observedAfterLeaderExit) return false;
+    || !attestation.observedAfterLeaderExit
+    || attestation.lastObservedAt === null) return false;
   if (Date.now() - attestation.lastObservedAt > PROCESS_GROUP_REATTEST_MAX_GAP_MS) {
     attestation.ownershipLost = true;
     return false;
@@ -544,9 +553,9 @@ function reattestOwnedProcessGroup(attestation) {
     return false;
   }
   // POSIX cannot reuse the numeric PGID while any member of that exact group
-  // survives. Continuous polling begins with the exact detached leader and
-  // permanently revokes authority on an observation gap or the first observed
-  // absence; a later group using the number is never signalled.
+  // survives. Continuous polling begins when the exact detached leader exits
+  // and permanently revokes authority on an observation gap or the first
+  // observed absence; a later group using the number is never signalled.
   attestation.observedAfterLeaderExit = true;
   attestation.lastObservedAt = Date.now();
   return true;
@@ -554,20 +563,9 @@ function reattestOwnedProcessGroup(attestation) {
 
 function signalAttestedProcessGroup(child, attestation, signal) {
   if (!child?.pid) return "absent";
-  if (process.platform !== "win32" && attestation !== null) {
-    const continuityExpired = Date.now() - attestation.lastObservedAt
-      > PROCESS_GROUP_REATTEST_MAX_GAP_MS;
-    if (continuityExpired) attestation.ownershipLost = true;
-    if (attestation.ownershipLost) {
-      // ChildProcess exit delivery can lag behind kernel exit while the event
-      // loop is stalled. Once observation continuity is lost, a still-null
-      // exitCode cannot re-authorize signalling; only observed group absence
-      // can safely confirm completion.
-      return ownedProcessGroupPresence(attestation.pgid) === "absent"
-        ? "absent"
-        : "unproven";
-    }
-  }
+  // While the exact self-led ChildProcess is definitely live and unreaped,
+  // POSIX cannot recycle its PID/PGID. Event-loop stalls do not weaken that
+  // kernel-backed authority, so signal the negative PGID directly.
   if (!processLeaderExited(child)) {
     try {
       process.kill(process.platform === "win32" ? child.pid : -child.pid, signal);
@@ -578,13 +576,24 @@ function signalAttestedProcessGroup(child, attestation, signal) {
     }
   }
   if (process.platform === "win32") return "absent";
+  if (attestation === null || !attestation.leaderExited) return "unproven";
+  const continuityExpired = attestation.lastObservedAt === null
+    || Date.now() - attestation.lastObservedAt > PROCESS_GROUP_REATTEST_MAX_GAP_MS;
+  if (continuityExpired) attestation.ownershipLost = true;
+  if (attestation.ownershipLost) {
+    // After leader exit, a lost observation window can hide disappearance and
+    // numeric reuse. Only observed absence can now confirm completion.
+    return ownedProcessGroupPresence(attestation.pgid) === "absent"
+      ? "absent"
+      : "unproven";
+  }
   const presence = ownedProcessGroupPresence(child.pid);
   if (presence === "absent") return "absent";
   if (presence !== "present") {
     if (attestation !== null) attestation.ownershipLost = true;
     return "unproven";
   }
-  if (attestation === null || !reattestOwnedProcessGroup(attestation)) return "unproven";
+  if (!reattestOwnedProcessGroup(attestation)) return "unproven";
   try {
     process.kill(-child.pid, signal);
     return "signalled";

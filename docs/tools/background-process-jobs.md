@@ -116,14 +116,16 @@ deliberately daemonize into another POSIX process group or session are not
 contained by this contract and must not use `background: true`.
 
 Live timeout, cancellation, and shutdown use a bounded `SIGTERM` then `SIGKILL`
-sequence. The host observes the self-led group continuously from spawn and
-probes it immediately when the gate leader exits. It signals the recorded
-negative PGID only while that uninterrupted proof still shows the numeric
-identity has not disappeared and been reused. An over-limit or indeterminate
-observation gap permanently revokes signalling authority. If termination or
-final group absence cannot be proved, the job settles with an explicit degraded
-error and leaves sandbox settings intact for operator investigation instead of
-hanging or cleaning beneath a possibly live descendant.
+sequence. While the exact self-led `ChildProcess` leader is live and unreaped,
+its negative PGID remains authoritative even if the owner's event loop stalls;
+the kernel cannot recycle that live identity. The host begins bounded-frequency
+group observation when the leader reports exit and signals the recorded
+negative PGID only while that post-exit proof remains continuous. A post-exit
+over-limit or indeterminate observation gap permanently revokes signalling
+authority. If termination or final group absence cannot be proved, the job
+settles with an explicit degraded error and leaves sandbox settings intact for
+operator investigation instead of hanging or cleaning beneath a possibly live
+descendant.
 
 ## Lifecycle, output, and wake delivery
 
@@ -161,9 +163,13 @@ record size is checked before a recovery transaction marker is published. A
 legacy transaction that can never fit or validate is moved intact into the
 owner-only `quarantine-v1/` directory; the store opens in degraded health and
 `mono-agent validate` reports the incident for operator review. Other unsafe or
-transient store failures remain fail-closed. Because process jobs are opt-in,
-an unavailable store disables only background jobs instead of aborting the
-whole agent.
+transient store failures remain fail-closed. If a live process completes but
+its terminal record cannot be committed, the controller stops new admissions,
+reports degraded health, and exposes a failed in-memory projection with wake
+delivery withheld. It preserves the durable nonterminal record so the next
+owner restart can reconcile it to `interrupted` and deliver the recovery wake.
+Because process jobs are opt-in, an unavailable store disables only background
+jobs instead of aborting the whole agent.
 
 Slack and Telegram wake the original thread/chat through their normal proactive
 turn path and settle the existing in-thread running indicator once, without an

@@ -258,6 +258,49 @@ describe("process job service", () => {
     expect((await service.get(first.jobId))?.timestamps.runtimeDeadlineAt).toBe("2026-08-14T10:30:01.000Z");
   });
 
+  it("tracks only the newest queue timer when overlapping arms resolve out of order", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const pendingLists: Array<ReturnType<typeof deferred<readonly DurableProcessJobRecord[]>>> = [];
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async list() {
+        const pending = pendingLists.shift();
+        return pending === undefined ? await baseStore.list() : await pending.promise;
+      },
+    };
+    const service = await startService(fixture, { store });
+    vi.useFakeTimers({ now: new Date("2026-08-14T10:00:00.000Z") });
+    const first = deferred<readonly DurableProcessJobRecord[]>();
+    const second = deferred<readonly DurableProcessJobRecord[]>();
+    pendingLists.push(first, second);
+    const timerPort = service as unknown as { armQueueTimer(): void };
+
+    timerPort.armQueueTimer();
+    timerPort.armQueueTimer();
+    second.resolve([durableRecord("25252525-2525-4525-8525-252525252525", {
+      state: "queued",
+      queueDeadlineAt: "2026-08-14T10:00:20.000Z",
+    })]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(vi.getTimerCount()).toBe(1);
+
+    first.resolve([durableRecord("26262626-2626-4626-8626-262626262626", {
+      state: "queued",
+      queueDeadlineAt: "2026-08-14T10:00:10.000Z",
+    })]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(vi.getTimerCount()).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(vi.getTimerCount()).toBe(1);
+
+    await service.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("enforces the compiled output cap across both redacted UTF-8 artifacts", async () => {
     const fixture = await createFixture({ maxOutputBytes: 48, previewChars: 48 });
     const completion = deferred<ProcessJobProcessResult>();
@@ -325,6 +368,72 @@ describe("process job service", () => {
     await waitFor(async () => (await service.get(started.jobId))?.state === "timed_out");
     expect(cleanup).not.toHaveBeenCalled();
     expect((await service.get(started.jobId))?.lastError?.message).toContain("cleanup was withheld");
+  });
+
+  it("surfaces a terminal degraded overlay when completion persistence fails and recovers it on restart", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    let failTerminalPersistence = false;
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async mutate(operation) {
+        return await baseStore.mutate(async (records) => {
+          const result = await operation(records);
+          if (failTerminalPersistence
+            && [...records.values()].some((record) => record.completedAt !== null)) {
+            throw new Error("simulated terminal persistence failure");
+          }
+          return result;
+        });
+      },
+    };
+    const completion = deferred<ProcessJobProcessResult>();
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const warn = vi.fn();
+    const service = await startService(fixture, { store, wake, logger: { warn } });
+    await service.activateWakes();
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+
+    failTerminalPersistence = true;
+    completion.resolve(processResult({ stdout: "completed but not committed\n" }));
+    await waitFor(() => service.health.state === "degraded");
+    expect(await service.get(started.jobId)).toMatchObject({
+      state: "failed",
+      wake: { state: "failed", attempts: 0 },
+      output: { preview: expect.stringContaining("completed but not committed") },
+      lastError: {
+        code: "process_job_store_error",
+        message: expect.stringContaining("restart recovery will reconcile"),
+      },
+    });
+    expect(await baseStore.get(started.jobId)).toMatchObject({ state: "running", completedAt: null });
+    expect(wake).not.toHaveBeenCalled();
+    await waitFor(() => warn.mock.calls.some(([message]) => message === "Process-job completion could not be recorded."));
+
+    const refusedCleanup = vi.fn(async () => undefined);
+    await expect(service.controller(ORIGIN, 0).start(
+      requestOf(handleOf(deferred<ProcessJobProcessResult>()), refusedCleanup),
+    )).rejects.toMatchObject({ code: "process_job_store_error" });
+    expect(refusedCleanup).toHaveBeenCalledOnce();
+
+    failTerminalPersistence = false;
+    await service.stop();
+    const recoveredWake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const recovered = await startService(fixture, {
+      store: baseStore,
+      wake: recoveredWake,
+      sameIncarnation: async () => false,
+    });
+    expect(await recovered.get(started.jobId)).toMatchObject({
+      state: "interrupted",
+      wake: { state: "pending", attempts: 0 },
+    });
+    await recovered.activateWakes();
+    await waitFor(() => recoveredWake.mock.calls.length === 1);
+    expect(await recovered.get(started.jobId)).toMatchObject({
+      state: "interrupted",
+      wake: { state: "delivered", attempts: 1 },
+    });
   });
 
   it("terminates and cleans a spawned tree when ownership metadata cannot be recorded", async () => {

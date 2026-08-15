@@ -113,19 +113,17 @@ describe("OperatorClient", () => {
           authorization: new Headers(init?.headers).get("authorization"),
           method: init?.method ?? "GET",
         });
-        return Response.json(url.endsWith("/v1/jobs") ? { jobs: [projection] } : projection);
+        return Response.json(projection);
       }) as typeof fetch,
     });
 
-    await expect(client.listJobs()).resolves.toEqual([projection]);
     await expect(client.getJob(projection.jobId)).resolves.toEqual(projection);
     await expect(client.cancelJob(projection.jobId)).resolves.toEqual(projection);
     expect(requests).toEqual([
       expect.objectContaining({ authorization: "Bearer owner-job-key", method: "GET" }),
-      expect.objectContaining({ authorization: "Bearer owner-job-key", method: "GET" }),
       expect.objectContaining({ authorization: "Bearer owner-job-key", method: "POST" }),
     ]);
-    await expect(new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui" }).listJobs())
+    await expect(new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui" }).getJob(projection.jobId))
       .rejects.toMatchObject({ code: "process_jobs_unavailable" });
   });
 

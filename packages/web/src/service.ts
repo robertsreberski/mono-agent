@@ -764,18 +764,6 @@ export class WebService {
     return delivery;
   }
 
-  async threadJobs(threadId: string): Promise<readonly ProcessJobProjection[]> {
-    const thread = this.store.getThread(threadId);
-    if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
-    const connection = this.connections.get(thread.sourceId);
-    if (connection === undefined || connection.info.supportsJobs !== true) {
-      throw new WebConsoleError("process_jobs_unavailable", "Process jobs are unavailable for this agent.", 409);
-    }
-    const conversationId = `web:${threadId}`;
-    const jobs = await connection.client.listJobs(AbortSignal.timeout(INFO_TIMEOUT_MS));
-    return jobs.filter((job) => job.origin.conversationId.split("#", 1)[0] === conversationId);
-  }
-
   /** Proxy one authenticated retained card to its exact agent/thread owner. */
   async threadJob(threadId: string, jobId: string): Promise<ProcessJobProjection> {
     const thread = this.store.getThread(threadId);

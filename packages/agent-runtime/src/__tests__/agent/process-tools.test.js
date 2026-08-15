@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
@@ -237,6 +237,115 @@ describe("Exec", () => {
     }
   });
 
+  it("keeps live-leader cancellation authoritative across an over-limit event-loop stall and permits cleanup", async () => {
+    if (process.platform === "win32") return;
+    const workspace = tempWorkspace();
+    const treePath = resolve(workspace, "stalled-cancel-tree.json");
+    const settingsPath = resolve(workspace, "settings.json");
+    writeFileSync(settingsPath, "{}\n");
+    const cleanup = vi.fn(async () => rmSync(settingsPath, { force: true }));
+    const nativeKill = process.kill.bind(process);
+    const probes = [];
+    let handle;
+    let terminal;
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (handle?.pgid !== null && handle?.pgid !== undefined
+        && pid === -handle.pgid && signal === 0) probes.push(pid);
+      return nativeKill(pid, signal);
+    });
+    const controller = {
+      async start(request) {
+        handle = request.launch({ timeoutMs: 10_000 });
+        terminal = (async () => {
+          await handle.release();
+          await waitForPath(treePath);
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 350);
+          // The known group leader stayed live throughout the stall, so long
+          // jobs need no 25 ms presence polling and cancellation remains safe.
+          expect(probes).toHaveLength(0);
+          handle.cancel();
+          const outcome = await handle.completion;
+          if (outcome.groupExitConfirmed) await request.prepared.cleanup();
+          return outcome;
+        })();
+        return { jobId: "pj_stalled_cancel", state: "running", startedAt: handle.startedAt };
+      },
+    };
+    const sandbox = {
+      ...passthroughSandbox,
+      async prepareCommand({ command }) {
+        return { ...command, args: command.args ?? [], sandboxSettingsPath: settingsPath, cleanup };
+      },
+    };
+    try {
+      await execToolRun({
+        executable: process.execPath,
+        args: ["--eval", inheritedProcessTreeSource(), treePath],
+        background: true,
+      }, { ctx: { workspace, sandbox }, processJobsController: controller });
+      const outcome = await within(terminal, 4_000);
+      const tree = readProcessTree(treePath);
+      expect(outcome).toMatchObject({ aborted: false, timedOut: false, groupExitConfirmed: true });
+      await Promise.all([handle.pid, tree.target, tree.descendant].map(async (pid) => await waitForProcessExit(pid)));
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(existsSync(settingsPath)).toBe(false);
+    } finally {
+      kill.mockRestore();
+      try { if (handle?.pgid !== null && handle?.pgid !== undefined) nativeKill(-handle.pgid, "SIGKILL"); } catch { /* already gone */ }
+    }
+  });
+
+  it("keeps live-leader timeout authoritative across an over-limit event-loop stall and permits cleanup", async () => {
+    if (process.platform === "win32") return;
+    const workspace = tempWorkspace();
+    const treePath = resolve(workspace, "stalled-timeout-tree.json");
+    const settingsPath = resolve(workspace, "settings.json");
+    writeFileSync(settingsPath, "{}\n");
+    const cleanup = vi.fn(async () => rmSync(settingsPath, { force: true }));
+    let handle;
+    let terminal;
+    const controller = {
+      async start(request) {
+        const timeoutMs = 1_000;
+        handle = request.launch({ timeoutMs });
+        terminal = (async () => {
+          await handle.release();
+          await waitForPath(treePath);
+          const pastDeadlineMs = Math.max(
+            350,
+            Date.parse(handle.startedAt) + timeoutMs - Date.now() + 300,
+          );
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, pastDeadlineMs);
+          const outcome = await handle.completion;
+          if (outcome.groupExitConfirmed) await request.prepared.cleanup();
+          return outcome;
+        })();
+        return { jobId: "pj_stalled_timeout", state: "running", startedAt: handle.startedAt };
+      },
+    };
+    const sandbox = {
+      ...passthroughSandbox,
+      async prepareCommand({ command }) {
+        return { ...command, args: command.args ?? [], sandboxSettingsPath: settingsPath, cleanup };
+      },
+    };
+    try {
+      await execToolRun({
+        executable: process.execPath,
+        args: ["--eval", inheritedProcessTreeSource(), treePath],
+        background: true,
+      }, { ctx: { workspace, sandbox }, processJobsController: controller });
+      const outcome = await within(terminal, 4_000);
+      const tree = readProcessTree(treePath);
+      expect(outcome).toMatchObject({ timedOut: true, groupExitConfirmed: true });
+      await Promise.all([handle.pid, tree.target, tree.descendant].map(async (pid) => await waitForProcessExit(pid)));
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(existsSync(settingsPath)).toBe(false);
+    } finally {
+      try { if (handle?.pgid !== null && handle?.pgid !== undefined) process.kill(-handle.pgid, "SIGKILL"); } catch { /* already gone */ }
+    }
+  });
+
   it("re-attests and cancels an owned descendant group after the gate leader exits", async () => {
     if (process.platform === "win32") return;
     const workspace = tempWorkspace();
@@ -268,7 +377,7 @@ describe("Exec", () => {
     }
   });
 
-  it("permanently revokes group authority after an over-limit observation gap", async () => {
+  it("permanently revokes group authority after a post-exit over-limit observation gap", async () => {
     if (process.platform === "win32") return;
     const workspace = tempWorkspace();
     const targetPidPath = resolve(workspace, "observation-gap-target.pid");
@@ -280,10 +389,21 @@ describe("Exec", () => {
       command: process.execPath,
       args: ["--eval", target, targetPidPath],
     }, { waitForProcessGroup: true, timeoutMs: 10_000 });
+    const nativeKill = process.kill.bind(process);
+    let leaderKilled = false;
+    let postExitProbeObserved = false;
+    const groupSignals = [];
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (leaderKilled && pid === -(handle.pgid ?? 0) && signal === 0) postExitProbeObserved = true;
+      if (pid === -(handle.pgid ?? 0) && signal !== 0) groupSignals.push(signal);
+      return nativeKill(pid, signal);
+    });
     try {
       await handle.release();
       await waitForPath(targetPidPath);
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 75));
+      leaderKilled = true;
+      if (handle.pid !== null) nativeKill(handle.pid, "SIGKILL");
+      await vi.waitFor(() => expect(postExitProbeObserved).toBe(true));
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 350);
 
       handle.cancel();
@@ -291,13 +411,60 @@ describe("Exec", () => {
       const targetPid = Number(readFileSync(targetPidPath, "utf8").trim());
       expect(outcome).toMatchObject({ groupExitConfirmed: false });
       expect(outcome.spawnError?.message).toMatch(/identity could not be re-attested/u);
+      expect(groupSignals).toEqual([]);
       expect(() => process.kill(targetPid, 0)).not.toThrow();
     } finally {
-      try { if (handle.pgid !== null) process.kill(-handle.pgid, "SIGKILL"); } catch { /* already gone */ }
+      kill.mockRestore();
+      try { if (handle.pgid !== null) nativeKill(-handle.pgid, "SIGKILL"); } catch { /* already gone */ }
     }
   });
 
-  it("does not restore group authority after an indeterminate observation", async () => {
+  it("never signals a numerically reused group after post-exit absence", async () => {
+    if (process.platform === "win32") return;
+    const workspace = tempWorkspace();
+    const targetPidPath = resolve(workspace, "reused-group-target.pid");
+    const target = [
+      "require('node:fs').writeFileSync(process.argv[1], String(process.pid));",
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const handle = startPreparedProcess({
+      command: process.execPath,
+      args: ["--eval", target, targetPidPath],
+    }, { waitForProcessGroup: true, timeoutMs: 10_000 });
+    const nativeKill = process.kill.bind(process);
+    let reportPostExitAbsence = false;
+    let absenceObserved = false;
+    const groupSignals = [];
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (reportPostExitAbsence && pid === -(handle.pgid ?? 0) && signal === 0) {
+        reportPostExitAbsence = false;
+        absenceObserved = true;
+        queueMicrotask(() => handle.cancel());
+        throw Object.assign(new Error("group absent"), { code: "ESRCH" });
+      }
+      if (pid === -(handle.pgid ?? 0) && signal !== 0) groupSignals.push(signal);
+      return nativeKill(pid, signal);
+    });
+    try {
+      await handle.release();
+      await waitForPath(targetPidPath);
+      reportPostExitAbsence = true;
+      if (handle.pid !== null) nativeKill(handle.pid, "SIGKILL");
+      await vi.waitFor(() => expect(absenceObserved).toBe(true));
+      const outcome = await within(handle.completion, 3_000);
+      // The still-live fixture stands in for a different group that reused the
+      // number after the first proven absence. It must never receive a signal.
+      const targetPid = Number(readFileSync(targetPidPath, "utf8").trim());
+      expect(outcome.groupExitConfirmed).toBe(true);
+      expect(groupSignals).toEqual([]);
+      expect(() => nativeKill(targetPid, 0)).not.toThrow();
+    } finally {
+      kill.mockRestore();
+      try { if (handle.pgid !== null) nativeKill(-handle.pgid, "SIGKILL"); } catch { /* already gone */ }
+    }
+  });
+
+  it("does not restore group authority after a post-exit indeterminate observation", async () => {
     if (process.platform === "win32") return;
     const workspace = tempWorkspace();
     const targetPidPath = resolve(workspace, "indeterminate-observation-target.pid");
@@ -311,26 +478,29 @@ describe("Exec", () => {
     }, { waitForProcessGroup: true, timeoutMs: 10_000 });
     const nativeKill = process.kill.bind(process);
     let injectIndeterminateProbe = false;
+    const groupSignals = [];
     const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
       if (injectIndeterminateProbe && pid === -(handle.pgid ?? 0) && signal === 0) {
         injectIndeterminateProbe = false;
         throw Object.assign(new Error("probe indeterminate"), { code: "EPERM" });
       }
+      if (pid === -(handle.pgid ?? 0) && signal !== 0) groupSignals.push(signal);
       return nativeKill(pid, signal);
     });
     try {
       await handle.release();
       await waitForPath(targetPidPath);
       injectIndeterminateProbe = true;
+      try { if (handle.pid !== null) nativeKill(handle.pid, "SIGKILL"); } catch { /* leader already exited */ }
       await vi.waitFor(() => expect(injectIndeterminateProbe).toBe(false));
       // Later successful presence probes must not refresh the revoked proof.
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 75));
-      kill.mockRestore();
 
       handle.cancel();
       const outcome = await within(handle.completion, 3_500);
       const targetPid = Number(readFileSync(targetPidPath, "utf8").trim());
       expect(outcome).toMatchObject({ groupExitConfirmed: false });
+      expect(groupSignals).toEqual([]);
       expect(() => nativeKill(targetPid, 0)).not.toThrow();
     } finally {
       kill.mockRestore();
@@ -694,6 +864,24 @@ async function waitForPath(path, timeoutMs = 2_000) {
     if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${path}.`);
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
   }
+}
+
+function inheritedProcessTreeSource() {
+  return [
+    "const { spawn } = require('node:child_process');",
+    "const child = spawn(process.execPath, ['--eval', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+    "require('node:fs').writeFileSync(process.argv[1], JSON.stringify({ target: process.pid, descendant: child.pid }));",
+    "setInterval(() => {}, 1000);",
+  ].join("\n");
+}
+
+function readProcessTree(path) {
+  const value = JSON.parse(readFileSync(path, "utf8"));
+  if (!Number.isSafeInteger(value?.target) || value.target <= 0
+    || !Number.isSafeInteger(value?.descendant) || value.descendant <= 0) {
+    throw new Error("Process-tree fixture did not publish valid PIDs.");
+  }
+  return value;
 }
 
 async function waitForProcessExit(pid, timeoutMs = 2_000) {

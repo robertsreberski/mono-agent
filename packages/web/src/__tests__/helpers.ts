@@ -98,7 +98,6 @@ export function operatorFetch(options: {
   readonly supportsMcpApps?: boolean;
   readonly supportsJobs?: boolean;
   readonly jobs?: readonly ProcessJobProjection[];
-  readonly onJobsRequest?: (authorization: string | null) => void;
   readonly onJobRequest?: (jobId: string, authorization: string | null) => void;
   readonly jobForRequest?: (jobId: string) => ProcessJobProjection | undefined;
   readonly skills?: OperatorSkillRegistry;

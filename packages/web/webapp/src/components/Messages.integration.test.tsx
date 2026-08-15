@@ -411,7 +411,6 @@ describe("message actions", () => {
       .mockResolvedValueOnce(running)
       .mockResolvedValueOnce(running)
       .mockResolvedValue(complete);
-    const threadJobs = vi.spyOn(api, "threadJobs");
     render(<MessageHarness message={{
       ...assistantMessage("running"),
       parts: [{ type: "process-job", job: running }],
@@ -420,8 +419,6 @@ describe("message actions", () => {
     await act(async () => { await Promise.resolve(); });
     expect(threadJob).toHaveBeenCalledTimes(1);
     expect(threadJob).toHaveBeenLastCalledWith("thread", running.jobId, expect.any(AbortSignal));
-    expect(threadJobs).not.toHaveBeenCalled();
-
     await act(async () => {
       vi.advanceTimersByTime(1_000);
       await Promise.resolve();

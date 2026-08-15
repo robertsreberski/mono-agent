@@ -175,6 +175,7 @@ describe("process-job API", () => {
 
     await expect(api.threadJob("thread/one", "job/two")).resolves.toEqual(job);
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/threads/thread%2Fone/jobs/job%2Ftwo");
+    expect(api).not.toHaveProperty("threadJobs");
   });
 });
 

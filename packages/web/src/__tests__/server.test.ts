@@ -905,6 +905,12 @@ describe("web HTTP server", () => {
     });
     const thread = (await json(created)).thread as { id: string; sourceId: string };
     expect(thread.sourceId).toBe("agent-one");
+    const removedJobCollection = await fetch(`${baseUrl}/api/v1/threads/${thread.id}/jobs`);
+    expect(removedJobCollection.status).toBe(404);
+    expect(await json(removedJobCollection)).toMatchObject({ error: { code: "not_found" } });
+    const retainedSingleJobProxy = await fetch(`${baseUrl}/api/v1/threads/${thread.id}/jobs/missing-job`);
+    expect(retainedSingleJobProxy.status).toBe(404);
+    expect(await json(retainedSingleJobProxy)).toMatchObject({ error: { code: "process_job_not_found" } });
     const turn = await fetch(`${baseUrl}/api/v1/threads/${thread.id}/turns`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "hello", model: "provider/default", effort: "high" }),
     });

@@ -61,6 +61,11 @@ interface ActiveProcessJob extends PendingProcessJob {
   groupExitConfirmed?: boolean;
 }
 
+interface MutableProcessJobsHealth {
+  state: "ok" | "degraded";
+  quarantinedTransactions: number;
+}
+
 export interface ProcessJobWakeInput {
   readonly projection: ProcessJobProjection;
   readonly prompt: string;
@@ -182,8 +187,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   readonly settings: ProcessJobsSettings;
   readonly operatorToken: string;
   readonly health: ProcessJobStore["health"];
+  private readonly mutableHealth: MutableProcessJobsHealth;
   private readonly pending = new Map<string, PendingProcessJob>();
   private readonly active = new Map<string, ActiveProcessJob>();
+  private readonly completionOverlays = new Map<string, ProcessJobProjection>();
   private readonly settlements = new Map<string, Promise<void>>();
   private readonly wakeTasks = new Map<string, Promise<void>>();
   private readonly shutdownFailures: unknown[] = [];
@@ -198,7 +205,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private tail: Promise<void> = Promise.resolve();
   private queueTimer: ReturnType<typeof setTimeout> | undefined;
+  private queueTimerGeneration = 0;
   private wakesActive = false;
+  private storageOperational = true;
   private stopping = false;
   private stopped = false;
   private stopPromise: Promise<void> | undefined;
@@ -213,7 +222,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   ) {
     this.settings = options.settings;
     this.operatorToken = operatorToken;
-    this.health = store.health;
+    this.mutableHealth = { ...store.health };
+    this.health = this.mutableHealth;
     this.now = options.now ?? (() => new Date());
     this.platform = platform;
     this.randomId = options.randomId ?? randomUUID;
@@ -246,15 +256,22 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   async list(): Promise<readonly ProcessJobProjection[]> {
     return [...await this.store.list()]
       .sort((left, right) => right.admittedAt.localeCompare(left.admittedAt) || left.jobId.localeCompare(right.jobId))
-      .map(projectProcessJob);
+      .map((record) => structuredClone(this.completionOverlays.get(record.jobId) ?? projectProcessJob(record)));
   }
 
   async get(jobId: string): Promise<ProcessJobProjection | undefined> {
+    const overlay = this.completionOverlays.get(jobId);
+    if (overlay !== undefined) return structuredClone(overlay);
     const record = await this.store.get(jobId);
     return record === undefined ? undefined : projectProcessJob(record);
   }
 
   async cancel(jobId: string): Promise<ProcessJobProjection> {
+    const overlay = this.completionOverlays.get(jobId);
+    if (overlay !== undefined) {
+      if (overlay.state === "cancelled") return structuredClone(overlay);
+      throw new ProcessJobServiceError("process_job_conflict", `Process job is already ${overlay.state}.`);
+    }
     return await this.withLock(async () => {
       let cancelled = false;
       const record = await this.store.mutate((records) => {
@@ -302,7 +319,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       queue_expired: 0,
       interrupted: 0,
     };
-    for (const record of await this.store.list()) counts[record.state] += 1;
+    for (const record of await this.list()) counts[record.state] += 1;
     return counts;
   }
 
@@ -659,6 +676,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       const artifactError = artifactWrites
         .filter((result): result is PromiseRejectedResult => result.status === "rejected")
         .map((result) => result.reason)[0];
+      const completionRecord = await this.store.get(jobId);
       let transitioned = false;
       try {
         await this.store.mutate((records) => {
@@ -747,6 +765,60 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           }
           transitioned = true;
         });
+      } catch (error) {
+        if (completionRecord !== undefined && !isTerminalProcessJobState(completionRecord.state)) {
+          completionRecord.exitCode = result.code;
+          completionRecord.signal = result.signal;
+          completionRecord.durationMs = Math.max(0, Math.floor(result.durationMs));
+          completionRecord.stdoutBytes = artifactWrites[0]?.status === "fulfilled"
+            ? Buffer.byteLength(stdout.text, "utf8")
+            : 0;
+          completionRecord.stderrBytes = artifactWrites[1]?.status === "fulfilled"
+            ? Buffer.byteLength(stderr.text, "utf8")
+            : 0;
+          if (artifactWrites[0]?.status !== "fulfilled") completionRecord.stdoutRef = null;
+          if (artifactWrites[1]?.status !== "fulfilled") completionRecord.stderrRef = null;
+          completionRecord.truncated = result.truncated || result.bufferExceeded
+            || stdout.truncated
+            || stderr.truncated
+            || artifactError !== undefined;
+          completionRecord.preview = outputPreview(stdout.text, stderr.text, completionRecord.previewChars);
+          transitionTerminal(
+            completionRecord,
+            "failed",
+            this.now(),
+            "process_job_store_error",
+            "The process completed, but its terminal state could not be persisted. Wake delivery was withheld; restart recovery will reconcile the durable record.",
+          );
+          if (cleanupError !== undefined) {
+            appendOperationalFailure(
+              completionRecord,
+              `Sandbox cleanup also failed: ${safeProcessError(
+                cleanupError,
+                "unknown cleanup failure",
+                active.redactionSecrets,
+              )}`,
+            );
+          }
+          if (artifactError !== undefined) {
+            appendOperationalFailure(
+              completionRecord,
+              `Output artifact publication also failed: ${safeProcessError(
+                artifactError,
+                "unknown artifact failure",
+                active.redactionSecrets,
+              )}`,
+            );
+          }
+          completionRecord.wake.state = "failed";
+          completionRecord.wake.retrySafe = false;
+          this.completionOverlays.set(jobId, projectProcessJob(completionRecord));
+        }
+        this.storageOperational = false;
+        this.mutableHealth.state = "degraded";
+        this.disarmQueueTimer();
+        this.scheduleSurfaceUpdate(jobId);
+        throw error;
       } finally {
         this.active.delete(jobId);
         this.pending.delete(jobId);
@@ -765,7 +837,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   }
 
   private async drainQueue(): Promise<void> {
-    while (!this.stopping && this.active.size < this.settings.maxConcurrent) {
+    while (!this.stopping && this.storageOperational && this.active.size < this.settings.maxConcurrent) {
       const queued = (await this.store.list())
         .filter((record) => record.state === "queued")
         .sort((left, right) => left.admittedAt.localeCompare(right.admittedAt) || left.jobId.localeCompare(right.jobId))[0];
@@ -802,16 +874,20 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   }
 
   private armQueueTimer(): void {
+    const generation = ++this.queueTimerGeneration;
     if (this.queueTimer !== undefined) clearTimeout(this.queueTimer);
     this.queueTimer = undefined;
-    if (this.stopping) return;
+    if (this.stopping || !this.storageOperational) return;
     void this.store.list().then((records) => {
+      if (generation !== this.queueTimerGeneration) return;
       const deadline = records
         .filter((record) => record.state === "queued")
         .map((record) => Date.parse(record.queueDeadlineAt))
         .sort((left, right) => left - right)[0];
-      if (deadline === undefined || this.stopping) return;
-      this.queueTimer = setTimeout(() => {
+      if (deadline === undefined || this.stopping || !this.storageOperational) return;
+      const timer = setTimeout(() => {
+        if (this.queueTimer === timer) this.queueTimer = undefined;
+        if (generation !== this.queueTimerGeneration || this.stopping || !this.storageOperational) return;
         void this.withLock(async () => {
           for (const record of await this.store.list()) {
             if (record.state === "queued" && Date.parse(record.queueDeadlineAt) <= this.now().getTime()) {
@@ -825,12 +901,20 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           });
         });
       }, Math.max(0, deadline - this.now().getTime()));
-      this.queueTimer.unref?.();
+      this.queueTimer = timer;
+      timer.unref?.();
     }).catch((error: unknown) => {
+      if (generation !== this.queueTimerGeneration) return;
       this.options.logger?.warn?.("Process-job queue deadline could not be loaded.", {
         reason: safeAmbientError(error, "unknown queue-deadline failure"),
       });
     });
+  }
+
+  private disarmQueueTimer(): void {
+    this.queueTimerGeneration += 1;
+    if (this.queueTimer !== undefined) clearTimeout(this.queueTimer);
+    this.queueTimer = undefined;
   }
 
   private scheduleWake(jobId: string): void {
@@ -927,7 +1011,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     if (this.stopped) return;
     this.stopping = true;
     this.wakesActive = false;
-    if (this.queueTimer !== undefined) clearTimeout(this.queueTimer);
+    this.disarmQueueTimer();
     const failures: unknown[] = [];
     try {
       try {
@@ -1081,6 +1165,12 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     if (this.stopping || this.stopped) {
       throw new ProcessJobServiceError("process_job_controller_unavailable", "Process-job controller is stopping.");
     }
+    if (!this.storageOperational) {
+      throw new ProcessJobServiceError(
+        "process_job_store_error",
+        "Process-job storage is degraded after a terminal persistence failure; restart recovery is required.",
+      );
+    }
     if (!isProcessJobOriginRecord(origin) || !isWakeCapableOrigin(origin)) {
       throw new ProcessJobServiceError(
         "background_unsupported_channel",
@@ -1125,8 +1215,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   }
 
   private async updateSurfaceById(jobId: string): Promise<void> {
-    const record = await this.store.get(jobId);
-    if (record !== undefined) await this.updateSurface(projectProcessJob(record));
+    const projection = await this.get(jobId);
+    if (projection !== undefined) await this.updateSurface(projection);
   }
 
   private async updateSurface(projection: ProcessJobProjection): Promise<void> {

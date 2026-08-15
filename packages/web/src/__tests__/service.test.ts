@@ -557,29 +557,6 @@ describe("WebService", () => {
     await service.stop();
   });
 
-  it("proxies owner-authorized process jobs and filters them to the requested thread", async () => {
-    const authorization: Array<string | null> = [];
-    const other = fakeProcessJob({
-      conversationId: "web:thread-two",
-      jobId: "22222222-2222-4222-8222-222222222222",
-    });
-    let jobs = [other];
-    const service = await createService({
-      discoverImpl: async () => [fakeDiscoveredAgent({ processJobsBearer: "owner-token" })],
-      fetchImpl: operatorFetch({
-        supportsJobs: true,
-        get jobs() { return jobs; },
-        onJobsRequest: (value) => authorization.push(value),
-      }),
-    });
-    const thread = service.createThread("agent-one");
-    const matching = fakeProcessJob({ conversationId: `web:${thread.id}#daily` });
-    jobs = [matching, other];
-    await expect(service.threadJobs(thread.id)).resolves.toEqual([matching]);
-    expect(authorization.at(-1)).toBe("Bearer owner-token");
-    await service.stop();
-  });
-
   it("proxies only one retained job bound to the exact source and thread", async () => {
     const requests: Array<{ jobId: string; authorization: string | null }> = [];
     let jobs: readonly ReturnType<typeof fakeProcessJob>[] = [];

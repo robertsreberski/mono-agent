@@ -7,7 +7,6 @@ import {
   parseCronOperatorRunPage,
   parseCronOperatorRunSummary,
   parseProcessJobProjection,
-  parseProcessJobProjections,
   parseAgentStreamFrame,
   type AgentLiveInputSettlement,
   type AgentLiveInputUnavailableReason,
@@ -296,15 +295,6 @@ export class OperatorClient {
     }).then(async (response) => {
       await response.body?.cancel().catch(() => undefined);
     });
-  }
-
-  async listJobs(signal?: AbortSignal): Promise<readonly ProcessJobProjection[]> {
-    const response = await this.request(`${this.baseUrl}/v1/jobs`, {
-      headers: this.processJobHeaders(),
-      ...(signal === undefined ? {} : { signal }),
-    });
-    const body = record(JSON.parse(await readBoundedBody(response, MAX_PROCESS_JOBS_BODY_BYTES, "operator_jobs_too_large")));
-    return parseProcessJobProjections(body?.jobs);
   }
 
   async getJob(jobId: string, signal?: AbortSignal): Promise<ProcessJobProjection> {
