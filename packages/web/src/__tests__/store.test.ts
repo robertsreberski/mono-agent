@@ -238,6 +238,197 @@ describe("WebStore", () => {
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });
   });
 
+  it("allocates deterministic collision-free IDs across existing, omitted, sparse, invalid, and reopened parts", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const existing = {
+      type: "failure" as const,
+      id: "web-reply-parts-truncated",
+      code: "unsupported_destination" as const,
+      message: "Existing durable outcome.",
+    };
+    const incoming = Array.from({ length: MAX_AGENT_REPLY_PARTS + 3 }, (_, index): AgentReplyPart => ({
+      type: "failure",
+      id: index === 0
+        ? "web-reply-parts-truncated-2"
+        : index === MAX_AGENT_REPLY_PARTS + 2
+          ? "web-reply-parts-truncated-3"
+          : `incoming-${index}`,
+      code: "artifact_missing",
+      message: `Incoming outcome ${index}.`,
+    }));
+    const injectExisting = (messageId: string) => {
+      const raw = new DatabaseSync(store.paths.database);
+      raw.prepare("UPDATE messages SET parts_json = ? WHERE id = ?")
+        .run(JSON.stringify([existing]), messageId);
+      raw.close();
+    };
+    const completeCollidingTurn = () => {
+      const thread = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: thread.id, text: "collision", attachmentIds: [] });
+      injectExisting(turn.assistantMessageId);
+      const detail = store.completeTurn(turn.turnId, "done", undefined, incoming);
+      const message = detail.messages.at(-1)!;
+      return {
+        messageId: message.id,
+        outcomes: message.parts.filter((part) => "id" in part),
+      };
+    };
+
+    const first = completeCollidingTurn();
+    const second = completeCollidingTurn();
+    const generated = first.outcomes.slice(1);
+    expect(first.outcomes).toHaveLength(MAX_AGENT_REPLY_PARTS);
+    expect(generated).toHaveLength(MAX_AGENT_REPLY_PARTS - 1);
+    expect(generated.slice(0, MAX_AGENT_REPLY_PARTS - 2).map((part) => part.id))
+      .toEqual(incoming.slice(0, MAX_AGENT_REPLY_PARTS - 2).map((part) => part.id));
+    expect(generated.at(-1)).toMatchObject({
+      type: "failure",
+      id: "web-reply-parts-truncated-4",
+      code: "reply_part_too_large",
+    });
+    expect(new Set(first.outcomes.map((part) => part.id)).size).toBe(first.outcomes.length);
+    expect(second.outcomes).toEqual(first.outcomes);
+
+    const invalidThread = store.createThread("agent-one");
+    const invalidTurn = store.beginTurn({ threadId: invalidThread.id, text: "invalid", attachmentIds: [] });
+    injectExisting(invalidTurn.assistantMessageId);
+    const invalidDetail = store.completeTurn(
+      invalidTurn.turnId,
+      "done",
+      undefined,
+      { id: "web-reply-parts-truncated-2", not: "an array" } as unknown as readonly AgentReplyPart[],
+    );
+    const invalidMessage = invalidDetail.messages.at(-1)!;
+    const invalidOutcomes = invalidMessage.parts.filter((part) => "id" in part);
+    expect(invalidOutcomes).toEqual([
+      existing,
+      {
+        type: "failure",
+        id: "web-reply-parts-truncated-3",
+        code: "unsupported_destination",
+        message: "The web console rejected an invalid rich reply collection.",
+      },
+    ]);
+
+    const validCollisions = [
+      {
+        type: "failure",
+        id: "web-reply-parts-truncated",
+        code: "artifact_missing",
+        message: "Collides with an existing outcome.",
+      },
+      {
+        type: "failure",
+        id: "duplicate-incoming",
+        code: "artifact_missing",
+        message: "First incoming outcome.",
+      },
+      {
+        type: "failure",
+        id: "duplicate-incoming",
+        code: "artifact_missing",
+        message: "Second incoming outcome.",
+      },
+    ] as const satisfies readonly AgentReplyPart[];
+    const completeValidCollisionTurn = () => {
+      const thread = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: thread.id, text: "valid collisions", attachmentIds: [] });
+      injectExisting(turn.assistantMessageId);
+      const detail = store.completeTurn(turn.turnId, "done", undefined, validCollisions);
+      const message = detail.messages.at(-1)!;
+      return {
+        messageId: message.id,
+        outcomes: message.parts.filter((part) => "id" in part),
+      };
+    };
+    const firstValidCollisions = completeValidCollisionTurn();
+    const secondValidCollisions = completeValidCollisionTurn();
+    expect(firstValidCollisions.outcomes).toEqual([
+      existing,
+      {
+        type: "failure",
+        id: "invalid-rich-part",
+        code: "unsupported_destination",
+        message: "A rich reply part reused an existing identifier and could not be displayed.",
+      },
+      validCollisions[1],
+      {
+        type: "failure",
+        id: "invalid-rich-part-2",
+        code: "unsupported_destination",
+        message: "A rich reply part reused an existing identifier and could not be displayed.",
+      },
+    ]);
+    expect(new Set(firstValidCollisions.outcomes.map((part) => part.id)).size)
+      .toBe(firstValidCollisions.outcomes.length);
+    expect(secondValidCollisions.outcomes).toEqual(firstValidCollisions.outcomes);
+
+    const sparse = new Array<AgentReplyPart>(5);
+    sparse[1] = {
+      type: "failure",
+      id: "invalid-rich-part",
+      code: "unknown_failure",
+      message: "Invalid failure code.",
+    } as unknown as AgentReplyPart;
+    sparse[2] = {
+      type: "failure",
+      id: "invalid-rich-part-2",
+      code: "artifact_missing",
+      message: "Valid middle outcome.",
+    };
+    sparse[4] = {
+      type: "failure",
+      id: "invalid-rich-part",
+      code: "artifact_missing",
+      message: "Valid colliding suffix outcome.",
+    };
+    const completeSparseTurn = () => {
+      const thread = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: thread.id, text: "sparse", attachmentIds: [] });
+      injectExisting(turn.assistantMessageId);
+      const detail = store.completeTurn(turn.turnId, "done", undefined, sparse);
+      const message = detail.messages.at(-1)!;
+      return {
+        messageId: message.id,
+        outcomes: message.parts.filter((part) => "id" in part),
+      };
+    };
+    const firstSparse = completeSparseTurn();
+    const secondSparse = completeSparseTurn();
+    expect(firstSparse.outcomes.map((part) => part.id)).toEqual([
+      "web-reply-parts-truncated",
+      "invalid-rich-part-3",
+      "invalid-rich-part-4",
+      "invalid-rich-part-2",
+      "invalid-rich-part-5",
+      "invalid-rich-part",
+    ]);
+    expect(firstSparse.outcomes.slice(1).map((part) => part.type === "failure" ? part.code : part.type))
+      .toEqual([
+        "unsupported_destination",
+        "unsupported_destination",
+        "artifact_missing",
+        "unsupported_destination",
+        "artifact_missing",
+      ]);
+    expect(new Set(firstSparse.outcomes.map((part) => part.id)).size).toBe(firstSparse.outcomes.length);
+    expect(secondSparse.outcomes).toEqual(firstSparse.outcomes);
+
+    store.close();
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getMessage(first.messageId)?.parts.filter((part) => "id" in part)).toEqual(first.outcomes);
+    expect(reopened.getMessage(invalidMessage.id)?.parts.filter((part) => "id" in part)).toEqual(invalidOutcomes);
+    expect(reopened.getMessage(firstValidCollisions.messageId)?.parts.filter((part) => "id" in part))
+      .toEqual(firstValidCollisions.outcomes);
+    expect(reopened.getMessage(firstSparse.messageId)?.parts.filter((part) => "id" in part))
+      .toEqual(firstSparse.outcomes);
+    reopened.close();
+  });
+
   it("projects synthetic steering events as one completed Steered tool row", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

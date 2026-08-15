@@ -2947,7 +2947,7 @@ export class WebStore {
     const existing = this.requireMessage(turn.assistant_message_id);
     const parts = [...existing.parts];
     if (finalText !== undefined && finalText.length > 0) reconcileFinalText(parts, finalText);
-    if (replyParts !== undefined) parts.push(...boundedWebReplyParts(replyParts));
+    if (replyParts !== undefined) parts.push(...boundedWebReplyParts(replyParts, parts));
     if (errorMessage !== undefined) {
       parts.push({ type: "error", ...(errorCode === undefined ? {} : { code: errorCode }), message: errorMessage });
     }
@@ -4237,35 +4237,105 @@ const REPLY_FAILURE_CODES = new Set([
 ]);
 
 const REPLY_PARTS_TRUNCATED_ID = "web-reply-parts-truncated";
+const INVALID_REPLY_PART_ID = "invalid-rich-part";
+type DurableWebReplyPart = Extract<WebMessagePart, { type: "attachment" | "mcp_app" | "failure" }>;
 
 /**
  * The SQLite boundary does not trust the operator wire parser. A truncated
  * reply reserves one of the shared outcome slots for a durable diagnostic so
- * every omitted suffix is visible without allowing the stored rich-part count
- * to exceed the producer/wire contract.
+ * every omitted suffix is visible without allowing this completion to take a
+ * message that is already within the producer/wire limit beyond that limit.
  */
-function boundedWebReplyParts(input: unknown): WebMessagePart[] {
+function nextSyntheticReplyPartId(base: string, ids: Set<string>): string {
+  let failureId = base;
+  for (let suffix = 2; ids.has(failureId); suffix += 1) {
+    failureId = `${base}-${suffix}`;
+  }
+  ids.add(failureId);
+  return failureId;
+}
+
+function replyPartIds(values: readonly unknown[]): Set<string> {
+  const ids = new Set<string>();
+  for (const value of values) {
+    const id = record(value)?.id;
+    if (validRichId(id)) ids.add(id);
+  }
+  return ids;
+}
+
+function replyPartIdCounts(values: readonly unknown[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    const id = record(value)?.id;
+    if (validRichId(id)) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function isDurableWebReplyPart(part: WebMessagePart): part is DurableWebReplyPart {
+  return part.type === "attachment" || part.type === "mcp_app" || part.type === "failure";
+}
+
+function boundedWebReplyParts(
+  input: unknown,
+  existingParts: readonly WebMessagePart[],
+): WebMessagePart[] {
+  const existingReplyParts = existingParts.filter(isDurableWebReplyPart);
+  const existingIds = replyPartIds(existingReplyParts);
+  const ids = new Set(existingIds);
+  const claimedIds = new Set(existingIds);
+  const availableSlots = Math.max(0, MAX_AGENT_REPLY_PARTS - existingReplyParts.length);
   if (!Array.isArray(input)) {
+    if (availableSlots === 0) return [];
+    const invalidRecord = record(input);
+    const legacyValues = invalidRecord === undefined ? [input] : [input, ...Object.values(invalidRecord)];
+    for (const id of replyPartIds(legacyValues)) ids.add(id);
     return [{
       type: "failure",
-      id: REPLY_PARTS_TRUNCATED_ID,
+      id: nextSyntheticReplyPartId(REPLY_PARTS_TRUNCATED_ID, ids),
       code: "unsupported_destination",
       message: "The web console rejected an invalid rich reply collection.",
     }];
   }
-  const truncated = input.length > MAX_AGENT_REPLY_PARTS;
-  const retainedCount = truncated ? MAX_AGENT_REPLY_PARTS - 1 : input.length;
-  const retained = input.slice(0, retainedCount).map((part) => toWebReplyPart(part as AgentReplyPart));
+  // Object.values visits only populated entries, so a legacy sparse array with
+  // a very large length cannot make this collision scan walk every empty slot.
+  const populated = Object.values(input);
+  const inputIdCounts = replyPartIdCounts(populated);
+  for (const id of inputIdCounts.keys()) ids.add(id);
+  const truncated = input.length > availableSlots;
+  const retainedCount = truncated ? Math.max(0, availableSlots - 1) : input.length;
+  const retained = Array.from(
+    { length: retainedCount },
+    (_, index): DurableWebReplyPart => {
+      const converted = toWebReplyPart(input[index], () => {
+        const inputId = record(input[index])?.id;
+        return validRichId(inputId)
+          && !existingIds.has(inputId)
+          && inputIdCounts.get(inputId) === 1
+          ? inputId
+          : nextSyntheticReplyPartId(INVALID_REPLY_PART_ID, ids);
+      });
+      if (!claimedIds.has(converted.id)) {
+        claimedIds.add(converted.id);
+        return converted;
+      }
+      const collision: DurableWebReplyPart = {
+        type: "failure",
+        id: nextSyntheticReplyPartId(INVALID_REPLY_PART_ID, ids),
+        code: "unsupported_destination",
+        message: "A rich reply part reused an existing identifier and could not be displayed.",
+      };
+      claimedIds.add(collision.id);
+      return collision;
+    },
+  );
   if (!truncated) return retained;
+  if (availableSlots === 0) return retained;
 
-  const retainedIds = new Set(retained.flatMap((part) => "id" in part ? [part.id] : []));
-  let failureId = REPLY_PARTS_TRUNCATED_ID;
-  for (let suffix = 2; retainedIds.has(failureId); suffix += 1) {
-    failureId = `${REPLY_PARTS_TRUNCATED_ID}-${suffix}`;
-  }
   retained.push({
     type: "failure",
-    id: failureId,
+    id: nextSyntheticReplyPartId(REPLY_PARTS_TRUNCATED_ID, ids),
     code: "reply_part_too_large",
     message: `The web console retained the first ${retainedCount} rich reply parts and omitted ${input.length - retainedCount} because one reply may contain at most ${MAX_AGENT_REPLY_PARTS} outcomes.`,
   });
@@ -4276,12 +4346,13 @@ function isMcpAppProtocolVersion(value: unknown): value is "2026-01-26" | "2025-
   return value === "2026-01-26" || value === "2025-11-21";
 }
 
-function toWebReplyPart(input: AgentReplyPart): WebMessagePart {
+function toWebReplyPart(input: unknown, syntheticId: () => string): DurableWebReplyPart {
   const part = record(input);
-  const id = validRichId(part?.id) ? part.id : `invalid-rich-part-${randomUUID()}`;
-  const failure = (code: "artifact_publish_failed" | "artifact_too_large" | "app_resource_invalid"): WebMessagePart => ({
+  const failure = (
+    code: "artifact_publish_failed" | "artifact_too_large" | "app_resource_invalid",
+  ): DurableWebReplyPart => ({
     type: "failure",
-    id,
+    id: syntheticId(),
     code,
     message: code === "artifact_too_large"
       ? "The generated file exceeded the web console attachment limit."
@@ -4369,7 +4440,7 @@ function toWebReplyPart(input: AgentReplyPart): WebMessagePart {
   }
   return {
     type: "failure",
-    id,
+    id: syntheticId(),
     code: "unsupported_destination",
     message: "A rich reply part used an unsupported format and could not be displayed.",
   };

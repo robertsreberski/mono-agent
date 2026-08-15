@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, uploadContent } from "./api";
+import { api, uploadContent, type ReplyAccessRefreshHandler } from "./api";
 import { agent, attachment } from "./test/fixtures";
 
 class FakeXMLHttpRequest {
@@ -318,16 +318,35 @@ describe("short-lived reply access", () => {
     vi.unstubAllGlobals();
   });
 
-  it("refreshes an authentic expired MCP resource once from its authoritative part", async () => {
+  it("adopts an authentic MCP refresh so later resource and bridge requests skip stale URLs", async () => {
     const resource = { app: appPart, html: "<!doctype html><p>ready</p>", connected: true };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(Response.json({ error: { code: "reply_access_expired", message: "Expired." } }, { status: 410 }))
       .mockResolvedValueOnce(Response.json({ part: appPart }))
-      .mockResolvedValueOnce(Response.json(resource));
+      .mockResolvedValueOnce(Response.json(resource))
+      .mockResolvedValueOnce(Response.json({ result: { contents: [] } }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(api.mcpAppResource(staleResourceUrl)).resolves.toEqual(resource);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    let access = { resourceUrl: staleResourceUrl, bridgeUrl: staleBridgeUrl };
+    const adopt = vi.fn((part: Parameters<ReplyAccessRefreshHandler<"mcp_app">>[0]) => {
+      if (part.resourceUrl === undefined || part.bridgeUrl === undefined) {
+        throw new Error("Expected refreshed MCP App access.");
+      }
+      access = { resourceUrl: part.resourceUrl, bridgeUrl: part.bridgeUrl };
+    });
+    await expect(api.mcpAppResource(access.resourceUrl, undefined, adopt)).resolves.toEqual(resource);
+    await expect(api.mcpAppRequest(
+      access.bridgeUrl,
+      "resources/read",
+      { uri: "ui://widgets/data" },
+      false,
+      undefined,
+      adopt,
+    )).resolves.toEqual({ contents: [] });
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(adopt).toHaveBeenCalledTimes(1);
+    expect(adopt).toHaveBeenCalledWith(appPart);
     expect(fetchMock.mock.calls[1]?.[0]).toBe(
       "/api/v1/threads/thread-one/messages/message-one/mcp-apps/app-one/access",
     );
@@ -336,6 +355,7 @@ describe("short-lived reply access", () => {
       headers: expect.objectContaining({ "X-Mono-Agent-Web-Origin": window.location.origin }),
     });
     expect(fetchMock.mock.calls[2]?.[0]).toBe(freshResourceUrl);
+    expect(fetchMock.mock.calls[3]?.[0]).toBe(freshBridgeUrl);
   });
 
   it("retries an expired MCP bridge mutation at most once", async () => {
@@ -359,6 +379,54 @@ describe("short-lived reply access", () => {
     expect(fetchMock.mock.calls[2]?.[0]).toBe(freshBridgeUrl);
     expect(JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body)))
       .toEqual(JSON.parse(String((fetchMock.mock.calls[2]?.[1] as RequestInit).body)));
+  });
+
+  it("coalesces concurrent access refreshes for one MCP App generation", async () => {
+    let resolveAccess!: (response: Response) => void;
+    const accessResponse = new Promise<Response>((resolve) => {
+      resolveAccess = resolve;
+    });
+    const fetchMock = vi.fn((input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      if (url.endsWith("/access")) return accessResponse;
+      if (url.includes("expires=1000000000")) {
+        return Promise.resolve(Response.json(
+          { error: { code: "reply_access_expired", message: "Expired." } },
+          { status: 410 },
+        ));
+      }
+      return Promise.resolve(Response.json({ result: { contents: [] } }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+    const leftAdopt = vi.fn();
+    const rightAdopt = vi.fn();
+
+    const left = api.mcpAppRequest(
+      staleBridgeUrl,
+      "resources/read",
+      { uri: "ui://widgets/left" },
+      false,
+      controller.signal,
+      leftAdopt,
+    );
+    const right = api.mcpAppRequest(
+      staleBridgeUrl,
+      "resources/read",
+      { uri: "ui://widgets/right" },
+      false,
+      controller.signal,
+      rightAdopt,
+    );
+    await vi.waitFor(() => {
+      expect(fetchMock.mock.calls.filter((call) => String(call[0]).endsWith("/access"))).toHaveLength(1);
+    });
+    resolveAccess(Response.json({ part: appPart }));
+
+    await expect(Promise.all([left, right])).resolves.toEqual([{ contents: [] }, { contents: [] }]);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(leftAdopt).toHaveBeenCalledTimes(1);
+    expect(rightAdopt).toHaveBeenCalledTimes(1);
   });
 
   it("does not refresh forged or unknown reply capabilities", async () => {
@@ -397,18 +465,71 @@ describe("short-lived reply access", () => {
           "content-length": "6",
           "x-mono-agent-integrity-id": fresh.integrityId,
         },
+      }))
+      .mockResolvedValueOnce(new Response("report", {
+        headers: {
+          "content-length": "6",
+          "x-mono-agent-integrity-id": fresh.integrityId,
+        },
       }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const response = await api.replyAttachmentContent(staleContentUrl);
+    let contentUrl = staleContentUrl;
+    const adopt = vi.fn((part: Parameters<ReplyAccessRefreshHandler<"attachment">>[0]) => {
+      if (part.contentUrl === undefined) throw new Error("Expected refreshed attachment access.");
+      contentUrl = part.contentUrl;
+    });
+    const response = await api.replyAttachmentContent(contentUrl, undefined, adopt);
     await expect(response.text()).resolves.toBe("report");
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await expect((await api.replyAttachmentContent(contentUrl, undefined, adopt)).text()).resolves.toBe("report");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(adopt).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[1]?.[0]).toBe(
       "/api/v1/threads/thread-one/messages/message-one/reply-attachments/file-one/access",
     );
     expect(String(fetchMock.mock.calls[1]?.[0])).not.toContain("expires=");
     expect(String(fetchMock.mock.calls[1]?.[0])).not.toContain("token=");
     expect(fetchMock.mock.calls[2]?.[0]).toBe(fresh.contentUrl);
+    expect(fetchMock.mock.calls[3]?.[0]).toBe(fresh.contentUrl);
+  });
+
+  it("rejects cross-message companion capabilities before adoption or retry", async () => {
+    const crossMessagePart = {
+      ...appPart,
+      resourceUrl: freshResourceUrl.replace("message-one", "message-two"),
+      bridgeUrl: freshBridgeUrl.replace("message-one", "message-two"),
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(
+        { error: { code: "reply_access_expired", message: "Expired." } },
+        { status: 410 },
+      ))
+      .mockResolvedValueOnce(Response.json({ part: crossMessagePart }));
+    vi.stubGlobal("fetch", fetchMock);
+    const adopt = vi.fn();
+
+    await expect(api.mcpAppResource(staleResourceUrl, undefined, adopt))
+      .rejects.toThrow("binding changed");
+    expect(adopt).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects an incomplete MCP capability pair before adoption or retry", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(
+        { error: { code: "reply_access_expired", message: "Expired." } },
+        { status: 410 },
+      ))
+      .mockResolvedValueOnce(Response.json({
+        part: { ...appPart, bridgeUrl: undefined },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const adopt = vi.fn();
+
+    await expect(api.mcpAppResource(staleResourceUrl, undefined, adopt))
+      .rejects.toThrow("incomplete private endpoints");
+    expect(adopt).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("keeps concurrent MCP App instance refreshes bound to their own message and part", async () => {
@@ -452,9 +573,18 @@ describe("short-lived reply access", () => {
 
     const stale = (suffix: "a" | "b") =>
       `/api/v1/threads/thread-${suffix}/messages/message-${suffix}/mcp-apps/app-${suffix}?expires=1000000000&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;
-    const [left, right] = await Promise.all([api.mcpAppResource(stale("a")), api.mcpAppResource(stale("b"))]);
+    const leftAdopt = vi.fn();
+    const rightAdopt = vi.fn();
+    const [left, right] = await Promise.all([
+      api.mcpAppResource(stale("a"), undefined, leftAdopt),
+      api.mcpAppResource(stale("b"), undefined, rightAdopt),
+    ]);
     expect(left.app.invocationId).toBe("app-a");
     expect(right.app.invocationId).toBe("app-b");
+    expect(leftAdopt).toHaveBeenCalledWith(expect.objectContaining({ id: "app-a", invocationId: "app-a" }));
+    expect(leftAdopt).not.toHaveBeenCalledWith(expect.objectContaining({ id: "app-b" }));
+    expect(rightAdopt).toHaveBeenCalledWith(expect.objectContaining({ id: "app-b", invocationId: "app-b" }));
+    expect(rightAdopt).not.toHaveBeenCalledWith(expect.objectContaining({ id: "app-a" }));
     expect(fetchMock).toHaveBeenCalledTimes(6);
     expect([...requestCounts.keys()].filter((url) => url.endsWith("/access"))).toEqual(expect.arrayContaining([
       "/api/v1/threads/thread-a/messages/message-a/mcp-apps/app-a/access",

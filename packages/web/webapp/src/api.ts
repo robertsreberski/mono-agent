@@ -84,6 +84,15 @@ export const sameOriginReplyUrl = (value: string): string => {
 type ReplyAttachmentPart = Extract<MessagePart, { readonly type: "attachment" }>;
 type RichReplyPart = ReplyAttachmentPart | McpAppPart;
 type RichReplyType = RichReplyPart["type"];
+const inFlightReplyAccessRefreshes = new WeakMap<
+  AbortSignal,
+  Map<string, Promise<RichReplyPart>>
+>();
+
+/** Adopt only the exact rich part returned by an authenticated access refresh. */
+export type ReplyAccessRefreshHandler<T extends RichReplyType> = (
+  part: Extract<RichReplyPart, { readonly type: T }>,
+) => void;
 
 interface ReplyEndpoint {
   readonly type: RichReplyType;
@@ -131,7 +140,55 @@ const refreshReplyPartAccess = async <T extends RichReplyType>(
   if (part.type !== expectedType || part.id !== endpoint.partId) {
     throw new Error("The refreshed reply part identity changed.");
   }
+  let capabilityUrls: readonly string[];
+  if (part.type === "attachment") {
+    if (part.contentUrl === undefined) {
+      throw new Error("The refreshed reply part has no private endpoint.");
+    }
+    capabilityUrls = [part.contentUrl];
+  } else {
+    if (part.resourceUrl === undefined || part.bridgeUrl === undefined) {
+      throw new Error("The refreshed MCP App has incomplete private endpoints.");
+    }
+    capabilityUrls = [part.resourceUrl, part.bridgeUrl];
+  }
+  for (const capabilityUrl of capabilityUrls) {
+    const refreshedEndpoint = replyEndpoint(capabilityUrl);
+    if (
+      refreshedEndpoint.type !== endpoint.type
+      || refreshedEndpoint.partId !== endpoint.partId
+      || refreshedEndpoint.accessPath !== endpoint.accessPath
+    ) {
+      throw new Error("The refreshed reply part binding changed.");
+    }
+  }
   return part as Extract<RichReplyPart, { readonly type: T }>;
+};
+
+const coordinatedReplyPartAccessRefresh = async <T extends RichReplyType>(
+  staleUrl: string,
+  expectedType: T,
+  signal?: AbortSignal,
+): Promise<Extract<RichReplyPart, { readonly type: T }>> => {
+  if (signal === undefined) return await refreshReplyPartAccess(staleUrl, expectedType);
+  const endpoint = replyEndpoint(staleUrl);
+  const key = `${expectedType}:${endpoint.accessPath}`;
+  let byEndpoint = inFlightReplyAccessRefreshes.get(signal);
+  if (byEndpoint === undefined) {
+    byEndpoint = new Map();
+    inFlightReplyAccessRefreshes.set(signal, byEndpoint);
+  }
+  let pending = byEndpoint.get(key);
+  if (pending === undefined) {
+    pending = refreshReplyPartAccess(staleUrl, expectedType, signal).finally(() => {
+      if (byEndpoint?.get(key) === pending) byEndpoint.delete(key);
+      if (byEndpoint?.size === 0) inFlightReplyAccessRefreshes.delete(signal);
+    });
+    byEndpoint.set(key, pending);
+  }
+  const refreshed = await pending;
+  if (refreshed.type !== expectedType) throw new Error("The refreshed reply part type changed.");
+  return refreshed as Extract<RichReplyPart, { readonly type: T }>;
 };
 
 const withReplyAccessRetry = async <T extends RichReplyType, TResult>(
@@ -140,18 +197,25 @@ const withReplyAccessRetry = async <T extends RichReplyType, TResult>(
   refreshedUrl: (part: Extract<RichReplyPart, { readonly type: T }>) => string | undefined,
   operation: (url: string) => Promise<TResult>,
   signal?: AbortSignal,
+  onAccessRefreshed?: ReplyAccessRefreshHandler<T>,
 ): Promise<TResult> => {
   try {
     return await operation(sameOriginReplyUrl(initialUrl));
   } catch (error) {
     if (!isReplyAccessExpired(error) || signal?.aborted === true) throw error;
   }
-  const refreshed = await refreshReplyPartAccess(initialUrl, type, signal);
+  const refreshed = await coordinatedReplyPartAccessRefresh(initialUrl, type, signal);
   const nextUrl = refreshedUrl(refreshed);
   if (nextUrl === undefined) throw new Error("The refreshed reply part has no private endpoint.");
+  const boundNextUrl = sameOriginReplyUrl(nextUrl);
+  signal?.throwIfAborted();
+  // The caller owns the in-memory DTO projection. Hand it only the validated,
+  // exact-type/exact-id refresh result so later operations can stop replaying
+  // the stale capability without granting any broader renewal authority.
+  onAccessRefreshed?.(refreshed);
   // Only an authenticated expiry response reaches this retry, and the newly
   // minted request is attempted exactly once.
-  return await operation(sameOriginReplyUrl(nextUrl));
+  return await operation(boundNextUrl);
 };
 
 const cronMutation = async <T>(path: string, body: Readonly<Record<string, unknown>>): Promise<CronMutationResult<T>> => {
@@ -394,7 +458,11 @@ export const api = {
     if (!response.ok) throw await readError(response);
   },
 
-  replyAttachmentContent: (contentUrl: string, signal?: AbortSignal) =>
+  replyAttachmentContent: (
+    contentUrl: string,
+    signal?: AbortSignal,
+    onAccessRefreshed?: ReplyAccessRefreshHandler<"attachment">,
+  ) =>
     withReplyAccessRetry(
       contentUrl,
       "attachment",
@@ -408,15 +476,21 @@ export const api = {
         return response;
       },
       signal,
+      onAccessRefreshed,
     ),
 
-  mcpAppResource: (resourceUrl: string, signal?: AbortSignal) =>
+  mcpAppResource: (
+    resourceUrl: string,
+    signal?: AbortSignal,
+    onAccessRefreshed?: ReplyAccessRefreshHandler<"mcp_app">,
+  ) =>
     withReplyAccessRetry(
       resourceUrl,
       "mcp_app",
       (part) => part.resourceUrl,
       (url) => request<McpAppResource>(url, { signal }),
       signal,
+      onAccessRefreshed,
     ),
 
   mcpAppRequest: async (
@@ -425,6 +499,7 @@ export const api = {
     params: unknown,
     confirmed: boolean,
     signal?: AbortSignal,
+    onAccessRefreshed?: ReplyAccessRefreshHandler<"mcp_app">,
   ) => {
     return await withReplyAccessRetry(
       bridgeUrl,
@@ -440,6 +515,7 @@ export const api = {
         return payload.result;
       },
       signal,
+      onAccessRefreshed,
     );
   },
 };
