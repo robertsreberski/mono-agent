@@ -32,7 +32,6 @@ import {
   createReplyArtifactService,
   DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
   isPublishReplyFileToolAllowed,
-  PUBLISH_REPLY_FILE_TOOL_NAME,
   replyArtifactStorageBudgetFor,
 } from "./reply-artifacts.js";
 import {
@@ -200,7 +199,8 @@ export async function buildResponder(
         storageBudget: replyArtifactStorage,
       })
     : undefined;
-  const replyArtifactsExtension = isPublishReplyFileToolAllowed(coreConfig.tools)
+  const mcpAppsBase = mcpApps?.createExtension;
+  const replyArtifactsBase = isPublishReplyFileToolAllowed(coreConfig.tools)
     && !runtimeRouteContainsDirectOpenCode(coreConfig)
     ? replyArtifacts.createExtension
     : undefined;
@@ -248,7 +248,6 @@ export async function buildResponder(
   if (adapterSendTools.blockingToolNames.length > 0) {
     mcpSources.push(`adapter send tools (${adapterSendTools.blockingToolNames.join(", ")})`);
   }
-  if (replyArtifactsExtension !== undefined) mcpSources.push(PUBLISH_REPLY_FILE_TOOL_NAME);
   const requestModelOverride = controller.requestModelOverrideRuntimeOptions(coreConfig, {
     mcpSources,
     indexSkillsActive: coreConfig.context.skillDisclosure === "index"
@@ -257,6 +256,16 @@ export async function buildResponder(
   const adapterSendToolsExtension = adapterSendTools.createExtension?.(
     requestModelOverride.targetsDirectOpenCode,
   );
+  const mcpAppsExtension: RuntimeOptionsExtension | undefined = mcpAppsBase === undefined
+    ? undefined
+    : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
+      ? { runtimeOptions: {}, cleanup: async () => {} }
+      : await mcpAppsBase(requestInput);
+  const replyArtifactsExtension: RuntimeOptionsExtension | undefined = replyArtifactsBase === undefined
+    ? undefined
+    : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
+      ? { runtimeOptions: {}, cleanup: async () => {} }
+      : await replyArtifactsBase(requestInput);
   const runHistoryExtension: RuntimeOptionsExtension | undefined = runHistoryBase === undefined
     ? undefined
     : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
@@ -277,7 +286,7 @@ export async function buildResponder(
     supermemoryMcp,
     runHistoryExtension,
     sessionHistoryExtension,
-    mcpApps?.createExtension,
+    mcpAppsExtension,
     replyArtifactsExtension,
     adapterSendToolsExtension,
     requestModelOverride.extension,
