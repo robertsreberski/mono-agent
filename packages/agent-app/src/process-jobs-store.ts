@@ -4,6 +4,7 @@ import {
   chmod,
   lstat,
   mkdir,
+  opendir,
   readdir,
   realpath,
   rename,
@@ -45,8 +46,12 @@ export const PROCESS_JOB_ROLLBACK_GUARD_CONTENT =
   "This state directory uses mono-agent process-job records v1. Older runtimes must not open it.\n";
 export const PROCESS_JOB_ORPHAN_RECONCILIATION_INTERVAL = 64;
 export const PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS = 3;
-export const PROCESS_JOB_CONVERSATION_BUSY_ATTEMPTS = 3;
+export const PROCESS_JOB_CONVERSATION_BUSY_ATTEMPT_COUNTER_MAX = 65_535;
 export const PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS = 5 * 60 * 1_000;
+/** Maximum simultaneously retained records plus pending wake obligations. */
+export const PROCESS_JOB_STORE_MAX_RECORD_ENTRIES = (2 * PROCESS_JOBS_CAPS.retention.maxRecords)
+  + PROCESS_JOBS_CAPS.maxConcurrent
+  + PROCESS_JOBS_CAPS.maxQueued;
 
 const MAX_RECORD_BYTES = 128 * 1024;
 const MAX_TRANSACTION_BYTES = 256 * 1024;
@@ -59,6 +64,8 @@ export const PROCESS_JOB_ENV_KEYS_CAPS = Object.freeze({
   maxTotalBytes: 8 * 1024,
 });
 const MAX_QUARANTINED_TRANSACTIONS = 10_000;
+const MAX_RECORD_TEMP_ENTRIES = 1;
+const RECORD_CAPACITY_ERROR = "Process-job durable record capacity is exceeded.";
 
 export interface ProcessJobOriginRecord {
   readonly conversationId: string;
@@ -159,11 +166,15 @@ export interface ProcessJobStoreWorkCounter {
   mutationEntriesPersisted: number;
   artifactDirectoriesInspected: number;
   orphanReconciliations: number;
+  /** Optional open-path scale seam; older callers need not initialize it. */
+  recordEntriesExaminedAtOpen?: number;
 }
 
 export interface OpenProcessJobStoreOptions {
   /** Deterministic internal work seam for scale regressions; omitted in production. */
   readonly workCounter?: ProcessJobStoreWorkCounter;
+  /** Lower-only internal seam for deterministic bounded-open regressions. */
+  readonly maxRecordEntries?: number;
 }
 
 interface ProcessJobRecordChange {
@@ -331,6 +342,12 @@ export async function openProcessJobStore(
   stateDir: string,
   options: OpenProcessJobStoreOptions = {},
 ): Promise<ProcessJobStore> {
+  const maxRecordEntries = options.maxRecordEntries ?? PROCESS_JOB_STORE_MAX_RECORD_ENTRIES;
+  if (!Number.isInteger(maxRecordEntries)
+    || maxRecordEntries < 1
+    || maxRecordEntries > PROCESS_JOB_STORE_MAX_RECORD_ENTRIES) {
+    throw new Error("Process-job store record-entry limit is invalid.");
+  }
   const { root, confined } = await resolveConfinedStateDirectory(agentRoot, stateDir);
   await ensureConfinedPrivateDirectory(root, confined);
   const recordsDir = join(confined, PROCESS_JOB_RECORDS_DIRECTORY);
@@ -345,6 +362,9 @@ export async function openProcessJobStore(
   await ensureRollbackGuard(guardPath);
 
   let manifest = await readManifest(manifestPath);
+  if (manifest !== undefined && manifest.records > maxRecordEntries) {
+    throw new Error(RECORD_CAPACITY_ERROR);
+  }
   let transaction: ProcessJobTransaction | undefined;
   try {
     transaction = await readTransaction(transactionPath);
@@ -352,14 +372,21 @@ export async function openProcessJobStore(
     if (!(error instanceof UnreplayableProcessJobTransactionError)) throw error;
     await quarantineUnreplayableTransaction(confined, quarantineDir, transactionPath);
   }
+  let directory = await inspectRecordDirectory(recordsDir, maxRecordEntries, options.workCounter);
   if (transaction !== undefined) {
+    if (transaction.write !== null
+      && !directory.jobIds.has(transaction.write.jobId)
+      && directory.recordCount >= maxRecordEntries) {
+      throw new Error(RECORD_CAPACITY_ERROR);
+    }
     await applyTransaction(recordsDir, transaction);
-    manifest = await persistManifest(manifestPath, transaction.generation, await recordCount(recordsDir));
+    directory = await inspectRecordDirectory(recordsDir, maxRecordEntries, options.workCounter);
+    manifest = await persistManifest(manifestPath, transaction.generation, directory.recordCount);
     await rm(transactionPath, { force: true });
     await syncDirectory(confined);
   }
 
-  const records = await loadRecords(recordsDir);
+  const records = await loadRecords(recordsDir, maxRecordEntries);
   if (manifest === undefined) {
     manifest = await persistManifest(manifestPath, randomUUID(), records.size);
   } else if (manifest.records !== records.size) {
@@ -426,6 +453,7 @@ export async function openProcessJobStore(
       return await withLock(async () => {
         const draft = new ProcessJobMutationDraft(records, workCounter);
         const result = await operation(draft);
+        if (draft.size > maxRecordEntries) throw new ProcessJobStoreMutationError(RECORD_CAPACITY_ERROR);
         let changes: readonly ProcessJobRecordChange[];
         try {
           changes = await persistDiff(
@@ -769,16 +797,33 @@ async function applyTransaction(recordsDir: string, transaction: ProcessJobTrans
   await syncDirectory(recordsDir);
 }
 
-async function loadRecords(recordsDir: string): Promise<Map<string, DurableProcessJobRecord>> {
+async function loadRecords(
+  recordsDir: string,
+  maxRecordEntries: number,
+): Promise<Map<string, DurableProcessJobRecord>> {
   const records = new Map<string, DurableProcessJobRecord>();
-  for (const entry of await readdir(recordsDir, { withFileTypes: true })) {
+  let entriesExamined = 0;
+  let recordCount = 0;
+  let tempCount = 0;
+  const directory = await opendir(recordsDir);
+  for await (const entry of directory) {
+    entriesExamined += 1;
+    if (entriesExamined > maxRecordEntries + MAX_RECORD_TEMP_ENTRIES) {
+      throw new Error(RECORD_CAPACITY_ERROR);
+    }
     if (entry.name.startsWith(".") && entry.name.endsWith(".tmp")) {
+      tempCount += 1;
+      if (!entry.isFile() || tempCount > MAX_RECORD_TEMP_ENTRIES) {
+        throw new Error("Process-job record directory contains unsupported temporary entries.");
+      }
       await rm(join(recordsDir, entry.name), { force: true });
       continue;
     }
     if (!entry.isFile() || !entry.name.endsWith(".json")) {
-      throw new Error(`Process-job record directory contains an unsupported entry: ${entry.name}`);
+      throw new Error("Process-job record directory contains an unsupported entry.");
     }
+    recordCount += 1;
+    if (recordCount > maxRecordEntries) throw new Error(RECORD_CAPACITY_ERROR);
     const path = join(recordsDir, entry.name);
     const value = parseJson(await readBoundedOwnerOnlyFile(path, MAX_RECORD_BYTES, "Process-job record"), path);
     assertDurableRecord(value);
@@ -788,6 +833,36 @@ async function loadRecords(recordsDir: string): Promise<Map<string, DurableProce
     records.set(value.jobId, structuredClone(value));
   }
   return records;
+}
+
+async function inspectRecordDirectory(
+  recordsDir: string,
+  maxRecordEntries: number,
+  workCounter: ProcessJobStoreWorkCounter | undefined,
+): Promise<{ readonly recordCount: number; readonly jobIds: ReadonlySet<string> }> {
+  let recordCount = 0;
+  let tempCount = 0;
+  const jobIds = new Set<string>();
+  const directory = await opendir(recordsDir);
+  for await (const entry of directory) {
+    if (workCounter !== undefined) {
+      workCounter.recordEntriesExaminedAtOpen = (workCounter.recordEntriesExaminedAtOpen ?? 0) + 1;
+    }
+    if (entry.name.startsWith(".") && entry.name.endsWith(".tmp")) {
+      tempCount += 1;
+      if (!entry.isFile() || tempCount > MAX_RECORD_TEMP_ENTRIES) {
+        throw new Error("Process-job record directory contains unsupported temporary entries.");
+      }
+      continue;
+    }
+    if (!entry.isFile() || !entry.name.endsWith(".json")) {
+      throw new Error("Process-job record directory contains an unsupported entry.");
+    }
+    recordCount += 1;
+    if (recordCount > maxRecordEntries) throw new Error(RECORD_CAPACITY_ERROR);
+    jobIds.add(entry.name.slice(0, -".json".length));
+  }
+  return { recordCount, jobIds };
 }
 
 async function readTransaction(path: string): Promise<ProcessJobTransaction | undefined> {
@@ -1191,7 +1266,7 @@ function validWake(value: unknown): boolean {
         && Number(value.destinationUnavailableAttempts) <= PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS))
     && (value.conversationBusyAttempts === undefined
       || (nonNegativeInteger(value.conversationBusyAttempts)
-        && Number(value.conversationBusyAttempts) <= PROCESS_JOB_CONVERSATION_BUSY_ATTEMPTS))
+        && Number(value.conversationBusyAttempts) <= PROCESS_JOB_CONVERSATION_BUSY_ATTEMPT_COUNTER_MAX))
     && (value.conversationBusySinceAt === undefined || nullableIso(value.conversationBusySinceAt))
     && ((Number(value.conversationBusyAttempts ?? 0) === 0)
       === (value.conversationBusySinceAt === undefined || value.conversationBusySinceAt === null));
@@ -1374,10 +1449,6 @@ function isJobId(value: unknown): value is string {
 
 function isUuid(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
-}
-
-function recordCount(recordsDir: string): Promise<number> {
-  return readdir(recordsDir).then((entries) => entries.filter((entry) => entry.endsWith(".json")).length);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

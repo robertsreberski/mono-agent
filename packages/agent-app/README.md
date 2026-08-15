@@ -40,8 +40,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   harness's canonical retained managed-tool lifecycle sidecar.
 - Opt in to Pi-native Exec/Bash process jobs through `processJobs.*`: keep the
   owner-private queue/store/process-group lifecycle, exact Slack/Telegram/web
-  wake with bounded busy deferrals and pending obligations, stable secret-free
-  public errors, native same-message lifecycle surfaces, fail-closed live store health,
+  wake with age-bounded busy deferrals, bounded pending/store materialization,
+  stable secret-free safety errors, native same-message lifecycle surfaces,
+  fail-closed live store health,
   restart interruption, state-root separation from every clear-sessions purge,
   doctor section, operator routes, and `mono-agent jobs` CLI at the app boundary.
 - Drive each channel through a uniform driver contract with per-channel

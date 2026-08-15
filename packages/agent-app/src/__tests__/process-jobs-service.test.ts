@@ -24,12 +24,12 @@ import {
   isTerminalProcessJobState,
   openProcessJobStore,
   PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS,
-  PROCESS_JOB_CONVERSATION_BUSY_ATTEMPTS,
   PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS,
   PROCESS_JOB_HEALTH_FILE,
   PROCESS_JOB_MANIFEST_FILE,
   PROCESS_JOB_ORPHAN_RECONCILIATION_INTERVAL,
   PROCESS_JOB_QUARANTINE_DIRECTORY,
+  PROCESS_JOB_STORE_MAX_RECORD_ENTRIES,
   PROCESS_JOB_TRANSACTION_FILE,
   type DurableProcessJobRecord,
   type ProcessJobOriginRecord,
@@ -285,7 +285,7 @@ describe("process job service", () => {
     const durable = await baseStore.get(started.jobId);
     const projection = await service.get(started.jobId);
     const wakeInput = wake.mock.calls[0]?.[0];
-    const publicFailure = processJobPublicError("process_job_store_error");
+    const publicFailure = processJobPublicError("process_job_cleanup_incomplete");
     expect(durable?.lastError).toEqual(publicFailure);
     expect(projection?.lastError).toEqual(publicFailure);
     expect(wakeInput?.projection.lastError).toEqual(publicFailure);
@@ -501,7 +501,45 @@ describe("process job service", () => {
     await waitFor(async () => (await service.get(started.jobId))?.state === "timed_out");
     expect(cleanup).not.toHaveBeenCalled();
     expect((await service.get(started.jobId))?.lastError)
-      .toEqual(processJobPublicError("process_job_timeout"));
+      .toEqual(processJobPublicError("process_job_cleanup_incomplete"));
+  });
+
+  it("preserves cancelled state while exposing failed sandbox cleanup", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const cleanup = vi.fn(async () => { throw new Error("private cancellation cleanup failure"); });
+    const service = await startService(fixture);
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion), cleanup));
+
+    await service.cancel(started.jobId);
+    completion.resolve(processResult({ aborted: true, code: null }));
+    await waitFor(async () => (await service.get(started.jobId))?.state === "cancelled");
+    expect(await service.get(started.jobId)).toMatchObject({
+      state: "cancelled",
+      lastError: processJobPublicError("process_job_cleanup_incomplete"),
+    });
+  });
+
+  it("preserves timed-out state while exposing an artifact publication failure", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async writeArtifact(jobId, stream, contents) {
+        if (stream === "stderr") throw new Error("private timeout artifact failure");
+        await baseStore.writeArtifact(jobId, stream, contents);
+      },
+    };
+    const completion = deferred<ProcessJobProcessResult>();
+    const service = await startService(fixture, { store });
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+
+    completion.resolve(processResult({ code: null, timedOut: true }));
+    await waitFor(async () => (await service.get(started.jobId))?.state === "timed_out");
+    expect(await service.get(started.jobId)).toMatchObject({
+      state: "timed_out",
+      lastError: processJobPublicError("process_job_store_error"),
+    });
   });
 
   it("surfaces a terminal degraded overlay when completion persistence fails and recovers it on restart", async () => {
@@ -829,7 +867,7 @@ describe("process job service", () => {
     expect(await restarted.get(jobId)).toMatchObject({ wake: { attempts: 1, state: "delivered" } });
   });
 
-  it("bounds permanent conversation-busy wakes, timers, records, and artifacts across restart", async () => {
+  it("bounds permanently busy wakes, timers, records, and artifacts by durable age across restart", async () => {
     const fixture = await createFixture({
       maxConcurrent: 1,
       maxQueued: 2,
@@ -873,6 +911,7 @@ describe("process job service", () => {
       store,
       wake: firstWake,
       wakeBusyRearmMs: 60_000,
+      now: () => new Date("2026-08-14T10:00:04.000Z"),
     });
     await first.activateWakes();
     await waitFor(() => firstWake.mock.calls.length === pendingWakeCap);
@@ -899,15 +938,16 @@ describe("process job service", () => {
     const restarted = await startService(fixture, {
       store,
       wake: restartedWake,
-      wakeBusyRearmMs: 0,
+      wakeBusyRearmMs: 60_000,
+      now: () => new Date(
+        Date.parse("2026-08-14T10:00:04.000Z") + PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS,
+      ),
     });
     await restarted.activateWakes();
     await waitFor(async () => (await store.list()).every((record) => record.wake.state === "failed"));
     await waitFor(async () => (await store.list()).length <= fixture.settings.retention.maxRecords);
 
-    expect(restartedWake).toHaveBeenCalledTimes(
-      pendingWakeCap * (PROCESS_JOB_CONVERSATION_BUSY_ATTEMPTS - 1),
-    );
+    expect(restartedWake).not.toHaveBeenCalled();
     expect(await store.list()).toHaveLength(1);
     expect((await store.list())[0]?.lastError)
       .toEqual(processJobPublicError("process_job_wake_failed"));
@@ -924,6 +964,55 @@ describe("process job service", () => {
     await expect(restarted.controller(ORIGIN, 0).start(requestOf(handleOf(laterCompletion))))
       .resolves.toMatchObject({ state: "running" });
     laterCompletion.resolve(processResult());
+  });
+
+  it("delivers once after more than three busy refusals when capacity returns before five minutes", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "bdbdbdbd-2222-4222-8222-222222222222";
+    await store.mutate((records) => records.set(jobId, durableRecord(jobId, {
+      state: "succeeded",
+      completedAt: "2026-08-14T10:00:01.000Z",
+      exitCode: 0,
+      durationMs: 1,
+      stdoutRef: null,
+      stderrRef: null,
+      wake: {
+        state: "pending",
+        attempts: 0,
+        deliveryKey: `process-job:${jobId}`,
+        lastAttemptAt: null,
+        retrySafe: false,
+        destinationUnavailableAttempts: 0,
+      },
+      lastError: null,
+    })));
+    let observedAt = Date.parse("2026-08-14T10:00:02.000Z");
+    const wake = vi.fn(async () => {
+      observedAt += 5_000;
+      return wake.mock.calls.length <= 4
+        ? {
+            delivered: false as const,
+            code: "conversation_busy",
+            reason: "conversation is busy",
+            retryable: true,
+          }
+        : { delivered: true as const };
+    });
+    const service = await startService(fixture, {
+      store,
+      wake,
+      wakeBusyRearmMs: 0,
+      now: () => new Date(observedAt),
+    });
+
+    await service.activateWakes();
+    await waitFor(async () => (await service.get(jobId))?.wake.state === "delivered");
+    expect(wake).toHaveBeenCalledTimes(5);
+    expect(await service.get(jobId)).toMatchObject({
+      wake: { state: "delivered", attempts: 1 },
+      lastError: null,
+    });
   });
 
   it("expires a persisted conversation-busy deferral by durable age without another delivery", async () => {
@@ -1911,7 +2000,7 @@ describe("process job service", () => {
     expect(await service.get(started.jobId)).toMatchObject({
       state: "interrupted",
       output: { preview: expect.stringContaining("output before shutdown") },
-      lastError: processJobPublicError("process_job_agent_restarted"),
+      lastError: processJobPublicError("process_job_cleanup_incomplete"),
     });
   });
 
@@ -2018,7 +2107,7 @@ describe("process job service", () => {
     expect(signals).toEqual([[-4321, "SIGTERM"], [-4321, "SIGKILL"]]);
     expect(await pathExists(settingsPath)).toBe(true);
     expect((await service.get(jobId))?.lastError)
-      .toEqual(processJobPublicError("process_job_agent_restarted"));
+      .toEqual(processJobPublicError("process_job_cleanup_incomplete"));
     await rm(settingsDirectory, { recursive: true, force: true });
   });
 
@@ -2076,7 +2165,7 @@ describe("process job service", () => {
 
     expect(await readFile(protectedPath, "utf8")).toBe("must stay\n");
     expect((await service.get(jobId))?.lastError)
-      .toEqual(processJobPublicError("process_job_agent_restarted"));
+      .toEqual(processJobPublicError("process_job_cleanup_incomplete"));
   });
 
   it("never signals a reused/missing leader and honestly warns that descendants may remain", async () => {
@@ -2097,7 +2186,7 @@ describe("process job service", () => {
     await waitFor(async () => wake.mock.calls.length === 1);
     expect(signalProcess).not.toHaveBeenCalled();
     expect((await service.get(jobId))?.lastError)
-      .toEqual(processJobPublicError("process_job_agent_restarted"));
+      .toEqual(processJobPublicError("process_job_cleanup_incomplete"));
     expect(wake).toHaveBeenCalledOnce();
   });
 
@@ -2122,7 +2211,7 @@ describe("process job service", () => {
 
     expect(signalProcess).not.toHaveBeenCalled();
     expect((await baseStore.get(jobId))?.lastError)
-      .toEqual(processJobPublicError("process_job_agent_restarted"));
+      .toEqual(processJobPublicError("process_job_cleanup_incomplete"));
   });
 
   it("does not SIGKILL a PGID whose leader vanished during the recovery grace window", async () => {
@@ -2147,7 +2236,7 @@ describe("process job service", () => {
     expect(signals).toEqual([[-4321, "SIGTERM"]]);
     expect(await pathExists(settingsPath)).toBe(true);
     expect((await service.get(jobId))?.lastError)
-      .toEqual(processJobPublicError("process_job_agent_restarted"));
+      .toEqual(processJobPublicError("process_job_cleanup_incomplete"));
     await rm(settingsDirectory, { recursive: true, force: true });
   });
 
@@ -2167,6 +2256,113 @@ describe("process job service", () => {
 });
 
 describe("process job store", () => {
+  it("fails closed after bounded legacy enumeration and opens normally after explicit remediation", async () => {
+    expect(PROCESS_JOB_STORE_MAX_RECORD_ENTRIES).toBe(20_096);
+    const fixture = await createFixture({
+      maxConcurrent: 1,
+      maxQueued: 1,
+      retention: { ...PROCESS_JOBS_DEFAULTS.retention, maxRecords: 1 },
+    });
+    await seedRetainedProcessJobStore(fixture, 4);
+    await rm(join(fixture.settings.stateDir, PROCESS_JOB_MANIFEST_FILE), { force: true });
+    const recordsDir = join(fixture.settings.stateDir, "records-v1");
+    const before = (await readdir(recordsDir)).sort();
+    const workCounter = emptyStoreWorkCounter();
+
+    for (let restart = 1; restart <= 2; restart += 1) {
+      await expect(openProcessJobStore(fixture.cwd, fixture.settings.stateDir, {
+        maxRecordEntries: 3,
+        workCounter,
+      })).rejects.toThrow("Process-job durable record capacity is exceeded.");
+      expect(workCounter.recordEntriesExaminedAtOpen).toBe(restart * 4);
+      expect((await readdir(recordsDir)).sort()).toEqual(before);
+    }
+
+    await rm(join(recordsDir, `${processJobScaleId(3)}.json`));
+    const remediated = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir, {
+      maxRecordEntries: 3,
+    });
+    expect(await remediated.list()).toHaveLength(3);
+    await expect(remediated.mutate((records) => records.set(
+      processJobScaleId(3),
+      durableRecord(processJobScaleId(3), {
+        state: "succeeded",
+        completedAt: "2026-08-14T10:00:04.000Z",
+        stdoutRef: null,
+        stderrRef: null,
+      }),
+    ))).rejects.toThrow("Process-job durable record capacity is exceeded.");
+    expect(await remediated.list()).toHaveLength(3);
+    await remediated.applyRetention(fixture.settings, new Date("2026-08-15T00:00:00.000Z"));
+    expect(await remediated.list()).toHaveLength(1);
+
+    const completion = deferred<ProcessJobProcessResult>();
+    const service = await startService(fixture, { store: remediated });
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    expect(started.state).toBe("running");
+    completion.resolve(processResult());
+    await waitFor(async () => (await service.get(started.jobId))?.state === "succeeded");
+  });
+
+  it("does not let transaction recovery grow a store past its bounded open ceiling", async () => {
+    const fixture = await createFixture();
+    await seedRetainedProcessJobStore(fixture, 3);
+    const overflowId = "99999999-9999-4999-8999-999999999998";
+    const generation = "99999999-9999-4999-8999-999999999997";
+    await writeFile(join(fixture.settings.stateDir, PROCESS_JOB_TRANSACTION_FILE), `${JSON.stringify({
+      schemaVersion: 1,
+      generation,
+      createdAt: "2026-08-15T00:00:00.000Z",
+      write: durableRecord(overflowId, {
+        generation,
+        state: "succeeded",
+        completedAt: "2026-08-14T10:00:02.000Z",
+        exitCode: 0,
+        durationMs: 1,
+        stdoutRef: null,
+        stderrRef: null,
+        wake: {
+          state: "delivered",
+          attempts: 1,
+          deliveryKey: `process-job:${overflowId}`,
+          lastAttemptAt: "2026-08-14T10:00:03.000Z",
+        },
+      }),
+      delete: null,
+    })}\n`, { mode: 0o600 });
+
+    for (let restart = 0; restart < 2; restart += 1) {
+      await expect(openProcessJobStore(fixture.cwd, fixture.settings.stateDir, {
+        maxRecordEntries: 3,
+      })).rejects.toThrow("Process-job durable record capacity is exceeded.");
+      expect(await pathExists(join(
+        fixture.settings.stateDir,
+        "records-v1",
+        `${overflowId}.json`,
+      ))).toBe(false);
+      expect(await pathExists(join(fixture.settings.stateDir, PROCESS_JOB_TRANSACTION_FILE))).toBe(true);
+    }
+  });
+
+  it("fails closed on a hostile record-directory name without reflecting it", async () => {
+    const fixture = await createFixture();
+    const initialized = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const privateName = "arbitrary-record-name-secret";
+    await writeFile(join(initialized.recordsDir, privateName), "private\n", { mode: 0o600 });
+
+    let failure: unknown;
+    try {
+      await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toEqual(expect.objectContaining({
+      message: "Process-job record directory contains an unsupported entry.",
+    }));
+    expect(String(failure)).not.toContain(privateName);
+    expect(String(failure)).not.toContain(fixture.cwd);
+  });
+
   it("treats the optional v1 destination-unavailable counter as zero and bounds new values", async () => {
     const fixture = await createFixture();
     const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);

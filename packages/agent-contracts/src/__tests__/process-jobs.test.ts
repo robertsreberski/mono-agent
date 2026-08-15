@@ -131,6 +131,10 @@ describe("process-job contracts", () => {
       code: "process_job_spawn_failed",
       message: "The process job could not be launched.",
     });
+    expect(processJobPublicError("process_job_cleanup_incomplete")).toEqual({
+      code: "process_job_cleanup_incomplete",
+      message: "Process-job cleanup could not be confirmed.",
+    });
     const raw: any = projection();
     raw.lastError = {
       code: "process_job_store_error",

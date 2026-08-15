@@ -1,5 +1,7 @@
 // @ts-check
 
+import { types as nodeUtilTypes } from "node:util";
+
 import { startPreparedProcess } from "./process-runner.js";
 
 /**
@@ -117,6 +119,7 @@ const PUBLIC_BACKGROUND_START_FAILURES = Object.freeze({
   process_job_timeout: "The process job exceeded its runtime limit.",
   process_job_cancelled: "The process job was cancelled.",
   process_job_agent_restarted: "The process job was interrupted by an agent restart.",
+  process_job_cleanup_incomplete: "Process-job cleanup could not be confirmed.",
   process_job_store_error: "Process-job storage failed.",
   process_job_wake_failed: "Process-job wake delivery failed.",
   process_job_response_too_large: "The process-job response exceeded its size limit.",
@@ -124,10 +127,20 @@ const PUBLIC_BACKGROUND_START_FAILURES = Object.freeze({
 });
 
 function publicBackgroundStartFailure(error) {
-  const code = typeof error?.code === "string"
-    && Object.prototype.hasOwnProperty.call(PUBLIC_BACKGROUND_START_FAILURES, error.code)
-    ? error.code
-    : "process_job_controller_unavailable";
+  let code = "process_job_controller_unavailable";
+  try {
+    if (typeof error === "object" && error !== null && !nodeUtilTypes.isProxy(error)) {
+      const descriptor = Object.getOwnPropertyDescriptor(error, "code");
+      if (descriptor !== undefined
+        && Object.prototype.hasOwnProperty.call(descriptor, "value")
+        && typeof descriptor.value === "string"
+        && Object.prototype.hasOwnProperty.call(PUBLIC_BACKGROUND_START_FAILURES, descriptor.value)) {
+        code = descriptor.value;
+      }
+    }
+  } catch {
+    // Proxies and revoked proxies are hostile input at this boundary.
+  }
   return { code, message: PUBLIC_BACKGROUND_START_FAILURES[code] };
 }
 

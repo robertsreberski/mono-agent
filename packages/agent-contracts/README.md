@@ -134,7 +134,7 @@ Primary modules:
 | Channel lifecycle | `channel.ts` | Driver startup, running handles, status, notifications, and interaction hooks. |
 | Message delivery | `buffered-message-stream.ts`, `resilient-message-stream.ts`, `stream-text.ts`, `tool-hints.ts` | Collect or safely adapt incremental output and format bounded activity copy. |
 | Process transport | `stream-wire.ts` | NDJSON stream frames for operator clients. |
-| Process-job projection | `process-jobs.ts` | Neutral lifecycle/error enums, stable public error messages, strict secret-free projection parsers, and the owner-authorized operator interface. |
+| Process-job projection | `process-jobs.ts` | Neutral lifecycle/error enums, stable public safety/cleanup messages, strict secret-free projection parsers, and the owner-authorized operator interface. |
 | Shared safety helpers | `host-safety.ts`, `bearer.ts`, `http-headers.ts`, `config-loader.ts`, `json-source.ts` | Safe binds, bounded HTTP shutdown/streaming, tokens, sanitized headers, layered config coercion, and settings files. |
 
 `ChannelId` is intentionally open so third-party drivers can choose an id.

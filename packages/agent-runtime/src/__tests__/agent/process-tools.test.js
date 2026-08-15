@@ -150,6 +150,40 @@ describe("Exec", () => {
     expect(JSON.stringify(result)).not.toContain(workspace);
   });
 
+  it.each([
+    ["throwing code accessor", Object.defineProperty(new Error("private-accessor-secret"), "code", {
+      get() { throw new Error("private-getter-secret"); },
+    })],
+    ["hostile proxy", new Proxy(Object.assign(new Error("private-proxy-secret"), {
+      code: "process_job_store_error",
+    }), {})],
+  ])("contains %s failures at the stable controller boundary", async (_label, failure) => {
+    const workspace = tempWorkspace();
+    const cleanup = vi.fn(async () => {});
+    const sandbox = {
+      ...passthroughSandbox,
+      async prepareCommand({ command }) {
+        return { ...command, args: command.args ?? [], cleanup };
+      },
+    };
+
+    const result = await execToolRun({
+      executable: process.execPath,
+      args: ["--eval", "process.stdout.write('must-not-run')"],
+      background: true,
+    }, {
+      ctx: { workspace, sandbox },
+      processJobsController: { start: vi.fn(async () => { throw failure; }) },
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      text: "Error: The process-job controller is unavailable.",
+      outcome: { code: "process_job_controller_unavailable" },
+    });
+    expect(JSON.stringify(result)).not.toContain("private-");
+  });
+
   it("does not clean underneath a launched handle when the controller result is invalid", async () => {
     const workspace = tempWorkspace();
     const cleanup = vi.fn(async () => {});

@@ -36,7 +36,7 @@ import {
   loadOrCreateProcessJobSecret,
   openProcessJobStore,
   prepareProcessJobStateDirectory,
-  PROCESS_JOB_CONVERSATION_BUSY_ATTEMPTS,
+  PROCESS_JOB_CONVERSATION_BUSY_ATTEMPT_COUNTER_MAX,
   PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS,
   PROCESS_JOB_DESTINATION_UNAVAILABLE_ATTEMPTS,
   PROCESS_JOB_ENV_KEYS_CAPS,
@@ -479,10 +479,17 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         : terminated
           ? "The owning agent restarted; the verified process group exited before sandbox cleanup."
           : "The owning agent restarted without complete proof that the owned process group exited; cleanup was withheld and descendants may remain.";
+      const cleanupComplete = (unreleased && unreleasedSettingsCleaned) || terminated;
       await this.storeMutate("recover.interrupt", (draft) => {
         const current = draft.get(record.jobId);
         if (current === undefined || isTerminalProcessJobState(current.state)) return;
-        transitionTerminal(current, "interrupted", this.now(), "process_job_agent_restarted", message);
+        transitionTerminal(
+          current,
+          "interrupted",
+          this.now(),
+          cleanupComplete ? "process_job_agent_restarted" : "process_job_cleanup_incomplete",
+          message,
+        );
       });
       this.scheduleSurfaceUpdate(record.jobId);
     }
@@ -694,12 +701,13 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         active.groupExitConfirmed = termination.groupExitConfirmed;
       }
       const terminationConfirmed = termination?.groupExitConfirmed !== false;
-      if (!terminationConfirmed) {
+      let cleanupIncomplete = !terminationConfirmed;
+      if (cleanupIncomplete) {
         this.options.logger?.warn?.("Spawn-fence cancellation could not confirm owned process-group exit; sandbox cleanup was withheld.", {
           jobId,
         });
       } else {
-        await active.cleanup().catch(() => undefined);
+        try { await active.cleanup(); } catch { cleanupIncomplete = true; }
       }
       this.active.delete(jobId);
       this.pending.delete(jobId);
@@ -712,7 +720,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             record,
             "spawn_failed",
             this.now(),
-            "process_job_store_error",
+            cleanupIncomplete ? "process_job_cleanup_incomplete" : "process_job_store_error",
             terminationConfirmed
               ? "The spawned process was terminated because its ownership metadata could not be recorded."
               : "Process-group exit could not be confirmed after the ownership-record failure; sandbox cleanup was withheld.",
@@ -812,6 +820,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
                   "unknown cleanup failure",
                   active.redactionSecrets,
                 )}`,
+                "process_job_cleanup_incomplete",
               );
             }
             if (artifactError !== undefined) {
@@ -842,6 +851,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
                   "unknown cleanup failure",
                   active.redactionSecrets,
                 )}`,
+                "process_job_cleanup_incomplete",
               );
             }
             if (artifactError !== undefined) {
@@ -899,6 +909,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
                 "unknown cleanup failure",
                 active.redactionSecrets,
               )}`,
+              "process_job_cleanup_incomplete",
             );
           }
           if (artifactError !== undefined) {
@@ -1108,13 +1119,16 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         && result.ambiguous !== true;
       const retryablePreDispatchRefusal = conversationBusy || destinationUnavailable;
       const busyObservedAt = this.now();
-      const nextConversationBusyAttempts = (record.wake.conversationBusyAttempts ?? 0)
-        + (conversationBusy ? 1 : 0);
+      const nextConversationBusyAttempts = conversationBusy
+        ? Math.min(
+          (record.wake.conversationBusyAttempts ?? 0) + 1,
+          PROCESS_JOB_CONVERSATION_BUSY_ATTEMPT_COUNTER_MAX,
+        )
+        : (record.wake.conversationBusyAttempts ?? 0);
       const conversationBusySinceAt = record.wake.conversationBusySinceAt ?? busyObservedAt.toISOString();
       const conversationBusyExhausted = conversationBusy
-        && (nextConversationBusyAttempts >= PROCESS_JOB_CONVERSATION_BUSY_ATTEMPTS
-          || Date.parse(conversationBusySinceAt) + PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS
-            <= busyObservedAt.getTime());
+        && Date.parse(conversationBusySinceAt) + PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS
+          <= busyObservedAt.getTime();
       const nextDestinationUnavailableAttempts = (record.wake.destinationUnavailableAttempts ?? 0)
         + (destinationUnavailable ? 1 : 0);
       const destinationUnavailableExhausted = destinationUnavailable
@@ -1339,7 +1353,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       await this.storeMutate("cleanup.record_failure", (records) => {
         const record = records.get(jobId);
         if (record !== undefined && isTerminalProcessJobState(record.state)) {
-          record.lastError = processJobPublicError("process_job_store_error");
+          record.lastError = processJobPublicError("process_job_cleanup_incomplete");
         }
       }).catch(() => undefined);
     }
@@ -1785,8 +1799,6 @@ function transitionTerminal(
 }
 
 function isConversationBusyExhausted(record: DurableProcessJobRecord, now: Date): boolean {
-  const attempts = record.wake.conversationBusyAttempts ?? 0;
-  if (attempts >= PROCESS_JOB_CONVERSATION_BUSY_ATTEMPTS) return true;
   const since = record.wake.conversationBusySinceAt;
   return typeof since === "string"
     && Date.parse(since) + PROCESS_JOB_CONVERSATION_BUSY_MAX_AGE_MS <= now.getTime();
@@ -1805,12 +1817,14 @@ function recordWakeFailure(record: DurableProcessJobRecord, _reason: string): vo
   record.lastError = processJobPublicError(record.lastError.code);
 }
 
-function appendOperationalFailure(record: DurableProcessJobRecord, _reason: string): void {
-  if (record.lastError === null) {
-    record.lastError = processJobPublicError("process_job_store_error");
-    return;
-  }
-  record.lastError = processJobPublicError(record.lastError.code);
+function appendOperationalFailure(
+  record: DurableProcessJobRecord,
+  _reason: string,
+  code: Extract<ProcessJobErrorCode, "process_job_cleanup_incomplete" | "process_job_store_error">
+    = "process_job_store_error",
+): void {
+  if (record.lastError?.code === "process_job_cleanup_incomplete") return;
+  record.lastError = processJobPublicError(code);
 }
 
 function terminalFromResult(
@@ -1838,39 +1852,37 @@ function terminalFromResult(
       "unknown cleanup failure",
       redactionSecrets,
     )}`;
+  const operationalCode = cleanupError !== undefined
+    ? "process_job_cleanup_incomplete"
+    : artifactError !== undefined
+      ? "process_job_store_error"
+      : undefined;
   if (record.cancelRequested || result.aborted) {
     return {
       state: "cancelled",
-      code: "process_job_cancelled",
+      code: operationalCode ?? "process_job_cancelled",
       message: `Process job was cancelled.${artifactFailure}${cleanupFailure}`,
     };
   }
   if (result.timedOut) {
     return {
       state: "timed_out",
-      code: "process_job_timeout",
+      code: operationalCode ?? "process_job_timeout",
       message: `Process job exceeded its maximum runtime.${artifactFailure}${cleanupFailure}`,
     };
   }
   if (result.spawnError !== null) {
     return {
       state: "spawn_failed",
-      code: "process_job_spawn_failed",
+      code: operationalCode ?? "process_job_spawn_failed",
       message: `${safeProcessError(result.spawnError, "Process spawn failed.", redactionSecrets)}${artifactFailure}${cleanupFailure}`,
     };
   }
-  if (artifactError !== undefined) {
+  if (operationalCode !== undefined) {
     return {
       state: "failed",
-      code: "process_job_store_error",
+      code: operationalCode,
       message: `${artifactFailure}${cleanupFailure}`.trim(),
-    };
-  }
-  if (cleanupError !== undefined) {
-    return {
-      state: "failed",
-      code: "process_job_store_error",
-      message: safeProcessError(cleanupError, "Sandbox cleanup failed.", redactionSecrets),
     };
   }
   if (result.code === 0 && result.signal === null && !result.bufferExceeded) return { state: "succeeded" };

@@ -165,10 +165,11 @@ could duplicate a real first delivery.
 A Slack or Telegram conversation that is already at its pre-turn admission cap
 does not spend that three-attempt budget. The wake stays durably pending and is
 re-armed on a separate, longer timer; a restart can deliver it later. Busy
-deferral is itself bounded at three refusals or five minutes from its first
-durable refusal. Exhaustion settles the wake as `failed` and immediately runs
-retention. Once a turn is admitted, any ambiguous failure is nonretryable and
-exactly-once wins over automatic replay.
+refusals do not themselves exhaust the wake: the durable bound is five minutes
+from its first refusal, so an ordinary busy turn can clear and receive the same
+delivery identity. Age exhaustion settles the wake as `failed` and immediately
+runs retention. Once a turn is admitted, any ambiguous failure is nonretryable
+and exactly-once wins over automatic replay.
 
 An absent or disabled destination channel is also a proven pre-dispatch refusal,
 but it has a separate durable bound of three checks. Those checks do not change
@@ -185,6 +186,15 @@ default; compiled maximum 10,096). This bounds the number of separate busy-wake
 rearm timers without silently evicting an obligation. Recovery keeps the oldest
 obligations when repairing legacy overflow and records explicit failed-wake
 outcomes for the excess before ordinary retention can reclaim them.
+
+The store also has a compiled open ceiling of 20,096 record entries: the 10,000
+retained-record maximum plus the 10,096 pending-obligation maximum. Startup
+streams and bounds the record directory before materializing records. A legacy
+or externally modified directory above that ceiling fails closed with a stable,
+path-free storage error; it does not delete pending wakes, artifacts, or active
+ownership records. The same check prevents transaction replay from growing the
+store past the ceiling. An operator must inspect and remediate that owner-private
+state before restart can proceed.
 
 Pending-wake records and their referenced artifacts remain live and are exempt
 from age, count, and artifact-byte pruning until delivery settles. Other
@@ -207,6 +217,10 @@ exception text—including absolute paths—never enters a durable public error,
 operator projection, wake prompt, or model tool result. Older v1 records with
 free-form error text remain readable; projection replaces that text and the
 next mutation rewrites it to the stable public form.
+`process_job_cleanup_incomplete` remains distinct from a safe
+`process_job_agent_restarted` interruption and from an artifact-only
+`process_job_store_error`; the terminal lifecycle state still records whether
+the process was cancelled, timed out, or otherwise failed.
 Environment-key inventories are bounded independently, and the exact serialized
 record size is checked before a recovery transaction marker is published. A
 legacy transaction that can never fit or validate is moved intact into the
