@@ -14,6 +14,20 @@ import { DEFAULT_MAX_STRING_BYTES } from "./guards.js";
 const SENSITIVE_KEY_PATTERN =
   /(token|password|authorization|api[_-]?key|cookie|credentials?|private[_-]?key|client[_-]?secret|bearer|secret)/iu;
 
+// Credential-specific compound names only: generic `*_key` and `*_url`
+// fields remain visible unless another existing sensitive-key rule applies.
+const COMPOUND_CREDENTIAL_KEY_SUFFIXES = [
+  "secret_access_key",
+  "secret_key",
+  "private_key",
+  "encryption_key",
+  "database_url",
+] as const;
+const STRUCTURED_COMPOUND_CREDENTIAL_KEY_SUFFIXES = [
+  "encryption_key",
+  "database_url",
+] as const;
+
 // This is intentionally a short, closed list of high-confidence credential
 // shapes. Prefix-only matches (for example prose that mentions `sk-` or
 // `ghp_`) are not enough: every pattern requires a credential-specific length
@@ -96,7 +110,7 @@ function redact(
   // numeric value under a "sensitive" key is a count/flag — e.g. `input_tokens`,
   // `output_tokens`, `cache_read_tokens` all match /token/ but carry token COUNTS
   // we want visible for cost observability. Only redact non-numeric matches.
-  if (key !== undefined && SENSITIVE_KEY_PATTERN.test(key) && typeof value !== "number") {
+  if (key !== undefined && isSensitiveStructuredKey(key) && typeof value !== "number") {
     return "[redacted]";
   }
   if (!consumeNode(budget)) {
@@ -329,15 +343,45 @@ function isExactRedactedSentinel(value: string): boolean {
 }
 
 function isCredentialKey(key: string): boolean {
-  const normalized = key.toLocaleLowerCase("en-US").trim().replace(/[\s.-]+/gu, "_");
-  return normalized.endsWith("api_key")
-    || normalized.endsWith("apikey")
+  const normalized = normalizeCredentialKey(key);
+  const compact = normalized.replaceAll("_", "");
+  return compact.endsWith("apikey")
     || normalized.endsWith("token")
     || normalized.endsWith("secret")
     || normalized.endsWith("password")
     || normalized === "authorization"
     || normalized.endsWith("_authorization")
-    || normalized.endsWith("cookie");
+    || normalized.endsWith("cookie")
+    || hasCompoundCredentialKeySuffix(normalized, COMPOUND_CREDENTIAL_KEY_SUFFIXES);
+}
+
+function isSensitiveStructuredKey(key: string): boolean {
+  return SENSITIVE_KEY_PATTERN.test(key)
+    || hasCompoundCredentialKeySuffix(
+      normalizeCredentialKey(key),
+      STRUCTURED_COMPOUND_CREDENTIAL_KEY_SUFFIXES,
+    );
+}
+
+function normalizeCredentialKey(key: string): string {
+  return key
+    .trim()
+    .replace(/([A-Z])([A-Z][a-z])/gu, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/gu, "$1_$2")
+    .toLocaleLowerCase("en-US")
+    .replace(/[\s.-]+/gu, "_");
+}
+
+function hasCompoundCredentialKeySuffix(
+  normalized: string,
+  suffixes: readonly string[],
+): boolean {
+  // Camel boundaries normalize to `_`; stripping those separators also covers
+  // deliberately compact spellings such as `awssecretaccesskey`.
+  const compact = normalized.replaceAll("_", "");
+  return suffixes.some((suffix) => normalized === suffix
+    || normalized.endsWith(`_${suffix}`)
+    || compact.endsWith(suffix.replaceAll("_", "")));
 }
 
 type VisibleTextInspection =

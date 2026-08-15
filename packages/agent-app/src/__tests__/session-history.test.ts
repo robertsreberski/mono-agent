@@ -2,10 +2,17 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { ToolHistoryReader, ToolHistoryWriter, type ToolHistoryRunBinding } from "@mono-agent/agent-harness";
+import {
+  ToolHistoryReader,
+  ToolHistoryWriter,
+  TOOL_HISTORY_DATABASE,
+  TOOL_HISTORY_DIRECTORY,
+  type ToolHistoryRunBinding,
+} from "@mono-agent/agent-harness";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -444,6 +451,82 @@ describe("SessionHistory request handler", () => {
 });
 
 describe("SessionHistory MCP tool", () => {
+  it("re-sanitizes compound credential assignments through model-visible MCP reads", async () => {
+    const root = await tempRoot();
+    const awsSecretAccessKey = [
+      "wJalrXUtnFEMI/K7MDENG/",
+      "bPxRfiCYEXAMPLEKEY",
+    ].join("");
+    const privateKeyHeader = ["-----BEGIN RSA", " PRIVATE KEY-----"].join("");
+    const encryptionAssignmentKey = "SESSION_ENCRYPTION_KEY";
+    const encryptionAssignmentValue = "session-encryption-assignment-fixture";
+    const apiKeyAssignmentKey = "openAPIkey";
+    const apiKeyAssignmentValue = "session-api-key-assignment-fixture";
+    const sensitiveAssignments = [
+      `AWS_SECRET_ACCESS_KEY=${awsSecretAccessKey}`,
+      "STRIPE_SECRET_KEY=sk_live_...",
+      `PRIVATE_KEY=${privateKeyHeader}`,
+      `${encryptionAssignmentKey}=${encryptionAssignmentValue}`,
+      `${apiKeyAssignmentKey}=${apiKeyAssignmentValue}`,
+      "DATABASE_URL=postgres://user:password@host/db",
+    ];
+    const hiddenValues = [
+      ...sensitiveAssignments,
+      ...sensitiveAssignments.map((assignment) => assignment.slice(assignment.indexOf("=") + 1)),
+    ];
+    const safeContext = {
+      publicKey: "PUBLIC_KEY=ssh-rsa-public-material",
+      docsUrl: "DOCS_URL=https://example.com/docs/path",
+      connectionAddress: "postgres://host/db",
+      input_tokens: 37,
+      marker: "useful-mcp-context-marker",
+    };
+    const writer = await ToolHistoryWriter.open({ root });
+    const stored = await writeCall(writer, binding("compound-credential-mcp-run"), "compound-credential-mcp", {
+      toolName: "Inspect",
+      content: "writer-safe-placeholder",
+    });
+    await writer.close();
+
+    const databasePath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+    // Exercise SessionHistory's reader-side guard with raw vulnerable content.
+    const raw = new DatabaseSync(databasePath);
+    try {
+      raw.prepare("UPDATE tool_records SET payload_json=?, search_text=? WHERE record_id=?")
+        .run(JSON.stringify({ sensitiveAssignments, safeContext }), safeContext.marker, stored.resultId);
+    } finally {
+      raw.close();
+    }
+
+    const opened = await openClient(root, "chat:42#2026-08-14", "current-run");
+    try {
+      const search = await opened.client.callTool({
+        name: SESSION_HISTORY_TOOL_NAME,
+        arguments: { action: "search", query: safeContext.marker },
+      });
+      const get = await opened.client.callTool({
+        name: SESSION_HISTORY_TOOL_NAME,
+        arguments: { action: "get", recordId: stored.resultId, chunkBytes: 8 * 1024 },
+      });
+      const visible = JSON.stringify({ search, get });
+
+      expect(body<{ readonly items: readonly unknown[] }>(search).items).toHaveLength(1);
+      expect(visible).toContain("[tool payload omitted because it contained a private host path]");
+      expect(visible).not.toContain(encryptionAssignmentKey);
+      expect(visible).not.toContain(encryptionAssignmentValue);
+      expect(visible).not.toContain(apiKeyAssignmentKey);
+      expect(visible).not.toContain(apiKeyAssignmentValue);
+      for (const retained of Object.values(safeContext).map(String)) {
+        expect(visible, retained).toContain(retained);
+      }
+      for (const hidden of hiddenValues) {
+        expect(visible, hidden).not.toContain(hidden);
+      }
+    } finally {
+      await opened.close();
+    }
+  });
+
   it("is capability-path and host bound, and keeps current-run and foreign-conversation records opaque", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });

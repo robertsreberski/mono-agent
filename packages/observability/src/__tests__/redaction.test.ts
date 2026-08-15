@@ -29,6 +29,16 @@ describe("redactJsonValue", () => {
     "client-secret",
     "clientSecret",
     "CLIENT_SECRET",
+    "encryption_key",
+    "encryption-key",
+    "encryptionKey",
+    "encryptionkey",
+    "ENCRYPTION_KEY",
+    "database_url",
+    "database-url",
+    "databaseUrl",
+    "databaseurl",
+    "DATABASE_URL",
     "bearer",
     "oauthBearer",
     "BEARER",
@@ -68,6 +78,29 @@ describe("redactJsonValue", () => {
       bearerCount: 1,
       cost_usd: 0.5,
       token: "[redacted]",
+    });
+  });
+
+  it("keeps generic key and URL fields visible while redacting only credential-bearing compound keys", () => {
+    const safe = {
+      PUBLIC_KEY: "public-material",
+      PRIMARY_KEY: "record-id",
+      SORT_KEY: "created-at",
+      DOCS_URL: "https://example.com/docs/path",
+      url: "postgres://host/db",
+      input_tokens: 100,
+      outputTokens: 20,
+      tokenCount: 2,
+    };
+
+    expect(redactJsonValue({
+      ...safe,
+      fieldEncryptionKey: "encrypt-fixture",
+      primaryDatabaseUrl: "postgres://user:password@host/db",
+    })).toEqual({
+      ...safe,
+      fieldEncryptionKey: "[redacted]",
+      primaryDatabaseUrl: "[redacted]",
     });
   });
 
@@ -243,6 +276,90 @@ describe("redactJsonValue", () => {
       "evidence-[redacted]": "key-value-survives",
     });
     expect(JSON.stringify(redacted)).not.toContain(fixture);
+  });
+
+  const awsSecretAccessKey = [
+    "wJalrXUtnFEMI/K7MDENG/",
+    "bPxRfiCYEXAMPLEKEY",
+  ].join("");
+  const privateKeyHeader = ["-----BEGIN RSA", " PRIVATE KEY-----"].join("");
+
+  it.each([
+    "apikey=compact-fixture",
+    "APIKEY=upper-fixture",
+    "apiKey=camel-fixture",
+    "ApiKey=title-camel-fixture",
+    "APIKey=acronym-camel-fixture",
+    "APIkey=acronym-lower-fixture",
+    "myapikey=prefixed-compact-fixture",
+    "myApiKey=prefixed-camel-fixture",
+    "myAPIKey=prefixed-acronym-camel-fixture",
+    "myAPIkey=prefixed-acronym-lower-fixture",
+    "openAPIkey=prefixed-open-acronym-fixture",
+    "service.api-key=delimited-fixture",
+    "service api key=spaced-fixture",
+    "'openAPIkey'='quoted-fixture'",
+    '"myAPIkey": "colon-fixture"',
+  ])("preserves historical API-key assignment redaction for %s", (value) => {
+    const options = { omission: "[credential assignment omitted]" } as const;
+
+    expect(containsVisibleSensitiveText(value, options)).toBe(true);
+    expect(sanitizeVisibleText(value, options)).toBe(options.omission);
+  });
+
+  it.each([
+    `AWS_SECRET_ACCESS_KEY=${awsSecretAccessKey}`,
+    "awsSecretAccessKey=compact-camel-fixture",
+    "awssecretaccesskey=compact-fixture",
+    "STRIPE_SECRET_KEY=sk_live_...",
+    "stripeSecretKey=compact-camel-fixture",
+    "stripesecretkey=compact-fixture",
+    `PRIVATE_KEY=${privateKeyHeader}`,
+    "SIGNING_PRIVATE_KEY=delimited-fixture",
+    "signingPrivateKey=compact-camel-fixture",
+    "signingprivatekey=compact-fixture",
+    "ENCRYPTION_KEY=<secret>",
+    "FIELD_ENCRYPTION_KEY=delimited-fixture",
+    "fieldEncryptionKey=compact-camel-fixture",
+    "fieldencryptionkey=compact-fixture",
+    "DATABASE_URL=postgres://user:password@host/db",
+    "PRIMARY_DATABASE_URL=postgres://user:password@host/db",
+    "primaryDatabaseUrl=postgres://user:password@host/db",
+    "primarydatabaseurl=postgres://user:password@host/db",
+  ])("omits high-confidence compound credential assignment %s", (value) => {
+    const options = { omission: "[credential assignment omitted]" } as const;
+
+    expect(containsVisibleSensitiveText(value, options)).toBe(true);
+    expect(sanitizeVisibleText(value, options)).toBe(options.omission);
+  });
+
+  it("bounds a 64 KiB contiguous-uppercase credential assignment", () => {
+    const retainedStringBytes = 64 * 1_024;
+    const credentialSuffix = "TOKEN=fixture";
+    const value = `${"A".repeat(retainedStringBytes - credentialSuffix.length)}${credentialSuffix}`;
+    const options = { omission: "[credential assignment omitted]" } as const;
+
+    expect(new TextEncoder().encode(value)).toHaveLength(retainedStringBytes);
+    expect(sanitizeVisibleText(value, options)).toBe(options.omission);
+  }, 1_000);
+
+  it.each([
+    "preauthorization=enabled",
+    "accessKeyId=public-identifier",
+    "AWS_ACCESS_KEY_ID=AKIAEXAMPLEPUBLICID",
+    "PUBLIC_KEY=ssh-rsa-public-material",
+    "PRIMARY_KEY=record-id",
+    "SORT_KEY=created-at",
+    "DOCS_URL=https://example.com/docs/path",
+    "WEBHOOK_URL=https://example.com/hooks/receive",
+    "https://example.com/docs/private-key-rotation",
+    "postgres://host/db",
+    "input_tokens=100",
+    "token_count=2",
+    "apiKeyCount=3",
+  ])("preserves non-credential assignment or URL %s", (value) => {
+    expect(containsVisibleSensitiveText(value)).toBe(false);
+    expect(sanitizeVisibleText(value)).toBe(value);
   });
 
   it.each([

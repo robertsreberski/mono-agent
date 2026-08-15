@@ -666,6 +666,129 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     }
   });
 
+  it("removes compound credential assignments before SQLite writes and on every reader projection", async () => {
+    const root = await tempRoot();
+    const run = binding("compound-credential-history");
+    const awsSecretAccessKey = [
+      "wJalrXUtnFEMI/K7MDENG/",
+      "bPxRfiCYEXAMPLEKEY",
+    ].join("");
+    const privateKeyHeader = ["-----BEGIN RSA", " PRIVATE KEY-----"].join("");
+    const encryptionAssignmentKey = "TOOL_HISTORY_ENCRYPTION_KEY";
+    const encryptionAssignmentValue = "history-encryption-assignment-fixture";
+    const apiKeyAssignmentKey = "openAPIkey";
+    const apiKeyAssignmentValue = "history-api-key-assignment-fixture";
+    const sensitiveAssignments = [
+      `AWS_SECRET_ACCESS_KEY=${awsSecretAccessKey}`,
+      "STRIPE_SECRET_KEY=sk_live_...",
+      `PRIVATE_KEY=${privateKeyHeader}`,
+      `${encryptionAssignmentKey}=${encryptionAssignmentValue}`,
+      `${apiKeyAssignmentKey}=${apiKeyAssignmentValue}`,
+      "DATABASE_URL=postgres://user:password@host/db",
+    ];
+    const structuredSecrets = [
+      "structured-encryption-fixture",
+      "postgres://structured:password@host/db",
+    ];
+    const hiddenValues = [
+      ...sensitiveAssignments,
+      ...sensitiveAssignments.map((assignment) => assignment.slice(assignment.indexOf("=") + 1)),
+      ...structuredSecrets,
+    ];
+    const safeContext = {
+      publicKey: "PUBLIC_KEY=ssh-rsa-public-material",
+      primaryKey: "PRIMARY_KEY=record-id",
+      sortKey: "SORT_KEY=created-at",
+      docsUrl: "DOCS_URL=https://example.com/docs/path",
+      connectionAddress: "postgres://host/db",
+      input_tokens: 37,
+      marker: "useful-safe-context-marker",
+    };
+    const payload = {
+      sensitiveAssignments,
+      structured: {
+        ENCRYPTION_KEY: structuredSecrets[0],
+        DATABASE_URL: structuredSecrets[1],
+      },
+      safeContext,
+    };
+    const writer = await ToolHistoryWriter.open({ root });
+    const invocation = await writer.persist(run, {
+      phase: "invocation",
+      toolCallId: "compound-credential-call",
+      toolName: "Inspect",
+      arguments: payload,
+    });
+    const result = await writer.persist(run, {
+      phase: "result",
+      toolCallId: "compound-credential-call",
+      state: "success",
+      content: payload,
+    });
+    await writer.close();
+    if (invocation.recordId === undefined || result.recordId === undefined) {
+      throw new Error("Compound credential history was not persisted.");
+    }
+
+    const databasePath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+    const databaseBytes = await readFile(databasePath);
+    for (const hidden of hiddenValues) {
+      expect(databaseBytes.includes(Buffer.from(hidden)), hidden).toBe(false);
+    }
+    for (const retained of Object.values(safeContext).map(String)) {
+      expect(databaseBytes.includes(Buffer.from(retained)), retained).toBe(true);
+    }
+
+    // Simulate an unmerged vulnerable writer so the independent read guard is
+    // exercised against hostile raw storage rather than only sanitized writes.
+    const raw = new DatabaseSync(databasePath);
+    try {
+      raw.prepare("UPDATE tool_records SET payload_json=?, search_text=? WHERE record_id=?")
+        .run(JSON.stringify(payload), safeContext.marker, invocation.recordId);
+    } finally {
+      raw.close();
+    }
+
+    const reader = new ToolHistoryReader(root);
+    const search = reader.search({
+      logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
+      currentRunId: "current",
+      query: safeContext.marker,
+    });
+    const fetched = [invocation.recordId, result.recordId].map((recordId) => reader.get({
+      logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-14",
+      currentRunId: "current",
+      recordId,
+      chunkBytes: 8 * 1024,
+    }));
+    const projection = buildToolHistoryProjection(
+      reader,
+      "slack:C1",
+      "slack:C1#2026-08-14",
+      "current",
+    );
+    const visible = JSON.stringify({ search, fetched, projection });
+
+    expect(search.items).toHaveLength(1);
+    expect(visible).toContain("useful-safe-context-marker");
+    expect(visible).toContain("PUBLIC_KEY=ssh-rsa-public-material");
+    expect(visible).toContain("PRIMARY_KEY=record-id");
+    expect(visible).toContain("SORT_KEY=created-at");
+    expect(visible).toContain("DOCS_URL=https://example.com/docs/path");
+    expect(visible).toContain("postgres://host/db");
+    expect(visible).toContain("input_tokens");
+    expect(projection?.text).toContain("[tool payload omitted because it contained a private host path]");
+    expect(projection?.text).not.toContain(encryptionAssignmentKey);
+    expect(projection?.text).not.toContain(encryptionAssignmentValue);
+    expect(projection?.text).not.toContain(apiKeyAssignmentKey);
+    expect(projection?.text).not.toContain(apiKeyAssignmentValue);
+    for (const hidden of hiddenValues) {
+      expect(visible, hidden).not.toContain(hidden);
+    }
+  });
+
   it("preserves path-keyed values collision-safely across raw storage, reads, and cold projection", async () => {
     const root = await tempRoot();
     const run = binding("path-keyed-history");
