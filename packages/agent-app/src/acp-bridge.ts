@@ -234,8 +234,12 @@ async function runPrompt(
     }
     controller.abort(context.signal.reason ?? new Error("ACP prompt request ended before completion."));
   };
-  if (context.signal.aborted) cancelOperator();
-  else context.signal.addEventListener("abort", cancelOperator, { once: true });
+  if (context.signal.aborted) {
+    cancelOperator();
+    await active.userCancellation;
+  } else {
+    context.signal.addEventListener("abort", cancelOperator, { once: true });
+  }
 
   const publishText = async (next: string): Promise<void> => {
     if (next === publishedText) return;

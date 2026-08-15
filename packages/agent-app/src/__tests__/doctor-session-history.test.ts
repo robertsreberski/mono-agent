@@ -373,7 +373,7 @@ describe("sessionToolHistorySection", () => {
       "../../../agent-harness/src/__tests__/fixtures/tool-history-child.mjs",
       import.meta.url,
     ));
-    const child = spawn(process.execPath, [fixture, root, "2000", "hold"], {
+    const child = spawn(process.execPath, [fixture, "@mono-agent/agent-harness", root, "2000", "hold"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let output = "";

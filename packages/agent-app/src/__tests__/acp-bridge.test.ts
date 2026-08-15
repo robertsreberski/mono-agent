@@ -6,12 +6,29 @@ import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { PassThrough } from "node:stream";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createChannelUserCancelReason,
   isChannelUserCancelReason,
 } from "@mono-agent/agent-contracts";
+
+const sessionAuthorizationMock = vi.hoisted(() => ({
+  beforeLoad: undefined as (() => Promise<void>) | undefined,
+}));
+
+vi.mock("../acp-session-store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../acp-session-store.js")>();
+  return {
+    ...actual,
+    async loadAcpSessionAuthorization(
+      ...args: Parameters<typeof actual.loadAcpSessionAuthorization>
+    ): ReturnType<typeof actual.loadAcpSessionAuthorization> {
+      await sessionAuthorizationMock.beforeLoad?.();
+      return await actual.loadAcpSessionAuthorization(...args);
+    },
+  };
+});
 
 import { runAcpBridge } from "../acp-bridge.js";
 
@@ -25,6 +42,7 @@ interface BridgeHarness {
 }
 
 afterEach(async () => {
+  sessionAuthorizationMock.beforeLoad = undefined;
   await Promise.all(cleanupServers.splice(0).map(async (server) => new Promise<void>((resolve) => {
     server.close(() => resolve());
   })));
@@ -96,18 +114,27 @@ async function startOperatorFixture(turnBodies: Array<Record<string, unknown>>):
   return `http://127.0.0.1:${String(address.port)}/gui`;
 }
 
-async function startCancellationOperatorFixture(): Promise<{
+async function startCancellationOperatorFixture(options: {
+  readonly beforeCancelSettlement?: () => Promise<void>;
+} = {}): Promise<{
   readonly baseUrl: string;
   readonly turnStarted: Promise<void>;
+  readonly cancelStarted: Promise<void>;
   readonly firstCancellation: Promise<unknown>;
   readonly cancelRequests: () => number;
+  readonly turnRequests: () => number;
+  readonly events: () => readonly string[];
 }> {
   let resolveTurnStarted!: () => void;
   const turnStarted = new Promise<void>((resolve) => { resolveTurnStarted = resolve; });
+  let resolveCancelStarted!: () => void;
+  const cancelStarted = new Promise<void>((resolve) => { resolveCancelStarted = resolve; });
   let resolveFirstCancellation!: (reason: unknown) => void;
   const firstCancellation = new Promise<unknown>((resolve) => { resolveFirstCancellation = resolve; });
   let settled = false;
   let cancelRequests = 0;
+  let turnRequests = 0;
+  const events: string[] = [];
   const settle = (reason: unknown): void => {
     if (settled) return;
     settled = true;
@@ -120,6 +147,8 @@ async function startCancellationOperatorFixture(): Promise<{
       return;
     }
     if (request.method === "POST" && request.url === "/gui/v1/turns") {
+      turnRequests += 1;
+      events.push("turn_started");
       for await (const _chunk of request) {
         // Consume the bounded request body before holding the response open.
       }
@@ -131,7 +160,14 @@ async function startCancellationOperatorFixture(): Promise<{
     }
     if (request.method === "POST" && request.url?.endsWith("/cancel") === true) {
       cancelRequests += 1;
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      events.push("cancel_started");
+      resolveCancelStarted();
+      if (options.beforeCancelSettlement === undefined) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      } else {
+        await options.beforeCancelSettlement();
+      }
+      events.push("cancel_settled");
       settle(createChannelUserCancelReason("TUI"));
       response.statusCode = 204;
       response.end();
@@ -147,8 +183,11 @@ async function startCancellationOperatorFixture(): Promise<{
   return {
     baseUrl: `http://127.0.0.1:${String(address.port)}/gui`,
     turnStarted,
+    cancelStarted,
     firstCancellation,
     cancelRequests: () => cancelRequests,
+    turnRequests: () => turnRequests,
+    events: () => events,
   };
 }
 
@@ -623,6 +662,46 @@ describe("ACP bridge", () => {
     expect(isChannelUserCancelReason(reason)).toBe(true);
     expect(fixture.cancelRequests()).toBe(1);
     await bridge.close();
+  });
+
+  it("settles user cancellation before skipping a turn cancelled during authorization", async () => {
+    let authorizationStarted!: () => void;
+    const authorizationInFlight = new Promise<void>((resolve) => { authorizationStarted = resolve; });
+    let releaseAuthorization!: () => void;
+    const authorizationReleased = new Promise<void>((resolve) => { releaseAuthorization = resolve; });
+    sessionAuthorizationMock.beforeLoad = async () => {
+      authorizationStarted();
+      await authorizationReleased;
+    };
+    let releaseCancellation!: () => void;
+    const cancellationReleased = new Promise<void>((resolve) => { releaseCancellation = resolve; });
+    const fixture = await startCancellationOperatorFixture({
+      beforeCancelSettlement: async () => await cancellationReleased,
+    });
+    const { bridge, promptRequestId } = await startActivePromptBridge(fixture.baseUrl);
+
+    try {
+      await authorizationInFlight;
+      bridge.send({ jsonrpc: "2.0", method: "$/cancel_request", params: { requestId: promptRequestId } });
+      releaseAuthorization();
+      await fixture.cancelStarted;
+
+      expect(fixture.turnRequests()).toBe(0);
+      expect(fixture.events()).toEqual(["cancel_started"]);
+
+      releaseCancellation();
+      const [reason, response] = await Promise.all([fixture.firstCancellation, bridge.next()]);
+      expect(isChannelUserCancelReason(reason)).toBe(true);
+      expect(reason).toMatchObject({ channel: "TUI" });
+      expect(response).toMatchObject({ id: promptRequestId, result: { stopReason: "cancelled" } });
+      expect(fixture.cancelRequests()).toBe(1);
+      expect(fixture.turnRequests()).toBe(0);
+      expect(fixture.events()).toEqual(["cancel_started", "cancel_settled"]);
+    } finally {
+      releaseAuthorization();
+      releaseCancellation();
+      await bridge.close();
+    }
   });
 
   it("keeps ACP connection loss as generic stream cancellation", async () => {
