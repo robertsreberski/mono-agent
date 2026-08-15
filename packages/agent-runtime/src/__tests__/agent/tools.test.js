@@ -595,6 +595,7 @@ describe("ai tool helpers", () => {
     const stateDir = join(privateRoot, "process-jobs");
     const secretPath = join(stateDir, "process-jobs-secret");
     const siblingPath = join(root, "notes.txt");
+    const aliasSecretPath = join(root, "jobs-alias", "process-jobs-secret");
     mkdirSync(stateDir, { recursive: true });
     writeFile(secretPath, "EXACT_PROCESS_JOB_SECRET");
     writeFile(siblingPath, "sibling-readable");
@@ -604,6 +605,14 @@ describe("ai tool helpers", () => {
       sandboxEngine: {
         async isAvailable() { return true; },
         async prepareCommand(command) {
+          if ((command.args ?? []).some((arg) => arg === secretPath || arg === aliasSecretPath)) {
+            return {
+              command: process.execPath,
+              args: ["--input-type=commonjs", "--eval", "process.exit(73)"],
+              cwd: root,
+              sandboxed: true,
+            };
+          }
           return { ...command, args: command.args ?? [], cwd: command.cwd ?? root, sandboxed: true };
         },
       },
@@ -611,7 +620,7 @@ describe("ai tool helpers", () => {
     const sandboxPolicy = failClosedSandboxPolicy({ root, protectedRoots: [stateDir] });
 
     const readResult = await readToolImpl({ file_path: secretPath }, { sandboxPolicy });
-    const aliasReadResult = await readToolImpl({ file_path: "jobs-alias/process-jobs-secret" }, { sandboxPolicy });
+    const aliasReadResult = await readToolImpl({ file_path: aliasSecretPath }, { sandboxPolicy });
     const writeResult = await writeToolImpl({ file_path: join(stateDir, "records", "job.json"), content: "bad" }, { sandboxPolicy });
     const bashResult = await bashToolImpl({ command: "pwd", workdir: stateDir }, { sandboxPolicy });
     const execResult = await execToolImpl({ executable: "/bin/pwd", workdir: stateDir }, { sandboxPolicy });
@@ -630,9 +639,9 @@ describe("ai tool helpers", () => {
       ...(output_mode === undefined ? {} : { output_mode }),
     }, { sandboxPolicy })));
 
-    expect(readResult).toContain("Path not allowed");
-    expect(aliasReadResult).toContain("Path not allowed");
-    expect(writeResult).toContain("Path not allowed");
+    expect(readResult).toBe("Error: Protected filesystem read was denied.");
+    expect(aliasReadResult).toBe("Error: Protected filesystem read was denied.");
+    expect(writeResult).toBe("Error: Protected filesystem write was denied.");
     expect(bashResult).toContain("Working directory not allowed");
     expect(execResult).toContain("Working directory not allowed");
     expect([readResult, aliasReadResult, writeResult, bashResult, execResult].join("\n"))

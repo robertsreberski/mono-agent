@@ -29,6 +29,17 @@ export function isWritablePathAllowed(path, workdir, options = {}) {
   return isPathAllowedFor(path, workdir, "write", options);
 }
 
+// Protected filesystem operations use these metadata-free checks only as a
+// lexical policy preflight. The native sandbox remains responsible for
+// resolving symlinks and enforcing the real path at the operation syscall.
+export function isPathLexicallyAllowed(path, workdir, options = {}) {
+  return isPathLexicallyAllowedFor(path, workdir, "read", options);
+}
+
+export function isWritablePathLexicallyAllowed(path, workdir, options = {}) {
+  return isPathLexicallyAllowedFor(path, workdir, "write", options);
+}
+
 function isPathAllowedFor(path, workdir, access, options) {
   const ctx = options.ctx;
   const r = resolveToolPath(path, workdir, ctx);
@@ -38,6 +49,20 @@ function isPathAllowedFor(path, workdir, access, options) {
     return !insideProtectedRoots(Array.isArray(policy.protectedRoots) ? policy.protectedRoots : [], r)
       && insideSandboxRoots(Array.isArray(field) ? field : [], r)
       && (access !== "write" || !sandboxDeniesWrite(policy, r, ctx));
+  }
+  const { workspace, repoRoot } = configured(ctx);
+  return insideLegacyRoots([workdir, workspace, repoRoot, process.cwd(), "/tmp"], r);
+}
+
+function isPathLexicallyAllowedFor(path, workdir, access, options) {
+  const ctx = options.ctx;
+  const r = resolveToolPath(path, workdir, ctx);
+  const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), options.sandboxPolicy);
+  if (policy) {
+    const field = access === "write" ? policy.writableRoots : policy.readableRoots;
+    return !insideLexicalRoots(Array.isArray(policy.protectedRoots) ? policy.protectedRoots : [], r)
+      && insideLexicalRoots(Array.isArray(field) ? field : [], r)
+      && (access !== "write" || !sandboxLexicallyDeniesWrite(policy, r, ctx));
   }
   const { workspace, repoRoot } = configured(ctx);
   return insideLegacyRoots([workdir, workspace, repoRoot, process.cwd(), "/tmp"], r);
@@ -100,6 +125,11 @@ function insideLegacyRoots(roots, target) {
   return allowedRoots.some((root) => isInsidePath(root, target));
 }
 
+function insideLexicalRoots(roots, target) {
+  const lexicalRoots = [...new Set(roots.filter(Boolean).map((path) => resolve(path)))];
+  return lexicalRoots.some((root) => isInsidePath(root, target));
+}
+
 function normalizeRoots(paths) {
   const out = new Set();
   for (const path of paths.filter(Boolean)) {
@@ -137,6 +167,11 @@ function sandboxDeniesWrite(policy, target, ctx) {
   const candidates = [...new Set([resolve(target), realTargetPath(target)])];
   return candidates.some((candidate) =>
     patterns.some((pattern) => denyWritePatternMatches(policy, pattern, candidate, ctx)));
+}
+
+function sandboxLexicallyDeniesWrite(policy, target, ctx) {
+  const patterns = Array.isArray(policy.denyWrite) ? policy.denyWrite : [];
+  return patterns.some((pattern) => denyWritePatternMatches(policy, pattern, resolve(target), ctx));
 }
 
 function denyWritePatternMatches(policy, pattern, target, ctx) {

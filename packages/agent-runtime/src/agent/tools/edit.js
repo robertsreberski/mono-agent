@@ -1,5 +1,11 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { isPathAllowed, isWritablePathAllowed, resolveToolPath } from "./shared/path-resolver.js";
+import {
+  isPathAllowed,
+  isPathLexicallyAllowed,
+  isWritablePathAllowed,
+  isWritablePathLexicallyAllowed,
+  resolveToolPath,
+} from "./shared/path-resolver.js";
 import {
   protectedCommandSucceeded,
   protectedFilesystemTargetPlan,
@@ -30,14 +36,22 @@ process.stdin.on("end", () => {
 
 /**
  * @param {{file_path: string, old_string: string, new_string: string, replace_all?: boolean, workdir?: string}} params
- * @param {{sandboxPolicy?: any, ctx?: any}} [options]
+ * @param {{sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
  */
-export async function editToolImpl({ file_path, old_string, new_string, replace_all = false, workdir }, { sandboxPolicy, ctx } = {}) {
+export async function editToolImpl({ file_path, old_string, new_string, replace_all = false, workdir }, { sandboxPolicy, sandboxEngine, ctx } = {}) {
   const target = resolveToolPath(file_path, workdir, ctx);
   const pathOptions = { sandboxPolicy, ctx };
-  if (!isPathAllowed(target, workdir, pathOptions) || !isWritablePathAllowed(target, workdir, pathOptions)) return `Error: Path not allowed: ${file_path}`;
   const protectedTarget = protectedFilesystemTargetPlan(target, { sandboxPolicy, ctx });
   const protectedExecution = protectedTarget !== null;
+  if (protectedExecution) {
+    if (!isPathLexicallyAllowed(target, workdir, pathOptions)
+      || !isWritablePathLexicallyAllowed(target, workdir, pathOptions)) {
+      return "Error: Protected filesystem edit was denied.";
+    }
+  } else if (!isPathAllowed(target, workdir, pathOptions)
+    || !isWritablePathAllowed(target, workdir, pathOptions)) {
+    return `Error: Path not allowed: ${file_path}`;
+  }
   if (!protectedExecution && !existsSync(target)) return `Error: File not found: ${file_path}`;
   if (protectedExecution) {
     try {
@@ -47,6 +61,7 @@ export async function editToolImpl({ file_path, old_string, new_string, replace_
         cwd: protectedTarget.cwd,
       }, {
         sandboxPolicy,
+        sandboxEngine,
         ctx,
         input: JSON.stringify({ oldString: old_string, newString: new_string, replaceAll: replace_all }),
       });

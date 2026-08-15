@@ -32,8 +32,14 @@ vi.mock("../../agent/tools/shared/path-resolver.js", async (importOriginal) => {
     isPathAllowed(...args) {
       return afterAllowedCheck(actual.isPathAllowed(...args));
     },
+    isPathLexicallyAllowed(...args) {
+      return afterAllowedCheck(actual.isPathLexicallyAllowed(...args));
+    },
     isWritablePathAllowed(...args) {
       return afterAllowedCheck(actual.isWritablePathAllowed(...args));
+    },
+    isWritablePathLexicallyAllowed(...args) {
+      return afterAllowedCheck(actual.isWritablePathLexicallyAllowed(...args));
     },
   };
 });
@@ -44,12 +50,14 @@ import {
   grepToolImpl,
   readToolImpl,
   resolveRgPath,
+  writeToolImpl,
 } from "../../agent/tools/index.js";
 import { createFakeSandbox, testSandboxPolicy } from "../helpers/fake-sandbox.js";
 import {
   configureToolRuntime,
   resetToolRuntime,
 } from "../../agent/tools/shared/runtime-context.js";
+import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 
 const tempDirs = [];
 const PROTECTED_SENTINEL = "PROTECTED_SENTINEL_UNCHANGED";
@@ -138,6 +146,19 @@ const protectedToolCases = [
     },
   },
   {
+    name: "Write",
+    authorizationChecks: 1,
+    initialTarget: "file",
+    expected: "Error: Protected filesystem write was denied.",
+    variants: [undefined],
+    async run(path, policy) {
+      return await writeToolImpl({
+        file_path: path,
+        content: "WRITE_REPLACEMENT",
+      }, { sandboxPolicy: policy });
+    },
+  },
+  {
     name: "Edit",
     authorizationChecks: 2,
     initialTarget: "file",
@@ -178,6 +199,159 @@ const protectedToolCases = [
 ];
 
 describe("protected filesystem target metadata", () => {
+  it("prefers the request-scoped sandbox engine for all five filesystem operations", async () => {
+    const fixture = createFixture({ denyProtectedCommands: false });
+    const contextPrepares = [];
+    const requestPrepares = [];
+    let contextAvailabilityChecks = 0;
+    let requestAvailabilityChecks = 0;
+    const contextEngine = {
+      async isAvailable() {
+        contextAvailabilityChecks += 1;
+        return true;
+      },
+      async prepareCommand(command) {
+        contextPrepares.push(command);
+        throw new Error("context engine must not prepare a request-scoped operation");
+      },
+    };
+    const requestEngine = {
+      async isAvailable() {
+        requestAvailabilityChecks += 1;
+        return true;
+      },
+      async prepareCommand(command) {
+        requestPrepares.push(command);
+        return {
+          ...command,
+          args: command.args ?? [],
+          cwd: command.cwd ?? fixture.root,
+          sandboxed: true,
+        };
+      },
+    };
+    const ctx = createToolContext({
+      workspace: fixture.root,
+      sandbox: createFakeSandbox(),
+      sandboxEngine: contextEngine,
+    });
+    const protectedOptions = {
+      sandboxPolicy: fixture.policy,
+      sandboxEngine: requestEngine,
+      ctx,
+    };
+    const protectedWritePath = join(fixture.root, "request-engine-write.txt");
+
+    const expectRequestPrepare = async (operation) => {
+      const before = requestPrepares.length;
+      const result = await operation();
+      expect(requestPrepares).toHaveLength(before + 1);
+      expect(contextPrepares).toHaveLength(0);
+      return result;
+    };
+
+    expect(await expectRequestPrepare(async () => await readToolImpl(
+      { file_path: fixture.siblingFile },
+      protectedOptions,
+    ))).toContain("sibling original");
+    expect(await expectRequestPrepare(async () => await writeToolImpl(
+      { file_path: protectedWritePath, content: "request write" },
+      protectedOptions,
+    ))).toContain("Successfully wrote");
+    expect(await expectRequestPrepare(async () => await editToolImpl({
+      file_path: fixture.siblingFile,
+      old_string: "original",
+      new_string: "edited",
+    }, protectedOptions))).toContain("Successfully edited");
+    expect(await expectRequestPrepare(async () => await globToolImpl(
+      { path: fixture.siblingDirectory, pattern: "*.txt" },
+      protectedOptions,
+    ))).toContain("allowed.txt");
+    expect(await expectRequestPrepare(async () => await grepToolImpl({
+      path: fixture.siblingDirectory,
+      pattern: "sibling needle",
+      output_mode: "content",
+    }, protectedOptions))).toContain("allowed.txt");
+
+    expect(requestPrepares).toHaveLength(5);
+    expect(requestAvailabilityChecks).toBe(5);
+    expect(contextPrepares).toHaveLength(0);
+    expect(contextAvailabilityChecks).toBe(0);
+    expect(readFileSync(protectedWritePath, "utf8")).toBe("request write");
+    expect(readFileSync(fixture.siblingFile, "utf8")).toBe("sibling edited");
+
+    const noProtectedOptions = {
+      sandboxPolicy: testSandboxPolicy({ root: fixture.root }),
+      sandboxEngine: requestEngine,
+      ctx,
+    };
+    const noProtectedWritePath = join(fixture.root, "no-protected-write.txt");
+    expect(await readToolImpl(
+      { file_path: fixture.siblingFile },
+      noProtectedOptions,
+    )).toContain("sibling edited");
+    expect(await writeToolImpl(
+      { file_path: noProtectedWritePath, content: "host write" },
+      noProtectedOptions,
+    )).toContain("Successfully wrote");
+    expect(await editToolImpl({
+      file_path: noProtectedWritePath,
+      old_string: "host write",
+      new_string: "host edited",
+    }, noProtectedOptions)).toContain("Successfully edited");
+    expect(await globToolImpl(
+      { path: fixture.siblingDirectory, pattern: "*.txt" },
+      noProtectedOptions,
+    )).toContain("allowed.txt");
+    expect(await grepToolImpl({
+      path: fixture.siblingDirectory,
+      pattern: "sibling needle",
+      output_mode: "content",
+    }, noProtectedOptions)).toContain("allowed.txt");
+    expect(requestPrepares).toHaveLength(5);
+    expect(requestAvailabilityChecks).toBe(5);
+    expect(contextPrepares).toHaveLength(0);
+    expect(contextAvailabilityChecks).toBe(0);
+    expect(readFileSync(noProtectedWritePath, "utf8")).toBe("host edited");
+    expect(readFileSync(fixture.protectedFile, "utf8")).toBe(PROTECTED_SENTINEL);
+  });
+
+  it.each(protectedToolCases)(
+    "$name normalizes initially protected missing/file/directory symlink targets",
+    async ({ expected, initialTarget, name, run, variants }) => {
+      const fixture = createFixture();
+      const guesses = [fixture.protectedMissing, fixture.protectedFile, fixture.protectedDirectory];
+      const results = [];
+
+      for (const guess of guesses) {
+        for (const variant of variants) {
+          pointSymlink(fixture.racePath, guess);
+          results.push(await run(fixture.racePath, fixture.policy, variant));
+        }
+      }
+
+      expect(new Set(results)).toEqual(new Set([expected]));
+      expect(results.join("\n")).not.toContain(fixture.root);
+      expect(readFileSync(fixture.protectedFile, "utf8")).toBe(PROTECTED_SENTINEL);
+      expect(readFileSync(join(fixture.protectedDirectory, "sentinel.txt"), "utf8"))
+        .toBe(PROTECTED_SENTINEL);
+
+      const allowedFixture = createFixture({ denyProtectedCommands: false });
+      const allowedTarget = initialTarget === "file"
+        ? allowedFixture.siblingFile
+        : allowedFixture.siblingDirectory;
+      for (const variant of variants) {
+        const allowedResult = await run(allowedTarget, allowedFixture.policy, variant);
+        expect(allowedResult).not.toBe(expected);
+        if (name === "Write") expect(allowedResult).toContain("Successfully wrote");
+      }
+      if (name === "Write") {
+        expect(readFileSync(allowedFixture.siblingFile, "utf8")).toBe("WRITE_REPLACEMENT");
+      }
+      expect(readFileSync(allowedFixture.protectedFile, "utf8")).toBe(PROTECTED_SENTINEL);
+    },
+  );
+
   it.each(protectedToolCases)(
     "$name normalizes post-authorization protected missing/file/directory swaps",
     async ({ authorizationChecks, expected, initialTarget, run, variants }) => {
@@ -203,11 +377,16 @@ describe("protected filesystem target metadata", () => {
     },
   );
 
-  it("keeps allowed sibling Read/Edit/Glob/all-Grep-mode behavior with protected roots active", async () => {
+  it("keeps allowed sibling Read/Write/Edit/Glob/all-Grep-mode behavior with protected roots active", async () => {
     const fixture = createFixture({ denyProtectedCommands: false });
+    const siblingWritePath = join(fixture.root, "sibling-write.txt");
 
     const readResult = await readToolImpl(
       { file_path: fixture.siblingFile },
+      { sandboxPolicy: fixture.policy },
+    );
+    const writeResult = await writeToolImpl(
+      { file_path: siblingWritePath, content: "sibling written" },
       { sandboxPolicy: fixture.policy },
     );
     const editResult = await editToolImpl({
@@ -258,6 +437,8 @@ describe("protected filesystem target metadata", () => {
     }, { sandboxPolicy: compatiblePolicy });
 
     expect(readResult).toContain("sibling original");
+    expect(writeResult).toContain("Successfully wrote");
+    expect(readFileSync(siblingWritePath, "utf8")).toBe("sibling written");
     expect(editResult).toContain("Successfully edited");
     expect(readFileSync(fixture.siblingFile, "utf8")).toBe("sibling edited");
     expect(globResult).toContain("allowed.txt");

@@ -9,6 +9,7 @@ import {
 import { boundedInt, safeStat } from "./shared/dedup.js";
 import {
   isPathAllowed,
+  isPathLexicallyAllowed,
   protectedRelativePaths,
   resolveToolPath,
   workspaceRoot,
@@ -31,7 +32,7 @@ const execFileAsync = promisify(execFile);
 
 /**
  * @param {{pattern: string, path?: string, glob?: string, type?: string, output_mode?: string, context?: number, case_insensitive?: boolean, multiline?: boolean, head_limit?: number, offset?: number, max_matches?: number, max_output_chars?: number, workdir?: string}} params
- * @param {{sandboxPolicy?: any, ctx?: any}} [options]
+ * @param {{sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
  */
 export async function grepToolImpl({
   pattern,
@@ -47,11 +48,17 @@ export async function grepToolImpl({
   max_matches,
   max_output_chars,
   workdir,
-}, { sandboxPolicy, ctx } = {}) {
+}, { sandboxPolicy, sandboxEngine, ctx } = {}) {
   const target = resolveToolPath(path || workspaceRoot(workdir, ctx), workdir, ctx);
-  if (!isPathAllowed(target, workdir, { sandboxPolicy, ctx })) return `Error: Path not allowed: ${target}`;
   const protectedSearch = protectedFilesystemTargetPlan(target, { sandboxPolicy, ctx });
   const protectedExecution = protectedSearch !== null;
+  if (protectedExecution) {
+    if (!isPathLexicallyAllowed(target, workdir, { sandboxPolicy, ctx })) {
+      return "Error: Protected filesystem search was denied.";
+    }
+  } else if (!isPathAllowed(target, workdir, { sandboxPolicy, ctx })) {
+    return `Error: Path not allowed: ${target}`;
+  }
   let cwd;
   let searchTarget;
   if (protectedExecution) {
@@ -93,7 +100,7 @@ export async function grepToolImpl({
         command: rgPath,
         args,
         cwd,
-      }, { sandboxPolicy, ctx, maxBufferBytes: SEARCH_MAX_BUFFER });
+      }, { sandboxPolicy, sandboxEngine, ctx, maxBufferBytes: SEARCH_MAX_BUFFER });
       if (protectedResult?.code === 1) return "No matches found.";
       if (protectedResult === null
         || protectedResult.code !== 0

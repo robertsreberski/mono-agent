@@ -9,7 +9,11 @@ import {
 } from "./shared/constants.js";
 import { boundedInt, rememberRead, trimLine } from "./shared/dedup.js";
 import { capChars } from "./shared/output-truncation.js";
-import { isPathAllowed, resolveToolPath } from "./shared/path-resolver.js";
+import {
+  isPathAllowed,
+  isPathLexicallyAllowed,
+  resolveToolPath,
+} from "./shared/path-resolver.js";
 import {
   protectedCommandSucceeded,
   protectedFilesystemTargetPlan,
@@ -110,13 +114,19 @@ async function readImageForModel(source, filePath, imageMime) {
 
 /**
  * @param {{file_path: string, offset?: number, start_line?: number, limit?: number, max_output_chars?: number, workdir?: string}} params
- * @param {{sandboxPolicy?: any, ctx?: any}} [options]
+ * @param {{sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
  */
-export async function readToolImpl({ file_path, offset = 0, start_line, limit, max_output_chars, workdir }, { sandboxPolicy, ctx } = {}) {
+export async function readToolImpl({ file_path, offset = 0, start_line, limit, max_output_chars, workdir }, { sandboxPolicy, sandboxEngine, ctx } = {}) {
   const target = resolveToolPath(file_path, workdir, ctx);
-  if (!isPathAllowed(target, workdir, { sandboxPolicy, ctx })) return `Error: Path not allowed: ${file_path}`;
   const protectedTarget = protectedFilesystemTargetPlan(target, { sandboxPolicy, ctx });
   const protectedExecution = protectedTarget !== null;
+  if (protectedExecution) {
+    if (!isPathLexicallyAllowed(target, workdir, { sandboxPolicy, ctx })) {
+      return "Error: Protected filesystem read was denied.";
+    }
+  } else if (!isPathAllowed(target, workdir, { sandboxPolicy, ctx })) {
+    return `Error: Path not allowed: ${file_path}`;
+  }
   if (!protectedExecution && !existsSync(target)) return `Error: File not found: ${file_path}`;
   let source;
   try {
@@ -125,7 +135,7 @@ export async function readToolImpl({ file_path, offset = 0, start_line, limit, m
         command: process.execPath,
         args: ["--input-type=commonjs", "--eval", PROTECTED_READ_SOURCE, target],
         cwd: protectedTarget.cwd,
-      }, { sandboxPolicy, ctx, maxBufferBytes: PROTECTED_READ_MAX_BUFFER_BYTES });
+      }, { sandboxPolicy, sandboxEngine, ctx, maxBufferBytes: PROTECTED_READ_MAX_BUFFER_BYTES });
       if (!protectedCommandSucceeded(protectedResult)) {
         return "Error: Protected filesystem read was denied.";
       }

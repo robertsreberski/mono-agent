@@ -9,6 +9,7 @@ import {
 import { boundedInt, safeStat } from "./shared/dedup.js";
 import {
   isPathAllowed,
+  isPathLexicallyAllowed,
   protectedRelativePaths,
   resolveToolPath,
   workspaceRoot,
@@ -34,13 +35,19 @@ const execFileAsync = promisify(execFile);
 
 /**
  * @param {{pattern: string, path?: string, limit?: number, offset?: number, max_matches?: number, max_output_chars?: number, workdir?: string}} params
- * @param {{sandboxPolicy?: any, ctx?: any}} [options]
+ * @param {{sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
  */
-export async function globToolImpl({ pattern, path, limit, offset = 0, max_matches, max_output_chars, workdir }, { sandboxPolicy, ctx } = {}) {
+export async function globToolImpl({ pattern, path, limit, offset = 0, max_matches, max_output_chars, workdir }, { sandboxPolicy, sandboxEngine, ctx } = {}) {
   const cwd = resolveToolPath(path || workspaceRoot(workdir, ctx), workdir, ctx);
-  if (!isPathAllowed(cwd, workdir, { sandboxPolicy, ctx })) return `Error: Path not allowed: ${cwd}`;
   const protectedSearch = protectedFilesystemTargetPlan(cwd, { sandboxPolicy, ctx });
   const protectedExecution = protectedSearch !== null;
+  if (protectedExecution) {
+    if (!isPathLexicallyAllowed(cwd, workdir, { sandboxPolicy, ctx })) {
+      return "Error: Protected filesystem search was denied.";
+    }
+  } else if (!isPathAllowed(cwd, workdir, { sandboxPolicy, ctx })) {
+    return `Error: Path not allowed: ${cwd}`;
+  }
   if (!protectedExecution) {
     const stat = safeStat(cwd);
     if (!stat?.isDirectory()) return `Error: Glob path is not a directory: ${cwd}`;
@@ -74,7 +81,7 @@ export async function globToolImpl({ pattern, path, limit, offset = 0, max_match
         command: rgPath,
         args,
         cwd: searchCwd,
-      }, { sandboxPolicy, ctx, maxBufferBytes: SEARCH_MAX_BUFFER });
+      }, { sandboxPolicy, sandboxEngine, ctx, maxBufferBytes: SEARCH_MAX_BUFFER });
       if (protectedResult?.code === 1) return "No files found matching pattern.";
       if (protectedResult === null
         || protectedResult.code !== 0
