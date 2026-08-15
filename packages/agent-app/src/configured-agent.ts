@@ -1186,21 +1186,22 @@ export function lazyConfiguredToolHistory(
           try {
             await handle.writer.resetConversation(logicalConversationId);
           } catch (error) {
-            const terminalCode = terminalToolHistoryWriterFailureCode(error, handle);
-            if (terminalCode === undefined) throw error;
+            const terminalCode = reportedToolHistoryWriterFailureCode(error);
+            if (terminalCode === undefined) {
+              if (handle.writer.isClosed) invalidate(attempt, "history_writer_closed");
+              throw error;
+            }
             invalidate(attempt, terminalCode);
             if (recoveryRetriesRemaining === 0) throw error;
             recoveryRetriesRemaining -= 1;
             continue;
           }
           const terminalCode = terminalToolHistoryWriterFailureCode(undefined, handle);
-          if (terminalCode === undefined) return;
-          invalidate(attempt, terminalCode);
-          // The reset itself completed, but a closure racing its response still
-          // earns the same single idempotent recovery attempt. A second closure
-          // is left invalidated for the next explicit boundary without looping.
-          if (recoveryRetriesRemaining === 0) return;
-          recoveryRetriesRemaining -= 1;
+          if (terminalCode !== undefined) invalidate(attempt, terminalCode);
+          // A resolved reset was acknowledged only after its transaction
+          // committed. Retire a concurrently closed handle, but never open a
+          // second destructive reset window for an operation that succeeded.
+          return;
         }
       });
       resetTail = reset.then(
@@ -1231,6 +1232,11 @@ function terminalToolHistoryWriterFailureCode(
   value: unknown,
   handle: ToolHistoryWriterHandle,
 ): string | undefined {
+  return reportedToolHistoryWriterFailureCode(value)
+    ?? (handle.writer.isClosed ? "history_writer_closed" : undefined);
+}
+
+function reportedToolHistoryWriterFailureCode(value: unknown): string | undefined {
   const candidate = typeof value === "object" && value !== null
     ? "errorCode" in value
       ? (value as { readonly errorCode?: unknown }).errorCode
@@ -1239,7 +1245,7 @@ function terminalToolHistoryWriterFailureCode(
         : undefined
     : undefined;
   if (candidate === "history_writer_closed") return candidate;
-  return handle.writer.isClosed ? "history_writer_closed" : undefined;
+  return undefined;
 }
 
 function toolHistoryAcquisitionErrorCode(error: unknown): string {

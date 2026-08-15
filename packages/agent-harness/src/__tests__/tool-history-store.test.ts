@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -213,6 +213,83 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       retainedBytes: expect.any(Number),
     });
   }, 20_000);
+
+  it.skipIf(process.platform === "win32")("fails artifact availability closed after root loss without a path-bearing writer incident", async () => {
+    const root = await tempRoot();
+    const artifactRoot = artifactRootForHistory(root);
+    const retainedRoot = join(root, "..", "retained-tool-output");
+    const run = binding("artifact-root-loss");
+    const artifact = join(artifactRoot, run.runId, "result.txt");
+    await mkdir(join(artifactRoot, run.runId), { recursive: true });
+    await writeFile(artifact, "artifact body");
+    const writer = await ToolHistoryWriter.open({ root, artifactRoot });
+    let resultRecordId: string | undefined;
+    try {
+      await writer.persist(run, {
+        phase: "invocation",
+        toolCallId: "root-loss-call",
+        toolName: "Read",
+        arguments: {},
+      });
+      const result = await writer.persist(run, {
+        phase: "result",
+        toolCallId: "root-loss-call",
+        state: "success",
+        content: { ok: true },
+        artifacts: [{ path: artifact }],
+      });
+      expect(result).toMatchObject({
+        persistence: "persisted",
+        artifactReferences: [{ id: expect.stringMatching(/^stha1_/u), available: true }],
+      });
+      resultRecordId = result.recordId;
+
+      await rename(artifactRoot, retainedRoot);
+      await symlink(join(root, "..", "missing-tool-output"), artifactRoot, "dir");
+      await expect(writer.persist(run, {
+        phase: "result",
+        toolCallId: "root-loss-call",
+        state: "success",
+        content: { ok: true },
+      })).resolves.toEqual({
+        persistence: "failed",
+        errorCode: "history_idempotency_conflict",
+      });
+      await expect(writer.stats()).resolves.toMatchObject({
+        writeFailures: 0,
+        idempotencyConflicts: 1,
+      });
+    } finally {
+      await writer.close();
+    }
+    expect(resultRecordId).toEqual(expect.stringMatching(/^sth1_/u));
+
+    const reader = new ToolHistoryReader(root);
+    expect(reader.get({
+      logicalConversationId: run.logicalConversationId,
+      currentRunId: "current-run",
+      recordId: resultRecordId!,
+    }).record?.artifactReferences).toEqual([
+      { id: expect.stringMatching(/^stha1_/u), available: false },
+    ]);
+
+    const database = new DatabaseSync(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE), { readOnly: true });
+    try {
+      const incidents = database.prepare(`
+        SELECT key,last_detail FROM writer_stats
+        WHERE key GLOB 'write_failures:*'
+           OR key GLOB 'idempotency_conflicts:*'
+           OR key='maintenance_failures'
+      `).all() as Array<{ readonly key: string; readonly last_detail: string | null }>;
+      expect(incidents).toEqual([{
+        key: expect.stringMatching(/^idempotency_conflicts:/u),
+        last_detail: "artifact-root-loss:root-loss-call:result",
+      }]);
+      expect(JSON.stringify(incidents)).not.toContain(artifactRoot);
+    } finally {
+      database.close();
+    }
+  });
 
   it("securely bounds multi-MiB payload preprocessing inside the persistence ceiling", async () => {
     const root = await tempRoot();

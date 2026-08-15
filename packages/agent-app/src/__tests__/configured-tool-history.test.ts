@@ -437,6 +437,66 @@ describe("configured tool-history acquisition", () => {
     expect(secondRelease).toHaveBeenCalledTimes(1);
   });
 
+  it("does not repeat a reset that resolves before its handle reports closed", async () => {
+    const base = await mkdtemp(join(tmpdir(), "configured-tool-history-committed-reset-"));
+    const root = join(base, "history");
+    const initialized = await ToolHistoryWriter.open({ root });
+    await initialized.close();
+
+    const deletionWindows: string[] = [];
+    let firstClosed = false;
+    const firstReset = vi.fn(async () => {
+      deletionWindows.push("committed-reset");
+      firstClosed = true;
+    });
+    const firstRelease = vi.fn(async () => undefined);
+    const firstHandle: ToolHistoryWriterHandle = {
+      writer: {
+        get isClosed() { return firstClosed; },
+        resetConversation: firstReset,
+      } as unknown as ToolHistoryWriter,
+      release: firstRelease,
+    };
+    const secondReset = vi.fn(async () => {
+      deletionWindows.push("unexpected-retry");
+    });
+    const secondPersist = vi.fn(async () => ({ persistence: "persisted" as const }));
+    const secondRelease = vi.fn(async () => undefined);
+    const secondHandle: ToolHistoryWriterHandle = {
+      writer: {
+        isClosed: false,
+        persist: secondPersist,
+        resetConversation: secondReset,
+      } as unknown as ToolHistoryWriter,
+      release: secondRelease,
+    };
+    const handles = [firstHandle, secondHandle];
+    const acquireWriter = vi.fn(async () => handles.shift()!);
+    const history = lazyConfiguredToolHistory({
+      root,
+      artifactRoot: join(base, "artifacts"),
+      rollover: "daily",
+      acquireWriter: acquireWriter as never,
+    });
+
+    try {
+      await expect(history.writer.resetConversation("chat:42")).resolves.toBeUndefined();
+
+      expect(acquireWriter).toHaveBeenCalledTimes(1);
+      expect(firstReset).toHaveBeenCalledTimes(1);
+      expect(secondReset).not.toHaveBeenCalled();
+      expect(deletionWindows).toEqual(["committed-reset"]);
+      await vi.waitFor(() => expect(firstRelease).toHaveBeenCalledTimes(1));
+    } finally {
+      await history.release?.();
+      await rm(base, { recursive: true, force: true });
+    }
+    expect(acquireWriter).toHaveBeenCalledTimes(1);
+    expect(secondReset).not.toHaveBeenCalled();
+    expect(secondRelease).not.toHaveBeenCalled();
+    expect(deletionWindows).toEqual(["committed-reset"]);
+  });
+
   it("bounds fresh reset worker-closure recovery to one retry", async () => {
     const base = await mkdtemp(join(tmpdir(), "configured-tool-history-bounded-reset-"));
     const root = join(base, "history");
@@ -444,19 +504,22 @@ describe("configured tool-history acquisition", () => {
     await initialized.close();
 
     const releases: Array<ReturnType<typeof vi.fn>> = [];
+    const resets: Array<ReturnType<typeof vi.fn>> = [];
     const handles = [1, 2].map((attemptNumber): ToolHistoryWriterHandle => {
       let closed = false;
       const release = vi.fn(async () => undefined);
+      const reset = vi.fn(async () => {
+        closed = true;
+        throw Object.assign(new Error(`reset worker ${String(attemptNumber)} closed`), {
+          code: "history_writer_closed",
+        });
+      });
       releases.push(release);
+      resets.push(reset);
       return {
         writer: {
           get isClosed() { return closed; },
-          resetConversation: vi.fn(async () => {
-            closed = true;
-            throw Object.assign(new Error(`reset worker ${String(attemptNumber)} closed`), {
-              code: "history_writer_closed",
-            });
-          }),
+          resetConversation: reset,
         } as unknown as ToolHistoryWriter,
         release,
       };
@@ -471,8 +534,13 @@ describe("configured tool-history acquisition", () => {
 
     try {
       await expect(history.writer.resetConversation("chat:42"))
-        .rejects.toMatchObject({ code: "history_writer_closed" });
+        .rejects.toMatchObject({
+          code: "history_writer_closed",
+          message: "reset worker 2 closed",
+        });
       expect(acquireWriter).toHaveBeenCalledTimes(2);
+      expect(resets).toHaveLength(2);
+      expect(resets.every((reset) => reset.mock.calls.length === 1)).toBe(true);
     } finally {
       await history.release?.();
       await rm(base, { recursive: true, force: true });

@@ -56,8 +56,15 @@ export function toolHistoryArtifactAvailable(
   artifactRoot: string,
   runId: string,
 ): boolean {
-  const normalized = normalizedCandidate(candidate, artifactRoot, runId, [artifactRoot]);
-  return normalized !== undefined && safeRegularFileExists(normalized.runRoot, normalized.path);
+  try {
+    const normalized = normalizedCandidate(candidate, artifactRoot, runId, [artifactRoot]);
+    return normalized !== undefined && safeRegularFileExists(normalized.runRoot, normalized.path);
+  } catch {
+    // Availability is a total read-time probe. Configuration/open validation
+    // remains strict, but a root that changed afterward is simply unavailable
+    // and must not surface a host path through an I/O error.
+    return false;
+  }
 }
 
 function normalizedCandidate(

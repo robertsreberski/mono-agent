@@ -1,10 +1,13 @@
-import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { canonicalToolArtifactRoot } from "../tool-history-artifacts.js";
+import {
+  canonicalToolArtifactRoot,
+  toolHistoryArtifactAvailable,
+} from "../tool-history-artifacts.js";
 
 const tempDirs: string[] = [];
 
@@ -46,8 +49,8 @@ describe("canonicalToolArtifactRoot", () => {
 
     expect(() => canonicalToolArtifactRoot(file)).toThrow(/must be a directory/iu);
     expect(() => canonicalToolArtifactRoot(fileAlias)).toThrow(/must be a directory/iu);
-    expect(() => canonicalToolArtifactRoot(dangling)).toThrow();
-    expect(() => canonicalToolArtifactRoot(loopA)).toThrow();
+    expect(capturedError(() => canonicalToolArtifactRoot(dangling))).toMatchObject({ code: "ENOENT" });
+    expect(capturedError(() => canonicalToolArtifactRoot(loopA))).toMatchObject({ code: "ELOOP" });
   });
 
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
@@ -58,10 +61,86 @@ describe("canonicalToolArtifactRoot", () => {
       await mkdir(inaccessible, { mode: 0o700 });
       await chmod(inaccessible, 0o000);
       try {
-        expect(() => canonicalToolArtifactRoot(inaccessible)).toThrow();
+        expect(capturedError(() => canonicalToolArtifactRoot(inaccessible))).toMatchObject({ code: "EACCES" });
       } finally {
         await chmod(inaccessible, 0o700);
       }
     },
   );
 });
+
+describe("toolHistoryArtifactAvailable", () => {
+  it.skipIf(process.platform === "win32")("resolves a safe directory alias without weakening containment", async () => {
+    const root = await tempRoot();
+    const target = join(root, "target");
+    const alias = join(root, "alias");
+    const runId = "safe-alias-run";
+    const artifact = join(alias, runId, "result.txt");
+    await mkdir(join(target, runId), { recursive: true });
+    await writeFile(join(target, runId, "result.txt"), "artifact body");
+    await symlink(target, alias, "dir");
+
+    expect(toolHistoryArtifactAvailable(artifact, alias, runId)).toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32")("returns false after the root is replaced by a dangling symlink", async () => {
+    const root = await tempRoot();
+    const artifactRoot = join(root, "artifacts");
+    const retainedRoot = join(root, "retained-artifacts");
+    const runId = "dangling-root-run";
+    const artifact = join(artifactRoot, runId, "result.txt");
+    await mkdir(join(artifactRoot, runId), { recursive: true });
+    await writeFile(artifact, "artifact body");
+    expect(toolHistoryArtifactAvailable(artifact, artifactRoot, runId)).toBe(true);
+
+    await rename(artifactRoot, retainedRoot);
+    await symlink(join(root, "missing-artifacts"), artifactRoot, "dir");
+
+    expect(toolHistoryArtifactAvailable(artifact, artifactRoot, runId)).toBe(false);
+  });
+
+  it("returns false after the root is replaced by a regular file", async () => {
+    const root = await tempRoot();
+    const artifactRoot = join(root, "artifacts");
+    const retainedRoot = join(root, "retained-artifacts");
+    const runId = "file-root-run";
+    const artifact = join(artifactRoot, runId, "result.txt");
+    await mkdir(join(artifactRoot, runId), { recursive: true });
+    await writeFile(artifact, "artifact body");
+    expect(toolHistoryArtifactAvailable(artifact, artifactRoot, runId)).toBe(true);
+
+    await rename(artifactRoot, retainedRoot);
+    await writeFile(artifactRoot, "not a directory");
+
+    expect(toolHistoryArtifactAvailable(artifact, artifactRoot, runId)).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "returns false when the root loses read/search permission",
+    async () => {
+      const root = await tempRoot();
+      const artifactRoot = join(root, "artifacts");
+      const runId = "inaccessible-root-run";
+      const artifact = join(artifactRoot, runId, "result.txt");
+      await mkdir(join(artifactRoot, runId), { recursive: true, mode: 0o700 });
+      await writeFile(artifact, "artifact body");
+      expect(toolHistoryArtifactAvailable(artifact, artifactRoot, runId)).toBe(true);
+
+      await chmod(artifactRoot, 0o000);
+      try {
+        expect(toolHistoryArtifactAvailable(artifact, artifactRoot, runId)).toBe(false);
+      } finally {
+        await chmod(artifactRoot, 0o700);
+      }
+    },
+  );
+});
+
+function capturedError(operation: () => unknown): unknown {
+  try {
+    operation();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
