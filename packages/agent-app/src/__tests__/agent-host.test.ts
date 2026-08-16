@@ -800,8 +800,27 @@ describe("agent host composition helpers", () => {
     const first = harness.run({ conversationId: "c1", userMessage: "a", abortSignal: new AbortController().signal });
     await firstStarted;
     // Second admits but parks waiting for the slot (pending = 1).
-    const second = harness.run({ conversationId: "c2", userMessage: "b", abortSignal: new AbortController().signal });
-    await delay(10);
+    let admittedSecond!: () => void;
+    const secondAdmitted = new Promise<void>((resolve) => { admittedSecond = resolve; });
+    const second = harness.run({
+      conversationId: "c2",
+      userMessage: "b",
+      abortSignal: new AbortController().signal,
+      sessionBoundary: {
+        type: "session_boundary",
+        kind: "rollover",
+        conversationId: "c2",
+        reason: "test_pending_admission",
+      },
+      onEvent: (event) => {
+        if (event.type === "session_boundary" && event.reason === "test_pending_admission") {
+          admittedSecond();
+        }
+      },
+    });
+    // The harness emits this boundary only after incrementing its pending-run
+    // counter, so the third arrival deterministically observes pending = 1.
+    await secondAdmitted;
     // Third arrives at capacity -> fails fast.
     const third = await harness.run({ conversationId: "c3", userMessage: "c", abortSignal: new AbortController().signal });
 
