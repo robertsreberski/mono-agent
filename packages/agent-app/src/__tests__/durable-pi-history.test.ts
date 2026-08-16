@@ -157,6 +157,7 @@ describe("configured durable Pi history", () => {
       const firstRuntime = observeRuntime(createMonoRuntime());
       firstHarness = await createConfiguredAgentHarness({
         config,
+        cwd: dir,
         runtime: firstRuntime.runtime,
         runtimeOptions: {
           piResolvedModel: piModel,
@@ -207,6 +208,7 @@ describe("configured durable Pi history", () => {
       const resumedRuntime = observeRuntime(createMonoRuntime());
       resumedHarness = await createConfiguredAgentHarness({
         config,
+        cwd: dir,
         runtime: resumedRuntime.runtime,
         runtimeOptions: {
           piResolvedModel: piModel,
