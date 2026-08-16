@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -219,6 +219,57 @@ describe("process-job lifecycle surface routing", () => {
     expect(controller.processJobsServiceStartFlight).toBeUndefined();
     expect(controller.processJobsStateDir).toBeUndefined();
     expect(controller.processJobsDegradation).toBeUndefined();
+  });
+
+  it("recovers a failed protection generation after the unsafe root is repaired and disabled", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "mono-agent-process-job-generation-recovery-"));
+    temporaryDirectories.push(cwd);
+    const configReadPath = join(cwd, "mono-agent.config.json");
+    const stateDir = join(cwd, ".state/jobs");
+    await mkdir(stateDir, { recursive: true });
+    await chmod(stateDir, 0o755);
+    const config = (enabled: boolean) => ({
+      runtime: { model: "pi:openai-codex:gpt-5.6-sol", workspace: "." },
+      context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
+      tools: { allowedTools: [], disallowedTools: [] },
+      artifacts: { dir: "./artifacts" },
+      processJobs: { enabled, stateDir: ".state/jobs" },
+    });
+    await writeFile(configReadPath, JSON.stringify(config(true)));
+    const agentRootOwnership = await ownershipFor(cwd);
+    const controller: ProcessJobsControllerPort = {
+      cwd,
+      configReadPath,
+      env: {},
+      logger: undefined,
+      running: new Map(),
+      statuses: new Map(),
+      stopped: false,
+      agentRootOwnership,
+      processJobsService: undefined,
+      processJobsServiceStart: undefined,
+      processJobsStateDir: undefined,
+      processJobsDegradation: undefined,
+      processJobsRegistry: undefined,
+      preparedProcessJobs: undefined,
+      observabilityContext: async () => ({}),
+      setStatus: (_id, status) => status,
+      refreshTraceSource: async () => undefined,
+    };
+
+    await prepareProcessJobsProtection(controller, "test-unsafe-root");
+    expect(controller.processJobsRegistry?.kind).toBe("failed");
+    expect(agentRootOwnership.coordinator.currentGeneration()?.id)
+      .toBe("mono-agent.process-jobs-roots.failed");
+
+    await chmod(stateDir, 0o700);
+    await writeFile(configReadPath, JSON.stringify(config(false)));
+    await prepareProcessJobsProtection(controller, "test-disabled-after-repair");
+
+    expect(controller.processJobsRegistry?.kind).toBe("empty");
+    expect(agentRootOwnership.coordinator.currentGeneration())
+      .toEqual(controller.processJobsRegistry?.generation);
+    expect(controller.processJobsStateDir).toBeUndefined();
   });
 
   it("sends bucketed Slack and Telegram origins to their exact-base real driver destinations", async () => {

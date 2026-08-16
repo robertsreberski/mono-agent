@@ -234,7 +234,19 @@ export async function prepareProcessJobsProtection(
       });
       registry = registration.snapshot;
     } else {
-      controller.agentRootOwnership.coordinator.synchronizeGeneration(registry.generation);
+      const failedGeneration = failedProcessJobsRootRegistryProtection(
+        controller.agentRootOwnership.agentRoot,
+      ).generation;
+      const currentGeneration = controller.agentRootOwnership.coordinator.currentGeneration();
+      // A failed snapshot cannot admit request leases. Once the durable
+      // registry is healthy again, let a disabled/no-marker reload recover the
+      // process-global coordinator instead of trapping every model surface in
+      // provider-zero state until process restart.
+      if (currentGeneration?.id === failedGeneration.id) {
+        controller.agentRootOwnership.coordinator.publishGeneration(registry.generation);
+      } else {
+        controller.agentRootOwnership.coordinator.synchronizeGeneration(registry.generation);
+      }
     }
   } catch (error) {
     registry = failedProcessJobsRootRegistryProtection(controller.agentRootOwnership.agentRoot);
