@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.20.2 — Background wake delivery and context clarity (2026-08-16)
+
+- Deliver completed background-process results as visible agent turns across
+  Slack, Telegram, TUI/web, and WhatsApp, preserving adapter-specific routing,
+  structured reply parts, durable retries, and exactly-once settlement.
+- Normalize context-window accounting so persisted managed-tool history and ACP
+  usage no longer inflate the remaining-context meter.
+- Clarify Web Console model controls by naming inherited choices `Default` and
+  showing the resolved default effort when it is known.
+
 ## 0.20.1 — Trusted-host ProcessJobs compatibility (2026-08-16)
 
 - Add the explicit `processJobs.unsafeAllowUnprotectedState` compatibility
