@@ -739,10 +739,18 @@ describe("agent host composition helpers", () => {
 
     let active = 0;
     let peak = 0;
+    let startedFirst!: () => void;
+    let startedSecond!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { startedFirst = resolve; });
+    const secondStarted = new Promise<void>((resolve) => { startedSecond = resolve; });
+    let calls = 0;
     const release: Array<() => void> = [];
     const fake = createFakeRuntime(async () => {
+      calls += 1;
       active += 1;
       peak = Math.max(peak, active);
+      if (calls === 1) startedFirst();
+      if (calls === 2) startedSecond();
       await new Promise<void>((resolve) => { release.push(resolve); });
       active -= 1;
       return { text: "ok" };
@@ -756,15 +764,12 @@ describe("agent host composition helpers", () => {
     const first = harness.run({ conversationId: "c1", userMessage: "a", abortSignal: new AbortController().signal });
     const second = harness.run({ conversationId: "c2", userMessage: "b", abortSignal: new AbortController().signal });
 
-    // Let the limiter settle: only one run should be in-flight.
-    for (let i = 0; i < 20 && release.length < 1; i += 1) {
-      await delay(5);
-    }
+    // The provider-entry signals are emitted only after the limiter admits a
+    // run, so they prove the second cannot enter before the first releases.
+    await firstStarted;
     expect(release.length).toBe(1);
     release.shift()?.();
-    for (let i = 0; i < 20 && release.length < 1; i += 1) {
-      await delay(5);
-    }
+    await secondStarted;
     release.shift()?.();
     await Promise.all([first, second]);
     expect(peak).toBe(1);
