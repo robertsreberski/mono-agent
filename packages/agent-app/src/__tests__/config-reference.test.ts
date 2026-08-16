@@ -386,6 +386,7 @@ describe("config reference", () => {
     expect((jobs as SchemaNode & { readonly additionalProperties?: boolean }).additionalProperties).toBe(false);
     expect((retention as SchemaNode & { readonly additionalProperties?: boolean }).additionalProperties).toBe(false);
     expect(schemaNode(jobs, "enabled")).toMatchObject({ type: "boolean", default: false });
+    expect(schemaNode(jobs, "unsafeAllowUnprotectedState")).toMatchObject({ type: "boolean", default: false });
     expect(schemaNode(jobs, "maxConcurrent")).toMatchObject({ minimum: 1, maximum: 32, default: 4 });
     expect(schemaNode(jobs, "maxActivePerConversation")).toMatchObject({ maximum: 8, default: 2 });
     expect(schemaNode(jobs, "maxQueued")).toMatchObject({ maximum: 64, default: 8 });

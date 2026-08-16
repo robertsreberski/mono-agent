@@ -1,5 +1,8 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import {
+  parseMonoRuntimeModelReference,
+  type RuntimeModelReference,
+} from "@mono-agent/runtime-adapter";
 
 type RuntimeConfig = MonoAgentConfig["runtime"];
 
@@ -16,6 +19,29 @@ export function configuredRuntimeModels(
   runtime: Pick<RuntimeConfig, "model" | "fallbacks" | "fallbackModels">,
 ): readonly RuntimeModelReference[] {
   return [runtime.model, ...configuredRuntimeFallbackModels(runtime)];
+}
+
+/**
+ * Whether every statically configured model-capable surface that can share the
+ * app's ProcessJobs authority is Pi-native. Request-scoped overrides are
+ * checked separately against their resolved route before provider work.
+ */
+export function configuredProcessJobsRoutesOnlyPiNative(config: MonoAgentConfig): boolean {
+  const routes: RuntimeModelReference[] = [...configuredRuntimeModels(config.runtime)];
+  if (config.subagents?.enabled === true) {
+    for (const definition of config.subagents.definitions ?? []) {
+      if (definition.model !== undefined) routes.push(definition.model);
+    }
+  }
+  const memoryLlm = config.memory?.llm;
+  if (memoryLlm?.provider === "agent-host") {
+    try {
+      routes.push(parseMonoRuntimeModelReference(memoryLlm.model));
+    } catch {
+      return false;
+    }
+  }
+  return routes.length > 0 && routes.every((model) => model.sdk === "pi");
 }
 
 export function hasConfiguredRuntimeFallbacks(

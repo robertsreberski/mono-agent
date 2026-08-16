@@ -67,6 +67,11 @@ import type {
 } from "./process-jobs-root-registry.js";
 import type { ProcessJobsSettings } from "./process-jobs-config.js";
 import type {
+  ProcessJobsProtectionPosture,
+  ProcessJobsProtectionStatus,
+} from "./process-jobs-protection.js";
+import { unsafeProcessJobsProtectionStatus } from "./process-jobs-protection.js";
+import type {
   ConfigApplyResult,
   ExporterStatus,
   SandboxStatus,
@@ -119,6 +124,7 @@ export interface MonoAgentApp {
   readonly traceabilityStatus: TraceabilityStatus;
   readonly exporterStatus: ExporterStatus;
   readonly sandboxStatus: SandboxStatus;
+  readonly processJobsProtection?: ProcessJobsProtectionStatus | undefined;
   readonly memoryHealth?: TraceSourceMemoryHealth;
   readonly selectedSkills: readonly string[] | undefined;
   channelStatus(id: ChannelId): ChannelStatus;
@@ -201,6 +207,9 @@ async function startMonoAgentAppInternal(
     });
     const startedController = controller;
 
+    const processJobsPreparationStartedAt = performance.now();
+    await startedController.prepareProcessJobsProtection("startup:prepare");
+    const processJobsPreparationDuration = performance.now() - processJobsPreparationStartedAt;
     await measure("sandbox", () => startedController.refreshSandboxStatus("startup"));
     await measure("traceability", () => startedController.startTraceability("startup"));
     await measure("services", async () => {
@@ -208,6 +217,9 @@ async function startMonoAgentAppInternal(
       await startedController.startContinuationServiceIfConfigured("startup");
       await startedController.startProcessJobsIfConfigured("startup");
     });
+    startupPhases.services = roundedMilliseconds(
+      (startupPhases.services ?? 0) + processJobsPreparationDuration,
+    );
     await measure(
       "channels",
       () => Promise.all(drivers.map((driver) => startedController.startChannelIfConfigured(driver.id, "startup"))),
@@ -371,9 +383,11 @@ export class MonoAgentAppController implements MonoAgentApp {
   processJobsStateDir: string | undefined;
   processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
   processJobsRegistry: ProcessJobsRootRegistrySnapshot | undefined;
+  processJobsProtectionPosture: ProcessJobsProtectionPosture | undefined;
   preparedProcessJobs: {
     readonly settings: ProcessJobsSettings;
     readonly workspace: string;
+    readonly protectionPosture: ProcessJobsProtectionPosture;
     readonly registration?: ProcessJobsRootRegistrationProof;
   } | undefined;
   /** One bounded scan cache for artifact-derived native-notify destinations. */
@@ -413,6 +427,10 @@ export class MonoAgentAppController implements MonoAgentApp {
     return this.sandboxStatusValue;
   }
 
+  get processJobsProtection(): ProcessJobsProtectionStatus | undefined {
+    return unsafeProcessJobsProtectionStatus(this.processJobsProtectionPosture);
+  }
+
   get memoryHealth(): TraceSourceMemoryHealth {
     return this.memoryHealthValue;
   }
@@ -422,6 +440,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   }
 
   sandboxEngineFor(coreConfig: MonoAgentConfig): SandboxEngine | undefined {
+    if (this.processJobsProtectionPosture?.suppressSyntheticSandbox === true) return undefined;
     if (this.sandboxEngine !== undefined) return this.sandboxEngine;
     if (coreConfig.sandbox?.engine !== "srt") return undefined;
     this.trustedSrtSandboxEngine ??= createSrtSandboxEngine({

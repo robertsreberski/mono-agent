@@ -91,6 +91,14 @@ describe("process-job request availability", () => {
       refreshTraceSource,
       processJobsService,
       processJobsDegradation: undefined,
+      processJobsProtectionPosture: {
+        kind: "unsafe-unprotected",
+        retainedRoots: true,
+        requiresPiNative: true,
+        suppressSyntheticSandbox: true,
+        unsafeAllowUnprotectedState: true,
+        warning: "UNSAFE: ProcessJobs state and operator secret are model-accessible.",
+      },
       drivers: [],
       startupCompleted: false,
       backgroundSnapshot: undefined,
@@ -118,6 +126,12 @@ describe("process-job request availability", () => {
           quarantinedTransactions: 2,
           failureOperation: "list",
         },
+        processJobsProtection: {
+          protection: "unsafe-unprotected",
+          retainedRoots: true,
+          unsafeAllowUnprotectedState: true,
+          warning: "UNSAFE: ProcessJobs state and operator secret are model-accessible.",
+        },
       },
     });
     expect(setStatus).toHaveBeenCalledWith("tui", expect.objectContaining({
@@ -127,12 +141,22 @@ describe("process-job request availability", () => {
     expect(refreshTraceSource).toHaveBeenCalledWith("process-jobs-health");
     expect(traceMetadata(controller, "heartbeat")).toMatchObject({
       processJobs: {
+        protection: {
+          protection: "unsafe-unprotected",
+          retainedRoots: true,
+          unsafeAllowUnprotectedState: true,
+          warning: "UNSAFE: ProcessJobs state and operator secret are model-accessible.",
+        },
         stateDir: "/private/state/process-jobs",
         state: "degraded",
         failureOperation: "list",
         failureDetectedAt: "2026-08-15T12:00:00.000Z",
       },
     });
+    const protection = (traceMetadata(controller, "heartbeat").processJobs as {
+      protection: unknown;
+    }).protection;
+    expect(JSON.stringify(protection)).not.toContain("/private/");
   });
 
   it("clears the app service and reports cleanup failures without blocking lifecycle teardown", async () => {

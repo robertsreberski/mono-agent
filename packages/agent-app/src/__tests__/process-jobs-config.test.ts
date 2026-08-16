@@ -28,6 +28,7 @@ describe("loadProcessJobsSettings", () => {
     const input = await fixture({});
     expect(PROCESS_JOBS_DEFAULTS).toEqual({
       enabled: false,
+      unsafeAllowUnprotectedState: false,
       stateDir: ".mono-agent/process-jobs",
       maxConcurrent: 4,
       maxActivePerConversation: 2,
@@ -68,10 +69,22 @@ describe("loadProcessJobsSettings", () => {
     });
   });
 
+  it("does not recognize an environment shortcut for the JSON-only unsafe opt-in", async () => {
+    const input = await fixture({ processJobs: { enabled: true } });
+    await expect(loadProcessJobsSettings({
+      ...input,
+      env: { MONO_AGENT_PROCESS_JOBS_UNSAFE_ALLOW_UNPROTECTED_STATE: "true" },
+    })).resolves.toMatchObject({
+      enabled: true,
+      unsafeAllowUnprotectedState: false,
+    });
+  });
+
   it("accepts every bounded setting and rejects values above compiled caps", async () => {
     const input = await fixture({
       processJobs: {
         enabled: true,
+        unsafeAllowUnprotectedState: true,
         stateDir: ".state/jobs",
         maxConcurrent: 9,
         maxActivePerConversation: 3,
@@ -87,6 +100,7 @@ describe("loadProcessJobsSettings", () => {
     await expect(loadProcessJobsSettings(input)).resolves.toMatchObject({
       configured: true,
       enabled: true,
+      unsafeAllowUnprotectedState: true,
       stateDir: join(input.cwd, ".state/jobs"),
       maxConcurrent: 9,
       maxActivePerConversation: 3,
@@ -171,6 +185,9 @@ describe("loadProcessJobsSettings", () => {
 
     await writeFile(input.configPath, JSON.stringify({ processJobs: { retention: { bytes: 1 } } }));
     await expect(loadProcessJobsSettings(input)).rejects.toThrow(/unknown key/u);
+
+    await writeFile(input.configPath, JSON.stringify({ processJobs: { unsafeAllowUnprotectedState: "yes" } }));
+    await expect(loadProcessJobsSettings(input)).rejects.toThrow(/processJobs\.unsafeAllowUnprotectedState must be a boolean/u);
 
     await writeFile(input.configPath, JSON.stringify({ processJobs: { stateDir: "../elsewhere" } }));
     await expect(loadProcessJobsSettings(input)).rejects.toThrow(/inside the agent root/u);

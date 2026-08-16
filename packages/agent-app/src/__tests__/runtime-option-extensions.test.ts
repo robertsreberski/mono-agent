@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { failClosedSandboxPolicy, protectSandboxRoots } from "@mono-agent/runtime-adapter";
 
 import {
+  clearSessionsSandboxPolicy,
   composeRuntimeOptionExtensions,
   createClearSessionsRuntimeExtension,
 } from "../runtime-option-extensions.js";
@@ -52,6 +53,27 @@ describe("composeRuntimeOptionExtensions", () => {
       network: { mode: "all" },
       protectedRoots: ["/agent/.mono-agent/clear-sessions-v1"],
     });
+  });
+
+  it("keeps recovery attestation but suppresses both clear-sessions policy injection sites in unsafe posture", async () => {
+    const assertion = vi.fn(async () => {});
+    const options = {
+      cwd: "/agent",
+      workspace: "/agent/workspace",
+      baseModel: { sdk: "pi" as const, provider: "openai-codex", model: "gpt-5.6-sol" },
+      fallbackModels: [{ sdk: "pi" as const, provider: "ollama", model: "qwen3:8b" }],
+      suppressSyntheticSandbox: true,
+      assertRecoveryResolved: assertion,
+      registryRoot: () => "/agent/.mono-agent/clear-sessions-v1",
+    };
+    const extension = createClearSessionsRuntimeExtension(undefined, options);
+
+    expect(clearSessionsSandboxPolicy(options)).toBeUndefined();
+    await expect(extension(INPUT)).resolves.toEqual({
+      runtimeOptions: {},
+      cleanup: expect.any(Function),
+    });
+    expect(assertion).toHaveBeenCalledWith("/agent");
   });
 
   it("keeps a clean accepted direct override free of Pi-only registry policy", async () => {

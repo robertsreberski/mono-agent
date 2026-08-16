@@ -55,6 +55,8 @@ function boundary(options: {
   baseModel?: typeof PI_MODEL | typeof CLAUDE_MODEL;
   sandboxEngine?: unknown;
   failed?: boolean;
+  unsafe?: boolean;
+  routesOnlyPiNative?: () => boolean;
 } = {}) {
   const protectedRoots = options.protectedRoots ?? ROOTS;
   const rootKeys = protectedRoots.filter((root) => root.includes(".state/"));
@@ -85,6 +87,17 @@ function boundary(options: {
     sandboxEngine: (Object.hasOwn(options, "sandboxEngine")
       ? options.sandboxEngine
       : availableSandboxEngine) as never,
+    ...(options.unsafe
+      ? { protectionPosture: {
+          kind: "unsafe-unprotected",
+          retainedRoots: true,
+          requiresPiNative: true,
+          suppressSyntheticSandbox: true,
+          unsafeAllowUnprotectedState: true,
+          warning: "UNSAFE: ProcessJobs state and operator secret are model-accessible.",
+        } }
+      : {}),
+    routesOnlyPiNative: options.routesOnlyPiNative ?? (() => true),
     ...(options.next === undefined ? {} : { next: options.next as never }),
     attestRegistry: async (snapshot) => {
       if (options.failed) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
@@ -113,11 +126,36 @@ describe("process-job registry runtime protection", () => {
 
   it("rejects a reachable non-Pi primary, fallback, override, or child route before provider invocation", async () => {
     const providerExtension = vi.fn(async () => ({ runtimeOptions: { model: CLAUDE_MODEL } }));
-    const { extension, acquireRequestLease, releaseAfterSettlement } = boundary({ next: providerExtension });
+    const { extension, acquireRequestLease, releaseAfterSettlement } = boundary({
+      next: providerExtension,
+      routesOnlyPiNative: () => false,
+    });
 
     await expect(extension(eligibleInput())).rejects.toThrow(PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR);
-    expect(providerExtension).toHaveBeenCalledOnce();
+    expect(providerExtension).not.toHaveBeenCalled();
     expect(acquireRequestLease).toHaveBeenCalledOnce();
+    expect(releaseAfterSettlement).toHaveBeenCalledOnce();
+  });
+
+  it("keeps controller injection and settlement leases but requires no synthetic policy or engine in unsafe posture", async () => {
+    const controller = vi.fn(() => ({ handOff: vi.fn() }));
+    const { extension, releaseAfterSettlement } = boundary({
+      unsafe: true,
+      sandboxEngine: undefined,
+      coreConfig: eligibleCoreConfig(createSandboxPolicy({ mode: "off", root: "/agent" })),
+      service: {
+        settings: { maxChainDepth: 4 },
+        controller,
+      },
+    });
+
+    const result = await extension(eligibleInput());
+    expect(result.runtimeOptions?.sandboxPolicy).toBeUndefined();
+    expect(result.runtimeOptions?.sandboxEngine).toBeUndefined();
+    expect(result.runtimeOptions?.processJobs).toBeDefined();
+    expect(controller).toHaveBeenCalledOnce();
+    expect(releaseAfterSettlement).not.toHaveBeenCalled();
+    await result.settleCleanup?.();
     expect(releaseAfterSettlement).toHaveBeenCalledOnce();
   });
 
