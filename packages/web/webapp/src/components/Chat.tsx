@@ -185,7 +185,7 @@ export function ModelControls() {
       const levels = effortLevelsForAgentModel(selectedAgent, effectiveReference);
       if (levels.length === 0) return [];
       return [
-        { id: "", name: "Automatic" },
+        { id: "", name: `Default · ${defaultEffortName(selectedAgent.defaultEffort, toggle)}` },
         ...levels.map((level) => ({
           id: level,
           name: toggle
@@ -197,7 +197,7 @@ export function ModelControls() {
     return [
       {
         id: "",
-        name: "Automatic model",
+        name: "Default model",
         description: selectedAgent.defaultModel
           ? `Agent default · ${selectedAgent.modelOptions?.[selectedAgent.defaultModel]?.label ?? selectedAgent.defaultModel}`
           : "Use the agent default",
@@ -248,6 +248,12 @@ const effortName = (effort: string): string => ({
   max: "Max",
   ultra: "Ultra",
 }[effort] ?? effort);
+
+const defaultEffortName = (effort: string | undefined, toggle: boolean): string => {
+  if (effort === undefined) return "Provider";
+  if (toggle) return effort === "none" ? "Off" : "On";
+  return effortName(effort);
+};
 
 function EmptyConversation() {
   const { selectedAgent, createThread, selectedThread } = useConsoleStore();

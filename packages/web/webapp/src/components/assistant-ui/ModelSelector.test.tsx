@@ -7,7 +7,7 @@ import {
 } from "./ModelSelector";
 
 const efforts = [
-  { id: "", name: "Automatic" },
+  { id: "", name: "Default · High" },
   { id: "low", name: "Low" },
   { id: "high", name: "High" },
 ] as const;
@@ -15,7 +15,7 @@ const efforts = [
 const models: readonly ModelSelectorOption[] = [
   {
     id: "",
-    name: "Automatic model",
+    name: "Default model",
     description: "Use the agent default",
     efforts,
   },
@@ -84,7 +84,7 @@ function ExternallyOpenedSelector() {
 }
 
 describe("ModelSelector", () => {
-  it("renders the caller-supplied automatic option and searches model names", async () => {
+  it("renders the caller-supplied default option and searches model names", async () => {
     render(<ControlledSelector />);
 
     fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
@@ -92,12 +92,12 @@ describe("ModelSelector", () => {
       name: "Model and reasoning effort",
     });
     expect(document.body).toContainElement(popup);
-    expect(within(popup).getByRole("option", { name: /Automatic model/u })).toHaveAttribute(
+    expect(within(popup).getByRole("option", { name: /Default model/u })).toHaveAttribute(
       "data-model-selected",
       "true",
     );
     expect(
-      within(popup).getByRole("option", { name: /Automatic model/u }).querySelector(
+      within(popup).getByRole("option", { name: /Default model/u }).querySelector(
         "[data-slot='model-selector-selected-indicator']",
       ),
     ).not.toBeNull();
