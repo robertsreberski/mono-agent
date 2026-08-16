@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.20.0 — Background jobs, rich replies, and session tool history (2026-08-16)
+
 ### ACP client interoperability
 
 - The mono-agent ACP bridge now accepts standard client filesystem and terminal
@@ -54,6 +56,7 @@
 - Model-visible `RunHistory` projections now sanitize ordinary filesystem spans
   in place to bounded `[host-path]` forms while continuing to omit credentials,
   private run-artifact content, and raw host roots.
+
 ### Rich replies and MCP Apps
 
 - Added bounded rich reply parts. `PublishReplyFile` copies a generated
@@ -102,6 +105,44 @@
 - Kept producer NDJSON frames bounded while restoring the web consumer's legacy
   8 MiB ceiling, so a new console can still read larger frames from an older
   agent. Reply downloads explicitly advertise `Accept-Ranges: none`.
+
+### Background process jobs
+
+- Added opt-in Pi-native background execution to the existing `Exec` and `Bash`
+  tools. The host owns queued and running process groups, persists bounded output,
+  and wakes the exact originating Slack thread, Telegram chat, or web-console
+  conversation after completion.
+- Restart recovery, cancellation, timeouts, retention, lifecycle cards, operator
+  commands, and exact-origin delivery are durable and bounded. Non-Pi provider
+  routes fail closed while private process state is present.
+- A monotonic owner-private root registry retains every initialized process-job
+  state root across disablement, config changes, and restarts. Interrupted
+  registry publication recovers before request-time inspection or mutation.
+
+### Portable memory bundles
+
+- Added `mono-agent memory export` and two-phase `memory import prepare` / `apply`
+  for owner-private, integrity-checked backups, machine migration, and seeding one
+  agent from another without copying provider-specific derived indexes.
+- Imports revalidate the source bundle and merge plan, create an fsync-verified
+  backup, preserve canonical ids and provenance, and rebuild embeddings under the
+  destination agent's configured provider.
+
+### Runtime and delivery reliability
+
+- `WebSearch` now reports an unavailable or blocked backend as a tool failure;
+  `No results.` is reserved for a successful search with a genuine empty set.
+- Recorded `AskUser` answers are visible across Slack, Telegram, and the web
+  console. Slack socket callbacks are deduplicated and triggering bot mentions
+  remain readable without changing routing.
+- Direct Codex sandbox configuration can explicitly allow network access, A2A
+  preserves in-doubt admissions through shutdown, and managed web/launchd log
+  checks remain bounded without mutating state for informational CLI commands.
+
+### Release coordination
+
+- All 22 catalog-publishable packages move together to 0.20.0. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
 
 ## 0.19.1 — Web Push delivery fix (2026-08-13)
 
