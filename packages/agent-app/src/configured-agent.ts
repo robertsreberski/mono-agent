@@ -97,6 +97,7 @@ import {
   attestProcessJobsRootRegistrySnapshot,
   loadProcessJobsRootRegistryProtection,
   processJobsProtectionPolicyRoots,
+  registerProcessJobsRoot,
   type ProcessJobsRootRegistrySnapshot,
 } from "./process-jobs-root-registry.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
@@ -227,6 +228,12 @@ interface ConfiguredAgentInternalHooks {
     readonly channelId: ChannelId | undefined;
     readonly routesOnlyPiNative?: (metadata: Record<string, unknown> | undefined) => boolean;
   };
+  /**
+   * App-local bootstrap seam for a configured responder that does not own the
+   * ProcessJobs service (currently `tui --local`). Registration happens only
+   * after this harness acquires the canonical agent-root owner.
+   */
+  readonly bootstrapProcessJobsStateDir?: string;
 }
 
 /**
@@ -966,7 +973,14 @@ async function createConfiguredAgentHarnessInternal(
   try {
   assertAgentRootLeaseOutsideWorkspace(ownership, config.runtime.workspace);
   const processJobsRegistry = internalHooks.processJobs?.registry
-    ?? await loadProcessJobsRootRegistryProtection(ownership.agentRoot, config.runtime.workspace);
+    ?? (internalHooks.bootstrapProcessJobsStateDir === undefined
+      ? await loadProcessJobsRootRegistryProtection(ownership.agentRoot, config.runtime.workspace)
+      : (await registerProcessJobsRoot({
+          agentRoot: ownership.agentRoot,
+          workspace: config.runtime.workspace,
+          stateDir: internalHooks.bootstrapProcessJobsStateDir,
+          coordinator: ownership.coordinator,
+        })).snapshot);
   ownership.coordinator.synchronizeGeneration(processJobsRegistry.generation);
   const processJobsProtectedRoots = processJobsProtectionPolicyRoots(processJobsRegistry);
   const artifactDerivedRoots = agentArtifactDerivedRoots(config.artifacts.dir);

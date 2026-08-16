@@ -49,7 +49,10 @@ import {
   captureBackgroundSnapshot,
 } from "./background-snapshot.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
-import { createConfiguredAgentResponder } from "./configured-agent.js";
+import {
+  createConfiguredAgentResponder,
+  createConfiguredAgentResponderForApp,
+} from "./configured-agent.js";
 import {
   CONFIGURATION_PROPOSAL_MCP_SERVER_NAME,
   CONFIGURATION_PROPOSAL_TOOL_NAME,
@@ -63,6 +66,8 @@ import { ADAPTER_SEND_TOOL_NAMES, canonicalToolName } from "./modules/known-tool
 import { RUN_HISTORY_MCP_SERVER_NAME, RUN_HISTORY_TOOL_NAME } from "./run-history.js";
 import { SESSION_HISTORY_MCP_SERVER_NAME, SESSION_HISTORY_TOOL_NAME } from "./session-history.js";
 import { configuredRuntimeFallbackModels } from "./runtime-routes.js";
+import { loadProcessJobsSettings } from "./process-jobs-config.js";
+import { hasExactProcessJobStateMarkers } from "./process-jobs-store.js";
 
 export const LOCAL_CONFIGURATION_PROMPT =
   "Begin the dedicated self-configuration session. This is not ordinary chat. Read the mono-agent-configure skill. In the first assistant message, identify the session as SELF-CONFIG and show one compact, user-led map of every capability area: identity and knowledge; runtime and models; skills, tools, MCP servers, and plugins; memory; channels, APIs, and A2A; automation and proactive work; security, sandboxing, and secrets; observability and operations; and acceptance criteria. Explain that the conversation can build a workflow from trigger → context/data → tools/actions → delivery → memory → safety/operations → success checks. State that secrets must never be entered, every file change requires a separate host-owned approval, and approval, rejection, done, or no changes keeps SELF-CONFIG active. Only /quit, /exit, or ctrl+c twice exits this session; quitting never sends a background stop request. Invite the operator to choose an area or describe the workflow they want, using one concise question. Do not repeat the setup wizard and do not overwhelm the operator with a questionnaire. The session may use multiple turns: ask one focused question at a time, and record one minimal coherent proposal with ProposeAgentConfiguration only when enough information is available. It is valid to explain or ask the next question without proposing a change. Never execute ordinary tasks with configuration authority or claim a proposal was applied; the local host validates proposals and asks for separate approval.";
@@ -149,11 +154,24 @@ export async function createLocalConfigurationSession(
   const authenticated = await authenticatedLocalConfig(options.cwd, options.configPath);
   const secureOptions = { ...options, ...authenticated };
   const config = await loadAppCoreConfig(secureOptions);
-  const responder = await createConfiguredAgentResponder({
+  const processJobs = await loadProcessJobsSettings({
+    cwd: secureOptions.cwd,
+    configPath: secureOptions.configPath,
+    env: secureOptions.env,
+  });
+  const bootstrapProcessJobsStateDir = processJobs.enabled
+    || await hasExactProcessJobStateMarkers(secureOptions.cwd, processJobs.stateDir)
+    ? processJobs.stateDir
+    : undefined;
+  const responder = await createConfiguredAgentResponderForApp({
     config,
     // The configured responder owns both clear-sessions and process-job root
     // protection. Use the authenticated root, never the ambient CLI cwd.
     cwd: secureOptions.cwd,
+  }, {
+    ...(bootstrapProcessJobsStateDir === undefined
+      ? {}
+      : { bootstrapProcessJobsStateDir }),
   }) as DisposableResponder;
   return {
     responder,

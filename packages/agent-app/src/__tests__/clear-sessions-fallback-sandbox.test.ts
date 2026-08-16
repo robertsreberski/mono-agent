@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { createMonoRuntime } from "@mono-agent/runtime-adapter";
 import type {
   MonoRuntimeLike,
-  RuntimeResult,
   RuntimeRunOptions,
   SandboxEngine,
   SandboxPolicy,
@@ -50,7 +49,7 @@ afterEach(async () => {
 
 describe("clear-sessions fallback sandbox boundary", () => {
   it(
-    "forces a non-Pi failure into real Pi tools while keeping the registry private and a sibling usable",
+    "skips a non-Pi primary before resolving real Pi tools that keep the registry private",
     { timeout: 240_000 },
     async () => {
       const workspace = await realpath(await mkdtemp(join(tmpdir(), "mono-agent-clear-fallback-")));
@@ -107,11 +106,7 @@ describe("clear-sessions fallback sandbox boundary", () => {
         configureTools(next) { primaryTools = next; },
         async run(_systemPrompt, options) {
           primaryRun = options;
-          // The production guard already ran while the registry was empty.
-          // Publish a canary only now so the Pi fallback attempts to cross the
-          // model-private boundary during this same logical run.
-          await writeFile(registryCanary, `${canary}\n`, { mode: 0o600 });
-          return failedProviderResult();
+          throw new Error("The protected non-Pi route must be skipped before provider execution.");
         },
       };
 
@@ -122,6 +117,10 @@ describe("clear-sessions fallback sandbox boundary", () => {
         configureTools(next) { piTools = next; },
         async run(_systemPrompt, options) {
           piRun = options;
+          // Request preflight proved the registry empty. Simulate a trusted
+          // host-side change after that preflight, then prove every Pi
+          // filesystem surface still enforces the native boundary.
+          await writeFile(registryCanary, `${canary}\n`, { mode: 0o600 });
           proof = await exercisePiTools(options, piTools, {
             workspace,
             registryCanary,
@@ -140,7 +139,7 @@ describe("clear-sessions fallback sandbox boundary", () => {
         fallbackChain: routes.map((model) => ({ model })),
         routeSafety: "per-route-native",
         retry: { backoffMs: 0, maxBackoffMs: 0 },
-        resolveAttempt: ({ attemptIndex }) => ({ runtime: attemptIndex === 0 ? primary : pi }),
+        resolveAttempt: ({ model }) => ({ runtime: model.sdk === "claude" ? primary : pi }),
       });
       const responder = await createConfiguredAgentResponder({
         config,
@@ -161,12 +160,10 @@ describe("clear-sessions fallback sandbox boundary", () => {
         await (responder as { dispose?: () => Promise<void> }).dispose?.();
       }
 
-      // The per-route router must not copy the Pi-only filesystem contract onto
-      // the clean direct-provider attempt. The later Pi attempt receives it.
-      expect(primaryTools?.sandboxPolicy).toBeUndefined();
-      expect(primaryTools?.sandboxEngine).toBeUndefined();
-      expect(primaryRun?.sandboxPolicy).toBeUndefined();
-      expect(primaryRun?.sandboxEngine).toBeUndefined();
+      // The protected-root gate skips the non-Pi route before resolver/provider
+      // construction. The later Pi attempt receives the complete contract.
+      expect(primaryTools).toBeUndefined();
+      expect(primaryRun).toBeUndefined();
       expect(piTools?.sandboxEngine).toBe(sandboxEngine);
       expect(piTools?.sandboxPolicy?.protectedRoots).toContain(registryRoot);
       expect(piRun?.sandboxEngine).toBeDefined();
@@ -176,8 +173,8 @@ describe("clear-sessions fallback sandbox boundary", () => {
         expect(policy.protectedRoots).toContain(registryRoot);
       }
 
-      expect(proof?.protectedRead).toContain("Path not allowed");
-      expect(proof?.protectedWrite).toContain("Path not allowed");
+      expect(proof?.protectedRead).toBe("Error: Protected filesystem read was denied.");
+      expect(proof?.protectedWrite).toBe("Error: Protected filesystem write was denied.");
       expect(proof?.protectedBash).not.toContain(canary);
       expect(proof?.protectedBash).toMatch(/denied|not permitted|operation not permitted|exit code|error/iu);
       expect(proof?.siblingRead).toContain("ordinary sibling remains readable");
@@ -286,19 +283,6 @@ function toolText(value: unknown): string {
     }
     return "";
   }).join("\n");
-}
-
-function failedProviderResult(): RuntimeResult {
-  return {
-    text: null,
-    // Match the runtime's retryable provider taxonomy while keeping the route
-    // completely local: no provider process or network call is made.
-    error: "Connection error.",
-    events: [],
-    cancelled: false,
-    usage: {},
-    failureKind: "provider_unavailable",
-  };
 }
 
 function deterministicBoundaryEngine(

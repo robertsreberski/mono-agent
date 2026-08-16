@@ -31,6 +31,7 @@ describe("configured agent runtime Pi auth", () => {
       workspace: "/repo",
       qaOutputDir: "/repo/.mono-agent/artifacts",
       resolvePiApiKey,
+      sandboxEngine: expect.objectContaining({ id: "srt" }),
     });
   });
 });
