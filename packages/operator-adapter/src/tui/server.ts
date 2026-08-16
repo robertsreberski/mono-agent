@@ -15,6 +15,8 @@ import {
   createChannelUserCancelReason,
   decodeAgentAttachmentText,
   isAgentResponseCancelledError,
+  parseProcessJobProjection,
+  parseProcessJobProjections,
   serializeAgentStreamFrame,
   type AgentAttachment,
   type AgentMessageStream,
@@ -29,6 +31,8 @@ import {
   type AgentToolEnvironment,
   type ChannelAskAnswer,
   type ChannelInteractionHub,
+  type ProcessJobOperator,
+  type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
 import {
   assertSafeBind,
@@ -152,6 +156,10 @@ export interface TuiAdapterOptions {
   readonly interaction?: ChannelInteractionHub;
   /** Agent-owned cron truth and controls. Absent on older/non-cron hosts. */
   readonly cron?: CronOperatorService;
+  /** Owner-authorized process-job control plane; omitted when unavailable. */
+  readonly processJobs?: ProcessJobOperator;
+  /** Independent owner bearer for process-job routes. Required with processJobs. */
+  readonly processJobsBearer?: string;
 }
 
 export interface TuiAdapterStartResult {
@@ -169,6 +177,7 @@ const MAX_VERBATIM_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_VERBATIM_TEXT_CHARACTERS = 200_000;
 const MAX_VERBATIM_TEXT_BYTES = 1024 * 1024;
 const MAX_LIVE_INPUT_BODY_BYTES = 32 * 1024;
+const MAX_PROCESS_JOBS_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_WEB_ATTACHMENTS = 10;
 const MAX_WEB_ATTACHMENT_BYTES = 64 * 1024 * 1024;
 const MAX_REQUEST_TOOL_ENVIRONMENT_KEYS = 32;
@@ -193,6 +202,13 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const port = options.port ?? DEFAULT_PORT;
   const basePath = normalizeBasePath(options.basePath ?? DEFAULT_BASE_PATH);
   const apiKey = normalizeOptionalString(options.apiKey);
+  const processJobsBearer = normalizeOptionalString(options.processJobsBearer);
+  if ((options.processJobs === undefined) !== (processJobsBearer === undefined)) {
+    throw new TuiAdapterError(
+      "invalid_config",
+      "processJobs and processJobsBearer must be configured together.",
+    );
+  }
   if (options.requestToolEnvironment !== undefined && !isLoopbackHost(host)) {
     throw new TuiAdapterError(
       "unsafe_host",
@@ -228,6 +244,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const cronConfigViewPath = `${basePath}/v1/cron/config-view`;
   const cronRunNowPath = `${basePath}/v1/cron/jobs/:jobId/run`;
   const cronEnabledPath = `${basePath}/v1/cron/jobs/:jobId/effective-enabled`;
+  const jobsPath = `${basePath}/v1/jobs`;
+  const jobPath = `${basePath}/v1/jobs/:jobId`;
+  const jobCancelPath = `${basePath}/v1/jobs/:jobId/cancel`;
 
   app.get(infoPath, (req, res) => {
     if (!authorize(req, res, apiKey)) {
@@ -284,6 +303,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                         && cronState.overview.actionsEnabled === true,
                     },
                   }),
+            ...(options.processJobs === undefined || processJobsBearer === undefined ? {} : { jobs: true }),
             ...(options.requestToolEnvironment === undefined ? {} : { toolEnvironment: true }),
           },
           ...(info?.label === undefined ? {} : { label: info.label }),
@@ -299,6 +319,66 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       .catch((error: unknown) => {
         options.logger?.error?.("TUI info provider failed.", { error: errorToMessage(error) });
         sendJsonError(res, 500, error);
+      });
+  });
+
+  app.get(jobsPath, (req, res, next) => {
+    if (!authorize(req, res, processJobsBearer)) return;
+    if (options.processJobs === undefined || processJobsBearer === undefined) {
+      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Process jobs are unavailable."));
+      return;
+    }
+    void options.processJobs.list()
+      .then((jobs) => sendBoundedJobs(res, jobs))
+      .catch(next);
+  });
+
+  app.get(jobPath, (req, res, next) => {
+    if (!authorize(req, res, processJobsBearer)) return;
+    if (options.processJobs === undefined || processJobsBearer === undefined) {
+      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Process jobs are unavailable."));
+      return;
+    }
+    const jobId = normalizeOptionalString(typeof req.params.jobId === "string" ? req.params.jobId : undefined);
+    if (jobId === undefined || jobId.length > 256) {
+      sendJsonError(res, 400, new TuiAdapterError("invalid_request", "A bounded jobId is required."));
+      return;
+    }
+    void options.processJobs.get(jobId)
+      .then((job) => {
+        if (job === undefined) {
+          res.status(404).json({ error: { code: "process_job_not_found", message: "Process job was not found." } });
+        } else {
+          sendBoundedJob(res, job);
+        }
+      })
+      .catch(next);
+  });
+
+  app.post(jobCancelPath, (req, res, next) => {
+    if (!authorize(req, res, processJobsBearer)) return;
+    if (options.processJobs === undefined || processJobsBearer === undefined) {
+      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Process jobs are unavailable."));
+      return;
+    }
+    const jobId = normalizeOptionalString(typeof req.params.jobId === "string" ? req.params.jobId : undefined);
+    if (jobId === undefined || jobId.length > 256) {
+      sendJsonError(res, 400, new TuiAdapterError("invalid_request", "A bounded jobId is required."));
+      return;
+    }
+    void options.processJobs.cancel(jobId)
+      .then((job) => sendBoundedJob(res, job))
+      .catch((error: unknown) => {
+        const code = typeof error === "object" && error !== null
+          ? (error as { code?: unknown }).code
+          : undefined;
+        if (code === "process_job_not_found") {
+          res.status(404).json({ error: { code, message: errorToMessage(error) } });
+        } else if (code === "process_job_conflict") {
+          res.status(409).json({ error: { code, message: errorToMessage(error) } });
+        } else {
+          next(error);
+        }
       });
   });
 
@@ -1709,6 +1789,82 @@ function sendJsonError(res: Response, status: number, error: unknown): void {
       ...(codeOf(error) === undefined ? {} : { code: codeOf(error) }),
     },
   });
+}
+
+function sendBoundedJobs(res: Response, jobs: readonly unknown[]): void {
+  const body = serializeBoundedJobs(jobs);
+  if (body === undefined) {
+    sendJsonError(
+      res,
+      413,
+      new TuiAdapterError(
+        "process_job_response_too_large",
+        `Process-job list exceeds the ${String(MAX_PROCESS_JOBS_RESPONSE_BYTES)}-byte operator response bound.`,
+      ),
+    );
+    return;
+  }
+  res.status(200).type("application/json").send(body);
+}
+
+function serializeBoundedJobs(jobs: readonly unknown[]): string | undefined {
+  const parsed = parseProcessJobProjections(jobs);
+  const selected = new Map<number, string>();
+  let selectedCount = 0;
+  let bodyBytes = Buffer.byteLength('{"jobs":[]}', "utf8");
+
+  const add = (index: number, projection: ProcessJobProjection): boolean => {
+    const serialized = JSON.stringify(projection);
+    const nextBytes = bodyBytes
+      + Buffer.byteLength(serialized, "utf8")
+      + (selectedCount === 0 ? 0 : 1);
+    if (nextBytes > MAX_PROCESS_JOBS_RESPONSE_BYTES) return false;
+    selected.set(index, serialized);
+    selectedCount += 1;
+    bodyBytes = nextBytes;
+    return true;
+  };
+
+  // The app can retain up to 32 starting/running and 64 queued records
+  // alongside its terminal ceiling. Keep that complete control-plane view
+  // even when large terminal projections require a smaller HTTP representation.
+  for (const [index, projection] of parsed.entries()) {
+    if (isActiveProcessJobProjection(projection) && !add(index, projection)) return undefined;
+  }
+
+  // Service lists are already newest-first. Select one deterministic terminal
+  // prefix so a larger byte budget can only extend, never reshuffle, history.
+  for (const [index, projection] of parsed.entries()) {
+    if (isActiveProcessJobProjection(projection)) continue;
+    if (!add(index, projection)) break;
+  }
+
+  const serialized = [...selected.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, projection]) => projection);
+  return `{"jobs":[${serialized.join(",")}]}`;
+}
+
+function isActiveProcessJobProjection(projection: ProcessJobProjection): boolean {
+  return projection.state === "queued"
+    || projection.state === "starting"
+    || projection.state === "running";
+}
+
+function sendBoundedJob(res: Response, job: unknown): void {
+  const body = JSON.stringify(parseProcessJobProjection(job));
+  if (Buffer.byteLength(body, "utf8") > MAX_PROCESS_JOBS_RESPONSE_BYTES) {
+    sendJsonError(
+      res,
+      413,
+      new TuiAdapterError(
+        "process_job_response_too_large",
+        `Process-job projection exceeds the ${String(MAX_PROCESS_JOBS_RESPONSE_BYTES)}-byte operator response bound.`,
+      ),
+    );
+    return;
+  }
+  res.status(200).type("application/json").send(body);
 }
 
 function codeOf(error: unknown): string | undefined {

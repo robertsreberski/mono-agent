@@ -75,6 +75,10 @@ describe("golden consumer config contracts", () => {
           "status": "disabled",
         },
         {
+          "id": "process-jobs",
+          "status": "disabled",
+        },
+        {
           "id": "sandbox",
           "status": "waiting",
         },
@@ -164,6 +168,10 @@ describe("golden consumer config contracts", () => {
         },
         {
           "id": "continuations",
+          "status": "disabled",
+        },
+        {
+          "id": "process-jobs",
           "status": "disabled",
         },
         {

@@ -8,7 +8,7 @@ import { MAX_AGENT_REPLY_PARTS, type AgentReplyPart } from "@mono-agent/agent-co
 
 import type { WebAgentSummary } from "../contracts.js";
 import { WebStore } from "../store.js";
-import { temporaryRoot } from "./helpers.js";
+import { fakeProcessJob, temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
 
@@ -1383,6 +1383,149 @@ describe("WebStore", () => {
     reopened.close();
   });
 
+  it("retains one evolving process-job card without synthesizing a web turn", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const running = fakeProcessJob({ conversationId: `web:${thread.id}` });
+
+    expect(store.upsertProcessJobCard({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      deliveryKey: running.wake.deliveryKey,
+      processJob: running,
+    })).toMatchObject({ duplicate: false, thread: { messageCount: 1 } });
+    const runningDetail = store.getThreadDetail(thread.id);
+    expect(runningDetail?.thread.runState).toEqual({ status: "idle" });
+    expect(runningDetail?.messages).toHaveLength(1);
+    expect(runningDetail?.messages[0]).toMatchObject({
+      role: "assistant",
+      status: "running",
+      parts: [{ type: "process-job", job: { state: "running" } }],
+    });
+
+    const terminal = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      state: "succeeded",
+    });
+    const replyParts = [
+      {
+        type: "attachment",
+        id: "job-attachment",
+        reference: { scheme: "mono-agent-artifact", id: "job-artifact" },
+        name: "report.txt",
+        mediaType: "text/plain",
+        sizeBytes: 12,
+        integrityId: `sha256:${"a".repeat(64)}`,
+      },
+      {
+        type: "mcp_app",
+        id: "11111111-1111-4111-8111-111111111111",
+        invocationId: "11111111-1111-4111-8111-111111111111",
+        connectionId: "job-connection",
+        serverName: "widgets",
+        toolName: "show_chart",
+        resourceUri: "ui://widgets/chart",
+        mediaType: "text/html;profile=mcp-app",
+        protocolVersion: "2026-01-26",
+        title: "Job chart",
+      },
+      {
+        type: "failure",
+        id: "job-failure",
+        code: "artifact_missing",
+        message: "One optional artifact expired.",
+      },
+    ] as const satisfies readonly AgentReplyPart[];
+    expect(store.upsertProcessJobCard({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      deliveryKey: terminal.wake.deliveryKey,
+      processJob: terminal,
+      responseText: "The worker completed safely.",
+      replyParts,
+    })).toMatchObject({ duplicate: false, thread: { messageCount: 1 } });
+    const terminalDetail = store.getThreadDetail(thread.id);
+    expect(terminalDetail?.messages).toHaveLength(1);
+    expect(terminalDetail?.messages[0]).toMatchObject({
+      id: runningDetail?.messages[0]?.id,
+      status: "complete",
+      parts: [
+        {
+          type: "process-job",
+          job: { state: "succeeded", wake: { state: "pending" } },
+          responseText: "The worker completed safely.",
+        },
+        { type: "attachment", id: "job-attachment", artifactId: "job-artifact", name: "report.txt" },
+        { type: "mcp_app", id: "11111111-1111-4111-8111-111111111111", connectionId: "job-connection" },
+        replyParts[2],
+      ],
+    });
+    expect(store.upsertProcessJobCard({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      deliveryKey: terminal.wake.deliveryKey,
+      processJob: terminal,
+      responseText: "The worker completed safely.",
+      replyParts,
+    })).toMatchObject({ duplicate: true });
+    expect(() => store.upsertProcessJobCard({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      deliveryKey: terminal.wake.deliveryKey,
+      processJob: terminal,
+      responseText: "The worker completed safely.",
+      replyParts: [{ ...replyParts[2], message: "A conflicting second outcome." }],
+    })).toThrowError(expect.objectContaining({ code: "notification_idempotency_conflict" }));
+    expect(() => store.upsertProcessJobCard({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      deliveryKey: terminal.wake.deliveryKey,
+      processJob: terminal,
+      responseText: "A conflicting second answer.",
+      replyParts,
+    })).toThrowError(expect.objectContaining({ code: "notification_idempotency_conflict" }));
+
+    const settled = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      state: "succeeded",
+      wakeState: "delivered",
+    });
+    expect(store.upsertProcessJobCard({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      deliveryKey: settled.wake.deliveryKey,
+      processJob: settled,
+    })).toMatchObject({ duplicate: false });
+    const settledParts = store.getThreadDetail(thread.id)?.messages[0]?.parts;
+    expect(settledParts).toMatchObject([
+      { type: "process-job", job: { wake: { state: "delivered" } }, responseText: "The worker completed safely." },
+      { type: "attachment", id: "job-attachment", artifactId: "job-artifact" },
+      { type: "mcp_app", id: "11111111-1111-4111-8111-111111111111" },
+      replyParts[2],
+    ]);
+    expect(() => store.upsertProcessJobCard({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      deliveryKey: running.wake.deliveryKey,
+      processJob: running,
+    })).toThrowError(expect.objectContaining({ code: "notification_idempotency_conflict" }));
+
+    const raw = new DatabaseSync(store.paths.database);
+    const row = raw.prepare("SELECT parts_json FROM messages WHERE id = ?")
+      .get(runningDetail!.messages[0]!.id) as unknown as { parts_json: string };
+    raw.close();
+    expect(row.parts_json).not.toMatch(/mono-agent-artifact|contentUrl|resourceUrl|bridgeUrl|token/u);
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThreadDetail(thread.id)?.messages[0]?.parts).toEqual(settledParts);
+    reopened.close();
+  });
+
   it("migrates schema v1 state through notification and live-input storage", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -1395,6 +1538,7 @@ describe("WebStore", () => {
     legacy.exec(`
       DROP TABLE live_inputs;
       DROP TABLE notification_deliveries;
+      DROP TABLE process_job_cards;
       ALTER TABLE threads DROP COLUMN trigger_kind;
       PRAGMA user_version = 1;
     `);
@@ -1407,11 +1551,37 @@ describe("WebStore", () => {
     const columns = inspected.prepare("PRAGMA table_info(threads)").all() as unknown as Array<{ name: string }>;
     const ledger = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notification_deliveries'").get();
     const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
+    const processJobCards = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'").get();
     inspected.close();
-    expect(version.user_version).toBe(6);
+    expect(version.user_version).toBe(7);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
     expect(liveInputs).toBeDefined();
+    expect(processJobCards).toBeDefined();
+  });
+
+  it("migrates schema v6 state to v7 process-job cards", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const initial = await WebStore.open({ stateDir });
+    const databasePath = initial.paths.database;
+    initial.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec("DROP TABLE process_job_cards; PRAGMA user_version = 6");
+    legacy.close();
+
+    const migrated = await WebStore.open({ stateDir });
+    migrated.close();
+    const inspected = new DatabaseSync(databasePath);
+    const version = inspected.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+    const processJobCards = inspected.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'",
+    ).get();
+    inspected.close();
+    expect(version.user_version).toBe(7);
+    expect(processJobCards).toBeDefined();
   });
 
   it("rejects a future schema without retaining the failed database handle", async () => {
@@ -1423,7 +1593,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 7");
+    future.exec("PRAGMA user_version = 8");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 

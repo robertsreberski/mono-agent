@@ -9,7 +9,7 @@ import { deliverWebNotification } from "@mono-agent/web";
 
 import { loadAppCoreConfig, resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
-import { createConfiguredAgentRuntime } from "./configured-agent.js";
+import { createConfiguredAgentRuntimeForApp } from "./configured-agent.js";
 import type { createConfiguredMemory } from "./configured-agent.js";
 import { routeProactiveNotification } from "./proactive-notify.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
@@ -77,8 +77,9 @@ export async function startMemoryRitualsIfConfigured(controller: MaintenanceCont
   }
 
   const sandboxEngine = controller.sandboxEngineFor(coreConfig);
-  const runtime = controller.runtime ?? createConfiguredAgentRuntime({
+  const runtime = controller.runtime ?? createConfiguredAgentRuntimeForApp({
     config: coreConfig,
+    cwd: controller.cwd,
     ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
   });
   if (!controller.activeRuntimes.includes(runtime)) {

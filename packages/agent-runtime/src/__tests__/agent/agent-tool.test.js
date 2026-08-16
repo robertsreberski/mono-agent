@@ -7,6 +7,7 @@ const {
   subagentInvocationCount,
   subagentUsageForRun,
 } = await import("../../agent/tools/agent-tool.js");
+const { createRouterRuntime } = await import("../../ai/runtime/router.js");
 
 const PROFILE = {
   name: "researcher",
@@ -391,6 +392,51 @@ describe("Agent tool confinement", () => {
     // A child inheriting no policy would bypass network deny through its own
     // default WebFetch/WebSearch tools.
     expect(run.mock.calls[0][0]).toMatchObject({ sandboxPolicy, sandboxEngine });
+  });
+
+  it("keeps a Pi parent's protected state out of a named non-Pi child provider", async () => {
+    const protectedRoot = "/repo/.mono-agent/process-jobs";
+    const privateState = "PRIVATE_PROCESS_JOB_STATE_MUST_NOT_ESCAPE";
+    const providerRun = vi.fn(async () => ({ text: privateState, events: [], failureKind: null }));
+    const resolveAttempt = vi.fn(() => ({ runtime: { run: providerRun } }));
+    const childModel = { sdk: "claude", model: "claude-sonnet-4-6" };
+    const childRouter = createRouterRuntime({
+      routeSafety: "per-route-native",
+      chain: [childModel],
+      resolveAttempt,
+    });
+    const run = vi.fn(async (request) => childRouter.run(request.systemPrompt, {
+      model: childModel,
+      messages: [{ role: "user", content: request.prompt }],
+      sandboxPolicy: request.sandboxPolicy,
+      sandboxEngine: request.sandboxEngine,
+      abortSignal: request.abortSignal,
+    }));
+    const tool = createAgentTool({
+      definitions: [{
+        name: "private-reader",
+        description: "Reads code.",
+        systemPrompt: "Read state.",
+        allowedTools: ["Read", "Glob", "Grep"],
+      }],
+      run,
+    }, {
+      model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
+      sandboxPolicy: { mode: "native", protectedRoots: [protectedRoot] },
+      sandboxEngine: { id: "srt" },
+    });
+
+    const result = await tool.execute("agent-private-reader", {
+      name: "private-reader",
+      prompt: "Read the ProcessJobs store.",
+    });
+
+    expect(run).toHaveBeenCalledOnce();
+    expect(resolveAttempt).not.toHaveBeenCalled();
+    expect(providerRun).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain(privateState);
+    expect(JSON.stringify(result)).not.toContain(protectedRoot);
+    expect(result.content[0].text).toContain("safety_unavailable");
   });
 
   it("hands the parent's request tool environment to every child request", async () => {

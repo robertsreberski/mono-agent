@@ -21,7 +21,7 @@ import {
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import { useConsoleStore } from "../console-store";
-import type { AskAnswer, AskSnapshot } from "../types";
+import type { AskAnswer, AskSnapshot, ProcessJobProjection, ProcessJobState } from "../types";
 import { UserMessageAttachments } from "./Attachments";
 import {
   ACTIVITY_GROUP_BY,
@@ -905,6 +905,124 @@ function ErrorPart({ data }: DataMessagePartProps) {
   );
 }
 
+const TERMINAL_PROCESS_JOB_STATES = new Set<ProcessJobState>([
+  "succeeded",
+  "failed",
+  "timed_out",
+  "cancelled",
+  "spawn_failed",
+  "queue_expired",
+  "interrupted",
+]);
+const PROCESS_JOB_POLL_INITIAL_MS = 1_000;
+const PROCESS_JOB_POLL_MAX_MS = 10_000;
+
+function processJobThreadId(job: ProcessJobProjection): string | undefined {
+  const base = job.origin.conversationId.split("#", 1)[0];
+  if (base === undefined || !base.startsWith("web:") || base === "web:new") return undefined;
+  return base.slice("web:".length) || undefined;
+}
+
+function processJobElapsed(job: ProcessJobProjection, now: number): string {
+  const started = Date.parse(job.timestamps.startedAt ?? job.timestamps.admittedAt);
+  const finished = job.timestamps.completedAt === null ? now : Date.parse(job.timestamps.completedAt);
+  const milliseconds = Number.isFinite(job.durationMs) && job.durationMs !== null
+    ? job.durationMs
+    : Math.max(0, finished - started);
+  if (milliseconds < 1_000) return `${String(Math.round(milliseconds))} ms`;
+  const seconds = Math.floor(milliseconds / 1_000);
+  if (seconds < 60) return `${String(seconds)} s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  if (minutes < 60) return `${String(minutes)}m ${String(remainder)}s`;
+  return `${String(Math.floor(minutes / 60))}h ${String(minutes % 60)}m`;
+}
+
+function ProcessJobPart({ data }: DataMessagePartProps) {
+  const payload = data as { readonly job?: ProcessJobProjection; readonly responseText?: unknown };
+  const initial = payload.job;
+  const [live, setLive] = useState(initial);
+  const [now, setNow] = useState(() => Date.now());
+  const threadId = initial === undefined ? undefined : processJobThreadId(initial);
+  const jobId = initial?.jobId;
+  const terminal = live === undefined || TERMINAL_PROCESS_JOB_STATES.has(live.state);
+
+  useEffect(() => {
+    setLive(initial);
+  }, [initial]);
+
+  useEffect(() => {
+    if (terminal || threadId === undefined || jobId === undefined) return;
+    const controller = new AbortController();
+    let timer: number | undefined;
+    let delayMs = PROCESS_JOB_POLL_INITIAL_MS;
+    const refresh = async () => {
+      setNow(Date.now());
+      try {
+        const next = await api.threadJob(threadId, jobId, controller.signal);
+        if (controller.signal.aborted) return;
+        setLive(next);
+        if (TERMINAL_PROCESS_JOB_STATES.has(next.state)) return;
+      } catch {
+        // The retained card remains authoritative while its owner is offline.
+      }
+      if (controller.signal.aborted) return;
+      timer = window.setTimeout(() => void refresh(), delayMs);
+      delayMs = Math.min(PROCESS_JOB_POLL_MAX_MS, delayMs * 2);
+    };
+    void refresh();
+    return () => {
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [jobId, terminal, threadId]);
+
+  const outputRefs = useMemo(
+    () => live === undefined
+      ? []
+      : [live.output.stdoutRef, live.output.stderrRef].filter((value): value is string => value !== null),
+    [live],
+  );
+  if (live === undefined) return null;
+  const responseText = typeof payload.responseText === "string" ? payload.responseText : undefined;
+  const stateLabel = live.state.replaceAll("_", " ");
+  return (
+    <section
+      className={`process-job-card is-${live.state}`}
+      aria-label={`${live.tool} background job ${stateLabel}`}
+      aria-live="polite"
+    >
+      <header className="process-job-header">
+        <span className="process-job-state-dot" aria-hidden="true" />
+        <strong>{live.tool} background job</strong>
+        <span className="process-job-state">{stateLabel}</span>
+      </header>
+      <p className="process-job-summary">{live.summary}</p>
+      <dl className="process-job-facts">
+        <div><dt>Elapsed</dt><dd>{processJobElapsed(live, now)}</dd></div>
+        {live.exitCode !== null && <div><dt>Exit</dt><dd>{live.exitCode}</dd></div>}
+        {live.signal !== null && <div><dt>Signal</dt><dd>{live.signal}</dd></div>}
+        <div><dt>Wake</dt><dd>{live.wake.state}</dd></div>
+      </dl>
+      {(live.output.preview.length > 0 || outputRefs.length > 0) && (
+        <details className="process-job-output">
+          <summary>Output{live.output.truncated ? " (truncated)" : ""}</summary>
+          {live.output.preview.length > 0 && <pre>{live.output.preview}</pre>}
+          {outputRefs.length > 0 && (
+            <ul>{outputRefs.map((ref) => <li key={ref}><code>{ref}</code></li>)}</ul>
+          )}
+        </details>
+      )}
+      {live.lastError !== null && (
+        <p className="process-job-error"><strong>{live.lastError.code}</strong> {live.lastError.message}</p>
+      )}
+      {responseText !== undefined && responseText.trim().length > 0 && (
+        <p className="process-job-response">{responseText}</p>
+      )}
+    </section>
+  );
+}
+
 const parts = {
   Text: MarkdownText,
   Quote: QuoteBlock,
@@ -919,6 +1037,7 @@ const parts = {
       "reply-attachment": ReplyAttachmentPart,
       "mcp-app": McpAppPart,
       "reply-failure": ReplyFailurePart,
+      "process-job": ProcessJobPart,
     },
   },
 } as const;
@@ -953,6 +1072,7 @@ function AssistantParts() {
             if (part.name === "reply-attachment") return <ReplyAttachmentPart {...part} />;
             if (part.name === "mcp-app") return <McpAppPart {...part} />;
             if (part.name === "reply-failure") return <ReplyFailurePart {...part} />;
+            if (part.name === "process-job") return <ProcessJobPart {...part} />;
             return part.dataRendererUI;
           case "indicator":
             return <RunningText status={{ type: "running" }} />;

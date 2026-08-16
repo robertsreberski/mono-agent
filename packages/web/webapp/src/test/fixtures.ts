@@ -4,6 +4,7 @@ import type {
   ThreadSummary,
   UploadLimits,
   WebAttachment,
+  ProcessJobProjection,
 } from "../types";
 
 export const uploadLimits: UploadLimits = {
@@ -59,6 +60,51 @@ export const thread = (
   runState: { status: "idle" },
   canSend: true,
   canUpload: true,
+  ...overrides,
+});
+
+export const processJob = (
+  overrides: Partial<ProcessJobProjection> = {},
+): ProcessJobProjection => ({
+  schema: "mono-agent.process-job-projection.v1",
+  jobId: "11111111-1111-4111-8111-111111111111",
+  tool: "Exec",
+  state: "succeeded",
+  summary: "node worker.js --safe-summary",
+  origin: {
+    conversationId: "web:thread",
+    channel: "web",
+    runId: "run-one",
+    historyBoundary: "web:thread",
+    bucket: null,
+  },
+  timestamps: {
+    admittedAt: "2026-07-17T10:00:00.000Z",
+    queueDeadlineAt: "2026-07-17T10:05:00.000Z",
+    startedAt: "2026-07-17T10:00:01.000Z",
+    runtimeDeadlineAt: "2026-07-17T10:30:01.000Z",
+    completedAt: "2026-07-17T10:00:03.000Z",
+  },
+  limits: { maxRuntimeMs: 1_800_000, maxOutputBytes: 1_048_576, previewChars: 2_000, chainDepth: 0 },
+  output: {
+    stdoutBytes: 5,
+    stderrBytes: 0,
+    truncated: false,
+    preview: "done\n",
+    stdoutRef: "artifacts/11111111-1111-4111-8111-111111111111/stdout.log",
+    stderrRef: "artifacts/11111111-1111-4111-8111-111111111111/stderr.log",
+  },
+  wake: {
+    state: "delivered",
+    attempts: 1,
+    deliveryKey: "process-job:11111111-1111-4111-8111-111111111111",
+    lastAttemptAt: "2026-07-17T10:00:04.000Z",
+  },
+  exitCode: 0,
+  signal: null,
+  durationMs: 2_000,
+  cancelRequested: false,
+  lastError: null,
   ...overrides,
 });
 

@@ -13,6 +13,7 @@ export interface LifecycleControllerPort {
   invalidateMemoryHealthRefresh(): void;
   stopChannel(id: ChannelId, reason: string): Promise<void>;
   stopContinuationService(): Promise<void>;
+  stopProcessJobsService(): Promise<void>;
   stopInteractionBridge(): Promise<void>;
   stopMemoryRituals(): void;
   stopArtifactRetentionScheduler(): void;
@@ -22,6 +23,9 @@ export interface LifecycleControllerPort {
   startTraceability(reason: string): Promise<TraceabilityStatus>;
   startExporters(reason: string): Promise<ExporterStatus>;
   startContinuationServiceIfConfigured(reason: string): Promise<void>;
+  prepareProcessJobsProtection(reason: string): Promise<void>;
+  startProcessJobsIfConfigured(reason: string): Promise<void>;
+  activateProcessJobWakes(): Promise<void>;
   startChannelIfConfigured(id: ChannelId, reason: string): Promise<ChannelStatus>;
   startMemoryRitualsIfConfigured(reason: string): Promise<void>;
   refreshMemoryHealthAfterLifecycle(reason: string, beforePublish?: () => void): Promise<void>;
@@ -29,6 +33,7 @@ export interface LifecycleControllerPort {
   channelStatus(id: ChannelId): ChannelStatus;
   refreshTraceSource(reason: string): Promise<void>;
   startChannel(driver: ChannelDriver, reason: string): Promise<ChannelStatus>;
+  releaseAgentRootOwnership(): Promise<void>;
 }
 
 export async function applyConfigChange(controller: LifecycleControllerPort, reason: string): Promise<ConfigApplyResult> {
@@ -44,6 +49,10 @@ export async function applyConfigChange(controller: LifecycleControllerPort, rea
     // that already entered is generation-fenced and is deliberately not
     // awaited, so config reload cannot hang behind native/filesystem work.
     controller.invalidateMemoryHealthRefresh();
+    // Publish the durable A+B protection generation before stopping admission.
+    // Store/secret creation remains behind the post-drain mutation gate below.
+    await controller.prepareProcessJobsProtection(`${reason}:prepare`);
+    await controller.stopProcessJobsService();
     await Promise.all(controller.drivers.map(
       (driver) => controller.stopChannel(driver.id, `${reason}:reload`),
     ));
@@ -60,7 +69,9 @@ export async function applyConfigChange(controller: LifecycleControllerPort, rea
     await controller.startTraceability(reason);
     await controller.startExporters(reason);
     await controller.startContinuationServiceIfConfigured(reason);
+    await controller.startProcessJobsIfConfigured(reason);
     await Promise.all(controller.drivers.map((driver) => controller.startChannelIfConfigured(driver.id, reason)));
+    await controller.activateProcessJobWakes();
     await controller.startMemoryRitualsIfConfigured(reason);
     await controller.refreshMemoryHealthAfterLifecycle(`${reason}:complete`);
     return controller.applyResult();
@@ -85,14 +96,24 @@ export async function startChannelIfConfigured(controller: LifecycleControllerPo
   }
   const inFlight = controller.startsInFlight.get(id);
   if (inFlight !== undefined) {
-    return await inFlight;
+    const status = await inFlight;
+    await controller.refreshTraceSource(reason);
+    return status;
   }
 
-  const start = controller.startChannel(driver, reason).finally(() => {
-    controller.startsInFlight.delete(id);
-  });
+  const start = controller.startChannel(driver, reason);
   controller.startsInFlight.set(id, start);
-  const status = await start;
+  let status: ChannelStatus;
+  try {
+    status = await start;
+  } finally {
+    // Teardown joins only channel ownership/publication. A trace or memory
+    // refresh may be unbounded and must not remain reachable through this map.
+    // Identity-check so a superseded flight cannot clear a newer generation.
+    if (controller.startsInFlight.get(id) === start) {
+      controller.startsInFlight.delete(id);
+    }
+  }
   await controller.refreshTraceSource(reason);
   return status;
 }
@@ -105,6 +126,7 @@ export async function stop(controller: LifecycleControllerPort): Promise<void> {
   // Stop the periodic audit before the first teardown await. Already-entered
   // computation is generation-fenced and must never delay shutdown.
   controller.invalidateMemoryHealthRefresh();
+  await controller.stopProcessJobsService();
   await Promise.all(controller.drivers.map((driver) => controller.stopChannel(driver.id, "stop")));
   await controller.stopContinuationService();
   await controller.stopInteractionBridge();
@@ -115,4 +137,5 @@ export async function stop(controller: LifecycleControllerPort): Promise<void> {
   for (const runtime of controller.activeRuntimes.splice(0)) {
     await runtime.disposeAllSessions?.().catch(() => undefined);
   }
+  await controller.releaseAgentRootOwnership();
 }

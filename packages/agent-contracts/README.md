@@ -19,7 +19,7 @@ Catalog responsibility: Defines shared structural request/response contracts plu
 ## Responsibility
 
 Define the structural request, response, stream, in-flight follow-up,
-channel-driver, and memory contracts that packages can implement independently. It also owns
+channel-driver, process-job projection, and memory contracts that packages can implement independently. It also owns
 small dependency-free helpers for settings JSON, JSON-to-env mapping, safe
 network binding, bearer tokens, attachments, and stream framing.
 
@@ -134,11 +134,16 @@ Primary modules:
 | Channel lifecycle | `channel.ts` | Driver startup, running handles, status, notifications, and interaction hooks. |
 | Message delivery | `buffered-message-stream.ts`, `resilient-message-stream.ts`, `stream-text.ts`, `tool-hints.ts` | Collect or safely adapt incremental output and format bounded activity copy. |
 | Process transport | `stream-wire.ts` | NDJSON stream frames for operator clients. |
+| Process-job projection | `process-jobs.ts` | Neutral lifecycle/error enums, stable public safety/cleanup messages, strict secret-free projection parsers, and the owner-authorized operator interface. |
 | Shared safety helpers | `host-safety.ts`, `bearer.ts`, `http-headers.ts`, `config-loader.ts`, `json-source.ts` | Safe binds, bounded HTTP shutdown/streaming, tokens, sanitized headers, layered config coercion, and settings files. |
 
 `ChannelId` is intentionally open so third-party drivers can choose an id.
 `isDeliverableConversation` only checks a conversation scheme against the ids a
 caller supplies; concrete delivery policy remains with the adapter or host.
+`ChannelStartInput` deliberately carries no process-job operator authority.
+Owner applications that expose authenticated job routes must compose that
+capability through their own private operator path rather than through the
+generic third-party channel contract.
 
 `ResilientMessageStream` can keep answer deltas final-only while exposing tool
 starts in one transient cumulative status. Its shared formatter uses friendly
@@ -182,6 +187,7 @@ editing in place and never changes final-answer delivery.
 | Format safe applied-steering activity | `formatLiveInputActivityLine` |
 | Sanitize or validate reply-part delivery outcomes | `sanitizeReplyPartDeliveryOutcomes`, `isAgentReplyPartDeliveryOutcomes` |
 | Carry stream events across a process boundary | `AgentStreamWireFrame`, `serializeAgentStreamFrame`, `parseAgentStreamFrame` |
+| Exchange process-job state without kernel/app coupling | `ProcessJobProjection`, `ProcessJobState`, `ProcessJobErrorCode`, `parseProcessJobProjection`, `ProcessJobOperator`, `MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES` |
 | Load adapter settings safely | `readSettingsJson`, `writeSettingsJson`, `layerJsonOntoEnv` |
 | Protect an HTTP listener | `assertSafeBind`, `listen`, `generateBearerToken`, `readAuthorizationBearer` |
 
@@ -313,6 +319,7 @@ MAX_CRON_OPERATOR_SUMMARY_FAILURE_KIND_BYTES
 MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES
 MAX_CRON_OPERATOR_SUMMARY_TEXT_BYTES
 MAX_CRON_OPERATOR_TIMEZONE_BYTES
+MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES
 MCP_APPS_EXTENSION_ID
 MCP_APP_RESOURCE_MIME_TYPE
 MCP_APP_SUPPORTED_VERSIONS
@@ -329,6 +336,20 @@ NotifyDeliveryContext
 NotifyDeliveryResult
 NotifyDestination
 NotifySuppression
+PROCESS_JOB_ERROR_CODES
+PROCESS_JOB_PUBLIC_ERROR_MESSAGES
+PROCESS_JOB_STATES
+ProcessJobErrorCode
+ProcessJobOperator
+ProcessJobProjection
+ProcessJobProjectionError
+ProcessJobProjectionLimits
+ProcessJobProjectionOrigin
+ProcessJobProjectionOutput
+ProcessJobProjectionTimestamps
+ProcessJobProjectionWake
+ProcessJobState
+ProcessJobWakeState
 ReadSettingsJsonResult
 RedactedSecretValue
 ResilientAgentMessageStream
@@ -370,6 +391,8 @@ isChannelUserCancelReason
 isCodedError
 isDeliverableConversation
 isLoopbackHost
+isProcessJobErrorCode
+isProcessJobState
 isSubagentLaunchToolName
 isWildcardHost
 layerJsonOntoEnv
@@ -383,6 +406,9 @@ parseCronOperatorOverview
 parseCronOperatorRunDetail
 parseCronOperatorRunPage
 parseCronOperatorRunSummary
+parseProcessJobProjection
+parseProcessJobProjections
+processJobPublicError
 readAuthorizationBearer
 readBoolean
 readChoice

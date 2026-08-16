@@ -26,6 +26,64 @@ export interface PushSubscriptionStatus {
 
 export type AgentStatus = "online" | "offline" | "degraded";
 export type NotificationTriggerKind = "cron" | "webhook";
+export type ProcessJobState =
+  | "queued"
+  | "starting"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "timed_out"
+  | "cancelled"
+  | "spawn_failed"
+  | "queue_expired"
+  | "interrupted";
+
+export interface ProcessJobProjection {
+  readonly schema: "mono-agent.process-job-projection.v1";
+  readonly jobId: string;
+  readonly tool: "Exec" | "Bash";
+  readonly state: ProcessJobState;
+  readonly summary: string;
+  readonly origin: {
+    readonly conversationId: string;
+    readonly channel: string;
+    readonly runId: string;
+    readonly historyBoundary: string;
+    readonly bucket: string | null;
+  };
+  readonly timestamps: {
+    readonly admittedAt: string;
+    readonly queueDeadlineAt: string;
+    readonly startedAt: string | null;
+    readonly runtimeDeadlineAt: string | null;
+    readonly completedAt: string | null;
+  };
+  readonly limits: {
+    readonly maxRuntimeMs: number;
+    readonly maxOutputBytes: number;
+    readonly previewChars: number;
+    readonly chainDepth: number;
+  };
+  readonly output: {
+    readonly stdoutBytes: number;
+    readonly stderrBytes: number;
+    readonly truncated: boolean;
+    readonly preview: string;
+    readonly stdoutRef: string | null;
+    readonly stderrRef: string | null;
+  };
+  readonly wake: {
+    readonly state: "pending" | "delivered" | "failed";
+    readonly attempts: number;
+    readonly deliveryKey: string;
+    readonly lastAttemptAt: string | null;
+  };
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  readonly durationMs: number | null;
+  readonly cancelRequested: boolean;
+  readonly lastError: { readonly code: string; readonly message: string } | null;
+}
 export type RunStatus =
   | "idle"
   | "running"
@@ -201,6 +259,11 @@ export type MessagePart =
       readonly history?: SessionToolHistoryMetadata;
       readonly status: ToolCallStatus;
       readonly calls: readonly ToolCall[];
+    }
+  | {
+      readonly type: "process-job";
+      readonly job: ProcessJobProjection;
+      readonly responseText?: string;
     }
   | { readonly type: "telemetry"; readonly event: string; readonly data?: unknown }
   | { readonly type: "error"; readonly code?: string; readonly message: string }

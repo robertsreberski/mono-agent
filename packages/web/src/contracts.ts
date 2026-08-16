@@ -14,6 +14,7 @@ import {
   type CronOperatorRunTrigger,
   type CronOperatorRunTruncatedField,
   type SessionToolHistoryEventMetadata,
+  type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
 
 /** Machine-readable discovery contract consumed by local ACP clients such as Worklab. */
@@ -82,7 +83,8 @@ export const WEB_MAX_TURN_TEXT_CHARACTERS = 200_000;
 export const WEB_MAX_LIVE_INPUTS_PER_THREAD = AGENT_LIVE_INPUT_MAX_MESSAGES;
 
 export type WebAgentStatus = "online" | "offline" | "degraded";
-export type WebNotificationTriggerKind = "cron" | "webhook";
+export type WebThreadNotificationTriggerKind = "cron" | "webhook";
+export type WebNotificationTriggerKind = WebThreadNotificationTriggerKind | "job";
 
 export type WebThreadTrigger =
   | { readonly kind: "webhook" }
@@ -223,6 +225,12 @@ export type WebMessagePart =
       readonly history?: SessionToolHistoryEventMetadata;
       readonly status: WebToolCallStatus;
       readonly calls: readonly WebToolCall[];
+    }
+  | {
+      readonly type: "process-job";
+      readonly job: ProcessJobProjection;
+      /** Bounded normal-turn answer produced by the terminal wake, when ready. */
+      readonly responseText?: string;
     }
   | { readonly type: "telemetry"; readonly event: string; readonly data?: unknown }
   | { readonly type: "error"; readonly code?: string; readonly message: string }

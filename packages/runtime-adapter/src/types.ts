@@ -6,6 +6,7 @@ import type {
 import type { AcpCallbackContext, AcpInteractionRequest, AcpProfileDescriptor } from "@mono-agent/agent-runtime";
 
 import type { PreparedSandboxCommand, SandboxCommandSpec, SandboxPolicy } from "./sandbox.js";
+import type { ProcessJobsController } from "./process-jobs.js";
 
 export interface MonoRuntimeSandboxEngine {
   readonly id?: string;
@@ -464,6 +465,8 @@ export interface RuntimeRunOptions {
   readonly abortSignal: AbortSignal;
   /** Host-only environment applied to Bash, Exec, and their nested subagents for this run. */
   readonly toolEnvironment?: AgentToolEnvironment;
+  /** Host-only Pi-native process-job controller; never model/provider visible. */
+  readonly processJobs?: ProcessJobsController;
   readonly executionMode?: RuntimeExecutionMode;
   readonly onEvent?: (event: RuntimeEventLike) => void;
   /** Host-owned, incremental durable tool-lifecycle writer for this run. */

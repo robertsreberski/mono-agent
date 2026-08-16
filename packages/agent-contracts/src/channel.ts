@@ -1,4 +1,5 @@
 import type { AgentResponder } from "./index.js";
+import type { ProcessJobProjection } from "./process-jobs.js";
 
 /**
  * Identifier of one communication channel. Open by design: hosts ship a set of
@@ -145,6 +146,12 @@ export interface RunningChannel {
     /** Stable host identity used by adapters that support duplicate suppression. */
     readonly deliveryKey?: string;
     readonly deliveryContext?: NotifyDeliveryContext;
+    /**
+     * Secret-free process-job state for a host-owned wake. Push adapters ignore
+     * it; the web driver uses it to update the one durable job card without
+     * synthesizing a second history entry.
+     */
+    readonly processJob?: ProcessJobProjection;
   }): Promise<NotifyDeliveryResult>;
 }
 
@@ -239,6 +246,8 @@ export interface ChannelStartInput<TConfig, TCore = unknown> {
   readonly coreConfig: TCore;
   readonly responder: AgentResponder;
   readonly cwd: string;
+  /** Stable local source identity, when observability discovery is ready. */
+  readonly sourceId?: string;
   readonly logger?: ChannelLogger;
   /**
    * Reports a transport that died after a successful start with NO self-recovery

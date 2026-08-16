@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { loadToolPolicyFromJsonFileSync } from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
-import { modelReferenceKey } from "@mono-agent/runtime-adapter";
+import { failClosedSandboxPolicy, modelReferenceKey } from "@mono-agent/runtime-adapter";
 import type {
   MonoRuntimeLike,
   RuntimeExecutionMode,
@@ -15,7 +15,7 @@ import { resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import {
   createConfiguredAgentResponderForApp,
-  createConfiguredAgentRuntime,
+  createConfiguredAgentRuntimeForApp,
   DEFAULT_HISTORY_MAX_MESSAGES,
 } from "./configured-agent.js";
 import type { ConfiguredAgentSessionEvent, createConfiguredMemory } from "./configured-agent.js";
@@ -41,8 +41,10 @@ import {
 import { createReplyPartBudget } from "./reply-part-budget.js";
 import {
   createRequestModelOverrideRuntimeExtension,
+  requestModelOverrideRoutesOnlyPiNative,
   requestModelOverrideTargetsDirectOpenCode,
   requestModelOverrideTargetsUnsupportedHistoryTool,
+  requestModelOverrideTargetsPiNative,
 } from "./request-model-override.js";
 import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
 import { configuredRuntimeFallbackModels, runtimeUsesFallbackRouter } from "./runtime-routes.js";
@@ -63,6 +65,17 @@ import type { ContinuationServiceHandle } from "./continuation-service.js";
 import type { MemoryRetrievalService } from "./memory-retrieval.js";
 import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
+import {
+  processJobsSandboxPolicy,
+} from "./process-jobs-runtime.js";
+import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
+import type { AgentRootOwnership } from "./agent-root-coordinator.js";
+import {
+  failedProcessJobsRootRegistryProtection,
+  processJobsProtectionPolicyRoots,
+  type ProcessJobsRootRegistrySnapshot,
+} from "./process-jobs-root-registry.js";
+import { bindProcessJobWakeContextToResponder } from "./process-jobs-context.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 
@@ -76,6 +89,10 @@ export interface ResponderControllerPort {
   readonly activeRuntimes: MonoRuntimeLike[];
   readonly interactionBridge: InteractionBridgeHandle | undefined;
   readonly continuationService: ContinuationServiceHandle | undefined;
+  readonly processJobsService: ProcessJobsServiceHandle | undefined;
+  readonly processJobsStateDir: string | undefined;
+  readonly agentRootOwnership: AgentRootOwnership;
+  readonly processJobsRegistry: ProcessJobsRootRegistrySnapshot | undefined;
   readonly seenNotifyDestinations: SeenNotifyDestinationCache;
   sandboxEngineFor(coreConfig: MonoAgentConfig): SandboxEngine | undefined;
   memoryStore(coreConfig: MonoAgentConfig): Promise<ConfiguredMemory>;
@@ -98,6 +115,8 @@ export interface ResponderControllerPort {
     readonly extension: RuntimeOptionsExtension;
     readonly targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean;
     readonly targetsUnsupportedHistoryTool: (metadata: Record<string, unknown> | undefined) => boolean;
+    readonly targetsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
+    readonly targetsProcessJobsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
   };
   buildRuntimeForModel(
     coreConfig: MonoAgentConfig,
@@ -140,10 +159,32 @@ export async function buildResponder(
   coreConfig: MonoAgentConfig,
   channelId?: ChannelId,
 ): Promise<AgentResponder> {
-  const sandboxEngine = controller.sandboxEngineFor(coreConfig);
+  const processJobsRegistry = controller.processJobsRegistry
+    ?? failedProcessJobsRootRegistryProtection(controller.agentRootOwnership.agentRoot);
+  const processJobsProtectedRoots = processJobsProtectionPolicyRoots(processJobsRegistry);
+  const modelBoundaryConfig = processJobsProtectedRoots.length === 0
+    ? coreConfig
+    : {
+        ...coreConfig,
+        sandbox: processJobsSandboxPolicy({
+          coreConfig,
+          protectedRoots: processJobsProtectedRoots,
+        }),
+      };
+  const sandboxEngineConfig = modelBoundaryConfig.sandbox?.mode === "native"
+    ? modelBoundaryConfig
+    : {
+        ...modelBoundaryConfig,
+        sandbox: failClosedSandboxPolicy({
+          root: coreConfig.runtime.workspace,
+          network: { mode: "all" },
+        }),
+      };
+  const sandboxEngine = controller.sandboxEngineFor(sandboxEngineConfig);
   const sessionRollover = sessionRolloverForChannel(channelId, coreConfig.runtime.session.rollover);
-  const runtime = controller.runtime ?? createConfiguredAgentRuntime({
+  const runtime = controller.runtime ?? createConfiguredAgentRuntimeForApp({
     config: coreConfig,
+    cwd: controller.cwd,
     ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
   });
   if (!controller.activeRuntimes.includes(runtime)) {
@@ -181,6 +222,7 @@ export async function buildResponder(
     coreConfig.providers?.piNative?.piSessionsRoot,
     coreConfig.traceability.registryDir,
     continuationStateDir,
+    ...processJobsProtectedRoots,
     artifactDerivedRoots.history,
   ].filter((path): path is string => path !== undefined);
   const replyArtifacts = createReplyArtifactService({
@@ -248,7 +290,7 @@ export async function buildResponder(
   if (adapterSendTools.blockingToolNames.length > 0) {
     mcpSources.push(`adapter send tools (${adapterSendTools.blockingToolNames.join(", ")})`);
   }
-  const requestModelOverride = controller.requestModelOverrideRuntimeOptions(coreConfig, {
+  const requestModelOverride = controller.requestModelOverrideRuntimeOptions(modelBoundaryConfig, {
     mcpSources,
     indexSkillsActive: coreConfig.context.skillDisclosure === "index"
       && coreConfig.context.skillsRoot !== undefined,
@@ -350,6 +392,12 @@ export async function buildResponder(
     exporterWarn: (warning) => controller.recordExporterWarning(warning),
     onSessionEvent: (event) => controller.recordSessionEvent(event, coreConfig),
   }, {
+    processJobs: {
+      registry: processJobsRegistry,
+      service: controller.processJobsService,
+      channelId,
+      routesOnlyPiNative: requestModelOverride.targetsProcessJobsPiNative,
+    },
     // Only the responder's own bucketing changes. RunHistory above keeps the
     // CONFIGURED policy on purpose: it strips `#YYYY-MM-DD` only under `daily`,
     // and dropping that here would hide every run this console thread already
@@ -365,9 +413,10 @@ export async function buildResponder(
     },
   });
   const replyResponder = replyArtifacts.wrapResponder(responder);
-  return postedReplyHistory.wrapResponder(
+  const richReplyResponder = postedReplyHistory.wrapResponder(
     mcpApps === undefined ? replyResponder : mcpApps.wrapResponder(replyResponder),
   );
+  return bindProcessJobWakeContextToResponder(richReplyResponder);
 }
 
 export function requestModelOverrideRuntimeOptions(
@@ -378,6 +427,8 @@ export function requestModelOverrideRuntimeOptions(
   readonly extension: RuntimeOptionsExtension;
   readonly targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean;
   readonly targetsUnsupportedHistoryTool: (metadata: Record<string, unknown> | undefined) => boolean;
+  readonly targetsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
+  readonly targetsProcessJobsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
 } {
   const options = {
     ...(controller.logger === undefined ? {} : { logger: controller.logger }),
@@ -398,6 +449,8 @@ export function requestModelOverrideRuntimeOptions(
     extension: async (input) => extension({ request: input.request }),
     targetsDirectOpenCode: (metadata) => requestModelOverrideTargetsDirectOpenCode(metadata, options),
     targetsUnsupportedHistoryTool: (metadata) => requestModelOverrideTargetsUnsupportedHistoryTool(metadata, options),
+    targetsPiNative: (metadata) => requestModelOverrideTargetsPiNative(metadata, options),
+    targetsProcessJobsPiNative: (metadata) => requestModelOverrideRoutesOnlyPiNative(metadata, options),
   };
 }
 
@@ -413,8 +466,9 @@ export function buildRuntimeForModel(
     if (cached !== undefined) {
       return cached;
     }
-    const runtime = createConfiguredAgentRuntime({
+    const runtime = createConfiguredAgentRuntimeForApp({
       config: coreConfig,
+      cwd: controller.cwd,
       model,
       ...(executionMode === undefined ? {} : { executionMode }),
       ...(sandboxEngine === undefined ? {} : { sandboxEngine }),

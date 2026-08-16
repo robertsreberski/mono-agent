@@ -187,8 +187,37 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
         const entrySafetyContract = routeSafetyContract(
           routeSafety,
           entry,
-          effectivePiSandboxPolicy(effectiveToolOptions, options),
+          entry.model.sdk === "pi"
+            ? effectivePiSandboxPolicy(effectiveToolOptions, options)
+            : undefined,
         );
+        // Internal protected roots are enforced by mono-agent's Pi tool layer
+        // and SRT projection. Provider-native non-Pi routes deliberately drop
+        // that layer, so attempting one would turn the router into a confused
+        // deputy for private host state. Reject the route before resolution or
+        // provider construction; a later Pi entry may still satisfy the run.
+        if (
+          entry.model.sdk !== "pi"
+          && attemptCarriesProtectedRoots(effectiveToolOptions, options)
+        ) {
+          const failure = safetyUnavailableResult();
+          lastRouteSkip = failure;
+          failoverHistory.push({
+            model: entry.model,
+            failureKind: "safety_unavailable",
+            routeSafety,
+            safetyContract: entrySafetyContract,
+          });
+          const unavailableRecord = routeSafetyRecord(
+            i,
+            entry,
+            entrySafetyContract,
+            "safety_unavailable",
+          );
+          routeSafetyHistory.push(unavailableRecord);
+          emit(options, { type: "provider_route_safety", ...unavailableRecord });
+          continue;
+        }
         if (!entrySatisfiesRequirements(entry, options)) {
           lastRouteSkip = {
             text: null,
@@ -770,6 +799,37 @@ function effectiveRouterToolOptions(host, configuredTools) {
     ?? host.sandbox
     ?? passthroughSandbox;
   return effective;
+}
+
+/**
+ * A protected-root policy is host-internal and intentionally has no public
+ * provider-native projection. Treat a present malformed value or an accessor
+ * failure as protected so untrusted option shapes cannot turn this gate into a
+ * fail-open boundary. Empty arrays preserve ordinary provider-native routing.
+ *
+ * @param {unknown} policy
+ * @returns {boolean}
+ */
+function sandboxPolicyHasProtectedRoots(policy) {
+  if (policy === null || typeof policy !== "object") return false;
+  try {
+    if (!("protectedRoots" in policy)) return false;
+    const protectedRoots = /** @type {{protectedRoots?: unknown}} */ (policy).protectedRoots;
+    if (protectedRoots === undefined) return false;
+    return !Array.isArray(protectedRoots) || protectedRoots.length > 0;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * @param {import('../types.js').AgentRuntimeToolOptions} toolOptions
+ * @param {Object<string, *>} runOptions
+ * @returns {boolean}
+ */
+function attemptCarriesProtectedRoots(toolOptions, runOptions) {
+  return sandboxPolicyHasProtectedRoots(toolOptions.sandboxPolicy)
+    || sandboxPolicyHasProtectedRoots(runOptions.sandboxPolicy);
 }
 
 /**

@@ -10,6 +10,7 @@ import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type {
   ChannelDriver,
   ChannelId,
+  ChannelStartInput,
   MonoAgentAppLogger,
   RunningChannel,
   ChannelStatus,
@@ -22,6 +23,8 @@ import type { InteractionBridgeHandle } from "./interaction-bridge.js";
 import type { ContinuationServiceHandle } from "./continuation-service.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
 import type { NotifyDestination } from "./notify-destinations.js";
+import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
+import { startAppOwnedTuiChannel } from "./channel-drivers/tui.js";
 
 export interface ChannelsControllerPort {
   readonly env: Record<string, string | undefined>;
@@ -33,8 +36,11 @@ export interface ChannelsControllerPort {
   readonly statuses: Map<ChannelId, ChannelStatus>;
   readonly running: Map<ChannelId, RunningChannel>;
   readonly channelStartGenerations: Map<ChannelId, symbol>;
+  readonly startsInFlight: Map<ChannelId, Promise<ChannelStatus>>;
   readonly stopped: boolean;
   readonly traceabilityStatusValue: TraceabilityStatus;
+  readonly processJobsService: ProcessJobsServiceHandle | undefined;
+  readonly processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
   setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus;
   rememberSelectedSkills(coreConfig: MonoAgentConfig): void;
   ensureInteractionBridge(coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined>;
@@ -59,17 +65,23 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
   const generation = Symbol(driver.id);
   controller.channelStartGenerations.set(driver.id, generation);
   const isCurrentGeneration = (): boolean => controller.channelStartGenerations.get(driver.id) === generation;
+  const currentStatus = (): ChannelStatus => controller.statuses.get(driver.id) ?? {
+    kind: "waiting_for_config",
+    reason: `${driver.label} start was superseded.`,
+  };
   const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
 
   let config: unknown;
   try {
     config = await driver.loadConfig(input);
   } catch (error) {
+    if (!isCurrentGeneration()) return currentStatus();
     if (driver.isConfigError(error)) {
       return controller.setStatus(driver.id, { kind: "waiting_for_config", reason: reasonOf(error) });
     }
     throw error;
   }
+  if (!isCurrentGeneration()) return currentStatus();
 
   const disabledReason = driver.disabledReason?.(config);
   if (disabledReason !== undefined) {
@@ -93,23 +105,29 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
     coreConfig = await loadAppCoreConfig(input);
     controller.rememberSelectedSkills(coreConfig);
   } catch (error) {
+    if (!isCurrentGeneration()) return currentStatus();
     if (isAppCoreConfigError(error)) {
       controller.logger?.info?.("Waiting for a valid agent config.", { reason: error.message });
       return controller.setStatus(driver.id, { kind: "waiting_for_config", reason: error.message });
     }
     throw error;
   }
+  if (!isCurrentGeneration()) return currentStatus();
 
   // Resolve the posted-message index path once so the Slack driver can link
   // posted messages to their producing conversation (in-thread reply continuity).
   const postedMessageIndexPath = resolvePostedMessageIndexPath(await resolveAppArtifactDir(input));
+  if (!isCurrentGeneration()) return currentStatus();
 
   // The bridge must exist BEFORE the responder is built (AskUser settings
   // resolution reads the exported bridge env) and before driver.start (sink
   // registration + pending-ask interception).
   const interactionBridge = await controller.ensureInteractionBridge(coreConfig);
+  if (!isCurrentGeneration()) return currentStatus();
   await controller.ensureContinuationService(coreConfig);
+  if (!isCurrentGeneration()) return currentStatus();
 
+  let disposeResponder: (() => Promise<void>) | undefined;
   try {
     // The channel identity decides the session boundary this responder applies:
     // the console owns its own (a thread), every other channel takes the
@@ -122,14 +140,31 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
     // per-channel harness rather than orphan it, and any wrapper applied to the
     // responder is honored. Duck-typed, consistent with the resetSharedMemory /
     // bujo-store patterns elsewhere in this file.
-    const disposeResponder = (): Promise<void> | undefined =>
-      (responder as { dispose?: () => Promise<void> }).dispose?.();
+    let responderDisposal: Promise<void> | undefined;
+    disposeResponder = (): Promise<void> => {
+      responderDisposal ??= Promise.resolve().then(async () => {
+        await (responder as { dispose?: () => Promise<void> }).dispose?.();
+      });
+      return responderDisposal;
+    };
     const hasDispose = typeof (responder as { dispose?: () => Promise<void> }).dispose === "function";
-    const runningChannel = await driver.start({
+    if (!isCurrentGeneration()) {
+      await disposeChannelResponder(controller, driver, disposeResponder, `${reason}:superseded`);
+      return currentStatus();
+    }
+    const observability = driver.id === "tui"
+      ? await controller.observabilityContext()
+      : {};
+    if (!isCurrentGeneration()) {
+      await disposeChannelResponder(controller, driver, disposeResponder, `${reason}:superseded`);
+      return currentStatus();
+    }
+    const channelStartInput: ChannelStartInput<unknown> = {
       config,
       coreConfig,
       responder,
       cwd: controller.cwd,
+      ...(observability.sourceId === undefined ? {} : { sourceId: observability.sourceId }),
       notifyDestination: (conversationId, text, options) =>
         notifyDestinationForChannel(controller, conversationId, text, options, driver.id),
       listNotifyDestinations: () => controller.listNotifyDestinations(),
@@ -137,6 +172,10 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       ...(interactionBridge === undefined ? {} : { interaction: interactionBridge }),
       ...(controller.logger === undefined ? {} : { logger: controller.logger }),
       onFailure: (failureReason) => {
+        if (!isCurrentGeneration()) {
+          return;
+        }
+        controller.channelStartGenerations.delete(driver.id);
         controller.running.delete(driver.id);
         controller.setStatus(driver.id, { kind: "failed", reason: failureReason });
         controller.logger?.error?.(`${driver.label} channel stopped with an error.`, { reason: failureReason });
@@ -144,7 +183,7 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
         // was just deleted, so dispose the responder here too — otherwise a
         // transport death orphans the per-channel harness/live-session manager
         // (the stop/reload path early-returns on the now-missing entry).
-        void disposeResponder()?.catch((error: unknown) => {
+        void disposeResponder?.().catch((error: unknown) => {
           controller.logger?.warn?.(`${driver.label} responder did not dispose cleanly after failure.`, {
             reason: failureReason,
             error: reasonOf(error),
@@ -170,6 +209,9 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       // preserved entry's summary. Guard on the entry: a recovery that races a
       // stop/reload must not resurrect a torn-down channel's status.
       onRecovered: () => {
+        if (!isCurrentGeneration()) {
+          return;
+        }
         const entry = controller.running.get(driver.id);
         if (entry === undefined) {
           return;
@@ -203,11 +245,45 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
           });
         });
       },
-    });
+    };
+    const appOwnedTuiStart = startAppOwnedTuiChannel(
+      driver,
+      channelStartInput,
+      controller.processJobsService,
+    );
+    const runningChannel = await (appOwnedTuiStart ?? driver.start(channelStartInput));
+    if (!isCurrentGeneration()) {
+      await stopStartedChannel(
+        controller,
+        driver,
+        runningChannel,
+        disposeResponder,
+        `${reason}:superseded`,
+      );
+      return currentStatus();
+    }
+    const summary = driver.id !== "tui"
+      ? runningChannel.summary
+      : controller.processJobsService !== undefined
+        ? {
+            ...runningChannel.summary,
+            processJobs: {
+              stateDir: controller.processJobsService.settings.stateDir,
+              health: controller.processJobsService.health.state,
+              quarantinedTransactions: controller.processJobsService.health.quarantinedTransactions,
+            },
+          }
+        : controller.processJobsDegradation === undefined
+          ? runningChannel.summary
+          : {
+              ...runningChannel.summary,
+              processJobsDegraded: controller.processJobsDegradation,
+            };
     controller.running.set(driver.id, {
       ...runningChannel,
+      summary,
       stop: () => runningChannel.stop(),
-      ...(hasDispose ? { dispose: () => disposeResponder() ?? Promise.resolve() } : {}),
+      ...(hasDispose ? { dispose: () => disposeResponder?.() ?? Promise.resolve() } : {}),
     });
     // A driver may discover durable control-state corruption or a lease conflict
     // only during start. Preserve that fail-visible degraded status instead of
@@ -215,13 +291,17 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
     const degraded = controller.statuses.get(driver.id);
     const status = degraded?.kind === "degraded"
       ? degraded
-      : controller.setStatus(driver.id, { kind: "running", summary: runningChannel.summary });
+      : controller.setStatus(driver.id, { kind: "running", summary });
     controller.logger?.info?.(
       degraded?.kind === "degraded" ? `${driver.label} channel started in degraded mode.` : `${driver.label} channel is running.`,
-      { reason, ...runningChannel.summary },
+      { reason, ...summary },
     );
     return status;
   } catch (error) {
+    if (disposeResponder !== undefined) {
+      await disposeChannelResponder(controller, driver, disposeResponder, `${reason}:start-failure`);
+    }
+    if (!isCurrentGeneration()) return currentStatus();
     const failure = reasonOf(error);
     controller.logger?.error?.(`${driver.label} channel failed to start.`, { reason: failure });
     return controller.setStatus(driver.id, { kind: "failed", reason: failure });
@@ -229,27 +309,59 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
 }
 
 export async function stopChannel(controller: ChannelsControllerPort, id: ChannelId, reason: string): Promise<void> {
+  const startInFlight = controller.startsInFlight.get(id);
   controller.channelStartGenerations.delete(id);
   const driver = controller.driversById.get(id);
   const runningChannel = controller.running.get(id);
-  if (driver === undefined || runningChannel === undefined) {
-    return;
+  if (driver !== undefined && runningChannel !== undefined) {
+    controller.running.delete(id);
+    await stopStartedChannel(
+      controller,
+      driver,
+      runningChannel,
+      async () => await runningChannel.dispose?.(),
+      reason,
+    );
   }
-  controller.running.delete(id);
-  await runningChannel.stop().catch((error: unknown) => {
-    controller.logger?.warn?.(`${driver.label} channel did not stop cleanly.`, { reason, error: reasonOf(error) });
-  });
-  // Stop the transport first (so no new turns arrive), then dispose the responder
-  // so the harness/live-session manager and warm provider sessions are retired
-  // rather than lingering against stale config across a reload.
-  await runningChannel.dispose?.().catch((error: unknown) => {
-    controller.logger?.warn?.(`${driver.label} responder did not dispose cleanly.`, { reason, error: reasonOf(error) });
-  });
-  if (!controller.stopped) {
+  // A start that had not published a running entry when teardown began owns its
+  // responder and possibly a live transport until it settles. Generation
+  // invalidation above makes the late result stop itself before returning.
+  await startInFlight?.catch(() => undefined);
+  if (driver !== undefined && !controller.stopped) {
     controller.setStatus(id, {
       kind: "waiting_for_config",
       reason: `${driver.label} stopped while applying config.`,
     });
+  }
+}
+
+async function stopStartedChannel(
+  controller: ChannelsControllerPort,
+  driver: ChannelDriver,
+  runningChannel: RunningChannel,
+  disposeResponder: () => Promise<void>,
+  reason: string,
+): Promise<void> {
+  try {
+    await runningChannel.stop();
+  } catch (error) {
+    controller.logger?.warn?.(`${driver.label} channel did not stop cleanly.`, { reason, error: reasonOf(error) });
+  }
+  // Stop the transport first (so no new turns arrive), then dispose the responder
+  // so the harness/live-session manager and warm provider sessions are retired.
+  await disposeChannelResponder(controller, driver, disposeResponder, reason);
+}
+
+async function disposeChannelResponder(
+  controller: ChannelsControllerPort,
+  driver: ChannelDriver,
+  disposeResponder: () => Promise<void>,
+  reason: string,
+): Promise<void> {
+  try {
+    await disposeResponder();
+  } catch (error) {
+    controller.logger?.warn?.(`${driver.label} responder did not dispose cleanly.`, { reason, error: reasonOf(error) });
   }
 }
 

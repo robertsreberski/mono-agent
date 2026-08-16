@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, uploadContent, type ReplyAccessRefreshHandler } from "./api";
-import { agent, attachment } from "./test/fixtures";
+import { agent, attachment, processJob } from "./test/fixtures";
 
 class FakeXMLHttpRequest {
   static latest: FakeXMLHttpRequest;
@@ -160,6 +160,22 @@ describe("turn overrides", () => {
         body: JSON.stringify({ text: "Steer this run" }),
       }),
     );
+  });
+});
+
+describe("process-job API", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("requests only the encoded job bound beneath its thread", async () => {
+    const job = processJob();
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ job }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.threadJob("thread/one", "job/two")).resolves.toEqual(job);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/threads/thread%2Fone/jobs/job%2Ftwo");
+    expect(api).not.toHaveProperty("threadJobs");
   });
 });
 

@@ -1,4 +1,8 @@
-import type { AgentContinuationOriginContext, ChannelInteractionSink } from "@mono-agent/agent-contracts";
+import type {
+  AgentContinuationOriginContext,
+  ChannelInteractionSink,
+  NotifyDeliveryResult,
+} from "@mono-agent/agent-contracts";
 import { AgentHarnessFailureError } from "@mono-agent/agent-harness";
 import type {
   SlackAdapterConfig,
@@ -186,7 +190,17 @@ export function createSlackChannelDriver(
         summary: {},
         stop: () => result.stop(),
         notify: async (request) => {
-          const { conversationId, text, verbatim, deliveryKey } = request;
+          const { conversationId, text, verbatim, deliveryKey, processJob } = request;
+          if (processJob !== undefined
+            && (processJob.origin.channel !== "slack"
+              || conversationId !== baseConversationId(processJob.origin.conversationId))) {
+            return {
+              delivered: false,
+              code: "process_job_origin_mismatch",
+              reason: "The process-job origin does not match the Slack destination.",
+              retryable: false,
+            };
+          }
           const target = slackTargetFromConversation(conversationId);
           if (target === undefined) {
             input.logger?.warn?.("Slack proactive notify skipped: unparseable destination.", { conversationId });
@@ -199,7 +213,33 @@ export function createSlackChannelDriver(
             input.logger?.warn?.("Slack proactive notify skipped: destination not in allowlist.", { conversationId });
             return { delivered: false, reason: "slack channel is not in the adapter allowlist" };
           }
-          return await result.adapter.notify(
+          if (processJob !== undefined) {
+            const updater = (result.adapter as unknown as {
+              updateProcessJob?: (
+                channelId: string,
+                threadTs: string | undefined,
+                projection: typeof processJob,
+              ) => Promise<NotifyDeliveryResult>;
+            }).updateProcessJob;
+            if (typeof updater !== "function") {
+              return {
+                delivered: false,
+                code: "background_unsupported_channel",
+                reason: "The running Slack adapter does not support process-job lifecycle updates.",
+                retryable: false,
+              };
+            }
+            const surfaceOutcome = await updater.call(
+              result.adapter,
+              target.channelId,
+              target.threadTs,
+              processJob,
+            );
+            if (text.trim().length === 0) {
+              return surfaceOutcome;
+            }
+          }
+          const outcome = await result.adapter.notify(
             target.channelId,
             target.threadTs,
             text,
@@ -210,6 +250,7 @@ export function createSlackChannelDriver(
                   ...(deliveryKey === undefined ? {} : { deliveryKey }),
                 },
           );
+          return processJob === undefined ? outcome : settleProcessJobWake(outcome);
         },
         synthesizeContinuation: async (continuationInput: {
           readonly continuationId: string;
@@ -299,6 +340,17 @@ export function createSlackChannelDriver(
       };
     },
   };
+}
+
+function baseConversationId(conversationId: string): string {
+  return conversationId.split("#", 1)[0] ?? conversationId;
+}
+
+function settleProcessJobWake(result: NotifyDeliveryResult): NotifyDeliveryResult {
+  if (result.delivered || result.code === "conversation_busy") return result;
+  // Once the responder turn was admitted, history/tool effects may have
+  // happened even when final delivery failed. Never replay that wake.
+  return { ...result, retryable: false, ambiguous: true };
 }
 
 /** Extract `{channelId, threadTs?}` from a `slack:<ch>[:<thread>]` conversation id. */

@@ -9,8 +9,11 @@ import {
   MAX_AGENT_REPLY_PARTS,
   classifyNotifySuppression,
   type AgentReplyPart,
+  parseProcessJobProjection,
   type AgentStreamEvent,
   type AgentStreamWireFrame,
+  type ProcessJobProjection,
+  type ProcessJobState,
 } from "@mono-agent/agent-contracts";
 
 import {
@@ -23,13 +26,13 @@ import {
   type WebMessage,
   type WebMessagePart,
   type WebMessageStatus,
-  type WebNotificationTriggerKind,
   type WebCronJob,
   type WebCronOverview,
   type WebCronRun,
   type WebCronRunSummary,
   type WebCronRunPage,
   type WebMessagePage,
+  type WebThreadNotificationTriggerKind,
   type WebQuote,
   type WebRunState,
   type WebThread,
@@ -95,6 +98,18 @@ interface CronChannelRow {
   job_id: string;
   thread_id: string;
   configured: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ProcessJobCardRow {
+  source_id: string;
+  job_id: string;
+  delivery_key: string;
+  thread_id: string;
+  message_id: string;
+  projection_sha256: string;
+  response_text: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -286,7 +301,7 @@ export interface ClaimedWebPushDelivery {
   readonly attempts: number;
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 6;
+const WEB_STORAGE_SCHEMA_VERSION = 7;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
 export const WEB_MESSAGE_PAGE_MAX = 100;
@@ -344,7 +359,7 @@ export interface ReserveStoredLiveInputResult {
 export interface ReserveWebNotificationInput {
   readonly sourceId: string;
   readonly deliveryKey: string;
-  readonly triggerKind: WebNotificationTriggerKind;
+  readonly triggerKind: WebThreadNotificationTriggerKind;
   readonly text: string;
   readonly jobId?: string;
   readonly runId?: string;
@@ -369,6 +384,15 @@ export function cronChannelReadOnlyError(): WebConsoleError {
     "Cron channels are read-only. Scheduled runs and history are managed by the agent.",
     409,
   );
+}
+
+export interface UpsertWebProcessJobCardInput {
+  readonly sourceId: string;
+  readonly threadId: string;
+  readonly deliveryKey: string;
+  readonly processJob: ProcessJobProjection;
+  readonly responseText?: string;
+  readonly replyParts?: readonly AgentReplyPart[];
 }
 
 export class WebStore {
@@ -1220,6 +1244,150 @@ export class WebStore {
       messages: [...new Set(messageIds)].map((messageId) => this.requireMessage(messageId)),
       changed,
     };
+  }
+
+  /** Append or update exactly one retained card for a web-origin process job. */
+  upsertProcessJobCard(input: UpsertWebProcessJobCardInput): CompleteWebNotificationResult {
+    const projection = parseProcessJobProjection(input.processJob);
+    const thread = this.requireThread(input.threadId);
+    if (thread.sourceId !== input.sourceId) {
+      throw new WebConsoleError("invalid_notification", "The process job does not belong to this agent thread.", 409);
+    }
+    const originConversation = projection.origin.conversationId.split("#", 1)[0];
+    if (projection.origin.channel !== "web" || originConversation !== `web:${input.threadId}`) {
+      throw new WebConsoleError("invalid_notification", "The process job origin does not match this web thread.", 409);
+    }
+    if (input.deliveryKey !== projection.wake.deliveryKey) {
+      throw new WebConsoleError("invalid_notification", "The process job delivery key does not match its projection.", 409);
+    }
+    if (input.responseText !== undefined
+      && (input.responseText.trim().length === 0 || input.responseText.length > 8_000)) {
+      throw new WebConsoleError("invalid_notification", "The process job response must contain 1 to 8000 characters.", 413);
+    }
+
+    const existing = this.database.prepare(`
+      SELECT * FROM process_job_cards WHERE source_id = ? AND job_id = ?
+    `).get(input.sourceId, projection.jobId) as unknown as ProcessJobCardRow | undefined;
+    const projectionJson = JSON.stringify(projection);
+    const projectionSha256 = createHash("sha256").update(projectionJson).digest("hex");
+    const now = this.now();
+    if (existing === undefined) {
+      const messageId = randomUUID();
+      const parts = processJobCardParts(projection, input.responseText, input.replyParts);
+      this.transaction(() => {
+        this.database.prepare(`
+          INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+          VALUES (?, ?, NULL, 'assistant', ?, ?, ?, ?)
+        `).run(
+          messageId,
+          input.threadId,
+          serializeParts(parts),
+          now,
+          now,
+          isTerminalJobState(projection.state) ? "complete" : "running",
+        );
+        this.database.prepare(`
+          INSERT INTO process_job_cards (
+            source_id, job_id, delivery_key, thread_id, message_id,
+            projection_sha256, response_text, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          input.sourceId,
+          projection.jobId,
+          input.deliveryKey,
+          input.threadId,
+          messageId,
+          projectionSha256,
+          input.responseText ?? null,
+          now,
+          now,
+        );
+        this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+          .run(now, input.threadId);
+        this.recordThreadRevision(input.threadId, "process_job_card_created", now);
+      });
+      return { thread: this.requireThread(input.threadId), duplicate: false };
+    }
+
+    if (existing.thread_id !== input.threadId || existing.delivery_key !== input.deliveryKey) {
+      throw new WebConsoleError(
+        "notification_idempotency_conflict",
+        "The process job was already bound to a different web thread or delivery key.",
+        409,
+      );
+    }
+    const message = this.database.prepare("SELECT * FROM messages WHERE id = ?")
+      .get(existing.message_id) as unknown as MessageRow | undefined;
+    if (message === undefined || message.thread_id !== input.threadId) {
+      throw new WebConsoleError("storage_corrupt", "A retained process-job card is missing its message.", 500);
+    }
+    const priorParts = parseParts(message.parts_json);
+    const priorJobParts = priorParts.filter((part) => part.type === "process-job");
+    const priorReplyParts = priorParts.filter(isDurableWebReplyPart);
+    const priorPart = priorJobParts[0];
+    if (priorJobParts.length !== 1
+      || priorPart === undefined
+      || priorPart.job.jobId !== projection.jobId
+      || priorParts.length !== 1 + priorReplyParts.length) {
+      throw new WebConsoleError("storage_corrupt", "A retained process-job card has invalid content.", 500);
+    }
+    assertProcessJobCardTransition(priorPart.job, projection);
+    const hasPriorWakeResponse = existing.response_text !== null || priorReplyParts.length > 0;
+    if (hasPriorWakeResponse
+      && input.responseText !== undefined
+      && input.responseText !== (existing.response_text ?? undefined)) {
+      throw new WebConsoleError(
+        "notification_idempotency_conflict",
+        "The process-job wake response cannot be replaced by different text.",
+        409,
+      );
+    }
+    const responseText = input.responseText ?? existing.response_text ?? undefined;
+    const nextReplyParts = input.replyParts === undefined
+      ? priorReplyParts
+      : boundedWebReplyParts(input.replyParts, []);
+    if (hasPriorWakeResponse
+      && input.replyParts !== undefined
+      && !isDeepStrictEqual(nextReplyParts, priorReplyParts)) {
+      throw new WebConsoleError(
+        "notification_idempotency_conflict",
+        "The process-job wake reply parts cannot be replaced by different parts.",
+        409,
+      );
+    }
+    const replyPartsChanged = !isDeepStrictEqual(nextReplyParts, priorReplyParts);
+    if (existing.projection_sha256 === projectionSha256
+      && responseText === (existing.response_text ?? undefined)
+      && !replyPartsChanged) {
+      return { thread, duplicate: true };
+    }
+    this.transaction(() => {
+      this.database.prepare(`
+        UPDATE messages SET parts_json = ?, updated_at = ?, status = ? WHERE id = ?
+      `).run(
+        serializeParts([processJobPart(projection, responseText), ...nextReplyParts]),
+        now,
+        isTerminalJobState(projection.state) ? "complete" : "running",
+        existing.message_id,
+      );
+      this.database.prepare(`
+        UPDATE process_job_cards
+        SET projection_sha256 = ?, response_text = ?, updated_at = ?
+        WHERE source_id = ? AND job_id = ?
+      `).run(projectionSha256, responseText ?? null, now, input.sourceId, projection.jobId);
+      this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+        .run(now, input.threadId);
+      this.recordThreadRevision(input.threadId, "process_job_card_updated", now);
+    });
+    return { thread: this.requireThread(input.threadId), duplicate: false };
+  }
+
+  /** Exact retained binding used before proxying a single operator job. */
+  processJobCardBelongsToThread(sourceId: string, threadId: string, jobId: string): boolean {
+    return this.database.prepare(`
+      SELECT 1 FROM process_job_cards
+      WHERE source_id = ? AND thread_id = ? AND job_id = ?
+    `).get(sourceId, threadId, jobId) !== undefined;
   }
 
   createThread(sourceId: string): WebThread {
@@ -2567,6 +2735,19 @@ export class WebStore {
         created_at TEXT NOT NULL,
         CHECK (old_thread_id <> new_thread_id)
       );
+      CREATE TABLE IF NOT EXISTS process_job_cards (
+        source_id TEXT NOT NULL REFERENCES agents(source_id),
+        job_id TEXT NOT NULL,
+        delivery_key TEXT NOT NULL,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+        projection_sha256 TEXT NOT NULL,
+        response_text TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, job_id),
+        UNIQUE (source_id, delivery_key)
+      );
       CREATE TABLE IF NOT EXISTS push_subscriptions (
         id TEXT PRIMARY KEY,
         endpoint TEXT NOT NULL,
@@ -2831,6 +3012,7 @@ export class WebStore {
       "cron_job_snapshots",
       "cron_run_messages",
       "thread_redirects",
+      "process_job_cards",
       "push_subscriptions",
       "push_events",
       "push_deliveries",
@@ -3429,7 +3611,7 @@ function stableDigest(...values: readonly string[]): string {
   return hash.digest("hex").slice(0, 32);
 }
 
-function notificationPayloadSha256(kind: WebNotificationTriggerKind, text: string): string {
+function notificationPayloadSha256(kind: WebThreadNotificationTriggerKind, text: string): string {
   return createHash("sha256")
     .update(kind)
     .update("\0")
@@ -4785,6 +4967,18 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       && Array.isArray(part.calls)
       && part.calls.every(isWebToolCall);
   }
+  if (part.type === "process-job") {
+    if (part.responseText !== undefined && (typeof part.responseText !== "string" || part.responseText.length > 8_000)) {
+      return false;
+    }
+    try {
+      parseProcessJobProjection(part.job);
+      return Object.keys(part).every((key) => key === "type" || key === "job" || key === "responseText")
+        && Object.keys(part).length === (part.responseText === undefined ? 2 : 3);
+    } catch {
+      return false;
+    }
+  }
   if (part.type === "telemetry") return typeof part.event === "string";
   if (part.type === "error") return typeof part.message === "string" && (part.code === undefined || typeof part.code === "string");
   if (part.type === "attachment") {
@@ -4826,6 +5020,101 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       && typeof part.message === "string"
       && Buffer.byteLength(part.message, "utf8") <= 1_024
       && (part.relatedPartId === undefined || validRichId(part.relatedPartId));
+  }
+  return false;
+}
+
+function processJobPart(
+  job: ProcessJobProjection,
+  responseText: string | undefined,
+): Extract<WebMessagePart, { readonly type: "process-job" }> {
+  return {
+    type: "process-job",
+    job,
+    ...(responseText === undefined ? {} : { responseText }),
+  };
+}
+
+function processJobCardParts(
+  job: ProcessJobProjection,
+  responseText: string | undefined,
+  replyParts: readonly AgentReplyPart[] | undefined,
+): WebMessagePart[] {
+  const card = processJobPart(job, responseText);
+  return replyParts === undefined ? [card] : boundedWebReplyParts(replyParts, [card]);
+}
+
+function isTerminalJobState(state: ProcessJobState): boolean {
+  return state === "succeeded"
+    || state === "failed"
+    || state === "timed_out"
+    || state === "cancelled"
+    || state === "spawn_failed"
+    || state === "queue_expired"
+    || state === "interrupted";
+}
+
+function assertProcessJobCardTransition(
+  previous: ProcessJobProjection,
+  next: ProcessJobProjection,
+): void {
+  if (previous.tool !== next.tool
+    || previous.summary !== next.summary
+    || previous.origin.conversationId !== next.origin.conversationId
+    || previous.origin.channel !== next.origin.channel
+    || previous.origin.runId !== next.origin.runId
+    || previous.origin.historyBoundary !== next.origin.historyBoundary
+    || previous.origin.bucket !== next.origin.bucket
+    || previous.timestamps.admittedAt !== next.timestamps.admittedAt
+    || previous.timestamps.queueDeadlineAt !== next.timestamps.queueDeadlineAt
+    || JSON.stringify(previous.limits) !== JSON.stringify(next.limits)
+    || previous.wake.deliveryKey !== next.wake.deliveryKey) {
+    throw new WebConsoleError(
+      "notification_idempotency_conflict",
+      "The process-job projection changed immutable identity fields.",
+      409,
+    );
+  }
+  if (!allowedProcessJobTransition(previous.state, next.state)) {
+    throw new WebConsoleError(
+      "notification_idempotency_conflict",
+      `Process-job card lifecycle cannot transition from ${previous.state} to ${next.state}.`,
+      409,
+    );
+  }
+  if ((previous.timestamps.startedAt !== null && previous.timestamps.startedAt !== next.timestamps.startedAt)
+    || (previous.timestamps.runtimeDeadlineAt !== null
+      && previous.timestamps.runtimeDeadlineAt !== next.timestamps.runtimeDeadlineAt)
+    || (previous.timestamps.completedAt !== null && previous.timestamps.completedAt !== next.timestamps.completedAt)) {
+    throw new WebConsoleError(
+      "notification_idempotency_conflict",
+      "Process-job card timing changed after becoming durable.",
+      409,
+    );
+  }
+  if (next.wake.attempts < previous.wake.attempts
+    || (previous.wake.state !== "pending" && previous.wake.state !== next.wake.state)) {
+    throw new WebConsoleError(
+      "notification_idempotency_conflict",
+      "Process-job wake settlement cannot move backwards.",
+      409,
+    );
+  }
+}
+
+function allowedProcessJobTransition(previous: ProcessJobState, next: ProcessJobState): boolean {
+  if (previous === next) return true;
+  if (previous === "queued") {
+    // Retained surfaces are sampled; a fast launch/completion may skip one or
+    // both internal nonterminal states between card updates.
+    return next === "starting" || next === "running" || isTerminalJobState(next);
+  }
+  if (previous === "starting") {
+    return next === "running" || (isTerminalJobState(next) && next !== "queue_expired");
+  }
+  if (previous === "running") {
+    return next === "succeeded" || next === "failed" || next === "timed_out"
+      || next === "cancelled" || next === "spawn_failed" || next === "interrupted";
   }
   return false;
 }

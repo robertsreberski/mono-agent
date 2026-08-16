@@ -24,12 +24,14 @@ describe("configured agent runtime Pi auth", () => {
   it("passes a configured Pi OAuth resolver into runtime creation", () => {
     const runtime = createConfiguredAgentRuntime(monoConfig("/tmp/pi-auth.json"));
 
-    expect(runtime).toBe(fakeRuntime);
+    expect(runtime).not.toBe(fakeRuntime);
+    expect(runtime.run).toEqual(expect.any(Function));
     expect(createPiOAuthApiKeyResolverMock).toHaveBeenCalledWith({ path: "/tmp/pi-auth.json" });
     expect(createMonoRuntimeMock).toHaveBeenCalledWith({
       workspace: "/repo",
       qaOutputDir: "/repo/.mono-agent/artifacts",
       resolvePiApiKey,
+      sandboxEngine: expect.objectContaining({ id: "srt" }),
     });
   });
 });

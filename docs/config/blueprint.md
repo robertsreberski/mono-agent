@@ -37,6 +37,7 @@ my-agent/
       .replay-projection-v1.json # BuJo exact metadata-only replay authority (0600)
       .index/              # managed generations + manifest/runtime metadata
     sessions/              # optional durable Pi transcripts when configured
+    process-jobs/          # opt-in owner-private Exec/Bash jobs and output
     whatsapp-auth/         # Baileys auth state (WhatsApp channel only)
     trace-sources/         # traceability registry (if kept folder-local)
 ```
@@ -231,6 +232,28 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "detachedServices": [
       { "name": "work-control", "tokenEnv": "WORK_CONTROL_CONTINUATION_TOKEN" }
     ]
+  },
+
+  // Opt-in Pi-native Exec/Bash background jobs. The host owns the inherited
+  // POSIX process group (commands that daemonize into another group are unsupported),
+  // durable bounded output, exact-thread wake, cancellation, and restart recovery.
+  // Unsupported on Windows; every numeric field has a compiled hard cap.
+  "processJobs": {
+    "enabled": true,                       // default false
+    "stateDir": ".mono-agent/process-jobs", // relative child of the agent root
+    "maxConcurrent": 4,                   // cap 32
+    "maxActivePerConversation": 2,        // cap 8
+    "maxQueued": 8,                       // cap 64
+    "maxRuntimeMs": 1800000,              // 30 min; cap 24 h; a call may narrow
+    "maxQueueAgeMs": 300000,              // 5 min; cap 1 h
+    "maxOutputBytes": 1048576,            // 1 MiB combined; cap 8 MiB
+    "previewChars": 2000,                 // cap 8000; a call may narrow
+    "maxChainDepth": 4,                   // host-owned wake depth; cap 8
+    "retention": {
+      "maxRecords": 1000,                 // cap 10000
+      "maxAgeMs": 604800000,              // 7 d; cap 30 d
+      "artifactMaxBytes": 268435456        // 256 MiB; cap 1 GiB
+    }
   },
 
   // Human-in-the-loop bridge: structured blocking AskUser plus tool
@@ -461,6 +484,7 @@ Every top-level section maps to a deep-dive page:
 | `context` | Identity, soul, skills selection | [Identity & soul](/context/identity-and-soul/), [Skills](/context/skills/), [Assembly](/context/assembly/) |
 | `memory` | Backend, tier, recall, embeddings, capture LLM, consolidation | [Embeddings](/memory/embeddings/), [Capture & recall](/memory/capture-and-recall/), [Consolidation](/memory/rituals/) |
 | `tools` | Allow/deny tool policy, MCP servers | [Tool policy](/tools/policy/), [MCP](/tools/mcp/) |
+| `processJobs` | Pi-native Exec/Bash background ownership and exact-thread wake | [Background process jobs](/tools/background-process-jobs/) |
 | `continuations` | Host-owned durable asynchronous result routing | [Durable continuations](/tools/durable-continuations/) |
 | `interaction` | Ask-the-user and tool-progress bridge | [Delivery & send tools](/channels/delivery-and-send-tools/) |
 | `sandbox` | Filesystem/network confinement for runtime commands | [Sandbox](/tools/sandbox/) |

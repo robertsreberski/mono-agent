@@ -684,8 +684,8 @@ describe("parseCliArgs", () => {
     expect(help).not.toContain("--artifact-dir");
     expect(help).not.toContain("web reset --all --yes");
 
-    // Exactly the nine PR3 JSON surfaces carry a [--json] marker.
-    expect(help.split("[--json]").length - 1).toBe(9);
+    // Exactly the ten JSON surfaces carry a [--json] marker.
+    expect(help.split("[--json]").length - 1).toBe(10);
     const lineFor = (short: string): string => lines.find((line) => line.includes(short)) ?? "";
     expect(lineFor("runs [report|audit]")).toContain("[--json]");
     expect(lineFor("memory <subcommand>")).toContain("[--json]");

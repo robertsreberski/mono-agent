@@ -41,6 +41,10 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   owner-private, bearer-authenticated loopback ingress. Webhooks retain one
   marked thread per result; cron deliveries append to one durable read-only
   channel per `(sourceId, jobId)` and reconcile all run states from the agent.
+- Accept exact-source/thread process-job notifications through the same private
+  ingress, update one durable job card in place without a verbatim-history
+  append, and proxy thread job refreshes through the agent's independent owner
+  operator capability.
 
 ## Install / Usage
 
@@ -271,8 +275,9 @@ cross-resource requests fail. See
 1. `server.ts` accepts the versioned browser API, staged uploads, and SSE
    subscriptions, then delegates stateful work to `WebConsoleService`.
 2. The service discovers agents from the trace-source registry, persists agent,
-   thread, message, part, turn, live-input, upload, preference, Web Push,
-   notification, and cron projection records through the SQLite store, and
+   thread, message, part, process-job card, turn, live-input, upload, preference,
+   Web Push subscription/event/delivery, notification, and cron projection
+   records through the SQLite store, and
    drives each agent over its loopback operator endpoint.
 3. Service mutations publish invalidations. Browsers consume `/api/v1/events`
    and refetch authoritative projections, including the selected agent's
@@ -283,9 +288,11 @@ cross-resource requests fail. See
    cards, composer, attachments, activity, and push-subscription UI; its service
    worker handles background delivery and same-origin clicks.
 5. `deliverWebNotification` reads the owner-private live ingress record and
-   performs one bearer-authenticated loopback delivery. The service first
-   appends the result to agent history, then atomically exposes an idempotent
-   assistant-only cron or webhook thread.
+   performs one bearer-authenticated loopback delivery. Cron/webhook delivery
+   first appends the result to agent history, then atomically exposes an
+   idempotent assistant-only thread. A process-job delivery instead updates one
+   source/thread-bound durable card; its normal wake turn owns the single agent
+   history entry.
 
 ### Package structure
 
@@ -294,8 +301,8 @@ cross-resource requests fail. See
 | [`server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/server.ts) | HTTP service, `/api/v1` routes, host/theme bootstrap identity, per-host PWA manifest, uploads, SSE invalidations, host/origin checks, and static webapp serving. |
 | [`service.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/service.ts) | Application lifecycle for discovery, threads, turns, live-input delivery/fallback, attachments, `AskUser` snapshots/submission, cancellation, notifications, and invalidation. |
 | [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence. |
-| [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, and durable history append over the operator protocol. |
-| [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook notification delivery. |
+| [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, and owner-authenticated process-job reads/cancel over the operator protocol. |
+| [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook thread delivery and source/thread-bound process-job card updates. |
 | [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including atomic `AskUser` forms, tests, and its own dependency lockfile. |
 
 ## Public API
@@ -307,7 +314,7 @@ cross-resource requests fail. See
 | `startWebServer` | Start the persistent browser service and receive the actual bound URL plus idempotent stop methods. |
 | `prepareWebState` / `prepareWebStatePaths` | Create and validate the owner-private state layout before starting a custom service. |
 | `resetWebState` | Perform the explicit whole-store reset used by host lifecycle commands. |
-| `deliverWebNotification` | Deliver one idempotent cron/webhook result through the private loopback ingress. |
+| `deliverWebNotification` | Deliver one idempotent cron/webhook result or source/thread-bound process-job card update through the private loopback ingress. |
 | `discoverAcpBridgeAgents` | Discover Worklab-importable ACP sources through a credential-free, versioned ownership contract. |
 | `discoverOperatorAgents` | Read trusted operator endpoints from trace-source manifests. |
 | `WebBootstrap`, `WebThreadDetail`, `WebEvent`, and related `Web*` DTOs | Build another client against the versioned browser API. |
@@ -336,6 +343,8 @@ DEFAULT_WEB_THEME
 DeliverWebNotificationInput
 DeliverWebNotificationOptions
 DeliverWebNotificationResult
+DeliverWebProcessJobNotificationInput
+DeliverWebThreadNotificationInput
 DiscoverAcpBridgeAgentsOptions
 DiscoverOperatorAgentsOptions
 DiscoveredOperatorAgent
@@ -391,6 +400,7 @@ WebStatePaths
 WebTheme
 WebThread
 WebThreadDetail
+WebThreadNotificationTriggerKind
 WebThreadTrigger
 defaultTraceRegistryDir
 defaultWebStateDir

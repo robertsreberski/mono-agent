@@ -7,10 +7,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   isChannelUserCancelReason,
+  type AgentReplyPart,
 } from "@mono-agent/agent-contracts";
 
 import { WebService, WeightedTurnBudget } from "../service.js";
-import { fakeDiscoveredAgent, operatorFetch, temporaryRoot } from "./helpers.js";
+import { fakeDiscoveredAgent, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
 
@@ -512,6 +513,158 @@ describe("WebService", () => {
       body: { text: "Cron digest", idempotencyKey: `${runId}:success` },
     }]);
     expect(recorded[0]!.conversationId).not.toBe(`web:${delivered.thread!.id}`);
+    await service.stop();
+  });
+
+  it("appends a process-job card to its origin thread without recordVerbatim", async () => {
+    const onVerbatim = vi.fn();
+    const service = await createService({
+      fetchImpl: operatorFetch({ supportsHistoryAppend: true, onVerbatim }),
+    });
+    const thread = service.createThread("agent-one");
+    const running = fakeProcessJob({ conversationId: `web:${thread.id}` });
+    await expect(service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: running.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: running,
+    })).resolves.toMatchObject({ duplicate: false, thread: { id: thread.id, messageCount: 1 } });
+    expect(onVerbatim).not.toHaveBeenCalled();
+    expect(service.thread(thread.id).messages).toHaveLength(1);
+
+    const terminal = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      state: "succeeded",
+      wakeState: "delivered",
+    });
+    const replyParts = [
+      {
+        type: "attachment" as const,
+        id: "job-attachment",
+        reference: { scheme: "mono-agent-artifact" as const, id: "job-artifact" },
+        name: "report.txt",
+        mediaType: "text/plain",
+        sizeBytes: 12,
+        integrityId: `sha256:${"a".repeat(64)}`,
+      },
+      {
+        type: "mcp_app" as const,
+        id: "11111111-1111-4111-8111-111111111111",
+        invocationId: "11111111-1111-4111-8111-111111111111",
+        connectionId: "job-connection",
+        serverName: "widgets",
+        toolName: "show_chart",
+        resourceUri: "ui://widgets/chart",
+        mediaType: "text/html;profile=mcp-app" as const,
+        protocolVersion: "2026-01-26" as const,
+        title: "Job chart",
+      },
+      {
+        type: "failure" as const,
+        id: "job-failure",
+        code: "artifact_missing" as const,
+        message: "One optional artifact expired.",
+      },
+    ] as const satisfies readonly AgentReplyPart[];
+    const terminalInput = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: terminal.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: terminal,
+      text: "Completed normally.",
+      parts: replyParts,
+    };
+    await expect(service.deliverNotification(terminalInput)).resolves.toMatchObject({ duplicate: false });
+    expect(service.thread(thread.id).messages).toHaveLength(1);
+    const parts = service.thread(thread.id).messages[0]?.parts;
+    expect(parts).toEqual([
+      expect.objectContaining({
+        type: "process-job",
+        job: expect.objectContaining({ state: "succeeded" }),
+        responseText: "Completed normally.",
+      }),
+      expect.objectContaining({
+        type: "attachment",
+        id: "job-attachment",
+        artifactId: "job-artifact",
+        contentUrl: expect.stringContaining("/reply-attachments/job-attachment/content?"),
+      }),
+      expect.objectContaining({
+        type: "mcp_app",
+        id: "11111111-1111-4111-8111-111111111111",
+        resourceUrl: expect.stringContaining("/mcp-apps/11111111-1111-4111-8111-111111111111?"),
+        bridgeUrl: expect.stringContaining("/mcp-apps/11111111-1111-4111-8111-111111111111/requests?"),
+      }),
+      replyParts[2],
+    ]);
+    expect(JSON.stringify(parts)).not.toContain("mono-agent-artifact");
+    await expect(service.deliverNotification(terminalInput)).resolves.toMatchObject({ duplicate: true });
+    await expect(service.deliverNotification({
+      ...terminalInput,
+      parts: [{ ...replyParts[2], message: "A different retry." }],
+    })).rejects.toMatchObject({ code: "notification_idempotency_conflict", status: 409 });
+    expect(onVerbatim).not.toHaveBeenCalled();
+    await service.stop();
+  });
+
+  it("proxies only one retained job bound to the exact source and thread", async () => {
+    const requests: Array<{ jobId: string; authorization: string | null }> = [];
+    let jobs: readonly ReturnType<typeof fakeProcessJob>[] = [];
+    let jobOverride: ReturnType<typeof fakeProcessJob> | undefined;
+    const second = fakeDiscoveredAgent();
+    const service = await createService({
+      discoverImpl: async () => [
+        fakeDiscoveredAgent({ processJobsBearer: "owner-token" }),
+        {
+          ...second,
+          source: { ...second.source, sourceId: "agent-two", label: "Agent Two" },
+          baseUrl: "http://127.0.0.1:45124/gui",
+          processJobsBearer: "other-owner-token",
+        },
+      ],
+      fetchImpl: operatorFetch({
+        supportsJobs: true,
+        get jobs() { return jobs; },
+        jobForRequest: (jobId) => jobOverride ?? jobs.find((candidate) => candidate.jobId === jobId),
+        onJobRequest: (jobId, authorization) => requests.push({ jobId, authorization }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const running = fakeProcessJob({ conversationId: `web:${thread.id}` });
+    jobs = [running];
+    await service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: running.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: running,
+    });
+
+    await expect(service.threadJob(thread.id, running.jobId)).resolves.toEqual(running);
+    expect(requests).toEqual([{ jobId: running.jobId, authorization: "Bearer owner-token" }]);
+
+    const sameSourceOtherThread = service.createThread("agent-one");
+    await expect(service.threadJob(sameSourceOtherThread.id, running.jobId))
+      .rejects.toMatchObject({ code: "process_job_not_found", status: 404 });
+    const otherSourceThread = service.createThread("agent-two");
+    await expect(service.threadJob(otherSourceThread.id, running.jobId))
+      .rejects.toMatchObject({ code: "process_job_not_found", status: 404 });
+    expect(requests).toHaveLength(1);
+
+    jobs = [fakeProcessJob({ conversationId: `web:${sameSourceOtherThread.id}` })];
+    await expect(service.threadJob(thread.id, running.jobId))
+      .rejects.toMatchObject({ code: "process_job_not_found", status: 404 });
+    expect(requests).toHaveLength(2);
+
+    jobOverride = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      jobId: "33333333-3333-4333-8333-333333333333",
+    });
+    await expect(service.threadJob(thread.id, running.jobId))
+      .rejects.toMatchObject({ code: "process_job_not_found", status: 404 });
+    expect(requests).toHaveLength(3);
     await service.stop();
   });
 

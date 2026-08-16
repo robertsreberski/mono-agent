@@ -13,11 +13,11 @@
  * agent-host-runtime-auth) so we can observe the OPTIONS createMonoRuntime is
  * built with AND capture the `model` reaching each `runtime.run`.
  */
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { RuntimeRunOptions } from "@mono-agent/runtime-adapter";
@@ -31,6 +31,7 @@ const fakeRuntime = {
   },
 };
 const createMonoRuntimeMock = vi.fn((_options: unknown) => fakeRuntime);
+const coordinatorHome = vi.hoisted(() => ({ path: "" }));
 
 vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@mono-agent/runtime-adapter")>();
@@ -39,10 +40,31 @@ vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => {
     createMonoRuntime: (options: unknown) => createMonoRuntimeMock(options),
   };
 });
+vi.mock("../account-home.js", () => ({
+  accountHomeDirectory: () => coordinatorHome.path,
+}));
+vi.mock("../process-incarnation.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../process-incarnation.js")>(),
+  currentProcessIncarnation: async () => ({
+    schema: "mono-agent.process-incarnation.v1" as const,
+    bootSessionId: "test-boot",
+    processStartId: "vitest-agent-host-memory-model",
+  }),
+  isSameProcessIncarnation: () => true,
+}));
 
 const { createConfiguredMemory } = await import("../index.js");
 
 const tempDirs: string[] = [];
+beforeAll(async () => {
+  coordinatorHome.path = await mkdtemp(join(tmpdir(), "agent-host-memory-model-coordinator-home-"));
+});
+afterAll(async () => {
+  await vi.waitFor(async () => {
+    expect(await readdir(join(coordinatorHome.path, ".mono-agent", "agent-root-leases"))).toEqual([]);
+  }, { timeout: 2_000, interval: 10 });
+  await rm(coordinatorHome.path, { recursive: true, force: true });
+});
 async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "agent-host-memory-model-"));
   tempDirs.push(dir);

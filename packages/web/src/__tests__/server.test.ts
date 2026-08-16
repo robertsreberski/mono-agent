@@ -6,8 +6,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { isAllowedWebHostname, startWebServer, type WebServerHandle } from "../server.js";
+import { deliverWebNotification } from "../notification-client.js";
 import { prepareWebStatePaths } from "../state-paths.js";
-import { fakeDiscoveredAgent, operatorFetch, temporaryRoot } from "./helpers.js";
+import { fakeDiscoveredAgent, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
 const servers: WebServerHandle[] = [];
@@ -905,6 +906,12 @@ describe("web HTTP server", () => {
     });
     const thread = (await json(created)).thread as { id: string; sourceId: string };
     expect(thread.sourceId).toBe("agent-one");
+    const removedJobCollection = await fetch(`${baseUrl}/api/v1/threads/${thread.id}/jobs`);
+    expect(removedJobCollection.status).toBe(404);
+    expect(await json(removedJobCollection)).toMatchObject({ error: { code: "not_found" } });
+    const retainedSingleJobProxy = await fetch(`${baseUrl}/api/v1/threads/${thread.id}/jobs/missing-job`);
+    expect(retainedSingleJobProxy.status).toBe(404);
+    expect(await json(retainedSingleJobProxy)).toMatchObject({ error: { code: "process_job_not_found" } });
     const turn = await fetch(`${baseUrl}/api/v1/threads/${thread.id}/turns`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "hello", model: "provider/default", effort: "high" }),
     });
@@ -923,6 +930,83 @@ describe("web HTTP server", () => {
     const deleted = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, { method: "DELETE" });
     expect(deleted.status).toBe(204);
     expect(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`)).toMatchObject({ status: 404 });
+  });
+
+  it("projects process-job rich replies through the thread API with exact message-bound access", async () => {
+    const { baseUrl, handle } = await start({ host: "127.0.0.1" });
+    const created = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    const thread = (await json(created)).thread as { id: string };
+    const processJob = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      state: "succeeded",
+      wakeState: "delivered",
+    });
+    const notification = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: processJob.wake.deliveryKey,
+      threadId: thread.id,
+      processJob,
+      parts: [
+        {
+          type: "attachment",
+          id: "job-attachment",
+          reference: { scheme: "mono-agent-artifact", id: "job-artifact" },
+          name: "report.txt",
+          mediaType: "text/plain",
+          sizeBytes: 12,
+          integrityId: `sha256:${"a".repeat(64)}`,
+        },
+        {
+          type: "mcp_app",
+          id: "11111111-1111-4111-8111-111111111111",
+          invocationId: "11111111-1111-4111-8111-111111111111",
+          connectionId: "job-connection",
+          serverName: "widgets",
+          toolName: "show_chart",
+          resourceUri: "ui://widgets/chart",
+          mediaType: "text/html;profile=mcp-app",
+          protocolVersion: "2026-01-26",
+          title: "Job chart",
+        },
+        {
+          type: "failure",
+          id: "job-failure",
+          code: "artifact_missing",
+          message: "One optional artifact expired.",
+        },
+      ],
+    } as const;
+    await expect(deliverWebNotification(notification, { stateDir: handle.stateDir }))
+      .resolves.toEqual({ threadId: thread.id, duplicate: false });
+    await expect(deliverWebNotification(notification, { stateDir: handle.stateDir }))
+      .resolves.toEqual({ threadId: thread.id, duplicate: true });
+
+    const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`)) as {
+      messages: Array<{ id: string; parts: Array<Record<string, unknown>> }>;
+    };
+    const message = detail.messages[0]!;
+    const expectedBase = `/api/v1/threads/${encodeURIComponent(thread.id)}/messages/${encodeURIComponent(message.id)}`;
+    expect(message.parts).toEqual([
+      expect.objectContaining({ type: "process-job", job: expect.objectContaining({ jobId: processJob.jobId }) }),
+      expect.objectContaining({
+        type: "attachment",
+        id: "job-attachment",
+        contentUrl: expect.stringMatching(new RegExp(`^${expectedBase}/reply-attachments/job-attachment/content\\?`)),
+      }),
+      expect.objectContaining({
+        type: "mcp_app",
+        id: "11111111-1111-4111-8111-111111111111",
+        resourceUrl: expect.stringMatching(new RegExp(`^${expectedBase}/mcp-apps/11111111-1111-4111-8111-111111111111\\?`)),
+        bridgeUrl: expect.stringMatching(new RegExp(`^${expectedBase}/mcp-apps/11111111-1111-4111-8111-111111111111/requests\\?`)),
+      }),
+      expect.objectContaining({ type: "failure", id: "job-failure", code: "artifact_missing" }),
+    ]);
+    expect(JSON.stringify(message.parts)).not.toContain("mono-agent-artifact");
   });
 
   it("accepts a live follow-up for the active web turn and exposes its applied status", async () => {

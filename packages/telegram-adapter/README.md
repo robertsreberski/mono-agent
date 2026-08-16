@@ -161,6 +161,21 @@ same cumulative ledger so it becomes the newest bot message after the human
 follow-up. A failed delete edits the existing ledger in place; neither path can
 block or replace the final answer.
 
+### Host-owned process-job lifecycle
+
+The config-first host uses `updateProcessJob` on the bot controller/start result
+for a background Exec/Bash job's lifecycle card. This path never invokes the
+responder. It binds the card to the exact chat origin, serializes updates per
+job, edits the same message when possible, and ignores any nonterminal update
+that arrives after a terminal state. The adapter retains up to the shared
+10,096 outstanding lifecycle identities, refuses overflow rather than evicting
+live state, and reclaims only terminal identities whose wake has already
+settled. When a terminal update has no editable reference, the adapter makes at
+most one self-contained terminal fallback post in that same chat. This identity
+state is instance-local, not durable across an adapter/process restart; the
+existing post-restart fallback contract is unchanged. Ordinary proactive
+`notify` behavior is unchanged.
+
 ### Live follow-up steering
 
 When the responder exposes live input, another plain-text message in the same
@@ -246,7 +261,9 @@ The request lifecycle is:
 4. The host responder returns normal stream events. `message-stream.ts` renders
    Telegram-safe final-only delivery, retries, activity, and cleanup; the
    Markdown translator runs only at this transport boundary.
-5. `stop()` ends polling and waits for the runner to settle.
+5. Host-owned process-job projections bypass the responder and use the
+   adapter-local monotonic lifecycle-message path.
+6. `stop()` ends polling and waits for the runner to settle.
 
 ### Package structure
 
@@ -272,6 +289,7 @@ The request lifecycle is:
 | `loadTelegramAdapterConfig` | Load, validate, and redact the config/env surface. |
 | `startTelegramAdapter` | Start the complete bot/poller lifecycle and obtain notify/post helpers. |
 | `createTelegramBot` | Control the bot controller lifecycle directly. |
+| `TelegramBotController.updateProcessJob` | Post or monotonically update one exact-origin host lifecycle card without a model turn. |
 | `createGrammyTelegramApi` / `createTelegramMessageSender` | Compose the Bot API boundary separately. |
 | `downloadTelegramAttachments` | Normalize authorized Telegram media into shared attachments. |
 | `createOpenAiTranscriber` | Add the optional transcription boundary. |
