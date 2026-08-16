@@ -21,6 +21,8 @@ export const AGENT_ROOT_OWNED_ELSEWHERE_ERROR =
   "Another mono-agent process is already using this agent root. Stop that local agent before trying again.";
 export const AGENT_ROOT_REQUIRED_ERROR =
   "A configured local runtime requires an explicit agent-root cwd.";
+export const AGENT_ROOT_WORKSPACE_REQUIRED_ERROR =
+  "runtime.workspace must reference an existing directory before mono-agent starts. Create it or choose an existing workspace.";
 export const PROCESS_JOBS_GENERATION_CHANGED_ERROR =
   "Process-job private-state protection changed before provider execution.";
 export const PROCESS_JOBS_GENERATION_DRAIN_TIMEOUT_ERROR =
@@ -304,7 +306,13 @@ export function assertAgentRootLeaseOutsideWorkspace(
 ): void {
   const entry = entryFor(ownership);
   const resolvedWorkspace = resolve(workspace);
-  const canonicalWorkspace = realpathSync(resolvedWorkspace);
+  let canonicalWorkspace: string;
+  try {
+    canonicalWorkspace = realpathSync(resolvedWorkspace);
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) throw new Error(AGENT_ROOT_WORKSPACE_REQUIRED_ERROR);
+    throw error;
+  }
   if (containsPath(resolvedWorkspace, entry.leasePath)
     || containsPath(canonicalWorkspace, entry.leasePath)) {
     throw new Error(

@@ -22,9 +22,11 @@ vi.mock("../process-incarnation.js", async (importOriginal) => ({
 
 import {
   AGENT_ROOT_OWNED_ELSEWHERE_ERROR,
+  AGENT_ROOT_WORKSPACE_REQUIRED_ERROR,
   PROCESS_JOBS_GENERATION_DRAIN_TIMEOUT_ERROR,
   agentRootLeasePath,
   acquireAgentRootOwnership,
+  assertAgentRootLeaseOutsideWorkspace,
   releaseAgentRootOwnershipWhenIdle,
 } from "../agent-root-coordinator.js";
 
@@ -139,6 +141,20 @@ describe("agent-root cooperative ownership", () => {
     await expect(acquireAgentRootOwnership(root, { homeDir: home })).rejects.toThrow(expected);
     await expect(acquireAgentRootOwnership(root, { homeDir: home })).rejects.toThrow(expected);
     expect(beforeLeaseRelease).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed with actionable runtime.workspace guidance when the configured directory is absent", async () => {
+    const { root, home } = await roots("missing-workspace");
+    const ownership = await acquireAgentRootOwnership(root, { homeDir: home });
+    const missingWorkspace = join(root, "missing-workspace");
+
+    expect(() => assertAgentRootLeaseOutsideWorkspace(ownership, missingWorkspace)).toThrow(
+      AGENT_ROOT_WORKSPACE_REQUIRED_ERROR,
+    );
+    await expect(lstat(missingWorkspace)).rejects.toMatchObject({ code: "ENOENT" });
+
+    ownership.release();
+    await waitForLeaseRelease(root, home);
   });
 });
 

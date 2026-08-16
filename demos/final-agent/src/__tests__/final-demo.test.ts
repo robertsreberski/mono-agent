@@ -31,11 +31,12 @@ import {
 import type { FinalAgentDemo } from "../final-demo.js";
 
 const tempDirs: string[] = [];
+const TEST_WORKSPACE_DIRECTORY = "workspace";
 
 async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "mono-agent-final-demo-"));
   tempDirs.push(dir);
-  await mkdir(join(dir, "workspace"), { recursive: true });
+  await mkdir(join(dir, TEST_WORKSPACE_DIRECTORY), { recursive: true });
   return dir;
 }
 
@@ -718,7 +719,7 @@ function validConfigPatch() {
       model: "pi:openai-codex:gpt-5.5",
       executionMode: "sdk",
       maxTurns: 4,
-      workspace: "./workspace",
+      workspace: `./${TEST_WORKSPACE_DIRECTORY}`,
     },
     context: {
       identityPath: "./IDENTITY.md",

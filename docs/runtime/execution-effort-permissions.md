@@ -162,6 +162,7 @@ This value does not size conversation history. The configured app uses an owner-
 ## Workspace
 
 `runtime.workspace` is the working directory for runtime tools (file reads/writes, shell, etc.). Relative paths resolve against the config directory; the default is `"."`.
+The directory must exist before startup so mono-agent can attest its filesystem boundary without trusting a path that may later become a symlink. Guided `mono-agent init` creates its configured `.mono-agent/workspace/`; when writing config by hand, create the selected directory first.
 
 | Key | Values | Default | Env var |
 |-----|--------|---------|---------|
