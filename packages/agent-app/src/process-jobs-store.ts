@@ -75,7 +75,8 @@ export interface ProcessJobOriginRecord {
   readonly normalizedReplyTarget: string;
   readonly runId: string;
   readonly historyBoundary: string;
-  readonly channel: "slack" | "telegram" | "web";
+  /** Opted-in addressable conversation-id scheme owned by the origin driver. */
+  readonly channel: string;
 }
 
 export interface DurableProcessJobRecord {
@@ -1220,7 +1221,8 @@ export function isProcessJobOriginRecord(value: unknown): value is ProcessJobOri
     || !boundedNonEmptyString(value.normalizedReplyTarget, 2_048)
     || !boundedNonEmptyString(value.runId, 512)
     || !boundedNonEmptyString(value.historyBoundary, 512)
-    || (value.channel !== "slack" && value.channel !== "telegram" && value.channel !== "web")) {
+    || !boundedNonEmptyString(value.channel, 64)
+    || !/^[a-z][a-z0-9-]*$/u.test(value.channel)) {
     return false;
   }
   const conversation = splitProcessJobConversationId(value.conversationId);
@@ -1260,13 +1262,16 @@ function isCanonicalProcessJobBase(
       && String(chatId) === destination;
   }
   if (channel === "web") return destination !== "new" && /^[^\s:#]+$/u.test(destination);
-  const parts = destination.split(":");
-  const channelId = parts[0];
-  const threadTs = parts[1];
-  return (parts.length === 1 || parts.length === 2)
-    && typeof channelId === "string"
-    && /^(?:C|D|G)[A-Z0-9]+$/u.test(channelId)
-    && (threadTs === undefined || /^\d+\.\d+$/u.test(threadTs));
+  if (channel === "slack") {
+    const parts = destination.split(":");
+    const channelId = parts[0];
+    const threadTs = parts[1];
+    return (parts.length === 1 || parts.length === 2)
+      && typeof channelId === "string"
+      && /^(?:C|D|G)[A-Z0-9]+$/u.test(channelId)
+      && (threadTs === undefined || /^\d+\.\d+$/u.test(threadTs));
+  }
+  return destination.length > 0 && !/[\s#]/u.test(destination);
 }
 
 function nullableSandboxSettingsPath(value: unknown): value is string | null {

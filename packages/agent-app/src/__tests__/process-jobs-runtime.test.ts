@@ -18,6 +18,7 @@ import {
 import {
   bindProcessJobWakeContextToResponder,
   processJobWakeContextForRequest,
+  registerProcessJobSteeringTarget,
   runWithProcessJobWakeContext,
 } from "../process-jobs-context.js";
 import {
@@ -182,7 +183,7 @@ describe("process-job request availability", () => {
     );
   });
 
-  it("captures exact Slack, Telegram, and existing-web origins including bucket and reply boundary", () => {
+  it("captures exact built-in and opted-in plugin origins including bucket and reply boundary", () => {
     expect(processJobOriginForRequest({
       runId: "run-slack",
       request: {
@@ -208,6 +209,21 @@ describe("process-job request availability", () => {
       runId: "run-web",
       request: { conversationId: "web:thread-1", text: "hello", metadata: { source: "web" } } as never,
     }, "tui")).toMatchObject({ channel: "web", replyToConversationId: "web:thread-1" });
+    expect(processJobOriginForRequest({
+      runId: "run-whatsapp",
+      request: { conversationId: "whatsapp:123@s.whatsapp.net#today", text: "hello" } as never,
+    }, "custom-whatsapp", "whatsapp")).toMatchObject({
+      channel: "whatsapp",
+      baseConversationId: "whatsapp:123@s.whatsapp.net",
+      bucket: "today",
+    });
+    expect(processJobOriginForRequest({
+      runId: "run-discord",
+      request: { conversationId: "discord:channel-1", text: "hello" } as never,
+    }, "discord-plugin", "discord")).toMatchObject({
+      channel: "discord",
+      replyToConversationId: "discord:channel-1",
+    });
   });
 
   it("refuses TUI-direct, new-web, cron, webhook, OpenAI API, A2A, and mismatched reply origins", () => {
@@ -231,7 +247,7 @@ describe("process-job request availability", () => {
   });
 
   it("injects only for allowed Pi-native turns", async () => {
-    const controller = vi.fn(() => ({ start: vi.fn() }));
+    const controller = vi.fn((_request: unknown, _depth: number | (() => number)) => ({ start: vi.fn() }));
     const coreConfig = {
       runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
       tools: { allowedTools: ["Exec", "Bash"], disallowedTools: [] },
@@ -256,7 +272,8 @@ describe("process-job request availability", () => {
       request: { conversationId: "slack:C1:1.1", text: "hello", ...(metadata === undefined ? {} : { metadata }) },
     }) as never;
     await expect(extension(input())).resolves.toMatchObject({ runtimeOptions: { processJobs: expect.any(Object) } });
-    expect(controller).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "slack:C1:1.1" }), 0);
+    expect(controller).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "slack:C1:1.1" }), expect.any(Function));
+    expect((controller.mock.calls[0]![1] as () => number)()).toBe(0);
     await expect(extension(input({ route: "claude" }))).rejects.toThrow(
       "Process-job private state requires a Pi-native runtime.",
     );
@@ -264,7 +281,7 @@ describe("process-job request availability", () => {
   });
 
   it("preserves parent-plus-one depth through a busy live-session queue and removes capability at max depth", async () => {
-    const controller = vi.fn(() => ({ start: vi.fn() }));
+    const controller = vi.fn((_request: unknown, _depth: number | (() => number)) => ({ start: vi.fn() }));
     const coreConfig = {
       runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
       tools: { allowedTools: ["Exec"], disallowedTools: [] },
@@ -366,8 +383,9 @@ describe("process-job request availability", () => {
     expect(controller).toHaveBeenCalledOnce();
     expect(controller).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: "slack:C1:1.1" }),
-      3,
+      expect.any(Function),
     );
+    expect((controller.mock.calls[0]![1] as () => number)()).toBe(3);
     await manager.dispose();
   });
 
@@ -375,7 +393,7 @@ describe("process-job request availability", () => {
     "retains inherited depth when a %s wake waits behind a busy conversation",
     async (channel) => {
       const conversationId = channel === "slack" ? "slack:C1:1.1" : "telegram:42";
-      const controller = vi.fn((_request: unknown, _chainDepth: number) => ({ start: vi.fn() }));
+      const controller = vi.fn((_request: unknown, _chainDepth: number | (() => number)) => ({ start: vi.fn() }));
       const coreConfig = {
         runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
         tools: { allowedTools: ["Exec"], disallowedTools: [] },
@@ -451,7 +469,8 @@ describe("process-job request availability", () => {
       release();
       await Promise.all([first, wake]);
       expect(outcome).toMatchObject({ runtimeOptions: { processJobs: expect.any(Object) } });
-      expect(controller).toHaveBeenCalledWith(expect.any(Object), 3);
+      expect(controller).toHaveBeenCalledWith(expect.any(Object), expect.any(Function));
+      expect((controller.mock.calls[0]![1] as () => number)()).toBe(3);
       await manager.dispose();
     },
   );
@@ -464,7 +483,7 @@ describe("process-job request availability", () => {
     try {
       const identityPath = join(dir, "IDENTITY.md");
       await writeFile(identityPath, "You are Mono.", "utf8");
-      const controller = vi.fn((_request: unknown, _chainDepth: number) => ({ start: vi.fn() }));
+      const controller = vi.fn((_request: unknown, _chainDepth: number | (() => number)) => ({ start: vi.fn() }));
       const coreConfig = {
         runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
         tools: { allowedTools: ["Exec"], disallowedTools: [] },
@@ -522,7 +541,7 @@ describe("process-job request availability", () => {
       );
       expect(runtimeCall).toBe(3);
       expect(controller).toHaveBeenCalledTimes(expectedCalls);
-      for (const call of controller.mock.calls) expect(call[1]).toBe(chainDepth);
+      for (const call of controller.mock.calls) expect((call[1] as () => number)()).toBe(chainDepth);
       await harness.dispose?.();
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -558,6 +577,89 @@ describe("process-job request availability", () => {
 
     release();
     await flight;
+  });
+
+  it("targets the exact active run and raises its controller depth only for applied wake steering", async () => {
+    const offers: Array<{ resolve(value: { status: "applied"; runId: string } | { status: "requeue"; reason: "closed" }): void }> = [];
+    const offeredRequests: Array<Record<string, unknown>> = [];
+    const responder = bindProcessJobWakeContextToResponder({
+      respond: async () => ({ text: "ok" }),
+      offerLiveInput(request) {
+        offeredRequests.push(request as unknown as Record<string, unknown>);
+        let resolve!: (value: { status: "applied"; runId: string } | { status: "requeue"; reason: "closed" }) => void;
+        const settled = new Promise<
+          { status: "applied"; runId: string } | { status: "requeue"; reason: "closed" }
+        >((resolvePromise) => { resolve = resolvePromise; });
+        offers.push({ resolve });
+        return { status: "accepted", settled };
+      },
+    });
+    const target = registerProcessJobSteeringTarget({
+      conversationId: "slack:C-exact:9.9",
+      runId: "active-run",
+      chainDepth: 1,
+    });
+    try {
+      const deliveryKey = "process-job:steer-depth";
+      let offer!: ReturnType<NonNullable<typeof responder.offerLiveInput>>;
+      await runWithProcessJobWakeContext({ jobId: "parent", chainDepth: 3 }, async () => {
+        offer = responder.offerLiveInput!({
+          conversationId: "slack:C-exact:9.9",
+          id: deliveryKey,
+          text: "finished",
+          receivedAt: "2026-08-16T10:00:00.000Z",
+          deliveryKey,
+        });
+      }, deliveryKey);
+      expect(offeredRequests[0]).toMatchObject({ targetRunId: "active-run" });
+      expect(target.chainDepth()).toBe(4);
+      if (offer.status !== "accepted") throw new Error("expected accepted offer");
+      offers[0]!.resolve({ status: "requeue", reason: "closed" });
+      await expect(offer.settled).resolves.toEqual({ status: "requeue", reason: "closed" });
+      expect(target.chainDepth()).toBe(1);
+
+      let applied!: ReturnType<NonNullable<typeof responder.offerLiveInput>>;
+      await runWithProcessJobWakeContext({ jobId: "parent", chainDepth: 2 }, async () => {
+        applied = responder.offerLiveInput!({
+          conversationId: "slack:C-exact:9.9",
+          id: "process-job:applied",
+          text: "finished",
+          receivedAt: "2026-08-16T10:00:01.000Z",
+          deliveryKey: "process-job:applied",
+        });
+      }, "process-job:applied");
+      if (applied.status !== "accepted") throw new Error("expected accepted offer");
+      offers[1]!.resolve({ status: "applied", runId: "active-run" });
+      await expect(applied.settled).resolves.toEqual({ status: "applied", runId: "active-run" });
+      expect(target.chainDepth()).toBe(3);
+    } finally {
+      target.release();
+    }
+  });
+
+  it("declines steering when more than one run claims the same base conversation", async () => {
+    const offerLiveInput = vi.fn(() => ({
+      status: "accepted" as const,
+      settled: Promise.resolve({ status: "applied" as const, runId: "one" }),
+    }));
+    const responder = bindProcessJobWakeContextToResponder({ respond: async () => ({ text: "ok" }), offerLiveInput });
+    const first = registerProcessJobSteeringTarget({ conversationId: "web:one", runId: "one", chainDepth: 0 });
+    const second = registerProcessJobSteeringTarget({ conversationId: "web:one#bucket", runId: "two", chainDepth: 0 });
+    try {
+      const outcome = await runWithProcessJobWakeContext({ jobId: "parent", chainDepth: 1 }, async () =>
+        responder.offerLiveInput!({
+          conversationId: "web:one",
+          id: "process-job:ambiguous-target",
+          text: "finished",
+          receivedAt: "2026-08-16T10:00:00.000Z",
+          deliveryKey: "process-job:ambiguous-target",
+        }), "process-job:ambiguous-target");
+      expect(outcome).toEqual({ status: "unavailable", reason: "inactive" });
+      expect(offerLiveInput).not.toHaveBeenCalled();
+    } finally {
+      first.release();
+      second.release();
+    }
   });
 
   it("fails closed when overlapping wake flights reuse one exact delivery discriminator", async () => {

@@ -50,7 +50,10 @@ export async function startWebNotificationIngress(
   let stopPromise: Promise<void> | undefined;
 
   server.headersTimeout = 10_000;
-  server.requestTimeout = 10_000;
+  // A terminal process-job wake may run a genuine provider turn. Keep the
+  // owner-authenticated ingress bounded, but do not cut it off at the ordinary
+  // five-second lifecycle-update deadline.
+  server.requestTimeout = 10 * 60 * 1_000;
   server.keepAliveTimeout = 1_000;
   app.disable("x-powered-by");
 
@@ -75,6 +78,7 @@ export async function startWebNotificationIngress(
         threadId: result.thread?.id ?? null,
         duplicate: result.duplicate,
         ...(result.tombstoned === true ? { tombstoned: true } : {}),
+        ...(result.delivery === undefined ? {} : { delivery: result.delivery }),
       });
     }).catch(next);
   });
@@ -156,6 +160,7 @@ type ParsedNotificationRequest = {
   readonly deliveryKey: string;
   readonly threadId: string;
   readonly processJob: ProcessJobProjection;
+  readonly wakePrompt?: string;
   readonly text?: string;
   readonly parts?: readonly AgentReplyPart[];
 };
@@ -166,7 +171,7 @@ export function parseNotificationRequest(body: unknown): ParsedNotificationReque
   }
   const record = body as Record<string, unknown>;
   const allowed = record.triggerKind === "job"
-    ? new Set(["sourceId", "triggerKind", "deliveryKey", "threadId", "processJob", "text", "parts"])
+    ? new Set(["sourceId", "triggerKind", "deliveryKey", "threadId", "processJob", "wakePrompt", "text", "parts"])
     : new Set(["sourceId", "triggerKind", "deliveryKey", "text", "jobId", "runId"]);
   if (Object.keys(record).some((key) => !allowed.has(key))) {
     throw new WebConsoleError("invalid_notification", "Notification body contains unsupported fields.", 400);
@@ -187,6 +192,12 @@ export function parseNotificationRequest(body: unknown): ParsedNotificationReque
     if (typeof record.text === "string" && record.text.length > 8_000) {
       throw new WebConsoleError("invalid_notification", "Process-job response text exceeds its limit.", 413);
     }
+    if (record.wakePrompt !== undefined
+      && (typeof record.wakePrompt !== "string"
+        || record.wakePrompt.trim().length === 0
+        || record.wakePrompt.length > WEB_MAX_TURN_TEXT_CHARACTERS)) {
+      throw new WebConsoleError("invalid_notification", "wakePrompt must contain a bounded process-job wake prompt.", 413);
+    }
     const parts = parseReplyParts(record.parts);
     return {
       sourceId,
@@ -194,6 +205,7 @@ export function parseNotificationRequest(body: unknown): ParsedNotificationReque
       deliveryKey,
       threadId,
       processJob,
+      ...(typeof record.wakePrompt === "string" ? { wakePrompt: record.wakePrompt } : {}),
       ...(typeof record.text === "string" ? { text: record.text } : {}),
       ...(parts === undefined ? {} : { parts }),
     };

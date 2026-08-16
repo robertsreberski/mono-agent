@@ -81,6 +81,7 @@ import {
   WebStore,
   notificationPushLogicalKey,
   type StoredAttachment,
+  type StoredTurnExecution,
   type StoredWebPushEvent,
   type WebPushIdentity,
 } from "./store.js";
@@ -138,6 +139,8 @@ interface ActiveLiveInput {
   readonly completion: Promise<void>;
 }
 
+type ProcessJobWakeReceipt = NonNullable<DeliverWebNotificationResult["delivery"]>;
+
 interface AgentConnection {
   readonly client: OperatorClient;
   readonly info: OperatorInfo;
@@ -167,6 +170,8 @@ export interface DeliverWebProcessJobNotificationInput {
   readonly deliveryKey: string;
   readonly threadId: string;
   readonly processJob: ProcessJobProjection;
+  /** Present only for the terminal wake delivery, not lifecycle-only updates. */
+  readonly wakePrompt?: string;
   readonly text?: string;
   readonly parts?: readonly AgentReplyPart[];
 }
@@ -179,6 +184,13 @@ export interface DeliverWebNotificationResult {
   readonly thread?: WebThread;
   readonly duplicate: boolean;
   readonly tombstoned?: true;
+  readonly delivery?: {
+    readonly delivered: boolean;
+    readonly disposition?: "steered" | "follow_up";
+    readonly code?: string;
+    readonly retryable?: boolean;
+    readonly ambiguous?: boolean;
+  };
 }
 
 export interface WebUploadReservation {
@@ -197,6 +209,9 @@ export class WebService {
   private readonly drainingLiveInputThreads = new Set<string>();
   private readonly activeUploads = new Map<string, number>();
   private readonly activeNotifications = new Map<string, Promise<DeliverWebNotificationResult>>();
+  private readonly processJobWakeTails = new Map<string, Promise<void>>();
+  private readonly processJobWakeReservations = new Map<string, number>();
+  private readonly activeProcessJobWakes = new Map<string, Promise<ProcessJobWakeReceipt>>();
   private readonly allowlist = new Set(DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST);
   private readonly attachmentTurnBudget: WeightedTurnBudget;
   private readonly pushIdentity: WebPushIdentity;
@@ -750,7 +765,12 @@ export class WebService {
       }
       this.emit("threads.changed", input.threadId, { thread: completed.thread });
       this.emit("thread.changed", input.threadId, { thread: completed.thread });
-      return completed;
+      if (input.wakePrompt === undefined) return completed;
+      if (this.connections.get(input.sourceId) === undefined) await this.refreshAgents();
+      const delivery = await this.deliverProcessJobWake(
+        input as DeliverWebProcessJobNotificationInput & { readonly wakePrompt: string },
+      );
+      return { ...completed, delivery };
     }
     const reservation = this.store.reserveNotification(input);
     if (reservation.duplicate) return this.store.completeNotification(reservation);
@@ -988,6 +1008,7 @@ export class WebService {
     const active = [...this.activeTurns.values()];
     const activeLiveInputs = [...this.activeLiveInputs.entries()];
     const activeNotifications = [...this.activeNotifications.values()];
+    const activeProcessJobWakes = [...this.activeProcessJobWakes.values()];
     const trackedIds = new Set(active.map((turn) => turn.turnId));
     for (const turnId of this.store.listActiveTurnIds()) {
       if (!trackedIds.has(turnId)) this.store.interruptTurn(turnId);
@@ -1002,6 +1023,7 @@ export class WebService {
     }
     await Promise.allSettled(active.map((turn) => turn.completion));
     await Promise.allSettled(activeLiveInputs.map(([, input]) => input.completion));
+    await Promise.allSettled(activeProcessJobWakes);
     await Promise.allSettled(activeNotifications);
     await Promise.allSettled(askWatches.map((watch) => watch.promise));
     await this.pushDispatcher.stopAndDrain(5_000);
@@ -1013,10 +1035,11 @@ export class WebService {
   }
 
   private async runTurn(
-    started: ReturnType<WebStore["beginTurn"]>,
+    started: StoredTurnExecution,
     client: OperatorClient,
     controller: AbortController,
     operatorText: string,
+    processJobWakeDeliveryKey?: string,
   ): Promise<void> {
     const coalescer = new StreamFrameCoalescer(
       async (frames) => {
@@ -1043,6 +1066,7 @@ export class WebService {
           web: { threadId: started.thread.id, turnId: started.turnId, ...modelMetadata },
           tui: modelMetadata,
         },
+        ...(processJobWakeDeliveryKey === undefined ? {} : { processJobWakeDeliveryKey }),
         onFrame: (frame) => {
           this.observeAskUserFrame(started.thread.id, started.turnId, frame);
           coalescer.push(frame);
@@ -1086,18 +1110,28 @@ export class WebService {
   }
 
   private launchTurn(
-    started: ReturnType<WebStore["beginTurn"]>,
+    started: StoredTurnExecution,
     client: OperatorClient,
     operatorText: string,
-  ): void {
+    processJobWakeDeliveryKey?: string,
+  ): Promise<void> {
     const threadId = started.thread.id;
     const controller = new AbortController();
-    const completion = this.runTurn(started, client, controller, operatorText).finally(() => {
+    const completion = this.runTurn(
+      started,
+      client,
+      controller,
+      operatorText,
+      processJobWakeDeliveryKey,
+    ).finally(() => {
       const active = this.activeTurns.get(threadId);
       if (active?.turnId === started.turnId) this.activeTurns.delete(threadId);
-      if (!this.stopped) void this.drainQueuedLiveInputs(threadId);
+      if (!this.stopped && !this.processJobWakeReservations.has(threadId)) {
+        void this.drainQueuedLiveInputs(threadId);
+      }
     });
     this.activeTurns.set(threadId, { turnId: started.turnId, controller, client, completion });
+    return completion;
   }
 
   private async deliverLiveInput(
@@ -1140,7 +1174,10 @@ export class WebService {
   }
 
   private async drainQueuedLiveInputs(threadId: string): Promise<void> {
-    if (this.stopped || this.activeTurns.has(threadId) || this.drainingLiveInputThreads.has(threadId)) return;
+    if (this.stopped
+      || this.activeTurns.has(threadId)
+      || this.processJobWakeReservations.has(threadId)
+      || this.drainingLiveInputThreads.has(threadId)) return;
     this.drainingLiveInputThreads.add(threadId);
     try {
       const thread = this.store.getThread(threadId);
@@ -1159,6 +1196,173 @@ export class WebService {
     } finally {
       this.drainingLiveInputThreads.delete(threadId);
     }
+  }
+
+  private async deliverProcessJobWake(
+    input: DeliverWebProcessJobNotificationInput & { readonly wakePrompt: string },
+  ): Promise<ProcessJobWakeReceipt> {
+    const activeKey = `${input.sourceId}\0${input.processJob.jobId}`;
+    const existing = this.activeProcessJobWakes.get(activeKey);
+    if (existing !== undefined) return await existing;
+
+    const reservation = this.store.reserveProcessJobWake({
+      sourceId: input.sourceId,
+      threadId: input.threadId,
+      jobId: input.processJob.jobId,
+      deliveryKey: input.deliveryKey,
+    });
+    if (reservation.kind === "completed") {
+      return { delivered: true, disposition: reservation.disposition };
+    }
+    if (reservation.kind === "uncertain") {
+      return {
+        delivered: false,
+        code: "process_job_wake_ambiguous",
+        retryable: false,
+        ambiguous: true,
+      };
+    }
+
+    this.retainProcessJobWakeReservation(input.threadId);
+    const previous = this.processJobWakeTails.get(input.threadId) ?? Promise.resolve();
+    const delivery = previous.catch(() => undefined).then(async (): Promise<ProcessJobWakeReceipt> => {
+      const connection = this.connections.get(input.sourceId);
+      if (connection === undefined) {
+        this.store.abandonProcessJobWake({
+          sourceId: input.sourceId,
+          jobId: input.processJob.jobId,
+          deliveryKey: input.deliveryKey,
+        });
+        return { delivered: false, code: "destination_channel_unavailable", retryable: true };
+      }
+      const active = this.activeTurns.get(input.threadId);
+      if (active !== undefined && connection.info.supportsLiveInput) {
+        try {
+          const settlement = await active.client.liveInput({
+            conversationId: `web:${input.threadId}`,
+            id: input.deliveryKey,
+            text: input.wakePrompt,
+            receivedAt: new Date().toISOString(),
+            deliveryKey: input.deliveryKey,
+            signal: AbortSignal.timeout(10 * 60 * 1_000),
+          });
+          if (settlement.status === "applied") {
+            this.store.completeProcessJobWake({
+              sourceId: input.sourceId,
+              jobId: input.processJob.jobId,
+              deliveryKey: input.deliveryKey,
+              disposition: "steered",
+            });
+            return { delivered: true, disposition: "steered" };
+          }
+        } catch (error) {
+          this.options.logger?.warn?.("Web process-job steering outcome is unknown; automatic fallback is suppressed.", {
+            threadId: input.threadId,
+            error: errorMessage(error),
+          });
+          return {
+            delivered: false,
+            code: "process_job_wake_ambiguous",
+            retryable: false,
+            ambiguous: true,
+          };
+        }
+      }
+
+      if (active !== undefined) await active.completion;
+      if (this.stopped) {
+        this.store.abandonProcessJobWake({
+          sourceId: input.sourceId,
+          jobId: input.processJob.jobId,
+          deliveryKey: input.deliveryKey,
+        });
+        return { delivered: false, code: "destination_channel_unavailable", retryable: true };
+      }
+      const refreshedConnection = this.connections.get(input.sourceId);
+      if (refreshedConnection === undefined) {
+        this.store.abandonProcessJobWake({
+          sourceId: input.sourceId,
+          jobId: input.processJob.jobId,
+          deliveryKey: input.deliveryKey,
+        });
+        return { delivered: false, code: "destination_channel_unavailable", retryable: true };
+      }
+      let started;
+      try {
+        started = this.store.beginAssistantTurn({
+          threadId: input.threadId,
+          prompt: input.wakePrompt,
+        });
+      } catch (error) {
+        this.store.abandonProcessJobWake({
+          sourceId: input.sourceId,
+          jobId: input.processJob.jobId,
+          deliveryKey: input.deliveryKey,
+        });
+        return {
+          delivered: false,
+          code: errorCode(error) ?? "process_job_wake_failed",
+          retryable: false,
+        };
+      }
+      const completion = this.launchTurn(
+        started,
+        refreshedConnection.client,
+        input.wakePrompt,
+        input.deliveryKey,
+      );
+      this.emit("message.changed", input.threadId, {
+        messageId: started.assistantMessageId,
+        updatedAt: started.thread.updatedAt,
+      });
+      this.emit("turn.changed", input.threadId, { turn: started.thread.runState });
+      this.emit("threads.changed", input.threadId);
+      await completion;
+      if (this.store.turnStatus(started.turnId) !== "complete") {
+        return {
+          delivered: false,
+          code: "process_job_wake_failed",
+          retryable: false,
+          ambiguous: true,
+        };
+      }
+      this.store.completeProcessJobWake({
+        sourceId: input.sourceId,
+        jobId: input.processJob.jobId,
+        deliveryKey: input.deliveryKey,
+        disposition: "follow_up",
+        turnId: started.turnId,
+      });
+      return { delivered: true, disposition: "follow_up" };
+    });
+    const tail = delivery.then(() => undefined, () => undefined);
+    this.processJobWakeTails.set(input.threadId, tail);
+    this.activeProcessJobWakes.set(activeKey, delivery);
+    try {
+      return await delivery;
+    } finally {
+      if (this.processJobWakeTails.get(input.threadId) === tail) {
+        this.processJobWakeTails.delete(input.threadId);
+      }
+      if (this.activeProcessJobWakes.get(activeKey) === delivery) {
+        this.activeProcessJobWakes.delete(activeKey);
+      }
+      this.releaseProcessJobWakeReservation(input.threadId);
+    }
+  }
+
+  private retainProcessJobWakeReservation(threadId: string): void {
+    this.processJobWakeReservations.set(
+      threadId,
+      (this.processJobWakeReservations.get(threadId) ?? 0) + 1,
+    );
+  }
+
+  private releaseProcessJobWakeReservation(threadId: string): void {
+    const remaining = (this.processJobWakeReservations.get(threadId) ?? 1) - 1;
+    if (remaining > 0) this.processJobWakeReservations.set(threadId, remaining);
+    else this.processJobWakeReservations.delete(threadId);
+    if (!this.stopped) void this.drainQueuedLiveInputs(threadId);
   }
 
   private async deliverNotificationOnce(

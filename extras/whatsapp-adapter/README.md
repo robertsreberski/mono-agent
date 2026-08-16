@@ -99,6 +99,14 @@ runner.start();
 The base responder, stream, response, and cancellation contracts come from
 `@mono-agent/agent-contracts`.
 
+When loaded as a channel plugin, WhatsApp claims the `whatsapp:` conversation
+scheme for ProcessJobs. Lifecycle updates stay bound to the allowlisted origin
+chat. A completion reserves that chat before it offers the stable delivery key
+to the exact active run; confirmed application reports `steered`, while every
+explicit non-applied settlement runs one ordinary follow-up with the normal
+`Thinking…` indicator and final response. New inbound messages see the
+reservation as busy, so they cannot overtake the fallback.
+
 The bundled `WhatsAppEventRunner` derives a queue from each usable, trimmed `remoteJid`; messages without one share a fallback queue. Within a queue it awaits both the message handler and its result callback before starting the next message. Different queues can enter the adapter concurrently, so one chat is not held behind another by the event runner, although host runtime limits can still serialize the underlying agent work. Completion and result-callback order across different chats is not guaranteed to match global receive order. A later message in the same chat, including `/cancel`, does not overtake the in-flight handler.
 
 ## Architecture
@@ -141,6 +149,7 @@ The bundled `WhatsAppEventRunner` derives a queue from each usable, trimmed `rem
 | `createChannelDriver` / `createWhatsAppChannelDriver` | Load the adapter through a config-first `channels.plugins[]` entry. |
 | `startWhatsAppAdapter` | Start socket, adapter, and event lifecycle together in a custom host. |
 | `WhatsAppAdapter` | Apply authorization, trigger, command, cancellation, and responder behavior to messages. |
+| `WhatsAppAdapter.notify` | Steer a durable completion into an active chat run or run its reserved visible fallback turn. |
 | `createBaileysWhatsAppSocket` | Create the production linked-device socket and credential store. |
 | `WhatsAppEventRunner` | Subscribe a socket to adapter handling with deterministic per-chat ordering. |
 | `WhatsAppMessageStream` | Reuse buffered final-answer delivery for a compatible socket. |
@@ -197,6 +206,8 @@ WhatsAppMessageNormalizationResult
 WhatsAppMessageStream
 WhatsAppMessageStreamLogger
 WhatsAppMessageStreamOptions
+WhatsAppNotifyOptions
+WhatsAppNotifyResult
 WhatsAppRawMessage
 WhatsAppRequestMetadata
 WhatsAppSendMessageContent

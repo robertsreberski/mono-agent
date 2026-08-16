@@ -231,6 +231,7 @@ interface ConfiguredAgentInternalHooks {
     readonly registry: ProcessJobsRootRegistrySnapshot;
     readonly service: ProcessJobsServiceHandle | undefined;
     readonly channelId: ChannelId | undefined;
+    readonly conversationScheme?: string | undefined;
     readonly protectionPosture: ProcessJobsProtectionPosture;
     readonly routesOnlyPiNative?: (metadata: Record<string, unknown> | undefined) => boolean;
   };
@@ -1101,6 +1102,7 @@ async function createConfiguredAgentHarnessInternal(
     coreConfig: config,
     baseModel: model,
     channelId: internalHooks.processJobs?.channelId,
+    conversationScheme: internalHooks.processJobs?.conversationScheme,
     sandboxEngine,
     protectionPosture: processJobsProtectionPosture,
     routesOnlyPiNative: internalHooks.processJobs?.routesOnlyPiNative
