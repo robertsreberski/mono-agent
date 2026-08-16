@@ -166,9 +166,10 @@ export async function createLocalConfigurationSession(
     // protection. Use the authenticated root, never the ambient CLI cwd.
     cwd: secureOptions.cwd,
   }, {
-    ...(bootstrapProcessJobsStateDir === undefined
-      ? {}
-      : { bootstrapProcessJobsStateDir }),
+    bootstrapProcessJobs: {
+      settings: processJobs,
+      ...(bootstrapProcessJobsStateDir === undefined ? {} : { stateDir: bootstrapProcessJobsStateDir }),
+    },
   }) as DisposableResponder;
   return {
     responder,

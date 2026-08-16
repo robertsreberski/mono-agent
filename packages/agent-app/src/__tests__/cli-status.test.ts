@@ -133,6 +133,25 @@ describe("printAppStatus exporter line", () => {
     expect(out).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
   });
 
+  it("prints the path-free unsafe ProcessJobs protection warning", async () => {
+    const app = {
+      ...fakeApp({ kind: "disabled", reason: "No observability exporter configured." }),
+      processJobsProtection: {
+        protection: "unsafe-unprotected" as const,
+        retainedRoots: true,
+        unsafeAllowUnprotectedState: true,
+        warning: "UNSAFE: ProcessJobs state and operator secret are model-accessible.",
+      },
+    };
+
+    const out = await captureStatus(app);
+
+    expect(out).toContain("process jobs protection");
+    expect(out).toContain("protection: unsafe-unprotected; retained roots: yes");
+    expect(out).toContain("UNSAFE: ProcessJobs state and operator secret are model-accessible.");
+    expect(out).not.toContain(".mono-agent/process-jobs");
+  });
+
   it("prints active skills and compact recent runs for foreground status", async () => {
     const out = await captureStatus(
       fakeApp(

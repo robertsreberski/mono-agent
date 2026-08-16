@@ -22,6 +22,7 @@ import {
   type AgentRootOwnership,
 } from "./agent-root-coordinator.js";
 import {
+  attestProcessJobsRootRegistrySnapshot,
   failedProcessJobsRootRegistryProtection,
   loadProcessJobsRootRegistryProtection,
   registerProcessJobsRoot,
@@ -29,6 +30,11 @@ import {
   type ProcessJobsRootRegistrySnapshot,
 } from "./process-jobs-root-registry.js";
 import { hasExactProcessJobStateMarkers } from "./process-jobs-store.js";
+import {
+  unsafeProcessJobsProtectionStatus,
+  resolveProcessJobsProtectionPosture,
+  type ProcessJobsProtectionPosture,
+} from "./process-jobs-protection.js";
 
 export interface ProcessJobsControllerPort {
   readonly cwd: string;
@@ -45,9 +51,11 @@ export interface ProcessJobsControllerPort {
   processJobsStateDir: string | undefined;
   processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
   processJobsRegistry: ProcessJobsRootRegistrySnapshot | undefined;
+  processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
   preparedProcessJobs: {
     readonly settings: ProcessJobsSettings;
     readonly workspace: string;
+    readonly protectionPosture: ProcessJobsProtectionPosture;
     readonly registration?: ProcessJobsRootRegistrationProof;
   } | undefined;
   observabilityContext(): Promise<{ readonly sourceId?: string }>;
@@ -248,6 +256,10 @@ export async function prepareProcessJobsProtection(
         controller.agentRootOwnership.coordinator.synchronizeGeneration(registry.generation);
       }
     }
+    registry = await attestProcessJobsRootRegistrySnapshot(
+      registry,
+      coreConfig.runtime.workspace,
+    );
   } catch (error) {
     registry = failedProcessJobsRootRegistryProtection(controller.agentRootOwnership.agentRoot);
     controller.agentRootOwnership.coordinator.publishGeneration(registry.generation);
@@ -255,12 +267,19 @@ export async function prepareProcessJobsProtection(
       reason: reasonOf(error),
     });
   }
+  const protectionPosture = resolveProcessJobsProtectionPosture({
+    settings,
+    registry,
+    coreConfig,
+  });
   controller.processJobsRegistry = registry;
+  controller.processJobsProtectionPosture = protectionPosture;
   controller.processJobsStateDir = settings.enabled ? settings.stateDir : undefined;
   controller.preparedProcessJobs = {
     settings,
     workspace: coreConfig.runtime.workspace,
-    ...(settings.enabled && registration !== undefined ? { registration } : {}),
+    protectionPosture,
+    ...(settings.enabled && registry.kind === "ready" && registration !== undefined ? { registration } : {}),
   };
 }
 
@@ -272,8 +291,12 @@ export async function publishProcessJobsHealth(
 ): Promise<void> {
   const tui = controller.running.get("tui");
   if (tui !== undefined) {
+    const protectionStatus = unsafeProcessJobsProtectionStatus(controller.processJobsProtectionPosture);
     const summary = {
       ...tui.summary,
+      ...(protectionStatus === undefined
+        ? {}
+        : { processJobsProtection: protectionStatus }),
       processJobs: {
         stateDir,
         health: health.state,

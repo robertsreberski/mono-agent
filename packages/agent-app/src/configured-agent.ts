@@ -87,6 +87,11 @@ import {
   configuredRuntimeFallbackModels,
   runtimeUsesFallbackRouter,
 } from "./runtime-routes.js";
+import type { ProcessJobsSettings } from "./process-jobs-config.js";
+import {
+  resolveProcessJobsProtectionPosture,
+  type ProcessJobsProtectionPosture,
+} from "./process-jobs-protection.js";
 import {
   createProcessJobsRuntimeExtension,
   processJobsSandboxPolicy,
@@ -226,6 +231,7 @@ interface ConfiguredAgentInternalHooks {
     readonly registry: ProcessJobsRootRegistrySnapshot;
     readonly service: ProcessJobsServiceHandle | undefined;
     readonly channelId: ChannelId | undefined;
+    readonly protectionPosture: ProcessJobsProtectionPosture;
     readonly routesOnlyPiNative?: (metadata: Record<string, unknown> | undefined) => boolean;
   };
   /**
@@ -233,7 +239,10 @@ interface ConfiguredAgentInternalHooks {
    * ProcessJobs service (currently `tui --local`). Registration happens only
    * after this harness acquires the canonical agent-root owner.
    */
-  readonly bootstrapProcessJobsStateDir?: string;
+  readonly bootstrapProcessJobs?: {
+    readonly settings: ProcessJobsSettings;
+    readonly stateDir?: string;
+  };
 }
 
 /**
@@ -429,22 +438,26 @@ export function createConfiguredAgentRuntime(
 /** @internal App/harness seam; callers are already inside the shared root/request choke point. */
 export function createConfiguredAgentRuntimeForApp(
   input: MonoAgentConfig | ConfiguredAgentRuntimeOptions,
+  internal: { readonly suppressSandboxEngine?: boolean } = {},
 ): MonoRuntimeLike {
   const config = isRuntimeOptions(input) ? input.config : input;
   const options = isRuntimeOptions(input) ? input : undefined;
-  return createConfiguredAgentRuntimeBase(config, options);
+  return createConfiguredAgentRuntimeBase(config, options, internal.suppressSandboxEngine === true);
 }
 
 function createConfiguredAgentRuntimeBase(
   config: MonoAgentConfig,
   options: ConfiguredAgentRuntimeOptions | undefined,
+  suppressSandboxEngine = false,
 ): MonoRuntimeLike {
   const fallback = fallbackChainForConfig(config, options);
-  const sandboxEngine = configuredSandboxEngine(
-    config,
-    options?.model ?? config.runtime.model,
-    options?.sandboxEngine,
-  );
+  const sandboxEngine = suppressSandboxEngine
+    ? undefined
+    : configuredSandboxEngine(
+        config,
+        options?.model ?? config.runtime.model,
+        options?.sandboxEngine,
+      );
   const runtimeOptions: Parameters<typeof createMonoRuntime>[0] = {
     ...runtimeHostOptionsForConfig(config),
     ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
@@ -717,6 +730,7 @@ function subagentsRuntimeOptions(
     readonly baseModel: RuntimeModelReference;
     readonly baseExecutionMode: RuntimeExecutionMode;
     readonly runtimeForModel?: AgentHarnessOptions["runtimeForModel"];
+    readonly processJobsProtectionPosture: ProcessJobsProtectionPosture;
   },
 ): StaticRuntimeOptions | undefined {
   const subagents = config.subagents;
@@ -784,7 +798,9 @@ function subagentsRuntimeOptions(
       ? request.systemPrompt
       : `${request.systemPrompt}\n\n${renderSkillIndexSection(childSkills)}`;
 
-    if (childModel.sdk !== "pi" && sandboxPolicyCarriesProtectedRoots(request.sandboxPolicy)) {
+    if (childModel.sdk !== "pi"
+      && (deps.processJobsProtectionPosture.requiresPiNative
+        || sandboxPolicyCarriesProtectedRoots(request.sandboxPolicy))) {
       throw new Error(PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR);
     }
 
@@ -972,16 +988,29 @@ async function createConfiguredAgentHarnessInternal(
   let ownershipTransferred = false;
   try {
   assertAgentRootLeaseOutsideWorkspace(ownership, config.runtime.workspace);
-  const processJobsRegistry = internalHooks.processJobs?.registry
-    ?? (internalHooks.bootstrapProcessJobsStateDir === undefined
+  const loadedProcessJobsRegistry = internalHooks.processJobs?.registry
+    ?? (internalHooks.bootstrapProcessJobs?.stateDir === undefined
       ? await loadProcessJobsRootRegistryProtection(ownership.agentRoot, config.runtime.workspace)
       : (await registerProcessJobsRoot({
           agentRoot: ownership.agentRoot,
           workspace: config.runtime.workspace,
-          stateDir: internalHooks.bootstrapProcessJobsStateDir,
+          stateDir: internalHooks.bootstrapProcessJobs.stateDir,
           coordinator: ownership.coordinator,
         })).snapshot);
+  const processJobsRegistry = loadedProcessJobsRegistry.kind === "failed"
+    ? loadedProcessJobsRegistry
+    : await attestProcessJobsRootRegistrySnapshot(
+        loadedProcessJobsRegistry,
+        config.runtime.workspace,
+      );
   ownership.coordinator.synchronizeGeneration(processJobsRegistry.generation);
+  const processJobsProtectionPosture = internalHooks.processJobs?.protectionPosture
+    ?? resolveProcessJobsProtectionPosture({
+      settings: internalHooks.bootstrapProcessJobs?.settings
+        ?? { enabled: false, unsafeAllowUnprotectedState: false },
+      registry: processJobsRegistry,
+      coreConfig: config,
+    });
   const processJobsProtectedRoots = processJobsProtectionPolicyRoots(processJobsRegistry);
   const artifactDerivedRoots = agentArtifactDerivedRoots(config.artifacts.dir);
   // Chat activity lines are formatted deep in the streaming layer, which has no
@@ -992,8 +1021,12 @@ async function createConfiguredAgentHarnessInternal(
   const model = options.model ?? config.runtime.model;
   const executionMode = options.executionMode ?? config.runtime.executionMode;
   const fallbackModels = configuredRuntimeFallbackModels(config.runtime);
-  const sandboxEngine = configuredSandboxEngine(config, model, options.sandboxEngine);
-  const harnessSandboxPolicy: SandboxPolicy | undefined = processJobsProtectedRoots.length === 0
+  const sandboxEngine = processJobsProtectionPosture.suppressSyntheticSandbox
+    ? undefined
+    : configuredSandboxEngine(config, model, options.sandboxEngine);
+  const harnessSandboxPolicy: SandboxPolicy | undefined = processJobsProtectionPosture.suppressSyntheticSandbox
+    ? config.sandbox
+    : processJobsProtectedRoots.length === 0
     ? config.sandbox
     : processJobsSandboxPolicy({ coreConfig: config, protectedRoots: processJobsProtectedRoots });
   const runtime = options.runtime ?? createConfiguredAgentRuntimeForApp({
@@ -1002,6 +1035,8 @@ async function createConfiguredAgentHarnessInternal(
     model,
     executionMode,
     ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
+  }, {
+    suppressSandboxEngine: processJobsProtectionPosture.suppressSyntheticSandbox,
   });
   const clearSessionsBoundaryOptions = {
     cwd: agentRoot,
@@ -1009,6 +1044,9 @@ async function createConfiguredAgentHarnessInternal(
     baseModel: model,
     fallbackModels,
     ...(harnessSandboxPolicy === undefined ? {} : { sandboxPolicy: harnessSandboxPolicy }),
+    ...(processJobsProtectionPosture.suppressSyntheticSandbox
+      ? { suppressSyntheticSandbox: true }
+      : {}),
   } satisfies ClearSessionsRuntimeBoundaryOptions;
   const routedClearSessionsPolicy = runtimeUsesFallbackRouter(config.runtime)
     ? clearSessionsSandboxPolicy(clearSessionsBoundaryOptions)
@@ -1028,9 +1066,11 @@ async function createConfiguredAgentHarnessInternal(
   // execute memory capture on `config.runtime.model` instead of
   // `config.memory.llm.model`. createConfiguredMemory builds the memory LLM its own
   // fallback-free runtime when no `memoryRuntime` is injected.
-  const configuredMemory = options.memory ?? (await createConfiguredMemory(config, {
-    cwd: agentRoot,
-  }));
+  const configuredMemory = options.memory ?? (await createConfiguredMemoryInternal(
+    config,
+    { cwd: agentRoot },
+    processJobsProtectionPosture,
+  ));
   const memory = configuredMemoryForHarness(config, configuredMemory);
   const memoryRecall = resolveMemoryRecallSettings(config) === undefined
     || !(memory instanceof MemoryRetrievalService)
@@ -1062,6 +1102,7 @@ async function createConfiguredAgentHarnessInternal(
     baseModel: model,
     channelId: internalHooks.processJobs?.channelId,
     sandboxEngine,
+    protectionPosture: processJobsProtectionPosture,
     routesOnlyPiNative: internalHooks.processJobs?.routesOnlyPiNative
       ?? (() => configuredRoutesOnlyPiNative(config, model)),
   });
@@ -1069,6 +1110,7 @@ async function createConfiguredAgentHarnessInternal(
     runtime,
     baseModel: model,
     baseExecutionMode: executionMode as RuntimeExecutionMode,
+    processJobsProtectionPosture,
     ...(options.runtimeForModel === undefined ? {} : { runtimeForModel: options.runtimeForModel }),
   });
   const runtimeOptions = mergeStaticRuntimeOptions(
@@ -1630,35 +1672,45 @@ function supportsSessionResume(model: RuntimeModelReference, executionMode: Runt
 // provider default (30s). The harness degrades recall to empty on timeout.
 const DEFAULT_EMBEDDINGS_TIMEOUT_MS = 10_000;
 
+interface ConfiguredMemoryDependencies {
+  /** Canonical agent-root authority and folder used to resolve optional plugins. */
+  readonly cwd?: string;
+  /** Managed workers must use the plugin frozen into their app-side runtime closure. */
+  readonly preferAppPluginInstall?: boolean;
+  readonly logger?: { warn(message: string): void };
+  /**
+   * Injection seam for the bujo memory LLM's runtime (tests). This runtime MUST
+   * NOT carry the channel runtime's fallback chain: the agent-runtime fallback
+   * router overrides each run's per-call `model` with the chain's primary entry.
+   */
+  readonly memoryRuntime?: MonoRuntimeLike;
+  /** Optional app-owned recording context for memory LLM calls. */
+  readonly observability?: Pick<
+    ConfiguredAgentHarnessOptions,
+    "observabilityContext" | "exporterWarn" | "exporterFactory"
+  >;
+}
+
 export async function createConfiguredMemory(
   config: MonoAgentConfig,
-  deps: {
-    /** Canonical agent-root authority and folder used to resolve optional plugins. */
-    cwd?: string;
-    /** Managed workers must use the plugin frozen into their app-side runtime closure. */
-    preferAppPluginInstall?: boolean;
-    logger?: { warn(message: string): void };
-    /**
-     * Injection seam for the bujo memory LLM's runtime (tests). This runtime MUST
-     * NOT carry the channel runtime's fallback chain: the agent-runtime fallback
-     * router overrides each run's per-call `model` with the chain's primary entry,
-     * so a memory LLM riding the channel runtime would silently execute on
-     * `config.runtime.model` instead of `config.memory.llm.model`. When omitted the
-     * memory LLM builds its OWN fallback-free runtime from
-     * `runtimeHostOptionsForConfig(config)` (preserving the pi auth resolver) so the
-     * per-call `config.memory.llm.model` is the sole, effective primary.
-     */
-    memoryRuntime?: MonoRuntimeLike;
-    /**
-     * When supplied, the bujo memory LLM records each `complete()` as a run via
-     * the same JSONL + Phoenix pipeline as channel runs (subject to the
-     * `memory.llm.trace` toggle). Omitted → memory LLM runs unrecorded.
-     */
-    observability?: Pick<
-      ConfiguredAgentHarnessOptions,
-      "observabilityContext" | "exporterWarn" | "exporterFactory"
-    >;
-  } = {},
+  deps: ConfiguredMemoryDependencies = {},
+): Promise<MemoryStore | undefined> {
+  return await createConfiguredMemoryInternal(config, deps);
+}
+
+/** @internal App-only unsafe authority; deliberately absent from the package root. */
+export async function createConfiguredMemoryForApp(
+  config: MonoAgentConfig,
+  deps: ConfiguredMemoryDependencies,
+  protectionPosture: ProcessJobsProtectionPosture,
+): Promise<MemoryStore | undefined> {
+  return await createConfiguredMemoryInternal(config, deps, protectionPosture);
+}
+
+async function createConfiguredMemoryInternal(
+  config: MonoAgentConfig,
+  deps: ConfiguredMemoryDependencies,
+  protectionPosture?: ProcessJobsProtectionPosture,
 ): Promise<MemoryStore | undefined> {
   if (config.memory === undefined) {
     return undefined;
@@ -1735,6 +1787,7 @@ export async function createConfiguredMemory(
     ),
     config,
     deps.cwd ?? process.cwd(),
+    protectionPosture,
   );
   const dim = embeddingsConfig?.dim ?? 768;
 
@@ -1773,6 +1826,7 @@ export async function createConfiguredMemory(
     deps.memoryRuntime,
     recording,
     deps.cwd ?? process.cwd(),
+    protectionPosture,
   );
   if (llm === undefined) {
     throw new Error("memory.mode 'bujo' could not construct the required memory.llm.");
@@ -1808,6 +1862,7 @@ function configuredMemoryLlm(
   memoryRuntimeOverride: MonoRuntimeLike | undefined,
   recording: RecorderCompositionDeps | undefined,
   agentRoot: string | undefined,
+  protectionPosture: ProcessJobsProtectionPosture | undefined,
 ): LlmComplete | undefined {
   if (llmConfig === undefined) {
     return undefined;
@@ -1817,7 +1872,7 @@ function configuredMemoryLlm(
     return wrapOwnedDirectMemoryLlm(bujo.createOllamaLlm({
       model: llmConfig.model,
       ...(llmConfig.endpoint !== undefined && { endpoint: llmConfig.endpoint }),
-    }), config, agentRoot);
+    }), config, agentRoot, protectionPosture);
   }
   const model = parseMonoRuntimeModelReference(llmConfig.model);
   const executionMode = llmConfig.executionMode ?? defaultExecutionModeForModel(model);
@@ -1834,6 +1889,7 @@ function configuredMemoryLlm(
     memoryRuntimeOverride ?? createMonoRuntime(runtimeHostOptionsForConfig(config)),
     config,
     agentRoot,
+    protectionPosture,
   );
   return createAgentHostMemoryLlm({
     runtime,
@@ -1865,6 +1921,7 @@ function wrapPerRunOwnedConfiguredRuntime(
   runtime: MonoRuntimeLike,
   config: MonoAgentConfig,
   agentRoot: string | undefined,
+  protectionPosture: ProcessJobsProtectionPosture | undefined,
 ): MonoRuntimeLike {
   return {
     ...runtime,
@@ -1885,22 +1942,24 @@ function wrapPerRunOwnedConfiguredRuntime(
         let effectiveOptions = runOptions;
         if (protectedRoots.length > 0) {
           if (runOptions.model.sdk !== "pi") throw new Error(PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR);
-          const sandboxEngine = runOptions.sandboxEngine ?? createSrtSandboxEngine();
-          if (!await sandboxEngine.isAvailable().catch(() => false)) {
-            throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
+          if (protectionPosture?.suppressSyntheticSandbox !== true) {
+            const sandboxEngine = runOptions.sandboxEngine ?? createSrtSandboxEngine();
+            if (!await sandboxEngine.isAvailable().catch(() => false)) {
+              throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
+            }
+            const sandboxPolicy = mergeSandboxPolicies(
+              runOptions.sandboxPolicy,
+              processJobsSandboxPolicy({ coreConfig: config, protectedRoots }),
+            );
+            if (sandboxPolicy === undefined) {
+              throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
+            }
+            effectiveOptions = {
+              ...runOptions,
+              sandboxPolicy,
+              sandboxEngine,
+            };
           }
-          const sandboxPolicy = mergeSandboxPolicies(
-            runOptions.sandboxPolicy,
-            processJobsSandboxPolicy({ coreConfig: config, protectedRoots }),
-          );
-          if (sandboxPolicy === undefined) {
-            throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
-          }
-          effectiveOptions = {
-            ...runOptions,
-            sandboxPolicy,
-            sandboxEngine,
-          };
         }
         return await runtime.run(systemPrompt, effectiveOptions);
       } finally {
@@ -1915,6 +1974,7 @@ function wrapOwnedDirectMemoryLlm(
   llm: LlmComplete,
   config: MonoAgentConfig,
   agentRoot: string | undefined,
+  protectionPosture: ProcessJobsProtectionPosture | undefined,
 ): LlmComplete {
   return {
     ...llm,
@@ -1931,7 +1991,8 @@ function wrapOwnedDirectMemoryLlm(
         const boundary = await attestProcessJobsRootRegistrySnapshot(loaded, config.runtime.workspace);
         requestLease = ownership.coordinator.acquireRequestLease(boundary.generation);
         const attested = await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
-        if (processJobsProtectionPolicyRoots(attested).length > 0) {
+        if (processJobsProtectionPolicyRoots(attested).length > 0
+          && protectionPosture?.suppressSyntheticSandbox !== true) {
           throw new Error(PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR);
         }
         return await llm.complete(prompt, options);
@@ -1953,6 +2014,7 @@ function wrapOwnedDirectEmbeddingProvider(
   provider: ConfiguredEmbeddingProvider,
   config: MonoAgentConfig,
   agentRoot: string | undefined,
+  protectionPosture: ProcessJobsProtectionPosture | undefined,
 ): ConfiguredEmbeddingProvider {
   return {
     ...provider,
@@ -1969,7 +2031,8 @@ function wrapOwnedDirectEmbeddingProvider(
         const boundary = await attestProcessJobsRootRegistrySnapshot(loaded, config.runtime.workspace);
         requestLease = ownership.coordinator.acquireRequestLease(boundary.generation);
         const attested = await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
-        if (processJobsProtectionPolicyRoots(attested).length > 0) {
+        if (processJobsProtectionPolicyRoots(attested).length > 0
+          && protectionPosture?.suppressSyntheticSandbox !== true) {
           throw new Error(PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR);
         }
         return await provider.embed(texts);

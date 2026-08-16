@@ -175,6 +175,7 @@ new agent.
   // interruption. Unsupported on Windows; unknown keys are rejected.
   "processJobs": {
     "enabled": true,                       // default false
+    "unsafeAllowUnprotectedState": false, // JSON-only; true exposes ProcessJobs state + operator secret to the model
     "stateDir": ".mono-agent/process-jobs", // relative child of the agent root
     "maxConcurrent": 4,                   // cap 32
     "maxActivePerConversation": 2,        // cap 8

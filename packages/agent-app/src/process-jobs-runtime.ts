@@ -20,6 +20,7 @@ import {
 } from "./process-jobs-root-registry.js";
 import { processJobWakeContextForRequest } from "./process-jobs-context.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
+import type { ProcessJobsProtectionPosture } from "./process-jobs-protection.js";
 import {
   isProcessJobOriginRecord,
   type ProcessJobOriginRecord,
@@ -36,6 +37,8 @@ export interface ProcessJobsRuntimeExtensionOptions {
   readonly baseModel: RuntimeModelReference;
   readonly channelId: ChannelId | undefined;
   readonly sandboxEngine: SandboxEngine | undefined;
+  /** App-private; omission preserves the fail-closed public/default behavior. */
+  readonly protectionPosture?: ProcessJobsProtectionPosture;
   /** Agent-root-aware preflight for every route reachable by this request. */
   readonly routesOnlyPiNative?: (metadata: Record<string, unknown> | undefined) => boolean;
   /** Deterministic unit-test seam; official composition always uses durable re-attestation. */
@@ -66,7 +69,8 @@ export function createProcessJobsRuntimeExtension(
         options.coreConfig.runtime.workspace,
       );
       const protectedRoots = processJobsProtectionPolicyRoots(attested);
-      if (protectedRoots.length > 0
+      const retainedRoots = attested.kind === "ready";
+      if (retainedRoots
         && options.routesOnlyPiNative !== undefined
         && !options.routesOnlyPiNative(input.request.metadata)) {
         throw new Error(PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR);
@@ -75,11 +79,11 @@ export function createProcessJobsRuntimeExtension(
         ? { runtimeOptions: {}, cleanup: async () => {} }
         : await options.next(input);
       const effectiveModel = runtimeModel(result.runtimeOptions?.model) ?? options.baseModel;
-      if (protectedRoots.length > 0 && effectiveModel.sdk !== "pi") {
+      if (retainedRoots && effectiveModel.sdk !== "pi") {
         throw new Error(PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR);
       }
       let runtimeOptions = result.runtimeOptions ?? {};
-      if (protectedRoots.length > 0) {
+      if (protectedRoots.length > 0 && options.protectionPosture?.suppressSyntheticSandbox !== true) {
         if (!await sandboxEngineAvailable(options.sandboxEngine)) {
           throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
         }

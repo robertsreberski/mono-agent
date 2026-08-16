@@ -49,7 +49,15 @@ describe("local TUI agent-root protection", () => {
 
     expect(responderState.create).toHaveBeenCalledWith(
       expect.objectContaining({ cwd: await realpath(dir) }),
-      {},
+      {
+        bootstrapProcessJobs: {
+          settings: expect.objectContaining({
+            configured: false,
+            enabled: false,
+            unsafeAllowUnprotectedState: false,
+          }),
+        },
+      },
     );
     await session.dispose();
     expect(responderState.dispose).toHaveBeenCalledOnce();

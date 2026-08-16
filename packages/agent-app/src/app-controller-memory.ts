@@ -1,9 +1,13 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { ChannelLogger } from "@mono-agent/agent-contracts";
 
-import { createConfiguredMemory } from "./configured-agent.js";
+import {
+  createConfiguredMemory,
+  createConfiguredMemoryForApp,
+} from "./configured-agent.js";
 import { isSharedRecallStore, MemoryRetrievalService } from "./memory-retrieval.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
+import type { ProcessJobsProtectionPosture } from "./process-jobs-protection.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 
@@ -11,6 +15,7 @@ export interface MemoryControllerPort {
   readonly cwd: string;
   readonly logger: ChannelLogger | undefined;
   readonly backgroundSnapshot: BackgroundSnapshot | undefined;
+  readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
   sharedMemory: ConfiguredMemory;
   sharedMemoryRetrieval: MemoryRetrievalService | undefined;
   sharedMemoryBuilt: boolean;
@@ -57,7 +62,7 @@ export async function memoryStore(
       observabilityContext,
       exporterWarn: (warning: { readonly phase: string; readonly message: string }) => controller.recordExporterWarning(warning),
     };
-    controller.sharedMemory = await createConfiguredMemory(coreConfig, {
+    const deps = {
       cwd: controller.cwd,
       // A managed worker receives a launch-attested snapshot and an exact
       // plugin closure beside agent-app. Never let mutable agent-local
@@ -65,7 +70,14 @@ export async function memoryStore(
       preferAppPluginInstall: controller.backgroundSnapshot !== undefined,
       ...(logger === undefined ? {} : { logger }),
       observability,
-    });
+    };
+    controller.sharedMemory = controller.processJobsProtectionPosture === undefined
+      ? await createConfiguredMemory(coreConfig, deps)
+      : await createConfiguredMemoryForApp(
+          coreConfig,
+          deps,
+          controller.processJobsProtectionPosture,
+        );
     controller.ensureSharedMemoryRetrieval(coreConfig, controller.sharedMemory);
     controller.sharedMemoryBuilt = true;
     return controller.sharedMemory;

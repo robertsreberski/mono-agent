@@ -33,6 +33,7 @@ clearing conversation state cannot delete process-job records or output.
 {
   "processJobs": {
     "enabled": true,
+    "unsafeAllowUnprotectedState": false,
     "stateDir": ".mono-agent/process-jobs",
     "maxConcurrent": 4,
     "maxActivePerConversation": 2,
@@ -53,6 +54,7 @@ clearing conversation state cannot delete process-job records or output.
 
 | Setting | Default | Compiled maximum |
 | --- | ---: | ---: |
+| `unsafeAllowUnprotectedState` | `false` | — |
 | `maxConcurrent` | 4 | 32 |
 | `maxActivePerConversation` | 2 | 8 |
 | `maxQueued` | 8 | 64 |
@@ -172,6 +174,52 @@ already owned host and do not invoke a provider themselves. Lower-level
 `@mono-agent/runtime-adapter` and `@mono-agent/agent-runtime` factories are
 root-agnostic unless an app-owned caller supplies the protection policy and
 route gate.
+
+## Unsafe trusted-host posture
+
+`processJobs.unsafeAllowUnprotectedState: true` is a JSON-only escape hatch for
+an operator who intentionally runs trusted same-user host tools. It is accepted
+only when all of these conditions hold:
+
+- `sandbox.mode` is present and exactly `"off"`;
+- ProcessJobs is enabled, or the attested durable registry still retains at
+  least one root; and
+- every configured primary, fallback, named `Agent` child, and agent-host
+  memory route is Pi-native. Accepted request overrides are checked again
+  before any provider is invoked.
+
+:::danger[ProcessJobs state and operator secret are model-accessible]
+In this posture mono-agent does not synthesize the ProcessJobs or
+clear-sessions SRT policy, does not create or require an SRT engine for the
+app-owned run, and lets Pi host commands and external MCP commands use the
+configured unsandboxed authority. ProcessJobs state, including its operator
+secret, is therefore accessible to the model and its tools. Use this only for
+trusted models, trusted prompts, and trusted same-user host tooling.
+:::
+
+The escape hatch changes only SRT policy injection. Registry load and
+attestation, including the second request-boundary attestation, owner and
+generation leases through true settlement, root disjointness, retention,
+store/service/controller lifecycle, and reply-artifact `privateRoots` remain in
+force. A failed or unavailable registry always wins and remains provider-zero.
+The Pi-only gates are independent from `sandbox.protectedRoots`, so mixed
+primary/fallback chains, non-Pi request overrides, non-Pi named children, and
+non-Pi agent-host memory remain rejected before provider work.
+
+Tool-less direct Ollama memory LLM and embedding calls may run in this posture;
+they still hold the canonical owner and registry-generation lease until the
+provider promise truly settles. Agent-host memory remains tool-less and
+Pi-native. Public package-root runtime, harness, responder, and memory factories
+do not accept this authority and keep their safe behavior.
+
+Changing this posture takes effect only when the app rebuilds its owned
+runtime surfaces: a managed configuration apply performs that teardown/rebuild,
+and a process restart does the same. Existing in-flight runs are not mutated.
+No state migration or reset occurs, and retained registry roots remain
+registered when the flag is enabled, disabled, or removed. `validate`,
+foreground/background `status`, trace metadata, and the local TUI summary show
+the path-free warning `UNSAFE: ProcessJobs state and operator secret are
+model-accessible.`
 
 ## Cooperative ownership and threat boundary
 

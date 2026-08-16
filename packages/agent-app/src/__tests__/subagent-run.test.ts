@@ -46,9 +46,11 @@ vi.mock("../process-jobs-root-registry.js", async (importOriginal) => ({
     roots: [],
     protectedRoots: [],
   }),
+  attestProcessJobsRootRegistrySnapshot: async (snapshot: unknown) => snapshot,
 }));
 
 const { createConfiguredAgentHarness } = await import("../index.js");
+const { createConfiguredAgentResponderForApp } = await import("../configured-agent.js");
 
 const PRIMARY = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
 const HAIKU = { sdk: "pi", provider: "anthropic", model: "claude-haiku-4-5", reference: "pi:anthropic:claude-haiku-4-5" } as const;
@@ -247,6 +249,69 @@ describe("configured subagents", () => {
     expect(resolveAttempt).not.toHaveBeenCalled();
     expect(providerRun).not.toHaveBeenCalled();
     expect(runtime.run).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Agent-child Pi gate provider-zero in unsafe posture without protectedRoots", async () => {
+    harnessMock.mockClear();
+    const privateState = "PRIVATE_PROCESS_JOB_STATE_MUST_NOT_ESCAPE";
+    const providerRun = vi.fn(async () => ({ text: privateState, events: [], failureKind: null }));
+    const resolveAttempt = vi.fn(() => ({ runtime: { run: providerRun } }));
+    const childRouter = createMonoRuntime({
+      routeSafety: "per-route-native",
+      fallbackChain: [{ model: CLAUDE_CHILD }],
+      resolveAttempt,
+    });
+    const runtimeForModel = vi.fn(() => childRouter);
+    const runtime = { run: vi.fn(async () => ({ text: "parent", events: [] })) };
+    const config = monoConfig({
+      enabled: true,
+      definitions: [{ name: "private-reader", description: "Reads code.", prompt: "Read state.", model: CLAUDE_CHILD }],
+    });
+    const responder = await createConfiguredAgentResponderForApp({
+      config: {
+        ...config,
+        sandbox: { mode: "off", root: "/repo", readableRoots: [], writableRoots: [], network: { mode: "all" } },
+      },
+      runtime: runtime as never,
+      runtimeForModel,
+    } as never, {
+      processJobs: {
+        registry: {
+          kind: "ready",
+          generation: { id: "11111111-1111-4111-8111-111111111111", rootKeys: ["private"] },
+          roots: [{}],
+          protectedRoots: ["/repo/.mono-agent/process-jobs"],
+        },
+        protectionPosture: {
+          kind: "unsafe-unprotected",
+          retainedRoots: true,
+          requiresPiNative: true,
+          suppressSyntheticSandbox: true,
+          unsafeAllowUnprotectedState: true,
+          warning: "UNSAFE: ProcessJobs state and operator secret are model-accessible.",
+        },
+      },
+    } as never);
+    const options = harnessMock.mock.calls[0]?.[0] as { runtimeOptions?: Record<string, unknown> };
+    const subagents = options.runtimeOptions?.subagents as Record<string, unknown>;
+    const definitions = subagents.definitions as Array<Record<string, unknown>>;
+    const run = subagents.run as (request: unknown) => Promise<unknown>;
+
+    await expect(run({
+      systemPrompt: "Read state.",
+      prompt: "Read the ProcessJobs store.",
+      definition: definitions[0],
+      maxTurns: 5,
+      depth: 1,
+      cwd: "/repo",
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    })).rejects.toThrow("Process-job private state requires a Pi-native runtime.");
+    expect(runtimeForModel).toHaveBeenCalledWith(CLAUDE_CHILD, "sdk");
+    expect(resolveAttempt).not.toHaveBeenCalled();
+    expect(providerRun).not.toHaveBeenCalled();
+    expect(runtime.run).not.toHaveBeenCalled();
+    await (responder as { dispose?: () => Promise<void> }).dispose?.();
   });
 
   it("keeps a profile whose model matches the primary on the shared router", async () => {

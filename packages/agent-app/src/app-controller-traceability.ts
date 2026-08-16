@@ -39,6 +39,10 @@ import type {
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger } from "./channels.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
+import {
+  unsafeProcessJobsProtectionStatus,
+  type ProcessJobsProtectionPosture,
+} from "./process-jobs-protection.js";
 
 export interface TraceabilityControllerPort {
   readonly env: Record<string, string | undefined>;
@@ -52,6 +56,7 @@ export interface TraceabilityControllerPort {
   readonly statuses: Map<ChannelId, ChannelStatus>;
   readonly processJobsService: ProcessJobsServiceHandle | undefined;
   readonly processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
+  readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
   readonly processStartMs: number;
   stopped: boolean;
   staleRunsReconciled: boolean;
@@ -175,7 +180,9 @@ export async function refreshSandboxStatus(controller: TraceabilityControllerPor
   try {
     const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
     const coreConfig = await loadAppCoreConfig(input);
-    const sandboxEngine = controller.sandboxEngineFor(coreConfig);
+    const sandboxEngine = controller.processJobsProtectionPosture?.suppressSyntheticSandbox === true
+      ? undefined
+      : controller.sandboxEngineFor(coreConfig);
     const state = await resolveSandboxEffectiveState({
       ...(coreConfig.sandbox === undefined ? {} : { policy: coreConfig.sandbox }),
       ...(sandboxEngine === undefined ? {} : { engine: sandboxEngine }),
@@ -469,6 +476,7 @@ export function traceMetadata(controller: TraceabilityControllerPort, reason: st
       ? { kind: "running", ...status.summary }
       : { kind: status.kind, reason: status.reason };
   }
+  const protection = unsafeProcessJobsProtectionStatus(controller.processJobsProtectionPosture);
   return {
     reason,
     ...(controller.processJobsService !== undefined
@@ -476,11 +484,18 @@ export function traceMetadata(controller: TraceabilityControllerPort, reason: st
           processJobs: {
             stateDir: controller.processJobsService.settings.stateDir,
             ...controller.processJobsService.health,
+            ...(protection === undefined ? {} : { protection }),
           },
         }
       : controller.processJobsDegradation === undefined
-        ? {}
-        : { processJobs: { state: "degraded", ...controller.processJobsDegradation } }),
+        ? protection === undefined ? {} : { processJobs: { protection } }
+        : {
+            processJobs: {
+              state: "degraded",
+              ...controller.processJobsDegradation,
+              ...(protection === undefined ? {} : { protection }),
+            },
+          }),
     ...(controller.startupCompleted
       ? {
           lifecycle: {

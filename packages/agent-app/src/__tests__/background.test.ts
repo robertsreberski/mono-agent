@@ -3046,6 +3046,14 @@ describe("statusBackground", () => {
       metadata: {
         reason: "startup-complete",
         observability: { endpoint: "http://127.0.0.1:6006/v1/traces", includeSensitiveData: false },
+        processJobs: {
+          protection: {
+            protection: "unsafe-unprotected",
+            retainedRoots: true,
+            unsafeAllowUnprotectedState: true,
+            warning: "UNSAFE: ProcessJobs state and operator secret are model-accessible.",
+          },
+        },
         channels: { telegram: { kind: "running" } },
       },
     });
@@ -3074,6 +3082,7 @@ describe("statusBackground", () => {
         readonly configPath: string;
         readonly logs: { readonly stdout: string; readonly stderr: string };
         readonly observability?: { readonly endpoint: string };
+        readonly processJobs?: { readonly protection: Record<string, unknown> };
         readonly channels?: Record<string, unknown>;
         readonly runsHealth: { readonly totalRuns: number } | null;
       } | null;
@@ -3085,6 +3094,13 @@ describe("statusBackground", () => {
     expect(parsed.instance?.configPath).toBe(target.configPath);
     expect(parsed.instance?.logs.stdout).toBe(target.paths.stdoutPath);
     expect(parsed.instance?.observability?.endpoint).toBe("http://127.0.0.1:6006/v1/traces");
+    expect(parsed.instance?.processJobs?.protection).toEqual({
+      protection: "unsafe-unprotected",
+      retainedRoots: true,
+      unsafeAllowUnprotectedState: true,
+      warning: "UNSAFE: ProcessJobs state and operator secret are model-accessible.",
+    });
+    expect(JSON.stringify(parsed.instance?.processJobs?.protection)).not.toContain("/work/");
     expect(parsed.instance?.channels).toMatchObject({ telegram: { kind: "running" } });
     expect(parsed.instance?.runsHealth?.totalRuns).toBe(7);
     expect(parsed.others.some((entry) => entry.sourceId === "mono-agent-999999999999")).toBe(true);
@@ -3257,6 +3273,32 @@ describe("statusBackground", () => {
     expect(stdout).toContain("fallback active: yes");
     expect(stdout).toContain("WARNING: Unsafe sandbox fallback is active");
     expect(stdout).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
+  });
+
+  it("prints the path-free unsafe ProcessJobs protection warning from persisted metadata", async () => {
+    const { runner } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    const current = makeSource(target, {
+      metadata: {
+        processJobs: {
+          protection: {
+            protection: "unsafe-unprotected",
+            retainedRoots: true,
+            unsafeAllowUnprotectedState: true,
+            warning: "UNSAFE: ProcessJobs state and operator secret are model-accessible.",
+          },
+        },
+      },
+    });
+    const harness = makeHarness({ runner, list: listReturning(() => [current]) });
+
+    await statusBackground(target, harness.deps);
+
+    const stdout = harness.out.join("");
+    expect(stdout).toContain("process jobs protection");
+    expect(stdout).toContain("protection: unsafe-unprotected; retained roots: yes");
+    expect(stdout).toContain("UNSAFE: ProcessJobs state and operator secret are model-accessible.");
+    expect(stdout).not.toContain(".mono-agent/process-jobs");
   });
 
   it("prints session status from persisted trace-source metadata", async () => {

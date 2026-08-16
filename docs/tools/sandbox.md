@@ -80,6 +80,14 @@ compatibility path; it does not satisfy the guided managed-install choice.
 - **`native`** — every sandboxed command is rewritten to `srt --settings <generated-file> <command> ...`. The generated settings file encodes the network and filesystem policy below. The run-scoped `NodeRepl` child is prepared through this same path, so evaluated JavaScript does not bypass the policy. Under `network.mode: "all"` the rewrite instead drives SRT through its library entry (see below) because the SRT CLI always starts domain filtering.
 - **`off`** — commands run unwrapped on the host. Equivalent to omitting the `sandbox` block.
 
+`processJobs.unsafeAllowUnprotectedState` is a separate, JSON-only trusted-host
+posture. It requires an explicit `sandbox.mode: "off"`; omission is rejected.
+When its additional registry and Pi-only route gates pass, the app suppresses
+both ProcessJobs and clear-sessions synthetic SRT injection. This makes
+ProcessJobs state and its operator secret model-accessible while preserving the
+durable registry, leases, reply-artifact private roots, and provider-zero route
+gates. See [Background process jobs](/tools/background-process-jobs/#unsafe-trusted-host-posture).
+
 ## Network policy
 
 `sandbox.network.mode` controls egress from inside the sandbox:

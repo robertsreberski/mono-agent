@@ -47,7 +47,10 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   recovery through a fixed-name owner-private sibling directory while request
   loading stays read-only and fail-closed, cooperative
   official-process ownership, true-settlement generation barriers, provider-zero
-  for configured routes and direct memory LLM/embedding calls, restart interruption,
+  for configured routes and direct memory LLM/embedding calls, plus the explicit
+  JSON-only `unsafeAllowUnprotectedState` trusted-host posture that suppresses
+  ProcessJobs and clear-sessions SRT only under explicit sandbox-off and all-Pi
+  routing while retaining registry/lease/private-root invariants, restart interruption,
   all-root separation from every clear-sessions purge, doctor section, operator
   routes, and `mono-agent jobs` CLI at the app boundary. This
   local contract does not resist a hostile same-UID provider; use OS privilege

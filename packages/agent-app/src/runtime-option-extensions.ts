@@ -35,6 +35,8 @@ export interface ClearSessionsRuntimeBoundaryOptions {
   readonly baseModel: RuntimeModelReference;
   readonly fallbackModels?: readonly RuntimeModelReference[];
   readonly sandboxPolicy?: SandboxPolicy;
+  /** @internal App-validated trusted-host posture; recovery attestation remains mandatory. */
+  readonly suppressSyntheticSandbox?: boolean;
   /** Test seam; production always uses the sessions-owned attestation. */
   readonly assertRecoveryResolved?: (cwd: string) => Promise<void>;
   /** Test seam; production always uses the stable sessions-owned registry root. */
@@ -71,6 +73,7 @@ export function clearSessionsSandboxPolicy(
   options: ClearSessionsRuntimeBoundaryOptions,
   effectiveModel: RuntimeModelReference = options.baseModel,
 ): SandboxPolicy | undefined {
+  if (options.suppressSyntheticSandbox === true) return undefined;
   if (![effectiveModel, ...(options.fallbackModels ?? [])].some((model) => model.sdk === "pi")) {
     return undefined;
   }
