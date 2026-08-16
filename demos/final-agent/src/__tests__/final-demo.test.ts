@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -35,6 +35,7 @@ const tempDirs: string[] = [];
 async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "mono-agent-final-demo-"));
   tempDirs.push(dir);
+  await mkdir(join(dir, "workspace"), { recursive: true });
   return dir;
 }
 
