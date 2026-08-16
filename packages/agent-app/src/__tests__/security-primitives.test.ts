@@ -122,6 +122,104 @@ describe("shared security primitives", () => {
     expect((await lstat(path)).mode & 0o777).toBe(0o600);
   });
 
+  it("fsyncs explicit cross-directory staging and claim paths in mutation order", async () => {
+    const dir = await root();
+    const registryDir = join(dir, "registry");
+    const recoveryDir = join(dir, "recovery");
+    const path = join(registryDir, "registry.json");
+    const temporaryPath = join(recoveryDir, "registry.staging.json");
+    const claimPath = join(recoveryDir, "registry.previous.json");
+    await Promise.all([
+      mkdir(registryDir, { mode: 0o700 }),
+      mkdir(recoveryDir, { mode: 0o700 }),
+    ]);
+    await writeFile(path, "previous\n", { mode: 0o600 });
+    const syncs: DirectorySyncObservation[] = [];
+
+    await secureFileReplace({
+      path,
+      temporaryPath,
+      contents: "replacement\n",
+      mode: 0o600,
+      syncDirectory: async (directory) => {
+        syncs.push(await observeDirectorySync(directory, registryDir, recoveryDir, path));
+      },
+      target: {
+        expected: {
+          kind: "present",
+          claimPath,
+          validate: async (candidate) => await readFile(candidate, "utf8") === "previous\n",
+          invalidError: () => new Error("unexpected current target"),
+        },
+        recovery: "restore-previous",
+      },
+    });
+
+    expect(syncs).toEqual([
+      syncObservation(recoveryDir, ["registry.json"], ["registry.staging.json"], "previous\n", 1),
+      syncObservation(recoveryDir, [], ["registry.previous.json", "registry.staging.json"]),
+      syncObservation(registryDir, [], ["registry.previous.json", "registry.staging.json"]),
+      syncObservation(registryDir, ["registry.json"], ["registry.previous.json", "registry.staging.json"], "replacement\n", 2),
+      syncObservation(recoveryDir, ["registry.json"], ["registry.staging.json"], "replacement\n", 2),
+      syncObservation(recoveryDir, ["registry.json"], [], "replacement\n", 1),
+    ]);
+    expect(await readFile(path, "utf8")).toBe("replacement\n");
+    await expect(readdir(recoveryDir)).resolves.toEqual([]);
+  });
+
+  it("fsyncs explicit failed-path rollback destination before source and then restores", async () => {
+    const dir = await root();
+    const registryDir = join(dir, "registry");
+    const recoveryDir = join(dir, "recovery");
+    const path = join(registryDir, "registry.json");
+    const temporaryPath = join(recoveryDir, "registry.staging.json");
+    const claimPath = join(recoveryDir, "registry.previous.json");
+    const failedPath = join(recoveryDir, "registry.failed.json");
+    await Promise.all([
+      mkdir(registryDir, { mode: 0o700 }),
+      mkdir(recoveryDir, { mode: 0o700 }),
+    ]);
+    await writeFile(path, "previous\n", { mode: 0o600 });
+    const syncs: DirectorySyncObservation[] = [];
+
+    await expect(secureFileReplace({
+      path,
+      temporaryPath,
+      contents: "replacement\n",
+      mode: 0o600,
+      syncDirectory: async (directory) => {
+        syncs.push(await observeDirectorySync(directory, registryDir, recoveryDir, path));
+      },
+      target: {
+        expected: {
+          kind: "present",
+          claimPath,
+          validate: async (candidate) => await readFile(candidate, "utf8") === "previous\n",
+          invalidError: () => new Error("unexpected current target"),
+        },
+        failedPath,
+        recovery: "restore-previous",
+        afterPublish: () => { throw new Error("injected post-publication failure"); },
+      },
+    })).rejects.toThrow("injected post-publication failure");
+
+    expect(syncs).toEqual([
+      syncObservation(recoveryDir, ["registry.json"], ["registry.staging.json"], "previous\n", 1),
+      syncObservation(recoveryDir, [], ["registry.previous.json", "registry.staging.json"]),
+      syncObservation(registryDir, [], ["registry.previous.json", "registry.staging.json"]),
+      syncObservation(registryDir, ["registry.json"], ["registry.previous.json", "registry.staging.json"], "replacement\n", 2),
+      syncObservation(recoveryDir, [], ["registry.failed.json", "registry.previous.json", "registry.staging.json"]),
+      syncObservation(registryDir, [], ["registry.failed.json", "registry.previous.json", "registry.staging.json"]),
+      syncObservation(registryDir, ["registry.json"], ["registry.failed.json", "registry.previous.json", "registry.staging.json"], "previous\n", 2),
+      syncObservation(recoveryDir, ["registry.json"], ["registry.failed.json", "registry.staging.json"], "previous\n", 1),
+      syncObservation(recoveryDir, ["registry.json"], ["registry.failed.json"], "previous\n", 1),
+    ]);
+    expect(await readFile(path, "utf8")).toBe("previous\n");
+    expect(await readFile(failedPath, "utf8")).toBe("replacement\n");
+    await expect(lstat(temporaryPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(claimPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("never commits or removes a replacement swapped onto the temporary pathname", async () => {
     const dir = await root();
     const path = join(dir, "managed.txt");
@@ -818,3 +916,56 @@ describe("shared security primitives", () => {
     expect(reads).toBe(1);
   });
 });
+
+interface DirectorySyncObservation {
+  readonly directory: string;
+  readonly registryEntries: readonly string[];
+  readonly recoveryEntries: readonly string[];
+  readonly targetContents?: string;
+  readonly targetLinks?: number;
+}
+
+async function observeDirectorySync(
+  directory: string,
+  registryDir: string,
+  recoveryDir: string,
+  targetPath: string,
+): Promise<DirectorySyncObservation> {
+  let targetContents: string | undefined;
+  let targetLinks: number | undefined;
+  try {
+    const details = await lstat(targetPath);
+    targetContents = await readFile(targetPath, "utf8");
+    targetLinks = details.nlink;
+  } catch (error) {
+    if (!isErrno(error, "ENOENT")) throw error;
+  }
+  return {
+    directory,
+    registryEntries: (await readdir(registryDir)).sort(),
+    recoveryEntries: (await readdir(recoveryDir)).sort(),
+    ...(targetContents === undefined || targetLinks === undefined
+      ? {} : { targetContents, targetLinks }),
+  };
+}
+
+function syncObservation(
+  directory: string,
+  registryEntries: readonly string[],
+  recoveryEntries: readonly string[],
+  targetContents?: string,
+  targetLinks?: number,
+): DirectorySyncObservation {
+  return {
+    directory,
+    registryEntries,
+    recoveryEntries,
+    ...(targetContents === undefined || targetLinks === undefined
+      ? {} : { targetContents, targetLinks }),
+  };
+}
+
+function isErrno(error: unknown, code: string): boolean {
+  return typeof error === "object" && error !== null
+    && (error as { readonly code?: unknown }).code === code;
+}
