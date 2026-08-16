@@ -49,10 +49,7 @@ import {
   captureBackgroundSnapshot,
 } from "./background-snapshot.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
-import {
-  createConfiguredAgentResponder,
-  createConfiguredAgentResponderForApp,
-} from "./configured-agent.js";
+import { createConfiguredAgentResponderForApp } from "./configured-agent.js";
 import {
   CONFIGURATION_PROPOSAL_MCP_SERVER_NAME,
   CONFIGURATION_PROPOSAL_TOOL_NAME,

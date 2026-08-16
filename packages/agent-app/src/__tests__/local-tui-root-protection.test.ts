@@ -11,7 +11,7 @@ const responderState = vi.hoisted(() => ({
 
 vi.mock("../configured-agent.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../configured-agent.js")>(),
-  createConfiguredAgentResponder: responderState.create,
+  createConfiguredAgentResponderForApp: responderState.create,
 }));
 
 const { initMonoAgentFolder } = await import("../init.js");
@@ -47,7 +47,10 @@ describe("local TUI agent-root protection", () => {
       configure: false,
     });
 
-    expect(responderState.create).toHaveBeenCalledWith(expect.objectContaining({ cwd: await realpath(dir) }));
+    expect(responderState.create).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: await realpath(dir) }),
+      {},
+    );
     await session.dispose();
     expect(responderState.dispose).toHaveBeenCalledOnce();
   });
