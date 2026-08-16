@@ -108,12 +108,13 @@ consistent over localhost, LAN, and Tailscale.
 The assistant-ui run-settings popover combines searchable model selection with
 the selected model's supported reasoning-effort choices and becomes a
 viewport-safe bottom sheet on narrow screens. Usage telemetry remains internal
-and is summarized through a context display that keeps exact Pi, Codex, and
-OpenCode provider-request snapshots separate from last-turn processed tokens and
-conversation cost. Running turns are labeled `Updating`; failed turns and model
-changes are `Last measured`. A running or successful compaction suppresses the
-older number until the next exact snapshot, while legacy and unsupported-runtime
-threads show `Context —` instead of deriving a percentage from aggregate work.
+and is summarized through a context display that keeps exact Pi, Codex,
+OpenCode, and ACP provider-request snapshots separate from last-turn processed
+tokens and conversation cost. Running turns are labeled `Updating`; failed
+turns and model changes are `Last measured`. A running or successful compaction
+suppresses the older number until the next exact snapshot, while legacy and
+unsupported-runtime threads show `Context —` instead of deriving a percentage
+from aggregate work.
 Structured reasoning, routine tools, and one update-in-place row per compaction
 share the stream-aware Activity disclosure, which collapses at every terminal
 message state without reordering answer parts.
