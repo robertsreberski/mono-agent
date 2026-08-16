@@ -609,6 +609,171 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("steers a process-job wake into the exact active web turn and durably suppresses replay", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const liveInputs: Array<{ conversationId: string; body: Record<string, unknown> }> = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { stream = controller; },
+        }),
+        onLiveInput(conversationId, body) {
+          liveInputs.push({ conversationId, body });
+          return { status: "applied", runId: "active-run" };
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Initial task" });
+    await waitFor(() => stream !== undefined);
+    const terminal = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      state: "succeeded",
+    });
+    const input = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: terminal.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: terminal,
+      wakePrompt: "Inspect the completed worker result",
+    };
+
+    await expect(service.deliverNotification(input)).resolves.toMatchObject({
+      duplicate: false,
+      delivery: { delivered: true, disposition: "steered" },
+    });
+    await expect(service.deliverNotification(input)).resolves.toMatchObject({
+      duplicate: true,
+      delivery: { delivered: true, disposition: "steered" },
+    });
+    expect(liveInputs).toEqual([{
+      conversationId: `web:${thread.id}`,
+      body: expect.objectContaining({
+        id: terminal.wake.deliveryKey,
+        deliveryKey: terminal.wake.deliveryKey,
+        text: "Inspect the completed worker result",
+      }),
+    }]);
+    expect(service.thread(thread.id).messages.filter((message) => message.role === "user"))
+      .toHaveLength(1);
+
+    stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Initial done" })}\n`));
+    stream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    await service.stop();
+  });
+
+  it("suppresses fallback when an active-turn steering acknowledgement is lost", async () => {
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { stream = controller; },
+        }),
+        onTurn(body) { turnBodies.push(body); },
+        async onLiveInput() {
+          throw new Error("connection dropped after delivery");
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Initial task" });
+    await waitFor(() => stream !== undefined);
+    const terminal = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      state: "succeeded",
+    });
+    const input = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: terminal.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: terminal,
+      wakePrompt: "Inspect the completed worker result",
+    };
+
+    await expect(service.deliverNotification(input)).resolves.toMatchObject({
+      duplicate: false,
+      delivery: {
+        delivered: false,
+        ambiguous: true,
+        code: "process_job_wake_ambiguous",
+        retryable: false,
+      },
+    });
+    await expect(service.deliverNotification(input)).resolves.toMatchObject({
+      duplicate: true,
+      delivery: {
+        delivered: false,
+        ambiguous: true,
+        code: "process_job_wake_ambiguous",
+        retryable: false,
+      },
+    });
+    expect(turnBodies).toHaveLength(1);
+    expect(service.thread(thread.id).messages.filter((message) => message.role === "user"))
+      .toHaveLength(1);
+
+    stream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status !== "running");
+    await service.stop();
+  });
+
+  it("runs one visible assistant-only fallback turn when no web turn is active", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => [
+          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "t1", name: "Read", arguments: { path: "result.txt" } } }),
+          JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "t1", name: "Read", result: "ok" } }),
+          JSON.stringify({ kind: "finish", finalText: "Worker result processed" }),
+          "",
+        ].join("\n"),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const terminal = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      state: "succeeded",
+    });
+    const input = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: terminal.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: terminal,
+      wakePrompt: "Inspect the completed worker result",
+    };
+
+    await expect(service.deliverNotification(input)).resolves.toMatchObject({
+      duplicate: false,
+      delivery: { delivered: true, disposition: "follow_up" },
+    });
+    await expect(service.deliverNotification(input)).resolves.toMatchObject({
+      duplicate: true,
+      delivery: { delivered: true, disposition: "follow_up" },
+    });
+    expect(turnBodies).toEqual([expect.objectContaining({
+      text: "Inspect the completed worker result",
+      processJobWakeDeliveryKey: terminal.wake.deliveryKey,
+    })]);
+    const messages = service.thread(thread.id).messages;
+    expect(messages.some((message) => message.role === "user")).toBe(false);
+    expect(messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "assistant", parts: [expect.objectContaining({ type: "process-job" })] }),
+      expect.objectContaining({ role: "assistant", parts: expect.arrayContaining([
+        expect.objectContaining({ type: "text", text: "Worker result processed" }),
+      ]) }),
+    ]));
+    await service.stop();
+  });
+
   it("proxies only one retained job bound to the exact source and thread", async () => {
     const requests: Array<{ jobId: string; authorization: string | null }> = [];
     let jobs: readonly ReturnType<typeof fakeProcessJob>[] = [];

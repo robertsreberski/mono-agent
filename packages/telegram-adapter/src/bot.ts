@@ -9,6 +9,7 @@ import {
   createChannelUserCancelReason,
   isAgentResponseCancelledError,
   isChannelUserCancelReason,
+  type AgentLiveInputOffer,
   type ChannelAskSnapshot,
   type ChannelAskSubmission,
   type ChannelAskSubmissionResult,
@@ -275,6 +276,8 @@ export interface TelegramNotifyResult {
   readonly channelId?: "telegram";
   readonly historyRecorded?: boolean;
   readonly historyErrorCode?: string;
+  /** Whether a process-job completion joined an active turn or ran after it. */
+  readonly disposition?: "steered" | "follow_up";
 }
 
 /**
@@ -288,6 +291,8 @@ export interface TelegramNotifyOptions {
   readonly verbatim?: boolean;
   /** Stable host delivery identity carried out of band for process-job wake binding. */
   readonly deliveryKey?: string;
+  /** Prefer the active turn while retaining this notification's fallback queue slot. */
+  readonly steerActive?: boolean;
   /**
    * Post the notification silently (`disable_notification`) so it arrives without
    * a push sound. Set by the channel driver during configured quiet hours.
@@ -2025,6 +2030,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     silent: boolean,
     includeRuntimeSelection: boolean,
     deliveryKey?: string,
+    showHints = false,
   ): Promise<TelegramNotifyResult> {
     try {
       if (controller.signal.aborted) {
@@ -2054,7 +2060,13 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           telegram: telegramMetadata,
         },
       };
-      const stream = new TelegramMessageStream(buildStreamOptions(chatId, undefined, controller.signal, silent, false));
+      const stream = new TelegramMessageStream(buildStreamOptions(
+        chatId,
+        undefined,
+        controller.signal,
+        silent,
+        showHints,
+      ));
       let response: AgentResponse;
       try {
         response = await options.responder.respond(request, stream);
@@ -2358,6 +2370,76 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
     const controller = registerController(chatId);
     const silent = notifyOptions?.silent === true;
+    if (notifyOptions?.steerActive === true
+      && notifyOptions.deliveryKey !== undefined
+      && notifyOptions.verbatim !== true
+      && options.responder.offerLiveInput !== undefined) {
+      const queueKey = String(chatId);
+      let queue = admissionQueues.get(queueKey);
+      if (queue === undefined) {
+        queue = new SerialQueue();
+        admissionQueues.set(queueKey, queue);
+      }
+      if (!queue.full) {
+        const decision = createDeferred<"run" | "steered">();
+        const reserved = queue.run(async (): Promise<TelegramNotifyResult> => {
+          const next = await decision.promise;
+          if (next === "run") {
+            const outcome = await runProactiveTurn(
+              chatId,
+              text,
+              controller,
+              silent,
+              includeRuntimeSelection,
+              notifyOptions.deliveryKey,
+              true,
+            );
+            return { ...outcome, disposition: "follow_up" as const };
+          }
+          unregisterController(chatId, controller);
+          return {
+            delivered: true,
+            code: "delivered",
+            channelId: "telegram" as const,
+            historyRecorded: true,
+            disposition: "steered" as const,
+          };
+        });
+        let offer: AgentLiveInputOffer;
+        try {
+          offer = options.responder.offerLiveInput({
+            conversationId: `telegram:${String(chatId)}`,
+            id: notifyOptions.deliveryKey,
+            text,
+            receivedAt: new Date().toISOString(),
+            deliveryKey: notifyOptions.deliveryKey,
+          });
+        } catch (error) {
+          logger?.debug?.("Telegram process-job steering failed; running the reserved fallback turn.", {
+            error: errorMessage(error),
+          });
+          decision.resolve("run");
+          try {
+            return await reserved;
+          } finally {
+            if (queue.idle && admissionQueues.get(queueKey) === queue) admissionQueues.delete(queueKey);
+          }
+        }
+        if (offer.status === "accepted") {
+          void offer.settled.then(
+            (settlement) => decision.resolve(settlement.status === "applied" ? "steered" : "run"),
+            () => decision.resolve("run"),
+          );
+        } else {
+          decision.resolve("run");
+        }
+        try {
+          return await reserved;
+        } finally {
+          if (queue.idle && admissionQueues.get(queueKey) === queue) admissionQueues.delete(queueKey);
+        }
+      }
+    }
     // `admit` returns void, so capture the run's outcome in a closure variable.
     // It defaults to the queue-full reason and is only overwritten when the task
     // actually runs (an over-cap rejection settles via onReject, leaving it).

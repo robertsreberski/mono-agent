@@ -1526,6 +1526,92 @@ describe("WebStore", () => {
     reopened.close();
   });
 
+  it("creates an assistant-only wake turn without a fake user row", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+
+    const started = store.beginAssistantTurn({ threadId: thread.id, prompt: "Process the worker result" });
+    expect(started.text).toBe("Process the worker result");
+    expect(store.getThreadDetail(thread.id)?.messages).toEqual([
+      expect.objectContaining({
+        id: started.assistantMessageId,
+        role: "assistant",
+        status: "running",
+        parts: [],
+      }),
+    ]);
+    expect(store.getThreadDetail(thread.id)?.messages.some((message) => message.role === "user")).toBe(false);
+    store.close();
+  });
+
+  it("persists completed and ambiguous process-job wake claims across reopen", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const completed = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      jobId: "11111111-1111-4111-8111-111111111111",
+    });
+    const uncertain = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      jobId: "22222222-2222-4222-8222-222222222222",
+    });
+    for (const processJob of [completed, uncertain]) {
+      store.upsertProcessJobCard({
+        sourceId: "agent-one",
+        threadId: thread.id,
+        deliveryKey: processJob.wake.deliveryKey,
+        processJob,
+      });
+      expect(store.reserveProcessJobWake({
+        sourceId: "agent-one",
+        threadId: thread.id,
+        jobId: processJob.jobId,
+        deliveryKey: processJob.wake.deliveryKey,
+      })).toEqual({ kind: "new" });
+    }
+    store.completeProcessJobWake({
+      sourceId: "agent-one",
+      jobId: completed.jobId,
+      deliveryKey: completed.wake.deliveryKey,
+      disposition: "follow_up",
+    });
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    reopened.replaceAgents([agent()]);
+    expect(reopened.reserveProcessJobWake({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      jobId: completed.jobId,
+      deliveryKey: completed.wake.deliveryKey,
+    })).toEqual({ kind: "completed", disposition: "follow_up" });
+    expect(reopened.reserveProcessJobWake({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      jobId: uncertain.jobId,
+      deliveryKey: uncertain.wake.deliveryKey,
+    })).toEqual({ kind: "uncertain" });
+    reopened.abandonProcessJobWake({
+      sourceId: "agent-one",
+      jobId: uncertain.jobId,
+      deliveryKey: uncertain.wake.deliveryKey,
+    });
+    expect(reopened.reserveProcessJobWake({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      jobId: uncertain.jobId,
+      deliveryKey: uncertain.wake.deliveryKey,
+    })).toEqual({ kind: "new" });
+    reopened.close();
+  });
+
   it("migrates schema v1 state through notification and live-input storage", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -1553,14 +1639,14 @@ describe("WebStore", () => {
     const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
     const processJobCards = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'").get();
     inspected.close();
-    expect(version.user_version).toBe(7);
+    expect(version.user_version).toBe(8);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
     expect(liveInputs).toBeDefined();
     expect(processJobCards).toBeDefined();
   });
 
-  it("migrates schema v6 state to v7 process-job cards", async () => {
+  it("migrates schema v6 state through v8 process-job wake delivery", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -1580,7 +1666,7 @@ describe("WebStore", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'",
     ).get();
     inspected.close();
-    expect(version.user_version).toBe(7);
+    expect(version.user_version).toBe(8);
     expect(processJobCards).toBeDefined();
   });
 
@@ -1593,7 +1679,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 8");
+    future.exec("PRAGMA user_version = 9");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 

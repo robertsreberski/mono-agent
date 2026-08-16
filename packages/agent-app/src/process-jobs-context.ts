@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import type {
+  AgentLiveInputOffer,
+  AgentLiveInputRequest,
   AgentMessageStream,
   AgentRequestBase,
   AgentResponder,
@@ -40,6 +42,52 @@ const wakeContextByRequestMetadata = new WeakMap<object, readonly ProcessJobWake
 // on a non-JSON symbol so a queued adapter callback can recover its own flight
 // without attributing context to unrelated work in the same conversation.
 const wakeFlightsByDeliveryKey = new Map<string, readonly ProcessJobWakeFlight[]>();
+
+interface ActiveProcessJobSteeringTarget {
+  readonly token: object;
+  readonly conversationId: string;
+  readonly runId: string;
+  readonly baseChainDepth: number;
+  readonly wakeDepths: Map<object, number>;
+}
+
+export interface ProcessJobSteeringTargetLease {
+  chainDepth(): number;
+  release(): void;
+}
+
+const steeringTargetsByConversation = new Map<string, readonly ActiveProcessJobSteeringTarget[]>();
+
+/** Register the exact active run whose controller can be raised by a host wake. */
+export function registerProcessJobSteeringTarget(input: {
+  readonly conversationId: string;
+  readonly runId: string;
+  readonly chainDepth: number;
+}): ProcessJobSteeringTargetLease {
+  const conversationId = baseConversationId(input.conversationId);
+  const target: ActiveProcessJobSteeringTarget = {
+    token: Object.freeze({}),
+    conversationId,
+    runId: input.runId,
+    baseChainDepth: input.chainDepth,
+    wakeDepths: new Map(),
+  };
+  const current = steeringTargetsByConversation.get(conversationId) ?? [];
+  steeringTargetsByConversation.set(conversationId, [...current, target]);
+  let released = false;
+  return {
+    chainDepth: () => effectiveSteeringDepth(target),
+    release: () => {
+      if (released) return;
+      released = true;
+      target.wakeDepths.clear();
+      const active = steeringTargetsByConversation.get(conversationId) ?? [];
+      const remaining = active.filter((candidate) => candidate.token !== target.token);
+      if (remaining.length === 0) steeringTargetsByConversation.delete(conversationId);
+      else steeringTargetsByConversation.set(conversationId, remaining);
+    },
+  };
+}
 
 /** Run a genuine channel turn with host-owned fan-out depth attached out of band. */
 export async function runWithProcessJobWakeContext<T>(
@@ -103,7 +151,10 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
     ...(responder.cancel === undefined ? {} : { cancel: responder.cancel.bind(responder) }),
     ...(responder.offerLiveInput === undefined
       ? {}
-      : { offerLiveInput: responder.offerLiveInput.bind(responder) }),
+      : {
+          offerLiveInput: (request: AgentLiveInputRequest): AgentLiveInputOffer =>
+            offerProcessJobWakeToActiveRun(responder, request),
+        }),
     ...(responder.deliverVerbatim === undefined
       ? {}
       : { deliverVerbatim: responder.deliverVerbatim.bind(responder) }),
@@ -121,6 +172,73 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
       : { startNewSession: startNewSession.bind(responder) }),
     ...(dispose === undefined ? {} : { dispose: dispose.bind(responder) }),
   } as AgentResponder;
+}
+
+function offerProcessJobWakeToActiveRun(
+  responder: AgentResponder,
+  request: AgentLiveInputRequest,
+): AgentLiveInputOffer {
+  const offerLiveInput = responder.offerLiveInput;
+  if (offerLiveInput === undefined) return { status: "unavailable", reason: "unsupported" };
+  const flight = processJobWakeFlightForOffer(request.deliveryKey);
+  if (flight === undefined) return offerLiveInput.call(responder, request);
+
+  const candidates = steeringTargetsByConversation.get(baseConversationId(request.conversationId)) ?? [];
+  if (candidates.length !== 1) return { status: "unavailable", reason: "inactive" };
+  const target = candidates[0]!;
+  const wakeToken = Object.freeze({});
+  target.wakeDepths.set(wakeToken, flight.chainDepth + 1);
+  const rollback = (): void => {
+    target.wakeDepths.delete(wakeToken);
+  };
+
+  let offer: AgentLiveInputOffer;
+  try {
+    offer = offerLiveInput.call(responder, {
+      ...request,
+      targetRunId: target.runId,
+    });
+  } catch (error) {
+    rollback();
+    throw error;
+  }
+  if (offer.status === "unavailable") {
+    rollback();
+    return offer;
+  }
+  return {
+    status: "accepted",
+    settled: offer.settled.then((settlement) => {
+      if (settlement.status !== "applied" || settlement.runId !== target.runId) {
+        rollback();
+        return settlement.status === "applied"
+          ? { status: "requeue" as const, reason: "failed" as const }
+          : settlement;
+      }
+      return settlement;
+    }, (error: unknown) => {
+      rollback();
+      throw error;
+    }),
+  };
+}
+
+function processJobWakeFlightForOffer(deliveryKey: string | undefined): ProcessJobWakeFlight | undefined {
+  const current = wakeContext.getStore();
+  if (current !== undefined) return current;
+  if (deliveryKey === undefined) return undefined;
+  const flights = wakeFlightsByDeliveryKey.get(deliveryKey) ?? [];
+  return flights.length === 1 ? flights[0] : undefined;
+}
+
+function effectiveSteeringDepth(target: ActiveProcessJobSteeringTarget): number {
+  let depth = target.baseChainDepth;
+  for (const wakeDepth of target.wakeDepths.values()) depth = Math.max(depth, wakeDepth);
+  return depth;
+}
+
+function baseConversationId(conversationId: string): string {
+  return conversationId.split("#", 1)[0] ?? conversationId;
 }
 
 /** Resolve only an association previously issued by the app-owned responder seam. */

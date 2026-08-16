@@ -72,7 +72,11 @@ describe("deliverWebNotification", () => {
     let deliveredBody: unknown;
     const fetchImpl = (async (_input, init) => {
       deliveredBody = JSON.parse(String(init?.body)) as unknown;
-      return Response.json({ threadId: "thread-one", duplicate: false }, { status: 201 });
+      return Response.json({
+        threadId: "thread-one",
+        duplicate: false,
+        delivery: { delivered: true, disposition: "follow_up" },
+      }, { status: 201 });
     }) as typeof fetch;
     const processJob = fakeProcessJob({ conversationId: "web:thread-one" });
     const input = {
@@ -81,11 +85,16 @@ describe("deliverWebNotification", () => {
       deliveryKey: processJob.wake.deliveryKey,
       threadId: "thread-one",
       processJob,
+      wakePrompt: "Inspect the completed worker result.",
       parts: [{ type: "failure" as const, id: "job-failure", code: "artifact_missing" as const, message: "File expired." }],
     };
 
     await expect(deliverWebNotification(input, { stateDir, fetchImpl }))
-      .resolves.toEqual({ threadId: "thread-one", duplicate: false });
+      .resolves.toEqual({
+        threadId: "thread-one",
+        duplicate: false,
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
     expect(deliveredBody).toEqual(input);
   });
 

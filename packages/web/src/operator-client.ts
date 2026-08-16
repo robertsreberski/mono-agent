@@ -105,6 +105,7 @@ export interface OperatorLiveInputInput {
   readonly id: string;
   readonly text: string;
   readonly receivedAt: string;
+  readonly deliveryKey?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -113,6 +114,7 @@ export interface OperatorTurnInput {
   readonly text: string;
   readonly attachments: readonly AgentAttachment[];
   readonly metadata: Readonly<Record<string, unknown>>;
+  readonly processJobWakeDeliveryKey?: string;
   readonly client?: "web" | "acp";
   readonly toolEnvironment?: AgentToolEnvironment;
   readonly signal: AbortSignal;
@@ -202,6 +204,9 @@ export class OperatorClient {
         text: input.text,
         client: input.client ?? "web",
         metadata: input.metadata,
+        ...(input.processJobWakeDeliveryKey === undefined
+          ? {}
+          : { processJobWakeDeliveryKey: input.processJobWakeDeliveryKey }),
         ...(input.toolEnvironment === undefined ? {} : { toolEnvironment: input.toolEnvironment }),
         ...(input.attachments.length === 0 ? {} : { attachments: input.attachments }),
       }),
@@ -258,7 +263,12 @@ export class OperatorClient {
         method: "POST",
         headers: this.headers(true),
         ...(input.signal === undefined ? {} : { signal: input.signal }),
-        body: JSON.stringify({ id: input.id, text: input.text, receivedAt: input.receivedAt }),
+        body: JSON.stringify({
+          id: input.id,
+          text: input.text,
+          receivedAt: input.receivedAt,
+          ...(input.deliveryKey === undefined ? {} : { deliveryKey: input.deliveryKey }),
+        }),
       },
     );
     const body = record(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_live_input_too_large")));

@@ -126,6 +126,7 @@ export function createTuiChannelDriver(
   const driver: AppOwnedTuiChannelDriver = {
     id: "tui",
     label: "TUI",
+    processJobs: { conversationScheme: "web" },
     async configView(input) {
       const adapter = await loadTuiModule();
       return await buildChannelConfigView(this, adapter.TUI_CONFIG_FIELDS, input, { jsonKey: "tui" });
@@ -273,6 +274,73 @@ export function createTuiChannelDriver(
         stop: async () => {
           skillRegistry.stop();
           await adapter.stop();
+        },
+        processJobs: {
+          update: async ({ conversationId, deliveryKey, processJob }) => {
+            const threadId = webThreadId(conversationId);
+            if (input.sourceId === undefined
+              || threadId === undefined
+              || processJob.origin.channel !== "web"
+              || conversationId !== baseConversationId(processJob.origin.conversationId)) {
+              return {
+                delivered: false,
+                code: "process_job_origin_mismatch",
+                reason: "The process-job origin does not match the web destination.",
+                retryable: false,
+              };
+            }
+            await deliverNotification({
+              sourceId: input.sourceId,
+              triggerKind: "job",
+              deliveryKey,
+              threadId,
+              processJob,
+            });
+            return { delivered: true, code: "delivered", channelId: "tui" };
+          },
+          wake: async ({ conversationId, text, deliveryKey, processJob }) => {
+            if (processJob.origin.channel !== "web"
+              || conversationId !== baseConversationId(processJob.origin.conversationId)) {
+              return {
+                delivered: false,
+                code: "process_job_origin_mismatch",
+                reason: "The process-job origin does not match the web destination.",
+                retryable: false,
+              };
+            }
+            const threadId = webThreadId(conversationId);
+            if (input.sourceId === undefined || threadId === undefined) {
+              return {
+                delivered: false,
+                code: "process_job_wake_failed",
+                reason: "The web job destination is unavailable.",
+                retryable: false,
+              };
+            }
+            const delivered = await deliverNotification({
+              sourceId: input.sourceId,
+              triggerKind: "job",
+              deliveryKey,
+              threadId,
+              processJob,
+              wakePrompt: text,
+            });
+            const receipt = delivered.delivery;
+            if (receipt === undefined) {
+              return {
+                delivered: false,
+                code: "process_job_wake_failed",
+                reason: "The web console returned no process-job wake receipt.",
+                retryable: false,
+              };
+            }
+            return {
+              ...receipt,
+              ...(receipt.delivered ? { code: "delivered" } : {}),
+              channelId: "tui",
+              ...(receipt.delivered ? { historyRecorded: true } : {}),
+            };
+          },
         },
         notify: async ({ conversationId, text, verbatim, deliveryKey, processJob }) => {
           if (verbatim === true

@@ -770,6 +770,17 @@ export interface AgentLiveInputRequest {
   readonly text: string;
   /** ISO-8601 transport receipt time, preserved in canonical history. */
   readonly receivedAt: string;
+  /**
+   * Host-owned durable delivery identity for a background wake. The responder
+   * uses it only to recover private wake context; it is never added to prompts
+   * or canonical history.
+   */
+  readonly deliveryKey?: string;
+  /**
+   * Exact active run selected by the host wake coordinator. Ordinary channel
+   * callers leave this unset; the mailbox rejects a stale/mismatched target.
+   */
+  readonly targetRunId?: string;
 }
 
 export type AgentLiveInputUnavailableReason =
@@ -991,7 +1002,11 @@ export type {
   NotifyDeliveryResult,
   NotifyDeliveryContext,
   NotifyDestination,
+  ProcessJobWakeDeliveryInput,
+  ProcessJobWakeDeliveryResult,
+  ProcessJobWakeDisposition,
   RunningChannel,
+  RunningProcessJobChannel,
 } from "./channel.js";
 export { isDeliverableConversation } from "./channel.js";
 export {

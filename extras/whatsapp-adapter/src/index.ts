@@ -9,6 +9,8 @@ export type {
   WhatsAppAdapterStreamOptions,
   WhatsAppGroupTriggerMode,
   WhatsAppMessageHandlingResult,
+  WhatsAppNotifyOptions,
+  WhatsAppNotifyResult,
   WhatsAppRequestMetadata,
   WhatsAppTriggerKind,
   WhatsAppTriggerOptions,

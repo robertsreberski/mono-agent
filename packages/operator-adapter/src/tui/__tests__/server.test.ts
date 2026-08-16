@@ -855,6 +855,7 @@ describe("startTuiAdapter", () => {
       client: "web",
       conversationId: "web:thread-1",
       metadata: { web: { model: "claude:claude-opus-4-8", effort: "high" } },
+      processJobWakeDeliveryKey: "process-job:web-wake",
       attachments: [{
         kind: "document",
         mimeType: "text/plain",
@@ -884,6 +885,11 @@ describe("startTuiAdapter", () => {
         sizeBytes: 22,
       }],
     });
+    expect(Object.getOwnPropertyDescriptor(
+      requests[0]?.metadata,
+      Symbol.for("mono-agent.process-job-wake.delivery-key.v1"),
+    )).toMatchObject({ value: "process-job:web-wake", enumerable: false });
+    expect(JSON.stringify(requests[0]?.metadata)).not.toContain("process-job:web-wake");
   });
 
   it("emits a terminal error frame with cancelled=true for a cancelled turn", async () => {
@@ -1052,6 +1058,7 @@ describe("startTuiAdapter", () => {
         id: "input-1",
         text: "Use the latest requirements",
         receivedAt: "2026-07-21T09:00:00.000Z",
+        deliveryKey: "process-job:job-1",
       }),
     });
     await expect(offered).resolves.toEqual({
@@ -1059,6 +1066,7 @@ describe("startTuiAdapter", () => {
       id: "input-1",
       text: "Use the latest requirements",
       receivedAt: "2026-07-21T09:00:00.000Z",
+      deliveryKey: "process-job:job-1",
     });
     settle({ status: "applied", runId: "run-1" });
     const response = await responsePromise;

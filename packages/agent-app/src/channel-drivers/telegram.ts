@@ -45,6 +45,7 @@ export function createTelegramChannelDriver(
   return {
     id: "telegram",
     label: "Telegram",
+    processJobs: { conversationScheme: "telegram" },
     async configView(input) {
       if (!(await isChannelConfigured(input, TELEGRAM_GATE))) {
         return unconfiguredChannelView("telegram", "Telegram");
@@ -84,6 +85,63 @@ export function createTelegramChannelDriver(
       return {
         summary: {},
         stop: () => result.stop(),
+        processJobs: {
+          update: async ({ conversationId, processJob }) => {
+            if (processJob.origin.channel !== "telegram"
+              || conversationId !== baseConversationId(processJob.origin.conversationId)) {
+              return {
+                delivered: false,
+                code: "process_job_origin_mismatch",
+                reason: "The process-job origin does not match the Telegram destination.",
+                retryable: false,
+              };
+            }
+            const chatId = telegramChatIdFromConversation(conversationId);
+            if (chatId === undefined
+              || (!input.config.allowAllChats && !input.config.allowedChatIds.includes(String(chatId)))) {
+              return { delivered: false, reason: "telegram chat is not in the adapter allowlist" };
+            }
+            const silent = input.config.quietHours !== undefined
+              && adapter.isWithinQuietHours(new Date(), input.config.quietHours);
+            if (result.updateProcessJob === undefined) {
+              return {
+                delivered: false,
+                code: "background_unsupported_channel",
+                reason: "The running Telegram adapter does not support process-job lifecycle updates.",
+                retryable: false,
+              };
+            }
+            return await result.updateProcessJob(
+              chatId,
+              processJob,
+              silent ? { silent: true } : undefined,
+            );
+          },
+          wake: async ({ conversationId, text, deliveryKey, processJob }) => {
+            if (processJob.origin.channel !== "telegram"
+              || conversationId !== baseConversationId(processJob.origin.conversationId)) {
+              return {
+                delivered: false,
+                code: "process_job_origin_mismatch",
+                reason: "The process-job origin does not match the Telegram destination.",
+                retryable: false,
+              };
+            }
+            const chatId = telegramChatIdFromConversation(conversationId);
+            if (chatId === undefined
+              || (!input.config.allowAllChats && !input.config.allowedChatIds.includes(String(chatId)))) {
+              return { delivered: false, reason: "telegram chat is not in the adapter allowlist" };
+            }
+            const silent = input.config.quietHours !== undefined
+              && adapter.isWithinQuietHours(new Date(), input.config.quietHours);
+            const outcome = await result.notify(chatId, text, {
+              deliveryKey,
+              steerActive: true,
+              ...(silent ? { silent: true } : {}),
+            });
+            return settleProcessJobWake(outcome);
+          },
+        },
         notify: async (request) => {
           const { conversationId, text, verbatim, deliveryKey, processJob } = request;
           if (processJob !== undefined

@@ -153,6 +153,13 @@ is instance-local, not durable across an adapter/process restart; the existing
 post-restart fallback contract is unchanged. Ordinary proactive `notify`
 behavior is unchanged.
 
+The app-owned completion wake uses `notify` with a stable delivery key and
+`steerActive: true`. It reserves the thread's normal queue position first,
+targets only the exact active run, and reports `steered` after provider
+acknowledgement. Every explicit non-applied settlement runs the reserved normal
+turn with visible thinking and tool activity; an unknown outcome is not
+silently reported as success.
+
 ### Live follow-up steering
 
 When the responder exposes live input, another plain-text message in the same

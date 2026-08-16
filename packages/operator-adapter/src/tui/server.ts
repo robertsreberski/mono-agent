@@ -570,6 +570,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       || body.text.length > AGENT_LIVE_INPUT_MAX_CHARACTERS
       || typeof body.receivedAt !== "string"
       || Number.isNaN(Date.parse(body.receivedAt))
+      || (body.deliveryKey !== undefined
+        && (typeof body.deliveryKey !== "string"
+          || body.deliveryKey.trim().length === 0
+          || body.deliveryKey.length > 1_024))
     ) {
       next(new TuiAdapterError(
         "invalid_request",
@@ -588,6 +592,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         id: body.id,
         text: body.text,
         receivedAt: body.receivedAt,
+        ...(typeof body.deliveryKey === "string" ? { deliveryKey: body.deliveryKey } : {}),
       });
     } catch (error) {
       next(error);
@@ -1350,6 +1355,7 @@ interface NormalizedTurnBody {
   readonly text: string;
   readonly metadata: Record<string, unknown>;
   readonly client: "tui" | "web" | "acp";
+  readonly processJobWakeDeliveryKey?: string;
   readonly attachments?: readonly AgentAttachment[];
   readonly toolEnvironment?: AgentToolEnvironment;
 }
@@ -1417,6 +1423,15 @@ function normalizeTurnBody(
     : record.client === "web" || (record.client === undefined && metadata.source === "web")
       ? "web"
       : "tui";
+  const processJobWakeDeliveryKey = normalizeOptionalString(
+    typeof record.processJobWakeDeliveryKey === "string"
+      ? record.processJobWakeDeliveryKey
+      : undefined,
+  );
+  if (processJobWakeDeliveryKey !== undefined
+    && (client !== "web" || processJobWakeDeliveryKey.length > 1_024)) {
+    throw new TuiAdapterError("invalid_request", "processJobWakeDeliveryKey is invalid.");
+  }
   const attachments = normalizeTurnAttachments(record.attachments, client);
   const toolEnvironment = normalizeRequestToolEnvironment(
     record.toolEnvironment,
@@ -1431,6 +1446,7 @@ function normalizeTurnBody(
     text,
     metadata,
     client,
+    ...(processJobWakeDeliveryKey === undefined ? {} : { processJobWakeDeliveryKey }),
     ...(attachments === undefined ? {} : { attachments }),
     ...(toolEnvironment === undefined ? {} : { toolEnvironment }),
   };
@@ -1456,13 +1472,22 @@ function requestMetadata(body: NormalizedTurnBody, requestId: string): Record<st
     ? undefined
     : { ...existingTui, ...overrideMirror };
 
-  return {
+  const metadata: Record<PropertyKey, unknown> = {
     ...body.metadata,
     web: web ?? {},
     ...(tui === undefined ? {} : { tui }),
     source: "web",
     webRequestId: requestId,
   };
+  if (body.processJobWakeDeliveryKey !== undefined) {
+    Object.defineProperty(metadata, Symbol.for("mono-agent.process-job-wake.delivery-key.v1"), {
+      value: body.processJobWakeDeliveryKey,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+  }
+  return metadata as Record<string, unknown>;
 }
 
 function normalizeTurnAttachments(

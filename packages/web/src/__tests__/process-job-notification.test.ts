@@ -15,6 +15,7 @@ describe("process-job web notification ingress", () => {
       threadId: "thread-one",
       processJob,
       text: "The worker is still running.",
+      wakePrompt: "Inspect the completed worker result.",
       parts: [{ type: "failure", id: "job-failure", code: "artifact_missing", message: "File expired." }],
     };
     expect(parseNotificationRequest(input)).toEqual(input);
@@ -25,6 +26,10 @@ describe("process-job web notification ingress", () => {
     expect(() => parseNotificationRequest({ ...input, text: "   " }))
       .toThrowError(expect.objectContaining({ code: "invalid_notification" }));
     expect(() => parseNotificationRequest({ ...input, text: "x".repeat(8_001) }))
+      .toThrowError(expect.objectContaining({ status: 413 }));
+    expect(() => parseNotificationRequest({ ...input, wakePrompt: "   " }))
+      .toThrowError(expect.objectContaining({ code: "invalid_notification" }));
+    expect(() => parseNotificationRequest({ ...input, wakePrompt: "x".repeat(200_001) }))
       .toThrowError(expect.objectContaining({ status: 413 }));
     expect(() => parseNotificationRequest({ ...input, parts: "not-an-array" }))
       .toThrowError(expect.objectContaining({ code: "invalid_notification", status: 400 }));

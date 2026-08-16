@@ -118,7 +118,7 @@ The harness is the request-to-runtime composition boundary:
 | `src/context/` / `src/skills/` | Deterministic context assembly and selected-skill loading |
 | `src/tool-policy/` | Tool and MCP normalization with a fail-closed default |
 | `src/responder.ts` | Structural request/stream adapter, applied-live-input activity correlation, cancellation, and session rollover |
-| `src/live-input.ts` | Bounded idempotent mailbox, provider acknowledgement, failover replay, and settlement |
+| `src/live-input.ts` | Bounded idempotent mailbox, exact target-run admission, provider acknowledgement, failover replay, and settlement |
 | `src/live-session.ts` / `src/sessions.ts` | Queue-after-turn coordination and provider-session lifecycle |
 | `src/history.ts` / `src/durable-history.ts` | In-memory and crash-safe canonical conversation history |
 | `src/tool-history-*.ts` | Secure sidecar schema, single-writer worker/ownership, incremental lifecycle persistence, recovery, bounded read/query, and cold projection |

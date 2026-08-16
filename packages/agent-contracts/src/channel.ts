@@ -69,6 +69,31 @@ export interface NotifyDeliveryResult {
   readonly historyErrorCode?: string;
 }
 
+export type ProcessJobWakeDisposition = "steered" | "follow_up";
+
+/** One durable background-job completion routed to its exact origin. */
+export interface ProcessJobWakeDeliveryInput {
+  readonly conversationId: string;
+  readonly text: string;
+  readonly deliveryKey: string;
+  readonly processJob: ProcessJobProjection;
+}
+
+/** Delivery receipt distinguishes an in-flight steer from a fallback turn. */
+export interface ProcessJobWakeDeliveryResult extends NotifyDeliveryResult {
+  readonly disposition?: ProcessJobWakeDisposition;
+}
+
+/**
+ * Explicit process-job surface owned by an opted-in addressable conversation
+ * adapter. Lifecycle rendering and completion turns stay separate from generic
+ * proactive notification delivery.
+ */
+export interface RunningProcessJobChannel {
+  update(input: Omit<ProcessJobWakeDeliveryInput, "text">): Promise<NotifyDeliveryResult>;
+  wake(input: ProcessJobWakeDeliveryInput): Promise<ProcessJobWakeDeliveryResult>;
+}
+
 /** A conversation a native cron/webhook notification can be delivered to. */
 export interface NotifyDestination {
   /** Destination conversationId, e.g. `<channel>:<chat>`. */
@@ -146,13 +171,11 @@ export interface RunningChannel {
     /** Stable host identity used by adapters that support duplicate suppression. */
     readonly deliveryKey?: string;
     readonly deliveryContext?: NotifyDeliveryContext;
-    /**
-     * Secret-free process-job state for a host-owned wake. Push adapters ignore
-     * it; the web driver uses it to update the one durable job card without
-     * synthesizing a second history entry.
-     */
+    /** @deprecated Process-job delivery uses {@link RunningChannel.processJobs}. */
     readonly processJob?: ProcessJobProjection;
   }): Promise<NotifyDeliveryResult>;
+  /** Adapter-owned durable background-job lifecycle and completion delivery. */
+  readonly processJobs?: RunningProcessJobChannel;
 }
 
 export interface ChannelAskOption {
@@ -308,6 +331,12 @@ export interface ChannelStartInput<TConfig, TCore = unknown> {
 export interface ChannelDriver<TConfig = unknown, TCore = unknown> {
   readonly id: ChannelId;
   readonly label: string;
+  /**
+   * Opt in to background jobs for one addressable conversation-id scheme.
+   * The host uses this declaration both for controller injection and routing;
+   * duplicate schemes fail closed during app construction.
+   */
+  readonly processJobs?: { readonly conversationScheme: string };
   loadConfig(input: ChannelConfigInput): Promise<TConfig>;
   /** True for the adapter's own typed config errors (incomplete config → waiting). */
   isConfigError(error: unknown): boolean;

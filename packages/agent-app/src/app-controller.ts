@@ -55,6 +55,7 @@ import * as channelsOperations from "./app-controller-channels.js";
 import * as responderOperations from "./app-controller-responder.js";
 import * as memoryOperations from "./app-controller-memory.js";
 import * as processJobsOperations from "./app-controller-process-jobs.js";
+import { assertUniqueProcessJobChannelSchemes } from "./process-job-channel-routing.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import {
   acquireAgentRootOwnership,
@@ -190,6 +191,7 @@ async function startMonoAgentAppInternal(
       () => resolveChannelDrivers({ env, cwd, configPath: configReadPath }),
     );
     if (options.drivers !== undefined) startupPhases.driverResolution = 0;
+    assertUniqueProcessJobChannelSchemes(drivers);
 
     controller = new MonoAgentAppController({
       cwd,
@@ -669,7 +671,13 @@ export class MonoAgentAppController implements MonoAgentApp {
 
   async stopChannel(id: ChannelId, reason: string): Promise<void> { return channelsOperations.stopChannel(this, id, reason); }
 
-  async buildResponder(coreConfig: MonoAgentConfig, channelId?: ChannelId): Promise<AgentResponder> { return responderOperations.buildResponder(this, coreConfig, channelId); }
+  async buildResponder(
+    coreConfig: MonoAgentConfig,
+    channelId?: ChannelId,
+    processJobConversationScheme?: string,
+  ): Promise<AgentResponder> {
+    return responderOperations.buildResponder(this, coreConfig, channelId, processJobConversationScheme);
+  }
 
   /**
    * Per-request extension that applies a cron/webhook/tui per-trigger model +

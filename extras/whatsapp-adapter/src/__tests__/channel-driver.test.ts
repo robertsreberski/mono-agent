@@ -49,6 +49,7 @@ describe("createWhatsAppChannelDriver", () => {
 
     expect(driver.id).toBe("whatsapp");
     expect(driver.label).toBe("WhatsApp");
+    expect(driver.processJobs).toEqual({ conversationScheme: "whatsapp" });
     expect(custom.id).toBe("custom-whatsapp");
     expect(custom.label).toBe("Custom WhatsApp");
   });
@@ -174,6 +175,45 @@ describe("createWhatsAppChannelDriver", () => {
 
     await running.stop();
     expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("publishes exact-origin lifecycle and completion routes", async () => {
+    const updateProcessJob = vi.fn(async () => ({ delivered: true }));
+    const notify = vi.fn(async () => ({ delivered: true, disposition: "follow_up" as const }));
+    const startAdapter = vi.fn<StartAdapter>(async () => fakeStartResult(
+      vi.fn(async () => undefined),
+      { updateProcessJob, notify },
+    ));
+    const running = await createWhatsAppChannelDriver({ startAdapter }).start(startInput({
+      config: enabledConfig(),
+    }));
+    const processJob = {
+      origin: { channel: "whatsapp", conversationId: "whatsapp:123@s.whatsapp.net#bucket" },
+    } as never;
+
+    await expect(running.processJobs?.update({
+      conversationId: "whatsapp:123@s.whatsapp.net",
+      deliveryKey: "job:key",
+      processJob,
+    })).resolves.toMatchObject({ delivered: true });
+    await expect(running.processJobs?.wake({
+      conversationId: "whatsapp:123@s.whatsapp.net",
+      text: "finished",
+      deliveryKey: "job:key",
+      processJob,
+    })).resolves.toMatchObject({ delivered: true, disposition: "follow_up" });
+    expect(updateProcessJob).toHaveBeenCalledWith("123@s.whatsapp.net", processJob);
+    expect(notify).toHaveBeenCalledWith("123@s.whatsapp.net", "finished", {
+      deliveryKey: "job:key",
+      steerActive: true,
+    });
+
+    await expect(running.processJobs?.wake({
+      conversationId: "whatsapp:other@s.whatsapp.net#wrong",
+      text: "finished",
+      deliveryKey: "job:key",
+      processJob,
+    })).resolves.toMatchObject({ delivered: false, code: "process_job_origin_mismatch" });
   });
 
   it("honors authDir overrides", async () => {
@@ -397,9 +437,12 @@ function firstStartAdapterOptions(
   return call[0];
 }
 
-function fakeStartResult(stop = vi.fn(async () => undefined)): WhatsAppAdapterStartResult {
+function fakeStartResult(
+  stop = vi.fn(async () => undefined),
+  adapter: Partial<WhatsAppAdapterStartResult["adapter"]> = {},
+): WhatsAppAdapterStartResult {
   return {
-    adapter: {} as WhatsAppAdapterStartResult["adapter"],
+    adapter: adapter as WhatsAppAdapterStartResult["adapter"],
     runner: {} as WhatsAppAdapterStartResult["runner"],
     socket: {} as WhatsAppAdapterStartResult["socket"],
     stop,

@@ -117,6 +117,14 @@ threads show `Context —` instead of deriving a percentage from aggregate work.
 Structured reasoning, routine tools, and one update-in-place row per compaction
 share the stream-aware Activity disclosure, which collapses at every terminal
 message state without reordering answer parts.
+
+Background-job completion first targets the exact active run in its originating
+web thread. If no run is active, or the provider explicitly declines the live
+input, the service starts one assistant-only follow-up turn: the user timeline
+gets no synthetic user row, while status, reasoning, tool calls, usage, and the
+final answer use the normal streamed Activity UI. A private SQLite claim makes
+completed replays idempotent across restart and treats an accepted-but-unsettled
+claim as ambiguous instead of risking a duplicate agent turn.
 Typing `/` in an empty composer opens the available command triggers. Typing
 `$` opens deterministic name/description autocomplete for usable skills from
 the active agent's live registry. The adjacent browse control also shows

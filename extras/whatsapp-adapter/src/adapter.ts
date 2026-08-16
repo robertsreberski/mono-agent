@@ -3,7 +3,11 @@ import {
   createChannelUserCancelReason,
   isAgentResponseCancelledError,
   isChannelUserCancelReason,
+  type AgentLiveInputOffer,
   type AgentMessageStream,
+  type NotifyDeliveryResult,
+  type ProcessJobProjection,
+  type ProcessJobWakeDisposition,
   type AgentRequestBase,
   type AgentResponder as SharedAgentResponder,
   type AgentResponse,
@@ -107,6 +111,15 @@ export interface WhatsAppAdapterOptions {
   logger?: WhatsAppAdapterLogger;
 }
 
+export interface WhatsAppNotifyOptions {
+  readonly deliveryKey?: string;
+  readonly steerActive?: boolean;
+}
+
+export interface WhatsAppNotifyResult extends NotifyDeliveryResult {
+  readonly disposition?: ProcessJobWakeDisposition;
+}
+
 export type WhatsAppAdapterIgnoredReason =
   | WhatsAppMessageIgnoredReason
   | "mention_required"
@@ -153,6 +166,8 @@ export type WhatsAppMessageHandlingResult =
 
 interface ActiveRun {
   controller: AbortController;
+  settled: Promise<void>;
+  settle(): void;
 }
 
 interface NormalizedCommand {
@@ -183,6 +198,8 @@ const DEFAULT_STREAM_OPTIONS: Required<WhatsAppAdapterStreamOptions> = {
   maxMessageChars: 3_800,
 };
 
+const PROCESS_JOB_WAKE_DELIVERY_METADATA = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");
+
 export class WhatsAppAdapter {
   private readonly socket: WhatsAppSocketLike;
   private readonly responder: AgentResponder;
@@ -193,6 +210,8 @@ export class WhatsAppAdapter {
   private readonly messages: Required<WhatsAppAdapterMessages>;
   private readonly logger: WhatsAppAdapterLogger | undefined;
   private readonly activeRuns = new Map<string, ActiveRun>();
+  private readonly proactiveTails = new Map<string, Promise<void>>();
+  private readonly proactiveReservations = new Map<string, number>();
   private stopping = false;
 
   constructor(options: WhatsAppAdapterOptions) {
@@ -306,7 +325,7 @@ export class WhatsAppAdapter {
       );
     }
 
-    if (activeRun !== undefined) {
+    if (activeRun !== undefined || (this.proactiveReservations.get(runKey) ?? 0) > 0) {
       await this.sendText(message.chatJid, this.messages.busyText);
       return withMessageId({ kind: "busy", chatJid: message.chatJid }, message.messageId);
     }
@@ -321,6 +340,75 @@ export class WhatsAppAdapter {
     for (const active of this.activeRuns.values()) {
       active.controller.abort(reason);
     }
+  }
+
+  async notify(
+    chatJid: WhatsAppJid,
+    text: string,
+    options?: WhatsAppNotifyOptions,
+  ): Promise<WhatsAppNotifyResult> {
+    if (this.stopping) return { delivered: false, reason: "adapter stopped", retryable: true };
+    if (!this.isAuthorized(chatJid)) {
+      return { delivered: false, reason: "whatsapp chat is not in the adapter allowlist", retryable: false };
+    }
+    return await this.runReservedProactive(chatJid, async () => {
+      if (options?.steerActive === true
+        && options.deliveryKey !== undefined
+        && this.responder.offerLiveInput !== undefined) {
+        let offer: AgentLiveInputOffer;
+        try {
+          offer = this.responder.offerLiveInput({
+            conversationId: `whatsapp:${chatJid}`,
+            id: options.deliveryKey,
+            text,
+            receivedAt: new Date().toISOString(),
+            deliveryKey: options.deliveryKey,
+          });
+        } catch (error) {
+          this.logger?.debug?.("WhatsApp process-job steering failed; running the reserved fallback turn.", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return await this.runProactiveTurn(chatJid, text, options.deliveryKey);
+        }
+        if (offer.status === "accepted") {
+          try {
+            const settlement = await offer.settled;
+            if (settlement.status === "applied") {
+              return {
+                delivered: true,
+                code: "delivered",
+                channelId: "whatsapp",
+                historyRecorded: true,
+                disposition: "steered",
+              };
+            }
+          } catch {
+            // The reserved fallback below owns every non-applied settlement.
+          }
+        }
+      }
+      return await this.runProactiveTurn(chatJid, text, options?.deliveryKey);
+    });
+  }
+
+  async updateProcessJob(
+    chatJid: WhatsAppJid,
+    projection: ProcessJobProjection,
+  ): Promise<NotifyDeliveryResult> {
+    if (this.stopping) return { delivered: false, reason: "adapter stopped", retryable: true };
+    if (!this.isAuthorized(chatJid)) {
+      return { delivered: false, reason: "whatsapp chat is not in the adapter allowlist", retryable: false };
+    }
+    const status = projection.state.replaceAll("_", " ");
+    const sent = await this.socket.sendMessage(chatJid, {
+      text: `Background job ${projection.jobId}: ${status}.`,
+    });
+    return {
+      delivered: true,
+      code: "delivered",
+      channelId: "whatsapp",
+      ...(sent?.key?.id == null ? {} : { deliveryId: sent.key.id }),
+    };
   }
 
   private async handleIgnoredMessage(
@@ -356,7 +444,7 @@ export class WhatsAppAdapter {
     runKey: string,
   ): Promise<WhatsAppMessageHandlingResult> {
     const controller = new AbortController();
-    const activeRun: ActiveRun = { controller };
+    const activeRun = createActiveRun(controller);
     this.activeRuns.set(runKey, activeRun);
 
     const streamOptions: WhatsAppMessageStreamOptions = {
@@ -430,9 +518,95 @@ export class WhatsAppAdapter {
       }
       return result;
     } finally {
+      activeRun.settle();
       if (this.activeRuns.get(runKey) === activeRun) {
         this.activeRuns.delete(runKey);
       }
+    }
+  }
+
+  private async runProactiveTurn(
+    chatJid: WhatsAppJid,
+    text: string,
+    deliveryKey?: string,
+  ): Promise<WhatsAppNotifyResult> {
+    const prior = this.activeRuns.get(chatJid);
+    if (prior !== undefined) await prior.settled;
+    if (this.stopping) return { delivered: false, reason: "adapter stopped", retryable: true };
+    const controller = new AbortController();
+    const activeRun = createActiveRun(controller);
+    this.activeRuns.set(chatJid, activeRun);
+    const stream = new WhatsAppMessageStream({
+      socket: this.socket,
+      chatJid,
+      initialStatusText: this.streamOptions.initialStatusText,
+      sendInitialStatus: this.streamOptions.sendInitialStatus,
+      maxMessageChars: this.streamOptions.maxMessageChars,
+      ...(this.logger === undefined ? {} : { logger: this.logger }),
+    });
+    try {
+      await stream.status(this.streamOptions.initialStatusText);
+      const conversationId = `whatsapp:${chatJid}`;
+      const metadata: AgentRequest["metadata"] = {
+        whatsapp: {
+          chat: { jid: chatJid, kind: chatJid.endsWith("@g.us") ? "group" : "direct" },
+          message: {},
+          mentionedJids: [],
+          trigger: chatJid.endsWith("@g.us") ? "group_any" : "direct",
+        },
+        ...(deliveryKey === undefined ? {} : { [PROCESS_JOB_WAKE_DELIVERY_METADATA]: deliveryKey }),
+      };
+      const response = await this.responder.respond({
+        conversationId,
+        replyTo: { conversationId },
+        chatJid,
+        remoteJid: chatJid,
+        chatKind: chatJid.endsWith("@g.us") ? "group" : "direct",
+        text,
+        trigger: chatJid.endsWith("@g.us") ? "group_any" : "direct",
+        abortSignal: controller.signal,
+        metadata,
+      }, stream);
+      await stream.finish(response.text, response.parts === undefined ? undefined : { parts: response.parts });
+      return {
+        delivered: true,
+        code: "delivered",
+        channelId: "whatsapp",
+        historyRecorded: true,
+        disposition: "follow_up",
+      };
+    } catch (error) {
+      if (!controller.signal.aborted && !isAgentResponseCancelledError(error)) {
+        await finishSafely(stream, this.messages.errorText, this.logger);
+      }
+      return {
+        delivered: false,
+        code: "process_job_wake_failed",
+        reason: error instanceof Error ? error.message : String(error),
+        retryable: false,
+      };
+    } finally {
+      activeRun.settle();
+      if (this.activeRuns.get(chatJid) === activeRun) this.activeRuns.delete(chatJid);
+    }
+  }
+
+  private async runReservedProactive<T>(chatJid: WhatsAppJid, task: () => Promise<T>): Promise<T> {
+    this.proactiveReservations.set(chatJid, (this.proactiveReservations.get(chatJid) ?? 0) + 1);
+    const previous = this.proactiveTails.get(chatJid) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolvePromise) => { release = resolvePromise; });
+    const tail = previous.catch(() => undefined).then(async () => await current);
+    this.proactiveTails.set(chatJid, tail);
+    await previous.catch(() => undefined);
+    try {
+      return await task();
+    } finally {
+      release();
+      const remaining = (this.proactiveReservations.get(chatJid) ?? 1) - 1;
+      if (remaining === 0) this.proactiveReservations.delete(chatJid);
+      else this.proactiveReservations.set(chatJid, remaining);
+      if (this.proactiveTails.get(chatJid) === tail) this.proactiveTails.delete(chatJid);
     }
   }
 
@@ -488,6 +662,12 @@ export class WhatsAppAdapter {
   private async sendText(chatJid: WhatsAppJid, text: string): Promise<void> {
     await this.socket.sendMessage(chatJid, { text });
   }
+}
+
+function createActiveRun(controller: AbortController): ActiveRun {
+  let settle!: () => void;
+  const settled = new Promise<void>((resolvePromise) => { settle = resolvePromise; });
+  return { controller, settled, settle };
 }
 
 function buildAgentRequest(

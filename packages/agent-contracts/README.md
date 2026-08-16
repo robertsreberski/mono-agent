@@ -124,6 +124,12 @@ The core turn boundary is deliberately structural:
    `ChannelStartInput.onSummaryChanged`; the host applies the status/discovery
    transition instead of a driver mutating shared summary state.
 
+An addressable driver may additionally declare one unique
+`processJobs.conversationScheme` and publish `RunningChannel.processJobs`.
+`update` renders lifecycle state without invoking the model; `wake` must return
+an honest `steered` or `follow_up` receipt for the completion turn. Drivers that
+do not opt in remain ineligible for background schemas and delivery.
+
 ### Package structure
 
 Primary modules:
@@ -349,6 +355,9 @@ ProcessJobProjectionOutput
 ProcessJobProjectionTimestamps
 ProcessJobProjectionWake
 ProcessJobState
+ProcessJobWakeDeliveryInput
+ProcessJobWakeDeliveryResult
+ProcessJobWakeDisposition
 ProcessJobWakeState
 ReadSettingsJsonResult
 RedactedSecretValue
@@ -357,6 +366,7 @@ ResilientMessageStream
 ResilientMessageStreamLogger
 ResilientMessageStreamOptions
 RunningChannel
+RunningProcessJobChannel
 SUBAGENT_TOOL_SEPARATOR
 SessionToolHistoryEventMetadata
 SessionToolHistoryTerminalState

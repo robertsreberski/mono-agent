@@ -1080,6 +1080,59 @@ describe("SlackAdapter", () => {
     expect(api.updateCalls).toEqual([]);
   });
 
+  it("steers a process-job wake into the active run and skips the reserved fallback", async () => {
+    const api = new FakeSlackApi();
+    const respond = vi.fn(async () => ({ text: "fallback" }));
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: {
+        respond,
+        offerLiveInput: vi.fn(() => ({
+          status: "accepted" as const,
+          settled: Promise.resolve({ status: "applied" as const, runId: "run-1" }),
+        })),
+      },
+    });
+
+    await expect(adapter.notify("C1", "171.5", "job finished", {
+      deliveryKey: "process-job:job-1",
+      steerActive: true,
+    })).resolves.toMatchObject({ delivered: true, disposition: "steered" });
+    expect(respond).not.toHaveBeenCalled();
+    expect(api.postMessageCalls).toEqual([]);
+  });
+
+  it("shows tool activity in the reserved process-job fallback turn", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: {
+        respond: async (_request, stream) => {
+          await stream.event?.({
+            type: "tool_call_started",
+            id: "t1",
+            name: "Read",
+            arguments: { path: "result.txt" },
+          });
+          return { text: "processed completion" };
+        },
+        offerLiveInput: () => ({ status: "unavailable", reason: "inactive" }),
+      },
+    });
+
+    await expect(adapter.notify("C1", "171.5", "job finished", {
+      deliveryKey: "process-job:job-2",
+      steerActive: true,
+    })).resolves.toMatchObject({ delivered: true, disposition: "follow_up" });
+    expect(api.postMessageCalls.map((call) => call.text)).toContain("processed completion");
+    expect([
+      ...api.postMessageCalls.map((call) => call.text),
+      ...api.updateCalls.map((call) => call.text),
+    ].some((text) => text.includes("Read"))).toBe(true);
+  });
+
   it("notify() verbatim posts the text as-is without running a turn and records it to history", async () => {
     const api = new FakeSlackApi();
     let responded = false;

@@ -140,7 +140,7 @@ export interface ProcessJobsServiceHandle {
   readonly settings: ProcessJobsSettings;
   readonly operatorToken: string;
   readonly health: ProcessJobsHealth;
-  controller(origin: ProcessJobOriginRecord, chainDepth: number): ProcessJobsController;
+  controller(origin: ProcessJobOriginRecord, chainDepth: number | (() => number)): ProcessJobsController;
   list(): Promise<readonly ProcessJobProjection[]>;
   get(jobId: string): Promise<ProcessJobProjection | undefined>;
   cancel(jobId: string): Promise<ProcessJobProjection>;
@@ -301,10 +301,14 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     this.wakeBusyRearmMs = options.wakeBusyRearmMs ?? WAKE_BUSY_REARM_MS;
   }
 
-  controller(origin: ProcessJobOriginRecord, chainDepth: number): ProcessJobsController {
+  controller(origin: ProcessJobOriginRecord, chainDepth: number | (() => number)): ProcessJobsController {
     const captured = structuredClone(origin);
     return Object.freeze({
-      start: async (request: ProcessJobStartRequest) => await this.start(captured, chainDepth, request),
+      start: async (request: ProcessJobStartRequest) => await this.start(
+        captured,
+        typeof chainDepth === "function" ? chainDepth() : chainDepth,
+        request,
+      ),
     });
   }
 
@@ -2109,9 +2113,8 @@ function processOutputSecrets(
 }
 
 function isWakeCapableOrigin(origin: ProcessJobOriginRecord): boolean {
-  if (origin.channel === "slack") return origin.replyToConversationId.startsWith("slack:");
-  if (origin.channel === "telegram") return origin.replyToConversationId.startsWith("telegram:");
-  return origin.replyToConversationId.startsWith("web:") && origin.replyToConversationId !== "web:new";
+  return origin.replyToConversationId.startsWith(`${origin.channel}:`)
+    && (origin.channel !== "web" || origin.replyToConversationId !== "web:new");
 }
 
 function boundedSummary(value: string): string {

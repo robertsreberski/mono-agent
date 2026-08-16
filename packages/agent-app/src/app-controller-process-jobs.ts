@@ -1,12 +1,15 @@
 import { loadAppCoreConfig, isAppCoreConfigError } from "./app-config.js";
-import { deliverWebNotification } from "@mono-agent/web";
 import type {
+  ChannelDriver,
   ChannelId,
   ChannelStatus,
   MonoAgentAppLogger,
   RunningChannel,
 } from "./channels.js";
-import { routeProactiveNotification } from "./proactive-notify.js";
+import {
+  routeProcessJobSurfaceUpdate,
+  routeProcessJobWake,
+} from "./process-job-channel-routing.js";
 import { loadProcessJobsSettings } from "./process-jobs-config.js";
 import type { ProcessJobsSettings } from "./process-jobs-config.js";
 import { runWithProcessJobWakeContext } from "./process-jobs-context.js";
@@ -41,6 +44,7 @@ export interface ProcessJobsControllerPort {
   readonly configReadPath: string;
   readonly env: Record<string, string | undefined>;
   readonly logger: MonoAgentAppLogger | undefined;
+  readonly drivers: readonly ChannelDriver[];
   readonly running: Map<ChannelId, RunningChannel>;
   readonly statuses: Map<ChannelId, ChannelStatus>;
   readonly stopped: boolean;
@@ -104,8 +108,6 @@ export function ensureProcessJobsService(
         registration.rootKey,
       );
       if (!isCurrentFlight()) return undefined;
-      const sourceId = (await controller.observabilityContext()).sourceId;
-      if (!isCurrentFlight()) return undefined;
       const service = await openProcessJobsService({
         cwd: controller.cwd,
         workspace,
@@ -113,36 +115,24 @@ export function ensureProcessJobsService(
         registration,
         wake: async (input) => await runWithProcessJobWakeContext(
           { jobId: input.projection.jobId, chainDepth: input.chainDepth },
-          async () => await routeProactiveNotification({
+          async () => await routeProcessJobWake({
             conversationId: input.conversationId,
             text: input.prompt,
             deliveryKey: input.deliveryKey,
-            processJob: input.projection,
+            projection: input.projection,
+            drivers: controller.drivers,
             running: controller.running,
             ...(controller.logger === undefined ? {} : { logger: controller.logger }),
           }),
           input.deliveryKey,
         ),
         surfaceUpdate: async (projection) => {
-          if (projection.origin.channel === "web") {
-            if (sourceId === undefined) throw new Error("The agent source identity is unavailable for a web job card.");
-            const threadId = webThreadId(projection.origin.conversationId);
-            if (threadId === undefined) throw new Error("The process job does not identify an existing web thread.");
-            await deliverWebNotification({
-              sourceId,
-              triggerKind: "job",
-              deliveryKey: projection.wake.deliveryKey,
-              threadId,
-              processJob: projection,
-            });
-            return;
-          }
-          const outcome = await routeProactiveNotification({
+          const outcome = await routeProcessJobSurfaceUpdate({
             conversationId: projection.origin.conversationId.split("#", 1)[0]
               ?? projection.origin.conversationId,
-            text: "",
             deliveryKey: projection.wake.deliveryKey,
-            processJob: projection,
+            projection,
+            drivers: controller.drivers,
             running: controller.running,
             ...(controller.logger === undefined ? {} : { logger: controller.logger }),
           });
@@ -315,13 +305,6 @@ export async function publishProcessJobsHealth(
     }
   }
   await controller.refreshTraceSource("process-jobs-health");
-}
-
-function webThreadId(conversationId: string): string | undefined {
-  const base = conversationId.split("#", 1)[0];
-  if (base === undefined || !base.startsWith("web:") || base === "web:new") return undefined;
-  const threadId = base.slice("web:".length).trim();
-  return threadId.length === 0 ? undefined : threadId;
 }
 
 export async function startProcessJobsIfConfigured(
