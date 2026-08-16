@@ -119,6 +119,62 @@ describe("conversationConsoleUsage", () => {
     });
   });
 
+  it("accepts ACP's exact used/window snapshot without treating it as aggregate token work", () => {
+    expect(conversationConsoleUsage(detail([message("acp", [{
+      type: "telemetry",
+      event: "runtime_telemetry",
+      data: {
+        type: "runtime_telemetry",
+        kind: "context_usage",
+        data: {
+          model: "acp:trusted:assistant",
+          source: "acp",
+          context: { used: 48_000, window: 128_000 },
+          cost: { amount: 0.02, currency: "USD" },
+        },
+      },
+    }])]), { selectedModel: "acp:trusted:assistant" })).toEqual({
+      context: {
+        status: "current",
+        usage: {
+          total: 48_000,
+          contextWindow: 128_000,
+          model: "acp:trusted:assistant",
+        },
+        measuredModel: "acp:trusted:assistant",
+      },
+    });
+  });
+
+  it("never adds durable-history size or aggregate billing usage to an exact snapshot", () => {
+    expect(conversationConsoleUsage(detail([message("history", [
+      {
+        type: "telemetry",
+        event: "usage_update",
+        data: { tokens: { input: 900_000, output: 20_000 } },
+      },
+      {
+        type: "telemetry",
+        event: "runtime_telemetry",
+        data: {
+          type: "runtime_telemetry",
+          kind: "context_usage",
+          data: {
+            contextWindow: 128_000,
+            tokens: { total: 12_500 },
+            durableToolHistory: { retainedBytes: 256 * 1024 * 1024 },
+          },
+        },
+      },
+    ])]))).toEqual({
+      context: {
+        status: "current",
+        usage: { total: 12_500, contextWindow: 128_000 },
+      },
+      processed: { input: 900_000, output: 20_000 },
+    });
+  });
+
   it("lets a post-compaction provider snapshot become current and decrease", () => {
     expect(conversationConsoleUsage(detail([
       message("first", [contextPart(90_000, { timestamp: 100, contextWindow: 100_000 })]),

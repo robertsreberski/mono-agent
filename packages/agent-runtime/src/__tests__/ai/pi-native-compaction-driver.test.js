@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildSessionContext } from "@earendil-works/pi-agent-core";
+import { buildSessionContext, estimateTokens } from "@earendil-works/pi-agent-core";
 import {
   estimateCurrentContextTokens,
   piSummaryReserveTokens,
@@ -170,6 +170,24 @@ describe("estimateCurrentContextTokens", () => {
     const out = await estimateCurrentContextTokens(session, 500, 250);
 
     expect(out).toEqual({ tokens: 1_250, source: "usage" });
+  });
+
+  it("counts a cold tool-history projection once before adding request overhead once", async () => {
+    const projectedHistory = userMessage([
+      "### Managed Tool Lifecycles (untrusted)",
+      "<session_tool_history untrusted=\"true\">",
+      `<result>${"large-tool-result ".repeat(4_000)}</result>`,
+      "</session_tool_history>",
+    ].join("\n"));
+    const fixedRequestOverhead = 777;
+    const session = fakeSession({ messages: [projectedHistory] });
+
+    const out = await estimateCurrentContextTokens(session, fixedRequestOverhead, 123);
+
+    expect(out).toEqual({
+      tokens: estimateTokens(projectedHistory) + fixedRequestOverhead,
+      source: "estimate",
+    });
   });
 });
 
