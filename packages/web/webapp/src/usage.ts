@@ -210,16 +210,26 @@ const normalizeUsage = (data: unknown): NormalizedUsage | null => {
 
 const contextUsage = (data: unknown): ConsoleContextUsage | undefined => {
   const usage = normalizeUsage(data);
-  if (usage?.total === undefined || usage.total < 0) return undefined;
+  // ACP reports its exact snapshot as `context: { used, window }` rather than
+  // the token object emitted by Pi/Codex/OpenCode. Keep this fallback confined
+  // to context telemetry: aggregate billing events must never become an
+  // inferred occupancy measurement.
+  const contextRecords = dataLayers(data).flatMap((layer) => {
+    const context = recordValue(layer.context);
+    return context === undefined ? [] : [context];
+  });
+  const total = usage?.total ?? numericValue(contextRecords, ["used"]);
+  const contextWindow = usage?.contextWindow ?? numericValue(contextRecords, ["window"]);
+  if (total === undefined || total < 0) return undefined;
   return {
-    total: usage.total,
-    ...(usage.input === undefined ? {} : { input: usage.input }),
-    ...(usage.cachedInput === undefined ? {} : { cachedInput: usage.cachedInput }),
-    ...(usage.cacheCreation === undefined ? {} : { cacheCreation: usage.cacheCreation }),
-    ...(usage.output === undefined ? {} : { output: usage.output }),
-    ...(usage.reasoning === undefined ? {} : { reasoning: usage.reasoning }),
-    ...(usage.model === undefined ? {} : { model: usage.model }),
-    ...(usage.contextWindow === undefined ? {} : { contextWindow: usage.contextWindow }),
+    total,
+    ...(usage?.input === undefined ? {} : { input: usage.input }),
+    ...(usage?.cachedInput === undefined ? {} : { cachedInput: usage.cachedInput }),
+    ...(usage?.cacheCreation === undefined ? {} : { cacheCreation: usage.cacheCreation }),
+    ...(usage?.output === undefined ? {} : { output: usage.output }),
+    ...(usage?.reasoning === undefined ? {} : { reasoning: usage.reasoning }),
+    ...(usage?.model === undefined ? {} : { model: usage.model }),
+    ...(contextWindow === undefined ? {} : { contextWindow }),
   };
 };
 

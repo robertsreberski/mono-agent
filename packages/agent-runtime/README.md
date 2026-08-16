@@ -959,7 +959,8 @@ Successful provider requests may also emit exact context telemetry through
 - `context_usage` is one provider-counted request snapshot, never the run's
   aggregate processed-token total. Pi emits it at each successful assistant
   `message_end`; Codex uses `thread/tokenUsage/updated.tokenUsage.last`; direct
-  OpenCode requires a completed assistant message with native `tokens.total`.
+  OpenCode requires a completed assistant message with native `tokens.total`;
+  ACP normalizes the agent's exact `usage_update` `used`/`size` pair.
   Each event identifies the measured model and includes `contextWindow` only
   when the provider's own model metadata supplied it. The Claude bridges do not
   currently emit this event.

@@ -1374,6 +1374,35 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     expect(projection?.text).toContain("result-tail");
   });
 
+  it("does not automatically re-inject the result of an explicit SessionHistory read", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    const run = binding("projection-session-history");
+    await writer.persist(run, {
+      phase: "invocation",
+      toolCallId: "history-call",
+      toolName: "SessionHistory",
+      arguments: { action: "get", recordId: "retained-record" },
+    });
+    await writer.persist(run, {
+      phase: "result",
+      toolCallId: "history-call",
+      state: "success",
+      content: { untrusted: true, chunk: "nested-history-body-must-not-replay" },
+    });
+    await writer.close();
+
+    const projection = buildToolHistoryProjection(
+      new ToolHistoryReader(root),
+      "slack:C1",
+      "slack:C1#2026-08-15",
+      "current-run",
+    );
+    expect(projection?.text).toContain("SessionHistory");
+    expect(projection?.text).toContain("[nested SessionHistory result omitted; inspect the referenced record directly]");
+    expect(projection?.text).not.toContain("nested-history-body-must-not-replay");
+  });
+
   it("retains the newest fitting projection suffix in chronological order within the UTF-8 byte ceiling", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });
