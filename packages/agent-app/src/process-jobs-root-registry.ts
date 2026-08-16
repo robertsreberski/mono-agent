@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { lstatSync, realpathSync, type BigIntStats } from "node:fs";
-import { chmod, lstat, mkdir, opendir, readdir, realpath, rmdir } from "node:fs/promises";
+import { lstatSync, realpathSync, type BigIntStats, type Dirent } from "node:fs";
+import { chmod, link, lstat, mkdir, opendir, realpath, rmdir, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 
@@ -16,6 +16,11 @@ import { syncDirectory } from "./continuation-store-fs.js";
 export const PROCESS_JOBS_ROOT_REGISTRY_SCHEMA = "mono-agent.process-jobs-roots.v1";
 export const PROCESS_JOBS_ROOT_REGISTRY_DIRECTORY = "process-jobs-roots-v1";
 export const PROCESS_JOBS_ROOT_REGISTRY_FILE = "registry.json";
+export const PROCESS_JOBS_ROOT_REGISTRY_RECOVERY_DIRECTORY = "process-jobs-roots-v1.recovery";
+export const PROCESS_JOBS_ROOT_REGISTRY_STAGING_FILE = "registry.staging.json";
+export const PROCESS_JOBS_ROOT_REGISTRY_PREVIOUS_FILE = "registry.previous.json";
+export const PROCESS_JOBS_ROOT_REGISTRY_FAILED_FILE = "registry.failed.json";
+export const PROCESS_JOBS_ROOT_REGISTRY_MAX_RECOVERY_ENTRIES = 3;
 export const PROCESS_JOBS_ROOT_REGISTRY_MAX_ROOTS = 64;
 export const PROCESS_JOBS_ROOT_REGISTRY_MAX_SEGMENTS = 64;
 export const PROCESS_JOBS_ROOT_REGISTRY_MAX_SEGMENT_BYTES = 255;
@@ -41,6 +46,19 @@ interface FileIdentity {
   readonly ino: bigint;
 }
 
+interface ProvenManifest {
+  readonly path: string;
+  readonly manifest: RegistryManifest;
+  readonly contents: Buffer;
+  readonly details: BigIntStats;
+}
+
+interface RecoveryArtifacts {
+  readonly staging?: ProvenManifest;
+  readonly previous?: ProvenManifest;
+  readonly failed?: ProvenManifest;
+}
+
 export interface RegisteredProcessJobsRoot {
   readonly segments: readonly string[];
   readonly key: string;
@@ -53,6 +71,7 @@ export interface EmptyProcessJobsRootRegistrySnapshot {
   readonly kind: "empty";
   readonly agentRoot: string;
   readonly registryDir: string;
+  readonly recoveryDir: string;
   readonly manifestPath: string;
   readonly mutationLockPath: string;
   readonly generation: AgentRootProtectionGeneration;
@@ -64,6 +83,7 @@ export interface ReadyProcessJobsRootRegistrySnapshot {
   readonly kind: "ready";
   readonly agentRoot: string;
   readonly registryDir: string;
+  readonly recoveryDir: string;
   readonly manifestPath: string;
   readonly mutationLockPath: string;
   readonly generation: AgentRootProtectionGeneration;
@@ -77,6 +97,7 @@ export interface FailedProcessJobsRootRegistrySnapshot {
   readonly kind: "failed";
   readonly agentRoot: string;
   readonly registryDir: string;
+  readonly recoveryDir: string;
   readonly manifestPath: string;
   readonly mutationLockPath: string;
   readonly generation: AgentRootProtectionGeneration;
@@ -99,6 +120,10 @@ export interface ProcessJobsRootRegistrationProof {
 interface ProcessJobsRootRegistrationHooks {
   /** @internal Deterministic failure seam after first-directory creation and before manifest staging. */
   readonly afterRegistryDirectoryCreated?: () => void | Promise<void>;
+  /** @internal Deterministic publication and recovery seams for crash-matrix tests. */
+  readonly afterManifestPublish?: () => void | Promise<void>;
+  readonly beforeManifestRestore?: () => void | Promise<void>;
+  readonly beforeRegistryRecovery?: () => void | Promise<void>;
 }
 
 export interface ProcessJobsRootRegistryFreeze {
@@ -109,14 +134,23 @@ export interface ProcessJobsRootRegistryFreeze {
 
 export function processJobsRootRegistryPaths(agentRoot: string): {
   readonly registryDir: string;
+  readonly recoveryDir: string;
   readonly manifestPath: string;
+  readonly stagingPath: string;
+  readonly previousPath: string;
+  readonly failedPath: string;
   readonly mutationLockPath: string;
 } {
   const managedRoot = resolve(agentRoot, ".mono-agent");
   const registryDir = join(managedRoot, PROCESS_JOBS_ROOT_REGISTRY_DIRECTORY);
+  const recoveryDir = join(managedRoot, PROCESS_JOBS_ROOT_REGISTRY_RECOVERY_DIRECTORY);
   return {
     registryDir,
+    recoveryDir,
     manifestPath: join(registryDir, PROCESS_JOBS_ROOT_REGISTRY_FILE),
+    stagingPath: join(recoveryDir, PROCESS_JOBS_ROOT_REGISTRY_STAGING_FILE),
+    previousPath: join(recoveryDir, PROCESS_JOBS_ROOT_REGISTRY_PREVIOUS_FILE),
+    failedPath: join(recoveryDir, PROCESS_JOBS_ROOT_REGISTRY_FAILED_FILE),
     mutationLockPath: join(managedRoot, `.${PROCESS_JOBS_ROOT_REGISTRY_DIRECTORY}.lock`),
   };
 }
@@ -148,7 +182,7 @@ export function failedProcessJobsRootRegistryProtection(
       rootKeys: Object.freeze([]),
     }),
     roots: [],
-    protectedRoots: Object.freeze([paths.registryDir, paths.mutationLockPath]),
+    protectedRoots: Object.freeze([paths.registryDir, paths.recoveryDir, paths.mutationLockPath]),
     error: PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR,
   };
 }
@@ -194,6 +228,7 @@ export async function registerProcessJobsRoot(options: {
     agentRoot,
     workspace: options.workspace,
     registryDir: paths.registryDir,
+    recoveryDir: paths.recoveryDir,
     mutationLockPath: paths.mutationLockPath,
     segments: rootSegments,
   });
@@ -201,6 +236,8 @@ export async function registerProcessJobsRoot(options: {
   const lock = await acquireRegistryLock(paths.mutationLockPath);
   if (lock === undefined) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
   try {
+    await ensureRecoveryDirectory(paths);
+    await recoverRegistryArtifacts(paths, options.hooks);
     // A first-registration crash may leave only the durable directory. Strict
     // request readers remain provider-zero; the mutation-locked writer alone
     // may remove that exact empty artifact before retrying publication.
@@ -226,9 +263,9 @@ export async function registerProcessJobsRoot(options: {
     if (current.kind === "empty") {
       await ensurePrivateDirectory(paths.registryDir, "Process-job registry");
       await options.hooks?.afterRegistryDirectoryCreated?.();
-      await replaceManifest(paths.manifestPath, contents, undefined);
+      await replaceManifest(paths, contents, undefined, options.hooks);
     } else {
-      await replaceManifest(paths.manifestPath, contents, current);
+      await replaceManifest(paths, contents, current, options.hooks);
     }
     await syncDirectory(paths.registryDir);
     await syncDirectory(dirname(paths.registryDir));
@@ -242,6 +279,7 @@ export async function registerProcessJobsRoot(options: {
     return proof(current, rootKey);
   } catch (error) {
     try {
+      await recoverRegistryArtifacts(paths, options.hooks);
       await removeExactEmptyRegistryDirectory(paths.registryDir);
     } catch (cleanupError) {
       throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR, {
@@ -266,6 +304,8 @@ export async function freezeProcessJobsRootRegistry(
   const lock = await acquireRegistryLock(paths.mutationLockPath);
   if (lock === undefined) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
   try {
+    await recoverRegistryArtifacts(paths);
+    await removeExactEmptyRegistryDirectory(paths.registryDir);
     const snapshot = await loadStrict(canonicalRoot, workspace);
     return {
       snapshot,
@@ -303,7 +343,7 @@ export function assertProcessJobsRegistryDisjointFromPaths(
   paths: readonly string[],
 ): void {
   if (snapshot.kind === "empty") return;
-  const privatePaths = [snapshot.registryDir, snapshot.mutationLockPath,
+  const privatePaths = [snapshot.registryDir, snapshot.recoveryDir, snapshot.mutationLockPath,
     ...snapshot.roots.flatMap((root) => root.protectedPaths)];
   for (const privatePath of privatePaths) {
     for (const candidate of paths) {
@@ -336,13 +376,10 @@ async function loadStrict(
   workspace: string,
 ): Promise<EmptyProcessJobsRootRegistrySnapshot | ReadyProcessJobsRootRegistrySnapshot> {
   const paths = processJobsRootRegistryPaths(agentRoot);
-  let registryDetails: BigIntStats;
-  try {
-    registryDetails = await lstat(paths.registryDir, { bigint: true });
-  } catch (error) {
-    if (!isErrno(error, "ENOENT")) throw error;
-    const manifest = await readManifest(paths.manifestPath);
-    if (manifest !== undefined) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  const target = await inspectRegistryTarget(paths);
+  const recovery = await scanRecoveryArtifacts(paths, target.directoryDetails);
+  if (hasRecoveryArtifacts(recovery)) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  if (target.directoryDetails === undefined) {
     return {
       kind: "empty",
       agentRoot,
@@ -352,27 +389,21 @@ async function loadStrict(
       protectedRoots: [],
     };
   }
-  assertPrivateDirectory(registryDetails, "Process-job registry");
-  const entries = await readdir(paths.registryDir, { withFileTypes: true });
-  if (entries.length !== 1
-    || entries[0]?.name !== PROCESS_JOBS_ROOT_REGISTRY_FILE
-    || !entries[0].isFile()
-    || entries[0].isSymbolicLink()) {
-    throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
-  }
-  const read = await readManifest(paths.manifestPath);
+  const read = target.current;
   if (read === undefined) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
-  const manifest = parseManifest(read.contents);
+  const manifest = read.manifest;
   const roots = manifest.roots.map((segments) => validateRegisteredRoot({
     agentRoot,
     workspace,
     registryDir: paths.registryDir,
+    recoveryDir: paths.recoveryDir,
     mutationLockPath: paths.mutationLockPath,
     segments,
   }));
   const rootKeys = roots.map((root) => root.key);
   const protectedRoots = uniquePaths([
     paths.registryDir,
+    paths.recoveryDir,
     paths.mutationLockPath,
     ...roots.flatMap((root) => root.protectedPaths),
   ]);
@@ -386,6 +417,161 @@ async function loadStrict(
     manifestIdentity: { dev: read.details.dev, ino: read.details.ino },
     manifestContents: Buffer.from(read.contents),
   };
+}
+
+async function inspectRegistryTarget(
+  paths: ReturnType<typeof processJobsRootRegistryPaths>,
+): Promise<{ readonly directoryDetails?: BigIntStats; readonly current?: ProvenManifest }> {
+  return await inspectRegistryTargetWithReader(paths, readProvenManifest);
+}
+
+async function inspectRegistryTargetForRecovery(
+  paths: ReturnType<typeof processJobsRootRegistryPaths>,
+): Promise<{ readonly directoryDetails?: BigIntStats; readonly current?: ProvenManifest }> {
+  return await inspectRegistryTargetWithReader(paths, readRecoveryPairCandidateManifest);
+}
+
+async function inspectRegistryTargetWithReader(
+  paths: ReturnType<typeof processJobsRootRegistryPaths>,
+  readCurrent: (path: string) => Promise<ProvenManifest>,
+): Promise<{ readonly directoryDetails?: BigIntStats; readonly current?: ProvenManifest }> {
+  let before: BigIntStats;
+  try {
+    before = await lstat(paths.registryDir, { bigint: true });
+  } catch (error) {
+    if (!isErrno(error, "ENOENT")) throw error;
+    if (await readManifest(paths.manifestPath) !== undefined) {
+      throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+    }
+    return {};
+  }
+  assertPrivateDirectory(before, "Process-job registry");
+  if (await realpath(paths.registryDir) !== paths.registryDir) {
+    throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  }
+  const directory = await opendir(paths.registryDir);
+  let entry: Dirent | null;
+  try {
+    entry = await directory.read();
+    if (entry !== null && (entry.name !== PROCESS_JOBS_ROOT_REGISTRY_FILE
+      || !entry.isFile() || entry.isSymbolicLink())) {
+      throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+    }
+    if (await directory.read() !== null) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  } finally {
+    await directory.close();
+  }
+  const current = entry === null ? undefined : await readCurrent(paths.manifestPath);
+  const after = await lstat(paths.registryDir, { bigint: true });
+  assertPrivateDirectory(after, "Process-job registry");
+  if (!sameFileIdentity(before, after)) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  return { directoryDetails: after, ...(current === undefined ? {} : { current }) };
+}
+
+async function scanRecoveryArtifacts(
+  paths: ReturnType<typeof processJobsRootRegistryPaths>,
+  registryDetails?: BigIntStats,
+): Promise<RecoveryArtifacts> {
+  return await scanRecoveryArtifactsWithPreviousReader(paths, registryDetails, readProvenManifest);
+}
+
+async function scanRecoveryArtifactsForRecovery(
+  paths: ReturnType<typeof processJobsRootRegistryPaths>,
+  registryDetails?: BigIntStats,
+): Promise<RecoveryArtifacts> {
+  return await scanRecoveryArtifactsWithPreviousReader(
+    paths,
+    registryDetails,
+    readRecoveryPairCandidateManifest,
+  );
+}
+
+async function scanRecoveryArtifactsWithPreviousReader(
+  paths: ReturnType<typeof processJobsRootRegistryPaths>,
+  registryDetails: BigIntStats | undefined,
+  readPrevious: (path: string) => Promise<ProvenManifest>,
+): Promise<RecoveryArtifacts> {
+  let before: BigIntStats;
+  try {
+    before = await lstat(paths.recoveryDir, { bigint: true });
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return {};
+    throw error;
+  }
+  assertRecoveryDirectory(before);
+  if (await realpath(paths.recoveryDir) !== paths.recoveryDir) {
+    throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  }
+  const filesystemPeer = registryDetails ?? await lstat(dirname(paths.recoveryDir), { bigint: true });
+  assertPrivateDirectory(filesystemPeer, "Process-job registry filesystem peer");
+  if (before.dev !== filesystemPeer.dev) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+
+  let staging: ProvenManifest | undefined;
+  let previous: ProvenManifest | undefined;
+  let failed: ProvenManifest | undefined;
+  let count = 0;
+  const directory = await opendir(paths.recoveryDir);
+  try {
+    for (;;) {
+      const entry = await directory.read();
+      if (entry === null) break;
+      count += 1;
+      if (count > PROCESS_JOBS_ROOT_REGISTRY_MAX_RECOVERY_ENTRIES) {
+        throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+      }
+      if (!entry.isFile() || entry.isSymbolicLink()) {
+        throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+      }
+      if (entry.name === PROCESS_JOBS_ROOT_REGISTRY_STAGING_FILE) {
+        staging = await readProvenManifest(paths.stagingPath);
+      } else if (entry.name === PROCESS_JOBS_ROOT_REGISTRY_PREVIOUS_FILE) {
+        previous = await readPrevious(paths.previousPath);
+      } else if (entry.name === PROCESS_JOBS_ROOT_REGISTRY_FAILED_FILE) {
+        failed = await readProvenManifest(paths.failedPath);
+      } else {
+        throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+      }
+    }
+  } finally {
+    await directory.close();
+  }
+  const after = await lstat(paths.recoveryDir, { bigint: true });
+  assertRecoveryDirectory(after);
+  if (!sameFileIdentity(before, after)) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  return {
+    ...(staging === undefined ? {} : { staging }),
+    ...(previous === undefined ? {} : { previous }),
+    ...(failed === undefined ? {} : { failed }),
+  };
+}
+
+async function readProvenManifest(path: string): Promise<ProvenManifest> {
+  const read = await readManifest(path);
+  if (read === undefined) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  return { path, manifest: parseManifest(read.contents), contents: read.contents, details: read.details };
+}
+
+async function readRecoveryPairCandidateManifest(path: string): Promise<ProvenManifest> {
+  const read = await readVerifiedFile(path, {
+    validate: (details) => {
+      if (!details.isFile() || details.isSymbolicLink()
+        || (details.nlink !== 1n && details.nlink !== 2n)
+        || details.size > BigInt(PROCESS_JOBS_ROOT_REGISTRY_MAX_BYTES)) {
+        throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+      }
+      if (typeof process.getuid === "function" && details.uid !== BigInt(process.getuid())) {
+        throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+      }
+      if ((details.mode & 0o777n) !== 0o600n) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+    },
+    changedError: () => new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR),
+  });
+  if (read === undefined) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  return { path, manifest: parseManifest(read.contents), contents: read.contents, details: read.details };
+}
+
+function hasRecoveryArtifacts(artifacts: RecoveryArtifacts): boolean {
+  return artifacts.staging !== undefined || artifacts.previous !== undefined || artifacts.failed !== undefined;
 }
 
 async function readManifest(path: string): Promise<{ readonly contents: Buffer; readonly details: BigIntStats } | undefined> {
@@ -460,6 +646,7 @@ function validateRegisteredRoot(input: {
   readonly agentRoot: string;
   readonly workspace: string;
   readonly registryDir: string;
+  readonly recoveryDir: string;
   readonly mutationLockPath: string;
   readonly segments: readonly string[];
 }): RegisteredProcessJobsRoot {
@@ -467,8 +654,12 @@ function validateRegisteredRoot(input: {
   const lexicalWorkspace = resolve(input.workspace);
   const canonicalWorkspace = realpathSync(lexicalWorkspace);
   const key = input.segments.join("/");
+  // Reject the configured spelling before touching any candidate component.
+  // Keep this recoveryDir branch distinct from the canonical check below:
+  // case-folding and other non-symlink filesystem aliases need both proofs.
   if (!strictDescendant(input.agentRoot, lexicalPath)
     || pathsOverlap(lexicalPath, input.registryDir)
+    || pathsOverlap(lexicalPath, input.recoveryDir)
     || pathsOverlap(lexicalPath, input.mutationLockPath)
     || pathsOverlap(lexicalPath, clearSessionsRegistryRoot(input.agentRoot))
     || stateRootContainsWorkspace(lexicalPath, lexicalWorkspace, canonicalWorkspace)) {
@@ -498,8 +689,12 @@ function validateRegisteredRoot(input: {
     }
     if (final) canonicalPath = realpathSync(current);
   }
+  // Symlink components are rejected above rather than followed. This second
+  // recoveryDir branch covers a canonical alias exposed without a symlink and
+  // must not be collapsed into the lexical-only check.
   if (!strictDescendant(input.agentRoot, canonicalPath)
     || pathsOverlap(canonicalPath, input.registryDir)
+    || pathsOverlap(canonicalPath, input.recoveryDir)
     || pathsOverlap(canonicalPath, input.mutationLockPath)
     || pathsOverlap(canonicalPath, clearSessionsRegistryRoot(input.agentRoot))
     || stateRootContainsWorkspace(canonicalPath, lexicalWorkspace, canonicalWorkspace)) {
@@ -515,19 +710,33 @@ function validateRegisteredRoot(input: {
 }
 
 async function replaceManifest(
-  path: string,
+  paths: ReturnType<typeof processJobsRootRegistryPaths>,
   contents: Buffer,
   previous: ReadyProcessJobsRootRegistrySnapshot | undefined,
+  hooks?: ProcessJobsRootRegistrationHooks,
 ): Promise<void> {
+  // Fixed recovery names are safe only while every official publisher holds
+  // the mutation lock and proves the recovery namespace drained immediately
+  // before entering secureFileReplace, whose cross-directory rename paths are
+  // intentionally fixed for this registry.
+  await assertRecoveryArtifactsDrained(paths);
   await secureFileReplace({
-    path,
+    path: paths.manifestPath,
+    temporaryPath: paths.stagingPath,
     contents,
     mode: 0o600,
     target: previous === undefined
-      ? { expected: { kind: "missing" }, recovery: "preserve-current" }
+      ? {
+          expected: { kind: "missing" },
+          failedPath: paths.failedPath,
+          recovery: "preserve-current",
+          ...(hooks?.afterManifestPublish === undefined
+            ? {} : { afterPublish: hooks.afterManifestPublish }),
+        }
       : {
           expected: {
             kind: "present",
+            claimPath: paths.previousPath,
             validate: async (candidate) => {
               const current = await readManifest(candidate);
               return current !== undefined
@@ -537,9 +746,242 @@ async function replaceManifest(
             },
             invalidError: () => new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR),
           },
+          failedPath: paths.failedPath,
           recovery: "restore-previous",
+          ...(hooks?.afterManifestPublish === undefined
+            ? {} : { afterPublish: hooks.afterManifestPublish }),
+          ...(hooks?.beforeManifestRestore === undefined
+            ? {} : { beforeRestore: hooks.beforeManifestRestore }),
         },
   });
+}
+
+async function ensureRecoveryDirectory(
+  paths: ReturnType<typeof processJobsRootRegistryPaths>,
+): Promise<void> {
+  let created = false;
+  try {
+    await mkdir(paths.recoveryDir, { mode: 0o700 });
+    created = true;
+  } catch (error) {
+    if (!isErrno(error, "EEXIST")) throw error;
+  }
+  if (created) await chmod(paths.recoveryDir, 0o700);
+  const details = await lstat(paths.recoveryDir, { bigint: true });
+  assertRecoveryDirectory(details);
+  if (await realpath(paths.recoveryDir) !== paths.recoveryDir) {
+    throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  }
+  let filesystemPeer: BigIntStats;
+  try {
+    filesystemPeer = await lstat(paths.registryDir, { bigint: true });
+    assertPrivateDirectory(filesystemPeer, "Process-job registry");
+  } catch (error) {
+    if (!isErrno(error, "ENOENT")) throw error;
+    filesystemPeer = await lstat(dirname(paths.recoveryDir), { bigint: true });
+    assertPrivateDirectory(filesystemPeer, "Process-job registry parent");
+  }
+  if (details.dev !== filesystemPeer.dev) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  if (created) {
+    await syncDirectory(dirname(paths.recoveryDir));
+    const after = await lstat(paths.recoveryDir, { bigint: true });
+    assertRecoveryDirectory(after);
+    if (!sameFileIdentity(details, after)) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  }
+}
+
+async function assertRecoveryArtifactsDrained(
+  paths: ReturnType<typeof processJobsRootRegistryPaths>,
+): Promise<void> {
+  const target = await inspectRegistryTarget(paths);
+  const artifacts = await scanRecoveryArtifacts(paths, target.directoryDetails);
+  if (hasRecoveryArtifacts(artifacts)) {
+    throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  }
+}
+
+async function createMissingRegistryDirectoryForRestore(
+  paths: ReturnType<typeof processJobsRootRegistryPaths>,
+): Promise<void> {
+  try {
+    await mkdir(paths.registryDir, { mode: 0o700 });
+  } catch (error) {
+    // A pathname appearing after the absent-target proof is ambiguous. Never
+    // adopt, chmod, remove, or overwrite it as part of recovery.
+    if (isErrno(error, "EEXIST")) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+    throw error;
+  }
+  const before = await lstat(paths.registryDir, { bigint: true });
+  assertPrivateDirectory(before, "Process-job registry");
+  await chmod(paths.registryDir, 0o700);
+  const after = await lstat(paths.registryDir, { bigint: true });
+  assertPrivateDirectory(after, "Process-job registry");
+  if (!sameFileIdentity(before, after) || await realpath(paths.registryDir) !== paths.registryDir) {
+    throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  }
+  const recovery = await lstat(paths.recoveryDir, { bigint: true });
+  assertRecoveryDirectory(recovery);
+  if (after.dev !== recovery.dev) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+
+  const parentPath = dirname(paths.registryDir);
+  await syncDirectory(parentPath);
+  const proven = await lstat(paths.registryDir, { bigint: true });
+  assertPrivateDirectory(proven, "Process-job registry");
+  if (!sameFileIdentity(after, proven)) throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+}
+
+async function recoverRegistryArtifacts(
+  paths: ReturnType<typeof processJobsRootRegistryPaths>,
+  hooks?: ProcessJobsRootRegistrationHooks,
+): Promise<void> {
+  await hooks?.beforeRegistryRecovery?.();
+  let target = await inspectRegistryTargetForRecovery(paths);
+  let artifacts = await scanRecoveryArtifactsForRecovery(paths, target.directoryDetails);
+
+  if (target.current?.details.nlink === 2n || artifacts.previous?.details.nlink === 2n) {
+    const interruptedTarget = target.current;
+    const interruptedPrevious = artifacts.previous;
+    if (interruptedTarget === undefined
+      || interruptedPrevious === undefined
+      || interruptedTarget.details.nlink !== 2n
+      || interruptedPrevious.details.nlink !== 2n
+      || !sameFileIdentity(interruptedTarget.details, interruptedPrevious.details)
+      || !interruptedTarget.contents.equals(interruptedPrevious.contents)) {
+      throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+    }
+    await completeInterruptedPreviousRestore(paths, interruptedTarget, interruptedPrevious);
+    // Return to the ordinary single-link readers before considering any other
+    // artifact cleanup. No general two-link state is admitted beyond the exact
+    // target+previous recovery pair completed above.
+    target = await inspectRegistryTarget(paths);
+    artifacts = await scanRecoveryArtifacts(paths, target.directoryDetails);
+  }
+  if (!hasRecoveryArtifacts(artifacts)) return;
+
+  if (target.current !== undefined) {
+    for (const artifact of [artifacts.previous, artifacts.staging, artifacts.failed]) {
+      if (artifact !== undefined) await removeProvenRecoveryArtifact(paths.recoveryDir, artifact);
+    }
+    await proveManifestUnchanged(target.current);
+    return;
+  }
+
+  if (artifacts.previous !== undefined) {
+    if (target.directoryDetails === undefined) {
+      await createMissingRegistryDirectoryForRestore(paths);
+    }
+    await restorePreviousManifest(paths, artifacts.previous);
+    for (const artifact of [artifacts.staging, artifacts.failed]) {
+      if (artifact !== undefined) await removeProvenRecoveryArtifact(paths.recoveryDir, artifact);
+    }
+    return;
+  }
+
+  if (artifacts.failed !== undefined) {
+    // A failed publication without a previous generation cannot prove which
+    // generation should be authoritative.
+    throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  }
+  if (artifacts.staging !== undefined) {
+    await removeProvenRecoveryArtifact(paths.recoveryDir, artifacts.staging);
+  }
+}
+
+async function restorePreviousManifest(
+  paths: ReturnType<typeof processJobsRootRegistryPaths>,
+  previous: ProvenManifest,
+): Promise<void> {
+  await proveManifestUnchanged(previous);
+  await link(previous.path, paths.manifestPath);
+  const target = await readRecoveryPairCandidateManifest(paths.manifestPath);
+  const linkedPrevious = await readRecoveryPairCandidateManifest(previous.path);
+  if (target.details.nlink !== 2n
+    || linkedPrevious.details.nlink !== 2n
+    || !sameFileIdentity(target.details, linkedPrevious.details)
+    || !target.contents.equals(linkedPrevious.contents)) {
+    throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  }
+  await completeInterruptedPreviousRestore(paths, target, linkedPrevious);
+}
+
+async function completeInterruptedPreviousRestore(
+  paths: ReturnType<typeof processJobsRootRegistryPaths>,
+  expectedTarget: ProvenManifest,
+  expectedPrevious: ProvenManifest,
+): Promise<void> {
+  let target = await proveRecoveryPairCandidateUnchanged(expectedTarget);
+  let previous = await proveRecoveryPairCandidateUnchanged(expectedPrevious);
+  assertExactInterruptedPreviousRestorePair(target, previous);
+
+  // The target link may have been created immediately before process death.
+  // Make it durable before consuming the only recovery pathname, then reprove
+  // both names after the fsync yield and immediately before unlinking.
+  await syncDirectory(paths.registryDir);
+  target = await proveRecoveryPairCandidateUnchanged(target);
+  previous = await proveRecoveryPairCandidateUnchanged(previous);
+  assertExactInterruptedPreviousRestorePair(target, previous);
+
+  await unlink(previous.path);
+  await syncDirectory(paths.recoveryDir);
+  const restored = await readProvenManifest(paths.manifestPath);
+  if (!sameFileIdentity(target.details, restored.details)
+    || !target.contents.equals(restored.contents)
+    || restored.details.nlink !== 1n) {
+    throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  }
+  try {
+    await lstat(previous.path);
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return;
+    throw error;
+  }
+  throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+}
+
+function assertExactInterruptedPreviousRestorePair(
+  target: ProvenManifest,
+  previous: ProvenManifest,
+): void {
+  if (target.path === previous.path
+    || target.details.nlink !== 2n
+    || previous.details.nlink !== 2n
+    || !sameFileIdentity(target.details, previous.details)
+    || !target.contents.equals(previous.contents)) {
+    throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  }
+}
+
+async function proveRecoveryPairCandidateUnchanged(expected: ProvenManifest): Promise<ProvenManifest> {
+  const current = await readRecoveryPairCandidateManifest(expected.path);
+  if (!sameFileIdentity(expected.details, current.details)
+    || !expected.contents.equals(current.contents)) {
+    throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  }
+  return current;
+}
+
+async function removeProvenRecoveryArtifact(
+  recoveryDir: string,
+  artifact: ProvenManifest,
+): Promise<void> {
+  await proveManifestUnchanged(artifact);
+  await unlink(artifact.path);
+  await syncDirectory(recoveryDir);
+  try {
+    await lstat(artifact.path);
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return;
+    throw error;
+  }
+  throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+}
+
+async function proveManifestUnchanged(expected: ProvenManifest): Promise<void> {
+  const current = await readProvenManifest(expected.path);
+  if (!sameFileIdentity(expected.details, current.details)
+    || !expected.contents.equals(current.contents)) {
+    throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  }
 }
 
 function encodeManifest(manifest: RegistryManifest): Buffer {
@@ -633,6 +1075,14 @@ async function ensurePrivateDirectory(path: string, _label: string): Promise<voi
 
 function assertPrivateDirectory(details: BigIntStats, _label: string): void {
   if (!details.isDirectory() || details.isSymbolicLink() || (details.mode & 0o077n) !== 0n) {
+    throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+  }
+  assertOwned(details);
+}
+
+function assertRecoveryDirectory(details: BigIntStats): void {
+  if (!details.isDirectory() || details.isSymbolicLink()
+    || (details.mode & 0o777n) !== 0o700n) {
     throw new Error(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
   }
   assertOwned(details);

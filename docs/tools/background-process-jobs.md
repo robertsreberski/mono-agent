@@ -92,12 +92,44 @@ The manifest is an owner-only, no-follow, regular single-link file. Updates use
 an owner-only mutation lock, atomic secure replacement, directory fsync, and an
 identity-and-content reread. Unsafe, malformed, or over-bound state fails closed
 with the path-free `Process-job private-state protection is unavailable.` error.
+The registry directory remains strict: its only permitted entry is
+`registry.json`. Replacement artifacts instead use the owner-only sibling
+`.mono-agent/process-jobs-roots-v1.recovery/`, which is mode `0700`, must share
+the registry filesystem, and permits at most these three mode-`0600` regular
+files:
+
+- `registry.staging.json`
+- `registry.previous.json`
+- `registry.failed.json`
+
+Cross-directory publication fsyncs each affected directory at the namespace
+mutation, destination before source. Ordinary request loading performs only a
+bounded inspection of the recovery directory and fails closed if any artifact
+is present; it never repairs or removes one. Only root registration and
+clear-sessions preflight may recover while holding the existing registry
+mutation lock. Recovery artifacts are single-link in steady processing except
+for one exact crash-transient: after a previous manifest is linked back to
+`registry.json` and before `registry.previous.json` is unlinked, those two fixed
+names may be the same proven inode with identical bytes and `nlink=2`. Requests
+still fail closed and leave that pair untouched. Locked recovery alone may
+reprove the exact pair, make the target link durable, unlink the previous name,
+fsync the recovery directory, and reprove `registry.json` at `nlink=1`; every
+other hard-linked shape remains untouched and fail-closed.
+
+A valid current manifest wins and proven artifacts are removed; an absent
+current manifest is restored from a valid previous manifest (recreating only a
+proven-absent registry directory when necessary) before proven staging/failed
+cleanup; staging alone is discarded so a fresh first registration can proceed.
+Failed-only state, a corrupt or ambiguous current manifest, unknown or fourth
+entries, and unsafe directories, links, ownership, modes, or artifact contents
+remain fail-closed. The recovery directory is empty in steady state.
+
 It is never auto-pruned: disabling or removing `processJobs`, changing A to B,
 or restarting retains A, and an A-to-B change protects both roots. The registry
-directory and every retained root's lexical and canonical aliases are native
-protected roots and reply-artifact private roots. A degraded or failed store
-open therefore leaves all earlier roots sealed even though the background
-controller itself remains optional.
+directory, recovery directory, and every retained root's lexical and canonical
+aliases are native protected roots and reply-artifact private roots. A degraded
+or failed store open therefore leaves all earlier roots sealed even though the
+background controller itself remains optional.
 
 Every official local request captures and re-attests the current registry
 generation, then acquires its generation lease before request resource
