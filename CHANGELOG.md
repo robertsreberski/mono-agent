@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.20.1 — Trusted-host ProcessJobs compatibility (2026-08-16)
+
+- Add the explicit `processJobs.unsafeAllowUnprotectedState` compatibility
+  posture for trusted Pi-native hosts that intentionally run with
+  `sandbox.mode: "off"`, while keeping the default ProcessJobs state boundary
+  fail-closed and preserving provider-zero recovery failures.
+
 ## 0.20.0 — Background jobs, rich replies, and session tool history (2026-08-16)
 
 ### ACP client interoperability
