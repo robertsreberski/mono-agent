@@ -22,6 +22,7 @@ import type { NotifyDestination } from "./notify-destinations.js";
 import { reasonOf } from "./app-controller-utils.js";
 import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
 import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
+import type { ProcessJobsProtectionPosture } from "./process-jobs-protection.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 
@@ -47,6 +48,7 @@ interface DestinationsControllerPort {
 export interface MaintenanceControllerPort extends NotifyControllerPort, DestinationsControllerPort {
   readonly runtime: MonoRuntimeLike | undefined;
   readonly activeRuntimes: MonoRuntimeLike[];
+  readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
   stopped: boolean;
   memoryRituals: RunningRituals | undefined;
   artifactRetentionScheduler: RunningArtifactRetentionScheduler | undefined;
@@ -81,6 +83,8 @@ export async function startMemoryRitualsIfConfigured(controller: MaintenanceCont
     config: coreConfig,
     cwd: controller.cwd,
     ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
+  }, {
+    suppressSandboxEngine: controller.processJobsProtectionPosture?.suppressSyntheticSandbox === true,
   });
   if (!controller.activeRuntimes.includes(runtime)) {
     controller.activeRuntimes.push(runtime);

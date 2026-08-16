@@ -14,6 +14,8 @@ const runtimeHooks = vi.hoisted(() => {
   return {
     run: vi.fn(),
     create: vi.fn(),
+    createSrt: vi.fn(),
+    configureTools: vi.fn(),
     dispose: vi.fn(async () => undefined),
     sandboxEngine,
   };
@@ -23,11 +25,14 @@ vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@mono-agent/runtime-adapter")>();
   return {
     ...actual,
-    createSrtSandboxEngine: () => runtimeHooks.sandboxEngine,
+    createSrtSandboxEngine: () => {
+      runtimeHooks.createSrt();
+      return runtimeHooks.sandboxEngine;
+    },
     createMonoRuntime: (options: unknown) => {
       runtimeHooks.create(options);
       return {
-        configureTools() {},
+        configureTools: runtimeHooks.configureTools,
         run: (...args: unknown[]) => runtimeHooks.run(...args),
         disposeAllSessions: runtimeHooks.dispose,
       };
@@ -42,6 +47,8 @@ const temporaryDirectories: string[] = [];
 beforeEach(() => {
   runtimeHooks.run.mockReset();
   runtimeHooks.create.mockClear();
+  runtimeHooks.createSrt.mockClear();
+  runtimeHooks.configureTools.mockClear();
   runtimeHooks.dispose.mockClear();
   runtimeHooks.sandboxEngine.isAvailable.mockClear();
   runtimeHooks.run.mockResolvedValue({
@@ -123,6 +130,42 @@ describe("local TUI configured runtime boundary", () => {
       ]),
     });
   });
+
+  it("uses the validated unsafe posture without creating or injecting SRT while retaining host and MCP authority", async () => {
+    const fixture = await localFixture({
+      unsafe: true,
+      fallback: "pi:ollama:qwen3:8b",
+    });
+    const session = await createLocalConfigurationSession({
+      cwd: fixture.cwd,
+      configPath: fixture.configPath,
+      env: {},
+    });
+    try {
+      await expect(session.responder.respond(localRequest(), { append: async () => undefined }))
+        .resolves.toMatchObject({ text: "local response" });
+    } finally {
+      await session.dispose();
+    }
+
+    expect(runtimeHooks.createSrt).not.toHaveBeenCalled();
+    expect(runtimeHooks.sandboxEngine.isAvailable).not.toHaveBeenCalled();
+    expect(runtimeHooks.create).toHaveBeenCalledWith(expect.not.objectContaining({
+      sandboxEngine: expect.anything(),
+    }));
+    for (const configured of runtimeHooks.configureTools.mock.calls) {
+      expect(configured[0]).not.toHaveProperty("sandboxEngine");
+      expect(configured[0]?.sandboxPolicy?.protectedRoots ?? []).toHaveLength(0);
+    }
+    const options = runtimeHooks.run.mock.calls[0]?.[1] as RuntimeRunOptions | undefined;
+    expect(options?.sandboxEngine).toBeUndefined();
+    expect(options?.sandboxPolicy).toMatchObject({ mode: "off" });
+    expect(options?.sandboxPolicy?.protectedRoots ?? []).toHaveLength(0);
+    expect(options?.allowedTools).toEqual(expect.arrayContaining(["Bash", "Exec", "mcp__gmail__*"]));
+    expect(options?.mcpServers).toMatchObject({
+      gmail: { command: "/Users/example/.config/gws-gmail" },
+    });
+  });
 });
 
 function localRequest(): never {
@@ -134,7 +177,10 @@ function localRequest(): never {
   } as never;
 }
 
-async function localFixture(options: { readonly fallback?: string } = {}): Promise<{
+async function localFixture(options: {
+  readonly fallback?: string;
+  readonly unsafe?: boolean;
+} = {}): Promise<{
   readonly cwd: string;
   readonly configPath: string;
   readonly processJobsStateDir: string;
@@ -156,6 +202,13 @@ async function localFixture(options: { readonly fallback?: string } = {}): Promi
     chmod(processJobsStateDir, 0o700),
     writeFile(join(cwd, "IDENTITY.md"), "# Local TUI boundary test\n"),
   ]);
+  if (options.unsafe === true) {
+    await writeFile(join(cwd, "mcp.json"), `${JSON.stringify({
+      mcpServers: {
+        gmail: { command: "/Users/example/.config/gws-gmail" },
+      },
+    }, null, 2)}\n`);
+  }
   await writeFile(configPath, `${JSON.stringify({
     agent: { name: "Local boundary test" },
     runtime: {
@@ -166,10 +219,21 @@ async function localFixture(options: { readonly fallback?: string } = {}): Promi
       workspace: ".",
     },
     context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
-    tools: { allowedTools: ["Read", "Write", "Bash"], disallowedTools: [] },
+    tools: {
+      allowedTools: options.unsafe === true
+        ? ["Read", "Write", "Bash", "Exec", "mcp__gmail__*"]
+        : ["Read", "Write", "Bash"],
+      disallowedTools: [],
+      ...(options.unsafe === true ? { mcpConfigPath: "./mcp.json" } : {}),
+    },
     artifacts: { dir: "./artifacts" },
     continuations: { enabled: false },
-    processJobs: { enabled: true, stateDir: ".mono-agent/process-jobs" },
+    processJobs: {
+      enabled: true,
+      stateDir: ".mono-agent/process-jobs",
+      ...(options.unsafe === true ? { unsafeAllowUnprotectedState: true } : {}),
+    },
+    ...(options.unsafe === true ? { sandbox: { mode: "off" } } : {}),
   }, null, 2)}\n`);
   return { cwd, configPath, processJobsStateDir, registryRoot };
 }

@@ -41,6 +41,7 @@ import {
   registerProcessJobsRoot,
   type ProcessJobsRootRegistrySnapshot,
 } from "../process-jobs-root-registry.js";
+import { resolveProcessJobsProtectionPosture } from "../process-jobs-protection.js";
 
 const processIdentity = vi.hoisted(() => ({
   current: {
@@ -585,6 +586,39 @@ describe("process-job mixed fallback route guard", () => {
     }
   });
 
+  it("keeps the full app responder and routed harness unprotected in validated unsafe posture", async () => {
+    const fixture = await createRouteGuardFixture(
+      PI_ROUTE,
+      PI_FALLBACK_ROUTE,
+      "live",
+      true,
+      "per-route-native",
+      true,
+    );
+    try {
+      const response = await fixture.responder.respond({
+        conversationId: "slack:C1:unsafe",
+        text: "exercise trusted host tools",
+        abortSignal: new AbortController().signal,
+      }, { append: async () => {} });
+      expect(response.text).toContain("fallback route completed");
+
+      expect(fixture.providerRunCounts).toEqual([1, 1]);
+      expect(fixture.sandboxEngineFor).not.toHaveBeenCalled();
+      for (const options of fixture.routeRunOptions) {
+        expect(options.sandboxEngine).toBeUndefined();
+        expect(options.sandboxPolicy).toMatchObject({ mode: "off" });
+        expect(options.sandboxPolicy?.protectedRoots ?? []).toHaveLength(0);
+      }
+      for (const options of fixture.routeToolOptions) {
+        expect(options.sandboxEngine).toBeUndefined();
+        expect(options.sandboxPolicy?.protectedRoots ?? []).toHaveLength(0);
+      }
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
   it("fails a degraded all-Pi turn before providers when the sandbox engine is unavailable", async () => {
     const fixture = await createRouteGuardFixture(
       PI_ROUTE,
@@ -644,11 +678,14 @@ async function createRouteGuardFixture(
   processJobsMode: "live" | "degraded" | "none",
   sandboxEngineAvailable = true,
   routeSafety: "uniform" | "per-route-native" = "per-route-native",
+  unsafe = false,
 ): Promise<{
   readonly responder: Awaited<ReturnType<typeof buildResponder>>;
   readonly providerRunCounts: readonly number[];
   readonly routeRunOptions: readonly RuntimeRunOptions[];
+  readonly routeToolOptions: readonly RuntimeRunOptions[];
   readonly sandboxEngine: object;
+  readonly sandboxEngineFor: ReturnType<typeof vi.fn>;
   readonly workspace: string;
   readonly processJobsStateDir: string;
   readonly siblingFile: string;
@@ -692,7 +729,9 @@ async function createRouteGuardFixture(
     processJobs: {
       enabled: processJobsMode !== "none",
       stateDir: ".mono-agent/process-jobs",
+      ...(unsafe ? { unsafeAllowUnprotectedState: true } : {}),
     },
+    ...(unsafe ? { sandbox: { mode: "off" } } : {}),
   }, null, 2)}\n`);
   const loadedConfig = await loadAppCoreConfig({ cwd: workspace, configPath, env: {} });
   const primaryModel = parseMonoRuntimeModelReference(primaryReference);
@@ -721,8 +760,9 @@ async function createRouteGuardFixture(
   expect(routes).toHaveLength(fallbackModel === undefined ? 1 : 2);
   const providerRunCounts = routes.map(() => 0);
   const routeRunOptions: RuntimeRunOptions[] = [];
+  const routeToolOptions: RuntimeRunOptions[] = [];
   const routeRuntimes = routes.map((_route, index): MonoRuntimeLike => ({
-    configureTools() {},
+    configureTools(options) { routeToolOptions.push(options as RuntimeRunOptions); },
     async run(_systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
       providerRunCounts[index] = (providerRunCounts[index] ?? 0) + 1;
       routeRunOptions.push(options);
@@ -766,6 +806,15 @@ async function createRouteGuardFixture(
     async isAvailable() { return sandboxEngineAvailable; },
     async prepareCommand(command: unknown) { return command; },
   };
+  const sandboxEngineFor = vi.fn(() => sandboxEngine as never);
+  const processJobsProtectionPosture = resolveProcessJobsProtectionPosture({
+    settings: {
+      enabled: processJobsMode !== "none",
+      unsafeAllowUnprotectedState: unsafe,
+    },
+    registry: security.registry,
+    coreConfig,
+  });
   const controller: ResponderControllerPort = {
     cwd: workspace,
     configPath,
@@ -785,8 +834,9 @@ async function createRouteGuardFixture(
     processJobsStateDir: processJobsMode === "none" ? undefined : processJobsStateDir,
     agentRootOwnership: security.ownership,
     processJobsRegistry: security.registry,
+    processJobsProtectionPosture,
     seenNotifyDestinations: createSeenNotifyDestinationCache(),
-    sandboxEngineFor: () => sandboxEngine as never,
+    sandboxEngineFor,
     memoryStore: async () => memory as never,
     ensureSharedMemoryRetrieval: () => undefined,
     reportMemoryRecallStatus: () => false,
@@ -805,7 +855,9 @@ async function createRouteGuardFixture(
     responder,
     providerRunCounts,
     routeRunOptions,
+    routeToolOptions,
     sandboxEngine,
+    sandboxEngineFor,
     workspace,
     processJobsStateDir,
     siblingFile,

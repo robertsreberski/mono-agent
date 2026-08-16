@@ -13,14 +13,14 @@
  * agent-host-runtime-auth) so we can observe the OPTIONS createMonoRuntime is
  * built with AND capture the `model` reaching each `runtime.run`.
  */
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import { createSandboxPolicy, type RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
 const runCalls: Array<{ systemPrompt: string; options: RuntimeRunOptions }> = [];
 const fakeRuntime = {
@@ -31,6 +31,11 @@ const fakeRuntime = {
   },
 };
 const createMonoRuntimeMock = vi.fn((_options: unknown) => fakeRuntime);
+const createSrtSandboxEngineMock = vi.fn(() => ({
+  id: "unexpected-srt",
+  isAvailable: async () => true,
+  prepareCommand: async (command: unknown) => command,
+}));
 const coordinatorHome = vi.hoisted(() => ({ path: "" }));
 
 vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => {
@@ -38,6 +43,7 @@ vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => {
   return {
     ...actual,
     createMonoRuntime: (options: unknown) => createMonoRuntimeMock(options),
+    createSrtSandboxEngine: (..._args: unknown[]) => createSrtSandboxEngineMock(),
   };
 });
 vi.mock("../account-home.js", () => ({
@@ -54,6 +60,16 @@ vi.mock("../process-incarnation.js", async (importOriginal) => ({
 }));
 
 const { createConfiguredMemory } = await import("../index.js");
+const { createConfiguredMemoryForApp } = await import("../configured-agent.js");
+const {
+  acquireAgentRootOwnership,
+  releaseAgentRootOwnershipWhenIdle,
+} = await import("../agent-root-coordinator.js");
+const {
+  loadProcessJobsRootRegistryProtection,
+  registerProcessJobsRoot,
+} = await import("../process-jobs-root-registry.js");
+const { resolveProcessJobsProtectionPosture } = await import("../process-jobs-protection.js");
 
 const tempDirs: string[] = [];
 beforeAll(async () => {
@@ -74,6 +90,7 @@ async function tempDir(): Promise<string> {
 beforeEach(() => {
   runCalls.length = 0;
   createMonoRuntimeMock.mockClear();
+  createSrtSandboxEngineMock.mockClear();
 });
 
 afterEach(async () => {
@@ -115,16 +132,60 @@ describe("memory LLM honours config.memory.llm.model", () => {
       expect(options.fallbackChain).toBeUndefined();
     }
   });
+
+  it("keeps Pi agent-host memory tool-less and SRT-free under validated unsafe app authority", async () => {
+    const lexicalDir = await tempDir();
+    const ownership = await acquireAgentRootOwnership(lexicalDir);
+    const dir = ownership.agentRoot;
+    const workspace = join(dir, "workspace");
+    await mkdir(workspace, { recursive: true });
+    const config = memoryModelConfig(dir, workspace, true);
+    const loaded = await loadProcessJobsRootRegistryProtection(dir, workspace);
+    ownership.coordinator.synchronizeGeneration(loaded.generation);
+    const registration = await registerProcessJobsRoot({
+      agentRoot: ownership.agentRoot,
+      workspace,
+      stateDir: join(dir, ".state", "process-jobs"),
+      coordinator: ownership.coordinator,
+    });
+    const posture = resolveProcessJobsProtectionPosture({
+      settings: { enabled: true, unsafeAllowUnprotectedState: true },
+      registry: registration.snapshot,
+      coreConfig: config,
+    });
+    await releaseAgentRootOwnershipWhenIdle(ownership);
+    const store = await createConfiguredMemoryForApp(config, { cwd: dir }, posture) as unknown as {
+      capture(conversationId: string, text: string): Promise<unknown>;
+      close(): Promise<void>;
+    };
+
+    await store.capture("conv-unsafe", "Keep trusted host memory direct.");
+    await store.close();
+
+    expect(createSrtSandboxEngineMock).not.toHaveBeenCalled();
+    expect(runCalls.length).toBeGreaterThanOrEqual(1);
+    for (const call of runCalls) {
+      expect(call.options.model.sdk).toBe("pi");
+      expect(call.options.sandboxEngine).toBeUndefined();
+      expect(call.options.sandboxPolicy?.protectedRoots ?? []).toHaveLength(0);
+      expect(call.options.allowedTools).toEqual([]);
+      expect(call.options.mcpServers).toEqual({});
+    }
+  });
 });
 
-function memoryModelConfig(dir: string): MonoAgentConfig {
+function memoryModelConfig(
+  dir: string,
+  workspace = dir,
+  unsafe = false,
+): MonoAgentConfig {
   return {
     runtime: {
       model: { ...RUNTIME_MODEL },
       fallbackModels: [{ ...FALLBACK_MODEL }],
       executionMode: "sdk",
       maxTurns: 4,
-      workspace: dir,
+      workspace,
       session: { mode: "per-message", idleTimeoutMs: 1_800_000 },
     },
     context: { identityPath: join(dir, "IDENTITY.md"), selectedSkills: [] },
@@ -143,5 +204,8 @@ function memoryModelConfig(dir: string): MonoAgentConfig {
       memoryRetention: { maxAgeDays: 7, maxCount: 5000, dryRun: false },
     },
     traceability: { registryDir: join(dir, "trace-sources") },
+    ...(unsafe
+      ? { sandbox: createSandboxPolicy({ mode: "off", root: workspace }) }
+      : {}),
   };
 }

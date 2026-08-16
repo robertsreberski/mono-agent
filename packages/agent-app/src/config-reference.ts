@@ -71,6 +71,11 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     description: "Opt in to owner-private Pi-native Exec/Bash background process jobs (unsupported on Windows).",
   },
   {
+    jsonPath: "processJobs.unsafeAllowUnprotectedState", env: "--", type: "boolean",
+    defaultLabel: "false", defaultValue: false, example: false,
+    description: "Dangerous trusted-host opt-in: with explicit sandbox.mode=off and Pi-only routes, retain ProcessJobs state without synthetic SRT protection; state and the operator secret become model-accessible.",
+  },
+  {
     jsonPath: "processJobs.stateDir", env: "--", type: "string",
     defaultLabel: ".mono-agent/process-jobs", defaultValue: ".mono-agent/process-jobs", example: ".mono-agent/process-jobs",
     description: "Agent-root-confined owner-private process-job records and artifacts; must be disjoint from every restart --clear-sessions purge root.",
@@ -489,6 +494,7 @@ function setProcessJobsSchema(root: Record<string, JsonSchema>): void {
     additionalProperties: false,
     properties: {
       enabled: { type: "boolean", default: false },
+      unsafeAllowUnprotectedState: { type: "boolean", default: false },
       stateDir: { type: "string", minLength: 1, default: ".mono-agent/process-jobs" },
       maxConcurrent: { type: "integer", minimum: 1, maximum: 32, default: 4 },
       maxActivePerConversation: { type: "integer", minimum: 1, maximum: 8, default: 2 },

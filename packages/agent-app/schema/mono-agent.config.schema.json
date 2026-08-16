@@ -1564,6 +1564,10 @@
           "type": "boolean",
           "default": false
         },
+        "unsafeAllowUnprotectedState": {
+          "type": "boolean",
+          "default": false
+        },
         "stateDir": {
           "type": "string",
           "minLength": 1,

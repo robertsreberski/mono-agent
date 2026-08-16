@@ -425,6 +425,31 @@ describe("validateMonoAgentFolder", () => {
     expect(await pathExists(stateDir)).toBe(false);
   });
 
+  it("surfaces the unsafe protection warning without putting a private path in the warning", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      sandbox: { mode: "off" },
+      processJobs: { enabled: true, unsafeAllowUnprotectedState: true },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      allowFilesystemWrites: false,
+    });
+
+    const section = sectionById(report, "process-jobs");
+    expect(section.status).toBe("ok");
+    expect(section.details[0]).toBe(
+      "UNSAFE: ProcessJobs state and operator secret are model-accessible.",
+    );
+    expect(section.details[0]).not.toContain(dir);
+  });
+
   it("fails process-job doctor checks for a symlinked intermediate state component", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const outside = await mkdtemp(join(tmpdir(), "agent-app-doctor-process-jobs-outside-"));

@@ -25,6 +25,10 @@ import type { NotifyDeliveryResult } from "./proactive-notify.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import { startAppOwnedTuiChannel } from "./channel-drivers/tui.js";
+import {
+  unsafeProcessJobsProtectionStatus,
+  type ProcessJobsProtectionPosture,
+} from "./process-jobs-protection.js";
 
 export interface ChannelsControllerPort {
   readonly env: Record<string, string | undefined>;
@@ -41,6 +45,7 @@ export interface ChannelsControllerPort {
   readonly traceabilityStatusValue: TraceabilityStatus;
   readonly processJobsService: ProcessJobsServiceHandle | undefined;
   readonly processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
+  readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
   setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus;
   rememberSelectedSkills(coreConfig: MonoAgentConfig): void;
   ensureInteractionBridge(coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined>;
@@ -262,11 +267,16 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       );
       return currentStatus();
     }
+    const protectionStatus = unsafeProcessJobsProtectionStatus(controller.processJobsProtectionPosture);
+    const protectionSummary = protectionStatus === undefined
+      ? {}
+      : { processJobsProtection: protectionStatus };
     const summary = driver.id !== "tui"
       ? runningChannel.summary
       : controller.processJobsService !== undefined
         ? {
             ...runningChannel.summary,
+            ...protectionSummary,
             processJobs: {
               stateDir: controller.processJobsService.settings.stateDir,
               health: controller.processJobsService.health.state,
@@ -274,9 +284,10 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
             },
           }
         : controller.processJobsDegradation === undefined
-          ? runningChannel.summary
+          ? { ...runningChannel.summary, ...protectionSummary }
           : {
               ...runningChannel.summary,
+              ...protectionSummary,
               processJobsDegraded: controller.processJobsDegradation,
             };
     controller.running.set(driver.id, {

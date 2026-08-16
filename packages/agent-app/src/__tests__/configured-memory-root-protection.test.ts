@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
+import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
 
 const memoryState = vi.hoisted(() => ({
   complete: vi.fn(async () => "[]"),
@@ -42,6 +43,8 @@ vi.mock("../process-incarnation.js", async (importOriginal) => ({
 }));
 
 const { createConfiguredMemory } = await import("../index.js");
+const { createConfiguredMemoryForApp } = await import("../configured-agent.js");
+const { resolveProcessJobsProtectionPosture } = await import("../process-jobs-protection.js");
 const {
   acquireAgentRootOwnership,
   agentRootLeasePath,
@@ -108,6 +111,46 @@ describe("direct configured memory provider protection", () => {
     expect(memoryState.embed).not.toHaveBeenCalled();
     await store.close();
     ownership.release();
+  });
+
+  it("allows direct tool-less LLM and embedding providers only through unsafe app authority while retaining settlement ownership", async () => {
+    const fixture = await memoryFixture("unsafe-retained");
+    const ownership = await seedRegistry(fixture, join(fixture.root, ".state", "jobs"));
+    const config = memoryConfig(fixture, true);
+    const registry = await loadProcessJobsRootRegistryProtection(fixture.root, fixture.workspace);
+    const posture = resolveProcessJobsProtectionPosture({
+      settings: { enabled: true, unsafeAllowUnprotectedState: true },
+      registry,
+      coreConfig: config,
+    });
+    const leasePath = agentRootLeasePath(ownership.agentRoot, fixture.home);
+    let settleEmbedding: ((value: number[][]) => void) | undefined;
+    memoryState.embed.mockImplementationOnce(async () => await new Promise<number[][]>((resolve) => {
+      settleEmbedding = resolve;
+    }));
+    const store = await createConfiguredMemoryForApp(
+      config,
+      { cwd: fixture.root },
+      posture,
+    ) as unknown as {
+      capture(): Promise<unknown>;
+      recall(): Promise<unknown>;
+      close(): Promise<void>;
+    };
+
+    await expect(store.capture()).resolves.toBe("[]");
+    expect(memoryState.complete).toHaveBeenCalledOnce();
+    const pendingRecall = store.recall();
+    await vi.waitFor(() => expect(memoryState.embed).toHaveBeenCalledOnce());
+    ownership.release();
+    await expect(lstat(leasePath)).resolves.toBeDefined();
+
+    settleEmbedding?.([[2]]);
+    await expect(pendingRecall).resolves.toEqual([[2]]);
+    await vi.waitFor(async () => {
+      await expect(lstat(leasePath)).rejects.toMatchObject({ code: "ENOENT" });
+    }, { timeout: 2_000, interval: 10 });
+    await store.close();
   });
 
   it("retains cooperative root ownership until an out-of-harness embedding provider truly settles", async () => {
@@ -180,7 +223,10 @@ async function seedRegistry(
   return ownership;
 }
 
-function memoryConfig(fixture: { root: string; workspace: string }): MonoAgentConfig {
+function memoryConfig(
+  fixture: { root: string; workspace: string },
+  unsafe = false,
+): MonoAgentConfig {
   return {
     runtime: {
       model: {
@@ -202,5 +248,8 @@ function memoryConfig(fixture: { root: string; workspace: string }): MonoAgentCo
     tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: join(fixture.root, "artifacts") },
     traceability: { registryDir: join(fixture.root, "trace") },
+    ...(unsafe
+      ? { sandbox: createSandboxPolicy({ mode: "off", root: fixture.workspace }) }
+      : {}),
   } as unknown as MonoAgentConfig;
 }

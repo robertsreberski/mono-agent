@@ -75,6 +75,10 @@ import {
   processJobsProtectionPolicyRoots,
   type ProcessJobsRootRegistrySnapshot,
 } from "./process-jobs-root-registry.js";
+import {
+  resolveProcessJobsProtectionPosture,
+  type ProcessJobsProtectionPosture,
+} from "./process-jobs-protection.js";
 import { bindProcessJobWakeContextToResponder } from "./process-jobs-context.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
@@ -93,6 +97,7 @@ export interface ResponderControllerPort {
   readonly processJobsStateDir: string | undefined;
   readonly agentRootOwnership: AgentRootOwnership;
   readonly processJobsRegistry: ProcessJobsRootRegistrySnapshot | undefined;
+  readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
   readonly seenNotifyDestinations: SeenNotifyDestinationCache;
   sandboxEngineFor(coreConfig: MonoAgentConfig): SandboxEngine | undefined;
   memoryStore(coreConfig: MonoAgentConfig): Promise<ConfiguredMemory>;
@@ -161,8 +166,16 @@ export async function buildResponder(
 ): Promise<AgentResponder> {
   const processJobsRegistry = controller.processJobsRegistry
     ?? failedProcessJobsRootRegistryProtection(controller.agentRootOwnership.agentRoot);
+  const processJobsProtectionPosture = controller.processJobsProtectionPosture
+    ?? resolveProcessJobsProtectionPosture({
+      settings: { enabled: false, unsafeAllowUnprotectedState: false },
+      registry: processJobsRegistry,
+      coreConfig,
+    });
   const processJobsProtectedRoots = processJobsProtectionPolicyRoots(processJobsRegistry);
-  const modelBoundaryConfig = processJobsProtectedRoots.length === 0
+  const modelBoundaryConfig = processJobsProtectionPosture.suppressSyntheticSandbox
+    ? coreConfig
+    : processJobsProtectedRoots.length === 0
     ? coreConfig
     : {
         ...coreConfig,
@@ -180,12 +193,16 @@ export async function buildResponder(
           network: { mode: "all" },
         }),
       };
-  const sandboxEngine = controller.sandboxEngineFor(sandboxEngineConfig);
+  const sandboxEngine = processJobsProtectionPosture.suppressSyntheticSandbox
+    ? undefined
+    : controller.sandboxEngineFor(sandboxEngineConfig);
   const sessionRollover = sessionRolloverForChannel(channelId, coreConfig.runtime.session.rollover);
   const runtime = controller.runtime ?? createConfiguredAgentRuntimeForApp({
     config: coreConfig,
     cwd: controller.cwd,
     ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
+  }, {
+    suppressSandboxEngine: processJobsProtectionPosture.suppressSyntheticSandbox,
   });
   if (!controller.activeRuntimes.includes(runtime)) {
     controller.activeRuntimes.push(runtime);
@@ -396,6 +413,7 @@ export async function buildResponder(
       registry: processJobsRegistry,
       service: controller.processJobsService,
       channelId,
+      protectionPosture: processJobsProtectionPosture,
       routesOnlyPiNative: requestModelOverride.targetsProcessJobsPiNative,
     },
     // Only the responder's own bucketing changes. RunHistory above keeps the
@@ -459,7 +477,8 @@ export function buildRuntimeForModel(
   coreConfig: MonoAgentConfig,
 ): (model: RuntimeModelReference, executionMode?: RuntimeExecutionMode) => MonoRuntimeLike {
   const cache = new Map<string, MonoRuntimeLike>();
-  const sandboxEngine = controller.sandboxEngineFor(coreConfig);
+  const suppressSandboxEngine = controller.processJobsProtectionPosture?.suppressSyntheticSandbox === true;
+  const sandboxEngine = suppressSandboxEngine ? undefined : controller.sandboxEngineFor(coreConfig);
   return (model, executionMode) => {
     const key = `${modelReferenceKey(model)}|${executionMode ?? ""}`;
     const cached = cache.get(key);
@@ -472,6 +491,8 @@ export function buildRuntimeForModel(
       model,
       ...(executionMode === undefined ? {} : { executionMode }),
       ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
+    }, {
+      suppressSandboxEngine,
     });
     cache.set(key, runtime);
     controller.activeRuntimes.push(runtime);

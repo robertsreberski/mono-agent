@@ -94,6 +94,38 @@ describe("Exec", () => {
     expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
+  it("hands off and launches an unsandboxed background command with no sandbox settings path", async () => {
+    const workspace = tempWorkspace();
+    let completion;
+    const start = vi.fn(async (request) => {
+      expect(request.prepared.sandboxed).toBe(false);
+      expect(request.prepared.sandboxSettingsPath).toBeUndefined();
+      const handle = request.launch({ timeoutMs: 5_000, maxBufferBytes: 1024 });
+      await handle.release();
+      completion = handle.completion;
+      return { jobId: "pj_unsandboxed", state: "running", startedAt: handle.startedAt };
+    });
+
+    const result = await execToolRun({
+      executable: process.execPath,
+      args: ["--eval", "process.stdout.write('unsandboxed handoff')"],
+      background: true,
+    }, {
+      ctx: { workspace, sandbox: passthroughSandbox },
+      processJobsController: { start },
+    });
+
+    expect(result).toMatchObject({
+      error: false,
+      outcome: { code: "background_started", job_id: "pj_unsandboxed" },
+    });
+    await expect(completion).resolves.toMatchObject({
+      code: 0,
+      stdout: "unsandboxed handoff",
+    });
+    expect(start).toHaveBeenCalledOnce();
+  });
+
   it("cleans an unlaunched prepared command once when the controller returns an invalid result", async () => {
     const workspace = tempWorkspace();
     const cleanup = vi.fn(async () => {});

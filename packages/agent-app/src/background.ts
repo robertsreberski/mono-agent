@@ -1634,6 +1634,7 @@ async function assembleInstanceStatus(
 ): Promise<Record<string, unknown>> {
   const metadata = source.metadata ?? {};
   const observability = metadata.observability;
+  const processJobs = metadata.processJobs;
   const sandbox = metadata.sandbox;
   const session = metadata.session;
   const channels = metadata.channels;
@@ -1651,6 +1652,7 @@ async function assembleInstanceStatus(
     ...(source.transports === undefined ? {} : { transports: source.transports }),
     logs: { stdout: target.paths.stdoutPath, stderr: target.paths.stderrPath },
     ...(isPlainRecord(observability) ? { observability } : {}),
+    ...(isPlainRecord(processJobs) ? { processJobs } : {}),
     ...(isPlainRecord(sandbox) ? { sandbox } : {}),
     ...(isPlainRecord(session) ? { session } : {}),
     ...(isPlainRecord(channels) ? { channels } : {}),
@@ -1928,6 +1930,13 @@ function writeInstanceDetail(source: TraceSourceListItem, target: InstanceTarget
     deps.stdout(ui.rule("observability"));
     deps.stdout(`  ${observability}\n`);
   }
+  const processJobsProtectionLines = describeProcessJobsProtectionMetadata(source);
+  if (processJobsProtectionLines.length > 0) {
+    deps.stdout(ui.rule("process jobs protection"));
+    for (const line of processJobsProtectionLines) {
+      deps.stdout(`  ${line}\n`);
+    }
+  }
   const sandboxLines = describeSandboxMetadata(source);
   if (sandboxLines.length > 0) {
     deps.stdout(ui.rule("sandbox"));
@@ -2084,6 +2093,18 @@ function describeSandboxMetadata(source: TraceSourceListItem): string[] {
     summary,
     ...stringFieldAsList(record, "detail"),
     ...stringFieldAsList(record, "warning").map((warning) => ui.style.yellow(warning)),
+  ];
+}
+
+function describeProcessJobsProtectionMetadata(source: TraceSourceListItem): string[] {
+  const processJobs = source.metadata?.processJobs;
+  if (!isPlainRecord(processJobs) || !isPlainRecord(processJobs.protection)) return [];
+  const protection = processJobs.protection;
+  const mode = stringField(protection, "protection");
+  if (mode === undefined) return [];
+  return [
+    `protection: ${mode}; retained roots: ${protection.retainedRoots === true ? "yes" : "no"}`,
+    ...stringFieldAsList(protection, "warning").map((warning) => ui.style.yellow(warning)),
   ];
 }
 

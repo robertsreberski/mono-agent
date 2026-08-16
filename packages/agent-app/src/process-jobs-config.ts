@@ -13,6 +13,7 @@ import {
 
 export const PROCESS_JOBS_DEFAULTS = Object.freeze({
   enabled: false,
+  unsafeAllowUnprotectedState: false,
   stateDir: ".mono-agent/process-jobs",
   maxConcurrent: 4,
   maxActivePerConversation: 2,
@@ -48,6 +49,7 @@ export const PROCESS_JOBS_CAPS = Object.freeze({
 export interface ProcessJobsSettings {
   readonly configured: boolean;
   readonly enabled: boolean;
+  readonly unsafeAllowUnprotectedState: boolean;
   readonly stateDir: string;
   readonly maxConcurrent: number;
   readonly maxActivePerConversation: number;
@@ -240,6 +242,7 @@ export async function loadProcessJobsSettings(input: {
   const block = requireObject(value, "processJobs");
   rejectUnknownKeys(block, "processJobs", [
     "enabled",
+    "unsafeAllowUnprotectedState",
     "stateDir",
     "maxConcurrent",
     "maxActivePerConversation",
@@ -265,6 +268,10 @@ async function resolvedSettings(
   options: LoadProcessJobsSettingsOptions,
 ): Promise<ProcessJobsSettings> {
   const enabled = optionalBoolean(block.enabled, "processJobs.enabled") ?? PROCESS_JOBS_DEFAULTS.enabled;
+  const unsafeAllowUnprotectedState = optionalBoolean(
+    block.unsafeAllowUnprotectedState,
+    "processJobs.unsafeAllowUnprotectedState",
+  ) ?? PROCESS_JOBS_DEFAULTS.unsafeAllowUnprotectedState;
   const rawStateDir = optionalString(block.stateDir, "processJobs.stateDir") ?? PROCESS_JOBS_DEFAULTS.stateDir;
   if (isAbsolute(rawStateDir)) {
     throw new Error("processJobs.stateDir must be relative to the agent root.");
@@ -297,6 +304,7 @@ async function resolvedSettings(
   return {
     configured,
     enabled,
+    unsafeAllowUnprotectedState,
     stateDir,
     maxConcurrent: bounded(block.maxConcurrent, "processJobs.maxConcurrent", PROCESS_JOBS_DEFAULTS.maxConcurrent, PROCESS_JOBS_CAPS.maxConcurrent),
     maxActivePerConversation: bounded(

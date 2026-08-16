@@ -88,6 +88,14 @@ import { CONTINUATION_STATES, continuationDigest, type ContinuationState } from 
 import { isProcessJobState, PROCESS_JOB_STATES } from "@mono-agent/agent-contracts";
 import { loadProcessJobsSettings } from "./process-jobs-config.js";
 import {
+  attestProcessJobsRootRegistrySnapshot,
+  failedProcessJobsRootRegistryProtection,
+  loadProcessJobsRootRegistryProtection,
+} from "./process-jobs-root-registry.js";
+import {
+  resolveProcessJobsProtectionPosture,
+} from "./process-jobs-protection.js";
+import {
   MAX_PROCESS_JOB_HEALTH_BYTES,
   PROCESS_JOB_HEALTH_FILE,
   PROCESS_JOB_QUARANTINE_DIRECTORY,
@@ -2532,13 +2540,44 @@ async function processJobsSection(
       details: [`Process-job configuration is invalid: ${continuationReason(error)}`],
     };
   }
+  let unsafeWarning: string | undefined;
+  if (settings.unsafeAllowUnprotectedState) {
+    try {
+      let registry = await loadProcessJobsRootRegistryProtection(input.cwd, config.runtime.workspace);
+      if (registry.kind !== "failed") {
+        try {
+          registry = await attestProcessJobsRootRegistrySnapshot(registry, config.runtime.workspace);
+        } catch {
+          registry = failedProcessJobsRootRegistryProtection(registry.agentRoot);
+        }
+      }
+      const posture = resolveProcessJobsProtectionPosture({ settings, registry, coreConfig: config });
+      if (posture.kind === "unavailable") {
+        return {
+          id: "process-jobs",
+          label: "Background process jobs",
+          status: "error",
+          details: ["Process-job private-state protection is unavailable."],
+        };
+      }
+      unsafeWarning = posture.warning;
+    } catch (error) {
+      return {
+        id: "process-jobs",
+        label: "Background process jobs",
+        status: "error",
+        details: [`Process-job configuration is invalid: ${continuationReason(error)}`],
+      };
+    }
+  }
   if (!settings.enabled) {
     return {
       id: "process-jobs",
       label: "Background process jobs",
-      status: "disabled",
+      status: unsafeWarning === undefined ? "disabled" : "ok",
       details: [
         "Background Exec/Bash jobs are opt-in (processJobs.enabled=false).",
+        ...(unsafeWarning === undefined ? [] : [unsafeWarning]),
         ...(process.platform === "win32" ? ["Windows is unsupported; detached POSIX process-group ownership is required."] : []),
       ],
     };
@@ -2553,6 +2592,7 @@ async function processJobsSection(
   }
 
   const details = [
+    ...(unsafeWarning === undefined ? [] : [unsafeWarning]),
     `Owner-only local state: ${settings.stateDir}.`,
     `Concurrency: ${String(settings.maxConcurrent)} global, ${String(settings.maxActivePerConversation)} per conversation, ${String(settings.maxQueued)} queued.`,
     `Caps: runtime=${String(settings.maxRuntimeMs)}ms, queue-age=${String(settings.maxQueueAgeMs)}ms, output=${String(settings.maxOutputBytes)} bytes, chain-depth=${String(settings.maxChainDepth)}.`,

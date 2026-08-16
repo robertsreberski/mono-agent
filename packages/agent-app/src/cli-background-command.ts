@@ -680,6 +680,13 @@ export async function printAppStatus(app: MonoAgentApp, options: PrintAppStatusO
     ),
   );
   const artifactDir = app.traceabilityStatus.kind === "running" ? app.traceabilityStatus.artifactDir : undefined;
+  if (app.processJobsProtection !== undefined) {
+    process.stdout.write(ui.rule("process jobs protection"));
+    process.stdout.write(
+      `  protection: ${app.processJobsProtection.protection}; retained roots: ${app.processJobsProtection.retainedRoots ? "yes" : "no"}` +
+      `${app.processJobsProtection.warning === undefined ? "" : `; ${ui.style.yellow(app.processJobsProtection.warning)}`}\n`,
+    );
+  }
   process.stdout.write(ui.rule("sandbox"));
   process.stdout.write(`  ${describeSandboxStatus(app.sandboxStatus)}\n`);
   process.stdout.write(ui.rule("observability"));
