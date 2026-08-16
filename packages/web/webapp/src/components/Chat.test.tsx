@@ -65,6 +65,7 @@ describe("ModelControls", () => {
       selectedAgent: agent("agent", {
         models: [MODEL],
         defaultModel: MODEL,
+        defaultEffort: "high",
         modelOptions: {
           [MODEL]: {
             label: "GPT-5.5 Codex",
@@ -83,7 +84,7 @@ describe("ModelControls", () => {
     const trigger = screen.getByRole("button", { name: "Model and reasoning effort" });
     const store = storeMock.current as { setModel: ReturnType<typeof vi.fn> };
 
-    expect(trigger).toHaveTextContent("Automatic model");
+    expect(trigger).toHaveTextContent("Default model");
     fireEvent.click(trigger);
     const dialog = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
     const option = within(dialog).getByRole("option", { name: /^GPT-5\.5 Codex/u });
@@ -93,12 +94,12 @@ describe("ModelControls", () => {
     expect(store.setModel).toHaveBeenCalledWith(MODEL);
   });
 
-  it("keeps automatic model and effort choices visibly distinct", async () => {
+  it("shows the configured default effort while keeping the explicit choices distinct", async () => {
     render(<ModelControls />);
 
     fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
     const effortGroup = await screen.findByRole("radiogroup", { name: "Reasoning effort" });
-    expect(within(effortGroup).getByRole("radio", { name: "Automatic" })).toHaveAttribute(
+    expect(within(effortGroup).getByRole("radio", { name: "Default · High" })).toHaveAttribute(
       "aria-checked",
       "true",
     );
@@ -106,6 +107,55 @@ describe("ModelControls", () => {
 
     const store = storeMock.current as { setEffort: ReturnType<typeof vi.fn> };
     expect(store.setEffort).toHaveBeenCalledWith("high");
+  });
+
+  it("names a provider-selected default without guessing its effort", async () => {
+    storeMock.current = {
+      ...storeMock.current,
+      selectedAgent: agent("agent", {
+        models: [MODEL],
+        defaultModel: MODEL,
+        modelOptions: {
+          [MODEL]: {
+            reasoning: true,
+            effortLevels: ["low", "high"],
+          },
+        },
+      }),
+    };
+    render(<ModelControls />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+    const effortGroup = await screen.findByRole("radiogroup", { name: "Reasoning effort" });
+    expect(within(effortGroup).getByRole("radio", { name: "Default · Provider" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+  });
+
+  it("renders the configured default through a toggle model's on/off vocabulary", async () => {
+    storeMock.current = {
+      ...storeMock.current,
+      selectedAgent: agent("agent", {
+        models: [MODEL],
+        defaultModel: MODEL,
+        defaultEffort: "none",
+        modelOptions: {
+          [MODEL]: {
+            reasoning: true,
+            reasoningMode: "toggle",
+            effortLevels: ["high", "none"],
+          },
+        },
+      }),
+    };
+    render(<ModelControls />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+    const effortGroup = await screen.findByRole("radiogroup", { name: "Reasoning effort" });
+    expect(within(effortGroup).getByRole("radio", { name: "Default · Off" })).toBeVisible();
+    expect(within(effortGroup).getByRole("radio", { name: "On" })).toBeVisible();
+    expect(within(effortGroup).getByRole("radio", { name: "Off" })).toBeVisible();
   });
 
   it("opens the same portaled mobile-safe picker from the slash settings action", async () => {
