@@ -42,9 +42,14 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   owner-private queue/store/process-group lifecycle, exact Slack/Telegram/web
   wake with age-bounded busy deferrals, bounded pending/store materialization,
   stable secret-free safety errors, native same-message lifecycle surfaces,
-  fail-closed live store health and degraded-open private-state protection,
-  restart interruption, state-root separation from every clear-sessions purge,
-  doctor section, operator routes, and `mono-agent jobs` CLI at the app boundary.
+  fail-closed live store health, a bounded monotonic registry that seals every
+  retained state root even after disable or reconfiguration, cooperative
+  official-process ownership, true-settlement generation barriers, provider-zero
+  for configured routes and direct memory LLM/embedding calls, restart interruption,
+  all-root separation from every clear-sessions purge, doctor section, operator
+  routes, and `mono-agent jobs` CLI at the app boundary. This
+  local contract does not resist a hostile same-UID provider; use OS privilege
+  separation when that is in the threat model.
 - Drive each channel through a uniform driver contract with per-channel
   `disabled` / `waiting_for_config` / `running` / `degraded` / `failed` status.
   `degraded` means a temporarily unavailable transport owns its recovery while

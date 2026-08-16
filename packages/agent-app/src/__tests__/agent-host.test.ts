@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type {
@@ -43,6 +43,29 @@ const fakeSandboxEngine: SandboxEngine = {
     throw new Error("not used by host composition tests");
   },
 };
+
+// These composition tests exercise harness/runtime wiring, not the real
+// cooperative owner. Dedicated coordinator and configured-root suites cover
+// the filesystem-backed lifetime contract.
+vi.mock("../agent-root-coordinator.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../agent-root-coordinator.js")>(),
+  acquireAgentRootOwnership: async (root: string | undefined) => ({
+    agentRoot: root ?? process.cwd(),
+    coordinator: {
+      synchronizeGeneration() {},
+      acquireRequestLease: (generation: unknown) => ({
+        generation,
+        releaseAfterSettlement() {},
+      }),
+    },
+    release() {},
+  }),
+  releaseAgentRootOwnershipWhenIdle: async (ownership: { release(): void }) => {
+    ownership.release();
+    return true;
+  },
+  assertAgentRootLeaseOutsideWorkspace() {},
+}));
 
 import {
   createConfiguredAgentHarness,

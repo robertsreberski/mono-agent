@@ -126,7 +126,7 @@ describe("sandbox policy", () => {
     });
   });
 
-  it("adds only canonical internal protected roots without exposing them as policy input", async () => {
+  it("retains lexical and canonical internal protected-root aliases without exposing them as policy input", async () => {
     const root = await realpath(await tempDir());
     const privateRoot = join(root, ".mono-agent");
     const stateDir = join(privateRoot, "process-jobs");
@@ -140,7 +140,7 @@ describe("sandbox policy", () => {
       protectedRoots: [stateDir],
     });
 
-    expect(policy.protectedRoots).toEqual([stateDir]);
+    expect(policy.protectedRoots).toEqual([stateDir, alias]);
     expect(configLikeAttempt).toMatchObject({ protectedRoots: [] });
   });
 });

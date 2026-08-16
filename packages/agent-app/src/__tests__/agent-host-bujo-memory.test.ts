@@ -8,7 +8,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -23,6 +23,20 @@ import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapt
 
 import { createConfiguredAgentHarness, createConfiguredMemory } from "../index.js";
 
+const coordinatorHome = vi.hoisted(() => ({ path: "" }));
+vi.mock("../account-home.js", () => ({
+  accountHomeDirectory: () => coordinatorHome.path,
+}));
+vi.mock("../process-incarnation.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../process-incarnation.js")>(),
+  currentProcessIncarnation: async () => ({
+    schema: "mono-agent.process-incarnation.v1" as const,
+    bootSessionId: "test-boot",
+    processStartId: "vitest-agent-host-bujo",
+  }),
+  isSameProcessIncarnation: () => true,
+}));
+
 /** Deterministic non-zero fake embeddings — no network. */
 const fakeEmbeddings: EmbeddingProvider = {
   id: "fake",
@@ -30,6 +44,15 @@ const fakeEmbeddings: EmbeddingProvider = {
 };
 
 const tempDirs: string[] = [];
+beforeAll(async () => {
+  coordinatorHome.path = await mkdtemp(join(tmpdir(), "agent-host-bujo-coordinator-home-"));
+});
+afterAll(async () => {
+  await vi.waitFor(async () => {
+    expect(await readdir(join(coordinatorHome.path, ".mono-agent", "agent-root-leases"))).toEqual([]);
+  }, { timeout: 2_000, interval: 10 });
+  await rm(coordinatorHome.path, { recursive: true, force: true });
+});
 async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "agent-host-bujo-test-"));
   tempDirs.push(dir);

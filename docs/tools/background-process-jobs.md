@@ -23,10 +23,11 @@ later result from a selected external MCP service.
 The feature is opt-in and every key is JSON-only. Unknown keys are rejected.
 `stateDir` must be a relative child of the agent root. Its canonical path must
 be disjoint from every root removed by `restart --clear-sessions`: Pi provider
-sessions, durable message/tool history, and ACP session authorizations. Startup
-and clear-sessions preflight reject equality or containment in either direction,
-including symlink aliases, so clearing conversation state cannot delete
-process-job records or output.
+sessions, durable message/tool history, and ACP session authorizations. The
+check covers every root retained in the durable registry, not only the current
+configuration. Startup and clear-sessions preflight reject equality or
+containment in either direction, including lexical and canonical aliases, so
+clearing conversation state cannot delete process-job records or output.
 
 ```json
 {
@@ -70,30 +71,96 @@ at admission. The runtime deadline starts when the detached launch gate is
 spawned immediately before ownership is persisted, so waiting in a busy queue
 does not consume the runtime budget.
 
-Whenever process jobs are configured and enabled, every model turn is guarded
-for the exact configured `stateDir`, even if the durable store cannot open and
-startup continues without a background controller. Every reachable primary,
-fallback, accepted request-override, and configured `Agent` child route must be
-Pi-native, and each accepted turn must have an available real sandbox engine
-before any provider runs. The router independently rejects a provider-native
-non-Pi route carrying protected roots before route resolution or provider
-invocation, so nested model routes cannot bypass the app's early chain guard.
-Eligible Pi-native turns receive host-internal, fail-closed native protection
-independently of whether they receive the background controller. Model `Read`,
-`Write`, `Edit`, `Glob`, `Grep`, `Bash`, and `Exec` cannot read, replace,
-rename, search, or use that directory as a workdir. Host filesystem tools
-perform their actual file operation through the native sandbox, closing
-symlink swaps after path authorization. SRT also denies a rename of any
-ancestor that would move the protected leaf.
+## Durable root registry and request barrier
 
-Only the exact state directory is protected: workspace siblings such as
+Before mono-agent creates an enabled `stateDir`, opens its store, or writes a
+store secret, `@mono-agent/agent-app` securely publishes that root to
+`.mono-agent/process-jobs-roots-v1/registry.json`. Opening the service requires
+the exact registration proof. The v1 manifest is absent exactly while no root
+has ever been registered for the agent. It stores sorted agent-root-relative
+segments and a fresh generation id, with these fixed bounds:
+
+| Registry bound | Maximum |
+| --- | ---: |
+| Retained roots | 64 |
+| Segments per root | 64 |
+| UTF-8 bytes per segment | 255 |
+| UTF-8 bytes per relative root | 2 KiB |
+| Encoded manifest | 256 KiB |
+
+The manifest is an owner-only, no-follow, regular single-link file. Updates use
+an owner-only mutation lock, atomic secure replacement, directory fsync, and an
+identity-and-content reread. Unsafe, malformed, or over-bound state fails closed
+with the path-free `Process-job private-state protection is unavailable.` error.
+It is never auto-pruned: disabling or removing `processJobs`, changing A to B,
+or restarting retains A, and an A-to-B change protects both roots. The registry
+directory and every retained root's lexical and canonical aliases are native
+protected roots and reply-artifact private roots. A degraded or failed store
+open therefore leaves all earlier roots sealed even though the background
+controller itself remains optional.
+
+Every official local request captures and re-attests the current registry
+generation, then acquires its generation lease before request resource
+extensions or provider invocation. A newly registered generation becomes the
+current generation before its store may open; opening waits for older leases
+that did not cover the new root. The bounded drain timeout fails closed and does
+not create the directory, store, or secret. A request releases its lease only
+from `settleCleanup`, after `runtime.run` truly settles. Earlier cleanup, abort,
+or harness disposal cannot release it beneath a late provider result.
+
+Once the registry is non-empty, every reachable primary, fallback, accepted
+request override, and named `Agent` child route must be Pi-native in both
+`uniform` and `per-route-native` routing. The configured app rejects the whole
+incompatible route plan before provider invocation; it does not wait to discover
+the unsafe fallback after another route fails. Direct configured memory LLM
+and embedding-provider calls obey the same rule. An empty registry preserves
+legitimate non-Pi routes.
+Eligible Pi-native turns receive the real SRT policy for the registry and every
+retained root independently of whether they receive the background controller.
+Model `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, and `Exec` cannot read,
+replace, rename, search, or use those paths as a workdir. Host filesystem tools
+perform their actual file operation through the native sandbox, closing symlink
+swaps after path authorization. SRT also denies a rename of any ancestor that
+would move a protected leaf.
+
+Only the registry and retained state directories are protected: workspace siblings such as
 `.mono-agent/artifacts/attachments` remain readable, including when the
 workspace itself is nested under `.mono-agent/`. When the configured sandbox
 is absent or off, this filesystem-only protection preserves unrestricted
 network behavior for commands, `WebFetch`, and `WebSearch`. A configured native
 network policy remains unchanged. Provider-owned non-Pi tool loops cannot
-enforce this host policy, so they are rejected while private process-job state
-is active; a request override remains on its protected Pi route.
+enforce this host policy, so they are rejected while any registered private
+root exists.
+
+This agent-root-aware coverage belongs to the full app, configured
+harness/responder, local TUI, the lazy-run wrapper returned by
+`createConfiguredAgentRuntime`, configured named children, and direct configured
+memory LLM/embedding calls. Remote TUI and ACP bridges are thin clients of an
+already owned host and do not invoke a provider themselves. Lower-level
+`@mono-agent/runtime-adapter` and `@mono-agent/agent-runtime` factories are
+root-agnostic unless an app-owned caller supplies the protection policy and
+route gate.
+
+## Cooperative ownership and threat boundary
+
+Official local hosts also take one cooperative lifetime lease keyed by the
+canonical realpath of the agent root and stored under the effective account
+home. In one process, repeated configured app/harness/responder/local-TUI owners
+share a reentrant reference count. Physical release waits for all owner
+references and all true-settlement request leases; a release failure makes every
+later in-process acquisition fail deterministically. A stale official-process
+lease is recoverable after a crash. The lease path and random owner token are
+host-only coordination data, but their permissions and hash-derived pathname
+are not a secrecy or tamper-resistance claim.
+
+This is cooperative serialization, not a security boundary against actively
+hostile code running as the same OS user. Such code can signal or `SIGKILL` the
+host, rewrite same-UID control state, and attack another registered agent root
+under the same account. Alternate same-UID coordination mechanisms do not
+change that fact. The local persistence guarantee covers exactly the roots
+durably registered for this agent; it is not an account-global provider-zero
+rule. If a provider is in that threat model, run it under a distinct UID or
+another real privilege-separation boundary.
 
 ## Availability and origins
 
@@ -252,8 +319,8 @@ owner restart can reconcile it to `interrupted` and deliver the recovery wake.
 A clean restart clears the marker only after recovery, retention, and durable
 readback succeed.
 Because process jobs are opt-in, an unavailable store disables only the
-background controller instead of aborting the whole agent. The resolved
-configured `stateDir` remains protected on every model turn; mixed or non-Pi
+background controller instead of aborting the whole agent. The registry and
+every retained `stateDir` remain protected on every model turn; mixed or non-Pi
 routes and unavailable native protection fail before provider invocation.
 
 Slack and Telegram start one host-owned lifecycle message before the tool call

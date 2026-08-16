@@ -8,6 +8,7 @@ import type {
 } from "./channels.js";
 import { routeProactiveNotification } from "./proactive-notify.js";
 import { loadProcessJobsSettings } from "./process-jobs-config.js";
+import type { ProcessJobsSettings } from "./process-jobs-config.js";
 import { runWithProcessJobWakeContext } from "./process-jobs-context.js";
 import {
   openProcessJobsService,
@@ -16,6 +17,18 @@ import {
   type ProcessJobsServiceHandle,
 } from "./process-jobs-service.js";
 import { reasonOf } from "./app-controller-utils.js";
+import {
+  assertAgentRootLeaseOutsideWorkspace,
+  type AgentRootOwnership,
+} from "./agent-root-coordinator.js";
+import {
+  failedProcessJobsRootRegistryProtection,
+  loadProcessJobsRootRegistryProtection,
+  registerProcessJobsRoot,
+  type ProcessJobsRootRegistrationProof,
+  type ProcessJobsRootRegistrySnapshot,
+} from "./process-jobs-root-registry.js";
+import { hasExactProcessJobStateMarkers } from "./process-jobs-store.js";
 
 export interface ProcessJobsControllerPort {
   readonly cwd: string;
@@ -25,11 +38,18 @@ export interface ProcessJobsControllerPort {
   readonly running: Map<ChannelId, RunningChannel>;
   readonly statuses: Map<ChannelId, ChannelStatus>;
   readonly stopped: boolean;
+  readonly agentRootOwnership: AgentRootOwnership;
   processJobsService: ProcessJobsServiceHandle | undefined;
   processJobsServiceStart: Promise<ProcessJobsServiceHandle | undefined> | undefined;
   processJobsServiceStartFlight?: symbol | undefined;
   processJobsStateDir: string | undefined;
   processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
+  processJobsRegistry: ProcessJobsRootRegistrySnapshot | undefined;
+  preparedProcessJobs: {
+    readonly settings: ProcessJobsSettings;
+    readonly workspace: string;
+    readonly registration?: ProcessJobsRootRegistrationProof;
+  } | undefined;
   observabilityContext(): Promise<{ readonly sourceId?: string }>;
   setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus;
   refreshTraceSource(reason: string): Promise<void>;
@@ -47,29 +67,42 @@ export function ensureProcessJobsService(
   const isCurrentFlight = (): boolean =>
     !controller.stopped && controller.processJobsServiceStartFlight === flight;
   const start = (async () => {
-    let settings: Awaited<ReturnType<typeof loadProcessJobsSettings>>;
-    try {
-      settings = await loadProcessJobsSettings({
-        cwd: controller.cwd,
-        configPath: controller.configReadPath,
-        env: controller.env,
-      });
-    } catch (error) {
-      if (!isCurrentFlight()) return undefined;
-      throw error;
-    }
+    const prepared = controller.preparedProcessJobs;
     if (!isCurrentFlight()) return undefined;
+    if (prepared === undefined) {
+      controller.processJobsDegradation = {
+        stateDir: "",
+        reason: "Process-job private-state protection is unavailable.",
+      };
+      return undefined;
+    }
+    const { settings, workspace, registration } = prepared;
     controller.processJobsStateDir = settings.enabled ? settings.stateDir : undefined;
     if (!settings.enabled) {
       controller.processJobsDegradation = undefined;
       return undefined;
     }
+    if (registration === undefined || controller.processJobsRegistry?.kind !== "ready") {
+      controller.processJobsDegradation = {
+        stateDir: settings.stateDir,
+        reason: "Process-job private-state protection is unavailable.",
+      };
+      return undefined;
+    }
+    let mutationGate;
     try {
+      mutationGate = await controller.agentRootOwnership.coordinator.publishAndAcquireMutationGate(
+        registration.snapshot.generation,
+        registration.rootKey,
+      );
+      if (!isCurrentFlight()) return undefined;
       const sourceId = (await controller.observabilityContext()).sourceId;
       if (!isCurrentFlight()) return undefined;
       const service = await openProcessJobsService({
         cwd: controller.cwd,
+        workspace,
         settings,
+        registration,
         wake: async (input) => await runWithProcessJobWakeContext(
           { jobId: input.projection.jobId, chainDepth: input.chainDepth },
           async () => await routeProactiveNotification({
@@ -132,6 +165,8 @@ export function ensureProcessJobsService(
       controller.processJobsDegradation = degradation;
       controller.logger?.error?.("Process-job controller failed to start; the agent is continuing without background jobs.", degradation);
       return undefined;
+    } finally {
+      mutationGate?.release();
     }
   })();
   controller.processJobsServiceStart = start;
@@ -149,6 +184,72 @@ async function stopLateProcessJobsService(
       reason: reasonOf(error),
     });
   }
+}
+
+/**
+ * Load/bootstrap/publish the next durable protection generation. On reload this
+ * runs before channel teardown; store opening remains deferred until afterward.
+ */
+export async function prepareProcessJobsProtection(
+  controller: ProcessJobsControllerPort,
+  reason: string,
+): Promise<void> {
+  controller.preparedProcessJobs = undefined;
+  let coreConfig;
+  try {
+    coreConfig = await loadAppCoreConfig({
+      env: controller.env,
+      cwd: controller.cwd,
+      configPath: controller.configReadPath,
+    });
+  } catch (error) {
+    if (isAppCoreConfigError(error)) {
+      controller.logger?.debug?.("Process-job protection is waiting for valid core configuration.", { reason });
+      return;
+    }
+    throw error;
+  }
+  assertAgentRootLeaseOutsideWorkspace(controller.agentRootOwnership, coreConfig.runtime.workspace);
+  const settings = await loadProcessJobsSettings({
+    cwd: controller.cwd,
+    configPath: controller.configReadPath,
+    env: controller.env,
+  });
+  let registry = await loadProcessJobsRootRegistryProtection(
+    controller.agentRootOwnership.agentRoot,
+    coreConfig.runtime.workspace,
+  );
+  let registration: ProcessJobsRootRegistrationProof | undefined;
+  try {
+    const bootstrapRoot = settings.enabled
+      || await hasExactProcessJobStateMarkers(controller.cwd, settings.stateDir)
+      ? settings.stateDir
+      : undefined;
+    if (bootstrapRoot !== undefined) {
+      registration = await registerProcessJobsRoot({
+        agentRoot: controller.agentRootOwnership.agentRoot,
+        workspace: coreConfig.runtime.workspace,
+        stateDir: bootstrapRoot,
+        coordinator: controller.agentRootOwnership.coordinator,
+      });
+      registry = registration.snapshot;
+    } else {
+      controller.agentRootOwnership.coordinator.synchronizeGeneration(registry.generation);
+    }
+  } catch (error) {
+    registry = failedProcessJobsRootRegistryProtection(controller.agentRootOwnership.agentRoot);
+    controller.agentRootOwnership.coordinator.publishGeneration(registry.generation);
+    controller.logger?.error?.("Process-job private-state registry could not be established.", {
+      reason: reasonOf(error),
+    });
+  }
+  controller.processJobsRegistry = registry;
+  controller.processJobsStateDir = settings.enabled ? settings.stateDir : undefined;
+  controller.preparedProcessJobs = {
+    settings,
+    workspace: coreConfig.runtime.workspace,
+    ...(settings.enabled && registration !== undefined ? { registration } : {}),
+  };
 }
 
 /** Publish a later store-health transition to both live operator surfaces. */
@@ -193,14 +294,8 @@ export async function startProcessJobsIfConfigured(
   reason: string,
 ): Promise<void> {
   if (controller.stopped) return;
-  try {
-    await loadAppCoreConfig({ env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath });
-  } catch (error) {
-    if (isAppCoreConfigError(error)) {
-      controller.logger?.debug?.("Process-job controller is waiting for valid core configuration.", { reason });
-      return;
-    }
-    throw error;
+  if (controller.preparedProcessJobs === undefined) {
+    await prepareProcessJobsProtection(controller, reason);
   }
   await ensureProcessJobsService(controller);
 }

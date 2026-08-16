@@ -23,6 +23,7 @@ export interface LifecycleControllerPort {
   startTraceability(reason: string): Promise<TraceabilityStatus>;
   startExporters(reason: string): Promise<ExporterStatus>;
   startContinuationServiceIfConfigured(reason: string): Promise<void>;
+  prepareProcessJobsProtection(reason: string): Promise<void>;
   startProcessJobsIfConfigured(reason: string): Promise<void>;
   activateProcessJobWakes(): Promise<void>;
   startChannelIfConfigured(id: ChannelId, reason: string): Promise<ChannelStatus>;
@@ -32,6 +33,7 @@ export interface LifecycleControllerPort {
   channelStatus(id: ChannelId): ChannelStatus;
   refreshTraceSource(reason: string): Promise<void>;
   startChannel(driver: ChannelDriver, reason: string): Promise<ChannelStatus>;
+  releaseAgentRootOwnership(): Promise<void>;
 }
 
 export async function applyConfigChange(controller: LifecycleControllerPort, reason: string): Promise<ConfigApplyResult> {
@@ -47,6 +49,9 @@ export async function applyConfigChange(controller: LifecycleControllerPort, rea
     // that already entered is generation-fenced and is deliberately not
     // awaited, so config reload cannot hang behind native/filesystem work.
     controller.invalidateMemoryHealthRefresh();
+    // Publish the durable A+B protection generation before stopping admission.
+    // Store/secret creation remains behind the post-drain mutation gate below.
+    await controller.prepareProcessJobsProtection(`${reason}:prepare`);
     await controller.stopProcessJobsService();
     await Promise.all(controller.drivers.map(
       (driver) => controller.stopChannel(driver.id, `${reason}:reload`),
@@ -132,4 +137,5 @@ export async function stop(controller: LifecycleControllerPort): Promise<void> {
   for (const runtime of controller.activeRuntimes.splice(0)) {
     await runtime.disposeAllSessions?.().catch(() => undefined);
   }
+  await controller.releaseAgentRootOwnership();
 }

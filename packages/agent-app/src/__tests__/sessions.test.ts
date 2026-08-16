@@ -1,15 +1,34 @@
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ToolHistoryWriter } from "@mono-agent/agent-harness";
 
+const processIdentity = vi.hoisted(() => ({
+  schema: "mono-agent.process-incarnation.v1" as const,
+  bootSessionId: "test-boot",
+  processStartId: "vitest-sessions",
+}));
+
+vi.mock("../process-incarnation.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../process-incarnation.js")>(),
+  currentProcessIncarnation: async () => processIdentity,
+  isSameProcessIncarnation: () => true,
+}));
+
 import { resolveAppSessionsRoot } from "../app-config.js";
+import { acquireAgentRootOwnership, agentRootLeasePath } from "../agent-root-coordinator.js";
+import {
+  loadProcessJobsRootRegistryProtection,
+  processJobsRootRegistryPaths,
+  registerProcessJobsRoot,
+} from "../process-jobs-root-registry.js";
 import {
   assertClearSessionsRecoveryResolved,
   clearSessionsRegistryRoot,
+  purgeAcpSessionAuthorizations,
   purgeConversationHistory,
   purgeConversationState,
   purgeSessions,
@@ -166,7 +185,124 @@ describe("purgeConversationHistory", () => {
   });
 });
 
+describe("standalone purge process-root protection", () => {
+  it.each([
+    {
+      name: "Pi sessions",
+      config: { providers: { piNative: { piSessionsRoot: "./.state/sessions" } } },
+      retainedRoot: ".state/sessions",
+      invoke: async (configPath: string) => await purgeSessions(inputFor(configPath)),
+    },
+    {
+      name: "conversation history",
+      config: { artifacts: { dir: "./.state/artifacts" } },
+      retainedRoot: ".state/history",
+      invoke: async (configPath: string) => await purgeConversationHistory(inputFor(configPath)),
+    },
+    {
+      name: "ACP authorizations",
+      config: { artifacts: { dir: "./.state/artifacts" } },
+      retainedRoot: ".state/acp-sessions",
+      invoke: async (configPath: string) => await purgeAcpSessionAuthorizations(inputFor(configPath)),
+    },
+  ])("refuses a retained-root overlap before inspecting or deleting $name", async ({
+    config,
+    retainedRoot,
+    invoke,
+  }) => {
+    const configPath = await writeConfig(config);
+    const root = join(dir, retainedRoot);
+    const ownership = await seedRetainedProcessJobRoots([root]);
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    await writeFile(join(root, "sentinel.txt"), "retained\n");
+
+    try {
+      await expect(invoke(configPath)).rejects.toThrow(
+        "restart --clear-sessions overlaps retained process-job private state; nothing was deleted.",
+      );
+      await expect(readFile(join(root, "sentinel.txt"), "utf8")).resolves.toBe("retained\n");
+      await expect(stat(processJobsRootRegistryPaths(dir).manifestPath)).resolves.toBeDefined();
+    } finally {
+      await releaseTestOwnership(ownership);
+    }
+  });
+});
+
 describe("purgeConversationState", () => {
+  it("refuses a dormant retained-root overlap before deleting any conversation state", async () => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.state/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+    });
+    const sessionsRoot = join(dir, ".state", "sessions");
+    const historyRoot = join(dir, ".state", "history");
+    const acpSessionsRoot = join(dir, ".state", "acp-sessions");
+    const otherRetainedRoot = join(dir, ".private", "older-root");
+    const ownership = await seedRetainedProcessJobRoots([otherRetainedRoot, historyRoot]);
+    await Promise.all([
+      mkdir(sessionsRoot, { recursive: true }),
+      mkdir(historyRoot, { recursive: true, mode: 0o700 }),
+      mkdir(acpSessionsRoot, { recursive: true }),
+      mkdir(otherRetainedRoot, { recursive: true, mode: 0o700 }),
+    ]);
+    await Promise.all([
+      writeFile(join(sessionsRoot, "session.jsonl"), "session\n"),
+      writeFile(join(historyRoot, "conversation.history.json"), "history\n"),
+      writeFile(join(acpSessionsRoot, "authorization.json"), "authorization\n"),
+      writeFile(join(otherRetainedRoot, "record.json"), "older private state\n"),
+    ]);
+
+    try {
+      await expect(purgeConversationState(inputFor(configPath))).rejects.toThrow(
+        "restart --clear-sessions overlaps retained process-job private state; nothing was deleted.",
+      );
+      await expect(readFile(join(sessionsRoot, "session.jsonl"), "utf8")).resolves.toBe("session\n");
+      await expect(readFile(join(historyRoot, "conversation.history.json"), "utf8")).resolves.toBe("history\n");
+      await expect(readFile(join(acpSessionsRoot, "authorization.json"), "utf8")).resolves.toBe("authorization\n");
+      await expect(readFile(join(otherRetainedRoot, "record.json"), "utf8")).resolves.toBe("older private state\n");
+      await expect(stat(processJobsRootRegistryPaths(dir).manifestPath)).resolves.toBeDefined();
+    } finally {
+      await releaseTestOwnership(ownership);
+    }
+  });
+
+  it("preserves every non-overlapping retained root and its registry while clearing sessions", async () => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.state/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+    });
+    const sessionsRoot = join(dir, ".state", "sessions");
+    const historyRoot = join(dir, ".state", "history");
+    const acpSessionsRoot = join(dir, ".state", "acp-sessions");
+    const retainedRoots = [join(dir, ".private", "a"), join(dir, ".private", "b")];
+    const ownership = await seedRetainedProcessJobRoots(retainedRoots);
+    await Promise.all([
+      mkdir(sessionsRoot, { recursive: true }),
+      mkdir(historyRoot, { recursive: true }),
+      mkdir(acpSessionsRoot, { recursive: true }),
+      ...retainedRoots.map(async (root) => await mkdir(root, { recursive: true, mode: 0o700 })),
+    ]);
+    await Promise.all([
+      writeFile(join(sessionsRoot, "session.jsonl"), "session\n"),
+      writeFile(join(historyRoot, "conversation.history.json"), "history\n"),
+      writeFile(join(acpSessionsRoot, "authorization.json"), "authorization\n"),
+      ...retainedRoots.map(async (root, index) =>
+        await writeFile(join(root, "record.json"), `private-${index}\n`)),
+    ]);
+
+    try {
+      const result = await purgeConversationState(inputFor(configPath));
+      expect(result.sessions.removed).toBe(true);
+      expect(result.history.removed).toBe(true);
+      expect(result.acpSessions.removed).toBe(true);
+      await Promise.all(retainedRoots.map(async (root, index) =>
+        await expect(readFile(join(root, "record.json"), "utf8")).resolves.toBe(`private-${index}\n`)));
+      await expect(stat(processJobsRootRegistryPaths(dir).manifestPath)).resolves.toBeDefined();
+    } finally {
+      await releaseTestOwnership(ownership);
+    }
+  });
+
   it.each([
     ["the agent state parent", "./.mono-agent"],
     ["the default process-job state root", "./.mono-agent/process-jobs"],
@@ -427,6 +563,75 @@ describe("purgeConversationState", () => {
     await expect(stat(quarantine)).rejects.toThrow();
     await expect(stat(newSessionsRoot)).rejects.toThrow();
     await expect(readdir(clearSessionsRegistryRoot(dir))).resolves.toEqual([]);
+  });
+
+  it.each([
+    {
+      name: "combined purge",
+      invoke: async (configPath: string) => await purgeConversationState(inputFor(configPath)),
+    },
+    {
+      name: "standalone Pi sessions purge",
+      invoke: async (configPath: string) => await purgeSessions(inputFor(configPath)),
+    },
+    {
+      name: "standalone history purge",
+      invoke: async (configPath: string) => await purgeConversationHistory(inputFor(configPath)),
+    },
+    {
+      name: "standalone ACP authorization purge",
+      invoke: async (configPath: string) => await purgeAcpSessionAuthorizations(inputFor(configPath)),
+    },
+  ])("$name reconciles an older quarantine before validating malformed current config", async ({ invoke }) => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.old/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.old/sessions" } },
+    });
+    const pending = await createPendingSessionsQuarantine(configPath, "malformed-current-config");
+    await writeFile(configPath, "{ not valid json");
+
+    await expect(invoke(configPath)).rejects.toThrow(/config is not valid JSON/u);
+
+    await expect(stat(pending.quarantine)).rejects.toThrow();
+    await expect(readdir(clearSessionsRegistryRoot(dir))).resolves.toEqual([]);
+    await expect(assertClearSessionsRecoveryResolved(dir)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    {
+      name: "combined purge",
+      invoke: async (configPath: string) => await purgeConversationState(inputFor(configPath)),
+    },
+    {
+      name: "standalone Pi sessions purge",
+      invoke: async (configPath: string) => await purgeSessions(inputFor(configPath)),
+    },
+    {
+      name: "standalone history purge",
+      invoke: async (configPath: string) => await purgeConversationHistory(inputFor(configPath)),
+    },
+    {
+      name: "standalone ACP authorization purge",
+      invoke: async (configPath: string) => await purgeAcpSessionAuthorizations(inputFor(configPath)),
+    },
+  ])("$name refuses recovery when a pending path became a retained process root", async ({ invoke }) => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.old/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.old/sessions" } },
+    });
+    const pending = await createPendingSessionsQuarantine(configPath, "retained-recovery-path");
+    const ownership = await seedRetainedProcessJobRoots([pending.originalRoot]);
+
+    try {
+      await expect(invoke(configPath)).rejects.toThrow(
+        "restart --clear-sessions overlaps retained process-job private state; nothing was deleted.",
+      );
+      await expect(readFile(join(pending.quarantine, "session.jsonl"), "utf8")).resolves.toBe("old session\n");
+      await expect(stat(pending.quarantine)).resolves.toBeDefined();
+      await expect(assertClearSessionsRecoveryResolved(dir)).rejects.toThrow(/recovery is unresolved/u);
+    } finally {
+      await releaseTestOwnership(ownership);
+    }
   });
 
   it.skipIf(process.platform === "win32")("standalone sessions recovery settles before rejecting an invalid replacement root", async () => {
@@ -738,3 +943,51 @@ describe("purgeConversationState", () => {
     await expect(readdir(clearSessionsRegistryRoot(dir))).resolves.toEqual([]);
   });
 });
+
+async function createPendingSessionsQuarantine(
+  configPath: string,
+  tag: string,
+): Promise<{ readonly originalRoot: string; readonly quarantine: string }> {
+  const originalRoot = join(dir, ".old", "sessions");
+  await mkdir(originalRoot, { recursive: true, mode: 0o700 });
+  await writeFile(join(originalRoot, "session.jsonl"), "old session\n");
+  let quarantine = "";
+  const failure = `simulated ${tag} crash`;
+  await expect(purgeConversationState(inputFor(configPath), {
+    hooks: {
+      afterRootQuarantined: (path) => {
+        quarantine = path;
+        throw new Error(failure);
+      },
+    },
+  })).rejects.toThrow(failure);
+  if (quarantine.length === 0) throw new Error("test did not capture a quarantine path");
+  return { originalRoot, quarantine };
+}
+
+async function seedRetainedProcessJobRoots(stateDirs: readonly string[]) {
+  const homeDir = join(dir, ".test-home");
+  await mkdir(homeDir, { recursive: true, mode: 0o700 });
+  const ownership = await acquireAgentRootOwnership(dir, { homeDir });
+  const snapshot = await loadProcessJobsRootRegistryProtection(ownership.agentRoot, ownership.agentRoot);
+  ownership.coordinator.synchronizeGeneration(snapshot.generation);
+  for (const stateDir of stateDirs) {
+    const canonicalStateDir = join(ownership.agentRoot, stateDir.slice(dir.length + 1));
+    await registerProcessJobsRoot({
+      agentRoot: ownership.agentRoot,
+      workspace: ownership.agentRoot,
+      stateDir: canonicalStateDir,
+      coordinator: ownership.coordinator,
+    });
+  }
+  return { ownership, leasePath: agentRootLeasePath(ownership.agentRoot, homeDir) };
+}
+
+async function releaseTestOwnership(
+  held: Awaited<ReturnType<typeof seedRetainedProcessJobRoots>>,
+): Promise<void> {
+  held.ownership.release();
+  await vi.waitFor(async () => {
+    await expect(lstat(held.leasePath)).rejects.toMatchObject({ code: "ENOENT" });
+  }, { timeout: 2_000, interval: 10 });
+}

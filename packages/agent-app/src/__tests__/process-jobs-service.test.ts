@@ -2459,7 +2459,9 @@ describe("process job service", () => {
     const acquireLock = vi.fn();
     await expect(openProcessJobsService({
       cwd: fixture.cwd,
+      workspace: fixture.cwd,
       settings: fixture.settings,
+      registration: {} as never,
       platform: "win32",
       wake: async () => ({ delivered: true }),
       acquireLock,
@@ -3092,14 +3094,33 @@ async function startService(
   fixture: { cwd: string; settings: ProcessJobsSettings },
   overrides: Partial<Parameters<typeof openProcessJobsService>[0]> = {},
 ): Promise<ProcessJobsServiceHandle> {
+  const {
+    cwd = fixture.cwd,
+    workspace = fixture.cwd,
+    settings = fixture.settings,
+    registration = {} as never,
+    wake = async () => ({ delivered: true as const }),
+    attestRegistration = async () => ({} as never),
+    currentIncarnation = async () => INCARNATION,
+    readIncarnation = async () => INCARNATION,
+    acquireLock = async () => ({
+      path: join(fixture.settings.stateDir, ".lock"),
+      ownerPid: process.pid,
+      release: async () => undefined,
+    }),
+    ...rest
+  } = overrides;
   const service = await openProcessJobsService({
-    cwd: fixture.cwd,
-    settings: fixture.settings,
-    wake: async () => ({ delivered: true }),
-    currentIncarnation: async () => INCARNATION,
-    readIncarnation: async () => INCARNATION,
-    acquireLock: async () => ({ path: join(fixture.settings.stateDir, ".lock"), ownerPid: process.pid, release: async () => undefined }),
-    ...overrides,
+    ...rest,
+    cwd,
+    workspace,
+    settings,
+    registration,
+    wake,
+    attestRegistration,
+    currentIncarnation,
+    readIncarnation,
+    acquireLock,
   });
   services.push(service);
   return service;

@@ -64,6 +64,7 @@ vi.mock("../process-jobs-service.js", async (importOriginal) => {
 });
 
 const { MonoAgentAppController } = await import("../app-controller.js");
+const { acquireAgentRootOwnership } = await import("../agent-root-coordinator.js");
 const { startMonoAgentApp } = await import("../app.js");
 
 const temporaryDirectories: string[] = [];
@@ -295,8 +296,12 @@ describe("mono-agent app startup rollback", () => {
         return { summary: { transport: "refresh-stop" }, stop: channelStop };
       },
     };
+    const ownerHome = await mkdtemp(join(tmpdir(), "mono-agent-channel-refresh-owner-"));
+    temporaryDirectories.push(ownerHome);
+    const agentRootOwnership = await acquireAgentRootOwnership(cwd, { homeDir: ownerHome });
     const controller = new MonoAgentAppController({
       cwd,
+      agentRootOwnership,
       configPath,
       configReadPath: configPath,
       env: {},

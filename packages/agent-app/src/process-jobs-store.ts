@@ -616,6 +616,41 @@ export async function prepareProcessJobStateDirectory(agentRoot: string, stateDi
   return confined;
 }
 
+/** Read-only migration probe for one exact configured/default durable store. */
+export async function hasExactProcessJobStateMarkers(
+  agentRoot: string,
+  stateDir: string,
+): Promise<boolean> {
+  const { confined } = await resolveConfinedStateDirectory(agentRoot, stateDir);
+  let details: Stats;
+  try {
+    details = await lstat(confined);
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return false;
+    throw error;
+  }
+  if (!details.isDirectory() || details.isSymbolicLink()
+    || (typeof process.getuid === "function" && details.uid !== process.getuid())
+    || (process.platform !== "win32" && (details.mode & 0o077) !== 0)) {
+    throw new Error(`Process-job state marker root is unsafe: ${confined}`);
+  }
+  let guard: string;
+  try {
+    guard = await readBoundedOwnerOnlyFile(
+      join(confined, PROCESS_JOB_ROLLBACK_GUARD),
+      MAX_GUARD_BYTES,
+      "Process-job rollback guard",
+    );
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return false;
+    throw error;
+  }
+  if (guard !== PROCESS_JOB_ROLLBACK_GUARD_CONTENT) {
+    throw new Error(`Process-job rollback guard contents are invalid: ${confined}`);
+  }
+  return await readManifest(join(confined, PROCESS_JOB_MANIFEST_FILE)) !== undefined;
+}
+
 export async function loadOrCreateProcessJobSecret(stateDir: string): Promise<Buffer> {
   const path = join(stateDir, PROCESS_JOB_SECRET_FILE);
   try {

@@ -84,6 +84,37 @@ export interface ProcessJobsConfigSnapshot {
   readonly env: Readonly<Record<string, string | undefined>>;
 }
 
+/** Resolve only the workspace needed by destructive registry validation. */
+export function resolveProcessJobsRegistryWorkspace(
+  snapshot: ProcessJobsConfigSnapshot,
+  cwd: string,
+): string {
+  const runtime = snapshot.json.runtime;
+  if (runtime !== undefined
+    && (typeof runtime !== "object" || runtime === null || Array.isArray(runtime))) {
+    throw new MonoAgentConfigError("invalid_json", "runtime must be an object.", { path: "runtime" });
+  }
+  const configured = runtime === undefined
+    ? undefined
+    : (runtime as Readonly<Record<string, unknown>>).workspace;
+  if (configured !== undefined && typeof configured !== "string") {
+    throw new MonoAgentConfigError(
+      "invalid_json",
+      "runtime.workspace must be a string.",
+      { path: "runtime.workspace" },
+    );
+  }
+  // An explicitly supplied environment value wins even when blank; the core
+  // loader normalizes that case back to cwd instead of falling through to JSON.
+  const selected = snapshot.env.MONO_AGENT_WORKSPACE !== undefined
+    ? snapshot.env.MONO_AGENT_WORKSPACE
+    : configured;
+  const normalized = selected?.trim();
+  return normalized === undefined || normalized.length === 0
+    ? resolve(cwd)
+    : resolve(cwd, normalized);
+}
+
 /** Read one strict, bounded, no-follow config generation for destructive preflight. */
 export async function readProcessJobsConfigSnapshot(input: {
   readonly configPath: string;

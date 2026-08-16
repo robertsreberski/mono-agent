@@ -3,12 +3,50 @@ import { describe, expect, it, vi } from "vitest";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime } from "@mono-agent/runtime-adapter";
 
-const harnessMock = vi.fn((options: Record<string, unknown>) => ({ options }));
+const harnessMock = vi.fn((options: Record<string, unknown>) => ({
+  options,
+  run: vi.fn(),
+  dispose: vi.fn(async () => undefined),
+}));
 
 vi.mock("@mono-agent/agent-harness", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@mono-agent/agent-harness")>();
   return { ...actual, createAgentHarness: (options: unknown) => harnessMock(options as Record<string, unknown>) };
 });
+
+vi.mock("../agent-root-coordinator.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../agent-root-coordinator.js")>(),
+  acquireAgentRootOwnership: async () => ({
+    agentRoot: "/repo",
+    coordinator: {
+      synchronizeGeneration() {},
+      acquireRequestLease: () => ({
+        generation: { id: "mono-agent.process-jobs-roots.absent", rootKeys: [] },
+        releaseAfterSettlement() {},
+      }),
+    },
+    release() {},
+  }),
+  releaseAgentRootOwnershipWhenIdle: async (ownership: { release(): void }) => {
+    ownership.release();
+    return true;
+  },
+  assertAgentRootLeaseOutsideWorkspace() {},
+}));
+
+vi.mock("../process-jobs-root-registry.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../process-jobs-root-registry.js")>(),
+  loadProcessJobsRootRegistryProtection: async () => ({
+    kind: "empty",
+    agentRoot: "/repo",
+    registryDir: "/repo/.mono-agent/process-jobs-roots-v1",
+    manifestPath: "/repo/.mono-agent/process-jobs-roots-v1/registry.json",
+    mutationLockPath: "/repo/.mono-agent/.process-jobs-roots-v1.lock",
+    generation: { id: "mono-agent.process-jobs-roots.absent", rootKeys: [] },
+    roots: [],
+    protectedRoots: [],
+  }),
+}));
 
 const { createConfiguredAgentHarness } = await import("../index.js");
 
@@ -189,7 +227,7 @@ describe("configured subagents", () => {
       model: CLAUDE_CHILD,
       allowedTools: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
     });
-    const result = await run({
+    const result = run({
       systemPrompt: definition?.systemPrompt,
       prompt: "Read the ProcessJobs store.",
       definition,
@@ -202,16 +240,13 @@ describe("configured subagents", () => {
       onEvent: () => {},
     });
 
+    await expect(result).rejects.toThrow(
+      "Process-job private state requires a Pi-native runtime.",
+    );
     expect(runtimeForModel).toHaveBeenCalledWith(CLAUDE_CHILD, "sdk");
-    expect(result).toMatchObject({
-      failureKind: "safety_unavailable",
-      error: "The route safety contract could not be established before execution.",
-    });
     expect(resolveAttempt).not.toHaveBeenCalled();
     expect(providerRun).not.toHaveBeenCalled();
     expect(runtime.run).not.toHaveBeenCalled();
-    expect(JSON.stringify(result)).not.toContain(privateState);
-    expect(JSON.stringify(result)).not.toContain(protectedRoot);
   });
 
   it("keeps a profile whose model matches the primary on the shared router", async () => {

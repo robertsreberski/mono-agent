@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,9 +10,15 @@ import { MonoAgentConfigError } from "@mono-agent/config";
 import {
   activateProcessJobWakes,
   ensureProcessJobsService,
+  prepareProcessJobsProtection,
   stopProcessJobsService,
   type ProcessJobsControllerPort,
 } from "../app-controller-process-jobs.js";
+import {
+  agentRootLeasePath,
+  acquireAgentRootOwnership,
+  type AgentRootOwnership,
+} from "../agent-root-coordinator.js";
 import {
   createSlackChannelDriver,
   createTelegramChannelDriver,
@@ -27,15 +33,37 @@ const processJobsService = vi.hoisted(() => ({
   open: vi.fn(),
 }));
 
+const processIdentity = vi.hoisted(() => ({
+  current: {
+    schema: "mono-agent.process-incarnation.v1" as const,
+    bootSessionId: "test-boot",
+    processStartId: "vitest-controller",
+  },
+}));
+
+vi.mock("../process-incarnation.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../process-incarnation.js")>(),
+  currentProcessIncarnation: async () => processIdentity.current,
+  isSameProcessIncarnation: () => true,
+}));
+
 vi.mock("../process-jobs-service.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../process-jobs-service.js")>(),
   openProcessJobsService: processJobsService.open,
 }));
 
 const temporaryDirectories: string[] = [];
+const ownerships: Array<{ ownership: AgentRootOwnership; leasePath: string }> = [];
 
 afterEach(async () => {
   processJobsService.open.mockReset();
+  const held = ownerships.splice(0);
+  for (const { ownership } of held) ownership.release();
+  await Promise.all(held.map(async ({ leasePath }) => {
+    await vi.waitFor(async () => {
+      await expect(lstat(leasePath)).rejects.toMatchObject({ code: "ENOENT" });
+    }, { timeout: 2_000, interval: 10 });
+  }));
   await Promise.all(temporaryDirectories.splice(0).map(async (path) =>
     await rm(path, { recursive: true, force: true })));
 });
@@ -46,9 +74,13 @@ describe("process-job lifecycle surface routing", () => {
     temporaryDirectories.push(cwd);
     const configReadPath = join(cwd, "mono-agent.config.json");
     await writeFile(configReadPath, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.6-sol", workspace: "." },
+      context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
+      tools: { allowedTools: [], disallowedTools: [] },
       artifacts: { dir: ".config-state/artifacts" },
       processJobs: { enabled: true, stateDir: ".state/history" },
     }));
+    const agentRootOwnership = await ownershipFor(cwd);
     const controller: ProcessJobsControllerPort = {
       cwd,
       configReadPath,
@@ -57,10 +89,13 @@ describe("process-job lifecycle surface routing", () => {
       running: new Map(),
       statuses: new Map(),
       stopped: false,
+      agentRootOwnership,
       processJobsService: undefined,
       processJobsServiceStart: undefined,
       processJobsStateDir: undefined,
       processJobsDegradation: undefined,
+      processJobsRegistry: undefined,
+      preparedProcessJobs: undefined,
       observabilityContext: async () => ({}),
       setStatus: (_id, status) => status,
       refreshTraceSource: async () => undefined,
@@ -68,6 +103,7 @@ describe("process-job lifecycle surface routing", () => {
 
     let failure: unknown;
     try {
+      await prepareProcessJobsProtection(controller, "test-startup");
       await ensureProcessJobsService(controller);
     } catch (error) {
       failure = error;
@@ -87,8 +123,13 @@ describe("process-job lifecycle surface routing", () => {
     temporaryDirectories.push(cwd);
     const configReadPath = join(cwd, "mono-agent.config.json");
     await writeFile(configReadPath, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.6-sol", workspace: "." },
+      context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
+      tools: { allowedTools: [], disallowedTools: [] },
+      artifacts: { dir: "./artifacts" },
       processJobs: { enabled: true, stateDir: ".state/jobs" },
     }));
+    const agentRootOwnership = await ownershipFor(cwd);
     processJobsService.open.mockRejectedValue(new Error("durable store unavailable"));
     const controller: ProcessJobsControllerPort = {
       cwd,
@@ -98,15 +139,19 @@ describe("process-job lifecycle surface routing", () => {
       running: new Map(),
       statuses: new Map(),
       stopped: false,
+      agentRootOwnership,
       processJobsService: undefined,
       processJobsServiceStart: undefined,
       processJobsStateDir: undefined,
       processJobsDegradation: undefined,
+      processJobsRegistry: undefined,
+      preparedProcessJobs: undefined,
       observabilityContext: async () => ({}),
       setStatus: (_id, status) => status,
       refreshTraceSource: async () => undefined,
     };
 
+    await prepareProcessJobsProtection(controller, "test-startup");
     await expect(ensureProcessJobsService(controller)).resolves.toBeUndefined();
 
     const stateDir = join(await realpath(cwd), ".state/jobs");
@@ -122,7 +167,14 @@ describe("process-job lifecycle surface routing", () => {
     const cwd = await mkdtemp(join(tmpdir(), "mono-agent-process-job-late-open-"));
     temporaryDirectories.push(cwd);
     const configReadPath = join(cwd, "mono-agent.config.json");
-    await writeFile(configReadPath, JSON.stringify({ processJobs: { enabled: true } }));
+    await writeFile(configReadPath, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.6-sol", workspace: "." },
+      context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
+      tools: { allowedTools: [], disallowedTools: [] },
+      artifacts: { dir: "./artifacts" },
+      processJobs: { enabled: true },
+    }));
+    const agentRootOwnership = await ownershipFor(cwd);
     const opened = deferred<ProcessJobsServiceHandle>();
     const stop = vi.fn(async () => undefined);
     const activateWakes = vi.fn(async () => undefined);
@@ -136,15 +188,19 @@ describe("process-job lifecycle surface routing", () => {
       running: new Map(),
       statuses: new Map(),
       stopped: false,
+      agentRootOwnership,
       processJobsService: undefined,
       processJobsServiceStart: undefined,
       processJobsStateDir: undefined,
       processJobsDegradation: undefined,
+      processJobsRegistry: undefined,
+      preparedProcessJobs: undefined,
       observabilityContext: async () => ({}),
       setStatus: (_id, status) => status,
       refreshTraceSource: async () => undefined,
     };
 
+    await prepareProcessJobsProtection(controller, "test-late-open");
     const staleStartup = ensureProcessJobsService(controller).then(async () => {
       await activateProcessJobWakes(controller);
     });
@@ -169,7 +225,14 @@ describe("process-job lifecycle surface routing", () => {
     const cwd = await mkdtemp(join(tmpdir(), "mono-agent-process-job-surface-"));
     temporaryDirectories.push(cwd);
     const configReadPath = join(cwd, "mono-agent.config.json");
-    await writeFile(configReadPath, JSON.stringify({ processJobs: { enabled: true } }));
+    await writeFile(configReadPath, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.6-sol", workspace: "." },
+      context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
+      tools: { allowedTools: [], disallowedTools: [] },
+      artifacts: { dir: "./artifacts" },
+      processJobs: { enabled: true },
+    }));
+    const agentRootOwnership = await ownershipFor(cwd);
 
     const slackUpdate = vi.fn(async () => ({ delivered: true }));
     const slack = await createSlackChannelDriver({
@@ -221,6 +284,8 @@ describe("process-job lifecycle surface routing", () => {
     let serviceOptions: OpenProcessJobsServiceOptions | undefined;
     const serviceHandle = {} as ProcessJobsServiceHandle;
     processJobsService.open.mockImplementation(async (options: OpenProcessJobsServiceOptions) => {
+      expect(options.registration.snapshot.generation.rootKeys).toContain(".mono-agent/process-jobs");
+      await expect(lstat(options.settings.stateDir)).rejects.toMatchObject({ code: "ENOENT" });
       serviceOptions = options;
       return serviceHandle;
     });
@@ -232,15 +297,19 @@ describe("process-job lifecycle surface routing", () => {
       running,
       statuses: new Map(),
       stopped: false,
+      agentRootOwnership,
       processJobsService: undefined,
       processJobsServiceStart: undefined,
       processJobsStateDir: undefined,
       processJobsDegradation: undefined,
+      processJobsRegistry: undefined,
+      preparedProcessJobs: undefined,
       observabilityContext: async () => ({}),
       setStatus: (_id, status) => status,
       refreshTraceSource: async () => undefined,
     };
 
+    await prepareProcessJobsProtection(controller, "test-startup");
     await expect(ensureProcessJobsService(controller)).resolves.toBe(serviceHandle);
     expect(controller.processJobsStateDir).toBe(join(await realpath(cwd), ".mono-agent/process-jobs"));
     const surfaceUpdate = serviceOptions?.surfaceUpdate;
@@ -277,6 +346,14 @@ function deferred<T>(): {
     resolvePromise = resolve;
   });
   return { promise, resolve: resolvePromise };
+}
+
+async function ownershipFor(cwd: string): Promise<AgentRootOwnership> {
+  const home = await mkdtemp(join(tmpdir(), "mono-agent-process-jobs-owner-"));
+  temporaryDirectories.push(home);
+  const ownership = await acquireAgentRootOwnership(cwd, { homeDir: home });
+  ownerships.push({ ownership, leasePath: agentRootLeasePath(ownership.agentRoot, home) });
+  return ownership;
 }
 
 function startInput<T>(cwd: string, config: T): ChannelStartInput<T> {

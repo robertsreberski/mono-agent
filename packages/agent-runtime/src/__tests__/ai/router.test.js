@@ -990,6 +990,29 @@ describe("createRouterRuntime — production fallback contracts", () => {
   );
 
   it.each(NON_PI_PROVIDER_ROUTES)(
+    "rejects a protected-root %s route under uniform safety before provider invocation",
+    async (_label, model) => {
+      const resolveAttempt = vi.fn(() => ({
+        runtime: { run: vi.fn(async () => ({ text: "private state", events: [], failureKind: null })) },
+      }));
+      const router = createRouterRuntime({
+        routeSafety: "uniform",
+        chain: [model],
+        resolveAttempt,
+      });
+
+      const result = await router.run("sys", {
+        messages: [],
+        sandboxPolicy: { mode: "native", protectedRoots: ["/repo/.mono-agent/process-jobs"] },
+      });
+
+      expect(result.failureKind).toBe("safety_unavailable");
+      expect(resolveAttempt).not.toHaveBeenCalled();
+      expect(executeMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(NON_PI_PROVIDER_ROUTES)(
     "preserves an ordinary %s provider-native route when protected roots are empty",
     async (_label, model) => {
       executeMock.mockResolvedValueOnce({ text: "ordinary route", events: [], failureKind: null });

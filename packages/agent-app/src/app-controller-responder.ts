@@ -15,7 +15,7 @@ import { resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import {
   createConfiguredAgentResponderForApp,
-  createConfiguredAgentRuntime,
+  createConfiguredAgentRuntimeForApp,
   DEFAULT_HISTORY_MAX_MESSAGES,
 } from "./configured-agent.js";
 import type { ConfiguredAgentSessionEvent, createConfiguredMemory } from "./configured-agent.js";
@@ -66,11 +66,15 @@ import type { MemoryRetrievalService } from "./memory-retrieval.js";
 import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 import {
-  createProcessJobsRuntimeExtension,
   processJobsSandboxPolicy,
 } from "./process-jobs-runtime.js";
-import { loadProcessJobsSettings } from "./process-jobs-config.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
+import type { AgentRootOwnership } from "./agent-root-coordinator.js";
+import {
+  failedProcessJobsRootRegistryProtection,
+  processJobsProtectionPolicyRoots,
+  type ProcessJobsRootRegistrySnapshot,
+} from "./process-jobs-root-registry.js";
 import { bindProcessJobWakeContextToResponder } from "./process-jobs-context.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
@@ -87,6 +91,8 @@ export interface ResponderControllerPort {
   readonly continuationService: ContinuationServiceHandle | undefined;
   readonly processJobsService: ProcessJobsServiceHandle | undefined;
   readonly processJobsStateDir: string | undefined;
+  readonly agentRootOwnership: AgentRootOwnership;
+  readonly processJobsRegistry: ProcessJobsRootRegistrySnapshot | undefined;
   readonly seenNotifyDestinations: SeenNotifyDestinationCache;
   sandboxEngineFor(coreConfig: MonoAgentConfig): SandboxEngine | undefined;
   memoryStore(coreConfig: MonoAgentConfig): Promise<ConfiguredMemory>;
@@ -153,15 +159,16 @@ export async function buildResponder(
   coreConfig: MonoAgentConfig,
   channelId?: ChannelId,
 ): Promise<AgentResponder> {
-  const processJobsProtectionStateDir = controller.processJobsStateDir
-    ?? controller.processJobsService?.settings.stateDir;
-  const modelBoundaryConfig = processJobsProtectionStateDir === undefined
+  const processJobsRegistry = controller.processJobsRegistry
+    ?? failedProcessJobsRootRegistryProtection(controller.agentRootOwnership.agentRoot);
+  const processJobsProtectedRoots = processJobsProtectionPolicyRoots(processJobsRegistry);
+  const modelBoundaryConfig = processJobsProtectedRoots.length === 0
     ? coreConfig
     : {
         ...coreConfig,
         sandbox: processJobsSandboxPolicy({
           coreConfig,
-          stateDir: processJobsProtectionStateDir,
+          protectedRoots: processJobsProtectedRoots,
         }),
       };
   const sandboxEngineConfig = modelBoundaryConfig.sandbox?.mode === "native"
@@ -175,8 +182,9 @@ export async function buildResponder(
       };
   const sandboxEngine = controller.sandboxEngineFor(sandboxEngineConfig);
   const sessionRollover = sessionRolloverForChannel(channelId, coreConfig.runtime.session.rollover);
-  const runtime = controller.runtime ?? createConfiguredAgentRuntime({
+  const runtime = controller.runtime ?? createConfiguredAgentRuntimeForApp({
     config: coreConfig,
+    cwd: controller.cwd,
     ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
   });
   if (!controller.activeRuntimes.includes(runtime)) {
@@ -201,12 +209,6 @@ export async function buildResponder(
     configPath: controller.configReadPath,
     env: controller.env,
   })).stateDir;
-  const processJobsStateDir = processJobsProtectionStateDir
-    ?? (await loadProcessJobsSettings({
-      cwd: controller.cwd,
-      configPath: controller.configReadPath,
-      env: controller.env,
-    })).stateDir;
   const replyArtifactPrivateRoots = [
     resolve(controller.cwd, ".mono-agent"),
     controller.configPath,
@@ -220,7 +222,7 @@ export async function buildResponder(
     coreConfig.providers?.piNative?.piSessionsRoot,
     coreConfig.traceability.registryDir,
     continuationStateDir,
-    processJobsStateDir,
+    ...processJobsProtectedRoots,
     artifactDerivedRoots.history,
   ].filter((path): path is string => path !== undefined);
   const replyArtifacts = createReplyArtifactService({
@@ -306,16 +308,6 @@ export async function buildResponder(
     : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
       ? { runtimeOptions: {}, cleanup: async () => {} }
       : await replyArtifactsBase(requestInput);
-  const processJobsExtension = processJobsProtectionStateDir === undefined
-    ? undefined
-    : createProcessJobsRuntimeExtension({
-        service: controller.processJobsService,
-        stateDir: processJobsProtectionStateDir,
-        coreConfig,
-        channelId,
-        sandboxEngine,
-        targetsPiNative: requestModelOverride.targetsProcessJobsPiNative,
-      });
   const runHistoryExtension: RuntimeOptionsExtension | undefined = runHistoryBase === undefined
     ? undefined
     : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
@@ -339,7 +331,6 @@ export async function buildResponder(
     mcpAppsExtension,
     replyArtifactsExtension,
     adapterSendToolsExtension,
-    processJobsExtension,
     requestModelOverride.extension,
     // Last and authoritative: only an opaque owner-created configuration
     // session can replace the daemon's ordinary action/MCP surface.
@@ -401,6 +392,12 @@ export async function buildResponder(
     exporterWarn: (warning) => controller.recordExporterWarning(warning),
     onSessionEvent: (event) => controller.recordSessionEvent(event, coreConfig),
   }, {
+    processJobs: {
+      registry: processJobsRegistry,
+      service: controller.processJobsService,
+      channelId,
+      routesOnlyPiNative: requestModelOverride.targetsProcessJobsPiNative,
+    },
     // Only the responder's own bucketing changes. RunHistory above keeps the
     // CONFIGURED policy on purpose: it strips `#YYYY-MM-DD` only under `daily`,
     // and dropping that here would hide every run this console thread already
@@ -469,8 +466,9 @@ export function buildRuntimeForModel(
     if (cached !== undefined) {
       return cached;
     }
-    const runtime = createConfiguredAgentRuntime({
+    const runtime = createConfiguredAgentRuntimeForApp({
       config: coreConfig,
+      cwd: controller.cwd,
       model,
       ...(executionMode === undefined ? {} : { executionMode }),
       ...(sandboxEngine === undefined ? {} : { sandboxEngine }),

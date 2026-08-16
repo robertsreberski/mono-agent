@@ -22,6 +22,10 @@ import type {
 import type { NotifyDeliveryResult } from "./channels.js";
 import { PROCESS_JOBS_CAPS, type ProcessJobsSettings } from "./process-jobs-config.js";
 import { acquireOwnerPrivateLock, type OwnerPrivateLock } from "./owner-private-lock.js";
+import {
+  attestProcessJobsRootRegistration,
+  type ProcessJobsRootRegistrationProof,
+} from "./process-jobs-root-registry.js";
 import { isSensitiveEnvironmentName } from "./redact-secrets.js";
 import {
   currentProcessIncarnation,
@@ -104,7 +108,12 @@ export interface ProcessJobWakeInput {
 
 export interface OpenProcessJobsServiceOptions {
   readonly cwd: string;
+  readonly workspace: string;
   readonly settings: ProcessJobsSettings;
+  /** Durable registration proof which must predate all state-root creation/mutation. */
+  readonly registration: ProcessJobsRootRegistrationProof;
+  /** Deterministic unit-test seam; production always re-attests the durable proof. */
+  readonly attestRegistration?: typeof attestProcessJobsRootRegistration;
   readonly wake: (input: ProcessJobWakeInput) => Promise<NotifyDeliveryResult>;
   /** Best-effort retained lifecycle update for the exact originating surface. */
   readonly surfaceUpdate?: (projection: ProcessJobProjection) => Promise<void>;
@@ -164,7 +173,14 @@ export async function openProcessJobsService(
       "Process jobs are unsupported on Windows because detached POSIX process-group ownership is required.",
     );
   }
+  const attestRegistration = options.attestRegistration ?? attestProcessJobsRootRegistration;
+  await attestRegistration(
+    options.registration,
+    options.workspace,
+    options.settings.stateDir,
+  );
   const stateDir = await prepareProcessJobStateDirectory(options.cwd, options.settings.stateDir);
+  await attestRegistration(options.registration, options.workspace, stateDir);
   const normalizedOptions: OpenProcessJobsServiceOptions = stateDir === options.settings.stateDir
     ? options
     : { ...options, settings: { ...options.settings, stateDir } };

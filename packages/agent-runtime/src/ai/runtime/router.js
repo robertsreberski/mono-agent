@@ -197,8 +197,7 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
         // deputy for private host state. Reject the route before resolution or
         // provider construction; a later Pi entry may still satisfy the run.
         if (
-          routeSafety === "per-route-native"
-          && entry.model.sdk !== "pi"
+          entry.model.sdk !== "pi"
           && attemptCarriesProtectedRoots(effectiveToolOptions, options)
         ) {
           const failure = safetyUnavailableResult();

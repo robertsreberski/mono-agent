@@ -282,7 +282,7 @@ export function protectSandboxRoots(
       field: "protectedRoots",
     });
   }
-  const canonicalRoots = roots.map((root, index) => {
+  const protectedAliases = roots.flatMap((root, index) => {
     if (typeof root !== "string" || root.trim().length === 0 || !isAbsolute(root)) {
       throw new SandboxPolicyError(
         "invalid_sandbox_policy",
@@ -290,11 +290,12 @@ export function protectSandboxRoots(
         { field: `protectedRoots[${index}]` },
       );
     }
-    return canonicalPolicyPath(root);
+    const absolute = resolve(root);
+    return [absolute, canonicalPolicyPath(absolute)];
   });
   const protectedRoots = removeCoveredRoots([
     ...(policy.protectedRoots ?? []),
-    ...canonicalRoots,
+    ...protectedAliases,
   ].sort());
   return { ...policy, protectedRoots };
 }
@@ -793,7 +794,10 @@ function mergedProtectedRoots(
   return removeCoveredRoots([
     ...(configured.protectedRoots ?? []),
     ...(request.protectedRoots ?? []),
-  ].map(canonicalPolicyPath).sort());
+  ].flatMap((root) => {
+    const absolute = resolve(root);
+    return [absolute, canonicalPolicyPath(absolute)];
+  }).sort());
 }
 
 function withMergedProtectedRoots(

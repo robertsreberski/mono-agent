@@ -37,7 +37,6 @@ import type {
   AgentHarnessRuntimeOptionsInput,
 } from "@mono-agent/agent-harness";
 import { createToolPolicy } from "@mono-agent/agent-harness";
-import { createSrtSandboxEngine } from "@mono-agent/runtime-adapter";
 import type {
   ConfigurationProposalCard,
   ConfigurationProposalResult,
@@ -63,9 +62,6 @@ import { validateMonoAgentFolder } from "./doctor.js";
 import { ADAPTER_SEND_TOOL_NAMES, canonicalToolName } from "./modules/known-tools.js";
 import { RUN_HISTORY_MCP_SERVER_NAME, RUN_HISTORY_TOOL_NAME } from "./run-history.js";
 import { SESSION_HISTORY_MCP_SERVER_NAME, SESSION_HISTORY_TOOL_NAME } from "./session-history.js";
-import { loadProcessJobsSettings } from "./process-jobs-config.js";
-import { createProcessJobsRuntimeExtension } from "./process-jobs-runtime.js";
-import { requestModelOverrideRoutesOnlyPiNative } from "./request-model-override.js";
 import { configuredRuntimeFallbackModels } from "./runtime-routes.js";
 
 export const LOCAL_CONFIGURATION_PROMPT =
@@ -153,34 +149,11 @@ export async function createLocalConfigurationSession(
   const authenticated = await authenticatedLocalConfig(options.cwd, options.configPath);
   const secureOptions = { ...options, ...authenticated };
   const config = await loadAppCoreConfig(secureOptions);
-  const processJobs = await loadProcessJobsSettings(secureOptions);
-  const sandboxEngine = processJobs.enabled ? createSrtSandboxEngine() : undefined;
-  const fallbackModels = configuredRuntimeFallbackModels(config.runtime);
-  const processJobsExtension = !processJobs.enabled
-    ? undefined
-    : createProcessJobsRuntimeExtension({
-        service: undefined,
-        stateDir: processJobs.stateDir,
-        coreConfig: config,
-        channelId: "tui",
-        sandboxEngine,
-        // Local embedded chat has no app-controller request-model extension;
-        // evaluate the exact configured chain it will actually execute.
-        targetsPiNative: () => requestModelOverrideRoutesOnlyPiNative(undefined, {
-          baseModel: config.runtime.model,
-          fallbackModels,
-        }),
-      });
   const responder = await createConfiguredAgentResponder({
     config,
-    // The configured harness owns the clear-sessions recovery attestation.
-    // Pass the authenticated agent root so local TUI cannot fall back to the
-    // CLI process cwd when selecting that registry.
+    // The configured responder owns both clear-sessions and process-job root
+    // protection. Use the authenticated root, never the ambient CLI cwd.
     cwd: secureOptions.cwd,
-    ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
-    ...(processJobsExtension === undefined
-      ? {}
-      : { runtimeOptionsForRequest: processJobsExtension }),
   }) as DisposableResponder;
   return {
     responder,

@@ -34,6 +34,36 @@ const availableSandboxEngine = {
   async prepareCommand(command: unknown) { return command; },
 } as never;
 
+const CLAUDE_MODEL = {
+  sdk: "claude",
+  provider: "anthropic",
+  model: "claude-opus-4-8",
+} as const;
+
+function processJobsBoundary(
+  coreConfig: Parameters<typeof createProcessJobsRuntimeExtension>[0]["coreConfig"],
+) {
+  const generation = {
+    id: "11111111-1111-4111-8111-111111111111",
+    rootKeys: [".mono-agent/process-jobs"],
+  } as const;
+  return {
+    ownership: {
+      coordinator: {
+        acquireRequestLease: () => ({ generation, releaseAfterSettlement: vi.fn() }),
+      },
+    } as never,
+    registry: {
+      kind: "ready",
+      generation,
+      protectedRoots: [PROCESS_JOBS_STATE_DIR],
+    } as never,
+    coreConfig,
+    baseModel: coreConfig.runtime.model,
+    attestRegistry: (async (snapshot: unknown) => snapshot) as never,
+  };
+}
+
 describe("process-job request availability", () => {
   it("publishes later storage degradation to live TUI status and trace metadata", async () => {
     const refreshTraceSource = vi.fn(async () => undefined);
@@ -178,7 +208,12 @@ describe("process-job request availability", () => {
 
   it("injects only for allowed Pi-native turns", async () => {
     const controller = vi.fn(() => ({ start: vi.fn() }));
+    const coreConfig = {
+      runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+      tools: { allowedTools: ["Exec", "Bash"], disallowedTools: [] },
+    } as never;
     const extension = createProcessJobsRuntimeExtension({
+      ...processJobsBoundary(coreConfig),
       service: {
         settings: {
           maxChainDepth: 4,
@@ -186,14 +221,11 @@ describe("process-job request availability", () => {
         },
         controller,
       } as never,
-      stateDir: PROCESS_JOBS_STATE_DIR,
-      coreConfig: {
-        runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
-        tools: { allowedTools: ["Exec", "Bash"], disallowedTools: [] },
-      } as never,
       channelId: "slack",
       sandboxEngine: availableSandboxEngine,
-      targetsPiNative: (metadata) => metadata?.route !== "claude",
+      next: async (input) => input.request.metadata?.route === "claude"
+        ? { runtimeOptions: { model: CLAUDE_MODEL } }
+        : { runtimeOptions: {} },
     });
     const input = (metadata?: Record<string, unknown>) => ({
       runId: "run-1",
@@ -209,7 +241,12 @@ describe("process-job request availability", () => {
 
   it("preserves parent-plus-one depth through a busy live-session queue and removes capability at max depth", async () => {
     const controller = vi.fn(() => ({ start: vi.fn() }));
+    const coreConfig = {
+      runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+      tools: { allowedTools: ["Exec"], disallowedTools: [] },
+    } as never;
     const extension = createProcessJobsRuntimeExtension({
+      ...processJobsBoundary(coreConfig),
       service: {
         settings: {
           maxChainDepth: 4,
@@ -217,14 +254,8 @@ describe("process-job request availability", () => {
         },
         controller,
       } as never,
-      stateDir: PROCESS_JOBS_STATE_DIR,
-      coreConfig: {
-        runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
-        tools: { allowedTools: ["Exec"], disallowedTools: [] },
-      } as never,
       channelId: "slack",
       sandboxEngine: availableSandboxEngine,
-      targetsPiNative: () => true,
     });
     let releaseActive!: () => void;
     const activeGate = new Promise<void>((resolve) => { releaseActive = resolve; });
@@ -321,7 +352,12 @@ describe("process-job request availability", () => {
     async (channel) => {
       const conversationId = channel === "slack" ? "slack:C1:1.1" : "telegram:42";
       const controller = vi.fn((_request: unknown, _chainDepth: number) => ({ start: vi.fn() }));
+      const coreConfig = {
+        runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+        tools: { allowedTools: ["Exec"], disallowedTools: [] },
+      } as never;
       const extension = createProcessJobsRuntimeExtension({
+        ...processJobsBoundary(coreConfig),
         service: {
           settings: {
             maxChainDepth: 4,
@@ -329,14 +365,8 @@ describe("process-job request availability", () => {
           },
           controller,
         } as never,
-        stateDir: PROCESS_JOBS_STATE_DIR,
-        coreConfig: {
-          runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
-          tools: { allowedTools: ["Exec"], disallowedTools: [] },
-        } as never,
         channelId: channel,
         sandboxEngine: availableSandboxEngine,
-        targetsPiNative: () => true,
       });
       let release!: () => void;
       const gate = new Promise<void>((resolvePromise) => { release = resolvePromise; });
@@ -411,7 +441,12 @@ describe("process-job request availability", () => {
       const identityPath = join(dir, "IDENTITY.md");
       await writeFile(identityPath, "You are Mono.", "utf8");
       const controller = vi.fn((_request: unknown, _chainDepth: number) => ({ start: vi.fn() }));
+      const coreConfig = {
+        runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+        tools: { allowedTools: ["Exec"], disallowedTools: [] },
+      } as never;
       const extension = createProcessJobsRuntimeExtension({
+        ...processJobsBoundary(coreConfig),
         service: {
           settings: {
             maxChainDepth: 4,
@@ -419,14 +454,8 @@ describe("process-job request availability", () => {
           },
           controller,
         } as never,
-        stateDir: PROCESS_JOBS_STATE_DIR,
-        coreConfig: {
-          runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
-          tools: { allowedTools: ["Exec"], disallowedTools: [] },
-        } as never,
         channelId: "slack",
         sandboxEngine: availableSandboxEngine,
-        targetsPiNative: () => true,
       });
       let runtimeCall = 0;
       const harness = createAgentHarness({
@@ -509,7 +538,12 @@ describe("process-job request availability", () => {
 
   it("fails closed when overlapping wake flights reuse one exact delivery discriminator", async () => {
     const controller = vi.fn(() => ({ start: vi.fn() }));
+    const coreConfig = {
+      runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+      tools: { allowedTools: ["Exec"], disallowedTools: [] },
+    } as never;
     const extension = createProcessJobsRuntimeExtension({
+      ...processJobsBoundary(coreConfig),
       service: {
         settings: {
           maxChainDepth: 4,
@@ -517,14 +551,8 @@ describe("process-job request availability", () => {
         },
         controller,
       } as never,
-      stateDir: PROCESS_JOBS_STATE_DIR,
-      coreConfig: {
-        runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
-        tools: { allowedTools: ["Exec"], disallowedTools: [] },
-      } as never,
       channelId: "slack",
       sandboxEngine: availableSandboxEngine,
-      targetsPiNative: () => true,
     });
     let release!: () => void;
     const gate = new Promise<void>((resolvePromise) => { release = resolvePromise; });

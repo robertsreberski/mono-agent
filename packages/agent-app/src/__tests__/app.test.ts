@@ -178,11 +178,11 @@ describe("startMonoAgentApp", () => {
       expect(controller.processJobsService).toBeUndefined();
       expect(controller.processJobsDegradation).toMatchObject({
         stateDir,
-        reason: expect.stringContaining("not a real directory"),
+        reason: "Process-job private-state protection is unavailable.",
       });
       expect(error).toHaveBeenCalledWith(
-        "Process-job controller failed to start; the agent is continuing without background jobs.",
-        expect.objectContaining({ stateDir }),
+        "Process-job private-state registry could not be established.",
+        { reason: "Process-job private-state protection is unavailable." },
       );
       await expect(app.listProcessJobs?.()).resolves.toEqual([]);
     } finally {
@@ -1371,6 +1371,7 @@ describe("startMonoAgentApp", () => {
     const coreConfig = await loadAppCoreConfig({ cwd: dir, configPath, env: {} });
     const baseInput = {
       cwd: dir,
+      agentRootOwnership: { agentRoot: dir, release() {} } as never,
       configPath,
       configReadPath: configPath,
       env: {},

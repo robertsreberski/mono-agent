@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, truncate, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 
@@ -31,10 +31,42 @@ import {
   REPLY_ARTIFACT_MCP_SERVER_NAME,
 } from "../reply-artifacts.js";
 import { createSeenNotifyDestinationCache } from "../seen-conversations.js";
+import {
+  agentRootLeasePath,
+  acquireAgentRootOwnership,
+  type AgentRootOwnership,
+} from "../agent-root-coordinator.js";
+import {
+  loadProcessJobsRootRegistryProtection,
+  registerProcessJobsRoot,
+  type ProcessJobsRootRegistrySnapshot,
+} from "../process-jobs-root-registry.js";
+
+const processIdentity = vi.hoisted(() => ({
+  current: {
+    schema: "mono-agent.process-incarnation.v1" as const,
+    bootSessionId: "test-boot",
+    processStartId: "vitest-responder",
+  },
+}));
+
+vi.mock("../process-incarnation.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../process-incarnation.js")>(),
+  currentProcessIncarnation: async () => processIdentity.current,
+  isSameProcessIncarnation: () => true,
+}));
 
 const tempDirs: string[] = [];
+const rootOwnerships: Array<{ ownership: AgentRootOwnership; leasePath: string }> = [];
 
 afterEach(async () => {
+  const held = rootOwnerships.splice(0);
+  for (const { ownership } of held) ownership.release();
+  await Promise.all(held.map(async ({ leasePath }) => {
+    await vi.waitFor(async () => {
+      await expect(lstat(leasePath)).rejects.toMatchObject({ code: "ENOENT" });
+    }, { timeout: 2_000, interval: 10 });
+  }));
   await Promise.all(tempDirs.splice(0).map(async (dir) => await rm(dir, { recursive: true, force: true })));
 });
 
@@ -87,6 +119,7 @@ describe("reply artifact responder composition", () => {
       continuations: { enabled: false },
     }, null, 2)}\n`);
     const coreConfig = await loadAppCoreConfig({ cwd: workspace, configPath, env: {} });
+    const security = await controllerSecurity(workspace, coreConfig.runtime.workspace);
     let publicationResult: unknown;
     let runtimeCalls = 0;
     const runtime = {
@@ -128,6 +161,8 @@ describe("reply artifact responder composition", () => {
       continuationService: undefined,
       processJobsService: undefined,
       processJobsStateDir: undefined,
+      agentRootOwnership: security.ownership,
+      processJobsRegistry: security.registry,
       seenNotifyDestinations: createSeenNotifyDestinationCache(),
       sandboxEngineFor: () => undefined,
       memoryStore: async () => memory as never,
@@ -268,6 +303,12 @@ describe("reply artifact responder composition", () => {
     ]);
 
     const coreConfig = await loadAppCoreConfig({ cwd: workspace, configPath: configReadPath, env: {} });
+    await chmod(processJobsStateDir, 0o700);
+    const security = await controllerSecurity(
+      workspace,
+      coreConfig.runtime.workspace,
+      processJobsStateDir,
+    );
     expect(coreConfig.artifacts.dir).toBe(artifactDir);
     const publicationResults: Array<{ readonly label: string; readonly result: unknown }> = [];
     let authorizedPublicationResult: unknown;
@@ -330,6 +371,8 @@ describe("reply artifact responder composition", () => {
         controller: vi.fn(),
       } as never,
       processJobsStateDir,
+      agentRootOwnership: security.ownership,
+      processJobsRegistry: security.registry,
       seenNotifyDestinations: createSeenNotifyDestinationCache(),
       sandboxEngineFor,
       memoryStore: async () => memory as never,
@@ -371,7 +414,7 @@ describe("reply artifact responder composition", () => {
       sandbox: expect.objectContaining({
         mode: "native",
         network: { mode: "all", allowlist: [] },
-        protectedRoots: [canonicalProcessJobsStateDir],
+        protectedRoots: expect.arrayContaining([canonicalProcessJobsStateDir]),
       }),
     }));
     for (const { result } of publicationResults) {
@@ -424,6 +467,28 @@ const NON_PI_ROUTES = [
 ] as const;
 
 describe("process-job mixed fallback route guard", () => {
+  it("blocks a mixed fallback chain before either provider under uniform route safety", async () => {
+    const fixture = await createRouteGuardFixture(
+      PI_ROUTE,
+      NON_PI_ROUTES[0][1],
+      "live",
+      true,
+      "uniform",
+    );
+    try {
+      await expect(fixture.responder.respond({
+        conversationId: "slack:C1:1.1",
+        text: "do not invoke a provider",
+        abortSignal: new AbortController().signal,
+      }, { append: async () => {} })).rejects.toThrow(
+        "Process-job private state requires a Pi-native runtime.",
+      );
+      expect(fixture.providerRunCounts).toEqual([0, 0]);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
   it.each(NON_PI_ROUTES)("blocks Pi to %s before either routed provider runs", async (_label, nonPiRoute) => {
     const fixture = await createRouteGuardFixture(PI_ROUTE, nonPiRoute, "live");
     try {
@@ -578,6 +643,7 @@ async function createRouteGuardFixture(
   fallbackReference: string | undefined,
   processJobsMode: "live" | "degraded" | "none",
   sandboxEngineAvailable = true,
+  routeSafety: "uniform" | "per-route-native" = "per-route-native",
 ): Promise<{
   readonly responder: Awaited<ReturnType<typeof buildResponder>>;
   readonly providerRunCounts: readonly number[];
@@ -611,7 +677,7 @@ async function createRouteGuardFixture(
       // integration matrix can cover ACP without weakening config validation.
       model: PI_ROUTE,
       ...(fallbackReference === undefined ? {} : { fallbacks: [{ model: NON_PI_ROUTES[0][1] }] }),
-      routeSafety: "per-route-native",
+      routeSafety,
       retry: { primaryAttempts: 1, backoffMs: 0, maxBackoffMs: 0 },
       workspace: ".",
     },
@@ -640,9 +706,14 @@ async function createRouteGuardFixture(
       model: primaryModel,
       fallbacks: fallbackModel === undefined ? [] : [{ model: fallbackModel }],
       executionMode: defaultExecutionModeForModel(primaryModel),
-      routeSafety: "per-route-native" as const,
+      routeSafety,
     },
   };
+  const security = await controllerSecurity(
+    workspace,
+    coreConfig.runtime.workspace,
+    processJobsMode === "none" ? undefined : processJobsStateDir,
+  );
   const routes = [
     coreConfig.runtime.model,
     coreConfig.runtime.fallbacks?.[0]?.model,
@@ -677,7 +748,7 @@ async function createRouteGuardFixture(
   }));
   const runtime = createMonoRuntime({
     fallbackChain: routes.map((model) => ({ model })),
-    routeSafety: "per-route-native",
+    routeSafety,
     retry: { backoffMs: 0, maxBackoffMs: 0 },
     resolveAttempt: ({ attemptIndex }) => {
       const runtimeForAttempt = routeRuntimes[attemptIndex];
@@ -712,6 +783,8 @@ async function createRouteGuardFixture(
         } as never
       : undefined,
     processJobsStateDir: processJobsMode === "none" ? undefined : processJobsStateDir,
+    agentRootOwnership: security.ownership,
+    processJobsRegistry: security.registry,
     seenNotifyDestinations: createSeenNotifyDestinationCache(),
     sandboxEngineFor: () => sandboxEngine as never,
     memoryStore: async () => memory as never,
@@ -740,4 +813,34 @@ async function createRouteGuardFixture(
       await (responder as { dispose?: () => Promise<void> }).dispose?.();
     },
   };
+}
+
+async function controllerSecurity(
+  agentRoot: string,
+  workspace: string,
+  stateDir?: string,
+): Promise<{
+  ownership: AgentRootOwnership;
+  registry: ProcessJobsRootRegistrySnapshot;
+}> {
+  const home = await mkdtemp(join(tmpdir(), "mono-agent-responder-owner-"));
+  tempDirs.push(home);
+  const ownership = await acquireAgentRootOwnership(agentRoot, { homeDir: home });
+  rootOwnerships.push({
+    ownership,
+    leasePath: agentRootLeasePath(ownership.agentRoot, home),
+  });
+  let registry = await loadProcessJobsRootRegistryProtection(ownership.agentRoot, workspace);
+  ownership.coordinator.synchronizeGeneration(registry.generation);
+  if (stateDir !== undefined) {
+    const canonicalStateDir = await realpath(stateDir);
+    const registration = await registerProcessJobsRoot({
+      agentRoot: ownership.agentRoot,
+      workspace,
+      stateDir: canonicalStateDir,
+      coordinator: ownership.coordinator,
+    });
+    registry = registration.snapshot;
+  }
+  return { ownership, registry };
 }

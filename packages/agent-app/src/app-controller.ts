@@ -56,6 +56,16 @@ import * as responderOperations from "./app-controller-responder.js";
 import * as memoryOperations from "./app-controller-memory.js";
 import * as processJobsOperations from "./app-controller-process-jobs.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
+import {
+  acquireAgentRootOwnership,
+  releaseAgentRootOwnershipWhenIdle,
+  type AgentRootOwnership,
+} from "./agent-root-coordinator.js";
+import type {
+  ProcessJobsRootRegistrationProof,
+  ProcessJobsRootRegistrySnapshot,
+} from "./process-jobs-root-registry.js";
+import type { ProcessJobsSettings } from "./process-jobs-config.js";
 import type {
   ConfigApplyResult,
   ExporterStatus,
@@ -163,62 +173,70 @@ async function startMonoAgentAppInternal(
     }
   };
   const cwd = resolve(options.cwd ?? process.cwd());
-  const configPath = resolve(cwd, options.configPath ?? "mono-agent.config.json");
-  const configReadPath = resolve(cwd, options.configReadPath ?? configPath);
-  const env = options.env ?? process.env;
-  const drivers = options.drivers ?? await measure(
-    "driverResolution",
-    () => resolveChannelDrivers({ env, cwd, configPath: configReadPath }),
-  );
-  if (options.drivers !== undefined) startupPhases.driverResolution = 0;
-
-  const controller = new MonoAgentAppController({
-    cwd,
-    configPath,
-    configReadPath,
-    env,
-    drivers,
-    ...(options.logger === undefined ? {} : { logger: options.logger }),
-    ...(options.runtime === undefined ? {} : { runtime: options.runtime }),
-    ...(options.sandboxEngine === undefined ? {} : { sandboxEngine: options.sandboxEngine }),
-    ...(options.traceDefaults === undefined ? {} : { traceDefaults: options.traceDefaults }),
-    ...(options.backgroundSnapshot === undefined ? {} : { backgroundSnapshot: options.backgroundSnapshot }),
-    trustedRuntimeReadRoots,
-  });
-
+  const agentRootOwnership = await acquireAgentRootOwnership(cwd);
+  let controller: MonoAgentAppController | undefined;
   try {
-    await measure("sandbox", () => controller.refreshSandboxStatus("startup"));
-    await measure("traceability", () => controller.startTraceability("startup"));
+    const configPath = resolve(cwd, options.configPath ?? "mono-agent.config.json");
+    const configReadPath = resolve(cwd, options.configReadPath ?? configPath);
+    const env = options.env ?? process.env;
+    const drivers = options.drivers ?? await measure(
+      "driverResolution",
+      () => resolveChannelDrivers({ env, cwd, configPath: configReadPath }),
+    );
+    if (options.drivers !== undefined) startupPhases.driverResolution = 0;
+
+    controller = new MonoAgentAppController({
+      cwd,
+      agentRootOwnership,
+      configPath,
+      configReadPath,
+      env,
+      drivers,
+      ...(options.logger === undefined ? {} : { logger: options.logger }),
+      ...(options.runtime === undefined ? {} : { runtime: options.runtime }),
+      ...(options.sandboxEngine === undefined ? {} : { sandboxEngine: options.sandboxEngine }),
+      ...(options.traceDefaults === undefined ? {} : { traceDefaults: options.traceDefaults }),
+      ...(options.backgroundSnapshot === undefined ? {} : { backgroundSnapshot: options.backgroundSnapshot }),
+      trustedRuntimeReadRoots,
+    });
+    const startedController = controller;
+
+    await measure("sandbox", () => startedController.refreshSandboxStatus("startup"));
+    await measure("traceability", () => startedController.startTraceability("startup"));
     await measure("services", async () => {
-      await controller.startExporters("startup");
-      await controller.startContinuationServiceIfConfigured("startup");
-      await controller.startProcessJobsIfConfigured("startup");
+      await startedController.startExporters("startup");
+      await startedController.startContinuationServiceIfConfigured("startup");
+      await startedController.startProcessJobsIfConfigured("startup");
     });
     await measure(
       "channels",
-      () => Promise.all(drivers.map((driver) => controller.startChannelIfConfigured(driver.id, "startup"))),
+      () => Promise.all(drivers.map((driver) => startedController.startChannelIfConfigured(driver.id, "startup"))),
     );
-    await controller.activateProcessJobWakes();
-    await measure("memoryRituals", () => controller.startMemoryRitualsIfConfigured("startup"));
+    await startedController.activateProcessJobWakes();
+    await measure("memoryRituals", () => startedController.startMemoryRitualsIfConfigured("startup"));
     const memoryHealthStartedAt = performance.now();
-    await controller.refreshMemoryHealthAfterLifecycle("startup-complete", () => {
+    await startedController.refreshMemoryHealthAfterLifecycle("startup-complete", () => {
       startupPhases.memoryHealth = roundedMilliseconds(performance.now() - memoryHealthStartedAt);
-      controller.startupTimingValue = {
+      startedController.startupTimingValue = {
         durationMs: roundedMilliseconds(performance.now() - startupStartedAt),
         phases: { ...startupPhases },
       };
     });
-    return controller;
+    return startedController;
   } catch (error) {
-    try {
-      await controller.stop();
-    } catch (cleanupError) {
+    if (controller === undefined) {
+      await releaseAgentRootOwnershipWhenIdle(agentRootOwnership).catch(() => undefined);
+    } else {
       try {
-        controller.logger?.warn?.("Mono agent app startup cleanup did not complete cleanly.", {
-          reason: reasonOf(cleanupError),
-        });
-      } catch {
-        // A diagnostic sink must not replace the original startup failure.
+        await controller.stop();
+      } catch (cleanupError) {
+        try {
+          controller.logger?.warn?.("Mono agent app startup cleanup did not complete cleanly.", {
+            reason: reasonOf(cleanupError),
+          });
+        } catch {
+          // A diagnostic sink must not replace the original startup failure.
+        }
       }
     }
     throw error;
@@ -231,6 +249,7 @@ function roundedMilliseconds(value: number): number {
 
 interface MonoAgentAppControllerInput {
   readonly cwd: string;
+  readonly agentRootOwnership: AgentRootOwnership;
   readonly configPath: string;
   readonly configReadPath: string;
   readonly env: Record<string, string | undefined>;
@@ -270,6 +289,8 @@ export class MonoAgentAppController implements MonoAgentApp {
   readonly traceDefaults: AppTraceDefaults | undefined;
   readonly backgroundSnapshot: BackgroundSnapshot | undefined;
   readonly trustedRuntimeReadRoots: readonly string[];
+  readonly agentRootOwnership: AgentRootOwnership;
+  private agentRootOwnershipReleased = false;
   private trustedSrtSandboxEngine: SandboxEngine | undefined;
   readonly activeRuntimes: MonoRuntimeLike[] = [];
   readonly statuses = new Map<ChannelId, ChannelStatus>();
@@ -349,11 +370,18 @@ export class MonoAgentAppController implements MonoAgentApp {
   /** Configured private root; retained even when the durable store cannot open. */
   processJobsStateDir: string | undefined;
   processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
+  processJobsRegistry: ProcessJobsRootRegistrySnapshot | undefined;
+  preparedProcessJobs: {
+    readonly settings: ProcessJobsSettings;
+    readonly workspace: string;
+    readonly registration?: ProcessJobsRootRegistrationProof;
+  } | undefined;
   /** One bounded scan cache for artifact-derived native-notify destinations. */
   readonly seenNotifyDestinations = createSeenNotifyDestinationCache();
 
   constructor(input: MonoAgentAppControllerInput) {
     this.cwd = input.cwd;
+    this.agentRootOwnership = input.agentRootOwnership;
     this.configPath = input.configPath;
     this.configReadPath = input.configReadPath;
     this.env = input.env;
@@ -543,6 +571,10 @@ export class MonoAgentAppController implements MonoAgentApp {
     return processJobsOperations.startProcessJobsIfConfigured(this, reason);
   }
 
+  async prepareProcessJobsProtection(reason: string): Promise<void> {
+    return processJobsOperations.prepareProcessJobsProtection(this, reason);
+  }
+
   async activateProcessJobWakes(): Promise<void> {
     return processJobsOperations.activateProcessJobWakes(this);
   }
@@ -571,7 +603,21 @@ export class MonoAgentAppController implements MonoAgentApp {
     deliveryKey: string,
   ): Promise<ContinuationHistoryRecordResult> { return continuationOperations.recordContinuationHistory(this, conversationId, text, deliveryKey); }
 
-  async stop(): Promise<void> { return lifecycleOperations.stop(this); }
+  async stop(): Promise<void> {
+    try {
+      await lifecycleOperations.stop(this);
+    } finally {
+      // A teardown failure must not strand this logical host reference. Active
+      // request-generation leases still defer the physical owner-lock release.
+      if (this.stopped) await this.releaseAgentRootOwnership();
+    }
+  }
+
+  async releaseAgentRootOwnership(): Promise<void> {
+    if (this.agentRootOwnershipReleased) return;
+    this.agentRootOwnershipReleased = true;
+    await releaseAgentRootOwnershipWhenIdle(this.agentRootOwnership);
+  }
 
   async startMemoryRitualsIfConfigured(reason: string): Promise<void> { return maintenanceOperations.startMemoryRitualsIfConfigured(this, reason); }
 
