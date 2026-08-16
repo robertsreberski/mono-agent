@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type {
@@ -43,6 +43,29 @@ const fakeSandboxEngine: SandboxEngine = {
     throw new Error("not used by host composition tests");
   },
 };
+
+// These composition tests exercise harness/runtime wiring, not the real
+// cooperative owner. Dedicated coordinator and configured-root suites cover
+// the filesystem-backed lifetime contract.
+vi.mock("../agent-root-coordinator.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../agent-root-coordinator.js")>(),
+  acquireAgentRootOwnership: async (root: string | undefined) => ({
+    agentRoot: root ?? process.cwd(),
+    coordinator: {
+      synchronizeGeneration() {},
+      acquireRequestLease: (generation: unknown) => ({
+        generation,
+        releaseAfterSettlement() {},
+      }),
+    },
+    release() {},
+  }),
+  releaseAgentRootOwnershipWhenIdle: async (ownership: { release(): void }) => {
+    ownership.release();
+    return true;
+  },
+  assertAgentRootLeaseOutsideWorkspace() {},
+}));
 
 import {
   createConfiguredAgentHarness,
@@ -716,10 +739,18 @@ describe("agent host composition helpers", () => {
 
     let active = 0;
     let peak = 0;
+    let startedFirst!: () => void;
+    let startedSecond!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { startedFirst = resolve; });
+    const secondStarted = new Promise<void>((resolve) => { startedSecond = resolve; });
+    let calls = 0;
     const release: Array<() => void> = [];
     const fake = createFakeRuntime(async () => {
+      calls += 1;
       active += 1;
       peak = Math.max(peak, active);
+      if (calls === 1) startedFirst();
+      if (calls === 2) startedSecond();
       await new Promise<void>((resolve) => { release.push(resolve); });
       active -= 1;
       return { text: "ok" };
@@ -733,15 +764,12 @@ describe("agent host composition helpers", () => {
     const first = harness.run({ conversationId: "c1", userMessage: "a", abortSignal: new AbortController().signal });
     const second = harness.run({ conversationId: "c2", userMessage: "b", abortSignal: new AbortController().signal });
 
-    // Let the limiter settle: only one run should be in-flight.
-    for (let i = 0; i < 20 && release.length < 1; i += 1) {
-      await delay(5);
-    }
+    // The provider-entry signals are emitted only after the limiter admits a
+    // run, so they prove the second cannot enter before the first releases.
+    await firstStarted;
     expect(release.length).toBe(1);
     release.shift()?.();
-    for (let i = 0; i < 20 && release.length < 1; i += 1) {
-      await delay(5);
-    }
+    await secondStarted;
     release.shift()?.();
     await Promise.all([first, second]);
     expect(peak).toBe(1);
@@ -777,8 +805,27 @@ describe("agent host composition helpers", () => {
     const first = harness.run({ conversationId: "c1", userMessage: "a", abortSignal: new AbortController().signal });
     await firstStarted;
     // Second admits but parks waiting for the slot (pending = 1).
-    const second = harness.run({ conversationId: "c2", userMessage: "b", abortSignal: new AbortController().signal });
-    await delay(10);
+    let admittedSecond!: () => void;
+    const secondAdmitted = new Promise<void>((resolve) => { admittedSecond = resolve; });
+    const second = harness.run({
+      conversationId: "c2",
+      userMessage: "b",
+      abortSignal: new AbortController().signal,
+      sessionBoundary: {
+        type: "session_boundary",
+        kind: "rollover",
+        conversationId: "c2",
+        reason: "test_pending_admission",
+      },
+      onEvent: (event) => {
+        if (event.type === "session_boundary" && event.reason === "test_pending_admission") {
+          admittedSecond();
+        }
+      },
+    });
+    // The harness emits this boundary only after incrementing its pending-run
+    // counter, so the third arrival deterministically observes pending = 1.
+    await secondAdmitted;
     // Third arrives at capacity -> fails fast.
     const third = await harness.run({ conversationId: "c3", userMessage: "c", abortSignal: new AbortController().signal });
 

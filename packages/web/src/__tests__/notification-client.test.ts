@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { deliverWebNotification } from "../notification-client.js";
 import { prepareWebStatePaths } from "../state-paths.js";
-import { temporaryRoot } from "./helpers.js";
+import { fakeProcessJob, temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
 
@@ -62,6 +62,31 @@ describe("deliverWebNotification", () => {
       },
     });
     expect(calls[0]?.init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("carries process-job rich reply parts through the authenticated ingress body", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    await writeIngressRecord(stateDir);
+    let deliveredBody: unknown;
+    const fetchImpl = (async (_input, init) => {
+      deliveredBody = JSON.parse(String(init?.body)) as unknown;
+      return Response.json({ threadId: "thread-one", duplicate: false }, { status: 201 });
+    }) as typeof fetch;
+    const processJob = fakeProcessJob({ conversationId: "web:thread-one" });
+    const input = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: processJob.wake.deliveryKey,
+      threadId: "thread-one",
+      processJob,
+      parts: [{ type: "failure" as const, id: "job-failure", code: "artifact_missing" as const, message: "File expired." }],
+    };
+
+    await expect(deliverWebNotification(input, { stateDir, fetchImpl }))
+      .resolves.toEqual({ threadId: "thread-one", duplicate: false });
+    expect(deliveredBody).toEqual(input);
   });
 
   it("fails closed for missing, permissive, symlinked, or non-loopback ingress records", async () => {

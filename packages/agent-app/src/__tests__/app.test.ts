@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -165,6 +165,31 @@ const unavailableSandboxEngine: SandboxEngine = {
 };
 
 describe("startMonoAgentApp", () => {
+  it("continues startup with a visible degradation when the opt-in process-job store cannot open", async () => {
+    await writeConfig({ ...baseConfig(), processJobs: { enabled: true } });
+    const stateDir = join(await realpath(dir), ".mono-agent", "process-jobs");
+    await mkdir(join(dir, ".mono-agent"), { recursive: true, mode: 0o700 });
+    await writeFile(join(dir, ".mono-agent", "process-jobs"), "not a directory\n", { mode: 0o600 });
+    const error = vi.fn();
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [], logger: { error } });
+    try {
+      const controller = app as MonoAgentAppController;
+      expect(controller.processJobsService).toBeUndefined();
+      expect(controller.processJobsDegradation).toMatchObject({
+        stateDir,
+        reason: "Process-job private-state protection is unavailable.",
+      });
+      expect(error).toHaveBeenCalledWith(
+        "Process-job private-state registry could not be established.",
+        { reason: "Process-job private-state protection is unavailable." },
+      );
+      await expect(app.listProcessJobs?.()).resolves.toEqual([]);
+    } finally {
+      await app.stop();
+    }
+  });
+
   it("reads an immutable config source while advertising the canonical config path", async () => {
     const canonicalConfigPath = await writeConfig({
       ...baseConfig(),
@@ -1338,7 +1363,7 @@ describe("startMonoAgentApp", () => {
     await app.stop();
   });
 
-  it("selects an app-owned SRT engine only for a verified managed runtime", async () => {
+  it("selects an app-owned SRT engine for every configured native policy", async () => {
     const configPath = await writeConfig({
       ...baseConfig(),
       sandbox: { mode: "native", fallback: "fail-closed" },
@@ -1346,6 +1371,7 @@ describe("startMonoAgentApp", () => {
     const coreConfig = await loadAppCoreConfig({ cwd: dir, configPath, env: {} });
     const baseInput = {
       cwd: dir,
+      agentRootOwnership: { agentRoot: dir, release() {} } as never,
       configPath,
       configReadPath: configPath,
       env: {},
@@ -1367,7 +1393,7 @@ describe("startMonoAgentApp", () => {
 
     expect(managed.sandboxEngineFor(coreConfig)?.id).toBe("srt");
     expect(managed.sandboxEngineFor(coreConfig)).toBe(managed.sandboxEngineFor(coreConfig));
-    expect(unmanaged.sandboxEngineFor(coreConfig)).toBeUndefined();
+    expect(unmanaged.sandboxEngineFor(coreConfig)?.id).toBe("srt");
     expect(injected.sandboxEngineFor(coreConfig)).toBe(unavailableSandboxEngine);
   });
 

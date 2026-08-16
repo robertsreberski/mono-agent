@@ -29,6 +29,7 @@ export function testSandboxPolicy({
   root,
   readableRoots,
   writableRoots,
+  protectedRoots = [],
   denyWrite = DEFAULT_DENY_WRITE,
   network = { mode: "none", allowlist: [] },
 } = {}) {
@@ -38,6 +39,7 @@ export function testSandboxPolicy({
     root,
     readableRoots: readableRoots ?? [root],
     writableRoots: writableRoots ?? [root],
+    protectedRoots,
     denyWrite,
     tempRoot: `${root}/.mono-agent/tmp`,
     network,
@@ -95,13 +97,20 @@ function mergeNetwork(configured, request) {
 function mergePolicies(configured, request) {
   if (configured === undefined) return request;
   if (request === undefined) return configured;
-  if (configured.mode === "off") return request.mode === "native" ? request : configured;
-  if (request.mode === "off") return configured;
+  const protectedRoots = [...new Set([
+    ...(configured.protectedRoots ?? []),
+    ...(request.protectedRoots ?? []),
+  ])].sort();
+  if (configured.mode === "off") {
+    return { ...(request.mode === "native" ? request : configured), protectedRoots };
+  }
+  if (request.mode === "off") return { ...configured, protectedRoots };
   return {
     ...configured,
     readableRoots: intersectRoots(configured.readableRoots, request.readableRoots),
     writableRoots: intersectRoots(configured.writableRoots, request.writableRoots),
     denyWrite: [...new Set([...(configured.denyWrite ?? []), ...(request.denyWrite ?? [])])],
+    protectedRoots,
     network: mergeNetwork(configured.network, request.network),
     fallback: configured.fallback === "fail-closed" || request.fallback === "fail-closed" ? "fail-closed" : configured.fallback,
     unsafeAllowHostProcess: configured.unsafeAllowHostProcess && request.unsafeAllowHostProcess,

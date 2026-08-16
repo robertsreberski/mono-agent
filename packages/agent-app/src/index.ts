@@ -96,6 +96,8 @@ export {
 export type { ContinuationSettings } from "./continuation-config.js";
 export { runContinuationCommand } from "./continuation-command.js";
 export type { RunContinuationCommandOptions } from "./continuation-command.js";
+export { runJobsCommand } from "./jobs-command.js";
+export type { RunJobsCommandOptions } from "./jobs-command.js";
 export {
   canonicalContinuationJson,
   CONTINUATION_CLAIM_TOKEN_ENV,

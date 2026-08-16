@@ -88,7 +88,7 @@ it is absent; other configurations keep it outside the app dependency closure.
 | Option | Type | Purpose |
 | --- | --- | --- |
 | `config` | `MonoAgentConfig` | **Required.** The loaded config |
-| `cwd` | `string` | Agent folder used to resolve agent-local optional plugins (defaults to `process.cwd()`) |
+| `cwd` | `string` | Agent-root authority and folder used to resolve agent-local optional plugins (configured harness/responders default to `process.cwd()`) |
 | `runtime` | `MonoRuntimeLike` | Inject a custom or shared runtime instead of building one from `runtime.model` |
 | `model` / `executionMode` | `RuntimeModelReference` / `string` | Override the config's primary model / execution mode |
 | `memory` | `MemoryStore` | Supply a memory store instead of provisioning from `config.memory` |
@@ -97,7 +97,14 @@ it is absent; other configurations keep it outside the app dependency closure.
 | `runtimeOptions` | static run options | Extra runtime options merged for every run (no `model`/`messages`/`abortSignal`/`executionMode`/`onEvent`) |
 | `runtimeOptionsForRequest` | `(input) => extension` | Per-request run options (see below) |
 
-`createConfiguredAgentRuntime(config)` and `createConfiguredAgentHarness(options)` are also exported if you want the runtime or harness without the responder wrapper.
+`createConfiguredAgentHarness(options)` is also exported if you want the harness
+without the responder wrapper. For a raw runtime, use
+`createConfiguredAgentRuntime({ config, cwd: agentRoot })`. Its owner and
+registry are acquired lazily on the first `run()` and retained until
+`disposeAllSessions()`. The legacy config-only construction cannot prove which
+agent root it owns, so its first run fails closed instead of invoking a
+provider. Direct `createConfiguredMemory` callers whose selected tier uses an
+LLM or embedding provider should likewise pass `{ cwd: agentRoot }`.
 
 A custom `historyStore` keeps provider sessions process-local unless it implements the crash-safe `beginProviderSessionTurn` transaction and advertises `providerSessionRetirement: "fail-closed"`. That marker is a promise that epoch rotation, dirty-fence recovery, and retention can durably retire every exact provider id before canonical history makes it unreachable. The harness withholds `piSessionsRoot` when either half is missing.
 

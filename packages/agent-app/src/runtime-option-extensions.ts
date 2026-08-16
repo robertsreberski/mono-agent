@@ -2,6 +2,18 @@ import type {
   AgentHarnessRuntimeOptionsExtension,
   AgentHarnessRuntimeOptionsInput,
 } from "@mono-agent/agent-harness";
+import {
+  failClosedSandboxPolicy,
+  mergeSandboxPolicies,
+  protectSandboxRoots,
+  type RuntimeModelReference,
+  type SandboxPolicy,
+} from "@mono-agent/runtime-adapter";
+
+import {
+  assertClearSessionsRecoveryResolved,
+  clearSessionsRegistryRoot,
+} from "./sessions.js";
 
 export type RuntimeOptionsExtension = (
   input: AgentHarnessRuntimeOptionsInput,
@@ -15,6 +27,62 @@ export interface RuntimeOptionsCompositionOptions {
    * merely reusing a trusted server name.
    */
   readonly preserveMcpServersUnderOverride?: readonly RuntimeOptionsExtension[];
+}
+
+export interface ClearSessionsRuntimeBoundaryOptions {
+  readonly cwd: string;
+  readonly workspace: string;
+  readonly baseModel: RuntimeModelReference;
+  readonly fallbackModels?: readonly RuntimeModelReference[];
+  readonly sandboxPolicy?: SandboxPolicy;
+  /** Test seam; production always uses the sessions-owned attestation. */
+  readonly assertRecoveryResolved?: (cwd: string) => Promise<void>;
+  /** Test seam; production always uses the stable sessions-owned registry root. */
+  readonly registryRoot?: (cwd: string) => string;
+}
+
+/**
+ * Run the recovery attestation before any sibling extension/provider work,
+ * then protect the stable registry whenever a reachable attempt can execute
+ * Pi-native host tools. Per-route-native routing removes this policy from
+ * non-Pi attempts; a genuinely non-Pi-only route stays policy-free here.
+ */
+export function createClearSessionsRuntimeExtension(
+  next: RuntimeOptionsExtension | undefined,
+  options: ClearSessionsRuntimeBoundaryOptions,
+): RuntimeOptionsExtension {
+  return async (input) => {
+    await (options.assertRecoveryResolved ?? assertClearSessionsRecoveryResolved)(options.cwd);
+    const result = next === undefined
+      ? { runtimeOptions: {}, cleanup: async () => {} }
+      : await next(input);
+    const effectiveModel = runtimeModel(result.runtimeOptions?.model) ?? options.baseModel;
+    const registryPolicy = clearSessionsSandboxPolicy(options, effectiveModel);
+    if (registryPolicy === undefined) return result;
+    const runtimeOptions: Record<string, unknown> = {};
+    mergeRuntimeOptions(runtimeOptions, result.runtimeOptions);
+    mergeRuntimeOptions(runtimeOptions, { sandboxPolicy: registryPolicy });
+    return { ...result, runtimeOptions };
+  };
+}
+
+/** Build the stable tool-context half of the clear-sessions boundary. */
+export function clearSessionsSandboxPolicy(
+  options: ClearSessionsRuntimeBoundaryOptions,
+  effectiveModel: RuntimeModelReference = options.baseModel,
+): SandboxPolicy | undefined {
+  if (![effectiveModel, ...(options.fallbackModels ?? [])].some((model) => model.sdk === "pi")) {
+    return undefined;
+  }
+  const base = options.sandboxPolicy?.mode === "native"
+    ? { ...options.sandboxPolicy, fallback: "fail-closed" as const, unsafeAllowHostProcess: false }
+    : failClosedSandboxPolicy({
+        root: options.workspace,
+        network: { mode: "all" },
+      });
+  return protectSandboxRoots(base, [
+    (options.registryRoot ?? clearSessionsRegistryRoot)(options.cwd),
+  ]);
 }
 
 /** Compose request-scoped runtime extensions without dropping tools or cleanup hooks. */
@@ -97,6 +165,10 @@ function mergeRuntimeOptions(
       };
       continue;
     }
+    if (key === "sandboxPolicy") {
+      target[key] = mergeSandboxPolicies(asSandboxPolicy(target[key]), asSandboxPolicy(value));
+      continue;
+    }
     target[key] = value;
   }
 }
@@ -114,4 +186,16 @@ function mergeStringLists(current: unknown, next: unknown): readonly string[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asSandboxPolicy(value: unknown): SandboxPolicy | undefined {
+  return isRecord(value) ? value as unknown as SandboxPolicy : undefined;
+}
+
+function runtimeModel(value: unknown): RuntimeModelReference | undefined {
+  return isRecord(value)
+    && typeof value.sdk === "string"
+    && typeof value.model === "string"
+    ? value as unknown as RuntimeModelReference
+    : undefined;
 }

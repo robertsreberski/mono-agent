@@ -23,6 +23,8 @@ export type {
   DeliverWebNotificationInput,
   DeliverWebNotificationOptions,
   DeliverWebNotificationResult,
+  DeliverWebProcessJobNotificationInput,
+  DeliverWebThreadNotificationInput,
 } from "./notification-client.js";
 
 export {
@@ -88,6 +90,7 @@ export type {
   WebMessageStatus,
   WebModelOption,
   WebNotificationTriggerKind,
+  WebThreadNotificationTriggerKind,
   WebPushBootstrap,
   WebPushSubscriptionState,
   WebPushSubscriptionStatus,

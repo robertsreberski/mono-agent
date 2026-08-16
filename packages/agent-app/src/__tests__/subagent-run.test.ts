@@ -1,18 +1,58 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
+import { createMonoRuntime } from "@mono-agent/runtime-adapter";
 
-const harnessMock = vi.fn((options: Record<string, unknown>) => ({ options }));
+const harnessMock = vi.fn((options: Record<string, unknown>) => ({
+  options,
+  run: vi.fn(),
+  dispose: vi.fn(async () => undefined),
+}));
 
 vi.mock("@mono-agent/agent-harness", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@mono-agent/agent-harness")>();
   return { ...actual, createAgentHarness: (options: unknown) => harnessMock(options as Record<string, unknown>) };
 });
 
+vi.mock("../agent-root-coordinator.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../agent-root-coordinator.js")>(),
+  acquireAgentRootOwnership: async () => ({
+    agentRoot: "/repo",
+    coordinator: {
+      synchronizeGeneration() {},
+      acquireRequestLease: () => ({
+        generation: { id: "mono-agent.process-jobs-roots.absent", rootKeys: [] },
+        releaseAfterSettlement() {},
+      }),
+    },
+    release() {},
+  }),
+  releaseAgentRootOwnershipWhenIdle: async (ownership: { release(): void }) => {
+    ownership.release();
+    return true;
+  },
+  assertAgentRootLeaseOutsideWorkspace() {},
+}));
+
+vi.mock("../process-jobs-root-registry.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../process-jobs-root-registry.js")>(),
+  loadProcessJobsRootRegistryProtection: async () => ({
+    kind: "empty",
+    agentRoot: "/repo",
+    registryDir: "/repo/.mono-agent/process-jobs-roots-v1",
+    manifestPath: "/repo/.mono-agent/process-jobs-roots-v1/registry.json",
+    mutationLockPath: "/repo/.mono-agent/.process-jobs-roots-v1.lock",
+    generation: { id: "mono-agent.process-jobs-roots.absent", rootKeys: [] },
+    roots: [],
+    protectedRoots: [],
+  }),
+}));
+
 const { createConfiguredAgentHarness } = await import("../index.js");
 
 const PRIMARY = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
 const HAIKU = { sdk: "pi", provider: "anthropic", model: "claude-haiku-4-5", reference: "pi:anthropic:claude-haiku-4-5" } as const;
+const CLAUDE_CHILD = { sdk: "claude", model: "claude-sonnet-4-6", reference: "claude:claude-sonnet-4-6" } as const;
 
 function monoConfig(
   subagents?: MonoAgentConfig["subagents"],
@@ -157,6 +197,55 @@ describe("configured subagents", () => {
 
     expect(runtimeForModel).toHaveBeenCalledWith(HAIKU, expect.any(String));
     expect(overrideRuntime.run).toHaveBeenCalledOnce();
+    expect(runtime.run).not.toHaveBeenCalled();
+  });
+
+  it("blocks a named non-Pi Agent child before its provider can read protected ProcessJobs state", async () => {
+    const privateState = "PRIVATE_PROCESS_JOB_STATE_MUST_NOT_ESCAPE";
+    const providerRun = vi.fn(async () => ({ text: privateState, events: [], failureKind: null }));
+    const resolveAttempt = vi.fn(() => ({ runtime: { run: providerRun } }));
+    const childRouter = createMonoRuntime({
+      routeSafety: "per-route-native",
+      fallbackChain: [{ model: CLAUDE_CHILD }],
+      resolveAttempt,
+    });
+    const runtimeForModel = vi.fn(() => childRouter);
+    const { runtime, subagents } = await buildSubagents(
+      monoConfig({
+        enabled: true,
+        definitions: [{ name: "private-reader", description: "Reads code.", prompt: "Read state.", model: CLAUDE_CHILD }],
+      }),
+      { runtimeForModel },
+    );
+    const definitions = (subagents?.definitions ?? []) as Array<Record<string, unknown>>;
+    const definition = definitions[0];
+    const run = subagents?.run as (request: unknown) => Promise<Record<string, unknown>>;
+    const protectedRoot = "/repo/.mono-agent/process-jobs";
+
+    expect(definition).toMatchObject({
+      name: "private-reader",
+      model: CLAUDE_CHILD,
+      allowedTools: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
+    });
+    const result = run({
+      systemPrompt: definition?.systemPrompt,
+      prompt: "Read the ProcessJobs store.",
+      definition,
+      maxTurns: 5,
+      depth: 1,
+      cwd: "/repo",
+      sandboxPolicy: { mode: "native", protectedRoots: [protectedRoot] },
+      sandboxEngine: { id: "srt" },
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    });
+
+    await expect(result).rejects.toThrow(
+      "Process-job private state requires a Pi-native runtime.",
+    );
+    expect(runtimeForModel).toHaveBeenCalledWith(CLAUDE_CHILD, "sdk");
+    expect(resolveAttempt).not.toHaveBeenCalled();
+    expect(providerRun).not.toHaveBeenCalled();
     expect(runtime.run).not.toHaveBeenCalled();
   });
 

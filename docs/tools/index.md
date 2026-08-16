@@ -1,6 +1,6 @@
 ---
 title: "Tools, MCP & Sandbox"
-description: "Configure built-in tools, local-first web research, MCP servers, durable continuations, and runtime sandboxing."
+description: "Configure built-in tools, background process jobs, local-first web research, MCP servers, durable continuations, and runtime sandboxing."
 sidebar:
   order: 0
 ---
@@ -15,6 +15,7 @@ All three are configured in `mono-agent.config.json`; enforcement depends on the
 | --- | --- | --- | --- |
 | Which tools the model may call | `@mono-agent/agent-harness` | `tools.allowedTools` / `tools.disallowedTools` | [Tool Policy](/tools/policy/) |
 | Searching and fetching the public web | `@mono-agent/agent-runtime` | `tools.web.*` | [Local-first web research](/tools/web-research/) |
+| Letting local Exec/Bash calls finish after the turn | `@mono-agent/agent-app` + Pi runtime | `processJobs.*` | [Background process jobs](/tools/background-process-jobs/) |
 | Attaching external MCP servers | `@mono-agent/agent-harness` | `tools.mcpConfigPath` → `mcp.json` | [MCP Servers](/tools/mcp/) |
 | Publishing files and interactive app replies | `@mono-agent/agent-app` | `tools.allowedTools` + runtime capability | [Reply files and MCP Apps](/tools/rich-replies/) |
 | Searching version-matched docs while authoring | `@mono-agent/docs-mcp` | harness MCP entry installed with the composer | [Documentation MCP companion](/tools/documentation-mcp/) |
@@ -52,7 +53,8 @@ Pi bridge; provider-owned routes use their native tool surfaces.
 `Exec` is the direct-argv process tool; use `Bash` only for shell syntax.
 `NodeRepl` shares state only within one run and uses the same sandbox policy.
 See [Built-in tools & auto-guards](/runtime/tools-and-guards/) for process
-lifecycle and limits.
+lifecycle and limits. An opt-in Pi-native host can also add `background: true`
+to Exec and Bash; see [Background process jobs](/tools/background-process-jobs/).
 
 Equivalent environment overrides exist for headless deploys:
 
@@ -97,6 +99,7 @@ mode are warned and ignored.
 - **[MCP Servers](/tools/mcp/)** — authoring `mcp.json`, stdio/sse/http transports, how servers are inlined for SDK runtimes versus path-forwarded for CLI runtimes.
 - **[Reply files and MCP Apps](/tools/rich-replies/)** — opaque file publication, native Slack/Telegram delivery, browser sandboxing, limits, retention, and fallback policy.
 - **[Documentation MCP companion](/tools/documentation-mcp/)** — offline semantic and exact-identifier search for the composer and other MCP clients.
+- **[Background process jobs](/tools/background-process-jobs/)** — opt-in durable ownership, bounded output, exact-thread wake, cancellation, and restart recovery for Pi-native Exec/Bash.
 - **[Durable continuations](/tools/durable-continuations/)** — trusted claim capabilities, immutable later results, tool-free synthesis, native delivery, and recovery.
 - **[Sandbox](/tools/sandbox/)** — native srt confinement, filesystem scopes, network modes, and the fail-closed vs unsafe-host-process fallback.
 

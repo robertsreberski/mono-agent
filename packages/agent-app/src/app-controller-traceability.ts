@@ -38,6 +38,7 @@ import type {
 } from "./app-controller-types.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger } from "./channels.js";
+import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 
 export interface TraceabilityControllerPort {
   readonly env: Record<string, string | undefined>;
@@ -49,6 +50,8 @@ export interface TraceabilityControllerPort {
   readonly backgroundSnapshot: BackgroundSnapshot | undefined;
   readonly drivers: readonly ChannelDriver[];
   readonly statuses: Map<ChannelId, ChannelStatus>;
+  readonly processJobsService: ProcessJobsServiceHandle | undefined;
+  readonly processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
   readonly processStartMs: number;
   stopped: boolean;
   staleRunsReconciled: boolean;
@@ -468,6 +471,16 @@ export function traceMetadata(controller: TraceabilityControllerPort, reason: st
   }
   return {
     reason,
+    ...(controller.processJobsService !== undefined
+      ? {
+          processJobs: {
+            stateDir: controller.processJobsService.settings.stateDir,
+            ...controller.processJobsService.health,
+          },
+        }
+      : controller.processJobsDegradation === undefined
+        ? {}
+        : { processJobs: { state: "degraded", ...controller.processJobsDegradation } }),
     ...(controller.startupCompleted
       ? {
           lifecycle: {

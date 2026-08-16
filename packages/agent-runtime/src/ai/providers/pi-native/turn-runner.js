@@ -120,6 +120,7 @@ export async function buildTurnTools(runState, {
       approvalModel: runtime.model?.id || runtime.model?.name || resolved.model,
       nodeReplController,
       webController,
+      processJobsController: options.processJobs,
       toolExecutionMode,
       subagents: options.subagents,
       // The child inherits the parent's route and workspace unless its profile

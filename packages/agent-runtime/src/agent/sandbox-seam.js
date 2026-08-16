@@ -48,12 +48,20 @@
  * @property {string} command
  * @property {ReadonlyArray<string>} [args]
  * @property {string} [cwd]
- * @property {Object<string, string|undefined>} [env]
+ * @property {Record<string, string|undefined>} [env]
  * @property {boolean} [allowLocalBinding] Trusted per-command capability.
  */
 
 /**
- * @typedef {SandboxCommandSpec & {sandboxed: boolean, cleanup?: () => Promise<void>}} PreparedSandboxCommand
+ * @typedef {Object} PreparedSandboxCommand
+ * @property {string} command
+ * @property {ReadonlyArray<string>} args
+ * @property {string} cwd
+ * @property {Record<string, string|undefined>} [env]
+ * @property {boolean} [allowLocalBinding]
+ * @property {boolean} sandboxed
+ * @property {string} [sandboxSettingsPath]
+ * @property {() => Promise<void>} [cleanup]
  */
 
 /**
@@ -77,6 +85,7 @@
  * @property {SandboxNetworkPolicyLike} [network]
  * @property {ReadonlyArray<string>} [readableRoots]
  * @property {ReadonlyArray<string>} [writableRoots]
+ * @property {ReadonlyArray<string>} [protectedRoots] Host-internal roots denied for both reads and writes.
  * @property {ReadonlyArray<string>} [denyWrite]
  * @property {string} [root]
  */
@@ -173,11 +182,16 @@ function mergePolicies(configured, request) {
   const configuredIsReal = isRealSandboxMode(configured.mode);
   const requestIsReal = isRealSandboxMode(request.mode);
   const mode = configuredIsReal ? configured.mode : (requestIsReal ? request.mode : (request.mode ?? configured.mode));
+  const protectedRoots = [...new Set([
+    ...(configured.protectedRoots ?? []),
+    ...(request.protectedRoots ?? []),
+  ])].sort();
   return {
     ...configured,
     ...request,
     mode,
     network: mergeNetwork(configured.network, request.network),
+    protectedRoots,
   };
 }
 

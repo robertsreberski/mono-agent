@@ -177,7 +177,10 @@ Do not set `dispose` yourself — the app attaches responder/harness teardown so
 
 The optional fields are host-owned capability seams. Proactive trigger channels
 use `notifyDestination` and `listNotifyDestinations`; thread-aware push channels
-can use `postedMessageIndexPath`. Most custom transports need none of them.
+can use `postedMessageIndexPath`. The generic input never includes the
+owner-only process-job service, bearer, or list/get/cancel authority; the app
+injects those only into its privately identified TUI composition. Most custom
+transports need none of these seams.
 
 ### Supporting blocking AskUser
 

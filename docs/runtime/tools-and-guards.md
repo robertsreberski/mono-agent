@@ -145,7 +145,7 @@ These are the normalized policy semantics, but the selected runtime must be able
 
 ## Exec and Bash
 
-Use `Exec({ executable, args, workdir?, timeout_ms?, max_output_chars? })` for
+Use `Exec({ executable, args, workdir?, timeout_ms?, max_output_chars?, background? })` for
 ordinary commands. It calls the executable directly, so every argument stays
 literal: no shell expansion, redirection, command substitution, pipelines, or
 quoting ambiguity. Use `Bash` only for commands that genuinely require shell
@@ -173,6 +173,17 @@ Both tools share one loss-aware process runner. It:
 - records structured status, exit code/signal, duration, byte count, timeout,
   and truncation metadata without copying the command or argv into timing
   telemetry.
+
+`background` is absent from both schemas unless an enabled Pi-native host
+injects an available process-job controller for the exact request. With no
+controller, schemas and foreground behavior are unchanged. With one,
+`background: true` hands the already sandbox-prepared command to the host and
+returns an opaque job id without waiting for completion. The host preserves the
+same command/shell semantics, owns cleanup after the inherited POSIX process
+group exits, and wakes the originating Slack, Telegram, or web conversation
+through a normal tool-capable turn. Commands that daemonize into another group
+or session are unsupported. See [Background process jobs](/tools/background-process-jobs/)
+for configuration, limits, supported origins, recovery, and operator access.
 
 These are macOS-facing tools. Prefer portable commands or feature-detect flags
 instead of assuming GNU variants of `sed`, `date`, `stat`, `xargs`, and similar

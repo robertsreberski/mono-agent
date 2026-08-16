@@ -2,12 +2,14 @@ import { realpath } from "node:fs/promises";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentResponder } from "@mono-agent/agent-contracts";
+import type { AgentMessageStream, AgentReplyPart, AgentRequestBase, AgentResponder, ProcessJobOperator, ProcessJobProjection } from "@mono-agent/agent-contracts";
 import type { DiscoveredLocalModel, LocalProviderDefinition } from "@mono-agent/runtime-adapter";
 import type { TuiAdapterConfig, TuiAdapterInfo, TuiAdapterOptions, TuiAdapterStartResult } from "@mono-agent/operator-adapter";
+import type { DeliverWebNotificationInput } from "@mono-agent/web";
 
-import type { ChannelStartInput } from "../channels.js";
+import type { ChannelDriver, ChannelStartInput } from "../channels.js";
 import { createTuiChannelDriver } from "../channels.js";
+import { startAppOwnedTuiChannel } from "../channel-drivers/tui.js";
 
 const noopResponder: AgentResponder = {
   async respond() {
@@ -332,3 +334,222 @@ describe("tui channel driver — info composition", () => {
     }
   });
 });
+
+describe("tui channel driver — process jobs", () => {
+  it("does not expose process-job authority through the generic driver start contract", async () => {
+    const captured = await startCapturingTui();
+    expect(captured.processJobs).toBeUndefined();
+    expect(captured.processJobsBearer).toBeUndefined();
+  });
+
+  it("rejects an arbitrary driver that merely claims the TUI id from the owner path", () => {
+    const start = vi.fn(async () => ({ summary: {}, stop: async () => undefined }));
+    const impostor = {
+      id: "tui",
+      label: "third-party impostor",
+      loadConfig: async () => baseConfig,
+      isConfigError: () => false,
+      start,
+    } satisfies ChannelDriver<TuiAdapterConfig>;
+    const processJobs: ProcessJobOperator = {
+      operatorToken: "must-not-leak",
+      list: async () => [],
+      get: async () => undefined,
+      cancel: async () => { throw new Error("must not run"); },
+    };
+
+    expect(startAppOwnedTuiChannel(impostor, baseInput(), processJobs)).toBeUndefined();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("passes the owner bearer and wakes one existing web thread through a normal history turn", async () => {
+    let captured: TuiAdapterOptions | undefined;
+    const deliverNotification = vi.fn(async (_input: DeliverWebNotificationInput) => ({ threadId: "thread-1", duplicate: false }));
+    const driver = createTuiChannelDriver({
+      adapterFactory: async (options): Promise<TuiAdapterStartResult> => {
+        captured = options;
+        return {
+          url: "http://127.0.0.1:0",
+          baseUrl: "http://127.0.0.1:0/gui",
+          infoUrl: "http://127.0.0.1:0/gui/v1/info",
+          turnsUrl: "http://127.0.0.1:0/gui/v1/turns",
+          host: "127.0.0.1",
+          port: 0,
+          stop: async () => undefined,
+        };
+      },
+      discoverModels: async () => [],
+      deliverNotification,
+    });
+    const respond = vi.fn<AgentResponder["respond"]>(async (_request: AgentRequestBase, _stream: AgentMessageStream) => ({ text: "Job finished safely." }));
+    const deliverVerbatim = vi.fn(async () => undefined);
+    const processJobs: ProcessJobOperator = {
+      operatorToken: "owner-token",
+      list: async () => [],
+      get: async () => undefined,
+      cancel: async () => { throw new Error("not used"); },
+    };
+    const start = startAppOwnedTuiChannel(driver, {
+      ...baseInput(),
+      responder: { respond, deliverVerbatim },
+      sourceId: "agent-one",
+    }, processJobs);
+    if (start === undefined) throw new Error("expected the app-owned TUI start path");
+    const running = await start;
+    expect(captured?.processJobs).toBe(processJobs);
+    expect(captured?.processJobsBearer).toBe("owner-token");
+
+    await expect(running.notify?.({
+      conversationId: "web:thread-1",
+      text: "bounded untrusted wake",
+      deliveryKey: PROCESS_JOB.wake.deliveryKey,
+      processJob: PROCESS_JOB,
+    })).resolves.toMatchObject({ delivered: true, historyRecorded: true });
+    expect(respond).toHaveBeenCalledOnce();
+    expect(respond.mock.calls[0]?.[0]).toMatchObject({
+      conversationId: "web:thread-1",
+      text: "bounded untrusted wake",
+      metadata: { source: "web", web: { trigger: "job" } },
+    });
+    expect(deliverVerbatim).not.toHaveBeenCalled();
+    expect(deliverNotification).toHaveBeenCalledWith({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: PROCESS_JOB.wake.deliveryKey,
+      threadId: "thread-1",
+      processJob: PROCESS_JOB,
+      text: "Job finished safely.",
+    });
+
+    respond.mockResolvedValueOnce({ parts: RICH_REPLY_PARTS });
+    const partOnlyDeliveryKey = `${PROCESS_JOB.wake.deliveryKey}:part-only`;
+    await expect(running.notify?.({
+      conversationId: "web:thread-1",
+      text: "render rich answer",
+      deliveryKey: partOnlyDeliveryKey,
+      processJob: {
+        ...PROCESS_JOB,
+        wake: { ...PROCESS_JOB.wake, deliveryKey: partOnlyDeliveryKey },
+      },
+    })).resolves.toMatchObject({ delivered: true, historyRecorded: true });
+    expect(deliverNotification).toHaveBeenLastCalledWith({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: partOnlyDeliveryKey,
+      threadId: "thread-1",
+      processJob: {
+        ...PROCESS_JOB,
+        wake: { ...PROCESS_JOB.wake, deliveryKey: partOnlyDeliveryKey },
+      },
+      parts: RICH_REPLY_PARTS,
+    });
+
+    respond.mockResolvedValueOnce({ text: "Rich answer ready.", parts: RICH_REPLY_PARTS });
+    const mixedDeliveryKey = `${PROCESS_JOB.wake.deliveryKey}:mixed`;
+    await expect(running.notify?.({
+      conversationId: "web:thread-1",
+      text: "render mixed answer",
+      deliveryKey: mixedDeliveryKey,
+      processJob: {
+        ...PROCESS_JOB,
+        wake: { ...PROCESS_JOB.wake, deliveryKey: mixedDeliveryKey },
+      },
+    })).resolves.toMatchObject({ delivered: true, historyRecorded: true });
+    expect(deliverNotification).toHaveBeenLastCalledWith(expect.objectContaining({
+      deliveryKey: mixedDeliveryKey,
+      text: "Rich answer ready.",
+      parts: RICH_REPLY_PARTS,
+    }));
+
+    await expect(running.notify?.({
+      conversationId: "web:thread-1#wrong-bucket",
+      text: "wrong bucket",
+      deliveryKey: PROCESS_JOB.wake.deliveryKey,
+      processJob: PROCESS_JOB,
+    })).resolves.toMatchObject({ delivered: false, code: "process_job_origin_mismatch" });
+    expect(respond).toHaveBeenCalledTimes(3);
+
+    respond.mockResolvedValueOnce({ text: "x".repeat(8_100) });
+    await expect(running.notify?.({
+      conversationId: "web:thread-1",
+      text: "bounded untrusted wake",
+      deliveryKey: `${PROCESS_JOB.wake.deliveryKey}:bounded`,
+      processJob: {
+        ...PROCESS_JOB,
+        wake: { ...PROCESS_JOB.wake, deliveryKey: `${PROCESS_JOB.wake.deliveryKey}:bounded` },
+      },
+    })).resolves.toMatchObject({ delivered: true });
+    const boundedText = deliverNotification.mock.calls.at(-1)?.[0].text;
+    expect(boundedText).toHaveLength(8_000);
+    expect(boundedText).toMatch(/… \[response truncated\]$/u);
+
+    await expect(running.notify?.({ conversationId: "tui:direct", text: "wake" }))
+      .resolves.toMatchObject({ delivered: false, code: "background_unsupported_channel" });
+    expect(respond).toHaveBeenCalledTimes(4);
+  });
+});
+
+const RICH_REPLY_PARTS = [
+  {
+    type: "attachment",
+    id: "wake-attachment",
+    reference: { scheme: "mono-agent-artifact", id: "wake-artifact" },
+    name: "report.txt",
+    mediaType: "text/plain",
+    sizeBytes: 12,
+    integrityId: `sha256:${"a".repeat(64)}`,
+  },
+  {
+    type: "mcp_app",
+    id: "11111111-1111-4111-8111-111111111111",
+    invocationId: "11111111-1111-4111-8111-111111111111",
+    connectionId: "wake-connection",
+    serverName: "widgets",
+    toolName: "show_chart",
+    resourceUri: "ui://widgets/chart",
+    mediaType: "text/html;profile=mcp-app",
+    protocolVersion: "2026-01-26",
+    title: "Wake chart",
+  },
+  {
+    type: "failure",
+    id: "wake-failure",
+    code: "artifact_missing",
+    message: "One optional artifact expired.",
+  },
+] as const satisfies readonly AgentReplyPart[];
+
+const PROCESS_JOB: ProcessJobProjection = {
+  schema: "mono-agent.process-job-projection.v1",
+  jobId: "11111111-1111-4111-8111-111111111111",
+  tool: "Exec",
+  state: "succeeded",
+  summary: "worker",
+  origin: {
+    conversationId: "web:thread-1#2026-07-21",
+    channel: "web",
+    runId: "run-1",
+    historyBoundary: "web:thread-1",
+    bucket: "2026-07-21",
+  },
+  timestamps: {
+    admittedAt: "2026-07-21T09:00:00.000Z",
+    queueDeadlineAt: "2026-07-21T09:05:00.000Z",
+    startedAt: "2026-07-21T09:00:01.000Z",
+    runtimeDeadlineAt: "2026-07-21T09:30:01.000Z",
+    completedAt: "2026-07-21T09:00:02.000Z",
+  },
+  limits: { maxRuntimeMs: 1_800_000, maxOutputBytes: 1_048_576, previewChars: 2_000, chainDepth: 0 },
+  output: { stdoutBytes: 0, stderrBytes: 0, truncated: false, preview: "", stdoutRef: null, stderrRef: null },
+  wake: {
+    state: "pending",
+    attempts: 1,
+    deliveryKey: "process-job:11111111-1111-4111-8111-111111111111",
+    lastAttemptAt: "2026-07-21T09:00:03.000Z",
+  },
+  exitCode: 0,
+  signal: null,
+  durationMs: 1_000,
+  cancelRequested: false,
+  lastError: null,
+};

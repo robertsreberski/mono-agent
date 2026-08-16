@@ -6,12 +6,15 @@ const fakeRuntime = {
   run: vi.fn(),
 };
 const createMonoRuntimeMock = vi.fn((_options: unknown) => fakeRuntime);
+const fakeSandboxEngine = { id: "fallback-sandbox-engine" };
+const createSrtSandboxEngineMock = vi.fn(() => fakeSandboxEngine);
 
 vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@mono-agent/runtime-adapter")>();
   return {
     ...actual,
     createMonoRuntime: (options: unknown) => createMonoRuntimeMock(options),
+    createSrtSandboxEngine: () => createSrtSandboxEngineMock(),
   };
 });
 
@@ -19,9 +22,46 @@ const { createConfiguredAgentRuntime } = await import("../index.js");
 
 beforeEach(() => {
   createMonoRuntimeMock.mockClear();
+  createSrtSandboxEngineMock.mockClear();
 });
 
 describe("configured agent runtime fallback models", () => {
+  it("hosts an SRT engine when only a reachable fallback is Pi-native", () => {
+    const base = monoConfig([
+      { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" },
+    ]);
+    const config: MonoAgentConfig = {
+      ...base,
+      runtime: {
+        ...base.runtime,
+        model: { sdk: "claude", model: "claude-opus-4-8", reference: "claude:claude-opus-4-8" },
+      },
+    };
+
+    createConfiguredAgentRuntime(config);
+
+    expect(createSrtSandboxEngineMock).toHaveBeenCalledOnce();
+    expect(createMonoRuntimeMock).toHaveBeenCalledWith(expect.objectContaining({
+      sandboxEngine: fakeSandboxEngine,
+    }));
+  });
+
+  it("does not host a Pi-only engine for a clean direct non-Pi route", () => {
+    const base = monoConfig(undefined, { primaryAttempts: 1 });
+    const config: MonoAgentConfig = {
+      ...base,
+      runtime: {
+        ...base.runtime,
+        model: { sdk: "claude", model: "claude-opus-4-8", reference: "claude:claude-opus-4-8" },
+      },
+    };
+
+    createConfiguredAgentRuntime(config);
+
+    expect(createSrtSandboxEngineMock).not.toHaveBeenCalled();
+    expect(createMonoRuntimeMock.mock.calls[0]?.[0]).not.toHaveProperty("sandboxEngine");
+  });
+
   it("passes a fallback chain with the primary model first", () => {
     const config = monoConfig([
       { sdk: "claude", model: "claude-sonnet-4-6", reference: "claude:claude-sonnet-4-6" },

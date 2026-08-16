@@ -323,6 +323,18 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "no command accepts or changes a channel destination.",
     ],
   },
+  {
+    command: "jobs",
+    group: "Maintain",
+    short: "jobs list|get|cancel",
+    summary: "Inspect or cancel local background process jobs.",
+    json: true,
+    signature: "mono-agent jobs [list|get <job-id>|cancel <job-id>] [--agent <label|sourceId>] [--json]",
+    lines: [
+      "Discover one running local agent and use its owner-authenticated process-job routes.",
+      "The command refuses remote endpoints and never reads job records or artifacts directly.",
+    ],
+  },
 ];
 
 const HELP_COMMANDS_BY_KEY = new Map(HELP_COMMANDS.map((entry) => [entry.command, entry]));

@@ -1,4 +1,5 @@
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { createHmac } from "node:crypto";
+import { chmod, mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -164,6 +165,46 @@ describe("operator discovery", () => {
     const found = await discoverOperatorAgents({ registryDirs: [registry], env: {} });
     expect(found).toHaveLength(1);
     expect(found[0]).toMatchObject({ baseUrl: "http://127.0.0.1:5555/gui", apiKey: "secret", source: { sourceId: "agent-one" } });
+  });
+
+  it("derives the process-job bearer only from an owner-private advertised state directory", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const registry = join(base, "registry");
+    const stateDir = join(base, "process-jobs");
+    await mkdir(registry);
+    await mkdir(stateDir, { mode: 0o700 });
+    const secret = Buffer.alloc(32, 7);
+    const secretPath = join(stateDir, "process-jobs-secret");
+    await writeFile(secretPath, `${secret.toString("base64url")}\n`, { mode: 0o600 });
+    await writeFile(join(registry, "agent-one.json"), JSON.stringify({
+      schema: "agent-runtime.trace-source.v1",
+      sourceId: "agent-one",
+      label: "Agent One",
+      artifactDir: join(base, "artifacts"),
+      status: "running",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      metadata: {
+        channels: {
+          tui: {
+            kind: "running",
+            baseUrl: "http://127.0.0.1:5555/gui",
+            processJobs: { stateDir },
+          },
+        },
+      },
+    }));
+
+    const expected = createHmac("sha256", secret)
+      .update("mono-agent-process-job-operator-v1")
+      .digest("base64url");
+    await expect(discoverOperatorAgents({ registryDirs: [registry], env: {} }))
+      .resolves.toEqual([expect.objectContaining({ processJobsBearer: expected })]);
+
+    await chmod(secretPath, 0o644);
+    const permissive = await discoverOperatorAgents({ registryDirs: [registry], env: {} });
+    expect(permissive[0]).not.toHaveProperty("processJobsBearer");
   });
 
   it("resolves the documented per-agent dotenv key from an attested background snapshot", async () => {

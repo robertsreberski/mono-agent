@@ -1,4 +1,4 @@
-import type { ChannelInteractionSink } from "@mono-agent/agent-contracts";
+import type { ChannelInteractionSink, NotifyDeliveryResult } from "@mono-agent/agent-contracts";
 import { describeRunFailureKind } from "@mono-agent/observability";
 import type {
   TelegramAdapterConfig,
@@ -85,7 +85,17 @@ export function createTelegramChannelDriver(
         summary: {},
         stop: () => result.stop(),
         notify: async (request) => {
-          const { conversationId, text, verbatim } = request;
+          const { conversationId, text, verbatim, deliveryKey, processJob } = request;
+          if (processJob !== undefined
+            && (processJob.origin.channel !== "telegram"
+              || conversationId !== baseConversationId(processJob.origin.conversationId))) {
+            return {
+              delivered: false,
+              code: "process_job_origin_mismatch",
+              reason: "The process-job origin does not match the Telegram destination.",
+              retryable: false,
+            };
+          }
           const chatId = telegramChatIdFromConversation(conversationId);
           if (chatId === undefined) {
             input.logger?.warn?.("Telegram proactive notify skipped: unparseable destination.", { conversationId });
@@ -97,13 +107,35 @@ export function createTelegramChannelDriver(
           }
           const silent = input.config.quietHours !== undefined
             && adapter.isWithinQuietHours(new Date(), input.config.quietHours);
-          const notifyOptions = verbatim === undefined && !silent
+          if (processJob !== undefined) {
+            const updater = result.updateProcessJob;
+            if (typeof updater !== "function") {
+              return {
+                delivered: false,
+                code: "background_unsupported_channel",
+                reason: "The running Telegram adapter does not support process-job lifecycle updates.",
+                retryable: false,
+              };
+            }
+            const surfaceOutcome = await updater.call(
+              result,
+              chatId,
+              processJob,
+              silent ? { silent: true } : undefined,
+            );
+            if (text.trim().length === 0) {
+              return surfaceOutcome;
+            }
+          }
+          const notifyOptions = verbatim === undefined && deliveryKey === undefined && !silent
             ? undefined
             : {
                 ...(verbatim === undefined ? {} : { verbatim }),
+                ...(deliveryKey === undefined ? {} : { deliveryKey }),
                 ...(silent ? { silent: true } : {}),
               };
-          return await result.notify(chatId, text, notifyOptions);
+          const outcome = await result.notify(chatId, text, notifyOptions);
+          return processJob === undefined ? outcome : settleProcessJobWake(outcome);
         },
         recordContinuationHistory: async (historyInput: {
           readonly conversationId: string;
@@ -136,6 +168,23 @@ export function createTelegramChannelDriver(
       };
     },
   };
+}
+
+function baseConversationId(conversationId: string): string {
+  return conversationId.split("#", 1)[0] ?? conversationId;
+}
+
+function settleProcessJobWake(result: NotifyDeliveryResult): NotifyDeliveryResult {
+  if (result.delivered) return result;
+  if (result.code === "conversation_busy") {
+    return { ...result, retryable: result.retryable ?? true };
+  }
+  // Compatibility for older/custom Telegram starters that predate the stable
+  // adapter code. Built-in adapters classify this refusal at their boundary.
+  if (result.code === undefined && result.reason === "chat at concurrency cap") {
+    return { ...result, code: "conversation_busy", retryable: result.retryable ?? true };
+  }
+  return { ...result, retryable: false, ambiguous: true };
 }
 
 function telegramAttachmentOptions(

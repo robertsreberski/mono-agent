@@ -132,6 +132,8 @@ const convertPart = (part: MessagePart): ConvertedPart | null => {
       // tool-call part (those carry no nested calls). A named data part keeps
       // the whole group intact and lets it render as one disclosure.
       return { type: "data-subagent", data: jsonObject(part) };
+    case "process-job":
+      return { type: "data-process-job", data: jsonObject(part) };
     case "telemetry":
       // Most telemetry remains store-only for chrome such as ContextDisplay.
       // Compaction is user-visible activity, so expose that one canonical kind
@@ -204,6 +206,7 @@ const ACTIVITY_PART_TYPES: ReadonlySet<string> = new Set([
   "tool-call",
   "data-subagent",
   "data-context-compaction",
+  "data-process-job",
 ]);
 
 const isBlankText = (part: ConvertedPart): boolean =>

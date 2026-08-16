@@ -9,9 +9,17 @@ import {
 import { boundedInt, safeStat } from "./shared/dedup.js";
 import {
   isPathAllowed,
+  isPathLexicallyAllowed,
+  protectedRelativePaths,
   resolveToolPath,
   workspaceRoot,
 } from "./shared/path-resolver.js";
+import {
+  normalizeProtectedSearchLine,
+  protectedFilesystemTargetPlan,
+  runProtectedFilesystemCommand,
+  scopeProtectedSearchGlob,
+} from "./shared/protected-filesystem.js";
 import {
   capLines,
   excludedGlobArgs,
@@ -24,7 +32,7 @@ const execFileAsync = promisify(execFile);
 
 /**
  * @param {{pattern: string, path?: string, glob?: string, type?: string, output_mode?: string, context?: number, case_insensitive?: boolean, multiline?: boolean, head_limit?: number, offset?: number, max_matches?: number, max_output_chars?: number, workdir?: string}} params
- * @param {{sandboxPolicy?: any, ctx?: any}} [options]
+ * @param {{sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
  */
 export async function grepToolImpl({
   pattern,
@@ -40,13 +48,27 @@ export async function grepToolImpl({
   max_matches,
   max_output_chars,
   workdir,
-}, { sandboxPolicy, ctx } = {}) {
+}, { sandboxPolicy, sandboxEngine, ctx } = {}) {
   const target = resolveToolPath(path || workspaceRoot(workdir, ctx), workdir, ctx);
-  if (!isPathAllowed(target, workdir, { sandboxPolicy, ctx })) return `Error: Path not allowed: ${target}`;
-  const stat = safeStat(target);
-  if (!stat) return `Error: Path not found: ${target}`;
-  const cwd = stat.isDirectory() ? target : dirname(target);
-  const searchTarget = stat.isDirectory() ? "." : basename(target);
+  const protectedSearch = protectedFilesystemTargetPlan(target, { sandboxPolicy, ctx });
+  const protectedExecution = protectedSearch !== null;
+  if (protectedExecution) {
+    if (!isPathLexicallyAllowed(target, workdir, { sandboxPolicy, ctx })) {
+      return "Error: Protected filesystem search was denied.";
+    }
+  } else if (!isPathAllowed(target, workdir, { sandboxPolicy, ctx })) {
+    return `Error: Path not allowed: ${target}`;
+  }
+  let cwd;
+  let searchTarget;
+  if (protectedExecution) {
+    ({ cwd, searchTarget } = protectedSearch);
+  } else {
+    const stat = safeStat(target);
+    if (!stat) return `Error: Path not found: ${target}`;
+    cwd = stat.isDirectory() ? target : dirname(target);
+    searchTarget = stat.isDirectory() ? "." : basename(target);
+  }
   const mode = ["content", "count", "files_with_matches"].includes(output_mode) ? output_mode : "files_with_matches";
   const args = ["--no-config", "--hidden", "--color=never"];
   if (mode === "files_with_matches") args.push("--files-with-matches");
@@ -55,15 +77,47 @@ export async function grepToolImpl({
   if (case_insensitive) args.push("-i");
   if (mode === "content" && context) args.push(`-C${boundedInt(context, 0, { min: 0, max: 20 })}`);
   if (multiline) args.push("-U", "--multiline-dotall");
-  if (glob) args.push("--glob", glob);
+  if (glob) args.push(
+    "--glob",
+    protectedExecution ? scopeProtectedSearchGlob(glob, searchTarget) : glob,
+  );
   if (type) args.push("--type", type);
-  args.push(...excludedGlobArgs(), "--", pattern, searchTarget);
+  args.push(...excludedGlobArgs());
+  const protectedPaths = protectedRelativePaths(cwd, { sandboxPolicy, ctx });
+  for (const protectedPath of protectedPaths) {
+    args.push("--glob", `!${protectedPath}`, "--glob", `!${protectedPath}/**`);
+  }
+  args.push("--", pattern, searchTarget);
   const resultLimit = boundedInt(head_limit ?? max_matches, DEFAULT_MAX_SEARCH_LINES, { min: 1, max: 1000 });
   const rgPath = resolveRgPath({ ctx });
   if (!rgPath) return ripgrepMissingMessage(ctx);
   try {
-    const { stdout } = await execFileAsync(rgPath, args, { cwd, timeout: 15000, maxBuffer: SEARCH_MAX_BUFFER });
-    const normalized = stdout.trim().split("\n").filter(Boolean).map((line) => line.replace(/^\.\//, ""));
+    let stdout;
+    if (!protectedExecution) {
+      ({ stdout } = await execFileAsync(rgPath, args, { cwd, timeout: 15000, maxBuffer: SEARCH_MAX_BUFFER }));
+    } else {
+      const protectedResult = await runProtectedFilesystemCommand({
+        command: rgPath,
+        args,
+        cwd,
+      }, { sandboxPolicy, sandboxEngine, ctx, maxBufferBytes: SEARCH_MAX_BUFFER });
+      if (protectedResult?.code === 1) return "No matches found.";
+      if (protectedResult === null
+        || protectedResult.code !== 0
+        || protectedResult.bufferExceeded
+        || protectedResult.timedOut) {
+        return "Error: Protected filesystem search was denied.";
+      }
+      stdout = protectedResult.stdout;
+    }
+    const normalized = stdout.trim().split("\n")
+      .filter(Boolean)
+      .filter((line) => !protectedPaths.some((path) => (
+        line === path || line.startsWith(`${path}/`) || line.startsWith(`${path}:`)
+      )))
+      .map((line) => protectedExecution
+        ? normalizeProtectedSearchLine(line, searchTarget)
+        : line.replace(/^\.\//, ""));
     const formatted = capLines(normalized.join("\n"), {
       label: "Grep",
       noMatches: "No matches found.",
@@ -74,6 +128,7 @@ export async function grepToolImpl({
     });
     return formatted === "No matches found." ? formatted : `${formatted}\n\n${excludedPathSummary()}`;
   } catch (err) {
+    if (protectedExecution) return "Error: Protected filesystem search was denied.";
     if (err.code === 1) return "No matches found.";
     if (err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" || /maxBuffer/i.test(err.message || "")) {
       return `${capLines(err.stdout || "", {

@@ -6,6 +6,7 @@ import {
   parseCronOperatorRunDetail,
   parseCronOperatorRunPage,
   parseCronOperatorRunSummary,
+  parseProcessJobProjection,
   parseAgentStreamFrame,
   type AgentLiveInputSettlement,
   type AgentLiveInputUnavailableReason,
@@ -19,6 +20,7 @@ import {
   type ChannelAskAnswer,
   type ChannelAskSnapshot,
   type ChannelAskSubmissionResult,
+  type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
 
 import type {
@@ -39,6 +41,7 @@ import { isTrustedOperatorBaseUrl } from "./discovery.js";
 
 const OPERATOR_WIRE_SCHEMA = 1;
 const MAX_INFO_BODY_BYTES = 1024 * 1024;
+const MAX_PROCESS_JOBS_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 // Compatibility boundary: older operators may emit frames up to 8 MiB. New
 // producers remain independently bounded, but the console must consume both.
@@ -64,6 +67,8 @@ type OperatorSkillRegistry =
 export interface OperatorConnection {
   readonly baseUrl: string;
   readonly apiKey?: string;
+  /** Independent owner-only bearer for process-job routes. */
+  readonly processJobsBearer?: string;
 }
 
 export interface OperatorInfo {
@@ -88,6 +93,7 @@ export interface OperatorInfo {
     readonly mimeTypes: readonly ["text/html;profile=mcp-app"];
   };
   readonly cron?: { readonly read: true; readonly actions: boolean };
+  readonly supportsJobs?: boolean;
 }
 
 export type OperatorLiveInputResult =
@@ -126,6 +132,7 @@ export interface OperatorClientOptions extends OperatorConnection {
 export class OperatorClient {
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
+  private readonly processJobsBearer: string | undefined;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: OperatorClientOptions) {
@@ -134,6 +141,7 @@ export class OperatorClient {
     }
     this.baseUrl = options.baseUrl.replace(/\/+$/u, "");
     this.apiKey = options.apiKey;
+    this.processJobsBearer = options.processJobsBearer;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -180,6 +188,7 @@ export class OperatorClient {
       ...(replyAttachments === undefined ? {} : { replyAttachments }),
       ...(mcpApps === undefined ? {} : { mcpApps }),
       ...(cron?.read === true ? { cron: { read: true, actions: cron.actions === true } } : {}),
+      ...(capabilities?.jobs === true ? { supportsJobs: true } : {}),
     };
   }
 
@@ -286,6 +295,30 @@ export class OperatorClient {
     }).then(async (response) => {
       await response.body?.cancel().catch(() => undefined);
     });
+  }
+
+  async getJob(jobId: string, signal?: AbortSignal): Promise<ProcessJobProjection> {
+    const response = await this.request(`${this.baseUrl}/v1/jobs/${encodeURIComponent(boundedJobId(jobId))}`, {
+      headers: this.processJobHeaders(),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    return parseProcessJobProjection(
+      JSON.parse(await readBoundedBody(response, MAX_PROCESS_JOBS_BODY_BYTES, "operator_job_too_large")),
+    );
+  }
+
+  async cancelJob(jobId: string, signal?: AbortSignal): Promise<ProcessJobProjection> {
+    const response = await this.request(
+      `${this.baseUrl}/v1/jobs/${encodeURIComponent(boundedJobId(jobId))}/cancel`,
+      {
+        method: "POST",
+        headers: this.processJobHeaders(),
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
+    return parseProcessJobProjection(
+      JSON.parse(await readBoundedBody(response, MAX_PROCESS_JOBS_BODY_BYTES, "operator_job_too_large")),
+    );
   }
 
   async pendingAsk(conversationId: string, signal?: AbortSignal): Promise<ChannelAskSnapshot | undefined> {
@@ -568,6 +601,17 @@ export class OperatorClient {
     return parseCronMutation(parsed);
   }
 
+  private processJobHeaders(): Record<string, string> {
+    if (this.processJobsBearer === undefined) {
+      throw new WebConsoleError(
+        "process_jobs_unavailable",
+        "Owner process-job credentials are unavailable for this agent.",
+        409,
+      );
+    }
+    return { authorization: `Bearer ${this.processJobsBearer}` };
+  }
+
   private async request(
     url: string,
     init: RequestInit,
@@ -726,6 +770,14 @@ function parseCronMutation(value: unknown): WebCronMutationResult<unknown> {
     return { kind: "completed", value: mutation.value, replayed: mutation.replayed };
   }
   return invalidCronResponse();
+}
+
+function boundedJobId(value: string): string {
+  const normalized = value.trim();
+  if (normalized.length === 0 || normalized.length > 256) {
+    throw new WebConsoleError("invalid_process_job", "A bounded process job id is required.", 400);
+  }
+  return normalized;
 }
 
 function parseSkillRegistry(

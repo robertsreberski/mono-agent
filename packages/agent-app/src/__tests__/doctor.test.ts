@@ -14,6 +14,10 @@ import { launchdLogsSectionFromInspection, validateMonoAgentFolder } from "../do
 import type { SdkAuthStatusExecFile } from "../doctor.js";
 import type { LaunchdLogInspection } from "../launchd-logs.js";
 import { agentAppPackageVersion } from "../package-version.js";
+import {
+  PROCESS_JOB_QUARANTINE_DIRECTORY,
+  recordProcessJobHealthIncident,
+} from "../process-jobs-store.js";
 
 let dir: string;
 
@@ -396,6 +400,134 @@ describe("validateMonoAgentFolder", () => {
     expect(section.details.join("\n")).toContain("http://127.0.0.1:4381");
     expect(section.details.join("\n")).toContain("a8c-control");
     expect(await pathExists(stateDir)).toBe(false);
+  });
+
+  it("reports enabled process jobs without creating their local state", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "process-jobs");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      processJobs: { enabled: true },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      allowFilesystemWrites: false,
+    });
+
+    expect(sectionById(report, "process-jobs")).toMatchObject({ status: "ok" });
+    expect(sectionById(report, "process-jobs").details.join("\n"))
+      .toContain("State has not been initialized");
+    expect(await pathExists(stateDir)).toBe(false);
+  });
+
+  it("fails process-job doctor checks for a symlinked intermediate state component", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const outside = await mkdtemp(join(tmpdir(), "agent-app-doctor-process-jobs-outside-"));
+    try {
+      await symlink(outside, join(dir, ".mono-agent"));
+      const configPath = await writeConfig({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "./IDENTITY.md" },
+        processJobs: { enabled: true },
+      });
+
+      const report = await validateMonoAgentFolder({
+        env: {},
+        cwd: dir,
+        configPath,
+        liveness: false,
+        allowFilesystemWrites: false,
+      });
+
+      expect(sectionById(report, "process-jobs")).toMatchObject({ status: "error" });
+      expect(sectionById(report, "process-jobs").details.join("\n")).toContain("not a symlink");
+      expect(await pathExists(join(outside, "process-jobs"))).toBe(false);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("reports bounded local process-job state counts without reading artifacts", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "process-jobs");
+    const recordsDir = join(stateDir, "records-v1");
+    const artifactsDir = join(stateDir, "artifacts");
+    await mkdir(recordsDir, { recursive: true, mode: 0o700 });
+    await mkdir(artifactsDir, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700);
+    await chmod(recordsDir, 0o700);
+    await chmod(artifactsDir, 0o700);
+    for (const [jobId, state] of [
+      ["11111111-1111-4111-8111-111111111111", "running"],
+      ["22222222-2222-4222-8222-222222222222", "succeeded"],
+    ] as const) {
+      const recordPath = join(recordsDir, `${jobId}.json`);
+      await writeFile(recordPath, `${JSON.stringify({ jobId, state })}\n`, { mode: 0o600 });
+      await chmod(recordPath, 0o600);
+    }
+    await writeFile(join(artifactsDir, "ignored-output"), "secret artifact contents\n", { mode: 0o600 });
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      processJobs: { enabled: true },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const section = sectionById(report, "process-jobs");
+    expect(section.status).toBe("ok");
+    expect(section.details).toContain("Local records: 2.");
+    expect(section.details.join("\n")).toContain("running=1");
+    expect(section.details.join("\n")).toContain("succeeded=1");
+    expect(section.details.join("\n")).not.toContain("secret artifact contents");
+  });
+
+  it("reports quarantined unreplayable process-job transactions as a degraded incident", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "process-jobs");
+    const quarantineDir = join(stateDir, PROCESS_JOB_QUARANTINE_DIRECTORY);
+    await mkdir(quarantineDir, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700);
+    await chmod(quarantineDir, 0o700);
+    const quarantineName = "transaction-2026-08-15T10-00-00.000Z-24242424-2424-4424-8424-242424242424.json";
+    await writeFile(join(quarantineDir, quarantineName), "{\"unreplayable\":true}\n", { mode: 0o600 });
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      processJobs: { enabled: true },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const section = sectionById(report, "process-jobs");
+    expect(section.status).toBe("error");
+    expect(section.details).toContain("Quarantined unreplayable process-job transactions: 1.");
+  });
+
+  it("reports a later live process-job store degradation from its owner-only marker", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "process-jobs");
+    await mkdir(stateDir, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700);
+    await recordProcessJobHealthIncident(
+      stateDir,
+      "wake.settle",
+      new Date("2026-08-15T10:00:00.000Z"),
+    );
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      processJobs: { enabled: true },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const section = sectionById(report, "process-jobs");
+    expect(section.status).toBe("error");
+    expect(section.details.join("\n")).toContain("degraded during wake.settle");
+    expect(section.details.join("\n")).toContain("new admission is closed");
   });
 
   it("fails continuation doctor validation for ephemeral configured ports", async () => {

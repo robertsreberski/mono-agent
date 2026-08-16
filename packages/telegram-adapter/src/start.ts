@@ -1,5 +1,5 @@
 import type { RunnerHandle } from "@grammyjs/runner";
-import type { ChannelAskSnapshot } from "@mono-agent/agent-contracts";
+import type { ChannelAskSnapshot, ProcessJobProjection } from "@mono-agent/agent-contracts";
 import type { Bot } from "grammy";
 
 import type {
@@ -92,6 +92,12 @@ export interface TelegramAdapterStartResult {
    * channel — owns the message.
    */
   notify(chatId: TelegramChatId, text: string, options?: TelegramNotifyOptions): Promise<TelegramNotifyResult>;
+  /** Optional for custom starters; the built-in host-only path never invokes the responder. */
+  updateProcessJob?(
+    chatId: TelegramChatId,
+    projection: ProcessJobProjection,
+    options?: { readonly silent?: boolean },
+  ): Promise<TelegramNotifyResult>;
   /** Post or edit-in-place a keyed tool-progress status line (best-effort). */
   postStatus(
     chatId: TelegramChatId,
@@ -119,6 +125,8 @@ export async function startTelegramAdapter(
   return {
     stop: () => controller.stop(),
     notify: (chatId, text, notifyOptions) => controller.notify(chatId, text, notifyOptions),
+    updateProcessJob: (chatId, projection, updateOptions) =>
+      controller.updateProcessJob(chatId, projection, updateOptions),
     postStatus: (chatId, text, statusOptions) => controller.postStatus(chatId, text, statusOptions),
     presentAsk: (chatId, snapshot) => controller.presentAsk(chatId, snapshot),
     updateAsk: (chatId, snapshot) => controller.updateAsk(chatId, snapshot),

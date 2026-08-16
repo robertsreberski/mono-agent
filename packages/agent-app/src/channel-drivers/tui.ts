@@ -1,6 +1,8 @@
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
+import type { AgentMessageStream, ProcessJobOperator } from "@mono-agent/agent-contracts";
+
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
   TuiAdapterConfig,
@@ -23,10 +25,11 @@ import {
   ACP_BRIDGE_SOURCE_SCHEMA,
   ACP_BRIDGE_VERSION,
   ACP_PROTOCOL_VERSION,
+  deliverWebNotification,
 } from "@mono-agent/web";
 
 import { buildChannelConfigView } from "../channel-config-view.js";
-import type { ChannelDriver } from "../channels.js";
+import type { ChannelDriver, ChannelStartInput, RunningChannel } from "../channels.js";
 import { agentAppPackageVersion } from "../package-version.js";
 import { configuredRuntimeModels } from "../runtime-routes.js";
 import { createSkillRegistryMonitor } from "../skill-registry.js";
@@ -79,6 +82,36 @@ export interface TuiChannelOverrides {
   readonly discoverModels?: (
     providers: readonly LocalProviderDefinition[] | undefined,
   ) => Promise<readonly DiscoveredLocalModel[]>;
+  /** Test/embedding seam for the owner-private local web ingress. */
+  readonly deliverNotification?: typeof deliverWebNotification;
+}
+
+const APP_OWNED_TUI_START = Symbol("app-owned-tui-start");
+
+interface AppOwnedTuiChannelDriver extends ChannelDriver<TuiAdapterConfig> {
+  [APP_OWNED_TUI_START](
+    input: ChannelStartInput<TuiAdapterConfig>,
+    processJobs: ProcessJobOperator | undefined,
+  ): Promise<RunningChannel>;
+}
+
+const appOwnedTuiDrivers = new WeakSet<ChannelDriver>();
+
+/**
+ * Start only a driver created by this module with app-owner capabilities. The
+ * private symbol plus exact object identity prevents a plugin or arbitrary
+ * driver named `tui` from opting into the owner path.
+ */
+export function startAppOwnedTuiChannel(
+  driver: ChannelDriver,
+  input: ChannelStartInput<unknown>,
+  processJobs: ProcessJobOperator | undefined,
+): Promise<RunningChannel> | undefined {
+  if (!appOwnedTuiDrivers.has(driver)) return undefined;
+  return (driver as AppOwnedTuiChannelDriver)[APP_OWNED_TUI_START](
+    input as ChannelStartInput<TuiAdapterConfig>,
+    processJobs,
+  );
 }
 
 /**
@@ -90,7 +123,7 @@ export function createTuiChannelDriver(
   overrides: TuiChannelOverrides = {},
   cronOperator?: CronOperatorRegistry,
 ): ChannelDriver<TuiAdapterConfig> {
-  return {
+  const driver: AppOwnedTuiChannelDriver = {
     id: "tui",
     label: "TUI",
     async configView(input) {
@@ -108,8 +141,12 @@ export function createTuiChannelDriver(
       return config.enabled ? undefined : "TUI stream endpoint is disabled.";
     },
     async start(input) {
+      return await this[APP_OWNED_TUI_START](input, undefined);
+    },
+    async [APP_OWNED_TUI_START](input, processJobs) {
       const adapterModule = await loadTuiModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
+      const deliverNotification = overrides.deliverNotification ?? deliverWebNotification;
       const discoverModels = overrides.discoverModels ?? discoverLocalProviderModels;
       const localProviders = input.coreConfig.providers?.local;
       const skillRegistry = createSkillRegistryMonitor({
@@ -211,6 +248,9 @@ export function createTuiChannelDriver(
           ? {}
           : { requestToolEnvironment: input.config.requestToolEnvironment }),
         responder: input.responder,
+        ...(processJobs === undefined
+          ? {}
+          : { processJobs, processJobsBearer: processJobs.operatorToken }),
         ...(input.interaction === undefined ? {} : { interaction: input.interaction }),
         ...(cronOperator?.configured === true ? { cron: cronOperator } : {}),
         info: buildInfo,
@@ -234,10 +274,101 @@ export function createTuiChannelDriver(
           skillRegistry.stop();
           await adapter.stop();
         },
+        notify: async ({ conversationId, text, verbatim, deliveryKey, processJob }) => {
+          if (verbatim === true
+            || deliveryKey === undefined
+            || processJob === undefined
+            || !conversationId.startsWith("web:")
+            || conversationId === "web:new") {
+            return {
+              delivered: false,
+              code: "background_unsupported_channel",
+              reason: "The TUI driver accepts process-job wakes only for an existing web thread.",
+              retryable: false,
+            };
+          }
+          if (processJob.origin.channel !== "web"
+            || conversationId !== baseConversationId(processJob.origin.conversationId)) {
+            return {
+              delivered: false,
+              code: "process_job_origin_mismatch",
+              reason: "The process-job origin does not match the web destination.",
+              retryable: false,
+            };
+          }
+          const controller = new AbortController();
+          try {
+            const response = await input.responder.respond({
+              conversationId,
+              text,
+              abortSignal: controller.signal,
+              metadata: { source: "web", web: { trigger: "job" } },
+            }, NULL_MESSAGE_STREAM);
+            const hasText = response.text !== undefined && response.text.trim().length > 0;
+            const hasParts = response.parts !== undefined && response.parts.length > 0;
+            if (!hasText && !hasParts) {
+              return { delivered: false, code: "empty_response", reason: "The process-job wake produced no answer.", retryable: false };
+            }
+            const threadId = webThreadId(conversationId);
+            if (input.sourceId === undefined || threadId === undefined) {
+              return {
+                delivered: false,
+                code: "process_job_wake_failed",
+                reason: "The web job card destination is unavailable.",
+                retryable: false,
+              };
+            }
+            await deliverNotification({
+              sourceId: input.sourceId,
+              triggerKind: "job",
+              deliveryKey,
+              threadId,
+              processJob,
+              ...(hasText ? { text: boundedProcessJobResponse(response.text!) } : {}),
+              ...(response.parts === undefined ? {} : { parts: response.parts }),
+            });
+            return { delivered: true, code: "delivered", channelId: "tui", historyRecorded: true };
+          } catch (error) {
+            return {
+              delivered: false,
+              code: "process_job_wake_failed",
+              reason: error instanceof Error ? error.message : String(error),
+              retryable: false,
+            };
+          }
+        },
       };
     },
   };
+  appOwnedTuiDrivers.add(driver);
+  return driver;
 }
+
+function webThreadId(conversationId: string): string | undefined {
+  const base = baseConversationId(conversationId);
+  if (base === undefined || !base.startsWith("web:") || base === "web:new") return undefined;
+  const threadId = base.slice("web:".length).trim();
+  return threadId.length === 0 ? undefined : threadId;
+}
+
+function baseConversationId(conversationId: string): string {
+  return conversationId.split("#", 1)[0] ?? conversationId;
+}
+
+function boundedProcessJobResponse(value: string): string {
+  const marker = "\n… [response truncated]";
+  return value.length <= 8_000
+    ? value
+    : `${value.slice(0, 8_000 - marker.length)}${marker}`;
+}
+
+const NULL_MESSAGE_STREAM: AgentMessageStream = {
+  status: async () => undefined,
+  append: async () => undefined,
+  replace: async () => undefined,
+  event: async () => undefined,
+  finish: async () => undefined,
+};
 
 async function canonicalPath(path: string): Promise<string> {
   const absolute = resolve(path);

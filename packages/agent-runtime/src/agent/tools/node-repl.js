@@ -254,9 +254,12 @@ async function terminateRecord(record) {
     await record.done;
     return;
   }
-  killProcessGroup(record.child, "SIGTERM");
+  killProcessGroup(record.child, "SIGTERM", { fallbackToChildPid: true });
   if (!record.killTimer) {
-    record.killTimer = setTimeout(() => killProcessGroup(record.child, "SIGKILL"), KILL_GRACE_MS);
+    record.killTimer = setTimeout(
+      () => killProcessGroup(record.child, "SIGKILL", { fallbackToChildPid: true }),
+      KILL_GRACE_MS,
+    );
     record.killTimer.unref?.();
   }
   await record.done;

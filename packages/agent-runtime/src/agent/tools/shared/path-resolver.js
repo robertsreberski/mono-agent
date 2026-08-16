@@ -29,14 +29,40 @@ export function isWritablePathAllowed(path, workdir, options = {}) {
   return isPathAllowedFor(path, workdir, "write", options);
 }
 
+// Protected filesystem operations use these metadata-free checks only as a
+// lexical policy preflight. The native sandbox remains responsible for
+// resolving symlinks and enforcing the real path at the operation syscall.
+export function isPathLexicallyAllowed(path, workdir, options = {}) {
+  return isPathLexicallyAllowedFor(path, workdir, "read", options);
+}
+
+export function isWritablePathLexicallyAllowed(path, workdir, options = {}) {
+  return isPathLexicallyAllowedFor(path, workdir, "write", options);
+}
+
 function isPathAllowedFor(path, workdir, access, options) {
   const ctx = options.ctx;
   const r = resolveToolPath(path, workdir, ctx);
   const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), options.sandboxPolicy);
   if (policy) {
     const field = access === "write" ? policy.writableRoots : policy.readableRoots;
-    return insideSandboxRoots(Array.isArray(field) ? field : [], r)
+    return !insideProtectedRoots(Array.isArray(policy.protectedRoots) ? policy.protectedRoots : [], r)
+      && insideSandboxRoots(Array.isArray(field) ? field : [], r)
       && (access !== "write" || !sandboxDeniesWrite(policy, r, ctx));
+  }
+  const { workspace, repoRoot } = configured(ctx);
+  return insideLegacyRoots([workdir, workspace, repoRoot, process.cwd(), "/tmp"], r);
+}
+
+function isPathLexicallyAllowedFor(path, workdir, access, options) {
+  const ctx = options.ctx;
+  const r = resolveToolPath(path, workdir, ctx);
+  const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), options.sandboxPolicy);
+  if (policy) {
+    const field = access === "write" ? policy.writableRoots : policy.readableRoots;
+    return !insideLexicalRoots(Array.isArray(policy.protectedRoots) ? policy.protectedRoots : [], r)
+      && insideLexicalRoots(Array.isArray(field) ? field : [], r)
+      && (access !== "write" || !sandboxLexicallyDeniesWrite(policy, r, ctx));
   }
   const { workspace, repoRoot } = configured(ctx);
   return insideLegacyRoots([workdir, workspace, repoRoot, process.cwd(), "/tmp"], r);
@@ -48,10 +74,29 @@ export function isWorkdirAllowed(workdir, options = {}) {
   const r = resolve(workdir);
   const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), options.sandboxPolicy);
   if (policy) {
-    return insideSandboxRoots(Array.isArray(policy.readableRoots) ? policy.readableRoots : [], r);
+    return !insideProtectedRoots(Array.isArray(policy.protectedRoots) ? policy.protectedRoots : [], r)
+      && insideSandboxRoots(Array.isArray(policy.readableRoots) ? policy.readableRoots : [], r);
   }
   const { workspace, repoRoot } = configured(ctx);
   return insideLegacyRoots([workspace, repoRoot, process.cwd(), "/tmp"], r);
+}
+
+/**
+ * Protected descendants of one search root, as normalized relative paths.
+ * Search tools use these both as ripgrep exclusions and as a defensive output
+ * filter; actual reads still cross the native sandbox boundary.
+ */
+export function protectedRelativePaths(directory, options = {}) {
+  const ctx = options.ctx;
+  const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), options.sandboxPolicy);
+  if (!policy || !Array.isArray(policy.protectedRoots)) return [];
+  const root = resolve(directory);
+  const out = new Set();
+  for (const protectedRoot of normalizeRoots(policy.protectedRoots)) {
+    const rel = relative(root, protectedRoot);
+    if (rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)) out.add(rel);
+  }
+  return [...out].sort();
 }
 
 // Sandbox roots also enforce realpath containment so a symlink inside an
@@ -63,11 +108,26 @@ function insideSandboxRoots(roots, target) {
     && allowedRoots.some((root) => isInsidePath(root, real));
 }
 
+// A protected root rejects either spelling: the lexical request and its
+// existing/nearest-existing realpath. This closes symlink aliases in both
+// directions without weakening ordinary readable/writable root checks.
+function insideProtectedRoots(roots, target) {
+  const protectedRoots = normalizeRoots(roots);
+  const candidates = [...new Set([resolve(target), realTargetPath(target)])];
+  return candidates.some((candidate) =>
+    protectedRoots.some((root) => isInsidePath(root, candidate)));
+}
+
 // Without a sandbox policy, keep the historical literal containment check —
 // symlinks out of the workspace (npm link et al.) stay usable by default.
 function insideLegacyRoots(roots, target) {
   const allowedRoots = [...new Set(roots.filter(Boolean).map((p) => resolve(p)))];
   return allowedRoots.some((root) => isInsidePath(root, target));
+}
+
+function insideLexicalRoots(roots, target) {
+  const lexicalRoots = [...new Set(roots.filter(Boolean).map((path) => resolve(path)))];
+  return lexicalRoots.some((root) => isInsidePath(root, target));
 }
 
 function normalizeRoots(paths) {
@@ -107,6 +167,11 @@ function sandboxDeniesWrite(policy, target, ctx) {
   const candidates = [...new Set([resolve(target), realTargetPath(target)])];
   return candidates.some((candidate) =>
     patterns.some((pattern) => denyWritePatternMatches(policy, pattern, candidate, ctx)));
+}
+
+function sandboxLexicallyDeniesWrite(policy, target, ctx) {
+  const patterns = Array.isArray(policy.denyWrite) ? policy.denyWrite : [];
+  return patterns.some((pattern) => denyWritePatternMatches(policy, pattern, resolve(target), ctx));
 }
 
 function denyWritePatternMatches(policy, pattern, target, ctx) {

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { isDeliverableConversation } from "../index.js";
+import type { ChannelStartInput } from "../index.js";
+
+type GenericChannelInputHasProcessJobs = "processJobs" extends keyof ChannelStartInput<unknown>
+  ? true
+  : false;
 
 describe("isDeliverableConversation", () => {
   const nativeCallbackChannels = ["telegram", "slack"];
@@ -31,5 +36,12 @@ describe("isDeliverableConversation", () => {
   it("supports caller-owned plugin channel policies without hardcoded prefixes", () => {
     expect(isDeliverableConversation("discord:channel-7", ["discord"])).toBe(true);
     expect(isDeliverableConversation("discord:channel-7", nativeCallbackChannels)).toBe(false);
+  });
+});
+
+describe("ChannelStartInput capability boundary", () => {
+  it("does not expose the owner-only process-job operator to channel drivers", () => {
+    const hasProcessJobs: GenericChannelInputHasProcessJobs = false;
+    expect(hasProcessJobs).toBe(false);
   });
 });

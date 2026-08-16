@@ -16,7 +16,7 @@ Catalog responsibility: Wraps @mono-agent/agent-runtime behind runtime contracts
 
 ## Responsibility
 
-Typed runtime facade over `@mono-agent/agent-runtime`. It parses runtime model references, selects or validates execution mode, exposes the available backend matrix, owns sandbox policy/process wrapping, creates a runtime wrapper, and exposes a small structural runtime contract to the harness.
+Typed runtime facade over `@mono-agent/agent-runtime`. It parses runtime model references, selects or validates execution mode, exposes the available backend matrix, owns sandbox policy/process wrapping, bridges the kernel's structural process-job controller to a typed neutral host interface, creates a runtime wrapper, and exposes a small structural runtime contract to the harness.
 
 ## Install / Usage
 
@@ -113,6 +113,8 @@ provider kernel:
    provider session lifecycle methods to `agent-harness`.
 4. Local-provider and MCP helpers translate host config into provider-neutral
    runtime options without importing channel or application code.
+5. `bridgeProcessJobsController()` validates host limits and adapts the typed
+   process-job controller to the kernel's JSDoc-only structural shape.
 
 ### Package structure
 
@@ -123,6 +125,7 @@ provider kernel:
 | `src/sandbox*.ts` | Sandbox policy, managed SRT integrity, and command wrapping |
 | `src/local-providers.ts` | Ollama, LM Studio, and OpenAI-compatible provider validation/discovery |
 | `src/mcp-servers.ts` / `src/runtime-policies.ts` | MCP normalization and legacy-policy migration |
+| `src/process-jobs.ts` | Typed host controller, kernel-shape bridge, launch/result contracts, and conformance boundary |
 
 ## Public API
 
@@ -138,6 +141,7 @@ provider kernel:
 | `discoverLocalProviderModels()` / `runtimeOptionsForLocalProvider()` | Validate and project a configured local Pi provider |
 | `parseMcpServers()` | Normalize HTTP, SSE, and stdio MCP server definitions |
 | `RuntimeToolLifecycleSink` and event/persistence types | Bind one host-owned durable lifecycle writer without importing provider internals |
+| `bridgeProcessJobsController()` / `ProcessJobsController` | Inject a typed host-owned process-job controller without making the kernel import workspace contracts |
 
 The generated inventory below is exhaustive; the table above is the recommended
 consumer entry path.
@@ -200,6 +204,12 @@ PI_TRANSPORTS
 PiTransport
 PrepareSandboxedCommandInput
 PreparedSandboxCommand
+ProcessJobLaunchOptions
+ProcessJobProcessHandle
+ProcessJobProcessResult
+ProcessJobStartRequest
+ProcessJobStartResult
+ProcessJobsController
 RuntimeAdapterError
 RuntimeAdapterErrorCode
 RuntimeAdapterErrorDetails
@@ -253,6 +263,7 @@ SrtSettings
 assertExecutionModeCompatible
 assertParsedRuntimeModelReference
 authenticateAcpProfile
+bridgeProcessJobsController
 createMonoRuntime
 createPiOAuthApiKeyResolver
 createSandboxPolicy
@@ -284,6 +295,7 @@ parseMcpServers
 parseMonoRuntimeModelReference
 prepareSandboxedCommand
 probeAcpProfile
+protectSandboxRoots
 resolveModelEffortLevels
 resolveRuntimePolicies
 resolveSandboxEffectiveState
@@ -393,9 +405,13 @@ tool policy and uses SRT only when an effective native sandbox policy is active
 (otherwise telemetry says `disabled` and subprocess tools are unsandboxed),
 Claude drops only the unrepresentable mono-agent SRT layer, and direct
 Codex/OpenCode use provider-native safety with an effective allow-all policy
-(allowlist omitted or containing `"*"`, empty denylist). Capability-bearing
-inputs are never silently discarded; an unsupported route is skipped with bounded,
-credential-free safety telemetry.
+(allowlist omitted or containing `"*"`, empty denylist). That projection is
+available only when the effective internal `sandboxPolicy.protectedRoots` is
+empty: a provider-native non-Pi route carrying protected roots is rejected as
+`safety_unavailable` before its resolver or provider runs. This also covers a
+named `Agent` child that inherits a protected parent policy. Capability-bearing
+inputs are never silently discarded; an unsupported route is skipped with
+bounded, credential-free safety telemetry.
 
 On macOS, the default SRT resolver prefers the integrity-verified managed copy in
 the private mono-agent cache. It revalidates the managed tree against an

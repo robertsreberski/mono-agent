@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync, symlinkSync } from "node:fs";
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
@@ -7,6 +7,18 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  editToolImpl,
+  globToolImpl,
+  grepToolImpl,
+  readToolImpl,
+  writeToolImpl,
+} from "@mono-agent/agent-runtime/agent/tools/index.js";
+import {
+  configureToolRuntime,
+  resetToolRuntime,
+} from "@mono-agent/agent-runtime/agent/tools/shared/runtime-context.js";
 
 import {
   SandboxUnavailableError,
@@ -18,12 +30,14 @@ import {
   mergeSandboxPolicies,
   networkPolicyAllowsUrl,
   prepareSandboxedCommand,
+  protectSandboxRoots,
   resolveSandboxEffectiveState,
   sandboxEffectiveStateWarning,
   sandboxPolicyToRuntimeOptions,
   sandboxRequired,
   srtSettingsForPolicy,
 } from "../index.js";
+import { monoSandboxImpl } from "../sandbox-impl.js";
 
 const tempDirs: string[] = [];
 
@@ -59,6 +73,7 @@ async function fakeProofSrtExecutable(suffix: string): Promise<{ root: string; p
 }
 
 afterEach(async () => {
+  resetToolRuntime();
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -109,6 +124,24 @@ describe("sandbox policy", () => {
     expect(sandboxPolicyToRuntimeOptions(policy)).toEqual({
       sandboxPolicy: policy,
     });
+  });
+
+  it("retains lexical and canonical internal protected-root aliases without exposing them as policy input", async () => {
+    const root = await realpath(await tempDir());
+    const privateRoot = join(root, ".mono-agent");
+    const stateDir = join(privateRoot, "process-jobs");
+    await mkdir(stateDir, { recursive: true });
+    const alias = join(root, "state-alias");
+    await symlink(stateDir, alias);
+    const policy = protectSandboxRoots(failClosedSandboxPolicy({ root }), [alias]);
+    const configLikeAttempt = createSandboxPolicy({
+      root,
+      // @ts-expect-error protectedRoots is host-internal, not SandboxPolicyInput.
+      protectedRoots: [stateDir],
+    });
+
+    expect(policy.protectedRoots).toEqual([stateDir, alias]);
+    expect(configLikeAttempt).toMatchObject({ protectedRoots: [] });
   });
 });
 
@@ -363,6 +396,26 @@ describe("policy merging", () => {
     expect(merged?.readableRoots).toEqual(["/repo/packages"]);
     expect(merged?.writableRoots).toEqual([]);
   });
+
+  it("unions protected roots across native/off and configured/request merges", () => {
+    const configured = protectSandboxRoots(
+      createSandboxPolicy({ mode: "off", root: "/repo" }),
+      ["/repo/.mono-agent"],
+    );
+    const request = protectSandboxRoots(
+      failClosedSandboxPolicy({ root: "/repo" }),
+      ["/repo/private/jobs"],
+    );
+
+    expect(mergeSandboxPolicies(configured, request)).toMatchObject({
+      mode: "native",
+      protectedRoots: ["/repo/.mono-agent", "/repo/private/jobs"],
+    });
+    expect(mergeSandboxPolicies(request, configured)?.protectedRoots).toEqual([
+      "/repo/.mono-agent",
+      "/repo/private/jobs",
+    ]);
+  });
 });
 
 describe("network policy URL checks", () => {
@@ -446,6 +499,202 @@ describe("srt integration contract", () => {
     expect(filesystem.allowRead).toContain("/workspace");
     expect(filesystem.allowRead).not.toContain(homedir());
   });
+
+  it("re-denies protected roots inside readable and writable workspace roots", () => {
+    const policy = protectSandboxRoots(
+      failClosedSandboxPolicy({ root: "/workspace" }),
+      ["/workspace/.mono-agent"],
+    );
+    const filesystem = srtSettingsForPolicy(policy).filesystem;
+
+    expect(filesystem.allowRead).toContain("/workspace");
+    expect(filesystem.allowWrite).toEqual(["/workspace"]);
+    expect(filesystem.denyRead).toEqual(["/", "/workspace/.mono-agent"]);
+    expect(filesystem.denyWrite).toContain("/workspace/.mono-agent");
+  });
+
+  it.skipIf(process.platform !== "darwin" || !existsSync(managedSrtInstallRoot()))(
+    "keeps protected process-job state unreadable and immutable through real SRT while siblings work",
+    { timeout: 240_000 },
+    async () => {
+      const execFileAsync = promisify(execFile);
+      const base = await realpath(await tempDir());
+      const workspace = join(base, "workspace");
+      const privateRoot = join(workspace, ".mono-agent");
+      const stateDir = join(privateRoot, "process-jobs");
+      const recordsDir = join(stateDir, "records");
+      const artifactsDir = join(stateDir, "artifacts");
+      const secretPath = join(stateDir, "process-jobs-secret");
+      const recordPath = join(recordsDir, "job.json");
+      const artifactPath = join(artifactsDir, "job.log");
+      const siblingPath = join(workspace, "notes.txt");
+      const siblingOutput = join(workspace, "sibling-output.txt");
+      const aliasPath = join(workspace, "jobs-alias");
+      await Promise.all([
+        mkdir(recordsDir, { recursive: true }),
+        mkdir(artifactsDir, { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(secretPath, "EXACT_PROCESS_JOB_SECRET\n", { mode: 0o600 }),
+        writeFile(recordPath, "record-private\n", { mode: 0o600 }),
+        writeFile(artifactPath, "artifact-private\n", { mode: 0o600 }),
+        writeFile(siblingPath, "sibling-readable\n", { mode: 0o600 }),
+      ]);
+      await symlink(stateDir, aliasPath);
+      const policy = protectSandboxRoots(
+        failClosedSandboxPolicy({ root: workspace }),
+        [stateDir],
+      );
+      const engine = createSrtSandboxEngine();
+      const prepared = await engine.prepareCommand({
+        command: process.execPath,
+        cwd: workspace,
+        args: [
+          "-e",
+          [
+            "const fs=require('node:fs');",
+            "const [secret,record,artifact,stateDir,privateRoot,alias,sibling,out]=process.argv.slice(1);",
+            "const denied=(fn,code)=>{try{fn();process.exit(code)}catch{}};",
+            "denied(()=>fs.readFileSync(secret,'utf8'),41);",
+            "denied(()=>fs.writeFileSync(secret,'changed'),42);",
+            "denied(()=>fs.writeFileSync(record,'changed'),43);",
+            "denied(()=>fs.readFileSync(artifact,'utf8'),44);",
+            "denied(()=>fs.readFileSync(alias+'/process-jobs-secret','utf8'),45);",
+            "denied(()=>fs.renameSync(stateDir,stateDir+'-moved'),46);",
+            "denied(()=>fs.renameSync(privateRoot,privateRoot+'-moved'),47);",
+            "if(fs.readFileSync(sibling,'utf8').trim()!=='sibling-readable')process.exit(48);",
+            "fs.writeFileSync(out,'sibling-written');",
+            "process.stdout.write('sibling-ok');",
+          ].join(""),
+          secretPath,
+          recordPath,
+          artifactPath,
+          stateDir,
+          privateRoot,
+          aliasPath,
+          siblingPath,
+          siblingOutput,
+        ],
+      }, policy);
+      try {
+        const result = await execFileAsync(prepared.command, [...prepared.args], {
+          cwd: prepared.cwd,
+          timeout: 60_000,
+          maxBuffer: 1_000_000,
+        });
+        expect(result.stdout).toBe("sibling-ok");
+        expect(`${result.stdout}${result.stderr}`).not.toContain("EXACT_PROCESS_JOB_SECRET");
+        expect(await readFile(siblingOutput, "utf8")).toBe("sibling-written");
+        expect(await readFile(secretPath, "utf8")).toBe("EXACT_PROCESS_JOB_SECRET\n");
+      } finally {
+        await prepared.cleanup?.();
+      }
+
+      const bashOutput = join(workspace, "bash-sibling-output.txt");
+      const bashScript = join(workspace, "protected-proof.sh");
+      await writeFile(bashScript, [
+        `if cat '${secretPath}'; then exit 51; fi`,
+        `if printf bad > '${recordPath}'; then exit 52; fi`,
+        `if cat '${artifactPath}'; then exit 53; fi`,
+        `if mv '${privateRoot}' '${privateRoot}-moved'; then exit 54; fi`,
+        `cat '${siblingPath}'`,
+        `printf bash-written > '${bashOutput}'`,
+      ].join("\n"), { mode: 0o700 });
+      const bashPrepared = await engine.prepareCommand({
+        command: "/bin/bash",
+        cwd: workspace,
+        args: ["--noprofile", "--norc", bashScript],
+      }, policy);
+      try {
+        const result = await execFileAsync(bashPrepared.command, [...bashPrepared.args], {
+          cwd: bashPrepared.cwd,
+          timeout: 60_000,
+          maxBuffer: 1_000_000,
+        });
+        expect(result.stdout).toBe("sibling-readable\n");
+        expect(`${result.stdout}${result.stderr}`).not.toContain("EXACT_PROCESS_JOB_SECRET");
+        expect(await readFile(bashOutput, "utf8")).toBe("bash-written");
+        expect(await readFile(secretPath, "utf8")).toBe("EXACT_PROCESS_JOB_SECRET\n");
+      } finally {
+        await bashPrepared.cleanup?.();
+      }
+
+      const attachmentPath = join(privateRoot, "artifacts", "attachments", "input.txt");
+      await mkdir(dirname(attachmentPath), { recursive: true });
+      await writeFile(attachmentPath, "attachment-readable\n");
+      configureToolRuntime({
+        workspace,
+        sandbox: monoSandboxImpl,
+        sandboxEngine: engine,
+        sandboxPolicy: policy,
+      });
+      const hostRead = await readToolImpl({ file_path: siblingPath });
+      const attachmentRead = await readToolImpl({ file_path: attachmentPath });
+      const hostGlob = await globToolImpl({ pattern: "**/*", path: workspace });
+      const hostGreps = await Promise.all([
+        "content",
+        "files_with_matches",
+        "count",
+        undefined,
+      ].map(async (output_mode) => await grepToolImpl({
+        pattern: "EXACT_PROCESS_JOB_SECRET|sibling-readable",
+        path: workspace,
+        ...(output_mode === undefined ? {} : { output_mode }),
+      })));
+      const hostToolOutput = join(workspace, "host-tool-output.txt");
+      const hostWrite = await writeToolImpl({ file_path: hostToolOutput, content: "host-write" });
+      const hostEdit = await editToolImpl({
+        file_path: hostToolOutput,
+        old_string: "host-write",
+        new_string: "host-edited",
+      });
+      expect(hostRead).toContain("sibling-readable");
+      expect(attachmentRead).toContain("attachment-readable");
+      expect(hostGlob).not.toContain("process-jobs-secret");
+      expect(hostGreps[0]).toContain("sibling-readable");
+      for (const hostGrep of hostGreps) {
+        expect(hostGrep).toContain("notes.txt");
+        expect(hostGrep).not.toContain("process-jobs-secret");
+        expect(hostGrep).not.toContain("EXACT_PROCESS_JOB_SECRET");
+      }
+      expect(hostWrite).toContain("Successfully wrote");
+      expect(hostEdit).toContain("Successfully edited");
+      expect(await readFile(hostToolOutput, "utf8")).toBe("host-edited");
+
+      // The model can keep a background process racing a workspace symlink.
+      // Host Read/Write/Edit therefore execute their actual open through SRT rather
+      // than trusting the earlier lexical/realpath authorization result.
+      const racePath = join(workspace, "race-link");
+      symlinkSync(siblingPath, racePath);
+      let toSecret = true;
+      const swap = setInterval(() => {
+        try {
+          rmSync(racePath, { force: true });
+          symlinkSync(toSecret ? secretPath : siblingPath, racePath);
+          toSecret = !toSecret;
+        } catch {
+          // The tool may briefly replace the ordinary side with a regular file.
+        }
+      }, 1);
+      const racedResults: string[] = [];
+      try {
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          racedResults.push(String(await readToolImpl({ file_path: racePath })));
+          racedResults.push(String(await writeToolImpl({ file_path: racePath, content: "race-write" })));
+          racedResults.push(String(await editToolImpl({
+            file_path: racePath,
+            old_string: "EXACT_PROCESS_JOB_SECRET",
+            new_string: "corrupted",
+          })));
+        }
+      } finally {
+        clearInterval(swap);
+        rmSync(racePath, { force: true });
+      }
+      expect(racedResults.join("\n")).not.toContain("EXACT_PROCESS_JOB_SECRET");
+      expect(await readFile(secretPath, "utf8")).toBe("EXACT_PROCESS_JOB_SECRET\n");
+    },
+  );
 
   it("accepts an all-network posture with the sandbox off or native", () => {
     expect(createSandboxPolicy({ mode: "off", network: { mode: "all" } }).network)

@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import {
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
+  type AgentReplyPart,
   createChannelUserCancelReason,
   isChannelUserCancelReason,
   toolNameLeaf,
@@ -15,6 +16,7 @@ import {
   type ChannelAskAnswer,
   type ChannelAskSnapshot,
   type ChannelAskSubmissionResult,
+  type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
 import { EFFORT_LEVELS } from "@mono-agent/config";
 
@@ -46,7 +48,7 @@ import {
   type WebMessage,
   type WebMessagePart,
   type WebModelOption,
-  type WebNotificationTriggerKind,
+  type WebThreadNotificationTriggerKind,
   type WebSkillRegistry,
   type WebThread,
   type WebThreadDetail,
@@ -150,14 +152,28 @@ type WebRichReplyPart =
   | Extract<WebMessagePart, { type: "attachment" }>
   | Extract<WebMessagePart, { type: "mcp_app" }>;
 
-export interface DeliverWebNotificationInput {
+export interface DeliverWebThreadNotificationInput {
   readonly sourceId: string;
-  readonly triggerKind: WebNotificationTriggerKind;
+  readonly triggerKind: WebThreadNotificationTriggerKind;
   readonly deliveryKey: string;
   readonly text: string;
   readonly jobId?: string;
   readonly runId?: string;
 }
+
+export interface DeliverWebProcessJobNotificationInput {
+  readonly sourceId: string;
+  readonly triggerKind: "job";
+  readonly deliveryKey: string;
+  readonly threadId: string;
+  readonly processJob: ProcessJobProjection;
+  readonly text?: string;
+  readonly parts?: readonly AgentReplyPart[];
+}
+
+export type DeliverWebNotificationInput =
+  | DeliverWebThreadNotificationInput
+  | DeliverWebProcessJobNotificationInput;
 
 export interface DeliverWebNotificationResult {
   readonly thread?: WebThread;
@@ -718,6 +734,24 @@ export class WebService {
       throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
     }
     if (this.store.getAgent(input.sourceId) === undefined) await this.refreshAgents();
+    if (input.triggerKind === "job") {
+      const completed = this.store.upsertProcessJobCard({
+        sourceId: input.sourceId,
+        threadId: input.threadId,
+        deliveryKey: input.deliveryKey,
+        processJob: input.processJob,
+        ...(input.text === undefined ? {} : { responseText: input.text }),
+        ...(input.parts === undefined ? {} : { replyParts: input.parts }),
+      });
+      const message = this.store.getThreadDetail(input.threadId)?.messages.find((candidate) =>
+        candidate.parts.some((part) => part.type === "process-job" && part.job.jobId === input.processJob.jobId));
+      if (!completed.duplicate && message !== undefined) {
+        this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
+      }
+      this.emit("threads.changed", input.threadId, { thread: completed.thread });
+      this.emit("thread.changed", input.threadId, { thread: completed.thread });
+      return completed;
+    }
     const reservation = this.store.reserveNotification(input);
     if (reservation.duplicate) return this.store.completeNotification(reservation);
 
@@ -729,6 +763,26 @@ export class WebService {
     });
     this.activeNotifications.set(activeKey, delivery);
     return delivery;
+  }
+
+  /** Proxy one authenticated retained card to its exact agent/thread owner. */
+  async threadJob(threadId: string, jobId: string): Promise<ProcessJobProjection> {
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    if (!this.store.processJobCardBelongsToThread(thread.sourceId, threadId, jobId)) {
+      throw new WebConsoleError("process_job_not_found", "Process job was not found for this conversation.", 404);
+    }
+    const connection = this.connections.get(thread.sourceId);
+    if (connection === undefined || connection.info.supportsJobs !== true) {
+      throw new WebConsoleError("process_jobs_unavailable", "Process jobs are unavailable for this agent.", 409);
+    }
+    const job = await connection.client.getJob(jobId, AbortSignal.timeout(INFO_TIMEOUT_MS));
+    if (job.jobId !== jobId
+      || job.origin.channel !== "web"
+      || job.origin.conversationId.split("#", 1)[0] !== `web:${threadId}`) {
+      throw new WebConsoleError("process_job_not_found", "Process job was not found for this conversation.", 404);
+    }
+    return job;
   }
 
   async startTurn(threadId: string, input: StartWebTurnInput): Promise<{ readonly thread: WebThread; readonly turn: WebThread["runState"] }> {
@@ -1180,6 +1234,7 @@ export class WebService {
       const client = new OperatorClient({
         baseUrl: agent.baseUrl,
         ...(agent.apiKey === undefined ? {} : { apiKey: agent.apiKey }),
+        ...(agent.processJobsBearer === undefined ? {} : { processJobsBearer: agent.processJobsBearer }),
         ...(this.options.fetchImpl === undefined ? {} : { fetchImpl: this.options.fetchImpl }),
       });
       try {

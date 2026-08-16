@@ -1,5 +1,6 @@
+import { createHmac } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { open, realpath } from "node:fs/promises";
+import { lstat, open, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { parseEnv } from "node:util";
@@ -31,6 +32,7 @@ export interface DiscoveredOperatorAgent {
   readonly source: TraceSourceListItem;
   readonly baseUrl?: string;
   readonly apiKey?: string;
+  readonly processJobsBearer?: string;
 }
 
 export function defaultTraceRegistryDir(env: Readonly<Record<string, string | undefined>> = process.env): string {
@@ -50,12 +52,52 @@ export async function discoverOperatorAgents(
     .map(async (source): Promise<DiscoveredOperatorAgent> => {
       const baseUrl = operatorBaseUrlFromMetadata(source.metadata);
       const apiKey = baseUrl === undefined ? undefined : await resolveOperatorApiKey(source, env);
+      const processJobsBearer = baseUrl === undefined ? undefined : await resolveProcessJobsBearer(source);
       return {
         source,
         ...(baseUrl === undefined ? {} : { baseUrl }),
         ...(apiKey === undefined ? {} : { apiKey }),
+        ...(processJobsBearer === undefined ? {} : { processJobsBearer }),
       };
     }));
+}
+
+async function resolveProcessJobsBearer(source: TraceSourceListItem): Promise<string | undefined> {
+  const channels = record(source.metadata?.channels);
+  const tui = record(channels?.tui);
+  const processJobs = record(tui?.processJobs);
+  if (tui?.kind !== "running" || typeof processJobs?.stateDir !== "string" || !isAbsolute(processJobs.stateDir)) {
+    return undefined;
+  }
+  const secretPath = resolve(processJobs.stateDir, "process-jobs-secret");
+  try {
+    const info = await lstat(secretPath);
+    const currentUid = typeof process.getuid === "function" ? process.getuid() : undefined;
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size <= 0 || info.size > 256
+      || (currentUid !== undefined && info.uid !== currentUid)
+      || (process.platform !== "win32" && (info.mode & 0o077) !== 0)) return undefined;
+    const handle = await open(
+      secretPath,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+    );
+    let value: string;
+    try {
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino || opened.size !== info.size
+        || opened.nlink !== 1 || (currentUid !== undefined && opened.uid !== currentUid)
+        || (process.platform !== "win32" && (opened.mode & 0o077) !== 0)) return undefined;
+      value = (await handle.readFile({ encoding: "utf8" })).trim();
+    } finally {
+      await handle.close();
+    }
+    const secret = Buffer.from(value, "base64url");
+    if (secret.byteLength !== 32 || secret.toString("base64url") !== value) return undefined;
+    return createHmac("sha256", secret)
+      .update("mono-agent-process-job-operator-v1")
+      .digest("base64url");
+  } catch {
+    return undefined;
+  }
 }
 
 /**
