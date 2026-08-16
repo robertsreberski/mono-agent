@@ -32,6 +32,7 @@ my-agent/
     sessions/              # optional durable Pi sessions when piSessionsRoot is set
     process-jobs/          # opt-in owner-private Exec/Bash job records and output
     process-jobs-roots-v1/ # monotonic retained-root protection registry
+    process-jobs-roots-v1.recovery/ # bounded locked registry recovery artifacts; empty at rest
     acp-sessions/          # owner-only ACP session authorization records
     trace-sources/         # traceability registry (when kept folder-local)
 ```
@@ -86,11 +87,12 @@ The framework creates and writes everything under `.mono-agent/`. You generally 
 | `.mono-agent/sessions/` | Optional Pi-native provider transcripts used with canonical history for cross-restart resume. Without `piSessionsRoot`, provider sessions are process-local. | `providers.piNative.piSessionsRoot` |
 | `.mono-agent/process-jobs/` | Opt-in owner-private Pi-native Exec/Bash records plus bounded stdout/stderr artifacts. Records survive ordinary restart and `--clear-sessions`; jobs themselves are interrupted at restart. | `processJobs.stateDir` |
 | `.mono-agent/process-jobs-roots-v1/` | Bounded monotonic registry of every process-job state root ever enabled for this agent. It survives disable, removal, state-root changes, and restart so dormant roots remain protected. | automatic; absent until the first registration |
+| `.mono-agent/process-jobs-roots-v1.recovery/` | Owner-only, same-filesystem recovery namespace for the root registry. It permits only the three fixed staging/previous/failed manifest names, is inspected read-only by requests, and is repaired only under the registry mutation lock; it is empty in steady state. | automatic; created by registry mutation |
 | `.mono-agent/acp-sessions/` | Owner-only, hashed authorization records for durable ACP session resume. These bind opaque ids to one source and workspace; prompt content and credentials are not stored here. | automatic; stored beside `artifacts.dir` |
 | `.mono-agent/trace-sources/` | The traceability registry, when kept folder-local. | `traceability.registryDir` |
 
 :::note
-`mono-agent restart --clear-sessions` purges persisted Pi `sessions/`, top-level message history, the tool-lifecycle sidecar, and `acp-sessions/` authorizations for a fresh start. Its output reports message-history bytes separately from tool-history files/bytes and record counts (or says when counts were unreadable). It keeps durable memory, recorded run artifacts, every registered process-job root, and the retained-root registry. Preflight freezes and validates that registry and refuses an overlap before deleting anything. Any nonterminal process job is interrupted by restart independently of this flag. See [Sessions & concurrency](/runtime/sessions-concurrency/), [Background process jobs](/tools/background-process-jobs/), [Artifacts & traces](/observability/artifacts-and-traces/), and [Capture & recall](/memory/capture-and-recall/).
+`mono-agent restart --clear-sessions` purges persisted Pi `sessions/`, top-level message history, the tool-lifecycle sidecar, and `acp-sessions/` authorizations for a fresh start. Its output reports message-history bytes separately from tool-history files/bytes and record counts (or says when counts were unreadable). It keeps durable memory, recorded run artifacts, every registered process-job root, and the retained-root registry plus its recovery directory. Preflight recovers, freezes, and validates that registry under its mutation lock and refuses an overlap before deleting anything. Any nonterminal process job is interrupted by restart independently of this flag. See [Sessions & concurrency](/runtime/sessions-concurrency/), [Background process jobs](/tools/background-process-jobs/), [Artifacts & traces](/observability/artifacts-and-traces/), and [Capture & recall](/memory/capture-and-recall/).
 :::
 
 ## Applying changes

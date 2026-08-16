@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { constants, linkSync, renameSync, type BigIntStats, unlinkSync } from "node:fs";
 import { lstat, open, unlink, type FileHandle } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import process from "node:process";
+
+import { syncDirectory as syncDirectoryDefault } from "./continuation-store-fs.js";
 
 type Awaitable<T> = T | Promise<T>;
 type SecureFileIdentity = { readonly dev: bigint; readonly ino: bigint };
@@ -27,9 +29,11 @@ type ExpectedTarget =
 
 interface TargetPublicationOptions {
   readonly expected: ExpectedTarget; readonly recovery: RecoveryMode;
+  readonly failedPath?: string;
   readonly beforeClaim?: (targetPath: string, temporaryPath: string) => Awaitable<void>;
   readonly beforePublish?: (targetPath: string, temporaryPath: string) => Awaitable<void>;
   readonly afterPublish?: (targetPath: string, temporaryPath: string) => Awaitable<void>;
+  readonly beforeRestore?: (targetPath: string, claimPath: string) => Awaitable<void>;
   readonly protectRecovery?: (path: string) => Awaitable<void>;
   readonly makeError?: (failure: SecureReplaceFailure) => Error;
 }
@@ -39,6 +43,7 @@ interface SecureFileReplaceOptions {
   readonly temporaryPath?: string;
   readonly validateTemporary?: (details: BigIntStats, path: string) => void;
   readonly beforeCommit?: (temporaryPath: string) => Awaitable<void>;
+  readonly syncDirectory?: (path: string) => Awaitable<void>;
   readonly target: TargetPublicationOptions;
 }
 
@@ -76,6 +81,7 @@ export async function readVerifiedFile(path: string, options: VerifiedFileReadOp
 export async function secureFileReplace(options: SecureFileReplaceOptions): Promise<void> {
   const temporaryPath = options.temporaryPath
     ?? join(dirname(options.path), `.${basename(options.path)}.mono-agent-${randomUUID()}.tmp`);
+  const syncDirectory = options.syncDirectory ?? syncDirectoryDefault;
   const expectedContents = typeof options.contents === "string"
     ? Buffer.from(options.contents, "utf8") : Buffer.from(options.contents);
   let handle: FileHandle | undefined;
@@ -94,20 +100,26 @@ export async function secureFileReplace(options: SecureFileReplaceOptions): Prom
     await handle.sync();
     await handle.close();
     handle = undefined;
+    await syncDirectory(dirname(temporaryPath));
 
     await options.beforeCommit?.(temporaryPath);
     const prove = (path: string, links?: readonly number[]) =>
       assertExactFile(path, identity!, options.mode, expectedContents, links);
     await prove(temporaryPath);
-    await publishTarget(options.path, temporaryPath, prove, options.target);
-    await removeExactTemporary(temporaryPath, identity);
+    await publishTarget(options.path, temporaryPath, prove, options.target, syncDirectory);
+    if (await removeExactTemporary(temporaryPath, identity)) {
+      await syncDirectory(dirname(temporaryPath));
+    }
     temporaryCleanupPending = false;
     await prove(options.path);
   } catch (error) {
     const failures: unknown[] = [error];
     try { await handle?.close(); } catch (cleanupError) { failures.push(cleanupError); }
     try {
-      if (identity !== undefined && temporaryCleanupPending) await removeExactTemporary(temporaryPath, identity);
+      if (identity !== undefined && temporaryCleanupPending) {
+        await removeExactTemporary(temporaryPath, identity);
+        await syncDirectory(dirname(temporaryPath));
+      }
     } catch (cleanupError) {
       failures.push(cleanupError);
     }
@@ -122,11 +134,12 @@ export async function secureFileReplace(options: SecureFileReplaceOptions): Prom
 
 async function publishTarget(targetPath: string, temporaryPath: string,
   prove: (path: string, allowedLinkCounts?: readonly number[]) => Promise<void>,
-  options: TargetPublicationOptions): Promise<void> {
+  options: TargetPublicationOptions,
+  syncDirectory: (path: string) => Awaitable<void>): Promise<void> {
   const present = options.expected.kind === "present" ? options.expected : undefined;
   const artifactStem = join(dirname(targetPath), `.${basename(targetPath)}.${randomUUID()}.mono-agent`);
   const claimPath = present?.claimPath ?? `${artifactStem}-previous`;
-  const failedPath = `${artifactStem}-failed`;
+  const failedPath = options.failedPath ?? `${artifactStem}-failed`;
   let claimActive = false;
   let published = false;
   let publishConflict = false;
@@ -142,6 +155,7 @@ async function publishTarget(targetPath: string, temporaryPath: string,
     if (present !== undefined) {
       renameSync(targetPath, claimPath);
       claimActive = true;
+      await syncMovedPath(targetPath, claimPath, syncDirectory);
       if (!await present.validate(claimPath, true)) invalid("claimed", present.invalidError);
     }
 
@@ -158,6 +172,7 @@ async function publishTarget(targetPath: string, temporaryPath: string,
       throw error;
     }
     published = true;
+    await syncDirectory(dirname(targetPath));
     await options.afterPublish?.(targetPath, temporaryPath);
     await prove(temporaryPath, [2]);
     await prove(targetPath, [2]);
@@ -165,6 +180,7 @@ async function publishTarget(targetPath: string, temporaryPath: string,
       const claimed = present.validate(claimPath, true);
       if (!(typeof claimed === "boolean" ? claimed : await claimed)) invalid("published", present.invalidError);
       unlinkSync(claimPath);
+      await syncDirectory(dirname(claimPath));
       claimActive = false;
     }
   } catch (cause) {
@@ -185,6 +201,7 @@ async function publishTarget(targetPath: string, temporaryPath: string,
       if (claimStillExpected) {
         try {
           unlinkSync(claimPath);
+          await syncDirectory(dirname(claimPath));
           claimActive = false;
         } catch (recoveryError) {
           if (isErrno(recoveryError, "ENOENT")) claimActive = false;
@@ -197,6 +214,7 @@ async function publishTarget(targetPath: string, temporaryPath: string,
         renameSync(targetPath, failedPath);
         recoveryPaths.push(failedPath);
         published = false;
+        await syncMovedPath(targetPath, failedPath, syncDirectory);
       } catch (recoveryError) {
         if (!isErrno(recoveryError, "ENOENT")) recoveryFailures.push(recoveryError);
         else published = false;
@@ -204,8 +222,11 @@ async function publishTarget(targetPath: string, temporaryPath: string,
     }
     if (mode === "restore-previous" && claimActive && present !== undefined) {
       try {
+        await options.beforeRestore?.(targetPath, claimPath);
         linkSync(claimPath, targetPath);
+        await syncDirectory(dirname(targetPath));
         unlinkSync(claimPath);
+        await syncDirectory(dirname(claimPath));
         claimActive = false;
       } catch (recoveryError) {
         if (!isErrno(recoveryError, "EEXIST")) recoveryFailures.push(recoveryError);
@@ -268,18 +289,31 @@ function sameFileSnapshot(left: BigIntStats, right: BigIntStats): boolean {
 function changedFile(path: string): Error {
   return new Error(`Secure replacement file ${path} changed during publication and was left untouched.`);
 }
-async function removeExactTemporary(path: string, identity: SecureFileIdentity): Promise<void> {
+async function removeExactTemporary(path: string, identity: SecureFileIdentity): Promise<boolean> {
   let details: BigIntStats;
   try {
     details = await lstat(path, { bigint: true });
   } catch (error) {
-    if (isErrno(error, "ENOENT")) return;
+    if (isErrno(error, "ENOENT")) return false;
     throw error;
   }
   if (!sameFileIdentity(details, identity)) {
     throw new Error(`Secure replacement temporary ${path} changed unexpectedly and was left untouched.`);
   }
   await unlink(path);
+  return true;
+}
+async function syncMovedPath(
+  sourcePath: string,
+  destinationPath: string,
+  syncDirectory: (path: string) => Awaitable<void>,
+): Promise<void> {
+  const destinationDirectory = dirname(destinationPath);
+  const sourceDirectory = dirname(sourcePath);
+  await syncDirectory(destinationDirectory);
+  if (resolve(sourceDirectory) !== resolve(destinationDirectory)) {
+    await syncDirectory(sourceDirectory);
+  }
 }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function isErrno(error: unknown, code: string): boolean {

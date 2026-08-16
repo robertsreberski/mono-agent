@@ -43,7 +43,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   wake with age-bounded busy deferrals, bounded pending/store materialization,
   stable secret-free safety errors, native same-message lifecycle surfaces,
   fail-closed live store health, a bounded monotonic registry that seals every
-  retained state root even after disable or reconfiguration, cooperative
+  retained state root even after disable or reconfiguration, bounded locked
+  recovery through a fixed-name owner-private sibling directory while request
+  loading stays read-only and fail-closed, cooperative
   official-process ownership, true-settlement generation barriers, provider-zero
   for configured routes and direct memory LLM/embedding calls, restart interruption,
   all-root separation from every clear-sessions purge, doctor section, operator
