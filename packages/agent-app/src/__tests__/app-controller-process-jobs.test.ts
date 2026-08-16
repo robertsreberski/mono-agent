@@ -86,6 +86,7 @@ describe("process-job lifecycle surface routing", () => {
       configReadPath,
       env: { MONO_AGENT_ARTIFACT_DIR: ".state/artifacts" },
       logger: undefined,
+      drivers: [],
       running: new Map(),
       statuses: new Map(),
       stopped: false,
@@ -136,6 +137,7 @@ describe("process-job lifecycle surface routing", () => {
       configReadPath,
       env: {},
       logger: undefined,
+      drivers: [],
       running: new Map(),
       statuses: new Map(),
       stopped: false,
@@ -185,6 +187,7 @@ describe("process-job lifecycle surface routing", () => {
       configReadPath,
       env: {},
       logger: undefined,
+      drivers: [],
       running: new Map(),
       statuses: new Map(),
       stopped: false,
@@ -242,6 +245,7 @@ describe("process-job lifecycle surface routing", () => {
       configReadPath,
       env: {},
       logger: undefined,
+      drivers: [],
       running: new Map(),
       statuses: new Map(),
       stopped: false,
@@ -295,6 +299,7 @@ describe("process-job lifecycle surface routing", () => {
       configReadPath,
       env: {},
       logger: undefined,
+      drivers: [],
       running: new Map(),
       statuses: new Map(),
       stopped: false,
@@ -397,6 +402,10 @@ describe("process-job lifecycle surface routing", () => {
       ["slack", slack],
       ["telegram", telegram],
     ]) as ProcessJobsControllerPort["running"];
+    const drivers: NonNullable<ProcessJobsControllerPort["drivers"]> = [
+      { id: "slack", processJobs: { conversationScheme: "slack" } },
+      { id: "telegram", processJobs: { conversationScheme: "telegram" } },
+    ] as unknown as NonNullable<ProcessJobsControllerPort["drivers"]>;
 
     let serviceOptions: OpenProcessJobsServiceOptions | undefined;
     const serviceHandle = {} as ProcessJobsServiceHandle;
@@ -411,6 +420,7 @@ describe("process-job lifecycle surface routing", () => {
       configReadPath,
       env: {},
       logger: undefined,
+      drivers,
       running,
       statuses: new Map(),
       stopped: false,
@@ -437,19 +447,9 @@ describe("process-job lifecycle surface routing", () => {
     await surfaceUpdate!(slackProjection);
     await surfaceUpdate!(telegramProjection);
 
-    expect(slackNotify).toHaveBeenCalledWith({
-      conversationId: "slack:C1:1.1",
-      text: "",
-      deliveryKey: slackProjection.wake.deliveryKey,
-      processJob: slackProjection,
-    });
+    expect(slackNotify).not.toHaveBeenCalled();
     expect(slackUpdate).toHaveBeenCalledWith("C1", "1.1", slackProjection);
-    expect(telegramNotify).toHaveBeenCalledWith({
-      conversationId: "telegram:42",
-      text: "",
-      deliveryKey: telegramProjection.wake.deliveryKey,
-      processJob: telegramProjection,
-    });
+    expect(telegramNotify).not.toHaveBeenCalled();
     expect(telegramUpdate).toHaveBeenCalledWith(42, telegramProjection, undefined);
   });
 });

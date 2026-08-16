@@ -28,6 +28,7 @@ export interface DeliverWebProcessJobNotificationInput {
   readonly deliveryKey: string;
   readonly threadId: string;
   readonly processJob: ProcessJobProjection;
+  readonly wakePrompt?: string;
   readonly text?: string;
   readonly parts?: readonly AgentReplyPart[];
 }
@@ -45,6 +46,13 @@ export interface DeliverWebNotificationResult {
   readonly threadId?: string;
   readonly duplicate: boolean;
   readonly tombstoned?: true;
+  readonly delivery?: {
+    readonly delivered: boolean;
+    readonly disposition?: "steered" | "follow_up";
+    readonly code?: string;
+    readonly retryable?: boolean;
+    readonly ambiguous?: boolean;
+  };
 }
 
 interface NotificationIngressRecord {
@@ -69,7 +77,10 @@ export async function deliverWebNotification(
     response = await fetchImpl(ingress.url, {
       method: "POST",
       redirect: "error",
-      signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+      signal: AbortSignal.timeout(options.timeoutMs
+        ?? (input.triggerKind === "job" && input.wakePrompt !== undefined
+          ? 10 * 60 * 1_000
+          : DEFAULT_TIMEOUT_MS)),
       headers: {
         authorization: `Bearer ${ingress.token}`,
         "content-type": "application/json",
@@ -104,11 +115,35 @@ export async function deliverWebNotification(
     || (result.threadId === null && (result.duplicate !== true || result.tombstoned !== true))) {
     throw new WebConsoleError("invalid_notification_response", "The web notification ingress returned an invalid result.", 502);
   }
+  const delivery = parseDeliveryResult(result.delivery);
   return {
     ...(typeof result.threadId === "string" ? { threadId: result.threadId } : {}),
     duplicate: result.duplicate,
     ...(result.tombstoned === true ? { tombstoned: true } : {}),
+    ...(delivery === undefined ? {} : { delivery }),
   };
+}
+
+function parseDeliveryResult(value: unknown): DeliverWebNotificationResult["delivery"] | undefined {
+  if (value === undefined) return undefined;
+  const result = asRecord(value);
+  if (result === undefined
+    || typeof result.delivered !== "boolean"
+    || (result.disposition !== undefined
+      && result.disposition !== "steered"
+      && result.disposition !== "follow_up")
+    || (result.code !== undefined && typeof result.code !== "string")
+    || (result.retryable !== undefined && typeof result.retryable !== "boolean")
+    || (result.ambiguous !== undefined && typeof result.ambiguous !== "boolean")) {
+    throw new WebConsoleError("invalid_notification_response", "The web notification ingress returned an invalid delivery receipt.", 502);
+  }
+  return {
+    delivered: result.delivered,
+    ...(result.disposition === undefined ? {} : { disposition: result.disposition }),
+    ...(result.code === undefined ? {} : { code: result.code }),
+    ...(result.retryable === undefined ? {} : { retryable: result.retryable }),
+    ...(result.ambiguous === undefined ? {} : { ambiguous: result.ambiguous }),
+  } as DeliverWebNotificationResult["delivery"];
 }
 
 async function readIngressRecord(path: string): Promise<NotificationIngressRecord> {

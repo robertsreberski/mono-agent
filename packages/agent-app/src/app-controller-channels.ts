@@ -50,7 +50,11 @@ export interface ChannelsControllerPort {
   rememberSelectedSkills(coreConfig: MonoAgentConfig): void;
   ensureInteractionBridge(coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined>;
   ensureContinuationService(coreConfig: MonoAgentConfig): Promise<ContinuationServiceHandle | undefined>;
-  buildResponder(coreConfig: MonoAgentConfig, channelId?: ChannelId): Promise<AgentResponder>;
+  buildResponder(
+    coreConfig: MonoAgentConfig,
+    channelId?: ChannelId,
+    processJobConversationScheme?: string,
+  ): Promise<AgentResponder>;
   notifyDestination(
     conversationId: string,
     text: string,
@@ -137,7 +141,11 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
     // The channel identity decides the session boundary this responder applies:
     // the console owns its own (a thread), every other channel takes the
     // configured one.
-    const responder = await controller.buildResponder(coreConfig, driver.id);
+    const responder = await controller.buildResponder(
+      coreConfig,
+      driver.id,
+      driver.processJobs?.conversationScheme,
+    );
     // The AgentResponder contract has no dispose(), but the configured responder
     // (createAgentResponder) exposes one that tears down the harness + live-session
     // manager. Read it LAZILY (at teardown time) off the `responder` so both the

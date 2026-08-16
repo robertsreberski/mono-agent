@@ -815,6 +815,51 @@ describe("createTelegramBot", () => {
     expect(requests[1]?.metadata.telegram.model).toBeUndefined();
   });
 
+  it("steers a process-job wake into the active run without posting a fallback", async () => {
+    const respond = vi.fn(async () => ({ text: "fallback" }));
+    const { controller, calls } = buildTestBot({
+      responder: {
+        respond,
+        offerLiveInput: vi.fn(() => ({
+          status: "accepted" as const,
+          settled: Promise.resolve({ status: "applied" as const, runId: "run-1" }),
+        })),
+      },
+    });
+
+    await expect(controller.notify(42, "job finished", {
+      deliveryKey: "process-job:job-1",
+      steerActive: true,
+    })).resolves.toMatchObject({ delivered: true, disposition: "steered" });
+    expect(respond).not.toHaveBeenCalled();
+    expect(texts(calls, "sendMessage")).toEqual([]);
+  });
+
+  it("shows tool activity in the reserved process-job fallback turn", async () => {
+    const { controller, calls } = buildTestBot({
+      stream: { editDebounceMs: 0 },
+      responder: {
+        respond: async (_request, stream) => {
+          await stream.event?.({
+            type: "tool_call_started",
+            id: "t1",
+            name: "Read",
+            arguments: { path: "result.txt" },
+          });
+          return { text: "processed completion" };
+        },
+        offerLiveInput: () => ({ status: "unavailable", reason: "inactive" }),
+      },
+    });
+
+    await expect(controller.notify(42, "job finished", {
+      deliveryKey: "process-job:job-2",
+      steerActive: true,
+    })).resolves.toMatchObject({ delivered: true, disposition: "follow_up" });
+    expect(texts(calls, "sendMessage")).toContain("processed completion");
+    expect(calls.some((call) => String(call.payload.text ?? "").includes("Read"))).toBe(true);
+  });
+
   it("reacts 👀 then 👍 around a successful turn when all reactions are enabled", async () => {
     const responder = responderFrom(async () => ({ text: "done" }));
     const { bot, calls } = buildTestBot({

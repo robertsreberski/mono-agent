@@ -397,4 +397,56 @@ describe("WhatsAppAdapter", () => {
       "The agent failed while processing your message.",
     ]);
   });
+
+  it("steers a process-job completion into the exact active turn without posting a fallback", async () => {
+    const settled = Promise.resolve({ status: "applied" as const, runId: "run-1" });
+    const responder: AgentResponder = {
+      respond: vi.fn(async () => ({ text: "fallback" })),
+      offerLiveInput: vi.fn(() => ({ status: "accepted" as const, settled })),
+    };
+    const { bridge, socket } = createBridge({ responder });
+
+    await expect(bridge.notify("123@s.whatsapp.net", "job finished", {
+      deliveryKey: "process-job:job-1",
+      steerActive: true,
+    })).resolves.toMatchObject({ delivered: true, disposition: "steered" });
+
+    expect(responder.offerLiveInput).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: "whatsapp:123@s.whatsapp.net",
+      id: "process-job:job-1",
+      deliveryKey: "process-job:job-1",
+    }));
+    expect(responder.respond).not.toHaveBeenCalled();
+    expect(socket.sent).toEqual([]);
+  });
+
+  it("runs a visible reserved follow-up turn whenever steering is unavailable", async () => {
+    let captured: AgentRequest | undefined;
+    const responder: AgentResponder = {
+      respond: vi.fn(async (request) => {
+        captured = request;
+        return { text: "processed completion" };
+      }),
+      offerLiveInput: vi.fn(() => ({ status: "unavailable" as const, reason: "inactive" as const })),
+    };
+    const { bridge, socket } = createBridge({ responder });
+
+    await expect(bridge.notify("123@s.whatsapp.net", "job finished", {
+      deliveryKey: "process-job:job-2",
+      steerActive: true,
+    })).resolves.toMatchObject({ delivered: true, disposition: "follow_up" });
+
+    expect(captured).toMatchObject({
+      conversationId: "whatsapp:123@s.whatsapp.net",
+      text: "job finished",
+    });
+    expect(Object.getOwnPropertyDescriptor(
+      captured?.metadata,
+      Symbol.for("mono-agent.process-job-wake.delivery-key.v1"),
+    )?.value).toBe("process-job:job-2");
+    expect(socket.sent.map((message) => message.content.text)).toEqual([
+      "Thinking…",
+      "processed completion",
+    ]);
+  });
 });

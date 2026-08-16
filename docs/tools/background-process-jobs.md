@@ -250,15 +250,16 @@ The host injects the controller only when all of these are true at call time:
 - the platform is POSIX; Windows is unsupported;
 - the selected request route is Pi-native;
 - the ordinary tool policy permits `Exec` or `Bash`; and
-- the turn originated in an exact Slack, Telegram, or web-console conversation
-  that the host can wake later.
+- the turn originated in an exact addressable conversation whose channel driver
+  opts into the ProcessJobs capability. The built-ins are Slack, Telegram, the
+  web console, and the WhatsApp plugin; future plugins may claim one unique
+  conversation-id scheme and publish the same running capability.
 
-Direct TUI turns, cron, webhook, OpenAI API, A2A, and plugin channels do not get
-background schemas. A controller also rejects an invalid origin as
+Direct TUI turns, cron, webhook, OpenAI API, A2A, and plugins without the
+explicit capability do not get background schemas. Duplicate or malformed
+scheme claims fail during app startup. A controller also rejects an invalid origin as
 `background_unsupported_channel`. Foreground calls continue to use their normal
-route and policy. A wake is a genuine normal-tool turn with ordinary history,
-not continuation synthesis, so the host increments an unforgeable chain depth
-and stops injecting background capability at the configured limit.
+route and policy.
 
 ## Starting a job
 
@@ -322,6 +323,25 @@ schedules one wake. An adapter result that explicitly proves retry is safe gets
 at most three attempts with the same delivery key, including across restart.
 Ambiguous wake attempts are not replayed automatically, because a second post
 could duplicate a real first delivery.
+
+For an active turn in the exact originating conversation, the adapter first
+offers the completion as live input targeted to that run id. It reserves the
+normal follow-up position before making the offer. A confirmed provider
+acknowledgement keeps the completion in that turn; an explicit unavailable,
+discarded, or requeued settlement runs the reserved normal follow-up turn. An
+unknown settlement is ambiguous and never triggers an automatic duplicate.
+Slack, Telegram, and WhatsApp use their ordinary visible thinking/tool/final
+stream for the fallback. The web console creates an assistant-only turn, emits
+the same NDJSON activity/tool frames, and never invents a user message.
+
+Every steer or fallback carries the stable delivery key out of band. The web
+console durably records accepted and completed claims: after restart a completed
+claim returns its prior `steered` or `follow_up` receipt, while an accepted but
+unsettled claim fails closed as ambiguous. A wake is a genuine tool-capable
+turn, not continuation synthesis. The host raises the active controller to the
+parent job's chain depth plus one before any steered tool call can start; a
+non-applied offer rolls that provisional depth back, and the configured maximum
+remains authoritative.
 
 A Slack or Telegram conversation that is already at its pre-turn admission cap
 does not spend that three-attempt budget. The wake stays durably pending and is

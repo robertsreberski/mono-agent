@@ -18,7 +18,11 @@ import {
   processJobsProtectionPolicyRoots,
   type ProcessJobsRootRegistrySnapshot,
 } from "./process-jobs-root-registry.js";
-import { processJobWakeContextForRequest } from "./process-jobs-context.js";
+import {
+  processJobWakeContextForRequest,
+  registerProcessJobSteeringTarget,
+  type ProcessJobSteeringTargetLease,
+} from "./process-jobs-context.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import type { ProcessJobsProtectionPosture } from "./process-jobs-protection.js";
 import {
@@ -36,6 +40,8 @@ export interface ProcessJobsRuntimeExtensionOptions {
   readonly coreConfig: MonoAgentConfig;
   readonly baseModel: RuntimeModelReference;
   readonly channelId: ChannelId | undefined;
+  /** Explicit opted-in conversation scheme; legacy built-ins derive it from channelId. */
+  readonly conversationScheme?: string | undefined;
   readonly sandboxEngine: SandboxEngine | undefined;
   /** App-private; omission preserves the fail-closed public/default behavior. */
   readonly protectionPosture?: ProcessJobsProtectionPosture;
@@ -57,6 +63,7 @@ export function createProcessJobsRuntimeExtension(
   return async (input) => {
     let result: Awaited<ReturnType<RuntimeOptionsExtension>> | undefined;
     let lease: AgentRootRequestLease | undefined;
+    let steeringTarget: ProcessJobSteeringTargetLease | undefined;
     const attestRegistry = options.attestRegistry ?? attestProcessJobsRootRegistrySnapshot;
     try {
       const boundary = await attestRegistry(
@@ -97,16 +104,26 @@ export function createProcessJobsRuntimeExtension(
         };
       }
       if (options.service !== undefined) {
-        const origin = processJobOriginForRequest(input, options.channelId);
+        const origin = processJobOriginForRequest(input, options.channelId, options.conversationScheme);
         const wake = processJobWakeContextForRequest(input.request);
         const chainDepth = wake.kind === "resolved" ? wake.context.chainDepth : 0;
+        if (origin !== undefined && wake.kind !== "missed") {
+          steeringTarget = registerProcessJobSteeringTarget({
+            conversationId: origin.baseConversationId,
+            runId: input.runId,
+            chainDepth,
+          });
+        }
         if (origin !== undefined
           && wake.kind !== "missed"
           && chainDepth < options.service.settings.maxChainDepth
           && hasAllowedProcessTool(options.coreConfig)) {
           runtimeOptions = {
             ...runtimeOptions,
-            processJobs: options.service.controller(origin, chainDepth),
+            processJobs: options.service.controller(
+              origin,
+              steeringTarget?.chainDepth ?? chainDepth,
+            ),
           };
         }
       }
@@ -120,7 +137,11 @@ export function createProcessJobsRuntimeExtension(
           try {
             await result?.settleCleanup?.();
           } finally {
-            heldLease.releaseAfterSettlement();
+            try {
+              steeringTarget?.release();
+            } finally {
+              heldLease.releaseAfterSettlement();
+            }
           }
         },
       };
@@ -132,7 +153,11 @@ export function createProcessJobsRuntimeExtension(
         try {
           await result?.settleCleanup?.();
         } finally {
-          lease?.releaseAfterSettlement();
+          try {
+            steeringTarget?.release();
+          } finally {
+            lease?.releaseAfterSettlement();
+          }
         }
       }
       throw error;
@@ -189,16 +214,18 @@ async function sandboxEngineAvailable(engine: SandboxEngine | undefined): Promis
 export function processJobOriginForRequest(
   input: Pick<AgentHarnessRuntimeOptionsInput, "request" | "runId">,
   channelId: ChannelId | undefined,
+  conversationScheme?: string,
 ): ProcessJobOriginRecord | undefined {
   const request = input.request;
-  let channel: ProcessJobOriginRecord["channel"] | undefined;
-  if (channelId === "slack") channel = "slack";
-  else if (channelId === "telegram") channel = "telegram";
-  else if (channelId === "tui"
+  let channel = conversationScheme;
+  if (channel === undefined && channelId === "slack") channel = "slack";
+  else if (channel === undefined && channelId === "telegram") channel = "telegram";
+  else if (channel === undefined && channelId === "tui"
     && request.metadata?.source === "web"
     && request.conversationId.startsWith("web:")
     && request.conversationId !== "web:new") channel = "web";
   if (channel === undefined) return undefined;
+  if (!/^[a-z][a-z0-9-]*$/u.test(channel)) return undefined;
 
   const conversationId = request.conversationId;
   const hash = conversationId.indexOf("#");
@@ -228,7 +255,7 @@ function hasAllowedProcessTool(config: MonoAgentConfig): boolean {
     && (allowAll || allowed.some((allowedName) => allowedName.toLowerCase() === name.toLowerCase())));
 }
 
-function matchesChannel(conversationId: string, channel: ProcessJobOriginRecord["channel"]): boolean {
+function matchesChannel(conversationId: string, channel: string): boolean {
   return conversationId.startsWith(`${channel}:`);
 }
 

@@ -39,7 +39,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Expose the sibling request-scoped read-only `SessionHistory` tool over the
   harness's canonical retained managed-tool lifecycle sidecar.
 - Opt in to Pi-native Exec/Bash process jobs through `processJobs.*`: keep the
-  owner-private queue/store/process-group lifecycle, exact Slack/Telegram/web
+  owner-private queue/store/process-group lifecycle, adapter-neutral opted-in
+  Slack/Telegram/web/WhatsApp wake routing with exact active-run steering and a
+  reserved visible normal-turn fallback,
   wake with age-bounded busy deferrals, bounded pending/store materialization,
   stable secret-free safety errors, native same-message lifecycle surfaces,
   fail-closed live store health, a bounded monotonic registry that seals every

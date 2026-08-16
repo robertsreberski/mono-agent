@@ -368,6 +368,7 @@ describe("OperatorClient", () => {
       id: "input-1",
       text: "Use the new constraint",
       receivedAt: "2026-07-21T09:00:00.000Z",
+      deliveryKey: "process-job:job-7",
     })).resolves.toEqual({ status: "applied", runId: "run-7" });
     expect(request).toEqual({
       url: "http://127.0.0.1:1234/gui/v1/conversations/web%3Athread%2Fone/live-input",
@@ -375,6 +376,7 @@ describe("OperatorClient", () => {
         id: "input-1",
         text: "Use the new constraint",
         receivedAt: "2026-07-21T09:00:00.000Z",
+        deliveryKey: "process-job:job-7",
       },
     });
   });

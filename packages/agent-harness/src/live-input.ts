@@ -105,12 +105,19 @@ export function createLiveInputMailbox(runId: string): LiveInputMailbox {
   return {
     offer(request): AgentLiveInputOffer {
       const existing = entriesById.get(request.id);
-      if (existing !== undefined) return { status: "accepted", settled: existing.settled };
+      if (existing !== undefined) {
+        return existing.request.targetRunId === request.targetRunId
+          ? { status: "accepted", settled: existing.settled }
+          : { status: "unavailable", reason: "invalid" };
+      }
       if (state !== "open") {
         return {
           status: "unavailable",
           reason: state === "unsupported" ? "unsupported" : "inactive",
         };
+      }
+      if (request.targetRunId !== undefined && request.targetRunId !== runId) {
+        return { status: "unavailable", reason: "inactive" };
       }
       if (
         request.id.trim().length === 0

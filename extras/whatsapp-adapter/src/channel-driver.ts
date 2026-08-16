@@ -60,6 +60,7 @@ export function createWhatsAppChannelDriver(
   return {
     id,
     label,
+    processJobs: { conversationScheme: "whatsapp" },
     async configView(input) {
       const section = await readWhatsAppConfigViewSection(options, input);
       let status: ChannelConfigViewSection["status"] = "active";
@@ -104,9 +105,49 @@ export function createWhatsAppChannelDriver(
       return {
         summary: {},
         stop: () => result.stop(),
+        processJobs: {
+          update: async ({ conversationId, processJob }) => {
+            const chatJid = whatsAppChatFromConversation(conversationId);
+            if (chatJid === undefined
+              || processJob.origin.channel !== "whatsapp"
+              || conversationId !== baseConversationId(processJob.origin.conversationId)) {
+              return {
+                delivered: false,
+                code: "process_job_origin_mismatch",
+                reason: "The process-job origin does not match the WhatsApp destination.",
+                retryable: false,
+              };
+            }
+            return await result.adapter.updateProcessJob(chatJid, processJob);
+          },
+          wake: async ({ conversationId, text, deliveryKey, processJob }) => {
+            const chatJid = whatsAppChatFromConversation(conversationId);
+            if (chatJid === undefined
+              || processJob.origin.channel !== "whatsapp"
+              || conversationId !== baseConversationId(processJob.origin.conversationId)) {
+              return {
+                delivered: false,
+                code: "process_job_origin_mismatch",
+                reason: "The process-job origin does not match the WhatsApp destination.",
+                retryable: false,
+              };
+            }
+            return await result.adapter.notify(chatJid, text, { deliveryKey, steerActive: true });
+          },
+        },
       };
     },
   };
+}
+
+function whatsAppChatFromConversation(conversationId: string): string | undefined {
+  if (!conversationId.startsWith("whatsapp:")) return undefined;
+  const chatJid = conversationId.slice("whatsapp:".length);
+  return chatJid.length > 0 && !chatJid.includes("#") ? chatJid : undefined;
+}
+
+function baseConversationId(conversationId: string): string {
+  return conversationId.split("#", 1)[0] ?? conversationId;
 }
 
 export const createChannelDriver = createWhatsAppChannelDriver;

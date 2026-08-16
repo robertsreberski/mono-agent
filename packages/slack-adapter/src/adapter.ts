@@ -3,6 +3,7 @@ import {
   MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES,
   createChannelUserCancelReason,
   type AgentAttachment,
+  type AgentLiveInputOffer,
   type ChannelAskSnapshot,
   type ChannelAskSubmission,
   type ChannelAskSubmissionResult,
@@ -262,6 +263,8 @@ export interface SlackNotifyResult {
   readonly historyRecorded?: boolean;
   /** Bounded machine code when a confirmed post could not be recorded to history. */
   readonly historyErrorCode?: string;
+  /** Whether a process-job completion joined an active turn or ran after it. */
+  readonly disposition?: "steered" | "follow_up";
 }
 
 /**
@@ -274,6 +277,8 @@ export interface SlackNotifyOptions {
   readonly verbatim?: boolean;
   /** Stable host delivery identity. Converted to Slack's UUID client_msg_id. */
   readonly deliveryKey?: string;
+  /** Prefer the active turn while retaining this notification's fallback queue slot. */
+  readonly steerActive?: boolean;
   /**
    * Request notification-suppressed delivery for cross-channel parity.
    *
@@ -1473,6 +1478,63 @@ export class SlackAdapter {
       this.admissionQueues.set(conversationId, queue);
     }
     try {
+      if (options?.steerActive === true
+        && options.deliveryKey !== undefined
+        && options.verbatim !== true
+        && this.responder.offerLiveInput !== undefined
+        && !queue.full) {
+        const decision = createDeferred<"run" | "steered">();
+        const reserved = queue.run(async () => {
+          const next = await decision.promise;
+          if (next === "run") {
+            const outcome = await this.runProactiveTurn(
+              conversationId,
+              channelId,
+              threadTs,
+              text,
+              runKey,
+              controller,
+              options.deliveryKey,
+              options.silent,
+              true,
+            );
+            return { ...outcome, disposition: "follow_up" as const };
+          }
+          this.unregisterController(runKey, conversationId, controller);
+          return {
+            delivered: true,
+            code: "delivered",
+            channelId: "slack" as const,
+            historyRecorded: true,
+            disposition: "steered" as const,
+          };
+        });
+        let offer: AgentLiveInputOffer;
+        try {
+          offer = this.responder.offerLiveInput({
+            conversationId,
+            id: options.deliveryKey,
+            text,
+            receivedAt: new Date().toISOString(),
+            deliveryKey: options.deliveryKey,
+          });
+        } catch (error) {
+          this.logger?.debug?.("Slack process-job steering failed; running the reserved fallback turn.", {
+            error: redactSlackErrorMessage(error),
+          });
+          decision.resolve("run");
+          return await reserved;
+        }
+        if (offer.status === "accepted") {
+          void offer.settled.then(
+            (settlement) => decision.resolve(settlement.status === "applied" ? "steered" : "run"),
+            () => decision.resolve("run"),
+          );
+        } else {
+          decision.resolve("run");
+        }
+        return await reserved;
+      }
       return await queue.run(() =>
         options?.verbatim === true
           ? this.runVerbatimDelivery(
@@ -1494,6 +1556,7 @@ export class SlackAdapter {
               controller,
               options?.deliveryKey,
               options?.silent,
+              false,
             ),
       );
     } catch (error) {
@@ -2754,6 +2817,7 @@ export class SlackAdapter {
     silent?: boolean,
     onAnswerReceipt?: (ref: { readonly ts: SlackMessageTs; readonly channel: SlackChannelId }) => void,
     onThreadRootPosted?: (ts: SlackMessageTs, channel: SlackChannelId) => void,
+    showHints = false,
   ): SlackMessageStreamOptions {
     const streamOptions: SlackMessageStreamOptions = {
       api: this.api,
@@ -2761,7 +2825,7 @@ export class SlackAdapter {
       // No reactToTs: a proactive turn has no inbound message to react to.
       finalOnly: this.streamOptions.finalOnly ?? true,
       // Proactive delivery has no waiting user watching a live turn.
-      showHints: false,
+      showHints,
       abortSignal: controller.signal,
       ...(deliveryKey === undefined ? {} : { clientMsgId: slackClientMessageId(deliveryKey) }),
       ...(silent === true ? { silent: true } : {}),
@@ -2926,6 +2990,7 @@ export class SlackAdapter {
     controller: AbortController,
     deliveryKey?: string,
     silent?: boolean,
+    showHints = false,
   ): Promise<SlackNotifyResult> {
     let answerReceipt: { readonly ts: SlackMessageTs; readonly channel: SlackChannelId } | undefined;
     const streamOptions = this.buildProactiveStreamOptions(
@@ -2945,6 +3010,7 @@ export class SlackAdapter {
         // by declining an ambiguous alias rather than collapsing the threads.
         this.recordPostedMessage?.(channel, ts, conversationId);
       },
+      showHints,
     );
     const stream = new SlackMessageStream(streamOptions);
     try {

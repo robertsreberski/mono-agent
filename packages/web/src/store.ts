@@ -301,7 +301,7 @@ export interface ClaimedWebPushDelivery {
   readonly attempts: number;
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 7;
+const WEB_STORAGE_SCHEMA_VERSION = 8;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
 export const WEB_MESSAGE_PAGE_MAX = 100;
@@ -339,6 +339,22 @@ export interface BeginStoredTurnResult {
   readonly attachments: readonly StoredAttachment[];
   readonly thread: WebThread;
 }
+
+export interface BeginStoredAssistantTurnResult {
+  readonly turnId: string;
+  readonly conversationId: string;
+  readonly text: string;
+  readonly assistantMessageId: string;
+  readonly attachments: readonly [];
+  readonly thread: WebThread;
+}
+
+export type StoredTurnExecution = BeginStoredTurnResult | BeginStoredAssistantTurnResult;
+
+export type ProcessJobWakeReservation =
+  | { readonly kind: "new" }
+  | { readonly kind: "completed"; readonly disposition: "steered" | "follow_up" }
+  | { readonly kind: "uncertain" };
 
 export interface StoredLiveInput {
   readonly id: string;
@@ -1382,6 +1398,82 @@ export class WebStore {
     return { thread: this.requireThread(input.threadId), duplicate: false };
   }
 
+  /** Durably claim one web process-job wake before touching the operator. */
+  reserveProcessJobWake(input: {
+    readonly sourceId: string;
+    readonly threadId: string;
+    readonly jobId: string;
+    readonly deliveryKey: string;
+  }): ProcessJobWakeReservation {
+    const card = this.database.prepare(`
+      SELECT thread_id, delivery_key FROM process_job_cards WHERE source_id = ? AND job_id = ?
+    `).get(input.sourceId, input.jobId) as unknown as {
+      thread_id: string;
+      delivery_key: string;
+    } | undefined;
+    if (card === undefined
+      || card.thread_id !== input.threadId
+      || card.delivery_key !== input.deliveryKey) {
+      throw new WebConsoleError("invalid_notification", "The process-job wake does not match its retained card.", 409);
+    }
+    const existing = this.database.prepare(`
+      SELECT state, disposition FROM process_job_wake_deliveries
+      WHERE source_id = ? AND job_id = ?
+    `).get(input.sourceId, input.jobId) as unknown as {
+      state: "accepted" | "completed";
+      disposition: "steered" | "follow_up" | null;
+    } | undefined;
+    if (existing?.state === "completed"
+      && (existing.disposition === "steered" || existing.disposition === "follow_up")) {
+      return { kind: "completed", disposition: existing.disposition };
+    }
+    if (existing !== undefined) return { kind: "uncertain" };
+    const now = this.now();
+    this.database.prepare(`
+      INSERT INTO process_job_wake_deliveries (
+        source_id, job_id, delivery_key, thread_id, state, disposition, turn_id,
+        created_at, completed_at
+      ) VALUES (?, ?, ?, ?, 'accepted', NULL, NULL, ?, NULL)
+    `).run(input.sourceId, input.jobId, input.deliveryKey, input.threadId, now);
+    return { kind: "new" };
+  }
+
+  completeProcessJobWake(input: {
+    readonly sourceId: string;
+    readonly jobId: string;
+    readonly deliveryKey: string;
+    readonly disposition: "steered" | "follow_up";
+    readonly turnId?: string;
+  }): void {
+    const result = this.database.prepare(`
+      UPDATE process_job_wake_deliveries
+      SET state = 'completed', disposition = ?, turn_id = ?, completed_at = ?
+      WHERE source_id = ? AND job_id = ? AND delivery_key = ? AND state = 'accepted'
+    `).run(
+      input.disposition,
+      input.turnId ?? null,
+      this.now(),
+      input.sourceId,
+      input.jobId,
+      input.deliveryKey,
+    );
+    if (result.changes !== 1) {
+      throw new WebConsoleError("notification_reservation_lost", "The process-job wake reservation was lost.", 409);
+    }
+  }
+
+  /** Release a reservation only while no operator delivery has begun. */
+  abandonProcessJobWake(input: {
+    readonly sourceId: string;
+    readonly jobId: string;
+    readonly deliveryKey: string;
+  }): void {
+    this.database.prepare(`
+      DELETE FROM process_job_wake_deliveries
+      WHERE source_id = ? AND job_id = ? AND delivery_key = ? AND state = 'accepted'
+    `).run(input.sourceId, input.jobId, input.deliveryKey);
+  }
+
   /** Exact retained binding used before proxying a single operator job. */
   processJobCardBelongsToThread(sourceId: string, threadId: string, jobId: string): boolean {
     return this.database.prepare(`
@@ -1869,6 +1961,54 @@ export class WebStore {
     };
   }
 
+  /** Begin one host-owned assistant-only follow-up without inventing a user row. */
+  beginAssistantTurn(input: { readonly threadId: string; readonly prompt: string }): BeginStoredAssistantTurnResult {
+    const threadId = this.resolveThreadId(input.threadId);
+    const thread = this.requireThread(threadId);
+    if (thread.archivedAt !== null) {
+      throw new WebConsoleError("thread_archived", "Unarchive this conversation before delivering a background result.", 409);
+    }
+    if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
+    if (!thread.canSend) {
+      throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
+    }
+    const active = this.database.prepare("SELECT id FROM turns WHERE thread_id = ? AND status = 'running'").get(threadId);
+    if (active !== undefined) {
+      throw new WebConsoleError("turn_active", "This conversation already has an active turn.", 409);
+    }
+    if (input.prompt.trim().length === 0) {
+      throw new WebConsoleError("empty_turn", "A background follow-up prompt is required.", 400);
+    }
+    const turnId = randomUUID();
+    const assistantMessageId = randomUUID();
+    const now = this.now();
+    this.transaction(() => {
+      this.database.prepare(`
+        INSERT INTO turns (
+          id, thread_id, status, text, model, effort, assistant_message_id,
+          started_at, finished_at, error_code, error_message
+        ) VALUES (?, ?, 'running', ?, NULL, NULL, ?, ?, NULL, NULL, NULL)
+      `).run(turnId, threadId, input.prompt, assistantMessageId, now);
+      this.database.prepare(`
+        INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, ?, 'assistant', '[]', ?, ?, 'running')
+      `).run(assistantMessageId, threadId, turnId, now, now);
+      this.database.prepare(
+        "UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?",
+      ).run(now, threadId);
+      this.recordThreadRevision(threadId, "background_follow_up_started", now);
+      this.setSetting("current_thread_id", threadId);
+    });
+    return {
+      turnId,
+      conversationId: `web:${threadId}`,
+      text: input.prompt,
+      assistantMessageId,
+      attachments: [],
+      thread: this.requireThread(threadId),
+    };
+  }
+
   reserveLiveInput(threadId: string, text: string): ReserveStoredLiveInputResult {
     threadId = this.resolveThreadId(threadId);
     const thread = this.requireThread(threadId);
@@ -2149,6 +2289,13 @@ export class WebStore {
   listActiveTurnIds(): string[] {
     const rows = this.database.prepare("SELECT id FROM turns WHERE status = 'running'").all() as unknown as Array<{ id: string }>;
     return rows.map((row) => row.id);
+  }
+
+  turnStatus(turnId: string): WebMessageStatus | undefined {
+    const row = this.database.prepare("SELECT status FROM turns WHERE id = ?").get(turnId) as unknown as {
+      status: WebMessageStatus;
+    } | undefined;
+    return row?.status;
   }
 
   threadIdForTurn(turnId: string): string | undefined {
@@ -2680,6 +2827,21 @@ export class WebStore {
       );
       CREATE INDEX IF NOT EXISTS notification_deliveries_by_thread
         ON notification_deliveries(thread_id) WHERE thread_id IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS process_job_wake_deliveries (
+        source_id TEXT NOT NULL REFERENCES agents(source_id),
+        job_id TEXT NOT NULL,
+        delivery_key TEXT NOT NULL,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        state TEXT NOT NULL CHECK (state IN ('accepted', 'completed')),
+        disposition TEXT CHECK (disposition IN ('steered', 'follow_up')),
+        turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        PRIMARY KEY (source_id, job_id),
+        UNIQUE (source_id, delivery_key)
+      );
+      CREATE INDEX IF NOT EXISTS process_job_wake_deliveries_by_thread
+        ON process_job_wake_deliveries(thread_id, created_at);
       CREATE TABLE IF NOT EXISTS cron_channels (
         source_id TEXT NOT NULL REFERENCES agents(source_id),
         job_id TEXT NOT NULL,

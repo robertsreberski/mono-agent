@@ -163,6 +163,7 @@ export async function buildResponder(
   controller: ResponderControllerPort,
   coreConfig: MonoAgentConfig,
   channelId?: ChannelId,
+  processJobConversationScheme?: string,
 ): Promise<AgentResponder> {
   const processJobsRegistry = controller.processJobsRegistry
     ?? failedProcessJobsRootRegistryProtection(controller.agentRootOwnership.agentRoot);
@@ -413,6 +414,9 @@ export async function buildResponder(
       registry: processJobsRegistry,
       service: controller.processJobsService,
       channelId,
+      ...(processJobConversationScheme === undefined
+        ? {}
+        : { conversationScheme: processJobConversationScheme }),
       protectionPosture: processJobsProtectionPosture,
       routesOnlyPiNative: requestModelOverride.targetsProcessJobsPiNative,
     },

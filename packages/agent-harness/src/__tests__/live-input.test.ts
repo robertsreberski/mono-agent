@@ -85,4 +85,21 @@ describe("live input mailbox", () => {
     mailbox.markUnsupported();
     expect(mailbox.offer(request("late"))).toEqual({ status: "unavailable", reason: "unsupported" });
   });
+
+  it("admits only the exact target run and rejects a duplicate id retargeted to another run", async () => {
+    const mailbox = createLiveInputMailbox("run-exact");
+    expect(mailbox.offer({ ...request("wrong"), targetRunId: "run-other" }))
+      .toEqual({ status: "unavailable", reason: "inactive" });
+
+    const exact = mailbox.offer({ ...request("same", "Exact"), targetRunId: "run-exact" });
+    expect(exact.status).toBe("accepted");
+    const retargeted = mailbox.offer({ ...request("same", "Exact"), targetRunId: "run-other" });
+    expect(retargeted).toEqual({ status: "unavailable", reason: "invalid" });
+
+    const item = await mailbox[Symbol.asyncIterator]().next();
+    item.value?.acknowledge?.();
+    if (exact.status === "accepted") {
+      await expect(exact.settled).resolves.toEqual({ status: "applied", runId: "run-exact" });
+    }
+  });
 });
