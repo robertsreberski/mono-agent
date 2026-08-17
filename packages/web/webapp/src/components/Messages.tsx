@@ -30,6 +30,7 @@ import {
 } from "./assistant-ui/Reasoning";
 import { Icon } from "./Icon";
 import { safeJson } from "./json";
+import { toolHistoryFailure } from "./tool-history";
 import { SubagentPart } from "./Subagent";
 import { QuoteBlock } from "./assistant-ui/Quote";
 import { cronRunAnchor } from "./CronChannelHeader";
@@ -668,6 +669,7 @@ export function ToolFallback({
   }
   const isRunning = status.type === "running";
   const history = sessionToolHistory(artifact);
+  const historyFailure = toolHistoryFailure(history);
   const displayedState = typeof history?.terminalState === "string"
     ? history.terminalState
     : isRunning ? "running" : isError ? "failed" : result === undefined ? "called" : "done";
@@ -690,10 +692,10 @@ export function ToolFallback({
             <pre>{safeJson(result)}</pre>
           </>
         )}
-        {history !== undefined && (
+        {historyFailure !== undefined && (
           <>
             <span>History</span>
-            <pre>{toolHistorySummary(history)}</pre>
+            <pre>{historyFailure}</pre>
           </>
         )}
       </div>
@@ -709,21 +711,6 @@ function sessionToolHistory(value: unknown): Record<string, unknown> | undefined
     : undefined;
 }
 
-function toolHistorySummary(history: Record<string, unknown>): string {
-  const artifacts = Array.isArray(history.artifactReferences) ? history.artifactReferences : [];
-  const unavailable = artifacts.filter((entry) => (
-    typeof entry === "object" && entry !== null && !Array.isArray(entry)
-      && (entry as Record<string, unknown>).available === false
-  )).length;
-  return [
-    history.persistence === "persisted" ? "persisted" : `not persisted${typeof history.errorCode === "string" ? ` (${history.errorCode})` : ""}`,
-    typeof history.recordId === "string" ? `record ${history.recordId}` : undefined,
-    typeof history.sequence === "number" ? `sequence ${String(history.sequence)}` : undefined,
-    history.truncated === true ? `bounded ${String(history.retainedBytes ?? "?")}/${String(history.originalBytes ?? "?")} bytes` : undefined,
-    artifacts.length > 0 ? `${String(artifacts.length)} artifact reference${artifacts.length === 1 ? "" : "s"}${unavailable > 0 ? ` (${String(unavailable)} unavailable)` : ""}` : undefined,
-    "untrusted historical data",
-  ].filter((part): part is string => part !== undefined).join(" · ");
-}
 
 type CompactionDisplayStatus = "running" | "succeeded" | "skipped" | "failed" | "interrupted";
 

@@ -534,14 +534,20 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .context-display-trigger { height: 32px; display: inline-flex; align-items: center; gap: 5px; padding: 0 7px; color: var(--text-muted); background: transparent; border-radius: 8px; cursor: pointer; font-family: var(--font-mono); font-size: 9px; white-space: nowrap; }
 .context-display-trigger:hover, .context-display-trigger[aria-expanded="true"] { color: var(--text); background: var(--surface-subtle); }
 .context-display-icon { color: var(--accent); }
-.context-display-trigger-state { color: var(--text-soft); font-size: 8px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
-.context-display-trigger-state[data-state="updating"] { color: var(--accent); }
-.context-display-trigger-state[data-state="awaiting_measurement"] { color: var(--warning); }
+/* The trigger is one number, so measurement state has to read as colour; the
+   word itself lives in the popup title. */
 .context-display-trigger-percent { color: var(--accent); font-weight: 700; }
-.context-display-trigger-state::before, .context-display-trigger-percent::before, .context-display-trigger-cost::before { content: "·"; margin-right: 5px; color: var(--line-strong); }
+.context-display-trigger[data-state="updating"] .context-display-trigger-percent { color: var(--accent); }
+.context-display-trigger[data-state="awaiting_measurement"] .context-display-trigger-percent { color: var(--warning); }
+.context-display-trigger[data-state="last_measured"] .context-display-trigger-percent,
+.context-display-trigger[data-state="unavailable"] .context-display-trigger-percent { color: var(--text-soft); }
 .context-display-positioner { z-index: 111; }
 .context-display-popover { width: min(300px, calc(100vw - 24px)); padding: 14px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 13px; box-shadow: var(--shadow-lg); }
-.context-display-title { margin: 0 0 12px; font-size: 12px; font-weight: 720; }
+.context-display-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 12px; }
+.context-display-title { margin: 0; font-size: 12px; font-weight: 720; }
+.context-display-status { color: var(--text-soft); font-family: var(--font-mono); font-size: 8px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.context-display-status[data-state="updating"] { color: var(--accent); }
+.context-display-status[data-state="awaiting_measurement"] { color: var(--warning); }
 .context-display-unavailable { margin: 0 0 12px; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
 .context-display-state-note { margin: -2px 0 10px; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
 .context-display-model { display: grid; gap: 3px; margin: 0 0 11px; color: var(--text-muted); font-size: 9px; }
@@ -1039,7 +1045,6 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 }
 
 @media (max-width: 360px) {
-  .context-display-trigger-cost { display: none; }
   .message-column { padding-inline: 9px; }
   .mobile-thread-drawer { width: calc(100vw - 28px); left: 0; }
   .mobile-agent-drawer { width: calc(100vw - 36px); }

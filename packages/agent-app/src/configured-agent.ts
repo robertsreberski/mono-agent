@@ -94,6 +94,7 @@ import {
 } from "./process-jobs-protection.js";
 import {
   createProcessJobsRuntimeExtension,
+  processJobsAvailableForRequest,
   processJobsSandboxPolicy,
   PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR,
   PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR,
@@ -1200,6 +1201,16 @@ async function createConfiguredAgentHarnessInternal(
     ...(runtimeOptionsForRequest === undefined
       ? {}
       : { runtimeOptionsForRequest }),
+    // Same predicate the process-jobs extension uses, so the session block only
+    // describes backgrounding on turns whose Exec/Bash actually offer it.
+    backgroundProcessJobsAvailable: (input) => processJobsAvailableForRequest(input, {
+      service: internalHooks.processJobs?.service,
+      coreConfig: config,
+      channelId: internalHooks.processJobs?.channelId,
+      conversationScheme: internalHooks.processJobs?.conversationScheme,
+      routesOnlyPiNative: internalHooks.processJobs?.routesOnlyPiNative
+        ?? (() => configuredRoutesOnlyPiNative(config, model)),
+    }),
     ...(config.tools.mcpRequestContextServers === undefined
       ? {}
       : {

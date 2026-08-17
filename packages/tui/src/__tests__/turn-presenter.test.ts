@@ -119,7 +119,7 @@ describe("TurnPresenter", () => {
     expect(text).not.toContain("full data in run artifacts");
   });
 
-  it("renders canonical history state, truncation, and unavailable artifact references on the same tool panel", async () => {
+  it("keeps successful persistence bookkeeping off the tool panel while still using the canonical state", async () => {
     const { presenter, rendered } = setup();
     await presenter.event({
       type: "tool_call_started",
@@ -152,13 +152,12 @@ describe("TurnPresenter", () => {
 
     const text = rendered();
     expect(text).toContain("✗ Bash");
-    expect(text.replace(/\s+/gu, " ")).toContain(
-      "history persisted · record sth1_result · timeout · seq 2 · bounded · 1 artifact · 1 unavailable · untrusted historical data",
-    );
+    expect(text).not.toContain("sth1_result");
+    expect(text).not.toContain("untrusted historical data");
     expect(text).not.toContain("persisted-history-secret");
   });
 
-  it("renders correlation and trust metadata for failed history persistence without leaking unrelated fields", async () => {
+  it("reports a lost history record without leaking unrelated fields", async () => {
     const { presenter, rendered } = setup();
     await presenter.event({ type: "tool_call_started", id: "failed-history-tool", name: "Read" });
     await presenter.event({
@@ -177,8 +176,9 @@ describe("TurnPresenter", () => {
 
     const text = rendered();
     expect(text.replace(/\s+/gu, " ")).toContain(
-      "history not persisted (history_writer_closed) · record sth1_failed · untrusted historical data",
+      "Tool history for this call was not saved (history_writer_closed).",
     );
+    expect(text).not.toContain("sth1_failed");
     expect(text).not.toContain("failed-history-secret");
   });
 
@@ -199,7 +199,6 @@ describe("TurnPresenter", () => {
     });
 
     const text = rendered();
-    expect(text).toContain("record sth1_safe\\u001b[31m");
     expect(text).toContain("history\\u202eclosed");
     expect(text).not.toContain("\u001b");
     expect(text).not.toContain("\u202e");
