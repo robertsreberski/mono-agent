@@ -246,10 +246,11 @@ export function createCronChannelDriver(
         onEffectiveEnabledChanged: () => {
           input.onSummaryChanged?.(currentSummary());
         },
-      }));
+      }), { live: true });
       return {
         summary,
         async stop() {
+          operatorRegistry.demote();
           adapter.stop();
           await store?.close();
         },
