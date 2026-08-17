@@ -333,17 +333,40 @@ export function createCronOperatorService(input: CronOperatorServiceInput): Cron
 /** Stable indirection lets cron and TUI drivers start/reload independently. */
 export class CronOperatorRegistry implements CronOperatorService {
   private service: CronOperatorService | undefined;
+  private live = false;
 
   get configured(): boolean {
     return this.service !== undefined;
   }
 
-  bind(service: CronOperatorService): void {
+  /**
+   * `live` marks the binding made by a started channel — the only one holding a
+   * control store and a running adapter, and therefore the only one that can
+   * enable operator actions.
+   *
+   * A non-live bind never replaces a live one. `loadConfig` runs again long
+   * after start (rendering a channel config view re-enters it), and letting
+   * that store-less, adapter-less service take over silently disabled run-now
+   * and runtime-enable for the rest of the process lifetime.
+   */
+  bind(service: CronOperatorService, options?: { readonly live?: boolean }): void {
+    const live = options?.live === true;
+    if (!live && this.live) return;
     this.service = service;
+    this.live = live;
+  }
+
+  /**
+   * Drops the live claim while keeping the bound service readable, so a stopped
+   * channel's next `loadConfig` may take over the read-only surface.
+   */
+  demote(): void {
+    this.live = false;
   }
 
   clear(): void {
     this.service = undefined;
+    this.live = false;
   }
 
   overview(): CronOperatorOverview | Promise<CronOperatorOverview> {
