@@ -67,7 +67,7 @@ describe("WebSearch", () => {
       return new Response(JSON.stringify({
         results: [
           {
-            title: "Primary",
+            title: "Agent tools primary",
             url: "https://Example.com/article/?utm_source=test#section",
             content: "Useful result",
           },
@@ -139,13 +139,16 @@ describe("WebSearch", () => {
       }
       return new Response(`
         <div class="result">
-          <a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fguide%3Futm_campaign%3Dx">Guide</a>
-          <div class="result__snippet">A useful guide.</div>
+          <a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fguide%3Futm_campaign%3Dx">Mono agent guide</a>
+          <div class="result__snippet">A useful mono-agent guide.</div>
         </div>
       `);
     });
     const automatic = await performWebSearch({ query: "mono agent" }, {
       searchConfig: { backend: "auto", endpoint: "http://127.0.0.1:8088" },
+      codexSearch: vi.fn(async () => ({
+        ok: false, backend: "codex", message: "Codex subscription search unavailable.", retryable: false,
+      })),
       fetchImpl: autoFetch,
       ctx: runtimeContext(),
     });
@@ -155,6 +158,79 @@ describe("WebSearch", () => {
     });
     expect(automatic.text).toContain("https://example.com/guide");
     expect(autoFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects irrelevant local results before using one exact Codex subscription search", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      results: [{
+        title: "Los Angeles traffic",
+        url: "https://unrelated.example/traffic",
+        content: "Tour de France and Telegram headlines",
+      }],
+    }), { headers: { "content-type": "application/json" } }));
+    const codexSearch = vi.fn(async (query) => ({
+      ok: true,
+      backend: "codex",
+      actualQuery: query,
+      results: [{
+        title: "Claude Opus 5",
+        url: "https://www.anthropic.com/news/claude-opus-5",
+        snippet: "Anthropic announces Claude Opus 5.",
+        backend: "codex",
+      }],
+    }));
+
+    const exactQuery = 'site:anthropic.com "Claude Opus 5"';
+    const result = await performWebSearch({ query: exactQuery }, {
+      searchConfig: {
+        backend: "auto",
+        endpoint: "http://127.0.0.1:8088",
+        codex: { model: "gpt-5.6-luna" },
+      },
+      fetchImpl,
+      codexSearch,
+      ctx: runtimeContext(),
+    });
+
+    expect(result).toMatchObject({
+      error: false,
+      outcome: {
+        backend: "codex",
+        attemptedBackends: ["searxng", "codex"],
+        actualQueries: [exactQuery],
+        failureMetadata: [{ backend: "searxng", code: "no_relevant_results" }],
+      },
+    });
+    expect(codexSearch).toHaveBeenCalledOnce();
+    expect(codexSearch).toHaveBeenCalledWith(exactQuery, expect.objectContaining({
+      model: "gpt-5.6-luna",
+    }));
+    expect(result.text).toContain("actual_query=\"site:anthropic.com \\\"Claude Opus 5\\\"\"");
+    expect(result.text).toContain("https://www.anthropic.com/news/claude-opus-5");
+    expect(result.text).not.toContain("Los Angeles");
+  });
+
+  it("keeps strict Codex mode strict and never calls local or keyless HTTP backends", async () => {
+    const fetchImpl = vi.fn();
+    const codexSearch = vi.fn(async () => ({
+      ok: false,
+      backend: "codex",
+      message: "Codex must be signed in with ChatGPT subscription access.",
+      retryable: false,
+    }));
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "codex", codex: { model: "gpt-5.6-luna" } },
+      fetchImpl,
+      codexSearch,
+      ctx: runtimeContext(),
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: { backend: "codex", attemptedBackends: ["codex"] },
+    });
+    expect(codexSearch).toHaveBeenCalledOnce();
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("reports an all-engines-unresponsive SearXNG answer as a failure, not an empty result set", async () => {
@@ -222,10 +298,13 @@ describe("WebSearch", () => {
     // the keyless chain below it could never rescue the query.
     const fetchImpl = vi.fn(async (url) => (String(url).startsWith("http://127.0.0.1")
       ? new Response(JSON.stringify({ results: [] }), { headers: { "content-type": "application/json" } })
-      : new Response('<div class="result"><a class="result__a" href="https://example.com/guide">Guide</a></div>')));
+      : new Response('<div class="result"><a class="result__a" href="https://example.com/guide">Mono agent guide</a></div>')));
 
     const result = await performWebSearch({ query: "mono agent" }, {
       searchConfig: { backend: "auto", endpoint: "http://127.0.0.1:8088" },
+      codexSearch: vi.fn(async () => ({
+        ok: false, backend: "codex", message: "Codex subscription search unavailable.", retryable: false,
+      })),
       fetchImpl,
       ctx: runtimeContext(),
     });
@@ -296,7 +375,7 @@ describe("WebSearch", () => {
     const fetchImpl = vi.fn(async (url, init) => {
       calls.push({ url: String(url), init });
       if (String(url).includes("duckduckgo")) return new Response("", { status: 503 });
-      return new Response('<div class="result"><a class="result-link" href="https://example.com/a">A</a></div>');
+      return new Response('<div class="result"><a class="result-link" href="https://example.com/a">Second result</a></div>');
     });
 
     await performWebSearch({ query: "tokyo news", time_range: "day" }, {
@@ -386,7 +465,7 @@ describe("WebSearch", () => {
         duckCalls.push(String(url));
         return new Response("<html>anomaly</html>", { status: 202 });
       }
-      return new Response('<div class="result"><a class="result-link" href="https://example.com/a">A</a></div>');
+      return new Response('<div class="result"><a class="result-link" href="https://example.com/a">Second result</a></div>');
     });
 
     await performWebSearch({
@@ -447,7 +526,7 @@ describe("WebSearch", () => {
       if (String(url).includes("duckduckgo")) {
         return new Response("<html>anomaly</html>", { status: 202 });
       }
-      return new Response('<div class="result"><a class="result-link" href="https://example.com/a">A</a></div>');
+      return new Response('<div class="result"><a class="result-link" href="https://example.com/a">Second result</a></div>');
     });
 
     await performWebSearch({ query: "first" }, {
@@ -793,7 +872,7 @@ describe("run-scoped web controller and browser isolation", () => {
 
   it("shares cached searches across controllers so sibling runs skip the network", async () => {
     const fetchImpl = vi.fn(async () => new Response(
-      '<div class="result"><a class="result__a" href="https://example.com/a">A</a></div>',
+      '<div class="result"><a class="result__a" href="https://example.com/a">Shared result</a></div>',
     ));
     const options = { searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext() };
 

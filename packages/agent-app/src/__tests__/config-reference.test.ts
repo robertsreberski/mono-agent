@@ -93,6 +93,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "tools.mcpCallTimeoutMs": "integer",
   "tools.mcpCallMaxTotalTimeoutMs": "integer",
   "tools.web.search.backend": "string",
+  "tools.web.search.codex.model": "string",
   "tools.web.search.endpoint": "string",
   "tools.web.fetch.render": "string",
   "tools.web.fetch.browserCommand": "string",

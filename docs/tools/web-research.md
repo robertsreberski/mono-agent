@@ -1,6 +1,6 @@
 ---
 title: "Local-first web research"
-description: "Configure WebSearch and WebFetch with local SearXNG, static extraction, and isolated browser rendering."
+description: "Configure WebSearch with local SearXNG, ChatGPT-subscription Codex search, and keyless fallbacks, plus static or browser-backed WebFetch."
 sidebar:
   order: 5
 ---
@@ -26,7 +26,8 @@ The framework defaults to keyless search fallback and static fetch extraction:
     "web": {
       "search": {
         "backend": "auto",
-        "endpoint": "http://127.0.0.1:8088"
+        "endpoint": "http://127.0.0.1:8088",
+        "codex": { "model": "gpt-5.6-luna" }
       },
       "fetch": {
         "render": "never",
@@ -53,6 +54,7 @@ Environment equivalents:
 | --- | --- | --- |
 | `tools.web.search.backend` | `MONO_AGENT_WEB_SEARCH_BACKEND` | `auto` |
 | `tools.web.search.endpoint` | `MONO_AGENT_WEB_SEARCH_ENDPOINT` | unset |
+| `tools.web.search.codex.model` | `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` | `gpt-5.6-luna` |
 | `tools.web.fetch.render` | `MONO_AGENT_WEB_FETCH_RENDER` | `never` |
 | `tools.web.fetch.browserCommand` | `MONO_AGENT_WEB_BROWSER_COMMAND` | `agent-browser` |
 
@@ -62,16 +64,39 @@ Search backends have explicit behavior:
 
 | Backend | Behavior |
 | --- | --- |
-| `auto` | Try configured SearXNG first; if that request fails *or returns nothing*, use the keyless chain. Without an endpoint, start with the keyless chain. |
+| `auto` | Try configured SearXNG first, then ChatGPT-subscription Codex search, then the keyless chain. A non-empty but irrelevant or out-of-domain result does not stop the chain. Without an endpoint, start with Codex. |
 | `searxng` | Require the configured local endpoint and fail when it fails. No silent fallback. |
+| `codex` | Require a ChatGPT-authenticated `codex` CLI whose app-server exposes web search and the configured model. No SearXNG/keyless fallback. |
 | `keyless` | Skip SearXNG and try DuckDuckGo HTML, then Startpage. |
 
 The tool accepts one `query`, up to three `alternate_queries`, a result `limit`
 from 1–10, `domains`, `exclude_domains`, `language`, and a `time_range` of
 `day`, `month`, or `year`. Query variants run concurrently in a deterministic
-order. Results are normalized, tracking parameters are removed, duplicates are
-fused with reciprocal-rank fusion, and include/exclude domain filters are
-enforced again on returned URLs.
+order for local and keyless search. Quotes and `site:` operators are never
+stripped or relaxed. Results are normalized, tracking parameters are removed,
+duplicates are fused with reciprocal-rank fusion, and include/exclude domain
+filters plus a deterministic query-term/quoted-phrase relevance gate are
+enforced before a backend can end `auto` mode.
+
+### ChatGPT-subscription Codex search
+
+Codex search uses the installed `codex app-server` and the operator's existing
+ChatGPT sign-in. It does not read, export, log, or persist OAuth tokens, and it
+does not use an OpenAI API key or API-billed Responses request. Readiness
+requires all three of:
+
+- `account/read` reports ChatGPT authentication;
+- `modelProvider/capabilities/read` reports `webSearch: true`;
+- `model/list` includes `tools.web.search.codex.model`.
+
+Each fallback executes one ephemeral, low-effort search turn in a private
+scratch working directory. MCP servers, environments, dynamic tools, project
+instructions, and capability roots are empty. Mono-agent consumes only the one
+completed structured `webSearch.results` item; assistant prose and any URLs it
+contains are ignored. A server interaction, a second search item, or any
+non-search tool item interrupts and rejects the fallback. Concurrent
+subscription searches are serialized process-wide, while the ordinary
+successful-result cache still prevents repeated calls for the same request.
 
 An empty result set is a successful answer (`No results.`) **only when the
 backend that produced it was actually working**. A tool error means every
@@ -95,13 +120,14 @@ field is the only thing that separates that from a query nothing matched:
 
 The error text names every failed engine (`duckduckgo: CAPTCHA; brave: too many
 requests`), so a blocked instance is diagnosable from the tool output without
-reading container logs. In `auto` mode the keyless chain still runs after it.
+reading container logs. In `auto` mode Codex subscription search and then the
+keyless chain still run after it.
 
 The stock SearXNG engine set is not usable from an ordinary residential IP —
 DuckDuckGo, Startpage and Qwant all answer with a CAPTCHA, and `google cse`
 needs an API key. [`demos/searxng`](https://github.com/robertsreberski/mono-agent/tree/main/demos/searxng)
-ships a working engine selection; check yours with
-`curl -sS -X POST http://127.0.0.1:8088/search -d 'q=test&format=json&engines=bing'`.
+ships a Yahoo-only engine selection; check yours with
+`curl -sS -X POST http://127.0.0.1:8088/search -d 'q=test&format=json&engines=yahoo'`.
 
 ### Keyless rate limiting
 
@@ -214,24 +240,31 @@ separately controls which network destinations they may contact:
 - `network.mode: "none"` blocks every web request.
 - `localhost` admits the local SearXNG companion but blocks public keyless
   search and public fetches.
-- an allowlist must include the local endpoint plus every public destination
+- an allowlist must include the local endpoint, `chatgpt.com` for Codex search,
+  plus every public destination
   the agent is authorized to search or fetch.
 - `all` permits public egress while retaining filesystem enforcement.
 
 `mono-agent validate` adds a **Web search & fetch** section. With liveness
-enabled it sends a bounded JSON query to a configured SearXNG endpoint and, when
-rendering is enabled, checks that `browserCommand --version` reports
-`agent-browser` 0.33.1 or newer. `liveness: false` skips both external probes
+enabled it sends a bounded JSON query to a configured SearXNG endpoint. Strict
+`codex` mode also verifies ChatGPT login, web-search capability, and model
+availability; `auto` checks that fallback lazily only if a search reaches it.
+When rendering is enabled, validation checks that `browserCommand --version`
+reports `agent-browser` 0.33.1 or newer. `liveness: false` skips external probes
 without changing structural validation.
 
 ## Security and observability
 
-Search snippets and fetched pages are always labelled untrusted. Tool-result
-details deliberately omit the query, URL, request headers, and command
-arguments. Timing events retain only bounded operational fields such as status,
-error code, backend, attempt count, byte count, HTTP/exit status, timeout,
-rendered, cache-hit, and truncation flags.
+Search snippets, the actual search query, and fetched pages are always labelled
+untrusted. WebSearch output includes bounded backend/query/provenance metadata
+so fallback behavior is inspectable, while sanitized failures expose only a
+backend and stable category. Timing events retain only bounded operational
+fields such as status, error code, backend, attempt count, byte count,
+HTTP/exit status, timeout, rendered, cache-hit, and truncation flags; request
+headers and command arguments stay out of them.
 
-The tools are public-web readers, not an authenticated browsing surface. They
-do not expose browser profiles, cookies, login state, file downloads, arbitrary
+The tools are public-web readers, not an authenticated browsing surface. Codex
+uses an existing ChatGPT subscription only as the search transport; neither
+search results nor model-visible output receives account data. The tools do not
+expose browser profiles, cookies, login state, file downloads, arbitrary
 headers, or remote SearXNG credentials.

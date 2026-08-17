@@ -13,25 +13,21 @@ offline search index.
 
 ## Engine selection
 
-`settings.yml` overrides which engines are enabled, and this is not cosmetic:
-the stock general set is unusable from an ordinary residential IP. DuckDuckGo,
-Startpage and Qwant all answer with a CAPTCHA and `google cse` needs an API key
-this instance does not carry, which leaves *every* query returning `HTTP 200`
-with an empty result list.
-
-Enabled instead: **bing** (the workhorse), plus **mwmbl** and **marginalia** —
-small independent indexes kept for redundancy, because a single engine
-eventually suspends under the query fan-out one `WebSearch` produces. **brave**
-stays on from the defaults; it works but rate-limits too readily to carry the
-load alone. Entries merge into the image defaults by name, so each override only
-flips a `disabled` flag.
+`settings.yml` deliberately keeps only **Yahoo** from the pinned image's engine
+catalog. This is not cosmetic: inheriting the full default engine set mixed
+blocked and low-relevance sources into otherwise useful results. Yahoo was the
+engine measured to return relevant results reliably from this operator network.
+The `keep_only` form also prevents a later image default from silently joining
+the result set. Outbound HTTP/2 is disabled because the current Yahoo endpoint
+disconnects that transport; the pinned HTTP/1.1 path is covered by the live
+smoke command below.
 
 Verify an engine before enabling it — some are enabled-but-broken in a given
 image and return zero results with no error at all:
 
 ```bash
 curl --silent --request POST \
-  --data 'q=best+time+to+visit+japan&format=json&engines=bing' \
+  --data 'q=best+time+to+visit+japan&format=json&engines=yahoo' \
   http://127.0.0.1:8088/search
 ```
 
@@ -78,8 +74,10 @@ Strict local-only search:
 }
 ```
 
-Use `"backend": "auto"` to try this endpoint first and fall back to the
-keyless public-search adapters when it is unavailable.
+Use `"backend": "auto"` to try this endpoint first, then ChatGPT-subscription
+Codex search through the signed-in `codex` CLI, then the keyless public-search
+adapters. Local results must pass domain and relevance checks before they stop
+the fallback chain.
 
 Run `mono-agent validate` after editing the config. Its **Web search & fetch**
 section performs a bounded JSON search probe when liveness checks are enabled.

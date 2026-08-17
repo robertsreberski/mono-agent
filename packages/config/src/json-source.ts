@@ -224,6 +224,9 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly search?: {
         readonly backend?: string;
         readonly endpoint?: string;
+        readonly codex?: {
+          readonly model?: string;
+        };
       };
       readonly fetch?: {
         readonly render?: string;

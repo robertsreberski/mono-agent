@@ -122,7 +122,7 @@ These tools need no extra capability config (coverage: `config` — they exist b
 | `Exec` | Run one executable directly with an argv array and no shell parsing. |
 | `NodeRepl` | Evaluate JavaScript in a run-scoped Node.js REPL. |
 | `WebFetch` | Fetch and locally extract one public URL, with opt-in browser rendering. |
-| `WebSearch` | Search via local SearXNG or keyless public fallbacks. |
+| `WebSearch` | Search via local SearXNG, ChatGPT-subscription Codex app-server, or keyless public fallbacks. |
 
 These are gated by `tools.allowedTools` / `tools.disallowedTools`. Deny always wins, and listing the same tool in both is rejected at validation time. Mono-agent-managed built-ins are provided by the Pi bridge; provider-owned routes use their native tool surfaces. See [Tool Policy](/tools/policy/) for the full allow/deny semantics, plus [MCP tools](/tools/mcp/) and the [sandbox](/tools/sandbox/) for process and network confinement.
 
@@ -269,7 +269,8 @@ Other bridges follow their own compaction behavior. See [Backends](/runtime/back
 
 ## Web research and WebFetch retry
 
-`WebSearch` supports a loopback SearXNG companion and deterministic keyless
+`WebSearch` supports a loopback SearXNG companion, structured
+ChatGPT-subscription Codex app-server search, and deterministic keyless
 fallbacks. `WebFetch` performs local Defuddle/Readability extraction for HTML,
 plus JSON, feed, PDF, and text handling. Optional `agent-browser` rendering is
 off by default and is a config-level capability ceiling.

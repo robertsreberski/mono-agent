@@ -207,7 +207,8 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "mcpCallMaxTotalTimeoutMs": 2700000,   // hard per-call wall clock (45 min); progress cannot extend it
     "web": {
       "search": {
-        "backend": "auto",                 // auto | searxng (strict) | keyless
+        "backend": "auto",                 // auto | searxng | codex | keyless
+        "codex": { "model": "gpt-5.6-luna" },
         "endpoint": "http://127.0.0.1:8088" // optional loopback HTTP SearXNG base URL
       },
       "fetch": {
