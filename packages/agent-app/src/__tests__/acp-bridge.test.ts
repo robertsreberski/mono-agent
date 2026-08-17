@@ -265,7 +265,7 @@ async function writeSourceManifest(options: {
             schema: "mono-agent.acp-source.v1",
             bridgeVersion: 1,
             protocolVersion: 1,
-            installedVersion: "0.20.2",
+            installedVersion: "0.20.3",
             workspacePath: options.workspace,
           },
         },
