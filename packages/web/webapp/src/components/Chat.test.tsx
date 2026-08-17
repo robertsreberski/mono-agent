@@ -262,7 +262,7 @@ describe("ModelControls", () => {
     render(<ModelControls />);
 
     const trigger = screen.getByRole("button", { name: "Context usage: unavailable" });
-    expect(trigger).toHaveTextContent("Context —");
+    expect(trigger).toHaveTextContent("—");
     fireEvent.click(trigger);
     const popover = await screen.findByRole("dialog", { name: "Context usage" });
     expect(within(popover).queryByRole("progressbar")).not.toBeInTheDocument();

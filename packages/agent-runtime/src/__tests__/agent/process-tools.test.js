@@ -83,7 +83,11 @@ describe("Exec", () => {
       error: false,
       outcome: { status: "ok", code: "background_started", background: true, job_id: "pj_runtime" },
     });
-    expect(JSON.parse(result.text)).toMatchObject({ job_id: "pj_runtime", state: "running" });
+    // The result leads with guidance so a started job is not mistaken for one
+    // the model should poll; the machine-readable payload follows it.
+    const [guidance, startPayload] = result.text.split("\n");
+    expect(guidance).toContain("Do not poll");
+    expect(JSON.parse(startPayload)).toMatchObject({ job_id: "pj_runtime", state: "running" });
     expect(start).toHaveBeenCalledTimes(1);
     expect(start.mock.calls[0][0].prepared.command).toBe(preparedCommands[0].command);
     expect(start.mock.calls[0][0].prepared.sandboxSettingsPath).toBe(resolve(workspace, "settings.json"));

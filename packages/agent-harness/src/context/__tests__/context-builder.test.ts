@@ -157,6 +157,39 @@ describe('buildAgentContext', () => {
     );
   });
 
+  it('tells the agent not to reload a skill only when the session is confirmed warm', () => {
+    const skills = [
+      { name: 'research', description: 'Find sources', mainFile: '/skills/research/SKILL.md' },
+    ];
+    const warm = buildAgentContext({
+      identity: 'Identity text',
+      userMessage: 'Use a skill if needed.',
+      skills,
+      skillDisclosure: 'index',
+      warmSession: true,
+    });
+    const cold = buildAgentContext({
+      identity: 'Identity text',
+      userMessage: 'Use a skill if needed.',
+      skills,
+      skillDisclosure: 'index',
+      warmSession: false,
+    });
+    // A cold reseed replays history as bounded untrusted text, so the earlier
+    // ReadSkill result is genuinely gone and re-reading is correct.
+    const claim = 'do not reload a skill whose complete instructions you can already see';
+
+    expect(warm.sections.find((section) => section.id === 'skills')?.content).toContain(claim);
+    expect(cold.sections.find((section) => section.id === 'skills')?.content).not.toContain(claim);
+    expect(buildAgentContext({
+      identity: 'Identity text',
+      userMessage: 'Use a skill if needed.',
+      skills,
+      skillDisclosure: 'full',
+      warmSession: true,
+    }).sections.find((section) => section.id === 'skills')?.content).not.toContain(claim);
+  });
+
   it('renders selected skill instructions in a separate section', () => {
     const context = buildAgentContext({
       identity: 'Identity text',

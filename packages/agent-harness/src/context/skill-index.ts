@@ -13,6 +13,23 @@ const SKILL_REFERENCE_GUIDANCE =
 const READ_SKILL_GUIDANCE =
   "When a listed skill applies and its complete instructions are not already present, call `ReadSkill` with its exact name when that tool is available. Do not use `Read` to open a skill's `SKILL.md`; reserve ordinary file reads for files referenced by the loaded skill.";
 
+/**
+ * `READ_SKILL_GUIDANCE`'s "not already present" test is the only brake on
+ * re-loading a skill, and the index is re-sent every turn with no way for the
+ * model to tell a live transcript from a replayed one — so it re-reads. Said
+ * ONLY on a confirmed warm session, where an earlier turn's `ReadSkill` result
+ * may still be in context; a cold reseed replays history as bounded, explicitly
+ * untrusted text, and claiming otherwise there would make the agent improvise
+ * instructions it does not have.
+ *
+ * Deliberately hedged rather than categorical. A warm session can still be
+ * compacted mid-conversation, which can summarize an earlier skill body away —
+ * so this points the agent at what it can actually see instead of asserting
+ * what must be there.
+ */
+const WARM_SESSION_SKILL_GUIDANCE =
+  "This session is continuous, so earlier turns in this conversation — including any skill body you loaded with `ReadSkill` — may still be in context above. Check before loading: do not reload a skill whose complete instructions you can already see.";
+
 const READ_SKILL_COMPATIBLE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/u;
 
 export interface LoadedSkillFile {
@@ -118,10 +135,15 @@ export function renderSkillIndex(
 export function renderSkillIndexEntries(
   entries: readonly SkillIndexSummary[],
   skillDisclosure?: 'index' | 'full',
+  warmSession = false,
 ): string {
   const index = entries.map((entry) => `- **${entry.name}** — ${entry.description}`).join('\n');
   const guidance = skillDisclosure === 'index'
-    ? `${SKILL_REFERENCE_GUIDANCE}\n\n${READ_SKILL_GUIDANCE}`
+    ? [
+        SKILL_REFERENCE_GUIDANCE,
+        READ_SKILL_GUIDANCE,
+        ...(warmSession ? [WARM_SESSION_SKILL_GUIDANCE] : []),
+      ].join('\n\n')
     : SKILL_REFERENCE_GUIDANCE;
   return `${guidance}\n\n${index}`;
 }

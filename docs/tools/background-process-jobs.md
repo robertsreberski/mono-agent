@@ -282,6 +282,19 @@ foreground call would launch. The immediate result contains only an opaque
 `job_id`, `state`, and `started_at`; it does not expose argv, environment,
 process ids, paths, or secrets.
 
+The agent is told when to reach for this and what not to do afterwards in three
+places, all gated on the same availability check as the schema itself: the
+`background` field description steers it toward work that outlives a reply and
+away from anything whose output is needed to answer now; the start result leads
+with a line saying the conversation is woken on completion, so the agent must
+not poll, sleep, or re-run the command to check; and the session block of the
+system prompt repeats both alongside the daemonize prohibition and the fact that
+job output arrives as untrusted evidence. The same availability check also
+relaxes the prompt's continuation rule, which otherwise has the agent announce
+that background delivery was not scheduled for a job it just started. No
+operator command is named in any model-facing copy — the agent has a shell, and
+naming a status command invites the polling this is meant to prevent.
+
 The process owns its sandbox settings until every process remaining in its
 owned POSIX process group exits.
 On POSIX a command-agnostic detached group leader starts first. Mono-agent

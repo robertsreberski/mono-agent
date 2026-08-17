@@ -115,9 +115,7 @@ export function createProcessJobsRuntimeExtension(
           });
         }
         if (origin !== undefined
-          && wake.kind !== "missed"
-          && chainDepth < options.service.settings.maxChainDepth
-          && hasAllowedProcessTool(options.coreConfig)) {
+          && processJobsAdmissible(origin, wake, chainDepth, options.service, options.coreConfig)) {
           runtimeOptions = {
             ...runtimeOptions,
             processJobs: options.service.controller(
@@ -244,6 +242,48 @@ export function processJobOriginForRequest(
     channel,
   };
   return isProcessJobOriginRecord(origin) ? origin : undefined;
+}
+
+function processJobsAdmissible(
+  origin: ProcessJobOriginRecord | undefined,
+  wake: ReturnType<typeof processJobWakeContextForRequest>,
+  chainDepth: number,
+  service: ProcessJobsServiceHandle | undefined,
+  coreConfig: MonoAgentConfig,
+): boolean {
+  return origin !== undefined
+    && wake.kind !== "missed"
+    && service !== undefined
+    && chainDepth < service.settings.maxChainDepth
+    && hasAllowedProcessTool(coreConfig);
+}
+
+export interface ProcessJobsAvailabilityOptions {
+  readonly service: ProcessJobsServiceHandle | undefined;
+  readonly coreConfig: MonoAgentConfig;
+  readonly channelId: ChannelId | undefined;
+  readonly conversationScheme?: string | undefined;
+  readonly routesOnlyPiNative?: (metadata: Record<string, unknown> | undefined) => boolean;
+}
+
+/**
+ * The same gate the extension applies before injecting a controller, minus the
+ * checks that only exist once a run is under way (registry attestation and the
+ * resolved model). Exported so the prompt guidance and the tool schema are
+ * decided by one predicate and cannot drift apart; it errs strict, because
+ * telling the model it can background a command it cannot is the worse failure.
+ */
+export function processJobsAvailableForRequest(
+  input: Pick<AgentHarnessRuntimeOptionsInput, "request" | "runId">,
+  options: ProcessJobsAvailabilityOptions,
+): boolean {
+  if (options.service === undefined) return false;
+  // Non-Pi routes never build the Exec/Bash schemas that carry `background`.
+  if (options.routesOnlyPiNative?.(input.request.metadata) === false) return false;
+  const origin = processJobOriginForRequest(input, options.channelId, options.conversationScheme);
+  const wake = processJobWakeContextForRequest(input.request);
+  const chainDepth = wake.kind === "resolved" ? wake.context.chainDepth : 0;
+  return processJobsAdmissible(origin, wake, chainDepth, options.service, options.coreConfig);
 }
 
 function hasAllowedProcessTool(config: MonoAgentConfig): boolean {
