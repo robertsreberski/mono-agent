@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.20.3 — Subscription-backed web search (2026-08-17)
+
+- Add an ordered WebSearch pipeline that tries a configured local SearXNG
+  service first, a serialized Codex app-server turn authenticated by the
+  existing ChatGPT subscription second, and keyless providers last.
+- Preserve quoted phrases and `site:` constraints across every backend, and
+  require domain and meaningful relevance before accepting a result set.
+- Add typed backend/model configuration, environment overrides, doctor
+  readiness checks, and a loopback-only Yahoo SearXNG companion configuration.
+
 ## 0.20.2 — Background wake delivery and context clarity (2026-08-16)
 
 - Deliver completed background-process results as visible agent turns across
