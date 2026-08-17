@@ -141,11 +141,44 @@ describe("CronChannelHeader", () => {
     expect(screen.getByRole("button", { name: "Disable" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Configuration" }));
 
-    expect(await screen.findByRole("dialog", { name: "Cron configuration" })).toHaveFocus();
+    const configDialog = await screen.findByRole("dialog", { name: "Cron configuration" });
+    await waitFor(() => expect(configDialog).toHaveFocus());
     expect(screen.getByText("[redacted]")).toBeInTheDocument();
     expect(screen.getByText("json · redacted")).toBeInTheDocument();
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("returns focus to the control that opened the dialog, not to whatever a re-render saw", async () => {
+    vi.mocked(useConsoleStore).mockReturnValue(store({
+      selectedAgent: {
+        sourceId: "alpha",
+        label: "Alpha",
+        status: "online",
+        cron: { read: true, actions: false },
+      },
+      cronOverview: { ...overview, actionsEnabled: false },
+    }));
+    vi.mocked(api.cronConfigView).mockResolvedValue({
+      id: "cron",
+      label: "Cron",
+      status: "active",
+      fields: [{ id: "prompt", label: "Prompt", value: "[redacted]", source: "json", redacted: true }],
+    });
+
+    render(<CronChannelHeader />);
+    const opener = screen.getByRole("button", { name: "Configuration" });
+    opener.focus();
+    expect(opener).toHaveFocus();
+
+    fireEvent.click(opener);
+    const dialog = await screen.findByRole("dialog", { name: "Cron configuration" });
+    await waitFor(() => expect(dialog).toHaveFocus());
+
+    // Closing must return focus to the control that opened the dialog.
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(opener).toHaveFocus());
   });
 
   it("ties both disabled actions to a focusable missing-key explanation without relying on title", () => {

@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api";
 import { useConsoleStore } from "../console-store";
@@ -45,18 +45,30 @@ function CronDialog({
   readonly onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
+  // Callers pass an inline arrow, so `onClose` has a new identity every render.
+  // Keeping it in a ref lets the focus trap below own the dialog's whole
+  // lifetime instead of tearing down and re-engaging on each re-render.
+  const onCloseRef = useRef(onClose);
   useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+  // Layout effect, not a passive one: focus must land in the same commit that
+  // mounts the dialog. A passive effect is flushed asynchronously, leaving a
+  // window where the dialog exists but focus is still on <body> — a flash of
+  // unfocused modal for a user, and an intermittent failure for anything that
+  // observes focus right after the dialog appears.
+  useLayoutEffect(() => {
     const prior = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     dialogRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") onCloseRef.current();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => {
       document.removeEventListener("keydown", onKeyDown);
       prior?.focus();
     };
-  }, [onClose]);
+  }, []);
   return (
     <div className="dialog-layer" role="presentation" onMouseDown={onClose}>
       <section
