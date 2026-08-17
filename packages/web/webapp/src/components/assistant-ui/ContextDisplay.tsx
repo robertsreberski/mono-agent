@@ -140,39 +140,37 @@ export function ContextDisplay({
 
   return (
     <Popover.Root>
+      {/* The toolbar shares one narrow row with the model selector on a phone,
+          so the trigger carries the single number worth glancing at. Tokens,
+          state, and cost are a tap away in the popup, and the aria-label keeps
+          the full summary for anyone who cannot see the colour. */}
       <Popover.Trigger
         type="button"
         className={joinClassNames("context-display-trigger", className)}
         data-slot="context-display-trigger"
+        data-state={context.status}
         aria-label={`Context usage: ${triggerSummary}`}
       >
         <Icon name="spark" size={14} className="context-display-icon" />
-        <span className="context-display-trigger-tokens" data-slot="context-display-total">
-          {usage === undefined
-            ? context.status === "updating" ? "Context updating…" : "Context —"
-            : `Context ${formatTokenCount(totalTokens)}`}
+        <span className="context-display-trigger-percent" data-slot="context-display-percent">
+          {roundedPercent === undefined ? "—" : `${roundedPercent}%`}
         </span>
-        {statusLabel !== undefined && (
-          <span className="context-display-trigger-state" data-state={context.status}>
-            {statusLabel}
-          </span>
-        )}
-        {roundedPercent !== undefined && (
-          <span className="context-display-trigger-percent" data-slot="context-display-percent">
-            {roundedPercent}%
-          </span>
-        )}
-        {cost !== undefined && (
-          <span className="context-display-trigger-cost" data-slot="context-display-cost">
-            {formatUsd(cost)}
-          </span>
-        )}
       </Popover.Trigger>
 
       <Popover.Portal>
         <Popover.Positioner className="context-display-positioner" side="bottom" align="end" sideOffset={8}>
           <Popover.Popup className="context-display-popover">
-            <Popover.Title className="context-display-title">Context usage</Popover.Title>
+            {/* The status word lives beside the title rather than inside it:
+                the title is the dialog's accessible name, which must stay
+                stable as measurement state changes. */}
+            <div className="context-display-header">
+              <Popover.Title className="context-display-title">Context usage</Popover.Title>
+              {statusLabel !== undefined && (
+                <span className="context-display-status" data-state={context.status}>
+                  {statusLabel}
+                </span>
+              )}
+            </div>
 
             {usage === undefined ? (
               <p className="context-display-unavailable" data-slot="context-display-unavailable">

@@ -45,7 +45,9 @@ The folder convention is part of the standard [agent folder layout](/config/fold
 
 Generated agents use `skillDisclosure: "index"`, so their names/descriptions enter the prompt while the bodies load on demand through `ReadSkill`. `ReadSkill` is shown separately from action-tool allowlists because disabling file/shell/web actions does not disable skill disclosure.
 
-In index mode, the model-facing Skill Index contains names and descriptions but not filesystem paths to each `SKILL.md`. The prompt tells the agent to call `ReadSkill` with the selected name before following that skill; ordinary `Read` remains available for supporting files referenced by the loaded instructions. Skill paths remain in host-side context metadata for diagnostics.
+In index mode, the model-facing Skill Index contains names and descriptions but not filesystem paths to each `SKILL.md`. The prompt tells the agent to call `ReadSkill` with the selected name before following that skill, unless those instructions are already in context; ordinary `Read` remains available for supporting files referenced by the loaded instructions. Skill paths remain in host-side context metadata for diagnostics.
+
+The index and its guidance are rebuilt for every turn, so "already in context" is a claim the prompt only makes when it can be true. On a confirmed warm provider session — the case where the earlier turn's `ReadSkill` result may still be in the live transcript — the index adds a line telling the agent to check before loading and not to reload a skill whose complete instructions it can already see. The line is hedged on purpose: a warm session can still be compacted, which may summarize an earlier skill body away. A cold reopen or a stateless run replays history as bounded, explicitly untrusted text in which the skill body is genuinely absent, so the line is withheld entirely and re-loading the skill is correct behaviour rather than a wasted call.
 
 ## Canonical skill references
 

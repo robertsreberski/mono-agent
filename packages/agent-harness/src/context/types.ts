@@ -58,6 +58,12 @@ export interface BuildContextInput {
   readonly skills?: readonly SkillIndexEntry[];
   /** Emits ReadSkill usage guidance when skill bodies are disclosed on demand. */
   readonly skillDisclosure?: 'index' | 'full';
+  /**
+   * True only on a confirmed warm provider session, where earlier turns —
+   * including any skill body already loaded — are still in the live transcript.
+   * A cold reseed replays history as text and must not claim otherwise.
+   */
+  readonly warmSession?: boolean;
   readonly skillInstructions?: ContextBlockInput | readonly ContextBlockInput[];
 }
 
@@ -100,5 +106,11 @@ export interface FileContextInput {
   readonly skillsRoot?: string;
   /** Emits ReadSkill usage guidance when skill bodies are disclosed on demand. */
   readonly skillDisclosure?: 'index' | 'full';
+  /**
+   * True only on a confirmed warm provider session, where earlier turns —
+   * including any skill body already loaded — are still in the live transcript.
+   * A cold reseed replays history as text and must not claim otherwise.
+   */
+  readonly warmSession?: boolean;
   readonly skillInstructions?: ContextBlockInput | readonly ContextBlockInput[];
 }

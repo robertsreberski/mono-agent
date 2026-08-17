@@ -131,7 +131,7 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.getByText('"Applied to current run"')).toBeVisible();
   });
 
-  it("renders the persisted terminal state, truncation, and unavailable artifact metadata from the canonical tool record", () => {
+  it("uses the canonical terminal state but keeps successful persistence bookkeeping out of the transcript", () => {
     render(<MessageHarness message={{
       ...assistantMessage("complete"),
       parts: [
@@ -161,11 +161,40 @@ describe("AssistantMessage grouped parts", () => {
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
     expect(screen.getByText("timeout")).toBeVisible();
     fireEvent.click(screen.getByText("Bash").closest("summary")!);
-    expect(screen.getByText(/persisted · record sth1_result · sequence 2/iu)).toHaveTextContent(
-      "bounded 16000/30000 bytes",
-    );
-    expect(screen.getByText(/1 artifact reference \(1 unavailable\)/iu)).toBeVisible();
-    expect(screen.getByText(/untrusted historical data/iu)).toBeVisible();
+    expect(screen.queryByText("History")).toBeNull();
+    expect(screen.queryByText(/sth1_result/u)).toBeNull();
+    expect(screen.queryByText(/untrusted historical data/iu)).toBeNull();
+  });
+
+  it("surfaces a lost history record, because the tool's output is gone for good", () => {
+    render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      parts: [
+        {
+          type: "tool-call",
+          toolCallId: "tool-history-failed",
+          toolName: "Bash",
+          args: { command: "slow-command" },
+          result: "bounded output",
+          status: "complete",
+          history: {
+            recordId: "sth1_result",
+            sequence: 2,
+            persistence: "failed",
+            errorCode: "history_writer_closed",
+            untrusted: true,
+          },
+        },
+        { type: "text", text: "The command finished." },
+      ],
+    }} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(screen.getByText("Bash").closest("summary")!);
+    expect(
+      screen.getByText("Tool history for this call was not saved (history_writer_closed)."),
+    ).toBeVisible();
+    expect(screen.queryByText(/sth1_result/u)).toBeNull();
   });
 
   it("preserves reasoning, tools, and answer order while keeping telemetry internal", () => {

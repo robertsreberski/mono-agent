@@ -27,6 +27,10 @@ describe("ContextDisplay", () => {
       name: "Context usage: 1.4k tokens, 50%, $0.0042",
     });
     expect(trigger).toHaveClass("context-display-trigger", "compact-context");
+    // The chip is one glanceable number; tokens and cost stay in the popup.
+    expect(trigger).toHaveTextContent("50%");
+    expect(trigger).not.toHaveTextContent("1.4k");
+    expect(trigger).not.toHaveTextContent("$0.0042");
     fireEvent.click(trigger);
 
     const popover = await screen.findByRole("dialog", { name: "Context usage" });
@@ -65,7 +69,7 @@ describe("ContextDisplay", () => {
     );
 
     const trigger = screen.getByRole("button", { name: "Context usage: unavailable, $5.10" });
-    expect(trigger).toHaveTextContent("Context —");
+    expect(trigger).toHaveTextContent("—");
     expect(trigger).not.toHaveTextContent("100%");
     fireEvent.click(trigger);
     const popover = await screen.findByRole("dialog", { name: "Context usage" });
@@ -98,8 +102,11 @@ describe("ContextDisplay", () => {
     const trigger = screen.getByRole("button", {
       name: "Context usage: 42k tokens, updating, 42%",
     });
-    expect(trigger).toHaveTextContent("Updating");
+    // The word moved into the popup; the chip carries the state as colour.
+    expect(trigger).not.toHaveTextContent("Updating");
+    expect(trigger).toHaveAttribute("data-state", "updating");
     fireEvent.click(trigger);
+    expect(await screen.findByText("Updating")).toBeVisible();
     const latest = await screen.findByRole("region", { name: "Latest provider measurement" });
     expect(within(latest).getByText("Measured model").nextElementSibling).toHaveTextContent("pi:p:m");
     expect(within(latest).queryByRole("region", { name: "Current context" })).not.toBeInTheDocument();
@@ -112,7 +119,7 @@ describe("ContextDisplay", () => {
     }} />);
 
     const trigger = screen.getByRole("button", { name: "Context usage: updating" });
-    expect(trigger).toHaveTextContent("Context updating…");
+    expect(trigger).toHaveTextContent("—");
     expect(trigger).not.toHaveTextContent("%");
     fireEvent.click(trigger);
     expect(await screen.findByText("The current turn has not reported an exact provider measurement yet.")).toBeVisible();
@@ -129,14 +136,15 @@ describe("ContextDisplay", () => {
     const trigger = screen.getByRole("button", {
       name: "Context usage: 12k tokens, last measured, 12%",
     });
-    expect(trigger).toHaveTextContent("Last measured");
+    expect(trigger).toHaveTextContent("12%");
+    expect(trigger).toHaveAttribute("data-state", "last_measured");
     fireEvent.click(trigger);
     const last = await screen.findByRole("region", { name: "Last measured" });
     expect(within(last).getByText("pi:p:old")).toBeVisible();
     expect(within(last).getByText(/next turn is set to pi:p:new/u)).toBeVisible();
   });
 
-  it("suppresses a stale pre-compaction number while awaiting measurement", () => {
+  it("suppresses a stale pre-compaction number while awaiting measurement", async () => {
     render(<ContextDisplay context={{
       status: "awaiting_measurement",
       reason: "Context changed during compaction; waiting for the next exact provider measurement.",
@@ -145,8 +153,10 @@ describe("ContextDisplay", () => {
     const trigger = screen.getByRole("button", {
       name: "Context usage: awaiting provider measurement",
     });
-    expect(trigger).toHaveTextContent("Context —");
-    expect(trigger).toHaveTextContent("Awaiting");
+    expect(trigger).toHaveTextContent("—");
+    expect(trigger).toHaveAttribute("data-state", "awaiting_measurement");
     expect(trigger).not.toHaveTextContent("%");
+    fireEvent.click(trigger);
+    expect(await screen.findByText("Awaiting")).toBeVisible();
   });
 });
