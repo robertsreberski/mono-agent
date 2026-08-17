@@ -167,7 +167,8 @@ The resolved `tools.web` block configures the managed Pi `WebSearch` and
     "web": {
       "search": {
         "backend": "auto",
-        "endpoint": "http://127.0.0.1:8088"
+        "endpoint": "http://127.0.0.1:8088",
+        "codex": { "model": "gpt-5.6-luna" }
       },
       "fetch": {
         "render": "never",
@@ -178,14 +179,17 @@ The resolved `tools.web` block configures the managed Pi `WebSearch` and
 }
 ```
 
-Search backend values are `auto`, strict `searxng`, and `keyless`. SearXNG
-endpoints are deliberately limited to unauthenticated loopback HTTP URLs.
+Search backend values are `auto`, strict `searxng`, strict `codex`, and
+`keyless`. Auto tries local SearXNG, ChatGPT-subscription Codex search, then the
+keyless chain. SearXNG endpoints are deliberately limited to unauthenticated
+loopback HTTP URLs.
 Fetch rendering is `never` by default (browser capability disabled) or `auto`
 for static-first isolated `agent-browser` fallback.
 
 Environment overrides are
 `MONO_AGENT_WEB_SEARCH_BACKEND`,
 `MONO_AGENT_WEB_SEARCH_ENDPOINT`,
+`MONO_AGENT_WEB_SEARCH_CODEX_MODEL`,
 `MONO_AGENT_WEB_FETCH_RENDER`, and
 `MONO_AGENT_WEB_BROWSER_COMMAND`.
 

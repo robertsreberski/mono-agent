@@ -84,9 +84,11 @@ argv and offer `Bash` only when shell syntax is required. Offer `NodeRepl` when
 the user wants run-scoped JavaScript evaluation. All three execute with the same
 sandbox authority.
 
-If the agent needs public-web research, ask whether it should use the keyless
-default, a loopback SearXNG companion, or strict SearXNG-only discovery. Fill
-`tools.web.search.backend` and optional `tools.web.search.endpoint`. Keep
+If the agent needs public-web research, ask whether it should use automatic
+local SearXNG → ChatGPT-subscription Codex → keyless fallback, strict Codex,
+strict keyless, or strict SearXNG-only discovery. Fill
+`tools.web.search.backend`, optional `tools.web.search.endpoint`, and optional
+`tools.web.search.codex.model` (default `gpt-5.6-luna`). Keep
 `tools.web.fetch.render: "never"` unless the user explicitly needs
 JavaScript-heavy pages and has `agent-browser` 0.33.1 or newer; then select
 `"auto"` plus the direct `browserCommand`. Explain that SearXNG is local

@@ -2,6 +2,7 @@
 
 import { parseHTML } from "linkedom";
 import { passthroughSandbox } from "../sandbox-seam.js";
+import { searchCodexSubscription } from "./codex-subscription-search.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { createCountingSemaphore } from "./shared/semaphore.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
@@ -81,11 +82,12 @@ export async function webSearchToolImpl(params, options = {}) {
 }
 
 /**
- * Search through an operator-owned SearXNG endpoint and/or the keyless HTML
- * fallback chain. Returns a structured internal outcome for the Pi bridge.
+ * Search through an operator-owned SearXNG endpoint, ChatGPT-subscription
+ * Codex search, and/or the keyless HTML fallback chain. Returns a structured
+ * internal outcome for the Pi bridge.
  *
  * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, time_range?: string}} params
- * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, searchConfig?: any, fetchImpl?: typeof fetch}} [options]
+ * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, searchConfig?: any, fetchImpl?: typeof fetch, codexSearch?: typeof searchCodexSubscription}} [options]
  */
 export async function performWebSearch(
   {
@@ -103,6 +105,7 @@ export async function performWebSearch(
     signal,
     searchConfig,
     fetchImpl = globalThis.fetch,
+    codexSearch = searchCodexSubscription,
   } = {},
 ) {
   const startedAt = Date.now();
@@ -111,7 +114,8 @@ export async function performWebSearch(
     return failure("Error: WebSearch query must not be empty.", "invalid_query", startedAt);
   }
   const max = clampInteger(limit, 1, 10, 5);
-  const includeDomains = normalizeDomains(domains);
+  const explicitDomains = normalizeDomains(Array.isArray(domains) ? domains : []);
+  const includeDomains = normalizeDomains([...explicitDomains, ...querySiteDomains(normalizedQuery)]);
   const excludeDomains = normalizeDomains(exclude_domains);
   const config = normalizeSearchConfig(searchConfig);
   if (config.error) return failure(`Error: ${config.error}`, "invalid_search_config", startedAt);
@@ -119,26 +123,33 @@ export async function performWebSearch(
   const resolvedCtx = ctx ?? readToolRuntime();
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
+  // Operators, quotes, and site: constraints are never relaxed or rewritten by
+  // the host. Alternate queries are explicit model input, not host-generated
+  // substitutions for the user's exact primary query.
   const initialQueries = uniqueStrings([normalizedQuery, ...alternate_queries], 4);
   /** @type {Array<Array<{title: string, url: string, snippet: string, backend: string}>>} */
   const rankedLists = [];
   const providerFailures = [];
   const providersUsed = new Set();
+  const attemptedBackends = new Set();
+  const actualQueries = [];
   let attempts = 0;
   let anyProviderSucceeded = false;
 
-  const runQuery = async (candidate) => {
+  const runQuery = async (candidate, backend) => {
     attempts += 1;
+    attemptedBackends.add(backend);
     return await searchOneQuery(
-      queryWithDomains(candidate, includeDomains),
+      queryWithDomains(candidate, explicitDomains),
       {
-        config,
+        config: { ...config, backend },
         language,
         timeRange: time_range,
         sandbox,
         policy,
         signal,
         fetchImpl,
+        codexSearch,
       },
     );
   };
@@ -147,30 +158,56 @@ export async function performWebSearch(
     // so a silent degradation to the fallback is still visible in the outcome.
     if (result.failures?.length) providerFailures.push(...result.failures);
     if (result.ok) {
-      anyProviderSucceeded = true;
-      providersUsed.add(result.backend);
-      rankedLists.push(filterByDomains(result.results, includeDomains, excludeDomains));
+      const filtered = filterRelevantResults(
+        filterByDomains(result.results, includeDomains, excludeDomains),
+        normalizedQuery,
+      );
+      if (filtered.length > 0) {
+        anyProviderSucceeded = true;
+        providersUsed.add(result.backend);
+        rankedLists.push(filtered);
+      } else if (result.results.length === 0) {
+        anyProviderSucceeded = true;
+      } else {
+        providerFailures.push({
+          ok: false,
+          backend: result.backend,
+          message: `${result.backend} returned no relevant results.`,
+          retryable: false,
+          relevance: true,
+        });
+      }
+      if (typeof result.actualQuery === "string" && result.actualQuery.trim()) {
+        actualQueries.push(result.actualQuery.trim());
+      }
     } else if (!result.failures?.length) {
       providerFailures.push(result);
     }
   };
 
-  const initialResults = await Promise.all(initialQueries.map(runQuery));
-  initialResults.forEach(recordResult);
+  const runStage = async (backend, candidates) => {
+    const results = await Promise.all(candidates.map((candidate) => runQuery(candidate, backend)));
+    results.forEach(recordResult);
+    return mergeRankedResults(rankedLists, max);
+  };
+
+  let merged = [];
+  if (config.backend === "searxng" || (config.backend === "auto" && config.endpoint)) {
+    merged = await runStage("searxng", initialQueries);
+  }
+  if (config.backend === "codex" || (config.backend === "auto" && merged.length === 0)) {
+    // Exactly one subscription turn per WebSearch call. Alternate queries still
+    // help local/keyless rank fusion but never multiply paid subscription work.
+    merged = await runStage("codex", [normalizedQuery]);
+  }
+  if (config.backend === "keyless" || (config.backend === "auto" && merged.length === 0)) {
+    merged = await runStage("keyless", initialQueries);
+  }
   if (signal?.aborted) {
     return failure("Error: WebSearch was aborted.", "aborted", startedAt, {
       attempts,
       retryable: false,
     });
-  }
-
-  let merged = mergeRankedResults(rankedLists, max);
-  if (merged.length < max && initialQueries.length < 4) {
-    const relaxed = relaxedQuery(normalizedQuery);
-    if (relaxed && !initialQueries.includes(relaxed)) {
-      recordResult(await runQuery(relaxed));
-      merged = mergeRankedResults(rankedLists, max);
-    }
   }
 
   if (!anyProviderSucceeded) {
@@ -190,10 +227,14 @@ export async function performWebSearch(
       retryable: providerFailures.some((entry) => entry.retryable),
       rateLimited: throttled,
       cooldownBackends: [...backendCooldownUntil.keys()],
+      attemptedBackends: [...attemptedBackends],
+      failureMetadata: sanitizeFailureMetadata(providerFailures),
     });
   }
 
-  const backend = providersUsed.size === 1 ? [...providersUsed][0] : "mixed";
+  const backend = providersUsed.size === 1
+    ? [...providersUsed][0]
+    : providersUsed.size > 1 ? "mixed" : config.backend;
   const body = merged.length === 0
     ? "No results."
     : merged.map((result, index) => {
@@ -202,6 +243,12 @@ export async function performWebSearch(
       }).join("\n\n");
   const text = [
     "[BEGIN UNTRUSTED WEB SEARCH RESULTS]",
+    searchMetadataLine({
+      backend,
+      attemptedBackends: [...attemptedBackends],
+      query: actualQueries[0] || normalizedQuery,
+      providerFailures,
+    }),
     body,
     "[END UNTRUSTED WEB SEARCH RESULTS]",
   ].join("\n");
@@ -221,6 +268,9 @@ export async function performWebSearch(
       providerFailureCount: providerFailures.length,
       rateLimited: providerFailures.some((entry) => entry.rateLimited || entry.cooldown),
       cooldownBackends: [...backendCooldownUntil.keys()],
+      attemptedBackends: [...attemptedBackends],
+      actualQueries: uniqueStrings(actualQueries.length > 0 ? actualQueries : [normalizedQuery], 4),
+      failureMetadata: sanitizeFailureMetadata(providerFailures),
     },
     error: false,
   };
@@ -243,16 +293,27 @@ async function searchOneQuery(query, options) {
   // circuit `auto` outright, so the fallbacks below could never rescue a query.
   let emptySuccess = null;
   if (options.signal?.aborted) return abortedSearch(config.backend, failures);
-  if (config.backend === "searxng" || (config.backend === "auto" && config.endpoint)) {
+  if (config.backend === "searxng") {
     const result = await searchSearxng(query, options);
-    // Strict mode has nothing to fall through to, so its answer stands as-is.
-    if (config.backend === "searxng") return { ...result, failures };
-    if (result.ok && result.results.length > 0) return { ...result, failures };
-    if (result.ok) emptySuccess = result;
-    else failures.push(result);
-    if (options.signal?.aborted) return abortedSearch(result.backend, failures);
+    return { ...result, failures };
   }
-  if (config.backend === "keyless" || config.backend === "auto") {
+  if (config.backend === "codex") {
+    if (!options.sandbox.networkAllowsUrl(options.policy, "https://chatgpt.com")) {
+      return {
+        ok: false,
+        backend: "codex",
+        message: "Network access denied by sandbox policy.",
+        retryable: false,
+        failures,
+      };
+    }
+    const result = await options.codexSearch(query, {
+      model: config.codex.model,
+      signal: options.signal,
+    });
+    return { ...result, failures };
+  }
+  if (config.backend === "keyless") {
     for (const backend of KEYLESS_BACKENDS) {
       if (options.signal?.aborted) return abortedSearch(backend, failures);
       if (backendInCooldown(backend)) {
@@ -694,8 +755,8 @@ export function mergeRankedResults(rankedLists, limit = 10) {
 
 function normalizeSearchConfig(input) {
   const backend = input?.backend ?? "auto";
-  if (!["auto", "searxng", "keyless"].includes(backend)) {
-    return { error: "Web search backend must be auto, searxng, or keyless." };
+  if (!["auto", "searxng", "codex", "keyless"].includes(backend)) {
+    return { error: "Web search backend must be auto, searxng, codex, or keyless." };
   }
   let endpoint;
   if (input?.endpoint !== undefined && String(input.endpoint).trim()) {
@@ -716,7 +777,13 @@ function normalizeSearchConfig(input) {
   if (backend === "searxng" && !endpoint) {
     return { error: "SearXNG backend requires tools.web.search.endpoint." };
   }
-  return { backend, endpoint };
+  const model = typeof input?.codex?.model === "string" && input.codex.model.trim()
+    ? input.codex.model.trim()
+    : "gpt-5.6-luna";
+  if (model.length > 160 || /[\u0000-\u001f\u007f]/u.test(model)) {
+    return { error: "Codex web search model must be a valid model id." };
+  }
+  return { backend, endpoint, codex: { model } };
 }
 
 function isLoopbackHost(hostname) {
@@ -746,6 +813,48 @@ function filterByDomains(results, include, exclude) {
   });
 }
 
+const RELEVANCE_STOP_WORDS = new Set([
+  "about", "after", "before", "best", "find", "from", "into", "latest",
+  "near", "news", "that", "the", "their", "this", "time", "what", "when",
+  "where", "which", "with", "your",
+]);
+
+function filterRelevantResults(results, query) {
+  const phrases = [...String(query).matchAll(/"([^"]{2,})"/gu)]
+    .map((match) => comparableText(match[1]))
+    .filter(Boolean);
+  const terms = uniqueStrings(
+    comparableText(String(query)
+      .replace(/"[^"]*"/gu, " ")
+      .replace(/\bsite:\S+/giu, " "))
+      .split(" ")
+      .filter((term) => term.length >= 3 && !RELEVANCE_STOP_WORDS.has(term)),
+    20,
+  );
+  if (phrases.length === 0 && terms.length === 0) return results;
+  const requiredTerms = Math.min(terms.length, terms.length >= 3 ? 2 : 1);
+  return results.filter((result) => {
+    const haystack = comparableText(`${result.title} ${result.snippet} ${result.url}`);
+    if (phrases.some((phrase) => !haystack.includes(phrase))) return false;
+    if (requiredTerms === 0) return true;
+    let matches = 0;
+    for (const term of terms) {
+      if (haystack.includes(term)) matches += 1;
+      if (matches >= requiredTerms) return true;
+    }
+    return false;
+  });
+}
+
+function comparableText(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
 function domainMatches(host, domain) {
   return host === domain || host.endsWith(`.${domain}`);
 }
@@ -755,13 +864,38 @@ function queryWithDomains(query, domains) {
   return `${query} (${domains.map((domain) => `site:${domain}`).join(" OR ")})`;
 }
 
-function relaxedQuery(query) {
-  const relaxed = query
-    .replace(/"([^"]+)"/gu, "$1")
-    .replace(/\bsite:\S+/giu, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-  return relaxed && relaxed !== query ? relaxed : null;
+function querySiteDomains(query) {
+  return [...String(query).matchAll(/\bsite:([a-z0-9.-]+)(?:\/\S*)?/giu)]
+    .map((match) => match[1]);
+}
+
+function sanitizeFailureMetadata(failures) {
+  const seen = new Set();
+  const metadata = [];
+  for (const failureEntry of failures) {
+    const backend = collapseWhitespace(failureEntry?.backend).slice(0, 40) || "unknown";
+    const code = failureEntry?.relevance
+      ? "no_relevant_results"
+      : failureEntry?.rateLimited ? "rate_limited"
+        : failureEntry?.cooldown ? "cooldown"
+          : failureEntry?.message === "Network access denied by sandbox policy."
+            ? "network_denied"
+            : "unavailable";
+    const key = `${backend}:${code}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    metadata.push({ backend, code });
+    if (metadata.length >= 12) break;
+  }
+  return metadata;
+}
+
+function searchMetadataLine({ backend, attemptedBackends, query, providerFailures }) {
+  const attempted = attemptedBackends.join(",") || "none";
+  const failures = sanitizeFailureMetadata(providerFailures)
+    .map((entry) => `${entry.backend}:${entry.code}`)
+    .join(",") || "none";
+  return `[Search metadata: backend=${backend}; attempted=${attempted}; actual_query=${JSON.stringify(collapseWhitespace(query).slice(0, 500))}; fallback=${failures}]`;
 }
 
 function uniqueStrings(values, limit) {

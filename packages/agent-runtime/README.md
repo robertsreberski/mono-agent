@@ -331,6 +331,7 @@ inferSkillsRoot
 **`@mono-agent/agent-runtime/agent/tools/index.js`**
 
 ```text
+DEFAULT_CODEX_SEARCH_MODEL
 bashToolImpl
 bashToolRun
 createWebToolController
@@ -339,6 +340,7 @@ execToolImpl
 execToolRun
 globToolImpl
 grepToolImpl
+inspectCodexSubscriptionSearch
 isPathAllowed
 isWorkdirAllowed
 normalizeBashTimeoutMs
@@ -347,6 +349,7 @@ performWebFetch
 performWebSearch
 readToolImpl
 resolveRgPath
+searchCodexSubscription
 webFetchToolImpl
 webSearchToolImpl
 writeToolImpl
@@ -824,7 +827,7 @@ Per-call options (a non-exhaustive selection):
 | `codexSandboxNetworkAccess` | `boolean` | Code-only Codex app-server per-turn network control. Only strict `true` enables it for plan/default/acceptEdits; omitted or any other value disables it. |
 | `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http); on direct Codex, each forwarded server authorizes its own tool calls. |
 | `sandboxPolicy` | `SandboxPolicy` | Optional fail-closed sandbox policy for built-in tools and stdio MCP process startup. |
-| `webSearchConfig` | `{ backend?, endpoint? }` | Run-scoped local SearXNG/keyless WebSearch backend selection. |
+| `webSearchConfig` | `{ backend?, endpoint?, codex?: { model? } }` | Run-scoped local SearXNG, ChatGPT-subscription Codex, and keyless WebSearch backend selection. |
 | `webFetchConfig` | `{ render?, browserCommand? }` | Run-scoped static extraction and optional isolated browser-render policy. |
 | `piToolExecutionMode` | `"safe-parallel" \| "sequential"` | Pi built-in scheduling. Safe parallelism is the default; stateful/mutating and MCP tools stay sequential. |
 | `maxTurns` | `number` | Hard cap on agent turns. |

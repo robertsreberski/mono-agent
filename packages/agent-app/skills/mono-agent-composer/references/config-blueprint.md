@@ -156,7 +156,8 @@ new agent.
     "mcpConfigPath": "./mcp.json",         // stdio/sse/http servers; inlined for SDK runtimes
     "web": {
       "search": {
-        "backend": "auto",                 // auto | searxng (strict) | keyless
+        "backend": "auto",                 // auto | searxng | codex | keyless
+        "codex": { "model": "gpt-5.6-luna" },
         "endpoint": "http://127.0.0.1:8088" // optional unauthenticated loopback HTTP SearXNG base URL
       },
       "fetch": {

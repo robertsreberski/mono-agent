@@ -24,6 +24,7 @@ import {
 import {
   defaultExecutionModeForModel,
   describeMonoRuntimeSupport,
+  inspectCodexSubscriptionSearch,
   isValidMcpServerName,
   modelReferenceKey,
   networkPolicyAllowsUrl,
@@ -155,6 +156,10 @@ export type SdkAuthStatusExecFile = (
   options: SdkAuthStatusExecOptions,
 ) => Promise<SdkAuthStatusExecResult>;
 
+export type CodexWebSearchProbe = (options: {
+  readonly model: string;
+}) => Promise<{ readonly ok: boolean; readonly reason: string; readonly model: string }>;
+
 export interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput {
   readonly drivers?: readonly ChannelDriver[];
   /** Optional sandbox engine override for deterministic validation tests. */
@@ -183,6 +188,8 @@ export interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput 
   readonly verifiedCredentialModelRefs?: readonly string[];
   /** Injectable subprocess seam for deterministic provider credential/login-status tests. */
   readonly sdkAuthStatusExecFile?: SdkAuthStatusExecFile;
+  /** Injectable ChatGPT-subscription Codex search readiness probe. */
+  readonly codexWebSearchProbe?: CodexWebSearchProbe;
   /** Managed workers resolve optional plugins only from their attested app closure. */
   readonly preferAppPluginInstall?: boolean;
   /**
@@ -2340,7 +2347,10 @@ async function webToolsSection(
   liveness: boolean,
 ): Promise<ValidationSection> {
   const web = config.tools.web;
-  const search = web?.search ?? { backend: "auto" as const };
+  const search = web?.search ?? {
+    backend: "auto" as const,
+    codex: { model: "gpt-5.6-luna" },
+  };
   const fetchConfig = web?.fetch ?? { render: "never" as const, browserCommand: "agent-browser" };
   const details = [`WebSearch backend: ${search.backend}.`];
   let status: ValidationStatus = "ok";
@@ -2348,7 +2358,11 @@ async function webToolsSection(
   if (search.endpoint === undefined) {
     details.push(search.backend === "keyless"
       ? "SearXNG is not configured; keyless search is enabled."
-      : "SearXNG is not configured; auto mode will use keyless search.");
+      : search.backend === "codex"
+        ? "SearXNG is not configured; strict Codex subscription search is enabled."
+        : search.backend === "searxng"
+          ? "SearXNG is not configured."
+          : "SearXNG is not configured; auto mode starts with Codex subscription search, then keyless search.");
   } else {
     details.push(`SearXNG endpoint: ${search.endpoint}.`);
     if (!liveness) {
@@ -2362,8 +2376,32 @@ async function webToolsSection(
         details.push(
           `[WARN] SearXNG JSON search probe failed (${probe.reason}). ` +
           (search.backend === "auto"
-            ? "Start the local companion or fix tools.web.search.endpoint; auto mode can still fall back to keyless search."
+            ? "Start the local companion or fix tools.web.search.endpoint; auto mode can still fall back to Codex subscription search, then keyless search."
             : "Start the local companion or fix tools.web.search.endpoint; strict SearXNG mode has no fallback."),
+        );
+      }
+    }
+  }
+
+  if (search.backend === "auto") {
+    const codexModel = search.codex?.model ?? "gpt-5.6-luna";
+    details.push(
+      `Codex subscription fallback model: ${codexModel}; readiness is checked lazily when auto mode reaches that fallback.`,
+    );
+  } else if (search.backend === "codex") {
+    const codexModel = search.codex?.model ?? "gpt-5.6-luna";
+    details.push(`Codex subscription search model: ${codexModel}.`);
+    if (!liveness) {
+      details.push("Codex subscription search readiness was not probed.");
+    } else {
+      const probe = await (input.codexWebSearchProbe ?? inspectCodexSubscriptionSearch)({ model: codexModel });
+      if (probe.ok) {
+        details.push("Codex ChatGPT subscription, web-search capability, and configured model are ready.");
+      } else {
+        status = "waiting";
+        details.push(
+          `[WARN] Codex subscription search is not ready (${probe.reason}). `
+          + "Strict Codex mode has no fallback.",
         );
       }
     }

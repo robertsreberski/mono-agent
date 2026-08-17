@@ -200,11 +200,12 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const webSearchBackend = readChoice<WebSearchBackend>(
     input.env.MONO_AGENT_WEB_SEARCH_BACKEND,
     "MONO_AGENT_WEB_SEARCH_BACKEND",
-    ["auto", "searxng", "keyless"],
+    ["auto", "searxng", "codex", "keyless"],
     "auto",
     invalidEnv,
   );
   const webSearchEndpoint = readWebSearchEndpoint(input.env.MONO_AGENT_WEB_SEARCH_ENDPOINT);
+  const webSearchCodexModel = readWebSearchCodexModel(input.env.MONO_AGENT_WEB_SEARCH_CODEX_MODEL);
   if (webSearchBackend === "searxng" && webSearchEndpoint === undefined) {
     throw new MonoAgentConfigError(
       "invalid_env",
@@ -237,6 +238,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
       search: {
         backend: webSearchBackend,
         ...(webSearchEndpoint === undefined ? {} : { endpoint: webSearchEndpoint }),
+        codex: { model: webSearchCodexModel },
       },
       fetch: {
         render: webFetchRender,
@@ -285,7 +287,12 @@ export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgen
       disallowedTools: [...config.tools.disallowedTools],
       ...(config.tools.web === undefined ? {} : {
         web: {
-          search: { ...config.tools.web.search },
+          search: {
+            ...config.tools.web.search,
+            ...(config.tools.web.search.codex === undefined
+              ? {}
+              : { codex: { ...config.tools.web.search.codex } }),
+          },
           fetch: { ...config.tools.web.fetch },
         },
       }),
@@ -788,6 +795,18 @@ function readWebSearchEndpoint(raw: string | undefined): string | undefined {
       { env: "MONO_AGENT_WEB_SEARCH_ENDPOINT" },
     );
   }
+}
+
+function readWebSearchCodexModel(raw: string | undefined): string {
+  const value = normalizeOptionalString(raw) ?? "gpt-5.6-luna";
+  if (value.length > 160 || /[\u0000-\u001f\u007f]/u.test(value)) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_WEB_SEARCH_CODEX_MODEL must be a non-empty model id of at most 160 characters without control characters.",
+      { env: "MONO_AGENT_WEB_SEARCH_CODEX_MODEL" },
+    );
+  }
+  return value;
 }
 
 function readWebBrowserCommand(raw: string | undefined): string {

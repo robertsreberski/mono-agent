@@ -575,7 +575,7 @@ export function getPiBuiltinTools(allowedTools, {
         outcome: { status: "error", code: "controller_unavailable", retryable: false, attempts: 0 },
         error: true,
       }), toolContext),
-    WebSearch: createBuiltinTool("WebSearch", "Web Search", "Search the public web with an operator-owned SearXNG endpoint when available, otherwise a keyless fallback, and return deduplicated ranked results.", objectSchema({
+    WebSearch: createBuiltinTool("WebSearch", "Web Search", "Search the public web through local SearXNG, ChatGPT-subscription Codex search, and keyless fallbacks according to the configured backend, then return relevance-filtered deduplicated results.", objectSchema({
       query: { type: "string" },
       limit: { type: "integer" },
       alternate_queries: { type: "array", items: { type: "string" }, maxItems: 3 },

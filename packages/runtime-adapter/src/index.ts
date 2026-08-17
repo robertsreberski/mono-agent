@@ -33,6 +33,7 @@ export type {
   RuntimeAdapterErrorDetails,
 } from "./runtime-adapter.js";
 export { discoverClaudeSdkModels } from "@mono-agent/agent-runtime";
+export { inspectCodexSubscriptionSearch } from "@mono-agent/agent-runtime/agent/tools/index.js";
 export type { AcpCallbackContext, AcpInteractionRequest, AcpProfileDescriptor } from "@mono-agent/agent-runtime";
 export { CodedError, isCodedError } from "@mono-agent/agent-contracts";
 export {

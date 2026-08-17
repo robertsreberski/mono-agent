@@ -28,7 +28,7 @@ const sharedSearchCache = new Map();
  * cleanup. Search results are the exception: they live in the process-wide
  * cache above so sibling subagents and later turns can reuse them.
  *
- * @param {{searchConfig?: any, fetchConfig?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, fetchImpl?: typeof fetch, browserRenderer?: any}} [options]
+ * @param {{searchConfig?: any, fetchConfig?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, fetchImpl?: typeof fetch, browserRenderer?: any, codexSearch?: any}} [options]
  */
 export function createWebToolController({
   searchConfig,
@@ -38,6 +38,7 @@ export function createWebToolController({
   ctx,
   fetchImpl,
   browserRenderer,
+  codexSearch,
 } = {}) {
   const namespace = `mono-agent-web-${randomUUID()}`;
   const fetchCache = new Map();
@@ -137,6 +138,7 @@ export function createWebToolController({
         sandboxPolicy: policy,
         ctx: resolvedCtx,
         fetchImpl,
+        codexSearch,
         signal: execution.signal,
       }));
     },

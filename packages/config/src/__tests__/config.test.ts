@@ -79,7 +79,7 @@ describe("loadMonoAgentConfig", () => {
       mcpCallTimeoutMs: 150000,
       mcpCallMaxTotalTimeoutMs: 2700000,
       web: {
-        search: { backend: "auto" },
+        search: { backend: "auto", codex: { model: "gpt-5.6-luna" } },
         fetch: { render: "never", browserCommand: "agent-browser" },
       },
     });
@@ -105,7 +105,7 @@ describe("loadMonoAgentConfig", () => {
     expect(config.artifacts.retention).toEqual({ maxAgeDays: 365, maxCount: 50000, dryRun: false });
     expect(config.artifacts.memoryRetention).toEqual({ maxAgeDays: 7, maxCount: 5000, dryRun: false });
     expect(config.tools.web).toEqual({
-      search: { backend: "auto" },
+      search: { backend: "auto", codex: { model: "gpt-5.6-luna" } },
       fetch: { render: "never", browserCommand: "agent-browser" },
     });
   });
@@ -117,13 +117,18 @@ describe("loadMonoAgentConfig", () => {
         ...baseEnv,
         MONO_AGENT_WEB_SEARCH_BACKEND: "searxng",
         MONO_AGENT_WEB_SEARCH_ENDPOINT: "http://127.0.0.1:8088/",
+        MONO_AGENT_WEB_SEARCH_CODEX_MODEL: "gpt-5.6-sol",
         MONO_AGENT_WEB_FETCH_RENDER: "auto",
         MONO_AGENT_WEB_BROWSER_COMMAND: "/opt/homebrew/bin/agent-browser",
       },
     });
 
     expect(config.tools.web).toEqual({
-      search: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+      search: {
+        backend: "searxng",
+        endpoint: "http://127.0.0.1:8088",
+        codex: { model: "gpt-5.6-sol" },
+      },
       fetch: { render: "auto", browserCommand: "/opt/homebrew/bin/agent-browser" },
     });
   });
@@ -152,6 +157,28 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_WEB_BROWSER_COMMAND: "agent-browser\t--unsafe" },
     })).toThrow(/MONO_AGENT_WEB_BROWSER_COMMAND/u);
+  });
+
+  it("accepts strict Codex search without SearXNG and validates its model id", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_WEB_SEARCH_BACKEND: "codex",
+        MONO_AGENT_WEB_SEARCH_CODEX_MODEL: "gpt-5.6-luna",
+      },
+    });
+    expect(config.tools.web?.search).toEqual({
+      backend: "codex",
+      codex: { model: "gpt-5.6-luna" },
+    });
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_WEB_SEARCH_CODEX_MODEL: `gpt${"x".repeat(200)}`,
+      },
+    })).toThrow(/MONO_AGENT_WEB_SEARCH_CODEX_MODEL/u);
   });
 
   it("loads every runtime compaction override from env", () => {
