@@ -96,9 +96,11 @@ describe("SubagentPart", () => {
       },
     }));
 
-    expect(screen.getByText("2 tools · 12.4s · history not persisted")).toBeVisible();
+    expect(screen.getByText("2 tools · 12.4s · history not saved")).toBeVisible();
     expect(screen.getByText("History")).toBeInTheDocument();
-    expect(screen.getByText(/history_persistence_timeout/u)).toBeInTheDocument();
+    expect(
+      screen.getByText("Tool history for this call was not saved (history_persistence_timeout)."),
+    ).toBeInTheDocument();
     expect(container.querySelectorAll("details.tool-call.is-nested")).toHaveLength(2);
     expect(container.querySelectorAll("details.tool-call.subagent-note")).toHaveLength(3);
   });

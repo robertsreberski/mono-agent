@@ -84,7 +84,7 @@ export async function handOffProcessJob({
       started_at: result.startedAt,
     };
     return {
-      text: JSON.stringify(payload),
+      text: `${BACKGROUND_START_GUIDANCE}\n${JSON.stringify(payload)}`,
       outcome: {
         status: "ok",
         code: "background_started",
@@ -110,6 +110,16 @@ export async function handOffProcessJob({
     );
   }
 }
+
+/**
+ * A bare id/state payload leaves the model to guess what happens next, and the
+ * cheapest wrong guess is a polling loop. Completion delivers its own turn, so
+ * the result says so itself rather than relying on the schema line alone. No
+ * operator command is named on purpose: the model has a shell, and naming a
+ * status command invites exactly the polling this forbids.
+ */
+const BACKGROUND_START_GUIDANCE =
+  "Background process job started (tool-authored guidance): this conversation is woken with a new turn when the job reaches a terminal state, and its output arrives with that turn. Do not poll, sleep, wait on it, or re-run the command to check progress, and do not report the work as finished yet.";
 
 const PUBLIC_BACKGROUND_START_FAILURES = Object.freeze({
   background_unsupported: "Background process jobs are unsupported for this tool call.",

@@ -14,6 +14,7 @@ import {
 import {
   createProcessJobsRuntimeExtension,
   processJobOriginForRequest,
+  processJobsAvailableForRequest,
 } from "../process-jobs-runtime.js";
 import {
   bindProcessJobWakeContextToResponder,
@@ -278,6 +279,33 @@ describe("process-job request availability", () => {
       "Process-job private state requires a Pi-native runtime.",
     );
 
+  });
+
+  it("answers the prompt-guidance predicate with the same gate that injects the schema", () => {
+    const coreConfig = {
+      runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+      tools: { allowedTools: ["Exec", "Bash"], disallowedTools: [] },
+    } as never;
+    const service = { settings: { maxChainDepth: 4, stateDir: PROCESS_JOBS_STATE_DIR } } as never;
+    const available = (
+      request: Record<string, unknown>,
+      overrides: Partial<Parameters<typeof processJobsAvailableForRequest>[1]> = {},
+    ) => processJobsAvailableForRequest(
+      { runId: "run-1", request: { text: "hello", ...request } as never },
+      { service, coreConfig, channelId: "slack", ...overrides },
+    );
+
+    expect(available({ conversationId: "slack:C1:1.1" })).toBe(true);
+    // Guidance must never outlive the capability it describes.
+    expect(available({ conversationId: "cron:job" })).toBe(false);
+    expect(available({ conversationId: "slack:C1:1.1" }, { service: undefined })).toBe(false);
+    expect(available({ conversationId: "slack:C1:1.1" }, { routesOnlyPiNative: () => false })).toBe(false);
+    expect(available({ conversationId: "slack:C1:1.1" }, {
+      coreConfig: {
+        ...(coreConfig as unknown as Record<string, unknown>),
+        tools: { allowedTools: ["Read"], disallowedTools: [] },
+      } as never,
+    })).toBe(false);
   });
 
   it("preserves parent-plus-one depth through a busy live-session queue and removes capability at max depth", async () => {

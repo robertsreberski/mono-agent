@@ -389,7 +389,7 @@ function readSkillTool(skillNames = [], { skillsRoot, dataDir, skills = [] } = {
   return {
     name: "ReadSkill",
     label: "Read Skill",
-    description: "Load the complete instructions for a named skill. Use ReadSkill instead of Read for SKILL.md files.",
+    description: "Load the complete instructions for a named skill. Use ReadSkill instead of Read for SKILL.md files. If a skill's instructions are already present in this conversation, apply those instead of loading it again.",
     parameters: objectSchema({ name: { type: "string", enum: enumNames } }, ["name"]),
     async execute(_toolCallId, { name }) {
       if (sharedRoot) {
@@ -473,6 +473,14 @@ export function getPiBuiltinTools(allowedTools, {
     minimum: 1,
     description: "Exact timeout in milliseconds.",
   };
+  // Shared by Exec and Bash, and injected only when the host supplies a
+  // process-job controller. House style for a tool description is
+  // capability + when-to-prefer + caveat, so the middle sentence is what tells
+  // the model which commands belong here rather than in the foreground.
+  const backgroundSchema = {
+    type: "boolean",
+    description: "Run as a durable background process job and notify this conversation when it finishes. Prefer this for work that outlives a reply — builds, full test suites, long installs, migrations, long-running watchers — and leave it off whenever you need the output to answer right now. Do not use for commands that daemonize into another POSIX process group or session.",
+  };
   // Per-tool closure config (cwd/event sink/limits/policy) plus the per-instance
   // ToolContext `ctx` that the tool impls and shared helpers read from.
   const toolContext = {
@@ -533,9 +541,7 @@ export function getPiBuiltinTools(allowedTools, {
       timeout_ms: processTimeoutSchema,
       timeout: legacyBashTimeoutSchema,
       max_output_chars: bashLimitSchema,
-      ...(processJobsController ? {
-        background: { type: "boolean", description: "Run as a durable background process job and notify this conversation when it finishes. Do not use for commands that daemonize into another POSIX process group or session." },
-      } : {}),
+      ...(processJobsController ? { background: backgroundSchema } : {}),
     }, ["command"]), bashToolRun, toolContext),
     Exec: createBuiltinTool("Exec", "Exec", "Execute one program directly from an argv array without shell parsing. Prefer this for ordinary commands; use Bash only when shell syntax is required.", objectSchema({
       executable: { type: "string", minLength: 1 },
@@ -543,9 +549,7 @@ export function getPiBuiltinTools(allowedTools, {
       workdir: { type: "string" },
       timeout_ms: processTimeoutSchema,
       max_output_chars: bashLimitSchema,
-      ...(processJobsController ? {
-        background: { type: "boolean", description: "Run as a durable background process job and notify this conversation when it finishes. Do not use for commands that daemonize into another POSIX process group or session." },
-      } : {}),
+      ...(processJobsController ? { background: backgroundSchema } : {}),
     }, ["executable"]), execToolRun, toolContext),
     NodeRepl: nodeReplController
       ? createBuiltinTool(

@@ -51,7 +51,13 @@ export async function prepareHarnessContext(
     const baseContext = await loadContextFromFiles({
       identityPath: options.identityPath,
       userMessage: request.userMessage,
-      session: sessionContextBlock(request, options.memory !== undefined),
+      session: sessionContextBlock(request, {
+        hostManagedMemory: options.memory !== undefined,
+        backgroundProcessJobs: options.backgroundProcessJobsAvailable?.({
+          request,
+          runId: contextOptions.turnId,
+        }) === true,
+      }),
       ...(options.soulPath === undefined ? {} : { soulPath: options.soulPath }),
       ...(history.length === 0 || contextOptions.historyMode !== "prompt" ? {} : { history }),
       ...(options.skillsRoot !== undefined
@@ -60,6 +66,9 @@ export async function prepareHarnessContext(
           ? { skills: selectedSkills.index }
           : {}),
       ...(options.skillDisclosure === undefined ? {} : { skillDisclosure: options.skillDisclosure }),
+      // "omitted" is the confirmed-warm case: the provider owns the live
+      // transcript, so an earlier ReadSkill result is genuinely still in context.
+      warmSession: contextOptions.historyMode === "omitted",
       ...(selectedSkills.instructions.length === 0 ? {} : { skillInstructions: selectedSkills.instructions }),
     });
     // Durable tool records are a separate store, not HistoryMessage entries.

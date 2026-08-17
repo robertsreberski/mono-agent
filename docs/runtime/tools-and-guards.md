@@ -182,7 +182,10 @@ returns an opaque job id without waiting for completion. The host preserves the
 same command/shell semantics, owns cleanup after the inherited POSIX process
 group exits, and wakes the originating Slack, Telegram, or web conversation
 through a normal tool-capable turn. Commands that daemonize into another group
-or session are unsupported. See [Background process jobs](/tools/background-process-jobs/)
+or session are unsupported. Usage guidance travels with the capability: when the
+controller is present the schema line, the start result, and the system prompt's
+session block all tell the agent when to background a command and that it must
+wait to be woken rather than poll. See [Background process jobs](/tools/background-process-jobs/)
 for configuration, limits, supported origins, recovery, and operator access.
 
 These are macOS-facing tools. Prefer portable commands or feature-detect flags

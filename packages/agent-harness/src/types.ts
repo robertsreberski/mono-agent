@@ -430,6 +430,17 @@ export interface AgentHarnessOptions {
    * when the surrounding turn never reaches the canonical-history commit.
    */
   readonly toolHistory?: AgentHarnessToolHistoryOptions;
+  /**
+   * Whether this turn's `Exec`/`Bash` will carry the `background` field, so the
+   * session block can explain a capability the model can actually see. The
+   * harness cannot decide this itself: the process-job controller is a host
+   * decision made per request, and the runtime-options extension that makes it
+   * runs after context assembly. Hosts must answer with the same predicate that
+   * injects the schema — guidance for an absent capability is worse than none.
+   */
+  readonly backgroundProcessJobsAvailable?: (
+    input: { readonly request: AgentHarnessRequest; readonly runId: string },
+  ) => boolean;
   /** Best-effort enrichment applied only to the assistant history entry. */
   readonly turnHistoryEnricher?: AgentHarnessTurnHistoryEnricher;
   readonly toolPolicy?: ToolPolicy;

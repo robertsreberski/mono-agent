@@ -135,29 +135,17 @@ export class ToolPanel implements Component {
   }
 }
 
+/**
+ * Durable-history bookkeeping is host business, not conversation content. A
+ * successful write, its record id and sequence, and the untrusted-evidence
+ * marker (which exists for the model, not the operator) say nothing worth a
+ * line in the panel; a lost record does, because the tool's output is gone.
+ * Wording matches the web console's `toolHistoryFailure`.
+ */
 function historySummary(history: SessionToolHistoryEventMetadata | undefined): string | undefined {
-  if (history === undefined) return undefined;
-  const record = history.recordId === undefined
-    ? undefined
-    : `record ${escapeTerminalControls(history.recordId)}`;
-  const trust = "untrusted historical data";
-  if (history.persistence === "failed") {
-    return [
-      `history not persisted${history.errorCode === undefined ? "" : ` (${escapeTerminalControls(history.errorCode)})`}`,
-      record,
-      trust,
-    ].filter((part): part is string => part !== undefined).join(" · ");
-  }
-  const artifacts = history.artifactReferences ?? [];
-  const unavailable = artifacts.filter((artifact) => !artifact.available).length;
-  return [
-    "history persisted",
-    record,
-    history.terminalState,
-    history.sequence === undefined ? undefined : `seq ${String(history.sequence)}`,
-    history.truncated === true ? "bounded" : undefined,
-    artifacts.length === 0 ? undefined : `${String(artifacts.length)} artifact${artifacts.length === 1 ? "" : "s"}`,
-    unavailable === 0 ? undefined : `${String(unavailable)} unavailable`,
-    trust,
-  ].filter((part): part is string => part !== undefined).join(" · ");
+  if (history?.persistence !== "failed") return undefined;
+  const code = history.errorCode === undefined
+    ? ""
+    : ` (${escapeTerminalControls(history.errorCode)})`;
+  return `Tool history for this call was not saved${code}.`;
 }

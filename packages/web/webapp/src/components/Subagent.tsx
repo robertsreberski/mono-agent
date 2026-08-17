@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { formatUsd } from "../usage";
 import { Icon } from "./Icon";
 import { safeJson } from "./json";
+import { toolHistoryFailure } from "./tool-history";
 
 type ToolCallStatus = "running" | "complete" | "failed";
 
@@ -180,6 +181,7 @@ function SubagentCall({ call }: { readonly call: SubagentCallView }) {
 export function SubagentPart({ data }: DataMessagePartProps) {
   const view = subagentView(data);
   if (view === undefined) return null;
+  const historyFailure = toolHistoryFailure(view.history);
   // The block stays folded, so the header carries the whole outcome.
   const summary = [
     `${view.calls.length} tool${view.calls.length === 1 ? "" : "s"}`,
@@ -188,7 +190,9 @@ export function SubagentPart({ data }: DataMessagePartProps) {
     // A delegation is the one part of a turn that can quietly cost more than
     // the turn itself, and the run total it folds into cannot say which one did.
     ...(view.costUsd === undefined ? [] : [formatUsd(view.costUsd)]),
-    ...(view.history?.persistence === "failed" ? ["history not persisted"] : []),
+    // The folded header only flags that something is wrong; the note inside
+    // carries the wording and the error code, so the two must not disagree.
+    ...(historyFailure === undefined ? [] : ["history not saved"]),
   ].join(" · ");
 
   return (
@@ -207,7 +211,7 @@ export function SubagentPart({ data }: DataMessagePartProps) {
           ? <p className="subagent-empty">No tool calls recorded.</p>
           : view.calls.map((call) => <SubagentCall key={call.toolCallId} call={call} />)}
         {view.result !== undefined && <SubagentNote title="Report">{safeJson(view.result)}</SubagentNote>}
-        {view.history !== undefined && <SubagentNote title="History">{safeJson(view.history)}</SubagentNote>}
+        {historyFailure !== undefined && <SubagentNote title="History">{historyFailure}</SubagentNote>}
       </div>
     </details>
   );
