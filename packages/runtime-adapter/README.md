@@ -275,6 +275,7 @@ describeSandboxEffectiveState
 discoverClaudeSdkModels
 discoverLocalProviderModels
 failClosedSandboxPolicy
+inspectCodexSubscriptionSearch
 isCodedError
 isPlainObject
 isPrivateBaseUrl

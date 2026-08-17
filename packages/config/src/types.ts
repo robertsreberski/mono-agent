@@ -15,7 +15,7 @@ import type {
 
 export type MemoryWriteMode = (typeof MEMORY_WRITE_MODES)[number];
 export type MemoryMode = (typeof MEMORY_MODES)[number];
-export type WebSearchBackend = "auto" | "searxng" | "keyless";
+export type WebSearchBackend = "auto" | "searxng" | "codex" | "keyless";
 export type WebFetchRenderMode = "never" | "auto";
 /**
  * Which memory engine backs the store. `"bujo"` (default) is the homegrown
@@ -400,6 +400,11 @@ export interface MonoAgentConfig {
         readonly backend: WebSearchBackend;
         /** SearXNG must be unauthenticated loopback HTTP. */
         readonly endpoint?: string;
+        /** ChatGPT-subscription Codex app-server search settings. */
+        readonly codex?: {
+          /** Defaults to the low-cost, low-latency GPT-5.6 Luna route. */
+          readonly model: string;
+        };
       };
       readonly fetch: {
         readonly render: WebFetchRenderMode;

@@ -170,8 +170,9 @@ They are tolerated so stale environments do not break startup, but they are igno
 | `MONO_AGENT_CONTINUATION_SERVERS` | `tools.continuationServers` | Comma-separated stdio or loopback-HTTP MCP server names that receive trusted request-bound continuation claim capabilities. See [durable continuations](/tools/durable-continuations/). |
 | `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | `tools.mcpCallTimeoutMs` | Inactivity timeout per MCP tool call; tool progress notifications reset it. Default 120000. |
 | `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | `tools.mcpCallMaxTotalTimeoutMs` | Hard wall clock per MCP tool call that progress cannot extend. Default 2700000 (45 min). |
-| `MONO_AGENT_WEB_SEARCH_BACKEND` | `tools.web.search.backend` | `auto` (default), strict `searxng`, or `keyless`. |
+| `MONO_AGENT_WEB_SEARCH_BACKEND` | `tools.web.search.backend` | `auto` (default), strict `searxng`, strict `codex`, or `keyless`. Auto uses local SearXNG → ChatGPT-subscription Codex → keyless. |
 | `MONO_AGENT_WEB_SEARCH_ENDPOINT` | `tools.web.search.endpoint` | Optional unauthenticated loopback HTTP SearXNG base URL; required by strict `searxng`. |
+| `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` | `tools.web.search.codex.model` | Codex app-server subscription-search model; default `gpt-5.6-luna`. |
 | `MONO_AGENT_WEB_FETCH_RENDER` | `tools.web.fetch.render` | `never` (default and capability disabled) or `auto` (static-first isolated browser fallback). |
 | `MONO_AGENT_WEB_BROWSER_COMMAND` | `tools.web.fetch.browserCommand` | Direct `agent-browser` executable name/path. Default `agent-browser`; shell fragments are not evaluated. |
 

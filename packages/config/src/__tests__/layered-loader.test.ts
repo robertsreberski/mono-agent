@@ -69,7 +69,11 @@ describe("layerJsonOntoEnv", () => {
           mcpCallTimeoutMs: 150000,
           mcpCallMaxTotalTimeoutMs: 2700000,
           web: {
-            search: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+            search: {
+              backend: "searxng",
+              endpoint: "http://127.0.0.1:8088",
+              codex: { model: "gpt-5.6-sol" },
+            },
             fetch: { render: "auto", browserCommand: "agent-browser-next" },
           },
         },
@@ -113,6 +117,7 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS).toBe("2700000");
     expect(layered.MONO_AGENT_WEB_SEARCH_BACKEND).toBe("searxng");
     expect(layered.MONO_AGENT_WEB_SEARCH_ENDPOINT).toBe("http://127.0.0.1:8088");
+    expect(layered.MONO_AGENT_WEB_SEARCH_CODEX_MODEL).toBe("gpt-5.6-sol");
     expect(layered.MONO_AGENT_WEB_FETCH_RENDER).toBe("auto");
     expect(layered.MONO_AGENT_WEB_BROWSER_COMMAND).toBe("agent-browser-next");
     expect(layered.MONO_AGENT_ARTIFACT_DIR).toBe(".mono-agent/artifacts");

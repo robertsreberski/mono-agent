@@ -287,7 +287,7 @@
  * @property {import('./providers/acp-client.js').AcpClientHostOptions["resolveAcpProfile"]} [resolveAcpProfile] Per-run ACP profile resolver; wins over the host default.
  * @property {import('./providers/acp-client.js').AcpClientHostOptions["onAcpInteractionRequest"]} [onAcpInteractionRequest] Per-run ACP permission/elicitation callback; wins over the host default.
  * @property {Uint8Array} [acpSessionTokenKey] Host-owned 32-byte key for confidential authenticated ACP session handles. Required for every ACP task run.
- * @property {{backend?: "auto"|"searxng"|"keyless", endpoint?: string}} [webSearchConfig] Run-scoped WebSearch backend configuration.
+ * @property {{backend?: "auto"|"searxng"|"codex"|"keyless", endpoint?: string, codex?: {model?: string}}} [webSearchConfig] Run-scoped WebSearch backend configuration.
  * @property {{render?: "never"|"auto", browserCommand?: string}} [webFetchConfig] Run-scoped WebFetch extraction/render configuration.
  * @property {"sequential"|"safe-parallel"} [piToolExecutionMode] Pi built-in tool scheduling mode. Safe parallelism is the default.
  * @property {"one-at-a-time"|"all"} [piToolParallelismMode] DEPRECATED. Compatibility alias mapped to piToolExecutionMode.

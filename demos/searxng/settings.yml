@@ -1,4 +1,7 @@
-use_default_settings: true
+use_default_settings:
+  engines:
+    keep_only:
+      - yahoo
 
 general:
   debug: false
@@ -18,27 +21,15 @@ server:
   image_proxy: false
   method: "POST"
 
-# The stock general engine set is unusable from an ordinary residential IP: every
-# one of duckduckgo, startpage and qwant answers with a CAPTCHA, and google cse
-# needs an API key this instance does not carry. That left `general` searches
-# returning HTTP 200 with an empty result list on every query. Entries here merge
-# into the defaults by name (use_default_settings is on), so this block only flips
-# the `disabled` flag — engine definitions still come from the image.
+outgoing:
+  # Yahoo currently disconnects SearXNG's HTTP/2 transport on otherwise valid
+  # searches. Pin this local companion to HTTP/1.1 so the sole enabled engine
+  # remains usable instead of reporting `HTTP protocol error` on every query.
+  enable_http2: false
+
+# Keep only the measured working Yahoo definition from the pinned image. A plain
+# `use_default_settings: true` silently retained unrelated default engines, so a
+# query could mix a good Yahoo result with low-relevance or blocked sources.
 engines:
-  # Enabled: measured working from a residential IP. bing is the workhorse;
-  # mwmbl and marginalia are small independent indexes kept for redundancy,
-  # because a single engine suspends under the tool's own query fan-out.
-  - name: bing
+  - name: yahoo
     disabled: false
-  - name: mwmbl
-    disabled: false
-  - name: marginalia
-    disabled: false
-  # Disabled: these only ever contribute a failure, and a failing engine still
-  # costs the request its timeout before it is suspended.
-  - name: duckduckgo
-    disabled: true
-  - name: startpage
-    disabled: true
-  - name: google cse
-    disabled: true

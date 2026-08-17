@@ -137,6 +137,7 @@ export const CONFIG_ENV_KEYS = {
   "tools.mcpCallMaxTotalTimeoutMs": "MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS",
   "tools.web.search.backend": "MONO_AGENT_WEB_SEARCH_BACKEND",
   "tools.web.search.endpoint": "MONO_AGENT_WEB_SEARCH_ENDPOINT",
+  "tools.web.search.codex.model": "MONO_AGENT_WEB_SEARCH_CODEX_MODEL",
   "tools.web.fetch.render": "MONO_AGENT_WEB_FETCH_RENDER",
   "tools.web.fetch.browserCommand": "MONO_AGENT_WEB_BROWSER_COMMAND",
   "sandbox.mode": "MONO_AGENT_SANDBOX_MODE",
@@ -853,6 +854,14 @@ function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSect
         label: "SearXNG endpoint",
         value: tools.web?.search.endpoint ?? "not configured",
         jsonPresent: json.tools?.web?.search?.endpoint !== undefined,
+      }),
+      toField(env, {
+        id: "tools.web.search.codex.model",
+        label: "Codex web search model",
+        value: tools.web?.search.codex?.model ?? "gpt-5.6-luna",
+        jsonPresent: json.tools?.web?.search?.codex?.model !== undefined,
+        jsonValue: json.tools?.web?.search?.codex?.model,
+        defaultValue: "gpt-5.6-luna",
       }),
       toField(env, {
         id: "tools.web.fetch.render",

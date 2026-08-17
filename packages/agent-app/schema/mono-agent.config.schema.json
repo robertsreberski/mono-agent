@@ -1101,7 +1101,7 @@
               "additionalProperties": false,
               "properties": {
                 "backend": {
-                  "description": "WebSearch backend: auto tries a configured local SearXNG endpoint then keyless fallbacks; searxng is strict; keyless skips SearXNG.",
+                  "description": "WebSearch backend: auto tries configured local SearXNG, then ChatGPT-subscription Codex search, then keyless fallbacks; searxng, codex, and keyless are strict.",
                   "examples": [
                     "auto"
                   ],
@@ -1110,6 +1110,7 @@
                   "enum": [
                     "auto",
                     "searxng",
+                    "codex",
                     "keyless"
                   ]
                 },
@@ -1119,6 +1120,20 @@
                     "http://127.0.0.1:8088"
                   ],
                   "type": "string"
+                },
+                "codex": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "model": {
+                      "description": "Codex app-server model used for ChatGPT-subscription web search. The signed-in account must expose both this model and web search; default gpt-5.6-luna.",
+                      "examples": [
+                        "gpt-5.6-luna"
+                      ],
+                      "type": "string",
+                      "default": "gpt-5.6-luna"
+                    }
+                  }
                 }
               }
             },

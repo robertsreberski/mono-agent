@@ -377,6 +377,10 @@ describe("buildMonoAgentConfigView", () => {
   it("shows web tool defaults and JSON/env precedence", () => {
     const defaults = buildView(baseEnv);
     expect(field(defaults, "tools.web.search.backend")).toMatchObject({ value: "auto", source: "default" });
+    expect(field(defaults, "tools.web.search.codex.model")).toMatchObject({
+      value: "gpt-5.6-luna",
+      source: "default",
+    });
     expect(field(defaults, "tools.web.fetch.render")).toMatchObject({ value: "never", source: "default" });
 
     const configured = buildView({
@@ -385,7 +389,11 @@ describe("buildMonoAgentConfigView", () => {
     }, {
       tools: {
         web: {
-          search: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+          search: {
+            backend: "searxng",
+            endpoint: "http://127.0.0.1:8088",
+            codex: { model: "gpt-5.6-sol" },
+          },
           fetch: { render: "auto", browserCommand: "agent-browser-next" },
         },
       },
@@ -393,6 +401,10 @@ describe("buildMonoAgentConfigView", () => {
     expect(field(configured, "tools.web.search.backend")).toMatchObject({ value: "searxng", source: "json" });
     expect(field(configured, "tools.web.search.endpoint")).toMatchObject({
       value: "http://127.0.0.1:8088",
+      source: "json",
+    });
+    expect(field(configured, "tools.web.search.codex.model")).toMatchObject({
+      value: "gpt-5.6-sol",
       source: "json",
     });
     expect(field(configured, "tools.web.fetch.render")).toMatchObject({ value: "never", source: "env" });
