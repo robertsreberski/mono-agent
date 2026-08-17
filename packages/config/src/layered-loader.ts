@@ -869,6 +869,9 @@ export function layerJsonOntoEnv(
   if (json.tools?.web?.search?.endpoint !== undefined) {
     fromJson.MONO_AGENT_WEB_SEARCH_ENDPOINT = json.tools.web.search.endpoint;
   }
+  if (json.tools?.web?.search?.codex?.model !== undefined) {
+    fromJson.MONO_AGENT_WEB_SEARCH_CODEX_MODEL = json.tools.web.search.codex.model;
+  }
   if (json.tools?.web?.fetch?.render !== undefined) {
     fromJson.MONO_AGENT_WEB_FETCH_RENDER = json.tools.web.fetch.render;
   }

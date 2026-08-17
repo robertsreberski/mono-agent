@@ -1136,7 +1136,7 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
   } else if (field.jsonPath === "providers.piNative.transport") {
     schema.enum = PI_TRANSPORTS;
   } else if (field.jsonPath === "tools.web.search.backend") {
-    schema.enum = ["auto", "searxng", "keyless"];
+    schema.enum = ["auto", "searxng", "codex", "keyless"];
   } else if (field.jsonPath === "tools.web.fetch.render") {
     schema.enum = ["never", "auto"];
   } else if (field.jsonPath === "telegram.groupMode") {
@@ -1349,6 +1349,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "tools.mcpCallTimeoutMs": 120_000,
     "tools.mcpCallMaxTotalTimeoutMs": 2_700_000,
     "tools.web.search.backend": "auto",
+    "tools.web.search.codex.model": "gpt-5.6-luna",
     "tools.web.fetch.render": "never",
     "tools.web.fetch.browserCommand": "agent-browser",
     "sandbox.network.mode": "none",
@@ -1581,10 +1582,13 @@ function descriptionFor(id: string): string {
     return "Configured stdio MCP server names that receive trusted per-request conversation, run, output-directory, and scoped progress context.";
   }
   if (id === "tools.web.search.backend") {
-    return "WebSearch backend: auto tries a configured local SearXNG endpoint then keyless fallbacks; searxng is strict; keyless skips SearXNG.";
+    return "WebSearch backend: auto tries configured local SearXNG, then ChatGPT-subscription Codex search, then keyless fallbacks; searxng, codex, and keyless are strict.";
   }
   if (id === "tools.web.search.endpoint") {
     return "Optional unauthenticated loopback HTTP SearXNG base URL. Remote HTTPS, credentials, query strings, and fragments are rejected.";
+  }
+  if (id === "tools.web.search.codex.model") {
+    return "Codex app-server model used for ChatGPT-subscription web search. The signed-in account must expose both this model and web search; default gpt-5.6-luna.";
   }
   if (id === "tools.web.fetch.render") {
     return "Browser-render capability for sparse JavaScript pages. never forces every call to static extraction; auto permits an isolated agent-browser session when needed.";

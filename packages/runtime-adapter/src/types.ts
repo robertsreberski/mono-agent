@@ -535,8 +535,9 @@ export interface RuntimeRunOptions {
   readonly piSessionsRoot?: string;
   /** Local-first WebSearch backend selection for this run. */
   readonly webSearchConfig?: {
-    readonly backend?: "auto" | "searxng" | "keyless";
+    readonly backend?: "auto" | "searxng" | "codex" | "keyless";
     readonly endpoint?: string;
+    readonly codex?: { readonly model?: string };
   };
   /** Static WebFetch extraction and optional isolated browser-render policy. */
   readonly webFetchConfig?: {

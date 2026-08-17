@@ -4339,7 +4339,8 @@ describe("validateMonoAgentFolder — web tools", () => {
       status: "ok",
       details: expect.arrayContaining([
         "WebSearch backend: auto.",
-        "SearXNG is not configured; auto mode will use keyless search.",
+        "SearXNG is not configured; auto mode starts with Codex subscription search, then keyless search.",
+        "Codex subscription fallback model: gpt-5.6-luna; readiness is checked lazily when auto mode reaches that fallback.",
         "WebFetch browser rendering: never.",
         "Static Defuddle/Readability extraction is active; agent-browser is not required.",
       ]),
@@ -4396,6 +4397,51 @@ describe("validateMonoAgentFolder — web tools", () => {
     expect(web.details).not.toContain("SearXNG JSON search probe succeeded.");
   });
 
+  it("probes strict Codex subscription auth, capability, and configured model readiness", async () => {
+    const probe = vi.fn().mockResolvedValue({
+      ok: true,
+      reason: "",
+      model: "gpt-5.6-luna",
+    });
+    const configPath = await writeWebToolsConfig({
+      search: { backend: "codex", codex: { model: "gpt-5.6-luna" } },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: true,
+      codexWebSearchProbe: probe,
+    });
+    const web = sectionById(report, "web-tools");
+
+    expect(web.status).toBe("ok");
+    expect(probe).toHaveBeenCalledWith({ model: "gpt-5.6-luna" });
+    expect(web.details).toContain(
+      "Codex ChatGPT subscription, web-search capability, and configured model are ready.",
+    );
+  });
+
+  it("warns when strict Codex subscription search is not ready", async () => {
+    const configPath = await writeWebToolsConfig({ search: { backend: "codex" } });
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: true,
+      codexWebSearchProbe: vi.fn().mockResolvedValue({
+        ok: false,
+        reason: "Codex must be signed in with ChatGPT subscription access.",
+        model: "gpt-5.6-luna",
+      }),
+    });
+    const web = sectionById(report, "web-tools");
+
+    expect(web.status).toBe("waiting");
+    expect(web.details.join(" ")).toContain("Strict Codex mode has no fallback.");
+  });
+
   it.each([
     ["agent-browser 0.33.1\n", "ok", "agent-browser v0.33.1 is ready."],
     ["agent-browser 0.26.0\n", "waiting", "[WARN] agent-browser is v0.26.0; WebFetch auto rendering requires >=0.33.1."],
@@ -4411,6 +4457,11 @@ describe("validateMonoAgentFolder — web tools", () => {
       configPath,
       liveness: true,
       sdkAuthStatusExecFile: execSpy,
+      codexWebSearchProbe: vi.fn().mockResolvedValue({
+        ok: true,
+        reason: "",
+        model: "gpt-5.6-luna",
+      }),
     });
     const web = sectionById(report, "web-tools");
 

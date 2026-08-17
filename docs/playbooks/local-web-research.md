@@ -73,8 +73,10 @@ tools enabled and add their local-first settings:
 }
 ```
 
-Strict `searxng` mode makes companion failure explicit. Change it to `auto` if
-DuckDuckGo/Startpage fallback is preferable.
+Strict `searxng` mode makes companion failure explicit. Change it to `auto` to
+fall through to ChatGPT-subscription Codex search and then DuckDuckGo/Startpage.
+The existing `codex` CLI must be signed in with ChatGPT; mono-agent consumes
+only app-server's structured search sources and never extracts OAuth tokens.
 
 `network.mode: "all"` is required here because SearXNG itself contacts public
 engines and `WebFetch` contacts the result sites. A narrower allowlist works

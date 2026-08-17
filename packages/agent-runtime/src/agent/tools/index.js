@@ -18,6 +18,11 @@ export {
 export { execToolImpl, execToolRun } from "./exec.js";
 export { webFetchToolImpl, performWebFetch } from "./web-fetch.js";
 export { webSearchToolImpl, performWebSearch } from "./web-search.js";
+export {
+  DEFAULT_CODEX_SEARCH_MODEL,
+  inspectCodexSubscriptionSearch,
+  searchCodexSubscription,
+} from "./codex-subscription-search.js";
 export { createWebToolController } from "./web-controller.js";
 
 export { isPathAllowed, isWorkdirAllowed } from "./shared/path-resolver.js";
