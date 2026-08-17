@@ -931,6 +931,42 @@ describe("cron channel driver — durable effective state", () => {
     expect(onDegraded).toHaveBeenCalledWith(runtimeReason);
   });
 
+  it("keeps operator actions enabled when loadConfig runs again after start", async () => {
+    const registry = new CronOperatorRegistry();
+    const driver = createCronChannelDriver({
+      inspectControlStore: async () => ({ status: "absent" }),
+      openControlStore: async () => testControlStore,
+      adapterFactory: (options) => adapterResult(options),
+    }, registry);
+    const config = {
+      jobs: [{ id: "j", expression: "* * * * *", timezone: "UTC", prompt: "p", enabled: true }],
+      operatorActionsEnabled: true,
+      controlInspection: { status: "absent" as const },
+      effectiveEnabledByJobId: new Map([["j", true]]),
+    };
+
+    // A configured-channel loadConfig input: the env prefix satisfies the gate.
+    const reloadInput = {
+      ...baseInput,
+      env: { MONO_AGENT_CRON_OPERATOR_ACTIONS_ENABLED: "true" },
+    };
+
+    const running = await driver.start({ ...baseInput, config });
+    expect(registry.overview()).toMatchObject({ actionsEnabled: true });
+
+    // Rendering a channel config view re-enters loadConfig on the live channel.
+    // Its binding carries no control store and no adapter, so before this fix it
+    // replaced the started service and disabled run-now for the whole process.
+    await driver.loadConfig(reloadInput as never);
+
+    expect(registry.overview()).toMatchObject({ actionsEnabled: true });
+
+    // A stopped channel releases the claim: it no longer owns a store or adapter.
+    await running.stop();
+    await driver.loadConfig(reloadInput as never);
+    expect(registry.overview()).toMatchObject({ actionsEnabled: false });
+  });
+
   it("halts every job, logs at error level, and exposes degraded operator state on control corruption", async () => {
     const error = vi.fn();
     const onDegraded = vi.fn();
