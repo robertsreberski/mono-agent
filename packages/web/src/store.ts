@@ -4204,6 +4204,7 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
         toolName: subagentToolName(event.name ?? existingSubagentToolName(group, event.id) ?? "Tool"),
         ...(event.arguments === undefined ? {} : { args: event.arguments }),
         ...(event.content === undefined ? {} : { result: event.content }),
+        ...(event.structuredContent === undefined ? {} : { structuredResult: event.structuredContent }),
         status,
       }, historyUpdate);
       return;
@@ -4226,6 +4227,11 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
       toolName: event.name ?? existingToolName(parts, event.id) ?? "Tool",
       ...(event.arguments === undefined ? {} : { args: event.arguments }),
       ...(event.content === undefined ? {} : { result: event.content }),
+      // `result` is the model-facing text and cannot answer "what did this tool
+      // actually decide". The AskUser card needs `interactionId`/`answered` to
+      // re-render an answered question after a reload, so keep the structured
+      // payload beside the prose rather than reparsing the sentence.
+      ...(event.structuredContent === undefined ? {} : { structuredResult: event.structuredContent }),
       status,
     }, historyUpdate);
     return;

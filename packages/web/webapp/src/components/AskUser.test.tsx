@@ -327,6 +327,83 @@ describe("AskUser web form", () => {
     expect(api.pendingAsk).not.toHaveBeenCalled();
   });
 
+  // Production shape check. AskUser's tool result reaching the console is the model-facing
+  // SENTENCE ("The user answered:\n- ..."), never an object — the machine-readable
+  // {interactionId, answered} lives in the MCP structuredContent, which now rides beside
+  // it in the tool-call artifact envelope. Before that payload was carried, an answered
+  // card had no interactionId and no durable status, so the coordinator marked it
+  // unresolved-and-not-running and it rendered "Question unavailable" the instant the
+  // answer landed. Note the other tests in this file pass `result` as an object, which is
+  // why they never caught this.
+  it("renders an answered card from structuredResult when the tool result is a plain string", async () => {
+    vi.spyOn(api, "ask");
+    vi.spyOn(api, "pendingAsk");
+
+    render(
+      <AskReconciliationProvider>
+        <ToolFallback
+          type="tool-call"
+          toolName="AskUser"
+          toolCallId="tool-answered"
+          args={{ message: "Morning briefing and reply draft" }}
+          argsText="{}"
+          result={"The user answered:\n- Delivery: Send"}
+          artifact={{
+            structuredResult: {
+              ok: true,
+              answered: true,
+              interactionId: "ask-answered",
+              answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }],
+            },
+          }}
+          isError={false}
+          status={{ type: "complete" }}
+          addResult={vi.fn()}
+          resume={vi.fn()}
+          respondToApproval={vi.fn()}
+        />
+      </AskReconciliationProvider>,
+    );
+
+    expect(await screen.findByText(/Answers submitted/u)).toBeVisible();
+    expect(screen.queryByText(/Question unavailable/u)).not.toBeInTheDocument();
+    // The durable status is authoritative, so the card never has to ask the agent.
+    expect(api.pendingAsk).not.toHaveBeenCalled();
+  });
+
+  it("reports an expired ask from structuredResult rather than calling it unavailable", async () => {
+    vi.spyOn(api, "ask");
+
+    render(
+      <AskReconciliationProvider>
+        <ToolFallback
+          type="tool-call"
+          toolName="AskUser"
+          toolCallId="tool-expired"
+          args={{}}
+          argsText="{}"
+          result={"The user did not answer within the wait window."}
+          artifact={{
+            structuredResult: {
+              ok: true,
+              answered: false,
+              reason: "timeout",
+              interactionId: "ask-expired",
+            },
+          }}
+          isError={false}
+          status={{ type: "complete" }}
+          addResult={vi.fn()}
+          resume={vi.fn()}
+          respondToApproval={vi.fn()}
+        />
+      </AskReconciliationProvider>,
+    );
+
+    expect(await screen.findByText(/Question expired/u)).toBeVisible();
+    expect(screen.queryByText(/Question unavailable/u)).not.toBeInTheDocument();
+  });
+
   it("never lets an old card adopt a different interaction and becomes non-actionable after eviction", async () => {
     vi.spyOn(api, "pendingAsk");
     vi.spyOn(api, "ask").mockResolvedValue({ ...snapshot, interactionId: "ask-newer" });
