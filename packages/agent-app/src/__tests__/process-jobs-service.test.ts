@@ -3090,6 +3090,26 @@ function processJobScaleId(index: number): string {
   return `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`;
 }
 
+/**
+ * Every record this suite seeds is stamped at FIXTURE_EPOCH (`durableRecord()` and
+ * friends hardcode 2026-08-14). Left on the real wall clock, the service's age-based
+ * retention prunes those records once real-now passes FIXTURE_EPOCH + the retention
+ * window, and `service.get()` silently starts returning undefined — which reads as an
+ * unrelated logic bug on whatever diff happens to be in CI. That is exactly what
+ * happened on 2026-08-21, seven days after the epoch, turning `main` red.
+ *
+ * So anchor the service clock at the fixture epoch instead of freezing it: the clock
+ * still advances in real time (deadlines, expiry and busy-bounds all still elapse), it
+ * simply starts where the fixtures live. A test that needs an exact instant keeps
+ * passing its own `now`, which wins over this default.
+ */
+const FIXTURE_EPOCH_MS = Date.parse("2026-08-14T10:00:00.000Z");
+
+function fixtureAnchoredClock(): () => Date {
+  const startedAtMs = Date.now();
+  return () => new Date(FIXTURE_EPOCH_MS + (Date.now() - startedAtMs));
+}
+
 async function startService(
   fixture: { cwd: string; settings: ProcessJobsSettings },
   overrides: Partial<Parameters<typeof openProcessJobsService>[0]> = {},
@@ -3108,10 +3128,12 @@ async function startService(
       ownerPid: process.pid,
       release: async () => undefined,
     }),
+    now = fixtureAnchoredClock(),
     ...rest
   } = overrides;
   const service = await openProcessJobsService({
     ...rest,
+    now,
     cwd,
     workspace,
     settings,
