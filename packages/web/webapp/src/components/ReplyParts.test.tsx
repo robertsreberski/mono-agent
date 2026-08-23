@@ -56,6 +56,7 @@ import {
   ReplyFailurePart,
   mcpAppContentSecurityPolicy,
   mcpAppArgumentPreview,
+  mcpAppPreferredHeight,
   openExternalMcpAppLink,
   safeMcpAppResourceMetadata,
   secureMcpAppHtml,
@@ -112,6 +113,8 @@ interface TestAppBridgeInstance {
   readonly onopenlink?: (params: unknown) => Promise<unknown>;
   readonly onupdatemodelcontext?: (params: unknown) => Promise<unknown>;
   readonly onsandboxready?: () => void;
+  readonly onrequestteardown?: () => void;
+  readonly onsizechange?: (params: { height?: number }) => void;
   readonly oninitialized?: () => void;
   readonly onerror?: (error: Error) => void;
   readonly teardownResource: () => Promise<void>;
@@ -1388,7 +1391,7 @@ describe("MCP App sandbox", () => {
         code: "reply_access_expired",
       });
     });
-    fireEvent.click(await screen.findByRole("button", { name: "Refresh app access for Quarterly report" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reopen Quarterly report" }));
 
     await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
     expect(load.mock.calls[1]?.[0]).toBe(fresh.resourceUrl);
@@ -1406,10 +1409,118 @@ describe("MCP App sandbox", () => {
 
     render(app(appPart));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Interactive app access expired"));
-    fireEvent.click(screen.getByRole("button", { name: "Refresh app access for Quarterly report" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reopen Quarterly report" }));
 
     expect(await screen.findByTitle("Quarterly report interactive app")).toHaveAttribute("sandbox", "allow-scripts");
     expect(load).toHaveBeenCalledTimes(2);
     expect(screen.getByRole("status")).toHaveTextContent("Starting the isolated app");
+  });
+  it("hides and restores the app from one reversible header control", async () => {
+    vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>gallery</p>",
+      connected: true,
+    });
+
+    render(app(appPart));
+    expect(await screen.findByTitle("Quarterly report interactive app")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide Quarterly report" }));
+    await waitFor(() => {
+      expect(screen.queryByTitle("Quarterly report interactive app")).not.toBeInTheDocument();
+    });
+
+    // The control must survive collapsing. A card that can be closed but not
+    // reopened is the dead end this replaced.
+    const show = screen.getByRole("button", { name: "Show Quarterly report" });
+    expect(show).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(show);
+    expect(await screen.findByTitle("Quarterly report interactive app")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Hide Quarterly report" }))
+      .toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("offers Reopen after the app tears itself down", async () => {
+    const load = vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>torn down</p>",
+      connected: true,
+    });
+
+    render(app(appPart));
+    const frame = await screen.findByTitle("Quarterly report interactive app") as HTMLIFrameElement;
+    const bridge = await connectRenderedApp(frame, appPart);
+
+    await act(async () => {
+      bridge.onrequestteardown?.();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTitle("Quarterly report interactive app")).not.toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Reopen Quarterly report" }));
+
+    expect(await screen.findByTitle("Quarterly report interactive app")).toBeInTheDocument();
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+  });
+
+  it("clamps an app-reported height into the host bounds", async () => {
+    vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>tall</p>",
+      connected: true,
+    });
+
+    render(app(appPart));
+    const frame = await screen.findByTitle("Quarterly report interactive app") as HTMLIFrameElement;
+    const bridge = await connectRenderedApp(frame, appPart);
+
+    await act(async () => {
+      bridge.onsizechange?.({ height: 99_999 });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(frame.style.height).toBe("1600px"));
+
+    await act(async () => {
+      bridge.onsizechange?.({ height: 1 });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(frame.style.height).toBe("160px"));
+  });
+
+  it("keeps the sandbox ready message to its exact allowed keys", async () => {
+    vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>keys</p>",
+      connected: true,
+    });
+
+    render(app(appPart));
+    const frame = await screen.findByTitle("Quarterly report interactive app") as HTMLIFrameElement;
+    const bridge = await connectRenderedApp(frame, appPart);
+    await act(async () => {
+      bridge.onsandboxready?.();
+      await Promise.resolve();
+    });
+
+    // The proxy validates this payload with an exact-key check and fails closed on
+    // anything unknown, so a stray layout hint here would break every app render.
+    expect(bridgeHarness.resources).toHaveLength(1);
+    for (const key of Object.keys(bridgeHarness.resources[0] as Record<string, unknown>)) {
+      expect(["html", "sandbox", "csp", "permissions"]).toContain(key);
+    }
+  });
+
+  it("treats preferredSize as a clamped hint and ignores unusable values", () => {
+    expect(mcpAppPreferredHeight({ ui: { preferredSize: { height: 600 } } })).toBe(600);
+    expect(mcpAppPreferredHeight({ ui: { preferredSize: { height: 99_999 } } })).toBe(1600);
+    expect(mcpAppPreferredHeight({ ui: { preferredSize: { height: 10 } } })).toBe(160);
+    for (const height of [0, -600, Number.NaN, Number.POSITIVE_INFINITY, "600", null]) {
+      expect(mcpAppPreferredHeight({ ui: { preferredSize: { height } } })).toBeUndefined();
+    }
+    expect(mcpAppPreferredHeight(undefined)).toBeUndefined();
+    expect(mcpAppPreferredHeight({ ui: {} })).toBeUndefined();
   });
 });
