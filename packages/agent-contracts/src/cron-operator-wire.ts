@@ -332,7 +332,7 @@ function parseCronOperatorEvent(
         || !validToolHistoryMetadata(event.history)) fail();
       break;
     case "tool_call_completed":
-      if (!hasOnlyKeys(event, ["type", "id", "name", "arguments", "content", "isError", "executionMs", "history", "metadata"])
+      if (!hasOnlyKeys(event, ["type", "id", "name", "arguments", "content", "structuredContent", "isError", "executionMs", "history", "metadata"])
         || typeof event.id !== "string"
         || (event.name !== undefined && typeof event.name !== "string")
         || (event.isError !== undefined && typeof event.isError !== "boolean")

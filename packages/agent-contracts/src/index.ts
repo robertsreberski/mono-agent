@@ -670,6 +670,13 @@ export type AgentStreamEvent =
       readonly name?: string;
       readonly arguments?: unknown;
       readonly content?: unknown;
+      /**
+       * An MCP tool's machine-readable result, when it returned one. `content` is the
+       * model-facing text and is deliberately lossy; a renderer that needs the tool's
+       * actual outcome fields (AskUser's `interactionId`/`answered`, for instance) must
+       * read them here. Bounded at the emitter — see `structuredContentFromToolResult`.
+       */
+      readonly structuredContent?: unknown;
       readonly isError?: boolean;
       /** Wall-clock tool execution time, when the runtime reported it. */
       readonly executionMs?: number;

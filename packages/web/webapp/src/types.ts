@@ -231,12 +231,28 @@ export interface SessionToolHistoryMetadata {
   readonly untrusted: true;
 }
 
+/**
+ * Per-tool-call metadata the console renders but assistant-ui's tool-call part cannot
+ * type. Both fields ride in that part's single `artifact` slot, so they are wrapped
+ * together rather than competing for it.
+ */
+export interface ToolCallArtifact {
+  readonly history?: unknown;
+  readonly structuredResult?: unknown;
+}
+
 /** One tool call, whether the agent made it or one of its subagents did. */
 export interface ToolCall {
   readonly toolCallId: string;
   readonly toolName: string;
   readonly args?: unknown;
   readonly result?: unknown;
+  /**
+   * An MCP tool's machine-readable result, when it returned one. `result` is the
+   * model-facing text and is lossy; renderers that must reason about the outcome
+   * (the AskUser card reads `interactionId`/`answered`) read this instead.
+   */
+  readonly structuredResult?: unknown;
   readonly status: ToolCallStatus;
   readonly history?: SessionToolHistoryMetadata;
 }

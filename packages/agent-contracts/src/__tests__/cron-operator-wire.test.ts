@@ -76,6 +76,17 @@ describe("cron operator wire contract", () => {
     const events = [
       { type: "tool_call_started", id: "call-1", name: "Read", history: { ...history, sequence: 1 } },
       { type: "tool_call_completed", id: "call-1", name: "Read", content: "ok", history },
+      // An MCP tool's structuredContent must survive this wire, not be rejected by it.
+      // The key list is exhaustive — an unlisted field fails the whole frame rather than
+      // being quietly dropped — so the AskUser card's interactionId/answered would never
+      // reach a cron-run detail view without this.
+      {
+        type: "tool_call_completed",
+        id: "call-2",
+        name: "AskUser",
+        content: "The user answered:\n- Delivery: Send",
+        structuredContent: { ok: true, answered: true, interactionId: "ask-1" },
+      },
     ];
 
     expect(parseCronOperatorRunDetail(summary({
