@@ -2,10 +2,11 @@ import { realpath } from "node:fs/promises";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentMessageStream, AgentReplyPart, AgentRequestBase, AgentResponder, ProcessJobOperator, ProcessJobProjection } from "@mono-agent/agent-contracts";
+import type { AgentMessageStream, AgentReplyPart, AgentRequestBase, AgentResponder, ProcessJobOperator, ProcessJobProjection, RunningChannel } from "@mono-agent/agent-contracts";
 import type { DiscoveredLocalModel, LocalProviderDefinition } from "@mono-agent/runtime-adapter";
 import type { TuiAdapterConfig, TuiAdapterInfo, TuiAdapterOptions, TuiAdapterStartResult } from "@mono-agent/operator-adapter";
 import type { DeliverWebNotificationInput } from "@mono-agent/web";
+import { WebConsoleError } from "@mono-agent/web";
 
 import type { ChannelDriver, ChannelStartInput } from "../channels.js";
 import { createTuiChannelDriver } from "../channels.js";
@@ -553,3 +554,115 @@ const PROCESS_JOB: ProcessJobProjection = {
   cancelRequested: false,
   lastError: null,
 };
+
+
+async function runningWebChannel(
+  deliverNotification: (input: DeliverWebNotificationInput) => Promise<unknown>,
+): Promise<RunningChannel> {
+  const driver = createTuiChannelDriver({
+    adapterFactory: async (): Promise<TuiAdapterStartResult> => ({
+      url: "http://127.0.0.1:0",
+      baseUrl: "http://127.0.0.1:0/gui",
+      infoUrl: "http://127.0.0.1:0/gui/v1/info",
+      turnsUrl: "http://127.0.0.1:0/gui/v1/turns",
+      host: "127.0.0.1",
+      port: 0,
+      stop: async () => undefined,
+    }),
+    discoverModels: async () => [],
+    deliverNotification: deliverNotification as never,
+  });
+  const start = startAppOwnedTuiChannel(driver, {
+    ...baseInput(),
+    responder: {
+      respond: async () => ({ text: "Job finished safely." }),
+      deliverVerbatim: async () => undefined,
+    },
+    sourceId: "agent-one",
+  }, {
+    operatorToken: "owner-token",
+    list: async () => [],
+    get: async () => undefined,
+    cancel: async () => { throw new Error("not used"); },
+  });
+  if (start === undefined) throw new Error("expected the app-owned TUI start path");
+  return await start;
+}
+
+describe("web process-job wake classification", () => {
+  const wakeInput = {
+    conversationId: "web:thread-1",
+    text: "bounded untrusted wake",
+    deliveryKey: PROCESS_JOB.wake.deliveryKey,
+    processJob: PROCESS_JOB,
+  };
+
+  it("retries only a failure that provably delivered nothing", async () => {
+    // The console re-runs the wake turn on every accepted call, so a connect
+    // failure is the one case safe to replay. Previously EVERY non-delivery was
+    // permanent on attempt 1 and the completion turn was simply lost.
+    const running = await runningWebChannel(async () => {
+      throw new WebConsoleError("notification_ingress_unavailable", "console is down", 503);
+    });
+
+    await expect(running.processJobs?.wake(wakeInput)).resolves.toMatchObject({
+      delivered: false,
+      code: "destination_channel_unavailable",
+      retryable: true,
+    });
+  });
+
+  it("keeps an ambiguous wake permanent so no job reports twice", async () => {
+    for (const code of ["notification_ingress_timeout", "notification_delivery_failed", "invalid_notification_response"]) {
+      const running = await runningWebChannel(async () => {
+        throw new WebConsoleError(code, `failed: ${code}`, 502);
+      });
+
+      await expect(running.processJobs?.wake(wakeInput)).resolves.toMatchObject({
+        delivered: false,
+        code: "process_job_wake_failed",
+        retryable: false,
+        ambiguous: true,
+      });
+    }
+  });
+
+  it("treats a missing wake receipt as ambiguous rather than merely failed", async () => {
+    const running = await runningWebChannel(async () => ({ threadId: "thread-1", duplicate: false }));
+
+    await expect(running.processJobs?.wake(wakeInput)).resolves.toMatchObject({
+      delivered: false,
+      code: "process_job_wake_failed",
+      retryable: false,
+      ambiguous: true,
+    });
+  });
+
+  it("keeps an origin mismatch non-retryable", async () => {
+    const running = await runningWebChannel(async () => {
+      throw new Error("must not be called");
+    });
+
+    await expect(running.processJobs?.wake({ ...wakeInput, conversationId: "web:other-thread" }))
+      .resolves.toMatchObject({
+        delivered: false,
+        code: "process_job_origin_mismatch",
+        retryable: false,
+      });
+  });
+
+  it("reports a delivered wake unchanged", async () => {
+    const running = await runningWebChannel(async () => ({
+      threadId: "thread-1",
+      duplicate: false,
+      delivery: { delivered: true },
+    }));
+
+    await expect(running.processJobs?.wake(wakeInput)).resolves.toMatchObject({
+      delivered: true,
+      code: "delivered",
+      channelId: "tui",
+      historyRecorded: true,
+    });
+  });
+});

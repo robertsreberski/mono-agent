@@ -317,14 +317,40 @@ export function createTuiChannelDriver(
                 retryable: false,
               };
             }
-            const delivered = await deliverNotification({
-              sourceId: input.sourceId,
-              triggerKind: "job",
-              deliveryKey,
-              threadId,
-              processJob,
-              wakePrompt: text,
-            });
+            // The console re-runs the wake turn on every accepted call — its
+            // dedupe covers the job card, not the wake — so only a failure that
+            // provably delivered nothing may be replayed. Everything else is
+            // ambiguous and stays permanent rather than risking a second
+            // completion turn for the same job.
+            let delivered;
+            try {
+              delivered = await deliverNotification({
+                sourceId: input.sourceId,
+                triggerKind: "job",
+                deliveryKey,
+                threadId,
+                processJob,
+                wakePrompt: text,
+              });
+            } catch (error) {
+              if (webConsoleErrorCode(error) === "notification_ingress_unavailable") {
+                return {
+                  delivered: false,
+                  code: "destination_channel_unavailable",
+                  reason: "The web console notification ingress is unavailable.",
+                  retryable: true,
+                  channelId: "tui",
+                };
+              }
+              return {
+                delivered: false,
+                code: "process_job_wake_failed",
+                reason: error instanceof Error ? error.message : String(error),
+                retryable: false,
+                ambiguous: true,
+                channelId: "tui",
+              };
+            }
             const receipt = delivered.delivery;
             if (receipt === undefined) {
               return {
@@ -332,6 +358,8 @@ export function createTuiChannelDriver(
                 code: "process_job_wake_failed",
                 reason: "The web console returned no process-job wake receipt.",
                 retryable: false,
+                ambiguous: true,
+                channelId: "tui",
               };
             }
             return {
@@ -417,6 +445,13 @@ function webThreadId(conversationId: string): string | undefined {
   if (base === undefined || !base.startsWith("web:") || base === "web:new") return undefined;
   const threadId = base.slice("web:".length).trim();
   return threadId.length === 0 ? undefined : threadId;
+}
+
+/** Read the stable `code` off a thrown WebConsoleError without trusting its shape. */
+function webConsoleErrorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+  const code = (error as { readonly code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
 }
 
 function baseConversationId(conversationId: string): string {

@@ -55,6 +55,31 @@ export function normalizeProcessTimeoutMs(value, fallback = DEFAULT_BASH_TIMEOUT
 }
 
 /**
+ * Background process-job timeout: positive-integer milliseconds with no
+ * foreground ceiling. A background budget belongs to the host's `processJobs`
+ * settings (`maxRuntimeMs`), which clamp it on their own side; reusing the
+ * foreground default as a cap here silently discarded the long runtime a caller
+ * deliberately asked for. `undefined` means "no explicit request", leaving the
+ * host default in force.
+ */
+export function normalizeBackgroundTimeoutMs(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return Math.max(1, Math.floor(n));
+}
+
+/**
+ * Legacy Bash `timeout` for a background job: the same seconds-vs-milliseconds
+ * heuristic as {@link normalizeBashTimeoutMs}, minus the foreground ceiling.
+ */
+export function normalizeBackgroundBashTimeoutMs(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  const floored = Math.floor(n);
+  return Math.max(1_000, floored <= 600 ? floored * 1_000 : floored);
+}
+
+/**
  * Compatibility wrapper retained for direct callers and tests.
  *
  * @param {{command: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean}} params
@@ -131,9 +156,11 @@ export async function bashToolRun(
   }
 
   if (background === true && processJobsController) {
+    // Deliberately re-derived from the raw params: `timeoutMs` above carries the
+    // foreground ceiling, which is not this job's budget.
     const requestedTimeoutMs = timeout_ms !== undefined
-      ? timeoutMs
-      : (timeout === undefined ? undefined : timeoutMs);
+      ? normalizeBackgroundTimeoutMs(timeout_ms)
+      : normalizeBackgroundBashTimeoutMs(timeout);
     const handedOff = await handOffProcessJob({
       controller: processJobsController,
       tool: "Bash",

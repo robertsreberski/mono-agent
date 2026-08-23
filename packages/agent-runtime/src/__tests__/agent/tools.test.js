@@ -13,6 +13,8 @@ import {
   globToolImpl,
   grepToolImpl,
   readToolImpl,
+  normalizeBackgroundBashTimeoutMs,
+  normalizeBackgroundTimeoutMs,
   normalizeBashTimeoutMs,
   resolveRgPath,
   webFetchToolImpl,
@@ -55,6 +57,29 @@ describe("ai tool helpers", () => {
     expect(normalizeBashTimeoutMs(120)).toBe(120000);
     expect(normalizeBashTimeoutMs(120000)).toBe(120000);
     expect(normalizeBashTimeoutMs(999999)).toBe(120000);
+  });
+
+  it("keeps a background timeout unbounded by the foreground default", () => {
+    // The foreground ceiling used to double as a cap here, so a four-hour
+    // background job was silently launched with a two-minute runtime limit.
+    expect(normalizeBackgroundTimeoutMs(14_400_000)).toBe(14_400_000);
+    expect(normalizeBackgroundTimeoutMs(1)).toBe(1);
+    expect(normalizeBackgroundTimeoutMs(9_999.6)).toBe(9_999);
+  });
+
+  it("reports an absent or unusable background timeout as undefined", () => {
+    // undefined leaves the host's processJobs budget in force rather than
+    // substituting the foreground default.
+    for (const value of [undefined, null, 0, -1, Number.NaN, Infinity, "nope"]) {
+      expect(normalizeBackgroundTimeoutMs(value)).toBeUndefined();
+    }
+  });
+
+  it("keeps legacy seconds semantics for a background timeout without capping it", () => {
+    expect(normalizeBackgroundBashTimeoutMs(30)).toBe(30_000);
+    expect(normalizeBackgroundBashTimeoutMs(600)).toBe(600_000);
+    expect(normalizeBackgroundBashTimeoutMs(14_400_000)).toBe(14_400_000);
+    expect(normalizeBackgroundBashTimeoutMs(undefined)).toBeUndefined();
   });
 
   it("glob excludes generated and vendor paths by default", async () => {
