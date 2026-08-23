@@ -1523,4 +1523,26 @@ describe("MCP App sandbox", () => {
     expect(mcpAppPreferredHeight(undefined)).toBeUndefined();
     expect(mcpAppPreferredHeight({ ui: {} })).toBeUndefined();
   });
+  it("offers Reopen rather than Hide when the app never loaded", async () => {
+    // The common shape of this: an older conversation whose originating
+    // connection was evicted, so the resource fetch fails outright.
+    const load = vi.spyOn(api, "mcpAppResource")
+      .mockRejectedValueOnce(new Error("connection gone"))
+      .mockResolvedValueOnce({
+        app: appPart,
+        html: "<!doctype html><p>recovered</p>",
+        connected: true,
+      });
+
+    render(app(appPart));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveClass("is-error"));
+
+    // Hide would be useless here: nothing is rendered, and re-expanding does not
+    // re-fetch the resource.
+    expect(screen.queryByRole("button", { name: "Hide Quarterly report" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reopen Quarterly report" }));
+
+    expect(await screen.findByTitle("Quarterly report interactive app")).toBeInTheDocument();
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+  });
 });

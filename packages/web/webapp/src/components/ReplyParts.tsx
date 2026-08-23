@@ -1095,10 +1095,12 @@ export function McpAppPart({ data }: DataMessagePartProps) {
     return <div className="reply-part-error" role="alert">An MCP App reference was invalid.</div>;
   }
 
-  // Torn down by the app, or its host access lapsed. Either way the frame cannot
-  // render, so the card degrades to its header and offers a way back instead of
-  // leaving a dead placeholder behind.
-  const degraded = status === "closed" || accessExpired;
+  // Torn down by the app, its host access lapsed, or it never loaded at all —
+  // the usual cause being an older conversation whose originating connection was
+  // evicted. In every case the frame cannot render, so the card degrades to its
+  // header and offers a way back. Offering Hide here instead would be useless:
+  // there is nothing to hide, and re-expanding does not re-fetch the resource.
+  const degraded = status === "closed" || status === "error" || accessExpired;
   const frameVisible = resource !== null && securedHtml !== undefined && !degraded && !collapsed;
   const appLabel = part.title ?? part.toolName;
   const reopenApp = () => {
