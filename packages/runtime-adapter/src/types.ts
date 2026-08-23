@@ -366,7 +366,11 @@ export interface RuntimeToolLimits {
   readonly toolPayloadMaxBytes?: number;
   readonly mcpCallTimeoutMs?: number;
   readonly mcpCallMaxTotalTimeoutMs?: number;
-  /** Documented for forward-compat; NOT wired to any tool today. */
+  /**
+   * Foreground ceiling and default for Bash/Exec timeouts on the Pi bridge
+   * (defaults to 120_000). Background process-job hand-offs ignore it and are
+   * bounded by `processJobs.maxRuntimeMs` on the host side instead.
+   */
   readonly bashTimeoutMs?: number;
 }
 

@@ -16,7 +16,7 @@ import { startPreparedProcess } from "./process-runner.js";
  *   timeoutMs?: number,
  *   maxOutputChars?: number,
  *   launch: (options?: {timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, onStdout?: (chunk: Buffer) => void, onStderr?: (chunk: Buffer) => void}) => ReturnType<typeof startPreparedProcess>,
- * }) => Promise<{jobId: string, state: "queued"|"starting"|"running", startedAt: string|null}>} start
+ * }) => Promise<{jobId: string, state: "queued"|"starting"|"running", startedAt: string|null, maxRuntimeMs?: number}>} start
  */
 
 /**
@@ -82,6 +82,7 @@ export async function handOffProcessJob({
       job_id: result.jobId,
       state: result.state,
       started_at: result.startedAt,
+      ...(result.maxRuntimeMs === undefined ? {} : { max_runtime_ms: result.maxRuntimeMs }),
     };
     return {
       text: `${BACKGROUND_START_GUIDANCE}\n${JSON.stringify(payload)}`,
@@ -119,7 +120,7 @@ export async function handOffProcessJob({
  * status command invites exactly the polling this forbids.
  */
 const BACKGROUND_START_GUIDANCE =
-  "Background process job started (tool-authored guidance): this conversation is woken with a new turn when the job reaches a terminal state, and its output arrives with that turn. Do not poll, sleep, wait on it, or re-run the command to check progress, and do not report the work as finished yet.";
+  "Background process job started (tool-authored guidance): this conversation is woken with a new turn when the job reaches a terminal state, and its output arrives with that turn. Do not poll, sleep, wait on it, or re-run the command to check progress, and do not report the work as finished yet. `max_runtime_ms` is the budget the host granted; if it is below what you requested, the host capped it and the job will be killed at that limit, so plan the work around the granted budget rather than re-running the same command.";
 
 const PUBLIC_BACKGROUND_START_FAILURES = Object.freeze({
   background_unsupported: "Background process jobs are unsupported for this tool call.",
@@ -191,6 +192,8 @@ function validProcessJobStartResult(value) {
   if (!value || typeof value !== "object") return false;
   if (typeof value.jobId !== "string" || value.jobId.trim().length === 0 || value.jobId.length > 256) return false;
   if (value.state !== "queued" && value.state !== "starting" && value.state !== "running") return false;
+  if (value.maxRuntimeMs !== undefined
+    && (!Number.isSafeInteger(value.maxRuntimeMs) || value.maxRuntimeMs <= 0)) return false;
   if (value.startedAt === null) return true;
   if (typeof value.startedAt !== "string") return false;
   const timestamp = Date.parse(value.startedAt);

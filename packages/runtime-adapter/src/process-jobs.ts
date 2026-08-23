@@ -62,10 +62,30 @@ export interface ProcessJobStartResult {
   readonly jobId: string;
   readonly state: Extract<ProcessJobState, "queued" | "starting" | "running">;
   readonly startedAt: string | null;
+  /**
+   * Runtime budget the host actually granted, after its own `maxRuntimeMs`
+   * ceiling was applied to whatever the caller requested. Optional so an older
+   * controller that omits it still satisfies the contract; when present the tool
+   * reports it, so a reduced budget can never be silently mistaken for the
+   * requested one.
+   */
+  readonly maxRuntimeMs?: number;
+}
+
+/** Host budget a background job is bounded by, independent of any one request. */
+export interface ProcessJobControllerLimits {
+  readonly maxRuntimeMs: number;
+  readonly maxOutputBytes: number;
 }
 
 /** Request-scoped host controller injected only into Pi-native Exec/Bash. */
 export interface ProcessJobsController {
+  /**
+   * The host's standing ceiling, published so the tool schema can state it
+   * before a job is launched. Optional: a controller that omits it simply
+   * leaves the limit unstated rather than failing the contract.
+   */
+  readonly limits?: ProcessJobControllerLimits;
   start(request: ProcessJobStartRequest): Promise<ProcessJobStartResult>;
 }
 
@@ -76,12 +96,25 @@ export function bridgeProcessJobsController(
   if (controller === null || typeof controller !== "object" || typeof controller.start !== "function") {
     throw new TypeError("Process-jobs controller must implement start().");
   }
+  const limits = bridgedLimits(controller.limits);
   return Object.freeze({
+    ...(limits === undefined ? {} : { limits }),
     async start(request: ProcessJobStartRequest): Promise<ProcessJobStartResult> {
       assertKernelStartRequest(request);
       return await controller.start(request);
     },
   });
+}
+
+/** Copy only well-formed positive budgets; a malformed one is simply unstated. */
+function bridgedLimits(
+  limits: ProcessJobControllerLimits | undefined,
+): ProcessJobControllerLimits | undefined {
+  if (limits === null || typeof limits !== "object") return undefined;
+  const { maxRuntimeMs, maxOutputBytes } = limits;
+  if (!Number.isSafeInteger(maxRuntimeMs) || maxRuntimeMs <= 0) return undefined;
+  if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes <= 0) return undefined;
+  return Object.freeze({ maxRuntimeMs, maxOutputBytes });
 }
 
 function assertKernelStartRequest(request: ProcessJobStartRequest): void {

@@ -18,6 +18,32 @@ type KernelStartRequest = Parameters<KernelProcessJobsController["start"]>[0];
 type KernelStartResult = Awaited<ReturnType<KernelProcessJobsController["start"]>>;
 
 describe("process-jobs kernel bridge", () => {
+  it("carries the host's published budget across the kernel seam", () => {
+    // Object.freeze in the bridge drops unknown fields, so the limits have to be
+    // copied deliberately or the tool schema would never see the real ceiling.
+    const bridged = bridgeProcessJobsController({
+      limits: { maxRuntimeMs: 28_800_000, maxOutputBytes: 1_048_576 },
+      start: async () => ({ jobId: "pj", state: "queued" as const, startedAt: null }),
+    });
+
+    expect(bridged.limits).toEqual({ maxRuntimeMs: 28_800_000, maxOutputBytes: 1_048_576 });
+    expect(Object.isFrozen(bridged.limits)).toBe(true);
+  });
+
+  it("leaves an absent or malformed budget unstated rather than failing the bridge", () => {
+    const start = async () => ({ jobId: "pj", state: "queued" as const, startedAt: null });
+
+    expect(bridgeProcessJobsController({ start })).not.toHaveProperty("limits");
+    for (const limits of [
+      { maxRuntimeMs: 0, maxOutputBytes: 1_048_576 },
+      { maxRuntimeMs: 28_800_000, maxOutputBytes: -1 },
+      { maxRuntimeMs: 1.5, maxOutputBytes: 1_048_576 },
+    ]) {
+      expect(bridgeProcessJobsController({ limits: limits as never, start }))
+        .not.toHaveProperty("limits");
+    }
+  });
+
   it("proves the kernel seam and neutral contract are structurally identical", () => {
     expectTypeOf<ProcessJobsController>().toExtend<KernelProcessJobsController>();
     expectTypeOf<KernelProcessJobsController>().toExtend<ProcessJobsController>();

@@ -12,6 +12,8 @@ export { grepToolImpl } from "./grep.js";
 export {
   bashToolImpl,
   bashToolRun,
+  normalizeBackgroundBashTimeoutMs,
+  normalizeBackgroundTimeoutMs,
   normalizeBashTimeoutMs,
   normalizeProcessTimeoutMs,
 } from "./bash.js";

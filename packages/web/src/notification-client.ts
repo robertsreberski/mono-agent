@@ -88,6 +88,17 @@ export async function deliverWebNotification(
       body: JSON.stringify(input),
     });
   } catch (error) {
+    // An abort means the request reached the wire and the console may still be
+    // running the delivery — for a job wake that is a whole agent turn. Callers
+    // must be able to tell that apart from a connect failure, which provably
+    // delivered nothing and is therefore safe to replay.
+    if (isAbortError(error)) {
+      throw new WebConsoleError(
+        "notification_ingress_timeout",
+        `The web notification ingress did not answer in time (${errorMessage(error)}).`,
+        504,
+      );
+    }
     throw new WebConsoleError(
       "notification_ingress_unavailable",
       `The web notification ingress is unavailable (${errorMessage(error)}).`,
@@ -122,6 +133,12 @@ export async function deliverWebNotification(
     ...(result.tombstoned === true ? { tombstoned: true } : {}),
     ...(delivery === undefined ? {} : { delivery }),
   };
+}
+
+function isAbortError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("name" in error)) return false;
+  const name = (error as { readonly name?: unknown }).name;
+  return name === "AbortError" || name === "TimeoutError";
 }
 
 function parseDeliveryResult(value: unknown): DeliverWebNotificationResult["delivery"] | undefined {

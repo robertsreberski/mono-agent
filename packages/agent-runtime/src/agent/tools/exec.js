@@ -3,7 +3,7 @@
 import { existsSync } from "node:fs";
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { DEFAULT_MAX_BASH_OUTPUT_CHARS } from "./shared/constants.js";
-import { normalizeProcessTimeoutMs } from "./bash.js";
+import { normalizeBackgroundTimeoutMs, normalizeProcessTimeoutMs } from "./bash.js";
 import { capChars } from "./shared/output-truncation.js";
 import {
   isPathAllowed,
@@ -101,7 +101,9 @@ export async function execToolRun(
       tool: "Exec",
       prepared,
       summary: `Exec command (${args.length} argument${args.length === 1 ? "" : "s"}; values redacted)`,
-      timeoutMs: timeout_ms === undefined ? undefined : timeoutMs,
+      // Re-derived from the raw param: `timeoutMs` carries the foreground
+      // ceiling, and a background job is bounded by processJobs instead.
+      timeoutMs: timeout_ms === undefined ? undefined : normalizeBackgroundTimeoutMs(timeout_ms),
       maxOutputChars: max_output_chars === undefined ? undefined : maxChars,
       startedAt,
       failed,

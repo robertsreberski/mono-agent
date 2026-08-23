@@ -803,6 +803,89 @@ describe("Exec", () => {
     expect(controller.start).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 1_000, maxOutputChars: 100 }));
   });
 
+  it("hands a multi-hour background timeout to the host unclamped", async () => {
+    // Regression: the foreground default (120_000) was reused as a cap, so a job
+    // launched with timeout_ms: 14_400_000 was SIGTERMed at exactly 120s and the
+    // model had no way to see that its own setting had been discarded.
+    const workspace = tempWorkspace();
+    const start = vi.fn(async () => ({ jobId: "pj_long", state: "queued", startedAt: null }));
+    const [bash, exec] = ["Bash", "Exec"].map((name) => getPiBuiltinTools([name], {
+      cwd: workspace,
+      ctx: { workspace, sandbox: passthroughSandbox },
+      processJobsController: { start },
+    }).find((tool) => tool.name === name));
+
+    await bash.execute("job-long-bash", {
+      command: `"${process.execPath}" --version`,
+      timeout_ms: 14_400_000,
+      background: true,
+    });
+    await exec.execute("job-long-exec", {
+      executable: process.execPath,
+      args: ["--version"],
+      timeout_ms: 14_400_000,
+      background: true,
+    });
+
+    expect(start.mock.calls[0][0]).toMatchObject({ tool: "Bash", timeoutMs: 14_400_000 });
+    expect(start.mock.calls[1][0]).toMatchObject({ tool: "Exec", timeoutMs: 14_400_000 });
+  });
+
+  it("keeps the legacy background timeout in seconds without capping it", async () => {
+    const workspace = tempWorkspace();
+    const start = vi.fn(async () => ({ jobId: "pj_legacy", state: "queued", startedAt: null }));
+    const bash = getPiBuiltinTools(["Bash"], {
+      cwd: workspace,
+      ctx: { workspace, sandbox: passthroughSandbox },
+      processJobsController: { start },
+    }).find((tool) => tool.name === "Bash");
+
+    await bash.execute("job-legacy", {
+      command: `"${process.execPath}" --version`,
+      timeout: 500,
+      background: true,
+    });
+
+    expect(start.mock.calls[0][0]).toMatchObject({ timeoutMs: 500_000 });
+  });
+
+  it("reports the runtime budget the host actually granted", async () => {
+    // Visibility is the other half of the fix: a host that narrows the request
+    // must say so, or the model reads the cap as its own mistake and relaunches.
+    const workspace = tempWorkspace();
+    const start = vi.fn(async () => ({
+      jobId: "pj_budget",
+      state: "queued",
+      startedAt: null,
+      maxRuntimeMs: 1_800_000,
+    }));
+    const result = await execToolRun({
+      executable: process.execPath,
+      args: ["--version"],
+      timeout_ms: 14_400_000,
+      background: true,
+    }, { ctx: { workspace, sandbox: passthroughSandbox }, processJobsController: { start } });
+
+    expect(result.error).toBe(false);
+    const [guidance, startPayload] = result.text.split("\n");
+    expect(guidance).toContain("max_runtime_ms");
+    expect(JSON.parse(startPayload)).toMatchObject({ job_id: "pj_budget", max_runtime_ms: 1_800_000 });
+    expect(result.outcome).toMatchObject({ code: "background_started", max_runtime_ms: 1_800_000 });
+  });
+
+  it("omits the granted budget when the host controller does not report one", async () => {
+    const workspace = tempWorkspace();
+    const start = vi.fn(async () => ({ jobId: "pj_silent", state: "queued", startedAt: null }));
+    const result = await execToolRun({
+      executable: process.execPath,
+      args: ["--version"],
+      background: true,
+    }, { ctx: { workspace, sandbox: passthroughSandbox }, processJobsController: { start } });
+
+    expect(result.error).toBe(false);
+    expect(JSON.parse(result.text.split("\n")[1])).not.toHaveProperty("max_runtime_ms");
+  });
+
   it("lets the host defaults own omitted background limits", async () => {
     const workspace = tempWorkspace();
     const start = vi.fn(async () => ({ jobId: "pj_defaults", state: "queued", startedAt: null }));

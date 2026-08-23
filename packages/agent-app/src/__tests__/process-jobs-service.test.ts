@@ -856,6 +856,32 @@ describe("process job service", () => {
     await expect(service.list()).resolves.toEqual([]);
   });
 
+  it("reports the runtime budget it granted, bounded by its own ceiling", async () => {
+    // The tool relays this back to the model. Without it a host-narrowed budget
+    // is indistinguishable from the one that was asked for, which is how three
+    // consecutive 120s kills read as the model's own mistake.
+    const fixture = await createFixture({ maxRuntimeMs: 30 * 60 * 1_000 });
+    const completion = deferred<ProcessJobProcessResult>();
+    const service = await startService(fixture);
+    // requestOf asks for one hour, so the service ceiling is what applies.
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+
+    expect(started.maxRuntimeMs).toBe(30 * 60 * 1_000);
+    expect(await service.get(started.jobId))
+      .toMatchObject({ limits: { maxRuntimeMs: 30 * 60 * 1_000 } });
+    completion.resolve(processResult());
+  });
+
+  it("grants the full requested runtime when it fits under the ceiling", async () => {
+    const fixture = await createFixture({ maxRuntimeMs: 8 * 60 * 60 * 1_000 });
+    const completion = deferred<ProcessJobProcessResult>();
+    const service = await startService(fixture);
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+
+    expect(started.maxRuntimeMs).toBe(60 * 60 * 1_000);
+    completion.resolve(processResult());
+  });
+
   it("retries only an explicitly safe wake result with the same delivery key", async () => {
     const fixture = await createFixture();
     const completion = deferred<ProcessJobProcessResult>();
