@@ -84,7 +84,7 @@ const PROVIDER_AUTH_RE = /(no api key|missing api key|api key required|invalid a
 // like worklab's coordinator, independent of retryableProviderFailureInfo) maps
 // that same terse text to the generic "spawn" kind instead of
 // "provider_unavailable".
-const PROVIDER_UNAVAILABLE_RE = /(econn|enotfound|etimedout|timed? ?out|service unavailable|503|502|gateway|fetch failed|network|websocket|\bconnection (?:error|refused|failed)\b|\bcould not connect\b)/i;
+const PROVIDER_UNAVAILABLE_RE = /(econn|enotfound|etimedout|timed? ?out|service unavailable|503|502|gateway|fetch failed|network|websocket|\bconnection (?:error|refused|failed)\b|\bcould not connect\b|\bstream ended without finish_reason\b)/i;
 const TOOL_FAILURE_RE = /(tool .* failed|mcp tool|permission denied|EACCES|read-only file system)/i;
 const NON_RETRYABLE_PROVIDER_RE = /(invalid[_ ]request|unknown parameter|no api key|missing api key|api key required|invalid api key|incorrect api key|provider is not configured:|authentication|authorization|not authorized|forbidden|billing|insufficient[_ ]quota|quota exceeded|model[_ ]not[_ ]found|unsupported model|permission denied|bad request|401|403|404)/i;
 // pi 0.80's openai-client-style bridge collapses a connection-refused/unreachable
@@ -92,7 +92,15 @@ const NON_RETRYABLE_PROVIDER_RE = /(invalid[_ ]request|unknown parameter|no api 
 // no fetch failed) — the `\bconnection (?:error|refused|failed)\b|\bcould not connect\b`
 // alternation below is the motivating fix so that case still fails over instead of
 // being classified as non-retryable.
-const RETRYABLE_PROVIDER_RE = /(currently overloaded|server(?:s)? (?:is |are )?overloaded|try again later|retry your request|request id|service unavailable|temporar(?:y|ily)|timed? ?out|stream disconnected|fetch failed|econnreset|econnrefused|eai_again|enotfound|etimedout|network|429|too many requests|500|502|503|504|gateway|internal server error|\bconnection (?:error|refused|failed)\b|\bcould not connect\b)/i;
+// pi-ai 0.83.0 adds a second such bare sentence: openai-completions.js throws
+// "Stream ended without finish_reason" when an SSE stream terminates without a
+// finish_reason chunk. Because pi-models.js pins every custom/OpenAI-compatible
+// provider to the openai-completions api, a truncated gateway response was terminal
+// on the first occurrence — a configured fallback chain never advanced off the
+// primary. Matched as the full sentence on purpose: mono-agent's own TUI/web
+// transports emit a similar "Stream ended without a finish or error frame." that is a
+// local protocol fault and must NOT trigger a provider failover.
+const RETRYABLE_PROVIDER_RE = /(currently overloaded|server(?:s)? (?:is |are )?overloaded|try again later|retry your request|request id|service unavailable|temporar(?:y|ily)|timed? ?out|stream disconnected|fetch failed|econnreset|econnrefused|eai_again|enotfound|etimedout|network|429|too many requests|500|502|503|504|gateway|internal server error|\bconnection (?:error|refused|failed)\b|\bcould not connect\b|\bstream ended without finish_reason\b)/i;
 export const PROVIDER_ABORT_RE = /\b(?:terminated|aborted before final output|aborted before final|stream aborted|stream was aborted|stream disconnected|websocket (?:error|disconnected|closed)|socket hang up|und_err_socket|econnreset|premature close)\b/i;
 
 /**
@@ -129,7 +137,12 @@ function retryableProviderSubkind(text) {
   if (/timed? ?out|etimedout/i.test(text)) return "timeout";
   // pi 0.80's terse "Connection error." (no ECONNREFUSED/fetch-failed detail) still
   // needs to land in the "network" subkind so a down provider fails over.
-  if (/stream disconnected|fetch failed|econnreset|econnrefused|eai_again|enotfound|network|\bconnection (?:error|refused|failed)\b|\bcould not connect\b/i.test(text)) return "network";
+  // pi-ai 0.83.0's openai-completions adapter throws the bare sentence
+  // "Stream ended without finish_reason" when an OpenAI-compatible SSE stream closes
+  // cleanly but no chunk ever carried a truthy finish_reason — i.e. a gateway
+  // truncated the response. That is a provider-side outage, so it belongs in the same
+  // "network" subkind as the terse connection error above.
+  if (/stream disconnected|fetch failed|econnreset|econnrefused|eai_again|enotfound|network|\bconnection (?:error|refused|failed)\b|\bcould not connect\b|\bstream ended without finish_reason\b/i.test(text)) return "network";
   if (/500|502|503|504|service unavailable|gateway|internal server error/i.test(text)) return "server_error";
   if (/retry your request|try again later|request id|processing your request/i.test(text)) return "retryable_request";
   return null;

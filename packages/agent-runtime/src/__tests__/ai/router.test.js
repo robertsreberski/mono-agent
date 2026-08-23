@@ -198,6 +198,46 @@ describe("createRouterRuntime — fallback on retryable", () => {
     expect(executeMock).toHaveBeenCalledTimes(2);
   });
 
+  it("falls back on pi-ai's truncated stream and carries the partial turn forward", async () => {
+    // Regression for a live incident: a 12-minute research turn died on
+    // "Stream ended without finish_reason" (pi-ai 0.83.0 openai-completions) with a
+    // three-model fallback chain configured, and the router never advanced off the
+    // primary because the text matched no retryable pattern. The work already done
+    // must reach the next route instead of being thrown away.
+    const callPrompts = [];
+    executeMock.mockImplementation(async (systemPrompt) => {
+      callPrompts.push(systemPrompt);
+      if (callPrompts.length === 1) {
+        return {
+          text: null,
+          error: "Stream ended without finish_reason",
+          failureKind: "provider_unavailable",
+          events: [
+            { type: "assistant", message: { content: [{ type: "text", text: "Malta dive itinerary so far" }] } },
+            { type: "final" },
+          ],
+          cancelled: false,
+        };
+      }
+      return { text: "recovered", events: [], failureKind: null };
+    });
+
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "claude", model: "claude-opus-4-7" },
+        { sdk: "claude", model: "claude-sonnet-4-6" },
+      ],
+    });
+    const result = await router.run("Original system prompt", { messages: [] });
+
+    expect(result.text).toBe("recovered");
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(result.failoverHistory).toMatchObject([{ retryableSubkind: "network" }]);
+    // The partial answer survives the route change rather than being discarded.
+    expect(callPrompts[1]).toContain("<resume_context>");
+    expect(callPrompts[1]).toContain("Malta dive itinerary so far");
+  });
+
   it("falls back when the primary model still exceeds its context window after compaction", async () => {
     executeMock
       .mockResolvedValueOnce({

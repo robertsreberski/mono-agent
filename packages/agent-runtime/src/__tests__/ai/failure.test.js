@@ -95,6 +95,15 @@ describe("classifyFailure", () => {
     expect(classifyFailure({ exitCode: 1, errorText: "Connection error." })).toBe("provider_unavailable");
   });
 
+  // pi-ai 0.83.0's openai-completions adapter throws this when an SSE stream closes
+  // cleanly without any chunk carrying a truthy finish_reason (gateway truncation).
+  // Same rationale as the terse-connection-error case above: hosts that call
+  // classifyFailure directly must not see "spawn" for a provider-side truncation.
+  it("classifies pi-ai's truncated-stream error as provider_unavailable (no hint)", () => {
+    expect(classifyFailure({ exitCode: 1, errorText: "Stream ended without finish_reason" }))
+      .toBe("provider_unavailable");
+  });
+
   it("matches tool failure messages", () => {
     expect(classifyFailure({ exitCode: 1, errorText: "tool Edit failed" })).toBe("tool_failure");
   });
@@ -220,6 +229,27 @@ describe("retryableProviderFailureInfo", () => {
       failureKind: "provider_unavailable",
       errorText: "Connection error.",
     })).toMatchObject({ retryable: true, subkind: "network" });
+  });
+
+  // A stream that ends without a finish_reason is a provider-side truncation: the
+  // run had a configured fallback chain and burned a 12-minute turn without ever
+  // advancing off the primary, because this text matched none of the retryable
+  // patterns. See pi-ai 0.83.0 dist/api/openai-completions.js.
+  it("treats pi-ai's truncated stream as a retryable network failure", () => {
+    expect(retryableProviderFailureInfo({
+      failureKind: "provider_unavailable",
+      errorText: "Stream ended without finish_reason",
+    })).toMatchObject({ retryable: true, subkind: "network" });
+  });
+
+  // The match must stay narrow: mono-agent's own TUI/web transports emit a
+  // similar-looking "stream ended" sentence that is a local protocol fault, not a
+  // provider outage, and must not silently trigger a model failover.
+  it("keeps mono-agent's own 'stream ended without a finish or error frame' non-retryable", () => {
+    expect(retryableProviderFailureInfo({
+      failureKind: "provider_unavailable",
+      errorText: "Stream ended without a finish or error frame.",
+    })).toMatchObject({ retryable: false, subkind: null });
   });
 
   it("treats a connection refused message as a retryable network failure", () => {
