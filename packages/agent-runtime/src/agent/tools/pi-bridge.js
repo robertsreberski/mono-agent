@@ -185,6 +185,20 @@ function writeFileChangeDetails(path, before, after) {
   };
 }
 
+/**
+ * Render a budget for a tool description: the exact milliseconds the host
+ * enforces, plus a human unit, so the model can both reason about the scale and
+ * pass an exact value back.
+ */
+function formatDurationForModel(ms) {
+  const hours = ms / 3_600_000;
+  const minutes = ms / 60_000;
+  const human = hours >= 1
+    ? `${Number.isInteger(hours) ? String(hours) : hours.toFixed(1)}h`
+    : (minutes >= 1 ? `${Number.isInteger(minutes) ? String(minutes) : minutes.toFixed(1)}m` : `${String(Math.round(ms / 1_000))}s`);
+  return `${human} (${String(ms)} ms)`;
+}
+
 function limitedNumber(value, fallback) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return fallback;
@@ -208,10 +222,19 @@ function withToolLimits(name, params, limits = {}) {
   if (name === "Bash" || name === "Exec") {
     const timeoutLimit = limits.bashTimeoutMs || DEFAULT_BASH_TIMEOUT_MS;
     next.max_output_chars = limitedNumber(next.max_output_chars, limits.bashOutputLimitChars || limits.toolTextLimitChars || 20000);
-    if (name === "Bash" && next.timeout_ms === undefined && next.timeout !== undefined) {
-      next.timeout = normalizeBashTimeoutMs(next.timeout, timeoutLimit);
-    } else {
-      next.timeout_ms = normalizeProcessTimeoutMs(next.timeout_ms, timeoutLimit);
+    // A background hand-off is bounded by the host's processJobs budget, so the
+    // FOREGROUND DEFAULT must never bound it: falling back to that default is what
+    // silently capped multi-hour background jobs at two minutes, and the `else`
+    // branch injects it even when no timeout was requested at all. An explicitly
+    // configured bashTimeoutMs still narrows them — a host that sets one means it
+    // for background work too.
+    const effectiveTimeoutLimit = next.background === true ? limits.bashTimeoutMs : timeoutLimit;
+    if (effectiveTimeoutLimit !== undefined) {
+      if (name === "Bash" && next.timeout_ms === undefined && next.timeout !== undefined) {
+        next.timeout = normalizeBashTimeoutMs(next.timeout, effectiveTimeoutLimit);
+      } else {
+        next.timeout_ms = normalizeProcessTimeoutMs(next.timeout_ms, effectiveTimeoutLimit);
+      }
     }
   }
   return next;
@@ -468,10 +491,16 @@ export function getPiBuiltinTools(allowedTools, {
     type: "integer",
     description: "Deprecated compatibility timeout. Values up to 600 mean seconds and larger values mean milliseconds; use timeout_ms instead.",
   };
+  const foregroundTimeoutLimitMs = toolLimits?.bashTimeoutMs || DEFAULT_BASH_TIMEOUT_MS;
+  const backgroundLimitMs = processJobsController?.limits?.maxRuntimeMs;
   const processTimeoutSchema = {
     type: "integer",
     minimum: 1,
-    description: "Exact timeout in milliseconds.",
+    description: `Exact timeout in milliseconds. A foreground run is capped at ${formatDurationForModel(foregroundTimeoutLimitMs)} and is killed at that point, so anything longer belongs in the background${
+      backgroundLimitMs === undefined
+        ? ""
+        : `, where this host allows up to ${formatDurationForModel(backgroundLimitMs)}`
+    }.`,
   };
   // Shared by Exec and Bash, and injected only when the host supplies a
   // process-job controller. House style for a tool description is
@@ -479,7 +508,11 @@ export function getPiBuiltinTools(allowedTools, {
   // the model which commands belong here rather than in the foreground.
   const backgroundSchema = {
     type: "boolean",
-    description: "Run as a durable background process job and notify this conversation when it finishes. Prefer this for work that outlives a reply — builds, full test suites, long installs, migrations, long-running watchers — and leave it off whenever you need the output to answer right now. Do not use for commands that daemonize into another POSIX process group or session.",
+    description: `Run as a durable background process job and notify this conversation when it finishes. Prefer this for work that outlives a reply — builds, full test suites, long installs, migrations, long-running watchers — and leave it off whenever you need the output to answer right now. Do not use for commands that daemonize into another POSIX process group or session.${
+      backgroundLimitMs === undefined
+        ? ""
+        : ` This host runs a background job for up to ${formatDurationForModel(backgroundLimitMs)}; \`timeout_ms\` may lower that but never raise it, and the start receipt reports \`max_runtime_ms\`, the budget actually granted — check it, because a job is killed at that limit.`
+    }`,
   };
   // Per-tool closure config (cwd/event sink/limits/policy) plus the per-instance
   // ToolContext `ctx` that the tool impls and shared helpers read from.

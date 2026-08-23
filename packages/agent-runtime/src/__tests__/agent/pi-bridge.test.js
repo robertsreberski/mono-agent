@@ -186,6 +186,86 @@ describe("pi MCP tool helpers", () => {
     expect(bashSchema.properties.workdir.type).toBe("string");
   });
 
+  it("leaves a background hand-off's timeout to the host's process-job budget", () => {
+    // Regression: the foreground default was injected/applied here too, so a
+    // background job was capped at 120s no matter what the caller asked for.
+    const toolLimits = { toolTextLimitChars: 16000, bashOutputLimitChars: 20000, searchResultLimit: 100 };
+
+    expect(normalizePiBuiltinToolParams("Bash", {
+      command: "ls",
+      timeout_ms: 14_400_000,
+      background: true,
+    }, { cwd: "/repo", toolLimits })).toMatchObject({ timeout_ms: 14_400_000 });
+
+    expect(normalizePiBuiltinToolParams("Exec", {
+      executable: "git",
+      args: ["status"],
+      timeout_ms: 14_400_000,
+      background: true,
+    }, { cwd: "/repo", toolLimits })).toMatchObject({ timeout_ms: 14_400_000 });
+
+    // No timeout requested: nothing is injected, so processJobs.maxRuntimeMs governs.
+    expect(normalizePiBuiltinToolParams("Bash", {
+      command: "ls",
+      background: true,
+    }, { cwd: "/repo", toolLimits })).not.toHaveProperty("timeout_ms");
+
+    // Output limits are unrelated to the runtime budget and still apply.
+    expect(normalizePiBuiltinToolParams("Bash", {
+      command: "ls",
+      max_output_chars: 999_999,
+      background: true,
+    }, { cwd: "/repo", toolLimits })).toMatchObject({ max_output_chars: 20000 });
+  });
+
+  it("still narrows a background hand-off when the host configures bashTimeoutMs", () => {
+    const toolLimits = { toolTextLimitChars: 16000, bashOutputLimitChars: 20000, searchResultLimit: 100 };
+
+    expect(normalizePiBuiltinToolParams("Bash", {
+      command: "ls",
+      timeout_ms: 14_400_000,
+      background: true,
+    }, { cwd: "/repo", toolLimits: { ...toolLimits, bashTimeoutMs: 5000 } })).toMatchObject({ timeout_ms: 5000 });
+  });
+
+  it("keeps the foreground timeout ceiling in force", () => {
+    const toolLimits = { toolTextLimitChars: 16000, bashOutputLimitChars: 20000, searchResultLimit: 100 };
+
+    expect(normalizePiBuiltinToolParams("Bash", {
+      command: "ls",
+      timeout_ms: 14_400_000,
+    }, { cwd: "/repo", toolLimits })).toMatchObject({ timeout_ms: 120_000 });
+  });
+
+  it("states the host's configured background ceiling in the tool schema", () => {
+    // The model must be able to size the work BEFORE launching. Learning the
+    // budget only from a start receipt means it has already committed to a plan.
+    const [bash, exec] = ["Bash", "Exec"].map((name) => getPiBuiltinTools([name], {
+      cwd: "/repo",
+      processJobsController: {
+        start: async () => ({ jobId: "pj", state: "queued", startedAt: null }),
+        limits: { maxRuntimeMs: 28_800_000, maxOutputBytes: 1_048_576 },
+      },
+    }).find((tool) => tool.name === name));
+
+    for (const tool of [bash, exec]) {
+      expect(tool.parameters.properties.background.description).toContain("8h (28800000 ms)");
+      expect(tool.parameters.properties.background.description).toContain("max_runtime_ms");
+      expect(tool.parameters.properties.timeout_ms.description).toContain("2m (120000 ms)");
+      expect(tool.parameters.properties.timeout_ms.description).toContain("8h (28800000 ms)");
+    }
+  });
+
+  it("states no background ceiling when the host publishes none", () => {
+    const bash = getPiBuiltinTools(["Bash"], {
+      cwd: "/repo",
+      processJobsController: { start: async () => ({ jobId: "pj", state: "queued", startedAt: null }) },
+    }).find((tool) => tool.name === "Bash");
+
+    expect(bash.parameters.properties.background.description).not.toContain("ms)");
+    expect(bash.parameters.properties.timeout_ms.description).toContain("2m (120000 ms)");
+  });
+
   it("returns image files read by the builtin Read tool as an image content block", async () => {
     const root = tempWorkspace();
     configureToolRuntime({ workspace: root });

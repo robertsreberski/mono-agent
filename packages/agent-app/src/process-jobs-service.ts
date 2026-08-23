@@ -304,6 +304,13 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   controller(origin: ProcessJobOriginRecord, chainDepth: number | (() => number)): ProcessJobsController {
     const captured = structuredClone(origin);
     return Object.freeze({
+      // Published so the tool schema can state the real ceiling up front. A model
+      // that only learns its budget from a start receipt has already committed to
+      // a plan sized for a budget it may not have.
+      limits: Object.freeze({
+        maxRuntimeMs: this.settings.maxRuntimeMs,
+        maxOutputBytes: this.settings.maxOutputBytes,
+      }),
       start: async (request: ProcessJobStartRequest) => await this.start(
         captured,
         typeof chainDepth === "function" ? chainDepth() : chainDepth,
@@ -647,7 +654,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           return await this.launch(jobId, false);
         }
         this.armQueueTimer();
-        return { jobId, state: "queued" as const, startedAt: null };
+        return { jobId, state: "queued" as const, startedAt: null, maxRuntimeMs };
       });
       await this.updateInitialSurface(result.jobId);
       return result;
@@ -819,7 +826,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       });
     }).finally(() => this.settlements.delete(jobId));
     this.settlements.set(jobId, settlement);
-    return { jobId, state: "running", startedAt: handle.startedAt };
+    return { jobId, state: "running", startedAt: handle.startedAt, maxRuntimeMs: current.maxRuntimeMs };
   }
 
   private async complete(jobId: string, result: ProcessJobProcessResult): Promise<void> {

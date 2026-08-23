@@ -343,6 +343,8 @@ grepToolImpl
 inspectCodexSubscriptionSearch
 isPathAllowed
 isWorkdirAllowed
+normalizeBackgroundBashTimeoutMs
+normalizeBackgroundTimeoutMs
 normalizeBashTimeoutMs
 normalizeProcessTimeoutMs
 performWebFetch

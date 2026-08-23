@@ -214,9 +214,10 @@
  * @property {number} [toolPayloadMaxBytes]       Hard cap on a single tool_result payload.
  * @property {number} [mcpCallTimeoutMs]          Per-MCP-call inactivity timeout.
  * @property {number} [mcpCallMaxTotalTimeoutMs]  Hard wall-clock cap for one MCP call.
- * @property {number} [bashTimeoutMs]             Documented for forward-compat; NOT wired to
- *   any tool today (no `agent_bash_*_timeout` mechanism exists — bash reads its per-call
- *   `timeout` argument), so setting it has no effect until a run-level default is introduced.
+ * @property {number} [bashTimeoutMs]             Foreground ceiling and default for
+ *   Bash/Exec timeouts on the Pi bridge, applied by `normalizePiBuiltinToolParams`
+ *   (defaults to 120_000). Background hand-offs deliberately ignore it: a process job is
+ *   bounded by the host's `processJobs.maxRuntimeMs` instead.
  */
 
 /**
