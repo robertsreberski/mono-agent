@@ -26,7 +26,11 @@ export { mcpAppContentSecurityPolicy, secureMcpAppHtml };
 
 const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
 const APP_MIN_HEIGHT = 160;
-const APP_MAX_HEIGHT = 800;
+// Apps report their true height through the ext-apps ResizeObserver, so this cap
+// is the only thing that decides whether a tall app is shown or clipped.
+const APP_MAX_HEIGHT = 1600;
+const APP_MAX_WIDTH = 1400;
+const APP_INITIAL_HEIGHT = 320;
 const MCP_APP_PROXY_PATH = "/api/v1/mcp-app-proxy";
 
 type ReplyAttachmentPart = Extract<MessagePart, { readonly type: "attachment" }>;
@@ -162,6 +166,23 @@ const intersectDeclaredOrigins = (
   if (allowlist.size === 0) return undefined;
   const effective = declaredOrigins(declared)?.filter((origin) => allowlist.has(origin));
   return effective === undefined || effective.length === 0 ? undefined : effective;
+};
+
+/**
+ * Read the advisory `_meta.ui.preferredSize` height hint.
+ *
+ * This only seeds the first paint, before the app connects and reports its real
+ * height. It is kept out of `safeMcpAppResourceMetadata` on purpose: that value
+ * flows toward the sandbox ready-message, whose validator fails closed on unknown
+ * keys, so widening it would break every app render. The field is also absent from
+ * the ext-apps schema, so it stays a clamped hint and never a contract.
+ */
+export const mcpAppPreferredHeight = (value: unknown): number | undefined => {
+  const outer = record(value);
+  const ui = record(outer?.ui) ?? outer;
+  const height = record(ui?.preferredSize)?.height;
+  if (typeof height !== "number" || !Number.isFinite(height) || height <= 0) return undefined;
+  return Math.round(Math.min(APP_MAX_HEIGHT, Math.max(APP_MIN_HEIGHT, height)));
 };
 
 /** Reduce server-declared policy to capabilities this console actually grants. */
@@ -519,11 +540,14 @@ const toolResult = (value: unknown): CallToolResult => {
   };
 };
 
-const hostContext = (height: number) => ({
+const hostContext = (height: number, width = APP_MAX_WIDTH) => ({
   theme: window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" as const : "light" as const,
   displayMode: "inline" as const,
   availableDisplayModes: ["inline" as const],
-  containerDimensions: { maxWidth: 880, maxHeight: Math.min(APP_MAX_HEIGHT, Math.max(APP_MIN_HEIGHT, height)) },
+  containerDimensions: {
+    maxWidth: Math.max(240, Math.min(APP_MAX_WIDTH, width)),
+    maxHeight: Math.min(APP_MAX_HEIGHT, Math.max(APP_MIN_HEIGHT, height)),
+  },
   locale: navigator.language || "en",
   timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   userAgent: navigator.userAgent,
@@ -633,7 +657,8 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   const [resource, setResource] = useState<McpAppResource | null>(null);
   const [status, setStatus] = useState<"loading" | "connecting" | "ready" | "closed" | "error">("loading");
   const [statusText, setStatusText] = useState("Loading interactive app…");
-  const [height, setHeight] = useState(320);
+  const [height, setHeight] = useState(APP_INITIAL_HEIGHT);
+  const [collapsed, setCollapsed] = useState(false);
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
   const [accessExpired, setAccessExpired] = useState(false);
   const [reloadRevision, setReloadRevision] = useState(0);
@@ -797,6 +822,14 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   }, [secured.error]);
   const securedHtml = secured.html;
   const clipboardWrite = metadata.permissions?.clipboardWrite !== undefined;
+  const preferredHeight = useMemo(
+    () => mcpAppPreferredHeight(resource?.resourceMetadata),
+    [resource?.resourceMetadata],
+  );
+  useEffect(() => {
+    if (preferredHeight !== undefined) setHeight(preferredHeight);
+  }, [preferredHeight]);
+
   const proxyInstanceKey = `${identity}:${clipboardWrite ? "clipboard" : "none"}`;
   const invocationId = part?.invocationId;
   const connectionId = part?.connectionId;
@@ -824,6 +857,7 @@ export function McpAppPart({ data }: DataMessagePartProps) {
       || securedHtml === undefined
       || accessExpired
       || status === "closed"
+      || collapsed
     ) return;
     const frameWindow = iframeRef.current?.contentWindow;
     if (frameWindow === undefined || frameWindow === null) return;
@@ -909,7 +943,7 @@ export function McpAppPart({ data }: DataMessagePartProps) {
               structuredContent: {},
             },
           },
-          { hostContext: hostContext(height) },
+          { hostContext: hostContext(height, containerRef.current?.clientWidth) },
         );
         transport = new PostMessageTransport(frameWindow, frameWindow);
         bridge.onsandboxready = () => {
@@ -1029,7 +1063,7 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   // The bridge lifecycle is one exact published app instance. Height updates
   // are sent through size notifications and must not recreate the transport.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessAvailable, accessExpired, adoptMcpAppAccess, cancelConfirmation, configureProxy, identity, metadata, nonce, part?.connectionId, part?.invocationId, reloadRevision, requestConfirmation, resource, securedHtml, status === "closed"]);
+  }, [accessAvailable, accessExpired, adoptMcpAppAccess, cancelConfirmation, configureProxy, identity, metadata, nonce, part?.connectionId, part?.invocationId, reloadRevision, requestConfirmation, resource, securedHtml, status === "closed", collapsed]);
 
   useEffect(() => {
     const syncHostContext = () => {
@@ -1037,7 +1071,7 @@ export function McpAppPart({ data }: DataMessagePartProps) {
       bridgeRef.current?.setHostContext({
         ...hostContext(height),
         containerDimensions: {
-          maxWidth: Math.max(240, Math.min(880, width)),
+          maxWidth: Math.max(240, Math.min(APP_MAX_WIDTH, width)),
           maxHeight: Math.min(APP_MAX_HEIGHT, Math.max(APP_MIN_HEIGHT, height)),
         },
       });
@@ -1061,6 +1095,19 @@ export function McpAppPart({ data }: DataMessagePartProps) {
     return <div className="reply-part-error" role="alert">An MCP App reference was invalid.</div>;
   }
 
+  // Torn down by the app, or its host access lapsed. Either way the frame cannot
+  // render, so the card degrades to its header and offers a way back instead of
+  // leaving a dead placeholder behind.
+  const degraded = status === "closed" || accessExpired;
+  const frameVisible = resource !== null && securedHtml !== undefined && !degraded && !collapsed;
+  const appLabel = part.title ?? part.toolName;
+  const reopenApp = () => {
+    setCollapsed(false);
+    setStatus("loading");
+    setStatusText("Loading interactive app…");
+    setReloadRevision((revision) => revision + 1);
+  };
+
   return (
     <section
       ref={containerRef}
@@ -1074,28 +1121,27 @@ export function McpAppPart({ data }: DataMessagePartProps) {
           <strong>{part.title ?? part.toolName}</strong>
           <span>{part.description ?? `${part.serverName} · ${part.toolName}`}</span>
         </span>
-        {status !== "closed" && (
+        {degraded ? (
           <button
             type="button"
             className="reply-part-action"
             disabled={confirmation !== null}
-            onClick={() => {
-              setStatus("closed");
-              setStatusText("The interactive app closed.");
-            }}
-          >Close<span className="sr-only"> {part.title ?? part.toolName}</span></button>
-        )}
-        {accessExpired && status !== "closed" && (
+            onClick={reopenApp}
+          >Reopen<span className="sr-only"> {appLabel}</span></button>
+        ) : (
           <button
             type="button"
             className="reply-part-action"
+            aria-expanded={!collapsed}
             disabled={confirmation !== null}
-            onClick={() => setReloadRevision((revision) => revision + 1)}
-          >Refresh app access<span className="sr-only"> for {part.title ?? part.toolName}</span></button>
+            onClick={() => setCollapsed((value) => !value)}
+          >{collapsed ? "Show" : "Hide"}<span className="sr-only"> {appLabel}</span></button>
         )}
       </header>
-      <p className={`mcp-app-status is-${status}`} role="status">{statusText}</p>
-      {resource !== null && securedHtml !== undefined && !accessExpired && status !== "closed" && (
+      <p className={`mcp-app-status is-${status}`} role="status">
+        {collapsed ? "Hidden. Choose Show to bring the app back." : statusText}
+      </p>
+      {frameVisible && (
         <iframe
           key={proxyInstanceKey}
           ref={iframeRef}
