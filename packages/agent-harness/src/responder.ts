@@ -684,11 +684,13 @@ export function streamEventFromRuntimeEvent(
           context?.toolNames?.delete(id);
         }
         const history = toolHistoryEventMetadata(block.history);
+        const structuredContent = structuredContentFromToolResult(block.raw_result);
         return {
           type: "tool_call_completed",
           id,
           ...(name === undefined ? {} : { name }),
           ...(hasOwn(block, "content") ? { content: block.content } : {}),
+          ...(structuredContent === undefined ? {} : { structuredContent }),
           ...(typeof block.is_error === "boolean" ? { isError: block.is_error } : {}),
           ...(executionMs === undefined ? {} : { executionMs }),
           ...(history === undefined ? {} : { history }),
@@ -697,6 +699,48 @@ export function streamEventFromRuntimeEvent(
     }
   }
   return undefined;
+}
+
+/**
+ * Maximum serialized size of a forwarded `structuredContent`. The pi bridge already
+ * bounds the whole raw MCP result, but that ceiling is far larger than anything a
+ * renderer needs; this keeps a chatty MCP tool from inflating every persisted tool-call
+ * part and every operator-wire frame. Oversized payloads are dropped, not truncated —
+ * a half-serialized object is worse than none, because consumers parse it as structure.
+ */
+const MAX_STRUCTURED_CONTENT_CHARS = 16_000;
+
+/**
+ * Lift an MCP tool's `structuredContent` out of the transcript block's raw result.
+ *
+ * The pi bridge stores the untouched MCP payload at `raw_result.details.raw`
+ * (`agent-runtime/src/agent/tools/pi-bridge.js`), while `content` keeps only the
+ * flattened text. `content` is therefore lossy for any tool whose real answer is
+ * structured — AskUser's `interactionId`/`answered` live nowhere else — so consumers
+ * that must reason about the outcome read this instead of parsing prose.
+ *
+ * Returns undefined when the tool returned no structured payload, when the bridge
+ * replaced an oversized raw result with its truncation marker, or when the payload
+ * exceeds MAX_STRUCTURED_CONTENT_CHARS.
+ */
+function structuredContentFromToolResult(rawResult: unknown): unknown {
+  if (!isRecord(rawResult)) return undefined;
+  const details = rawResult.details;
+  if (!isRecord(details)) return undefined;
+  const raw = details.raw;
+  // `compactRawMcpResult` swaps an oversized payload for {truncated, preview, ...};
+  // that marker carries no structuredContent, so this falls through to undefined.
+  if (!isRecord(raw)) return undefined;
+  const structuredContent = raw.structuredContent;
+  if (structuredContent === undefined || structuredContent === null) return undefined;
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(structuredContent) ?? "";
+  } catch {
+    // Cyclic or otherwise unserializable: it cannot survive the wire regardless.
+    return undefined;
+  }
+  return serialized.length > MAX_STRUCTURED_CONTENT_CHARS ? undefined : structuredContent;
 }
 
 function toolHistoryEventMetadata(value: unknown): NonNullable<

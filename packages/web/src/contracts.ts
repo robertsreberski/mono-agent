@@ -193,6 +193,12 @@ export interface WebToolCall {
   readonly toolName: string;
   readonly args?: unknown;
   readonly result?: unknown;
+  /**
+   * An MCP tool's machine-readable result, when it returned one. `result` is the
+   * model-facing text and is lossy; renderers that must reason about the outcome
+   * (the AskUser card reads `interactionId`/`answered`) read this instead.
+   */
+  readonly structuredResult?: unknown;
   readonly status: WebToolCallStatus;
   /** Canonical durable-tool record metadata received on the live event. */
   readonly history?: SessionToolHistoryEventMetadata;

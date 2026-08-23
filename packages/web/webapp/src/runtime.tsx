@@ -13,6 +13,8 @@ import { canSendInConsole, canUploadInConsole } from "./capabilities";
 import { useConsoleStore, useUploadLimits } from "./console-store";
 import type {
   MessagePart,
+  ToolCall,
+  ToolCallArtifact,
   WebAttachment,
   WebMessage,
   WebQuote,
@@ -110,6 +112,20 @@ const isContextCompactionPart = (part: Extract<MessagePart, { type: "telemetry" 
 
 type ConvertedPart = Exclude<ThreadMessageLike["content"], string>[number];
 
+/**
+ * Per-tool-call metadata the console renders but assistant-ui cannot type: the durable
+ * history record, and an MCP tool's structuredContent. Both ride in the part's single
+ * `artifact` slot, so they are wrapped rather than fighting over it. Returns undefined
+ * when neither is present, keeping ordinary tool calls unchanged.
+ */
+const toolCallArtifact = (part: ToolCall): ToolCallArtifact | undefined =>
+  part.history === undefined && part.structuredResult === undefined
+    ? undefined
+    : {
+        ...(part.history === undefined ? {} : { history: part.history }),
+        ...(part.structuredResult === undefined ? {} : { structuredResult: part.structuredResult }),
+      };
+
 const convertPart = (part: MessagePart): ConvertedPart | null => {
   switch (part.type) {
     case "text":
@@ -125,7 +141,10 @@ const convertPart = (part: MessagePart): ConvertedPart | null => {
         argsText: jsonText(part.args),
         result: part.result,
         isError: part.status === "failed",
-        ...(part.history === undefined ? {} : { artifact: part.history }),
+        // assistant-ui's tool-call part types no slot for our own per-call metadata,
+        // so `artifact` carries an envelope of it. Omitted entirely when empty so a
+        // plain tool call stays byte-identical to what it was before.
+        ...(toolCallArtifact(part) === undefined ? {} : { artifact: toolCallArtifact(part) }),
       };
     case "subagent":
       // A delegation owns its children, so it cannot be an assistant-ui

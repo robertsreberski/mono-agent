@@ -1271,6 +1271,89 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     expect(toolTimings.has("t9")).toBe(false);
   });
 
+  // An MCP tool's structuredContent is the only durable record of its machine-readable
+  // outcome. AskUser relies on it: the web console reads `interactionId`/`answered` from
+  // the persisted tool result to re-render an answered card after a reload. The text
+  // content is a human sentence and carries neither field, so dropping structuredContent
+  // here degrades every answered ask card to "Question unavailable".
+  it("forwards an MCP tool result's structuredContent onto tool_call_completed", () => {
+    const structuredContent = {
+      ok: true,
+      answered: true,
+      interactionId: "ask-1-NH9j2kc1WkMl",
+      answers: [{ questionId: "q0", selectedOptionIds: ["o1"] }],
+    };
+    expect(
+      streamEventFromRuntimeEvent(
+        {
+          type: "user",
+          message: {
+            content: [{
+              type: "tool_result",
+              tool_use_id: "t1",
+              content: "The user answered:\n- Retry what: go",
+              raw_result: {
+                details: {
+                  server: "mono-agent-adapter-send",
+                  tool: "AskUser",
+                  raw: { content: [{ type: "text", text: "The user answered:" }], structuredContent },
+                },
+              },
+            }],
+          },
+        },
+        { toolTimings: new Map() },
+      ),
+    ).toEqual({
+      type: "tool_call_completed",
+      id: "t1",
+      content: "The user answered:\n- Retry what: go",
+      structuredContent,
+    });
+  });
+
+  it("omits structuredContent when the MCP raw result carries none", () => {
+    expect(
+      streamEventFromRuntimeEvent(
+        {
+          type: "user",
+          message: {
+            content: [{
+              type: "tool_result",
+              tool_use_id: "t1",
+              content: "x",
+              raw_result: { details: { server: "s", tool: "T", raw: { content: [] } } },
+            }],
+          },
+        },
+        { toolTimings: new Map() },
+      ),
+    ).toEqual({ type: "tool_call_completed", id: "t1", content: "x" });
+  });
+
+  // compactRawMcpResult replaces an oversized raw payload with a truncation marker, so
+  // `raw.structuredContent` is simply absent. Nothing to forward, and no crash.
+  it("omits structuredContent when the raw MCP result was truncated", () => {
+    expect(
+      streamEventFromRuntimeEvent(
+        {
+          type: "user",
+          message: {
+            content: [{
+              type: "tool_result",
+              tool_use_id: "t1",
+              content: "x",
+              raw_result: {
+                details: { raw: { truncated: true, original_length: 99999, preview: "..." } },
+              },
+            }],
+          },
+        },
+        { toolTimings: new Map() },
+      ),
+    ).toEqual({ type: "tool_call_completed", id: "t1", content: "x" });
+  });
+
   it("omits executionMs when no timing was recorded for the tool call", () => {
     expect(
       streamEventFromRuntimeEvent(

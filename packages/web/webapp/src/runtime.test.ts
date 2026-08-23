@@ -139,12 +139,16 @@ describe("convertWebMessage", () => {
       "text",
     ]);
     expect(converted.content.find((part) => part.type === "tool-call")).toMatchObject({
+      // `artifact` is an envelope, not the history record itself: it also carries an MCP
+      // tool's structuredContent, which the AskUser card needs alongside the history.
       artifact: {
-        recordId: "sth1_result",
-        sequence: 2,
-        persistence: "persisted",
-        terminalState: "success",
-        untrusted: true,
+        history: {
+          recordId: "sth1_result",
+          sequence: 2,
+          persistence: "persisted",
+          terminalState: "success",
+          untrusted: true,
+        },
       },
     });
     expect(converted.status).toEqual({ type: "running" });

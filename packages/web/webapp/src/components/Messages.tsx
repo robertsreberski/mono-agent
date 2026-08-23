@@ -21,7 +21,7 @@ import {
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import { useConsoleStore } from "../console-store";
-import type { AskAnswer, AskSnapshot, ProcessJobProjection, ProcessJobState } from "../types";
+import type { AskAnswer, AskSnapshot, ProcessJobProjection, ProcessJobState, ToolCallArtifact } from "../types";
 import { UserMessageAttachments } from "./Attachments";
 import {
   ACTIVITY_GROUP_BY,
@@ -511,15 +511,26 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
 function AskUserTool({
   args,
   result,
+  structuredResult,
   status,
   toolCallId,
-}: Pick<ToolCallMessagePartProps, "args" | "result" | "status" | "toolCallId">) {
+}: Pick<ToolCallMessagePartProps, "args" | "status" | "toolCallId">
+  & { readonly result?: unknown; readonly structuredResult?: unknown }) {
   const threadId = useConsoleStore().selectedThread?.id;
   const coordinator = useContext(AskReconciliationContext);
   const registerAsk = coordinator?.register;
   const replaceAsk = coordinator?.replace;
-  const expectedInteractionId = useMemo(() => askInteractionId(result), [result]);
-  const durableTerminalStatus = useMemo(() => persistedAskStatus(result), [result]);
+  // The structured payload is authoritative: AskUser's text result is a human sentence
+  // that carries neither `interactionId` nor `answered`. `result` stays as the fallback
+  // for tool calls recorded before structuredResult was persisted.
+  const expectedInteractionId = useMemo(
+    () => askInteractionId(structuredResult) ?? askInteractionId(result),
+    [result, structuredResult],
+  );
+  const durableTerminalStatus = useMemo(
+    () => persistedAskStatus(structuredResult) ?? persistedAskStatus(result),
+    [result, structuredResult],
+  );
   const cardState = coordinator?.states[toolCallId];
   const snapshot = cardState?.snapshot;
   const [selected, setSelected] = useState<Record<string, readonly string[]>>({});
@@ -664,11 +675,20 @@ export function ToolFallback({
   toolCallId,
   artifact,
 }: ToolCallMessagePartProps) {
+  const envelope = toolCallArtifact(artifact);
   if (toolName === "AskUser") {
-    return <AskUserTool args={args} result={result} status={status} toolCallId={toolCallId} />;
+    return (
+      <AskUserTool
+        args={args}
+        result={result}
+        structuredResult={envelope?.structuredResult}
+        status={status}
+        toolCallId={toolCallId}
+      />
+    );
   }
   const isRunning = status.type === "running";
-  const history = sessionToolHistory(artifact);
+  const history = sessionToolHistory(envelope?.history);
   const historyFailure = toolHistoryFailure(history);
   const displayedState = typeof history?.terminalState === "string"
     ? history.terminalState
@@ -701,6 +721,13 @@ export function ToolFallback({
       </div>
     </details>
   );
+}
+
+/** Unwrap the per-tool-call metadata envelope assistant-ui carries in `artifact`. */
+function toolCallArtifact(value: unknown): ToolCallArtifact | undefined {
+  return value === null || typeof value !== "object" || Array.isArray(value)
+    ? undefined
+    : value as ToolCallArtifact;
 }
 
 function sessionToolHistory(value: unknown): Record<string, unknown> | undefined {

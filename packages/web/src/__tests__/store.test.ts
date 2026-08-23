@@ -551,6 +551,78 @@ describe("WebStore", () => {
     store.close();
   });
 
+  // An MCP tool's structuredContent is the only machine-readable record of its outcome:
+  // `content` is the model-facing sentence. AskUser depends on this surviving the store —
+  // the console reads interactionId/answered from the persisted part to re-render an
+  // answered card after a reload, and without it every answered card degraded to
+  // "Question unavailable".
+  it("persists an MCP tool's structuredContent beside its text result", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    store.selectThread(thread.id);
+    const turn = store.beginTurn({ threadId: thread.id, text: "ask me", attachmentIds: [] });
+
+    const structuredContent = {
+      ok: true,
+      answered: true,
+      interactionId: "ask-1-NH9j2kc1WkMl",
+      answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }],
+    };
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_started", id: "t1", name: "AskUser", arguments: {} } },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "t1",
+          name: "AskUser",
+          content: "The user answered:\n- Delivery: Send",
+          structuredContent,
+        },
+      },
+    ]);
+    const detail = store.completeTurn(turn.turnId, "done");
+    const tool = detail.messages.at(-1)?.parts.find((part) => part.type === "tool-call");
+
+    expect(tool).toMatchObject({
+      type: "tool-call",
+      toolCallId: "t1",
+      toolName: "AskUser",
+      result: "The user answered:\n- Delivery: Send",
+      structuredResult: structuredContent,
+      status: "complete",
+    });
+    store.close();
+  });
+
+  it("omits structuredResult when the tool returned no structured payload", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    store.selectThread(thread.id);
+    const turn = store.beginTurn({ threadId: thread.id, text: "read it", attachmentIds: [] });
+
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_completed", id: "t1", name: "Read", content: "file body" } },
+    ]);
+    const detail = store.completeTurn(turn.turnId, "done");
+    const tool = detail.messages.at(-1)?.parts.find((part) => part.type === "tool-call");
+
+    expect(tool).toEqual({
+      type: "tool-call",
+      toolCallId: "t1",
+      toolName: "Read",
+      result: "file body",
+      status: "complete",
+    });
+    store.close();
+  });
+
   it("deletes only archived threads, removes attachment files, and sweeps crash orphans", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
