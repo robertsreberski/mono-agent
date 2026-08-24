@@ -146,9 +146,18 @@ Once the registry is non-empty, every reachable primary, fallback, accepted
 request override, and named `Agent` child route must be Pi-native in both
 `uniform` and `per-route-native` routing. The configured app rejects the whole
 incompatible route plan before provider invocation; it does not wait to discover
-the unsafe fallback after another route fails. Direct configured memory LLM
-and embedding-provider calls obey the same rule. An empty registry preserves
+the unsafe fallback after another route fails. An empty registry preserves
 legitimate non-Pi routes.
+
+Tool-less direct configured memory LLM and embedding-provider calls are the one
+exception, in every posture. SRT confines the model's tool loop; these surfaces
+run no tool loop and touch no filesystem — an embedding provider is a single
+`embed(texts)` HTTP call with nothing the model can steer — so confinement has
+nothing to protect there. They still take the canonical owner and the
+registry-generation lease and hold both until the provider promise truly
+settles, which is the control that does apply. Rejecting them instead made
+`processJobs.enabled` mutually exclusive with the `bujo` and `journal` memory
+tiers, which require an embedding provider.
 Eligible Pi-native turns receive the real SRT policy for the registry and every
 retained root independently of whether they receive the background controller.
 Model `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, and `Exec` cannot read,
@@ -206,11 +215,12 @@ The Pi-only gates are independent from `sandbox.protectedRoots`, so mixed
 primary/fallback chains, non-Pi request overrides, non-Pi named children, and
 non-Pi agent-host memory remain rejected before provider work.
 
-Tool-less direct Ollama memory LLM and embedding calls may run in this posture;
-they still hold the canonical owner and registry-generation lease until the
-provider promise truly settles. Agent-host memory remains tool-less and
-Pi-native. Public package-root runtime, harness, responder, and memory factories
-do not accept this authority and keep their safe behavior.
+Tool-less direct Ollama memory LLM and embedding calls run in this posture as
+they do in the safe one, still holding the canonical owner and
+registry-generation lease until the provider promise truly settles. Agent-host
+memory remains tool-less and Pi-native. Public package-root runtime, harness,
+responder, and memory factories do not accept this authority and keep their safe
+behavior.
 
 Changing this posture takes effect only when the app rebuilds its owned
 runtime surfaces: a managed configuration apply performs that teardown/rebuild,

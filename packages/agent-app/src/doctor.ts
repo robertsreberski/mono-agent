@@ -95,6 +95,7 @@ import {
 } from "./process-jobs-root-registry.js";
 import {
   resolveProcessJobsProtectionPosture,
+  type ProcessJobsProtectionPosture,
 } from "./process-jobs-protection.js";
 import {
   MAX_PROCESS_JOB_HEALTH_BYTES,
@@ -2578,18 +2579,23 @@ async function processJobsSection(
       details: [`Process-job configuration is invalid: ${continuationReason(error)}`],
     };
   }
+  // Resolve the posture on EVERY path, not just the unsafe opt-in. It decides
+  // whether retained roots are in force, and there was previously no way to see
+  // it from outside the process at all — which is what let mono-agent#664 run
+  // for a day without the operator being able to name the state they were in.
   let unsafeWarning: string | undefined;
-  if (settings.unsafeAllowUnprotectedState) {
-    try {
-      let registry = await loadProcessJobsRootRegistryProtection(input.cwd, config.runtime.workspace);
-      if (registry.kind !== "failed") {
-        try {
-          registry = await attestProcessJobsRootRegistrySnapshot(registry, config.runtime.workspace);
-        } catch {
-          registry = failedProcessJobsRootRegistryProtection(registry.agentRoot);
-        }
+  let posture: ProcessJobsProtectionPosture | undefined;
+  try {
+    let registry = await loadProcessJobsRootRegistryProtection(input.cwd, config.runtime.workspace);
+    if (registry.kind !== "failed") {
+      try {
+        registry = await attestProcessJobsRootRegistrySnapshot(registry, config.runtime.workspace);
+      } catch {
+        registry = failedProcessJobsRootRegistryProtection(registry.agentRoot);
       }
-      const posture = resolveProcessJobsProtectionPosture({ settings, registry, coreConfig: config });
+    }
+    posture = resolveProcessJobsProtectionPosture({ settings, registry, coreConfig: config });
+    if (settings.unsafeAllowUnprotectedState) {
       if (posture.kind === "unavailable") {
         return {
           id: "process-jobs",
@@ -2599,7 +2605,11 @@ async function processJobsSection(
         };
       }
       unsafeWarning = posture.warning;
-    } catch (error) {
+    }
+  } catch (error) {
+    // Only the unsafe opt-in has rejectable combinations; on the safe path this
+    // line is diagnostics and must never turn a healthy config into an error.
+    if (settings.unsafeAllowUnprotectedState) {
       return {
         id: "process-jobs",
         label: "Background process jobs",
@@ -2607,7 +2617,11 @@ async function processJobsSection(
         details: [`Process-job configuration is invalid: ${continuationReason(error)}`],
       };
     }
+    posture = undefined;
   }
+  const protectionDetail = posture === undefined
+    ? []
+    : [`Private-state protection: ${posture.kind}${posture.retainedRoots ? " (roots retained)" : ""}.`];
   if (!settings.enabled) {
     return {
       id: "process-jobs",
@@ -2615,6 +2629,7 @@ async function processJobsSection(
       status: unsafeWarning === undefined ? "disabled" : "ok",
       details: [
         "Background Exec/Bash jobs are opt-in (processJobs.enabled=false).",
+        ...protectionDetail,
         ...(unsafeWarning === undefined ? [] : [unsafeWarning]),
         ...(process.platform === "win32" ? ["Windows is unsupported; detached POSIX process-group ownership is required."] : []),
       ],
@@ -2631,6 +2646,7 @@ async function processJobsSection(
 
   const details = [
     ...(unsafeWarning === undefined ? [] : [unsafeWarning]),
+    ...protectionDetail,
     `Owner-only local state: ${settings.stateDir}.`,
     `Concurrency: ${String(settings.maxConcurrent)} global, ${String(settings.maxActivePerConversation)} per conversation, ${String(settings.maxQueued)} queued.`,
     `Caps: runtime=${String(settings.maxRuntimeMs)}ms, queue-age=${String(settings.maxQueueAgeMs)}ms, output=${String(settings.maxOutputBytes)} bytes, chain-depth=${String(settings.maxChainDepth)}.`,
