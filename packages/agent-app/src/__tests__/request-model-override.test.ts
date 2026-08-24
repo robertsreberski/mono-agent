@@ -182,6 +182,30 @@ describe("requestModelOverrideRoutesOnlyPiNative", () => {
       fallbackModels: [piFallback, piFallback],
     })).toBe(false);
   });
+
+  // Regression for mono-agent#664: this predicate fails closed on an
+  // unresolvable chain, which at every call site is indistinguishable from a
+  // genuinely non-Pi route. Discarding the cause made that failure impossible
+  // to diagnose from outside, so the reason must reach the logger.
+  it("warns with the swallowed reason instead of discarding an unresolvable chain", () => {
+    const logger = { warn: vi.fn() };
+    expect(requestModelOverrideRoutesOnlyPiNative(undefined, { logger })).toBe(false);
+    expect(logger.warn).toHaveBeenCalledOnce();
+    expect(logger.warn.mock.calls[0]?.[0]).toContain("could not be resolved");
+    expect(logger.warn.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ reason: expect.stringContaining("model reference") }),
+    );
+  });
+
+  it("does not warn when the chain resolves and is genuinely non-Pi", () => {
+    const logger = { warn: vi.fn() };
+    expect(requestModelOverrideRoutesOnlyPiNative(undefined, {
+      logger,
+      baseModel: parseMonoRuntimeModelReference("claude:claude-opus-4-8"),
+      fallbackModels: [piFallback],
+    })).toBe(false);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
 });
 
 describe("createRequestModelOverrideRuntimeExtension", () => {
