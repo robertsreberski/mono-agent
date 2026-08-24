@@ -430,6 +430,7 @@ MemoryHealthStatus
 MemoryModelError
 MemoryModelKind
 MemoryModelOutputError
+MemoryOperatorIntegrityFailure
 MemoryOperatorMutationGate
 MigrateDeps
 MigrateResult

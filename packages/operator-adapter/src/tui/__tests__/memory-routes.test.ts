@@ -175,7 +175,7 @@ describe("memory operator routes", () => {
   });
 
   it("degrades getter failures without exposing capability diagnostics in bodies or logs", async () => {
-    const rootPath = "/Users/owner/private-memory.db";
+    const rootPath = "/Users/example/private-memory.db";
     const credential = "sk-memory-secret";
     const loggerError = vi.fn();
     const capability = () => ({
@@ -276,7 +276,7 @@ describe("memory operator routes", () => {
   });
 
   it("projects every service result onto clean allowlisted wire objects", async () => {
-    const rootPath = "/Users/owner/private-memory.db";
+    const rootPath = "/Users/example/private-memory.db";
     const credential = "sk-memory-secret";
     const extra = { rootPath, credential, serializationTrap: 1n };
     const dirtyCapability = {
@@ -448,7 +448,7 @@ describe("memory operator routes", () => {
   });
 
   it("fails malformed service results closed with one sanitized 503 contract", async () => {
-    const rootPath = "/Users/owner/private-memory.db";
+    const rootPath = "/Users/example/private-memory.db";
     const credential = "sk-memory-secret";
     const loggerError = vi.fn();
     const graph = vi.fn<MemoryOperatorService["graph"]>();
@@ -751,7 +751,7 @@ describe("memory operator routes", () => {
     restore.mockImplementationOnce(() => {
       throw new MemoryOperatorError(
         "revision_conflict",
-        "Memory changed at /Users/owner/private-memory.db; token=sk-memory-secret",
+        "Memory changed at /Users/example/private-memory.db; token=sk-memory-secret",
       );
     });
     const conflict = await memoryFetch("/records/memory-1/restore", {
@@ -764,7 +764,7 @@ describe("memory operator routes", () => {
     expect(conflictBody).toEqual({
       error: { code: "revision_conflict", message: "Memory record changed; refresh and retry." },
     });
-    expect(JSON.stringify(conflictBody)).not.toContain("/Users/owner");
+    expect(JSON.stringify(conflictBody)).not.toContain("/Users/example");
     expect(JSON.stringify(conflictBody)).not.toContain("sk-memory-secret");
   });
 
@@ -900,7 +900,7 @@ describe("memory operator routes", () => {
   });
 
   it("does not expose an unexpected provider or filesystem failure", async () => {
-    const rootPath = "/Users/owner/private-memory.db";
+    const rootPath = "/Users/example/private-memory.db";
     const credential = "sk-memory-secret";
     const loggerError = vi.fn();
     running = await startTuiAdapter({

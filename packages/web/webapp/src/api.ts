@@ -15,6 +15,16 @@ import type {
   McpAppPart,
   McpAppResource,
   MessagePart,
+  MemoryActionInput,
+  MemoryAvailability,
+  MemoryEditInput,
+  MemoryGraph,
+  MemoryGraphQuery,
+  MemoryMutationAdmission,
+  MemoryOperation,
+  MemoryRecordDetail,
+  MemoryRecordPage,
+  MemoryRecordQuery,
   PushSubscriptionStatus,
   ProcessJobProjection,
   StartTurnInput,
@@ -359,6 +369,62 @@ const cronMutation = async <T>(path: string, body: Readonly<Record<string, unkno
   return await response.json() as CronMutationResult<T>;
 };
 
+const memoryBasePath = (sourceId: string): string =>
+  `/api/v1/agents/${encodeURIComponent(sourceId)}/memory`;
+
+const memoryRecordQueryString = (input: MemoryRecordQuery): string => {
+  const query = new URLSearchParams();
+  if (input.q !== undefined && input.q.trim()) query.set("q", input.q.trim());
+  if (input.lifecycle !== undefined) query.set("lifecycle", input.lifecycle);
+  if (input.type !== undefined) query.set("type", input.type);
+  if (input.collection !== undefined && input.collection.trim()) {
+    query.set("collection", input.collection.trim());
+  }
+  if (input.limit !== undefined) query.set("limit", String(input.limit));
+  if (input.before !== undefined) query.set("before", input.before);
+  return query.toString();
+};
+
+const memoryGraphQueryString = (input: MemoryGraphQuery): string => {
+  const query = new URLSearchParams();
+  if (input.focusId !== undefined) query.set("focusId", input.focusId);
+  if (input.includeHistory !== undefined) query.set("includeHistory", String(input.includeHistory));
+  if (input.limit !== undefined) query.set("limit", String(input.limit));
+  return query.toString();
+};
+
+const memoryMutation = async (
+  path: string,
+  method: "PATCH" | "POST",
+  body: MemoryActionInput | MemoryEditInput,
+  signal: AbortSignal | undefined,
+  confirmationAllowed: boolean,
+): Promise<MemoryMutationAdmission> => {
+  const response = await fetch(path, {
+    method,
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Mono-Agent-Web-Origin": window.location.origin,
+    },
+    body: JSON.stringify(body),
+    ...(signal === undefined ? {} : { signal }),
+  });
+  if (response.status !== 202 && !(confirmationAllowed && response.status === 428)) {
+    if (!response.ok) throw await readError(response);
+    throw new ApiError("Memory mutation returned an unexpected status.", response.status);
+  }
+  const admission = await response.json() as unknown;
+  const kind = typeof admission === "object" && admission !== null && "kind" in admission
+    ? admission.kind
+    : undefined;
+  const expectedKind = response.status === 202 ? "queued" : "confirmation_required";
+  if (kind !== expectedKind) {
+    throw new ApiError("Memory mutation returned an unexpected response.", 502, "invalid_memory_response");
+  }
+  return admission as MemoryMutationAdmission;
+};
+
 export const api = {
   bootstrap: async (signal?: AbortSignal) =>
     normalizeBootstrap(await request<WireBootstrap>("/api/v1/bootstrap", { signal })),
@@ -634,6 +700,94 @@ export const api = {
   ) => cronMutation<{ readonly job: CronJob }>(
     `/api/v1/agents/${encodeURIComponent(sourceId)}/cron/jobs/${encodeURIComponent(jobId)}/effective-enabled`,
     { enabled, idempotencyKey, ...(confirmationToken === undefined ? {} : { confirmationToken }) },
+  ),
+
+  memoryOverview: (sourceId: string, signal?: AbortSignal) =>
+    request<MemoryAvailability>(memoryBasePath(sourceId), { signal }),
+
+  memoryRecords: (
+    sourceId: string,
+    input: MemoryRecordQuery = {},
+    signal?: AbortSignal,
+  ) => {
+    const query = memoryRecordQueryString(input);
+    return request<MemoryRecordPage>(
+      `${memoryBasePath(sourceId)}/records${query ? `?${query}` : ""}`,
+      { signal },
+    );
+  },
+
+  memoryRecord: (
+    sourceId: string,
+    recordId: string,
+    signal?: AbortSignal,
+  ) => request<MemoryRecordDetail>(
+    `${memoryBasePath(sourceId)}/records/${encodeURIComponent(recordId)}`,
+    { signal },
+  ),
+
+  memoryGraph: async (
+    sourceId: string,
+    input: MemoryGraphQuery = {},
+    signal?: AbortSignal,
+  ) => {
+    const query = memoryGraphQueryString(input);
+    const result = await request<{ readonly graph: MemoryGraph }>(
+      `${memoryBasePath(sourceId)}/graph${query ? `?${query}` : ""}`,
+      { signal },
+    );
+    return result.graph;
+  },
+
+  memoryOperation: async (
+    sourceId: string,
+    operationId: string,
+    signal?: AbortSignal,
+  ) => {
+    const result = await request<{ readonly operation: MemoryOperation }>(
+      `${memoryBasePath(sourceId)}/operations/${encodeURIComponent(operationId)}`,
+      { signal },
+    );
+    return result.operation;
+  },
+
+  editMemoryRecord: (
+    sourceId: string,
+    recordId: string,
+    input: MemoryEditInput,
+    signal?: AbortSignal,
+  ) => memoryMutation(
+    `${memoryBasePath(sourceId)}/records/${encodeURIComponent(recordId)}`,
+    "PATCH",
+    input,
+    signal,
+    false,
+  ),
+
+  forgetMemoryRecord: (
+    sourceId: string,
+    recordId: string,
+    input: MemoryActionInput,
+    signal?: AbortSignal,
+  ) => memoryMutation(
+    `${memoryBasePath(sourceId)}/records/${encodeURIComponent(recordId)}/forget`,
+    "POST",
+    input,
+    signal,
+    true,
+  ),
+
+  restoreMemoryRecord: (
+    sourceId: string,
+    recordId: string,
+    input: MemoryActionInput,
+    signal?: AbortSignal,
+  ) => memoryMutation(
+    `${memoryBasePath(sourceId)}/records/${encodeURIComponent(recordId)}/restore`,
+    "POST",
+    input,
+    signal,
+    false,
   ),
 
   registerPushSubscription: async (subscription: PushSubscription, previousSubscriptionId?: string) => {

@@ -80,6 +80,48 @@ are keyless. Mutations are never keyless. The web console proxy adds exact
 same-origin enforcement; the underlying TUI route authenticates with its bind
 and bearer policy, not an `Origin` header.
 
+## Live web console
+
+The browser workspace is the source-qualified route `/memory/:sourceId`. Open
+it through **Memory** in Conversations or the command palette. It presents
+**Overview**, **Records**, and **Graph** for exactly that live agent; changing
+the agent rewrites the route and clears the prior source's projection. There is
+no multi-agent merge, WebStore/SQLite memory cache, bootstrap copy, or offline
+snapshot. Conversation persistence in the web service does not make memory
+state persistent there.
+
+The web availability response is `{ capability, overview? }`. A live capability
+is useful even when canonical reads are closed: unsupported or degraded/
+read-disabled state renders the capability and its sanitized reason without an
+overview, and Records/Graph display their unavailable state without issuing
+follow-up reads. When `capability.read` is true, `overview` is present and the
+page may fetch record and graph projections.
+Offline sources clear the current projection; older agents with no memory
+capability report the workspace as unsupported rather than serving stale data.
+
+The browser calls the same-origin, source-qualified proxy at
+`/api/v1/agents/:sourceId/memory`. The web service, not JavaScript, holds and
+adds the selected agent's bearer to upstream TUI requests. Every browser edit,
+forget, or restore must also pass the web server's exact scheme/host/port origin
+check. This is request-integrity enforcement within the trusted web-console
+network boundary, not an additional login system.
+
+Records expose the same filters and cursor paging as the API, followed by
+authoritative detail and action history. The Graph view adds lifecycle-history
+inclusion, node focus/clear, 60%–200% zoom and reset, a truncation notice, and a
+touch/scroll-pannable canvas. Complete node and relationship lists sit beside
+the canvas on desktop and above it on mobile, retaining complete labels for
+assistive technology as an alternative to the visual SVG.
+
+The UI never claims an optimistic memory change. It sends the displayed
+revision with a fresh idempotency key, performs forget's agent-issued
+confirmation round trip, and polls the exact source and operation id after a
+`202`. Polling backs off from one to ten seconds through
+`queued | draining | applying`, then the active overview, record/detail, or
+graph view is refetched authoritatively. A successful edit or restore selects
+its returned new record id. See [Always-on web console](/observability/web-console/#live-memory-workspace)
+for responsive layout and availability behavior.
+
 ## Sanitized, provider-free projection
 
 Overview, record, action-history, and graph reads are snapshots of local

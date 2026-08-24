@@ -8,7 +8,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { isAllowedWebHostname, startWebServer, type WebServerHandle } from "../server.js";
 import { deliverWebNotification } from "../notification-client.js";
 import { prepareWebStatePaths } from "../state-paths.js";
-import { fakeDiscoveredAgent, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
+import {
+  fakeDiscoveredAgent,
+  fakeMemoryCapability,
+  fakeMemoryOverview,
+  fakeProcessJob,
+  operatorFetch,
+  temporaryRoot,
+} from "./helpers.js";
 
 const cleanup: string[] = [];
 const servers: WebServerHandle[] = [];
@@ -79,6 +86,9 @@ describe("web HTTP server", () => {
     const clientRoute = await fetch(`${baseUrl}/conversations/example`);
     expect(clientRoute.status).toBe(200);
     expect(await clientRoute.text()).toContain("<title>web</title>");
+    const memoryRoute = await fetch(`${baseUrl}/memory/agent-one`);
+    expect(memoryRoute.status).toBe(200);
+    expect(await memoryRoute.text()).toContain("<title>web</title>");
     const bootstrap = await fetch(`${baseUrl}/api/v1/bootstrap`);
     expect(bootstrap.status).toBe(200);
     expect(bootstrap.headers.get("cache-control")).toBe("no-store");
@@ -94,6 +104,234 @@ describe("web HTTP server", () => {
       },
     });
     expect(JSON.stringify(body)).not.toContain("privateKey");
+  });
+
+  it("proxies the complete source-qualified live memory surface with exact statuses and origin", async () => {
+    const upstream: Array<{
+      readonly url: string;
+      readonly method: string;
+      readonly authorization: string | null;
+      readonly body?: Record<string, unknown>;
+    }> = [];
+    const { baseUrl } = await start({
+      discoverImpl: async () => [fakeDiscoveredAgent({ apiKey: "server-held-memory-key" })],
+      fetchImpl: operatorFetch({
+        memoryCapability: fakeMemoryCapability(),
+        onMemoryRequest(url, init, body) {
+          upstream.push({
+            url,
+            method: init?.method ?? "GET",
+            authorization: new Headers(init?.headers).get("authorization"),
+            ...(body === undefined ? {} : { body }),
+          });
+          if (url.endsWith("/v1/memory")) {
+            return Response.json({ overview: fakeMemoryOverview({ rootPath: "/private/memory.db" }) });
+          }
+          return undefined;
+        },
+      }),
+    });
+    const exactOrigin = { "x-mono-agent-web-origin": baseUrl };
+    const revision = "a".repeat(64);
+    const recordId = "🧠".repeat(512);
+
+    const overview = await fetch(`${baseUrl}/api/v1/agents/agent-one/memory`);
+    expect(overview.status).toBe(200);
+    expect(overview.headers.get("cache-control")).toBe("no-store");
+    await expect(json(overview)).resolves.toMatchObject({
+      capability: { backend: "builtin", tier: "bujo", read: true, actions: true },
+      overview: { counts: { total: 1 } },
+    });
+
+    const records = await fetch(`${baseUrl}/api/v1/agents/agent-one/memory/records?${new URLSearchParams({
+      q: "  ｃoncise  ",
+      lifecycle: "active",
+      type: "note",
+      collection: "  ｐeople  ",
+      limit: "100",
+      before: "older_cursor",
+    })}`);
+    expect(records.status).toBe(200);
+    await expect(json(records)).resolves.toMatchObject({ records: [{ id: "memory-1" }] });
+
+    const detail = await fetch(
+      `${baseUrl}/api/v1/agents/agent-one/memory/records/${encodeURIComponent(recordId)}`,
+    );
+    expect(detail.status).toBe(200);
+    await expect(json(detail)).resolves.toMatchObject({ record: { id: recordId }, history: [] });
+
+    const graph = await fetch(`${baseUrl}/api/v1/agents/agent-one/memory/graph?${new URLSearchParams({
+      focusId: recordId,
+      includeHistory: "true",
+      limit: "200",
+    })}`);
+    expect(graph.status).toBe(200);
+    await expect(json(graph)).resolves.toEqual({ graph: { fidelity: "captured", nodes: [], edges: [] } });
+
+    const editBody = JSON.stringify({
+      expectedRevision: revision,
+      idempotencyKey: "edit:intent-1",
+      patch: {
+        text: "  Updated memory  ",
+        tags: [" Preference ", "Team"],
+        collection: " Project Notes ",
+      },
+    });
+    const missingOrigin = await fetch(`${baseUrl}/api/v1/agents/agent-one/memory/records/memory-1`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: editBody,
+    });
+    expect(missingOrigin.status).toBe(403);
+    await expect(json(missingOrigin)).resolves.toMatchObject({
+      error: { code: "origin_required", message: "An exact same-origin request is required." },
+    });
+    const wrongOrigin = await fetch(`${baseUrl}/api/v1/agents/agent-one/memory/records/memory-1`, {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        "x-mono-agent-web-origin": "http://127.0.0.1:1",
+      },
+      body: editBody,
+    });
+    expect(wrongOrigin.status).toBe(403);
+    await expect(json(wrongOrigin)).resolves.toMatchObject({
+      error: { code: "origin_mismatch", message: "Requests must come from this exact console origin." },
+    });
+
+    const edit = await fetch(`${baseUrl}/api/v1/agents/agent-one/memory/records/memory-1`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", ...exactOrigin },
+      body: editBody,
+    });
+    expect(edit.status).toBe(202);
+    await expect(json(edit)).resolves.toMatchObject({ kind: "queued", operation: { action: "edit" } });
+
+    const actionBody = JSON.stringify({ expectedRevision: revision, idempotencyKey: "forget:intent-1" });
+    const forget = await fetch(`${baseUrl}/api/v1/agents/agent-one/memory/records/memory-1/forget`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...exactOrigin },
+      body: actionBody,
+    });
+    expect(forget.status).toBe(428);
+    const confirmation = await json(forget) as {
+      readonly confirmation: { readonly token: string };
+    };
+    expect(confirmation).toMatchObject({ kind: "confirmation_required" });
+    const confirmedForget = await fetch(`${baseUrl}/api/v1/agents/agent-one/memory/records/memory-1/forget`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...exactOrigin },
+      body: JSON.stringify({
+        expectedRevision: revision,
+        idempotencyKey: "forget:intent-1",
+        confirmationToken: confirmation.confirmation.token,
+      }),
+    });
+    expect(confirmedForget.status).toBe(202);
+    await expect(json(confirmedForget)).resolves.toMatchObject({ kind: "queued", operation: { action: "forget" } });
+
+    const restore = await fetch(`${baseUrl}/api/v1/agents/agent-one/memory/records/memory-1/restore`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...exactOrigin },
+      body: JSON.stringify({ expectedRevision: revision, idempotencyKey: "restore:intent-1" }),
+    });
+    expect(restore.status).toBe(202);
+    await expect(json(restore)).resolves.toMatchObject({ kind: "queued", operation: { action: "restore" } });
+
+    const operation = await fetch(`${baseUrl}/api/v1/agents/agent-one/memory/operations/operation-1`);
+    expect(operation.status).toBe(200);
+    await expect(json(operation)).resolves.toMatchObject({ operation: { id: "operation-1", status: "succeeded" } });
+
+    expect(upstream.every((request) => request.authorization === "Bearer server-held-memory-key")).toBe(true);
+    expect(upstream.some((request) => request.url.includes(
+      "/v1/memory/records?q=concise&lifecycle=active&type=note&collection=people&limit=100&before=older_cursor",
+    ))).toBe(true);
+    expect(upstream.some((request) => request.url.endsWith(`/records/${encodeURIComponent(recordId)}`))).toBe(true);
+    expect(upstream.find((request) => request.method === "PATCH")?.body).toMatchObject({
+      patch: { text: "Updated memory", tags: ["Preference", "Team"], collection: "project-notes" },
+    });
+    expect(JSON.stringify(await (await fetch(`${baseUrl}/api/v1/agents/agent-one/memory`)).json()))
+      .not.toContain("/private/memory.db");
+  });
+
+  it("enforces bounded memory inputs and sanitizes operator failures", async () => {
+    const { baseUrl } = await start({
+      fetchImpl: operatorFetch({
+        memoryCapability: fakeMemoryCapability(),
+        onMemoryRequest(url) {
+          return url.includes("/records/memory-conflict")
+            ? Response.json({
+                error: { code: "revision_conflict", message: "/Users/example/memory.db token=secret" },
+              }, { status: 409 })
+            : undefined;
+        },
+      }),
+    });
+    const invalidQuery = await fetch(`${baseUrl}/api/v1/agents/agent-one/memory/records?future=true`);
+    expect(invalidQuery.status).toBe(400);
+    await expect(json(invalidQuery)).resolves.toMatchObject({ error: { code: "invalid_request" } });
+    for (const query of [
+      new URLSearchParams({ q: "🧠".repeat(513) }),
+      new URLSearchParams({ before: "x".repeat(4_097) }),
+      new URLSearchParams({ limit: "101" }),
+    ]) {
+      const response = await fetch(`${baseUrl}/api/v1/agents/agent-one/memory/records?${query}`);
+      expect(response.status).toBe(400);
+    }
+    expect((await fetch(`${baseUrl}/api/v1/agents/agent-one/memory/graph?limit=201`)).status).toBe(400);
+
+    const invalidId = await fetch(`${baseUrl}/api/v1/agents/agent-one/memory/records/${encodeURIComponent("x".repeat(513))}`);
+    expect(invalidId.status).toBe(400);
+    const invalidEncoding = await fetch(`${baseUrl}/api/v1/agents/agent-one/memory/records/%E0%A4%A`);
+    expect(invalidEncoding.status).toBe(400);
+    await expect(json(invalidEncoding)).resolves.toMatchObject({ error: { code: "invalid_request" } });
+
+    const mutationUrl = `${baseUrl}/api/v1/agents/agent-one/memory/records/memory-1`;
+    const mutationHeaders = {
+      "content-type": "application/json",
+      "x-mono-agent-web-origin": baseUrl,
+    };
+    for (const body of [
+      { expectedRevision: "A".repeat(64), idempotencyKey: "valid", patch: { text: "valid" } },
+      { expectedRevision: "a".repeat(64), idempotencyKey: "invalid key", patch: { text: "valid" } },
+      { expectedRevision: "a".repeat(64), idempotencyKey: "valid", patch: { text: "x".repeat(4_001) } },
+      {
+        expectedRevision: "a".repeat(64),
+        idempotencyKey: "valid",
+        patch: { tags: Array.from({ length: 33 }, (_, index) => `tag-${String(index)}`) },
+      },
+      { expectedRevision: "a".repeat(64), idempotencyKey: "valid", patch: { collection: "bad/slug" } },
+    ]) {
+      const response = await fetch(mutationUrl, {
+        method: "PATCH",
+        headers: mutationHeaders,
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+      await expect(json(response)).resolves.toMatchObject({ error: { code: "invalid_request" } });
+    }
+
+    const oversized = await fetch(`${baseUrl}/api/v1/agents/agent-one/memory/records/memory-1`, {
+      method: "PATCH",
+      headers: mutationHeaders,
+      body: JSON.stringify({
+        expectedRevision: "a".repeat(64),
+        idempotencyKey: "oversized",
+        patch: { text: "x".repeat(65 * 1024) },
+      }),
+    });
+    expect(oversized.status).toBe(413);
+    await expect(json(oversized)).resolves.toEqual({
+      error: { code: "invalid_request", message: "Memory request body is too large." },
+    });
+
+    const conflict = await fetch(`${baseUrl}/api/v1/agents/agent-one/memory/records/memory-conflict`);
+    expect(conflict.status).toBe(409);
+    const conflictBody = await json(conflict);
+    expect(conflictBody).toEqual({
+      error: { code: "revision_conflict", message: "Memory record changed; refresh and retry." },
+    });
+    expect(JSON.stringify(conflictBody)).not.toContain("/Users/example");
   });
 
   it("serves the fixed MCP App proxy with a route-local executable CSP", async () => {

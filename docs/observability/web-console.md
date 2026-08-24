@@ -1,11 +1,11 @@
 ---
 title: "Always-on web console"
-description: "Run and secure the persistent assistant-ui console for cross-agent conversations, search, workflow, attachments, notifications, and live turns."
+description: "Run and secure the persistent assistant-ui console for cross-agent conversations, live memory inspection, search, workflow, attachments, notifications, and turns."
 sidebar:
   order: 5
 ---
 
-`mono-agent web` is the browser operator console for every running agent discovered on this computer. It is a separate `@mono-agent/web` application built on assistant-ui's External Store Runtime and native Thread, ThreadList, Message, Composer, Attachment, GroupedParts, and ToolFallback primitives, with the assistant-ui Reasoning disclosure adapted for structured runtime parts. The service owns conversations and in-flight turns, so refreshing or closing a browser tab does not abort work.
+`mono-agent web` is the browser operator console for every running agent discovered on this computer. It is a separate `@mono-agent/web` application built on assistant-ui's External Store Runtime and native Thread, ThreadList, Message, Composer, Attachment, GroupedParts, and ToolFallback primitives, with the assistant-ui Reasoning disclosure adapted for structured runtime parts. The service owns conversations and in-flight turns, while its memory workspace remains a live view of one agent's authoritative store.
 
 This is the chat-first companion to [`mono-agent tui`](/observability/tui/). The former `mono-agent sessions` read-only run browser [was removed](#session-recorder-removed); recorded-run replay now lives in `mono-agent tui`.
 
@@ -89,6 +89,77 @@ service, which keeps the operator stream alive through page reloads and maps
 agent events into durable message parts. The PWA consumes service invalidations
 and reloads authoritative projections, so multiple tabs converge on the same
 SQLite-backed state.
+
+## Live memory workspace
+
+Open **Memory** from Conversations or the command palette. The stable route is
+`/memory/:sourceId`, where the encoded source id identifies exactly one
+discovered agent. It is not a cross-agent memory search or aggregate. Selecting
+another agent while Memory is open rewrites the route to that source, clears the
+current projection, and loads the newly selected agent. A direct route whose
+source is unknown stays visibly unavailable rather than borrowing the selected
+conversation's agent.
+
+The three tabs read only live, agent-owned state:
+
+- **Overview** shows the advertised backend, actual tier, ready/degraded/
+  unsupported state, read and change availability, graph fidelity, lifecycle
+  and type counts, access totals, and optional embedding metadata.
+- **Records** provides text search plus lifecycle, type, and collection filters,
+  cursor-based **Load more** paging, authoritative record detail, sanitized
+  conversation provenance, and terminal edit/forget/restore history.
+- **Graph** shows the bounded node and relationship projection. Captured graphs
+  require the actual BuJo tier; Lite and Journal explain that no canonical graph
+  is available.
+
+Memory is deliberately absent from the web service's SQLite `WebStore`, initial
+bootstrap, and conversation search index. The browser does not receive a stale
+memory fallback. If the agent or console connection goes offline, the current
+snapshot is cleared until that exact source reconnects. An older agent with no
+memory operator reports the surface as unsupported. For a live modern agent,
+the availability response is `{ capability, overview? }`: capability is always
+shown, while `overview` is omitted when the capability is unsupported,
+degraded with reads disabled, or otherwise read-disabled. Records and Graph
+show their read-unavailable state and do not issue follow-up requests unless
+`capability.read` is true.
+
+### Memory graph on desktop and mobile
+
+The graph toolbar exposes graph fidelity, **Include lifecycle history**, node
+focus and **Clear focus**, zoom from 60% to 200%, and **Reset**. A bounded-result
+notice asks you to focus a node when the response was truncated.
+
+On desktop, complete **Nodes** and **Relationships** lists sit beside a
+scrollable graph canvas. On mobile, those lists stack above the canvas; the
+canvas supports touch/scroll panning while the same explicit controls change its
+internal zoom. The list items retain complete labels in the accessible DOM and
+complement the visual SVG on both layouts, so the graph never depends on color,
+pointer precision, or a shortened canvas label alone.
+
+### Memory changes stay server-authoritative
+
+The browser calls source-qualified same-origin proxy routes under
+`/api/v1/agents/:sourceId/memory`. It never receives the agent's operator API
+key: the persistent web service keeps that bearer server-side and adds it only
+to the selected agent's upstream request. Edit, forget, and restore additionally
+require an exact same-origin mutation request, including the console's scheme,
+host, and port. The web listener's trusted-network boundary still applies.
+
+The editor sends the displayed record revision and a fresh idempotency key.
+Edit saves a new memory rather than changing the selected record in place.
+Forget first opens the agent-issued, expiring confirmation dialog and resubmits
+the same bound request with its token. Restore creates and selects a new active
+record id when it succeeds.
+
+After a mutation returns `202`, the page polls only that source-qualified
+operation receipt, starting at one second and backing off to ten seconds, while
+showing its queued/draining/applying state. It never patches record or graph
+state optimistically. On terminal success or failure, the active Overview,
+Records/detail, or Graph projection is fetched again from the agent; a returned
+replacement/restored id becomes the selected record. **Refresh** explicitly
+aborts stale reads and reloads the active live projection without creating a
+browser-side snapshot. See [Memory operator](/memory/operator/) for action
+eligibility, revisions, retention, and recovery semantics.
 
 ## Agents, threads, and turns
 

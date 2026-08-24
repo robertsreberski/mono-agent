@@ -355,6 +355,65 @@ describe("ConsoleStoreProvider integration", () => {
     expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
   });
 
+  it("loads a source-qualified memory route directly without opening conversation detail", async () => {
+    const alphaThread = thread("alpha-thread", "alpha");
+    window.history.replaceState(null, "", "/memory/alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha")], [alphaThread]));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [alphaThread] });
+    vi.mocked(api.thread).mockResolvedValue(detail(alphaThread));
+
+    const store = await renderStore();
+
+    await waitFor(() => expect(store.current.workspaceRoute).toEqual({
+      kind: "memory",
+      sourceId: "alpha",
+    }));
+    expect(store.current.selectedAgentId).toBe("alpha");
+    expect(store.current.selectedThreadId).toBe(alphaThread.id);
+    expect(store.current.conversationDetailOpen).toBe(false);
+    expect(window.location.pathname).toBe("/memory/alpha");
+  });
+
+  it("keeps agent switches in memory, restores per-agent conversation state, and exits explicitly", async () => {
+    const alphaThread = thread("alpha-thread", "alpha");
+    const betaThread = thread("beta-thread", "beta");
+    window.history.replaceState(null, "", "/memory/alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha"),
+      agent("beta"),
+    ], [alphaThread, betaThread]));
+    vi.mocked(api.threads).mockImplementation(async (sourceId) => ({
+      threads: sourceId === "alpha" ? [alphaThread] : [betaThread],
+    }));
+    vi.mocked(api.thread).mockImplementation(async (threadId) =>
+      detail(threadId === alphaThread.id ? alphaThread : betaThread));
+    const store = await renderStore();
+
+    act(() => store.current.selectAgent("beta"));
+    await waitFor(() => expect(store.current.workspaceRoute).toEqual({ kind: "memory", sourceId: "beta" }));
+    expect(window.location.pathname).toBe("/memory/beta");
+    expect(store.current.selectedThreadId).toBe(betaThread.id);
+
+    window.history.pushState(null, "", "/memory/alpha");
+    act(() => window.dispatchEvent(new PopStateEvent("popstate")));
+    await waitFor(() => expect(store.current.selectedAgentId).toBe("alpha"));
+    expect(store.current.selectedThreadId).toBe(alphaThread.id);
+
+    act(() => store.current.openConversationIndex());
+    await waitFor(() => expect(store.current.workspaceRoute).toEqual({ kind: "conversations" }));
+    expect(window.location.pathname).toBe("/conversations");
+    expect(store.current.selectedThreadId).toBe(alphaThread.id);
+  });
+
+  it("repairs a malformed memory route to the conversation index", async () => {
+    window.history.replaceState(null, "", "/memory/%E0%A4%A");
+
+    const store = await renderStore();
+
+    await waitFor(() => expect(window.location.pathname).toBe("/conversations"));
+    expect(store.current.workspaceRoute).toEqual({ kind: "conversations" });
+  });
+
   it("resolves a cron route whose channel is outside the bootstrap window", async () => {
     window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([

@@ -87,6 +87,65 @@ export function fakeProcessJob(options: {
   };
 }
 
+export function fakeMemoryCapability(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    schema: 1,
+    backend: "builtin",
+    tier: "bujo",
+    status: "ready",
+    read: true,
+    actions: true,
+    graph: "captured",
+    ...overrides,
+  };
+}
+
+export function fakeMemoryRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "memory-1",
+    revision: "a".repeat(64),
+    lifecycle: "active",
+    type: "note",
+    status: "open",
+    text: "Prefers concise summaries",
+    salience: 0.8,
+    isInsight: true,
+    createdAt: "2026-08-24T10:00:00.000Z",
+    accessCount: 2,
+    tags: ["preference"],
+    ...overrides,
+  };
+}
+
+export function fakeMemoryOverview(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    generatedAt: "2026-08-24T10:00:00.000Z",
+    capability: fakeMemoryCapability(),
+    counts: {
+      total: 1,
+      active: 1,
+      superseded: 0,
+      forgotten: 0,
+      byType: { task: 0, event: 0, note: 1 },
+    },
+    access: { totalCount: 2, accessedRecords: 1 },
+    ...overrides,
+  };
+}
+
+export function fakeMemoryOperation(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "operation-1",
+    action: "edit",
+    recordId: "memory-1",
+    status: "queued",
+    createdAt: "2026-08-24T10:01:00.000Z",
+    updatedAt: "2026-08-24T10:01:00.000Z",
+    resultRecordId: "memory-2",
+    ...overrides,
+  };
+}
+
 export function operatorFetch(options: {
   readonly turns?: (body: Record<string, unknown>) => string | ReadableStream<Uint8Array>;
   readonly supportsAttachments?: boolean;
@@ -108,6 +167,12 @@ export function operatorFetch(options: {
   readonly cronRun?: Record<string, unknown>;
   readonly cronConfigView?: Record<string, unknown>;
   readonly onCronMutation?: (url: string, body: Record<string, unknown>) => Record<string, unknown>;
+  readonly memoryCapability?: unknown;
+  readonly onMemoryRequest?: (
+    url: string,
+    init: RequestInit | undefined,
+    body: Record<string, unknown> | undefined,
+  ) => Response | undefined | Promise<Response | undefined>;
   readonly onAskSubmit?: (body: Record<string, unknown>) => void;
   readonly onTurn?: (body: Record<string, unknown>) => void;
   readonly onLiveInput?: (
@@ -162,9 +227,66 @@ export function operatorFetch(options: {
           ...(options.cronOverview === undefined
             ? {}
             : { cron: { read: true, actions: options.onCronMutation !== undefined } }),
+          ...(options.memoryCapability === undefined ? {} : { memory: options.memoryCapability }),
           ...(options.supportsJobs === true ? { jobs: true } : {}),
         },
       });
+    }
+    if (url.includes("/v1/memory")) {
+      const pathname = new URL(url).pathname;
+      const recordRoute = /\/v1\/memory\/records\/([^/]+)(?:\/(forget|restore))?$/u.exec(pathname);
+      const requestedRecordId = recordRoute?.[1] === undefined ? undefined : decodeURIComponent(recordRoute[1]);
+      const operationRoute = /\/v1\/memory\/operations\/([^/]+)$/u.exec(pathname);
+      const requestedOperationId = operationRoute?.[1] === undefined
+        ? undefined
+        : decodeURIComponent(operationRoute[1]);
+      const body = init?.body === undefined
+        ? undefined
+        : JSON.parse(String(init.body)) as Record<string, unknown>;
+      const custom = await options.onMemoryRequest?.(url, init, body);
+      if (custom !== undefined) return custom;
+      if (url.endsWith("/v1/memory")) {
+        return Response.json({ overview: fakeMemoryOverview() });
+      }
+      if (url.includes("/v1/memory/operations/")) {
+        return Response.json({
+          operation: fakeMemoryOperation({
+            status: "succeeded",
+            ...(requestedOperationId === undefined ? {} : { id: requestedOperationId }),
+          }),
+        });
+      }
+      if (url.endsWith("/graph") || url.includes("/graph?")) {
+        return Response.json({ graph: { fidelity: "captured", nodes: [], edges: [] } });
+      }
+      if (url.endsWith("/forget") && body?.confirmationToken === undefined) {
+        return Response.json({
+          kind: "confirmation_required",
+          confirmation: {
+            token: "confirm-forget",
+            expiresAt: "2026-08-24T10:06:00.000Z",
+            message: "Confirm this memory action?",
+          },
+        }, { status: 428 });
+      }
+      if (init?.method === "PATCH" || init?.method === "POST") {
+        const action = url.endsWith("/forget") ? "forget" : url.endsWith("/restore") ? "restore" : "edit";
+        return Response.json({
+          kind: "queued",
+          operation: fakeMemoryOperation({
+            action,
+            ...(requestedRecordId === undefined ? {} : { recordId: requestedRecordId }),
+            ...(action === "forget" ? { resultRecordId: undefined } : {}),
+          }),
+        }, { status: 202 });
+      }
+      if (/\/v1\/memory\/records\/[^/?]+(?:\?|$)/u.test(url)) {
+        return Response.json({
+          record: fakeMemoryRecord(requestedRecordId === undefined ? {} : { id: requestedRecordId }),
+          history: [],
+        });
+      }
+      return Response.json({ records: [fakeMemoryRecord()] });
     }
     if (url.endsWith("/v1/cron")) {
       return options.cronOverview === undefined

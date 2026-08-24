@@ -5,6 +5,12 @@ import type {
   UploadLimits,
   WebAttachment,
   ProcessJobProjection,
+  MemoryAvailability,
+  MemoryCapability,
+  MemoryGraph,
+  MemoryOverview,
+  MemoryRecord,
+  MemoryRecordDetail,
 } from "../types";
 
 export const uploadLimits: UploadLimits = {
@@ -129,4 +135,77 @@ export const bootstrap = (
   threads,
   currentThreadId,
   limits: uploadLimits,
+});
+
+export const memoryCapability = (
+  overrides: Partial<MemoryCapability> = {},
+): MemoryCapability => ({
+  schema: 1,
+  backend: "builtin",
+  tier: "bujo",
+  status: "ready",
+  read: true,
+  actions: true,
+  graph: "captured",
+  ...overrides,
+});
+
+export const memoryRecord = (
+  id: string,
+  overrides: Partial<MemoryRecord> = {},
+): MemoryRecord => ({
+  id,
+  revision: "a".repeat(64),
+  lifecycle: "active",
+  type: "note",
+  status: "open",
+  text: `Memory ${id}`,
+  salience: 0.7,
+  isInsight: false,
+  createdAt: "2026-08-20T10:00:00.000Z",
+  accessCount: 2,
+  tags: ["test"],
+  collection: "work",
+  ...overrides,
+});
+
+export const memoryOverview = (
+  overrides: Partial<MemoryOverview> = {},
+): MemoryOverview => ({
+  generatedAt: "2026-08-24T10:00:00.000Z",
+  capability: memoryCapability(),
+  counts: {
+    total: 3,
+    active: 2,
+    superseded: 1,
+    forgotten: 0,
+    byType: { task: 1, event: 1, note: 1 },
+  },
+  access: { totalCount: 7, accessedRecords: 2 },
+  embedding: { model: "nomic-embed-text", dimension: 768 },
+  ...overrides,
+});
+
+export const memoryAvailability = (
+  overrides: Partial<MemoryAvailability> = {},
+): MemoryAvailability => ({
+  capability: memoryCapability(),
+  overview: memoryOverview(),
+  ...overrides,
+});
+
+export const memoryDetail = (
+  record = memoryRecord("record-one"),
+): MemoryRecordDetail => ({ record, history: [] });
+
+export const memoryGraph = (
+  overrides: Partial<MemoryGraph> = {},
+): MemoryGraph => ({
+  fidelity: "captured",
+  nodes: [
+    { kind: "entity", id: "entity-one", label: "Robert", entityType: "person" },
+    { kind: "memory", id: "record-one", label: "Memory record one", lifecycle: "active", recordType: "note" },
+  ],
+  edges: [{ source: "entity-one", target: "record-one", kind: "supports" }],
+  ...overrides,
 });

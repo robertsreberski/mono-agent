@@ -505,6 +505,194 @@ export interface ChannelConfigView {
   }[];
 }
 
+/** Browser mirror of the bounded, provider-free memory operator DTOs. */
+export type MemoryTier = "lite" | "journal" | "bujo";
+export type MemoryBackend = "builtin" | "supermemory";
+export type MemoryCapabilityStatus = "ready" | "degraded" | "unsupported";
+export type MemoryGraphFidelity = "captured" | "derived" | "unavailable";
+
+export interface MemoryCapability {
+  readonly schema: 1;
+  readonly backend: MemoryBackend;
+  readonly tier?: MemoryTier;
+  readonly status: MemoryCapabilityStatus;
+  readonly read: boolean;
+  readonly actions: boolean;
+  readonly graph: MemoryGraphFidelity;
+  readonly reason?: string;
+}
+
+export type MemoryRecordType = "task" | "event" | "note";
+export type MemoryRecordStatus =
+  | "open"
+  | "done"
+  | "scheduled"
+  | "migrated"
+  | "dropped"
+  | "invalidated";
+export type MemoryLifecycle = "active" | "superseded" | "forgotten";
+
+export interface MemoryRecord {
+  readonly id: string;
+  readonly revision: string;
+  readonly lifecycle: MemoryLifecycle;
+  readonly type: MemoryRecordType;
+  readonly status: MemoryRecordStatus;
+  readonly text: string;
+  readonly salience: number;
+  readonly isInsight: boolean;
+  readonly createdAt: string;
+  readonly lastAccessedAt?: string;
+  readonly accessCount: number;
+  readonly validFrom?: string;
+  readonly validTo?: string;
+  readonly dueAt?: string;
+  readonly tags: readonly string[];
+  readonly collection?: string;
+  readonly supersededBy?: string;
+  readonly supersededAt?: string;
+  readonly source?: { readonly conversationId?: string };
+}
+
+export interface MemoryActionHistoryItem {
+  readonly id: string;
+  readonly action: "edit" | "forget" | "restore";
+  readonly status: "succeeded" | "failed";
+  readonly recordId: string;
+  readonly resultRecordId?: string;
+  readonly createdAt: string;
+  readonly completedAt: string;
+  readonly errorCode?: string;
+}
+
+export interface MemoryRecordDetail {
+  readonly record: MemoryRecord;
+  readonly history: readonly MemoryActionHistoryItem[];
+}
+
+export interface MemoryOverview {
+  readonly generatedAt: string;
+  readonly capability: MemoryCapability;
+  readonly counts: {
+    readonly total: number;
+    readonly active: number;
+    readonly superseded: number;
+    readonly forgotten: number;
+    readonly byType: Readonly<Record<MemoryRecordType, number>>;
+  };
+  readonly access: {
+    readonly totalCount: number;
+    readonly accessedRecords: number;
+  };
+  readonly embedding?: { readonly model?: string; readonly dimension?: number };
+}
+
+/** Live web availability can expose a read:false capability without an overview snapshot. */
+export interface MemoryAvailability {
+  readonly capability: MemoryCapability;
+  readonly overview?: MemoryOverview;
+}
+
+export interface MemoryRecordQuery {
+  readonly q?: string;
+  readonly lifecycle?: MemoryLifecycle;
+  readonly type?: MemoryRecordType;
+  readonly collection?: string;
+  readonly limit?: number;
+  readonly before?: string;
+}
+
+export interface MemoryRecordPage {
+  readonly records: readonly MemoryRecord[];
+  readonly nextCursor?: string;
+}
+
+export type MemoryGraphNode =
+  | {
+      readonly kind: "entity";
+      readonly id: string;
+      readonly label: string;
+      readonly entityType?: string;
+      readonly summary?: string;
+    }
+  | {
+      readonly kind: "memory";
+      readonly id: string;
+      readonly label: string;
+      readonly lifecycle: MemoryLifecycle;
+      readonly recordType: MemoryRecordType;
+    };
+
+export interface MemoryGraphEdge {
+  readonly source: string;
+  readonly target: string;
+  readonly kind: "relation" | "association" | "supports" | "supersedes";
+  readonly label?: string;
+  readonly weight?: number;
+}
+
+export interface MemoryGraph {
+  readonly fidelity: MemoryGraphFidelity;
+  readonly nodes: readonly MemoryGraphNode[];
+  readonly edges: readonly MemoryGraphEdge[];
+  readonly truncated?: true;
+}
+
+export interface MemoryGraphQuery {
+  readonly focusId?: string;
+  readonly includeHistory?: boolean;
+  readonly limit?: number;
+}
+
+export interface MemorySemanticPatch {
+  readonly text?: string;
+  readonly type?: MemoryRecordType;
+  readonly tags?: readonly string[];
+  readonly salience?: number;
+  readonly collection?: string | null;
+  readonly dueAt?: string | null;
+  readonly validFrom?: string | null;
+}
+
+export interface MemoryActionInput {
+  readonly expectedRevision: string;
+  readonly idempotencyKey: string;
+  readonly confirmationToken?: string;
+}
+
+export interface MemoryEditInput extends MemoryActionInput {
+  readonly patch: MemorySemanticPatch;
+}
+
+export interface MemoryConfirmation {
+  readonly token: string;
+  readonly expiresAt: string;
+  readonly message: string;
+}
+
+export type MemoryOperationStatus =
+  | "queued"
+  | "draining"
+  | "applying"
+  | "succeeded"
+  | "failed";
+
+export interface MemoryOperation {
+  readonly id: string;
+  readonly action: "edit" | "forget" | "restore";
+  readonly recordId: string;
+  readonly status: MemoryOperationStatus;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly resultRecordId?: string;
+  readonly errorCode?: string;
+  readonly errorMessage?: string;
+}
+
+export type MemoryMutationAdmission =
+  | { readonly kind: "confirmation_required"; readonly confirmation: MemoryConfirmation }
+  | { readonly kind: "queued"; readonly operation: MemoryOperation };
+
 export interface UploadLimits {
   readonly maxFileBytes: number;
   readonly maxFilesPerTurn: number;

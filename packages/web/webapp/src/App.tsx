@@ -16,6 +16,7 @@ import { AgentRail, BrandMark } from "./components/AgentRail";
 import { Chat } from "./components/Chat";
 import { ConversationWorkspace } from "./components/ConversationWorkspace";
 import { Icon, type IconName } from "./components/Icon";
+import { MemoryWorkspace } from "./components/MemoryWorkspace";
 import { useConsoleStore } from "./console-store";
 import { applyConsolePresentation } from "./theme";
 
@@ -117,6 +118,13 @@ function CommandPalette({ open, onClose }: { readonly open: boolean; readonly on
         icon: "new",
         disabled: !store.selectedAgent,
         run: () => void store.createThread().catch(() => undefined),
+      },
+      {
+        id: "memory",
+        label: `Open ${store.selectedAgent?.label ?? "agent"} memory`,
+        icon: "memory",
+        disabled: !store.selectedAgent,
+        run: () => store.openMemory(),
       },
       {
         id: "rename",
@@ -273,8 +281,10 @@ export function App() {
     clearActionError,
     conversationDetailOpen,
     openConversationIndex,
+    workspaceRoute,
   } = useConsoleStore();
   const [palette, setPalette] = useState(false);
+  const [memoryAgentFocusHandoff, setMemoryAgentFocusHandoff] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [agentRailExpanded, setAgentRailExpanded] = useState(readAgentRailExpanded);
   const detailWasOpen = useRef(false);
@@ -289,6 +299,8 @@ export function App() {
     });
   }, []);
   const closePalette = useCallback(() => setPalette(false), []);
+  const requestMemoryAgentFocus = useCallback(() => setMemoryAgentFocusHandoff(true), []);
+  const completeMemoryAgentFocus = useCallback(() => setMemoryAgentFocusHandoff(false), []);
   const togglePalette = useCallback(() => {
     setPalette((current) => !current);
   }, []);
@@ -379,7 +391,7 @@ export function App() {
         window.dispatchEvent(new CustomEvent("mono-agent:new-thread"));
         return;
       }
-      if (!typing && event.key === "/") {
+      if (!typing && workspaceRoute.kind === "conversations" && event.key === "/") {
         event.preventDefault();
         document.querySelector<HTMLTextAreaElement>("#composer-input")?.focus();
       }
@@ -389,7 +401,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [palette, togglePalette]);
+  }, [palette, togglePalette, workspaceRoute.kind]);
 
   const store = useConsoleStore();
   useEffect(() => {
@@ -403,18 +415,42 @@ export function App() {
   if (loading && !bootstrap) return <InitialLoading />;
   if (error && !bootstrap) return <FatalError />;
 
+  const memoryOpen = workspaceRoute.kind === "memory";
+  const memoryMountKey = workspaceRoute.kind === "memory"
+    ? [
+        workspaceRoute.sourceId,
+        store.connection,
+        store.agents.find((agent) => agent.sourceId === workspaceRoute.sourceId)?.status ?? "missing",
+      ].join(":")
+    : "conversations";
+
   return (
     <div
-      className={`app-shell conversation-layout${conversationDetailOpen ? " has-conversation-detail" : ""}`}
+      className={memoryOpen
+        ? "app-shell memory-layout"
+        : `app-shell conversation-layout${conversationDetailOpen ? " has-conversation-detail" : ""}`}
       style={appStyle}
     >
       <div className="desktop-agent-rail">
         <AgentRail expanded={agentRailExpanded} onToggleExpanded={toggleAgentRail} />
       </div>
-      <div className="conversation-master"><ConversationWorkspace /></div>
-      <div className="conversation-detail">
-        <Chat onBackToWorkspace={openConversationIndex} />
-      </div>
+      {memoryOpen ? (
+        <div className="memory-main">
+          <MemoryWorkspace
+            key={memoryMountKey}
+            focusAgentPickerOnMount={memoryAgentFocusHandoff}
+            onAgentPickerSelection={requestMemoryAgentFocus}
+            onAgentPickerFocusRestored={completeMemoryAgentFocus}
+          />
+        </div>
+      ) : (
+        <>
+          <div className="conversation-master"><ConversationWorkspace /></div>
+          <div className="conversation-detail">
+            <Chat onBackToWorkspace={openConversationIndex} />
+          </div>
+        </>
+      )}
 
       <CommandPalette open={palette} onClose={closePalette} />
       {(notice || actionError) && (

@@ -38,6 +38,9 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 - Accept browser-selected files through bounded staged uploads and forward the
   exact transport-neutral `AgentAttachment` contract used by Telegram.
 - Serve the assistant-ui PWA and its versioned JSON/SSE API.
+- Proxy each connected agent's bounded memory overview, records, graph, and
+  asynchronous edit/forget/restore operations without copying memory state into
+  the web database, bootstrap payload, or SSE stream.
 - Accept explicit cron/webhook `web:new` notification delivery through an
   owner-private, bearer-authenticated loopback ingress. Webhooks retain one
   marked thread per result; cron deliveries append to one durable read-only
@@ -243,6 +246,33 @@ agent-issued confirmation. The console neither edits config nor computes a
 schedule. Runtime enable state, run history, action audit, and idempotency are
 agent-owned; the web SQLite database is a reconnect/refresh projection.
 
+The **Memory** workspace at `/memory/:sourceId` is a live view of the selected
+agent's own memory operator. Its availability response always includes the
+current parsed capability while the agent is connected; an optional overview
+is present only when that capability currently permits reads. Records support
+bounded search, lifecycle/type/collection filters, cursor pagination, and
+authoritative detail/history. The Graph tab shows the agent's captured or
+derived relationships, including fidelity and truncation. Desktop uses a
+bounded SVG plus a textual fallback; narrow and assistive layouts use the node
+and edge lists directly.
+
+Memory responses are source-qualified, `no-store`, and fetched live on every
+request. They never enter `WebStore`, `/bootstrap`, or SSE, and the web service
+does not fall back to an earlier snapshot when an agent disconnects or disables
+reads. Operation polling remains available on a live advertised memory
+capability after reads become unavailable so an already-admitted action can
+still reach a terminal state.
+
+Edit, forget, and restore use the record's exact 64-character revision plus one
+stable idempotency key for the whole user intent. They require an exact
+same-origin browser request; the ordinary agent operator bearer stays in the
+server process and is never returned to the browser. Successful admission is
+`202`; only forget may return `428` with a short-lived confirmation token, and
+the confirmed retry reuses the same revision, payload, and idempotency key.
+The browser then polls only the returned operation id and refreshes
+authoritative views after completion instead of applying optimistic memory
+state.
+
 When the selected agent advertises `capabilities.askUser`, a running `AskUser`
 tool call appears as one form containing all remaining questions. Each question
 has two or three described choices plus an **Other** custom-reply field;
@@ -326,10 +356,13 @@ cross-resource requests fail. See
    subscription/event/delivery, notification, and cron projection records
    through the SQLite store, and
    drives each agent over its loopback operator endpoint.
-3. Service mutations publish invalidations. Browsers consume `/api/v1/events`
+   Memory capability and inventory bypass that persistence path and are proxied
+   only through the current live connection.
+3. Durable service mutations publish invalidations. Browsers consume `/api/v1/events`
    and refetch authoritative projections, including the selected agent's
    memory-only live skill registry, so reloads and concurrent tabs do not own or
    interrupt upstream turns.
+   Memory reads and actions have no corresponding event or cached projection.
 4. The bundled assistant-ui webapp maps those DTOs—including canonical
    lifecycle metadata—into its external store, thread list, messages, tool
    cards, composer, attachments, activity, and push-subscription UI; its service
@@ -349,6 +382,7 @@ cross-resource requests fail. See
 | [`service.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/service.ts) | Application lifecycle for discovery, threads, turns, live-input delivery/fallback, attachments, `AskUser` snapshots/submission, cancellation, notifications, and invalidation. |
 | [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence. |
 | [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, and owner-authenticated process-job reads/cancel over the operator protocol. |
+| [`memory-wire.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/memory-wire.ts) | Private fail-closed reconstruction of bounded, path-free memory operator DTOs before they cross the browser boundary. |
 | [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook thread delivery and source/thread-bound process-job card updates. |
 | [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including atomic `AskUser` forms, tests, and its own dependency lockfile. |
 
@@ -365,6 +399,7 @@ cross-resource requests fail. See
 | `discoverAcpBridgeAgents` | Discover Worklab-importable ACP sources through a credential-free, versioned ownership contract. |
 | `discoverOperatorAgents` | Read trusted operator endpoints from trace-source manifests. |
 | `WebBootstrap`, `WebThreadDetail`, `WebEvent`, and related `Web*` DTOs | Build another client against the versioned browser API. |
+| `WebMemoryAvailability`, `WebMemoryOverview`, `WebMemoryRecord`, `WebMemoryGraph`, and `WebMemoryOperation` | Consume the live source-qualified memory workspace without treating it as persisted web state. |
 | `WEB_THEMES`, `DEFAULT_WEB_THEME`, `WebTheme`, and `WebConsoleIdentity` | Select a curated theme and consume the hostname/theme identity returned to browsers. |
 
 <!-- public-api-inventory:start -->
@@ -431,6 +466,33 @@ WebConsoleIdentity
 WebEvent
 WebEventType
 WebLiveInputReceipt
+WebMemoryActionHistoryItem
+WebMemoryActionInput
+WebMemoryAvailability
+WebMemoryBackend
+WebMemoryCapability
+WebMemoryCapabilityStatus
+WebMemoryConfirmation
+WebMemoryEditInput
+WebMemoryErrorCode
+WebMemoryGraph
+WebMemoryGraphEdge
+WebMemoryGraphFidelity
+WebMemoryGraphNode
+WebMemoryGraphQuery
+WebMemoryLifecycle
+WebMemoryMutationAdmission
+WebMemoryOperation
+WebMemoryOperationStatus
+WebMemoryOverview
+WebMemoryRecord
+WebMemoryRecordDetail
+WebMemoryRecordPage
+WebMemoryRecordQuery
+WebMemoryRecordStatus
+WebMemoryRecordType
+WebMemorySemanticPatch
+WebMemoryTier
 WebMessage
 WebMessagePart
 WebMessageStatus
@@ -500,6 +562,10 @@ The browser API is rooted at `/api/v1`:
   and `POST /push/events/:eventId/ack`; the status read carries the exact
   `X-Mono-Agent-Web-Origin` browser-origin claim and returns no endpoint or key
   material
+- Live memory routes under `/agents/:id/memory`: `GET` availability/optional
+  overview, records, record detail, graph, and operation state; exact-origin
+  `PATCH` record edit; and exact-origin `POST` forget/restore. Mutation
+  admission preserves `202`, with `428` reserved for forget confirmation.
 - `GET /events` (SSE)
 
 `GET /healthz` is intentionally outside the versioned API for service probes.
@@ -532,6 +598,8 @@ import a communication adapter or another operator surface.
 ## What This Package Does Not Own
 
 - Agent runtime/provider execution or conversation history inside an agent.
+- Canonical memory records, graph, action ledger, or operation lifecycle inside
+  an agent; the Memory workspace is a live proxy, not another memory store.
 - The operator-adapter HTTP server published by each agent.
 - CLI background-process, launchd, or conflict-safe Tailscale Serve lifecycle.
 - Recorded-run replay, which belongs to `@mono-agent/tui`.

@@ -634,6 +634,9 @@ export function ConversationWorkspace() {
           {store.collectionsLoading && <span className="workspace-nav-status">Loading collections…</span>}
         </nav>
         <nav className="workspace-archive-nav">
+          <button type="button" onClick={() => store.openMemory()} disabled={store.selectedAgentId === null}>
+            <Icon name="memory" size={15} />Memory
+          </button>
           <button type="button" aria-current={activeCollection === "archive" ? "page" : undefined} className={activeCollection === "archive" ? "is-active" : ""} onClick={() => chooseCollection("archive")}>
             <Icon name="archive" size={15} />Archive
           </button>

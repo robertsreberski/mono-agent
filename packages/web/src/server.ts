@@ -35,6 +35,10 @@ import {
   type StartWebTurnInput,
   type WebEvent,
   type WebConsoleIdentity,
+  type WebMemoryActionInput,
+  type WebMemoryEditInput,
+  type WebMemoryGraphQuery,
+  type WebMemoryRecordQuery,
   type WebMessagePart,
   type WebTheme,
 } from "./contracts.js";
@@ -55,6 +59,18 @@ export const DEFAULT_WEB_PORT = 5050;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const MAX_SSE_CLIENTS = 64;
 const MAX_MCP_APP_BRIDGE_REQUEST_BYTES = 64 * 1024;
+const MAX_MEMORY_ACTION_BODY_BYTES = 64 * 1024;
+const MAX_MEMORY_RECORD_PAGE = 100;
+const MAX_MEMORY_GRAPH_NODES = 200;
+const MAX_MEMORY_ID_CODE_POINTS = 512;
+const MAX_MEMORY_QUERY_CODE_POINTS = 512;
+const MAX_MEMORY_TEXT_CODE_POINTS = 4_000;
+const MAX_MEMORY_TAGS = 32;
+const MAX_MEMORY_TAG_CODE_POINTS = 64;
+const MAX_MEMORY_COLLECTION_CODE_POINTS = 128;
+const MEMORY_IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$/u;
+const MEMORY_COLLECTION = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const INVALID_MEMORY_SEMANTIC_TEXT = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
 const WEB_THEME_CHROME: Readonly<Record<WebTheme, { readonly light: string; readonly dark: string }>> = {
   evergreen: { light: "#eeefeb", dark: "#0f1110" },
   ocean: { light: "#edf1f4", dark: "#0d1115" },
@@ -114,6 +130,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     res.setHeader("Pragma", "no-cache");
     next();
   });
+  app.use("/api/v1/agents/:id/memory", express.json({ limit: MAX_MEMORY_ACTION_BODY_BYTES, strict: true }));
   app.use("/api/v1", express.json({ limit: "256kb", strict: true }));
 
   app.get("/healthz", (_req, res) => {
@@ -173,6 +190,110 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   app.get("/api/v1/agents/:id/skills", (req, res, next) => {
     try {
       res.status(200).json(service.agentSkills(pathParam(req.params.id)));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/agents/:id/memory", (req, res, next) => {
+    try {
+      assertMemoryQueryFields(req, []);
+      void trackOperation(service.memoryOverview(pathParam(req.params.id)), activeOperations)
+        .then((availability) => res.status(200).json(availability))
+        .catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/agents/:id/memory/records", (req, res, next) => {
+    try {
+      const query = memoryRecordQuery(req);
+      void trackOperation(service.memoryRecords(pathParam(req.params.id), query), activeOperations)
+        .then((page) => res.status(200).json(page))
+        .catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/agents/:id/memory/records/:recordId", (req, res, next) => {
+    try {
+      assertMemoryQueryFields(req, []);
+      void trackOperation(service.memoryRecord(
+        pathParam(req.params.id),
+        memoryIdentifier(req.params.recordId, "record"),
+      ), activeOperations).then((detail) => res.status(200).json(detail)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/agents/:id/memory/graph", (req, res, next) => {
+    try {
+      const query = memoryGraphQuery(req);
+      void trackOperation(service.memoryGraph(pathParam(req.params.id), query), activeOperations)
+        .then((graph) => res.status(200).json({ graph }))
+        .catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/v1/agents/:id/memory/records/:recordId", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      assertMemoryQueryFields(req, []);
+      const input = parseMemoryEditInput(req.body);
+      void trackOperation(service.memoryEdit(
+        pathParam(req.params.id),
+        memoryIdentifier(req.params.recordId, "record"),
+        input,
+      ), activeOperations).then((result) => res.status(202).json(result)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/agents/:id/memory/records/:recordId/forget", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      assertMemoryQueryFields(req, []);
+      const input = parseMemoryActionInput(req.body);
+      void trackOperation(service.memoryForget(
+        pathParam(req.params.id),
+        memoryIdentifier(req.params.recordId, "record"),
+        input,
+      ), activeOperations).then((result) => {
+        res.status(result.kind === "confirmation_required" ? 428 : 202).json(result);
+      }).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/agents/:id/memory/records/:recordId/restore", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      assertMemoryQueryFields(req, []);
+      const input = parseMemoryActionInput(req.body);
+      void trackOperation(service.memoryRestore(
+        pathParam(req.params.id),
+        memoryIdentifier(req.params.recordId, "record"),
+        input,
+      ), activeOperations).then((result) => res.status(202).json(result)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/agents/:id/memory/operations/:operationId", (req, res, next) => {
+    try {
+      assertMemoryQueryFields(req, []);
+      void trackOperation(service.memoryOperation(
+        pathParam(req.params.id),
+        memoryIdentifier(req.params.operationId, "operation"),
+      ), activeOperations).then((operation) => res.status(200).json({ operation })).catch(next);
     } catch (error) {
       next(error);
     }
@@ -704,22 +825,35 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     });
   });
 
-  app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
+  app.use((error: unknown, req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) {
       next(error);
       return;
     }
     const known = error instanceof WebConsoleError;
     const syntax = error instanceof SyntaxError && (error as { status?: unknown }).status === 400;
+    const invalidPathEncoding = error instanceof URIError && (error as { status?: unknown }).status === 400;
     const tooLarge = typeof error === "object" && error !== null
       && ((error as { status?: unknown }).status === 413 || (error as { type?: unknown }).type === "entity.too.large");
-    const status = known ? error.status : tooLarge ? 413 : syntax ? 400 : 500;
-    const code = known ? error.code : tooLarge ? "request_too_large" : syntax ? "invalid_json" : "internal_error";
+    const memoryRequest = isMemoryApiRequest(req);
+    const status = known ? error.status : tooLarge ? 413 : syntax || invalidPathEncoding ? 400 : 500;
+    const code = known
+      ? error.code
+      : memoryRequest && (tooLarge || syntax || invalidPathEncoding)
+        ? "invalid_request"
+        : tooLarge ? "request_too_large" : syntax ? "invalid_json" : "internal_error";
+    const message = memoryRequest && tooLarge
+      ? "Memory request body is too large."
+      : memoryRequest && invalidPathEncoding
+        ? "Memory request path is not valid UTF-8."
+        : memoryRequest && syntax
+          ? "Request body is not valid JSON."
+          : known || syntax ? errorMessage(error) : "Internal server error.";
     if (status >= 500) logger?.error?.("Web console request failed.", { error: errorMessage(error) });
     res.status(status).json({
       error: {
         code,
-        message: known || syntax ? errorMessage(error) : "Internal server error.",
+        message,
         ...(known && error.details !== undefined ? { details: error.details } : {}),
       },
     });
@@ -1249,12 +1383,12 @@ function exactRequestOrigin(req: Request): string {
   }
   const rawOrigin = req.headers.origin ?? claimedOrigin;
   if (rawOrigin === undefined) {
-    throw new WebConsoleError("origin_required", "Push subscription changes require an exact same-origin request.", 403);
+    throw new WebConsoleError("origin_required", "An exact same-origin request is required.", 403);
   }
   const origin = validateExactOrigin(req, rawOrigin);
   if (req.headers.origin !== undefined && claimedOrigin !== undefined
     && validateExactOrigin(req, claimedOrigin) !== origin) {
-    throw new WebConsoleError("origin_mismatch", "Push subscription changes must come from this exact console origin.", 403);
+    throw new WebConsoleError("origin_mismatch", "Requests must come from this exact console origin.", 403);
   }
   return origin;
 }
@@ -1269,7 +1403,7 @@ function validateExactOrigin(req: Request, rawOrigin: string): string {
   const host = normalizedAuthority(req.headers.host);
   if ((origin.protocol !== "http:" && origin.protocol !== "https:") || origin.host.toLowerCase() !== host.authority
     || origin.username !== "" || origin.password !== "" || origin.pathname !== "/" || origin.search !== "" || origin.hash !== "") {
-    throw new WebConsoleError("origin_mismatch", "Push subscription changes must come from this exact console origin.", 403);
+    throw new WebConsoleError("origin_mismatch", "Requests must come from this exact console origin.", 403);
   }
   return origin.origin;
 }
@@ -1349,6 +1483,248 @@ function boundedQueryLimit(value: unknown, maximum: number, fallback: number): n
   return limit;
 }
 
+function assertMemoryQueryFields(req: Request, allowed: readonly string[]): void {
+  if (Object.keys(req.query).some((key) => !allowed.includes(key))) {
+    throw invalidMemoryRequest("Memory query contains an unsupported field.");
+  }
+}
+
+function memoryRecordQuery(req: Request): WebMemoryRecordQuery {
+  assertMemoryQueryFields(req, ["q", "lifecycle", "type", "collection", "limit", "before"]);
+  const query = normalizedMemoryQueryString(req.query.q, "q", MAX_MEMORY_QUERY_CODE_POINTS);
+  const collection = normalizedMemoryQueryString(
+    req.query.collection,
+    "collection",
+    MAX_MEMORY_COLLECTION_CODE_POINTS,
+  );
+  const before = boundedMemoryCursor(req.query.before);
+  const lifecycle = exactMemoryQueryString(req.query.lifecycle, "lifecycle");
+  if (lifecycle !== undefined && lifecycle !== "active" && lifecycle !== "superseded" && lifecycle !== "forgotten") {
+    throw invalidMemoryRequest("lifecycle must be active, superseded, or forgotten.");
+  }
+  const type = exactMemoryQueryString(req.query.type, "type");
+  if (type !== undefined && type !== "task" && type !== "event" && type !== "note") {
+    throw invalidMemoryRequest("type must be task, event, or note.");
+  }
+  return {
+    ...(query === undefined ? {} : { query }),
+    ...(lifecycle === undefined ? {} : { lifecycle }),
+    ...(type === undefined ? {} : { type }),
+    ...(collection === undefined ? {} : { collection }),
+    limit: boundedMemoryLimit(req.query.limit, MAX_MEMORY_RECORD_PAGE, 50),
+    ...(before === undefined ? {} : { before }),
+  };
+}
+
+function memoryGraphQuery(req: Request): WebMemoryGraphQuery {
+  assertMemoryQueryFields(req, ["focusId", "includeHistory", "limit"]);
+  const focusId = req.query.focusId === undefined
+    ? undefined
+    : memoryIdentifier(singleMemoryQueryString(req.query.focusId, "focusId"), "record");
+  let includeHistory: boolean | undefined;
+  if (req.query.includeHistory !== undefined) {
+    if (req.query.includeHistory === "true") includeHistory = true;
+    else if (req.query.includeHistory === "false") includeHistory = false;
+    else throw invalidMemoryRequest("includeHistory must be true or false.");
+  }
+  return {
+    ...(focusId === undefined ? {} : { focusId }),
+    ...(includeHistory === undefined ? {} : { includeHistory }),
+    limit: boundedMemoryLimit(req.query.limit, MAX_MEMORY_GRAPH_NODES, 100),
+  };
+}
+
+function exactMemoryQueryString(value: unknown, name: string): string | undefined {
+  return value === undefined ? undefined : singleMemoryQueryString(value, name);
+}
+
+function singleMemoryQueryString(value: unknown, name: string): string {
+  if (typeof value !== "string") throw invalidMemoryRequest(`${name} must be a single string.`);
+  return value;
+}
+
+function normalizedMemoryQueryString(
+  value: unknown,
+  name: string,
+  maxCodePoints: number,
+): string | undefined {
+  if (value === undefined) return undefined;
+  const normalized = singleMemoryQueryString(value, name).normalize("NFKC").trim();
+  if (normalized.length === 0 || [...normalized].length > maxCodePoints) {
+    throw invalidMemoryRequest(
+      `${name} must be non-empty and at most ${String(maxCodePoints)} Unicode code points.`,
+    );
+  }
+  return normalized;
+}
+
+function boundedMemoryCursor(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const cursor = singleMemoryQueryString(value, "before");
+  if (cursor.length === 0 || Buffer.byteLength(cursor, "utf8") > 4_096) {
+    throw invalidMemoryRequest("before is not a valid bounded cursor.");
+  }
+  return cursor;
+}
+
+function boundedMemoryLimit(value: unknown, maximum: number, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== "string" || !/^\d+$/u.test(value)) {
+    throw invalidMemoryRequest("limit must be a positive integer.");
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > maximum) {
+    throw invalidMemoryRequest(`limit must be 1-${String(maximum)}.`);
+  }
+  return parsed;
+}
+
+function memoryIdentifier(
+  value: string | readonly string[] | undefined,
+  kind: "record" | "operation",
+): string {
+  const id = Array.isArray(value) ? undefined : value;
+  if (typeof id !== "string" || id.length === 0 || [...id].length > MAX_MEMORY_ID_CODE_POINTS
+    || INVALID_MEMORY_SEMANTIC_TEXT.test(id)) {
+    throw invalidMemoryRequest(`A valid memory ${kind} id is required.`);
+  }
+  return id;
+}
+
+function parseMemoryActionInput(value: unknown): WebMemoryActionInput {
+  const body = requireRecord(value);
+  assertMemoryActionKeys(body, ["expectedRevision", "idempotencyKey", "confirmationToken"]);
+  return parseMemoryActionFields(body);
+}
+
+function parseMemoryEditInput(value: unknown): WebMemoryEditInput {
+  const body = requireRecord(value);
+  assertMemoryActionKeys(body, ["expectedRevision", "idempotencyKey", "confirmationToken", "patch"]);
+  const patch = requireRecord(body.patch);
+  assertMemoryActionKeys(patch, ["text", "type", "tags", "salience", "collection", "dueAt", "validFrom"]);
+  if (Object.keys(patch).length === 0) {
+    throw invalidMemoryRequest("patch must change at least one semantic field.");
+  }
+  const text = patch.text === undefined
+    ? undefined
+    : normalizeMemorySemanticText(patch.text, "patch.text", MAX_MEMORY_TEXT_CODE_POINTS);
+  let type: WebMemoryEditInput["patch"]["type"];
+  if (patch.type !== undefined) {
+    if (patch.type !== "task" && patch.type !== "event" && patch.type !== "note") {
+      throw invalidMemoryRequest("patch.type must be task, event, or note.");
+    }
+    type = patch.type;
+  }
+  let tags: readonly string[] | undefined;
+  if (patch.tags !== undefined) {
+    if (!Array.isArray(patch.tags) || patch.tags.length > MAX_MEMORY_TAGS) {
+      throw invalidMemoryRequest(`patch.tags must contain at most ${String(MAX_MEMORY_TAGS)} strings.`);
+    }
+    tags = patch.tags.map((tag, index) => normalizeMemorySemanticText(
+      tag,
+      `patch.tags[${String(index)}]`,
+      MAX_MEMORY_TAG_CODE_POINTS,
+    ));
+    if (new Set(tags).size !== tags.length) {
+      throw invalidMemoryRequest("patch.tags must not contain duplicates.");
+    }
+  }
+  let salience: number | undefined;
+  if (patch.salience !== undefined) {
+    if (typeof patch.salience !== "number" || !Number.isFinite(patch.salience)
+      || patch.salience < 0 || patch.salience > 1) {
+      throw invalidMemoryRequest("patch.salience must be between 0 and 1.");
+    }
+    salience = patch.salience;
+  }
+  const collection = normalizeNullableMemoryCollection(patch.collection);
+  const dueAt = nullableMemoryTimestamp(patch.dueAt, "patch.dueAt");
+  const validFrom = nullableMemoryTimestamp(patch.validFrom, "patch.validFrom");
+  return {
+    ...parseMemoryActionFields(body),
+    patch: {
+      ...(text === undefined ? {} : { text }),
+      ...(type === undefined ? {} : { type }),
+      ...(tags === undefined ? {} : { tags }),
+      ...(salience === undefined ? {} : { salience }),
+      ...(collection === undefined ? {} : { collection }),
+      ...(dueAt === undefined ? {} : { dueAt }),
+      ...(validFrom === undefined ? {} : { validFrom }),
+    },
+  };
+}
+
+function parseMemoryActionFields(value: Record<string, unknown>): WebMemoryActionInput {
+  if (typeof value.expectedRevision !== "string" || !/^[a-f0-9]{64}$/u.test(value.expectedRevision)) {
+    throw invalidMemoryRequest("expectedRevision must be 64 lowercase hexadecimal characters.");
+  }
+  if (typeof value.idempotencyKey !== "string" || !MEMORY_IDEMPOTENCY_KEY.test(value.idempotencyKey)) {
+    throw invalidMemoryRequest("idempotencyKey has an invalid format.");
+  }
+  let confirmationToken: string | undefined;
+  if (value.confirmationToken !== undefined) {
+    if (typeof value.confirmationToken !== "string" || value.confirmationToken.length === 0
+      || Buffer.byteLength(value.confirmationToken, "utf8") > 1_024) {
+      throw invalidMemoryRequest("confirmationToken must be a non-empty bounded string.");
+    }
+    confirmationToken = value.confirmationToken;
+  }
+  return {
+    expectedRevision: value.expectedRevision,
+    idempotencyKey: value.idempotencyKey,
+    ...(confirmationToken === undefined ? {} : { confirmationToken }),
+  };
+}
+
+function assertMemoryActionKeys(value: Record<string, unknown>, allowed: readonly string[]): void {
+  const unexpected = Object.keys(value).find((key) => !allowed.includes(key));
+  if (unexpected !== undefined) {
+    throw invalidMemoryRequest(`Unexpected memory action field: ${unexpected}.`);
+  }
+}
+
+function normalizeMemorySemanticText(value: unknown, name: string, maxCodePoints: number): string {
+  if (typeof value !== "string") throw invalidMemoryRequest(`${name} must be a string.`);
+  const normalized = value.normalize("NFKC").trim();
+  if (normalized.length === 0 || [...normalized].length > maxCodePoints
+    || INVALID_MEMORY_SEMANTIC_TEXT.test(normalized)
+    || (name === "patch.text" && normalized.includes("<!--mem"))) {
+    throw invalidMemoryRequest(`${name} is invalid or exceeds ${String(maxCodePoints)} Unicode code points.`);
+  }
+  return normalized;
+}
+
+function normalizeNullableMemoryCollection(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "string") {
+    throw invalidMemoryRequest("patch.collection must be a string or null.");
+  }
+  const normalized = value
+    .normalize("NFKC")
+    .trim()
+    .toLocaleLowerCase("en-US")
+    .replace(/[ _]+/gu, "-");
+  if (normalized.length === 0 || [...normalized].length > MAX_MEMORY_COLLECTION_CODE_POINTS
+    || !MEMORY_COLLECTION.test(normalized)) {
+    throw invalidMemoryRequest("patch.collection must be a bounded slug or null.");
+  }
+  return normalized;
+}
+
+function nullableMemoryTimestamp(value: unknown, name: string): string | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "string") throw invalidMemoryRequest(`${name} must be an exact ISO timestamp or null.`);
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds) || new Date(milliseconds).toISOString() !== value) {
+    throw invalidMemoryRequest(`${name} must be an exact ISO timestamp or null.`);
+  }
+  return value;
+}
+
+function invalidMemoryRequest(message: string): WebConsoleError {
+  return new WebConsoleError("invalid_request", message, 400);
+}
+
 function parseCronAction(value: unknown): {
   readonly idempotencyKey: string;
   readonly confirmationToken?: string;
@@ -1400,6 +1776,10 @@ function formatSse(event: WebEvent): string {
 
 function isMutation(method: string): boolean {
   return method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+}
+
+function isMemoryApiRequest(req: Request): boolean {
+  return /^\/api\/v1\/agents\/[^/]+\/memory(?:\/|\?|$)/u.test(req.originalUrl);
 }
 
 function normalizePort(value: number): number {

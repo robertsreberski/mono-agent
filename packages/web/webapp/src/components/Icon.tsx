@@ -15,7 +15,9 @@ export type IconName =
   | "eye"
   | "eye-off"
   | "file"
+  | "graph"
   | "menu"
+  | "memory"
   | "more"
   | "new"
   | "quote"
@@ -86,7 +88,21 @@ const paths: Record<IconName, React.ReactNode> = {
       <path d="M14 3v5h5M9 13h6M9 17h5" />
     </>
   ),
+  graph: (
+    <>
+      <circle cx="6" cy="7" r="2.5" />
+      <circle cx="18" cy="6" r="2.5" />
+      <circle cx="12" cy="18" r="2.5" />
+      <path d="m8.3 7 7.2-.8M7.4 9.1l3.3 6.6M16.7 8.1l-3.4 7.6" />
+    </>
+  ),
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,
+  memory: (
+    <>
+      <path d="M8 5.5a3 3 0 0 1 5.2-2A3.5 3.5 0 0 1 18 8a3.5 3.5 0 0 1 .1 6.8A3.5 3.5 0 0 1 13 19a3 3 0 0 1-5.2-.5A3.5 3.5 0 0 1 6 12a3.5 3.5 0 0 1 2-6.5Z" />
+      <path d="M9 8.5c1 .1 1.8.6 2.2 1.5M15.5 8.5c-1 .1-1.8.6-2.2 1.5M12 10v7" />
+    </>
+  ),
   more: <path d="M5 12h.01M12 12h.01M19 12h.01" />,
   new: <path d="M12 5v14M5 12h14" />,
   quote: (

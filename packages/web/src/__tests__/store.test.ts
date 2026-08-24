@@ -1741,6 +1741,30 @@ describe("WebStore", () => {
     expect(processJobCards).toBeDefined();
   });
 
+  it("keeps live memory inventory out of schema v9 and persisted agent summaries", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const databasePath = store.paths.database;
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.listAgents()[0]).not.toHaveProperty("memory");
+    reopened.close();
+
+    const inspected = new DatabaseSync(databasePath);
+    const version = inspected.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+    const tables = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+      .all() as unknown as Array<{ readonly name: string }>;
+    const agentColumns = inspected.prepare("PRAGMA table_info(agents)").all() as unknown as Array<{ readonly name: string }>;
+    inspected.close();
+    expect(version.user_version).toBe(9);
+    expect(tables.map((row) => row.name).some((name) => name.includes("memory"))).toBe(false);
+    expect(agentColumns.map((column) => column.name).some((name) => name.includes("memory"))).toBe(false);
+  });
+
   it("migrates schema v6 state through v9 conversation workspace storage", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
