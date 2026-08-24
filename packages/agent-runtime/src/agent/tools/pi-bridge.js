@@ -4,6 +4,7 @@ import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
@@ -730,6 +731,9 @@ async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, 
       retainedByMcpApps: false,
       privateCapabilityUrl,
       closed: false,
+      // AbortControllers for calls currently on the wire. Teardown aborts these
+      // BEFORE closing so the server is told to stop — see closeConnectedMcpClient.
+      inFlight: new Set(),
     };
   } catch (error) {
     try { await transport?.close?.(); } catch { /* best-effort */ }
@@ -905,6 +909,25 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
         parameters: sourceTool.inputSchema || /** @type {any} */ (sourceTool).input_schema || objectSchema({}),
         async execute(toolCallId, params, signal) {
           if (signal?.aborted) throw new Error("tool execution aborted");
+          // OWN this request's abort signal rather than forwarding the caller's
+          // directly, so run teardown can cancel the call ON THE WIRE. The SDK
+          // turns an abort into `notifications/cancelled`; closing the client
+          // only rejects the caller locally (Protocol._onclose) and then
+          // SIGTERM/SIGKILLs a stdio child with its request still outstanding —
+          // which is how a proxy's upstream work was left dangling in #664.
+          const callAbort = new AbortController();
+          const forwardAbort = () => callAbort.abort(signal?.reason);
+          signal?.addEventListener("abort", forwardAbort, { once: true });
+          const inFlight = { controller: callAbort, label: `${serverName}:${sourceTool.name}` };
+          connected.inFlight.add(inFlight);
+          try {
+            return await callMcpTool();
+          } finally {
+            connected.inFlight.delete(inFlight);
+            signal?.removeEventListener("abort", forwardAbort);
+          }
+
+          async function callMcpTool() {
           const textLimit = limits.mcpTextLimitChars || MCP_TEXT_RESULT_LIMIT;
           const imageInlineMaxBytes = limits.imageInlineMaxBytes ?? MCP_IMAGE_INLINE_MAX_BYTES;
           const normalizedParams = normalizeMcpToolParams(serverName, sourceTool.name, params || {}, { qaOutputDir, ctx });
@@ -950,7 +973,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
               timeout: mcpCallTimeoutMs,
               resetTimeoutOnProgress: true,
               maxTotalTimeout: mcpCallMaxTotalTimeoutMs,
-              signal,
+              signal: callAbort.signal,
               onprogress,
             },
           ).catch((error) => {
@@ -962,7 +985,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
           const out = await withTimeout(
             request,
             mcpCallTimeoutMs,
-            signal,
+            callAbort.signal,
             `${serverName}:${sourceTool.name}`,
             (reset) => {
               resetInactivityTimeout = reset;
@@ -1013,6 +1036,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
               } : {}),
             },
           };
+          }
         },
       });
     }
@@ -1104,15 +1128,30 @@ async function registerMcpAppForToolResult({
   const connection = {
     connectionId: connected.connectionId,
     readResource: async (uri) => await connected.client.readResource({ uri }),
-    callTool: async (name, args, signal) => await connected.client.callTool(
-      { name, arguments: args && typeof args === "object" && !Array.isArray(args) ? args : {} },
-      undefined,
-      {
-        timeout: 120_000,
-        maxTotalTimeout: 120_000,
-        ...(signal ? { signal } : {}),
-      },
-    ),
+    // Same in-flight registration as the tool path: a retained MCP App
+    // connection torn down mid-call must cancel on the wire, not be closed out
+    // from under the request. See closeConnectedMcpClient.
+    callTool: async (name, args, signal) => {
+      const callAbort = new AbortController();
+      const forwardAbort = () => callAbort.abort(signal?.reason);
+      signal?.addEventListener("abort", forwardAbort, { once: true });
+      const inFlight = { controller: callAbort, label: `${serverName}:${name}` };
+      connected.inFlight.add(inFlight);
+      try {
+        return await connected.client.callTool(
+          { name, arguments: args && typeof args === "object" && !Array.isArray(args) ? args : {} },
+          undefined,
+          {
+            timeout: 120_000,
+            maxTotalTimeout: 120_000,
+            signal: callAbort.signal,
+          },
+        );
+      } finally {
+        connected.inFlight.delete(inFlight);
+        signal?.removeEventListener("abort", forwardAbort);
+      }
+    },
     close: async () => {
       connected.retainedByMcpApps = false;
       await closeConnectedMcpClient(connected, 5_000);
@@ -1176,9 +1215,36 @@ function selectMcpAppResource(response, resourceUri) {
   };
 }
 
+/**
+ * Cancel every call still on the wire, then close.
+ *
+ * Order matters. `Protocol._onclose` rejects pending requests LOCALLY with
+ * ConnectionClosed and never notifies the server, and StdioClientTransport then
+ * escalates stdin.end -> SIGTERM -> SIGKILL — so closing first kills a stdio
+ * proxy mid-request with its upstream work still outstanding, and the caller
+ * gets a bare "Connection closed" that cannot be told apart from a server that
+ * died on its own. Aborting first makes the SDK emit `notifications/cancelled`
+ * so the server can unwind, and rejects the caller with a sentence naming the
+ * server and tool. See mono-agent#664.
+ */
+function cancelInFlightMcpCalls(connected) {
+  const pending = connected?.inFlight;
+  if (!pending || pending.size === 0) return;
+  for (const entry of [...pending]) {
+    try {
+      entry.controller.abort(new McpError(
+        ErrorCode.ConnectionClosed,
+        `${entry.label} was cancelled because its MCP connection was torn down.`,
+      ));
+    } catch { /* best-effort */ }
+  }
+  pending.clear();
+}
+
 async function closeConnectedMcpClient(connected, timeoutMs) {
   if (!connected || connected.closed === true) return;
   connected.closed = true;
+  cancelInFlightMcpCalls(connected);
   const { client, transport } = connected;
   try { await closeWithTimeout(client?.close?.bind(client), timeoutMs); } catch { /* best-effort */ }
   try { await closeWithTimeout(transport?.close?.bind(transport), timeoutMs); } catch { /* best-effort */ }

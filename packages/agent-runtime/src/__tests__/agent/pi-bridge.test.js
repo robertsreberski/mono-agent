@@ -554,12 +554,116 @@ describe("pi MCP tool helpers", () => {
       // inactivity timeout — otherwise progress-based keep-alive could never
       // extend a call past the inactivity cap.
       expect(requestOptions).toMatchObject({ timeout: 90000, maxTotalTimeout: 2_700_000 });
-      // The abort signal is forwarded so a cancelled/timed-out call also cancels the SDK request.
-      expect(requestOptions.signal).toBe(ac.signal);
+      // A signal DERIVED from the caller's is forwarded (not the caller's own),
+      // so run teardown can cancel this one call without touching the caller's.
+      // Forwarding in both directions is covered by the two tests below.
+      expect(requestOptions.signal).toBeInstanceOf(AbortSignal);
+      expect(requestOptions.signal).not.toBe(ac.signal);
     } finally {
       connectSpy.mockRestore();
       listSpy.mockRestore();
       callSpy.mockRestore();
+    }
+  });
+
+  it("forwards a caller abort to the SDK request while the call is on the wire", async () => {
+    const connectSpy = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const listSpy = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+      tools: [{ name: "slow_thing", description: "d", inputSchema: { type: "object", properties: {} } }],
+    });
+    let observedSignal = null;
+    let sawCall = null;
+    const callStarted = new Promise((resolve) => { sawCall = resolve; });
+    const callSpy = vi
+      .spyOn(McpClient.prototype, "callTool")
+      .mockImplementation(async (_params, _schema, requestOptions) => {
+        observedSignal = requestOptions?.signal ?? null;
+        sawCall();
+        return await new Promise((_resolve, reject) => {
+          observedSignal?.addEventListener("abort", () => {
+            reject(observedSignal.reason ?? new Error("aborted"));
+          }, { once: true });
+        });
+      });
+    try {
+      const { tools } = await initPiMcpTools(
+        { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+        new Set(),
+        {},
+      );
+      const tool = tools.find((entry) => entry.name === "slow_thing");
+      const ac = new AbortController();
+      const settled = tool.execute("call-1", {}, ac.signal).then(
+        () => ({ ok: true }),
+        (error) => ({ ok: false, error }),
+      );
+      await callStarted;
+      expect(observedSignal.aborted).toBe(false);
+
+      ac.abort(new Error("caller went away"));
+
+      expect(observedSignal.aborted).toBe(true);
+      expect((await settled).ok).toBe(false);
+    } finally {
+      connectSpy.mockRestore();
+      listSpy.mockRestore();
+      callSpy.mockRestore();
+    }
+  });
+
+  // mono-agent#664: a run torn down mid-`tools/call` used to close the client
+  // straight out from under the in-flight request. The MCP SDK rejects the
+  // caller locally on close, but never tells the SERVER — so a stdio proxy is
+  // SIGTERM/SIGKILLed mid-request with its upstream work still outstanding.
+  // Cancelling first sends `notifications/cancelled` so the server can unwind.
+  it("cancels in-flight MCP calls on the wire before tearing the client down", async () => {
+    const connectSpy = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const listSpy = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+      tools: [{ name: "slow_thing", description: "d", inputSchema: { type: "object", properties: {} } }],
+    });
+    let observedSignal = null;
+    let sawCall = null;
+    const callStarted = new Promise((resolve) => { sawCall = resolve; });
+    const callSpy = vi
+      .spyOn(McpClient.prototype, "callTool")
+      .mockImplementation(async (_params, _schema, requestOptions) => {
+        observedSignal = requestOptions?.signal ?? null;
+        sawCall();
+        // Mirror the SDK: reject only when the request's own signal aborts.
+        return await new Promise((_resolve, reject) => {
+          observedSignal?.addEventListener("abort", () => {
+            reject(observedSignal.reason ?? new Error("aborted"));
+          }, { once: true });
+        });
+      });
+    const closeSpy = vi.spyOn(McpClient.prototype, "close").mockResolvedValue(undefined);
+    try {
+      const { tools, clients } = await initPiMcpTools(
+        { linear: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+        new Set(),
+        { limits: { mcpCallTimeoutMs: 120000 } },
+      );
+      const tool = tools.find((entry) => entry.name === "slow_thing");
+      const pending = tool.execute("call-1", {}, undefined);
+      // Keep the rejection observed from the first tick so teardown cannot
+      // surface as an unhandled rejection.
+      const settled = pending.then(() => ({ ok: true }), (error) => ({ ok: false, error }));
+      await callStarted;
+      expect(observedSignal?.aborted).toBe(false);
+
+      await closePiMcpClients(clients);
+
+      expect(observedSignal?.aborted).toBe(true);
+      const outcome = await settled;
+      expect(outcome.ok).toBe(false);
+      // Explainable and immediate, naming the server and tool — not a 120s silence.
+      expect(String(outcome.error?.message ?? outcome.error)).toContain("linear");
+      expect(String(outcome.error?.message ?? outcome.error)).toContain("slow_thing");
+    } finally {
+      connectSpy.mockRestore();
+      listSpy.mockRestore();
+      callSpy.mockRestore();
+      closeSpy.mockRestore();
     }
   });
 

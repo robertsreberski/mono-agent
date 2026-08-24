@@ -544,10 +544,18 @@ function wrapOwnedConfiguredRuntime(
         const protectedRoots = processJobsProtectionPolicyRoots(attested);
         let effectiveOptions = runOptions;
         if (protectedRoots.length > 0) {
-          if (!configuredRoutesOnlyPiNative(config, runOptions.model)) {
-            throw new Error(PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR);
+          const verdict = configuredRoutesOnlyPiNative(config, runOptions.model);
+          if (!verdict.ok) {
+            throw new Error(
+              `${PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR} Rejected the configured runtime chain: ${verdict.reason}.`,
+            );
           }
-          if (runOptions.model.sdk !== "pi") throw new Error(PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR);
+          if (runOptions.model.sdk !== "pi") {
+            throw new Error(
+              `${PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR} The configured runtime route ${
+                modelReferenceKey(runOptions.model)} is not Pi-native.`,
+            );
+          }
           const sandboxEngine = runOptions.sandboxEngine
             ?? configuredSandboxEngine
             ?? createSrtSandboxEngine();
@@ -803,7 +811,10 @@ function subagentsRuntimeOptions(
     if (childModel.sdk !== "pi"
       && (deps.processJobsProtectionPosture.requiresPiNative
         || sandboxPolicyCarriesProtectedRoots(request.sandboxPolicy))) {
-      throw new Error(PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR);
+      throw new Error(
+        `${PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR} The Agent child route ${
+          modelReferenceKey(childModel)} is not Pi-native.`,
+      );
     }
 
     return await runtime.run(childSystemPrompt, {
@@ -932,17 +943,41 @@ function fallbackChainForConfig(
   };
 }
 
+/**
+ * Whether every configured route reachable behind `primary` is Pi-native.
+ *
+ * Returns a VERDICT, not a bare boolean: this fails closed on an unresolvable
+ * chain, and a caller that turns `false` into a thrown
+ * PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR would otherwise emit the same opaque
+ * sentence for "could not resolve" as for "genuinely non-Pi" — the ambiguity
+ * that made mono-agent#664 undiagnosable from outside.
+ */
+type ConfiguredRoutesPiNativeVerdict =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: string };
+
 function configuredRoutesOnlyPiNative(
   config: MonoAgentConfig,
   primary: RuntimeModelReference,
-): boolean {
+): ConfiguredRoutesPiNativeVerdict {
+  let routes: readonly RuntimeModelReference[];
   try {
     const fallback = fallbackChainForConfig(config, { config, model: primary });
-    const routes = fallback.fallbackChain?.map((entry) => entry.model) ?? [primary];
-    return routes.length > 0 && routes.every((model) => model.sdk === "pi");
-  } catch {
-    return false;
+    routes = fallback.fallbackChain?.map((entry) => entry.model) ?? [primary];
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `the configured route chain could not be resolved (${
+        error instanceof Error ? error.message : String(error)})`,
+    };
   }
+  if (routes.length === 0) {
+    return { ok: false, reason: "the configured route chain is empty" };
+  }
+  const nonPi = routes.filter((model) => model.sdk !== "pi");
+  return nonPi.length === 0
+    ? { ok: true }
+    : { ok: false, reason: `non-Pi routes are reachable: ${nonPi.map(modelReferenceKey).join(", ")}` };
 }
 
 function sandboxPolicyCarriesProtectedRoots(policy: unknown): boolean {
@@ -1107,7 +1142,7 @@ async function createConfiguredAgentHarnessInternal(
     sandboxEngine,
     protectionPosture: processJobsProtectionPosture,
     routesOnlyPiNative: internalHooks.processJobs?.routesOnlyPiNative
-      ?? (() => configuredRoutesOnlyPiNative(config, model)),
+      ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
   });
   const subagents = subagentsRuntimeOptions(config, {
     runtime,
@@ -1209,7 +1244,7 @@ async function createConfiguredAgentHarnessInternal(
       channelId: internalHooks.processJobs?.channelId,
       conversationScheme: internalHooks.processJobs?.conversationScheme,
       routesOnlyPiNative: internalHooks.processJobs?.routesOnlyPiNative
-        ?? (() => configuredRoutesOnlyPiNative(config, model)),
+        ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
     }),
     ...(config.tools.mcpRequestContextServers === undefined
       ? {}
@@ -1800,7 +1835,6 @@ async function createConfiguredMemoryInternal(
     ),
     config,
     deps.cwd ?? process.cwd(),
-    protectionPosture,
   );
   const dim = embeddingsConfig?.dim ?? 768;
 
@@ -1885,7 +1919,7 @@ function configuredMemoryLlm(
     return wrapOwnedDirectMemoryLlm(bujo.createOllamaLlm({
       model: llmConfig.model,
       ...(llmConfig.endpoint !== undefined && { endpoint: llmConfig.endpoint }),
-    }), config, agentRoot, protectionPosture);
+    }), config, agentRoot);
   }
   const model = parseMonoRuntimeModelReference(llmConfig.model);
   const executionMode = llmConfig.executionMode ?? defaultExecutionModeForModel(model);
@@ -1954,7 +1988,12 @@ function wrapPerRunOwnedConfiguredRuntime(
         const protectedRoots = processJobsProtectionPolicyRoots(attested);
         let effectiveOptions = runOptions;
         if (protectedRoots.length > 0) {
-          if (runOptions.model.sdk !== "pi") throw new Error(PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR);
+          if (runOptions.model.sdk !== "pi") {
+            throw new Error(
+              `${PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR} The agent-host memory LLM route ${
+                modelReferenceKey(runOptions.model)} is not Pi-native.`,
+            );
+          }
           if (protectionPosture?.suppressSyntheticSandbox !== true) {
             const sandboxEngine = runOptions.sandboxEngine ?? createSrtSandboxEngine();
             if (!await sandboxEngine.isAvailable().catch(() => false)) {
@@ -1983,11 +2022,24 @@ function wrapPerRunOwnedConfiguredRuntime(
   };
 }
 
+/**
+ * The direct (non-agent-host) memory LLM executes outside the channel harness.
+ * Hold the same canonical-root owner and generation lease through the true
+ * complete() settlement so an out-of-harness provider call cannot outlive the
+ * protection generation it started under.
+ *
+ * A retained process-job root does NOT reject this provider. SRT confines the
+ * MODEL'S TOOL LOOP; the host process is already unconfined and already reads
+ * the private state dir. `LlmComplete` is a single `complete(prompt) => string`
+ * over HTTP with no tools and no filesystem access, so there is nothing here
+ * for confinement to protect — while rejecting it made `processJobs.enabled`
+ * mutually exclusive with the bujo/journal memory tiers (mono-agent#664). The
+ * lease, not the sandbox, is this seam's control.
+ */
 function wrapOwnedDirectMemoryLlm(
   llm: LlmComplete,
   config: MonoAgentConfig,
   agentRoot: string | undefined,
-  protectionPosture: ProcessJobsProtectionPosture | undefined,
 ): LlmComplete {
   return {
     ...llm,
@@ -2003,11 +2055,7 @@ function wrapOwnedDirectMemoryLlm(
         ownership.coordinator.synchronizeGeneration(loaded.generation);
         const boundary = await attestProcessJobsRootRegistrySnapshot(loaded, config.runtime.workspace);
         requestLease = ownership.coordinator.acquireRequestLease(boundary.generation);
-        const attested = await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
-        if (processJobsProtectionPolicyRoots(attested).length > 0
-          && protectionPosture?.suppressSyntheticSandbox !== true) {
-          throw new Error(PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR);
-        }
+        await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
         return await llm.complete(prompt, options);
       } finally {
         requestLease?.releaseAfterSettlement();
@@ -2020,14 +2068,19 @@ function wrapOwnedDirectMemoryLlm(
 /**
  * Configured embedding providers execute outside the channel harness. Hold the
  * same canonical-root owner and generation lease through the true embed()
- * settlement, and reject the non-Pi provider before invocation whenever a
- * retained process-job root makes native SRT confinement mandatory.
+ * settlement so an out-of-harness provider call cannot outlive the protection
+ * generation it started under.
+ *
+ * A retained process-job root does NOT reject this provider — see the sibling
+ * `wrapOwnedDirectMemoryLlm` doc for the reasoning. `embed(texts) =>
+ * number[][]` is one method with no model-steerable surface, and the bujo and
+ * journal tiers REQUIRE it, so rejecting it disabled memory outright under the
+ * safe posture (mono-agent#664).
  */
 function wrapOwnedDirectEmbeddingProvider(
   provider: ConfiguredEmbeddingProvider,
   config: MonoAgentConfig,
   agentRoot: string | undefined,
-  protectionPosture: ProcessJobsProtectionPosture | undefined,
 ): ConfiguredEmbeddingProvider {
   return {
     ...provider,
@@ -2043,11 +2096,7 @@ function wrapOwnedDirectEmbeddingProvider(
         ownership.coordinator.synchronizeGeneration(loaded.generation);
         const boundary = await attestProcessJobsRootRegistrySnapshot(loaded, config.runtime.workspace);
         requestLease = ownership.coordinator.acquireRequestLease(boundary.generation);
-        const attested = await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
-        if (processJobsProtectionPolicyRoots(attested).length > 0
-          && protectionPosture?.suppressSyntheticSandbox !== true) {
-          throw new Error(PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR);
-        }
+        await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
         return await provider.embed(texts);
       } finally {
         requestLease?.releaseAfterSettlement();

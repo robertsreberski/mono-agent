@@ -422,6 +422,11 @@ describe("validateMonoAgentFolder", () => {
     expect(sectionById(report, "process-jobs")).toMatchObject({ status: "ok" });
     expect(sectionById(report, "process-jobs").details.join("\n"))
       .toContain("State has not been initialized");
+    // mono-agent#664: the resolved protection posture must be visible on the
+    // SAFE path too, not only behind the unsafe opt-in — it is what decides
+    // whether retained roots are in force.
+    expect(sectionById(report, "process-jobs").details.join("\n"))
+      .toContain("Private-state protection:");
     expect(await pathExists(stateDir)).toBe(false);
   });
 
