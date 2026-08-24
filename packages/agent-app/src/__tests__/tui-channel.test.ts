@@ -2,7 +2,7 @@ import { realpath } from "node:fs/promises";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentMessageStream, AgentReplyPart, AgentRequestBase, AgentResponder, ProcessJobOperator, ProcessJobProjection, RunningChannel } from "@mono-agent/agent-contracts";
+import type { AgentMessageStream, AgentReplyPart, AgentRequestBase, AgentResponder, MemoryOperatorService, ProcessJobOperator, ProcessJobProjection, RunningChannel } from "@mono-agent/agent-contracts";
 import type { DiscoveredLocalModel, LocalProviderDefinition } from "@mono-agent/runtime-adapter";
 import type { TuiAdapterConfig, TuiAdapterInfo, TuiAdapterOptions, TuiAdapterStartResult } from "@mono-agent/operator-adapter";
 import type { DeliverWebNotificationInput } from "@mono-agent/web";
@@ -343,6 +343,42 @@ describe("tui channel driver — process jobs", () => {
     expect(captured.processJobsBearer).toBeUndefined();
   });
 
+  it("injects memory authority only through the private app-owned start path", async () => {
+    let captured: TuiAdapterOptions | undefined;
+    const driver = createTuiChannelDriver({
+      adapterFactory: async (options): Promise<TuiAdapterStartResult> => {
+        captured = options;
+        return {
+          url: "http://127.0.0.1:0",
+          baseUrl: "http://127.0.0.1:0/gui",
+          infoUrl: "http://127.0.0.1:0/gui/v1/info",
+          turnsUrl: "http://127.0.0.1:0/gui/v1/turns",
+          host: "127.0.0.1",
+          port: 0,
+          stop: async () => undefined,
+        };
+      },
+      discoverModels: async () => [],
+    });
+    const memory = { capability: () => ({}) } as unknown as MemoryOperatorService;
+    const memoryProvider = vi.fn(async () => memory);
+
+    const start = startAppOwnedTuiChannel(
+      driver,
+      baseInput(),
+      undefined,
+      memoryProvider,
+    );
+    if (start === undefined) throw new Error("expected the app-owned TUI start path");
+    await start;
+
+    expect(memoryProvider).toHaveBeenCalledOnce();
+    expect(captured?.memory).toBe(memory);
+
+    await driver.start(baseInput());
+    expect(captured?.memory).toBeUndefined();
+  });
+
   it("rejects an arbitrary driver that merely claims the TUI id from the owner path", () => {
     const start = vi.fn(async () => ({ summary: {}, stop: async () => undefined }));
     const impostor = {
@@ -358,9 +394,13 @@ describe("tui channel driver — process jobs", () => {
       get: async () => undefined,
       cancel: async () => { throw new Error("must not run"); },
     };
+    const memoryProvider = vi.fn(async () => {
+      throw new Error("must not run");
+    });
 
-    expect(startAppOwnedTuiChannel(impostor, baseInput(), processJobs)).toBeUndefined();
+    expect(startAppOwnedTuiChannel(impostor, baseInput(), processJobs, memoryProvider)).toBeUndefined();
     expect(start).not.toHaveBeenCalled();
+    expect(memoryProvider).not.toHaveBeenCalled();
   });
 
   it("passes the owner bearer and wakes one existing web thread through a normal history turn", async () => {

@@ -19,7 +19,8 @@ Catalog responsibility: Defines shared structural request/response contracts plu
 ## Responsibility
 
 Define the structural request, response, stream, in-flight follow-up,
-channel-driver, process-job projection, and memory contracts that packages can implement independently. It also owns
+channel-driver, process-job projection, memory-store, and sanitized
+memory-operator contracts that packages can implement independently. It also owns
 small dependency-free helpers for settings JSON, JSON-to-env mapping, safe
 network binding, bearer tokens, attachments, and stream framing.
 
@@ -105,6 +106,14 @@ Cron detail projections retain all 20 records. Compact cron summaries retain
 the first eight in stable part order so a maximum 100-run page remains below
 the operator response ceiling.
 
+`MemoryOperatorService` is deliberately separate from `MemoryStore`. It gives
+an owner client sanitized capability, overview, record/detail, action-history,
+graph, and operation projections without exposing a store implementation.
+Mutations carry both an optimistic `expectedRevision` and an `idempotencyKey`;
+forget may return a `MemoryOperatorConfirmation`, while accepted edit, forget,
+and restore calls return a pollable `MemoryOperatorOperation`. The contract has
+no path, raw-vector, provider-error, or internal-queue field.
+
 ## Architecture
 
 ### Data flow
@@ -141,6 +150,7 @@ Primary modules:
 | Message delivery | `buffered-message-stream.ts`, `resilient-message-stream.ts`, `stream-text.ts`, `tool-hints.ts` | Collect or safely adapt incremental output and format bounded activity copy. |
 | Process transport | `stream-wire.ts` | NDJSON stream frames for operator clients. |
 | Process-job projection | `process-jobs.ts` | Neutral lifecycle/error enums, stable public safety/cleanup messages, strict secret-free projection parsers, and the owner-authorized operator interface. |
+| Memory operator | `memory-operator.ts` | Sanitized capability/record/graph/action DTOs, optimistic revision and idempotency inputs, stable errors, and the narrow owner service interface. |
 | Shared safety helpers | `host-safety.ts`, `bearer.ts`, `http-headers.ts`, `config-loader.ts`, `json-source.ts` | Safe binds, bounded HTTP shutdown/streaming, tokens, sanitized headers, layered config coercion, and settings files. |
 
 `ChannelId` is intentionally open so third-party drivers can choose an id.
@@ -150,6 +160,11 @@ caller supplies; concrete delivery policy remains with the adapter or host.
 Owner applications that expose authenticated job routes must compose that
 capability through their own private operator path rather than through the
 generic third-party channel contract.
+
+The memory operator follows the same ownership rule. Core contracts define its
+adapter-neutral DTOs, error codes, and narrow service interface, but they do not
+select a backend, enable actions, authenticate a transport, or persist an
+operation. Hosts and memory implementations own those decisions.
 
 `ResilientMessageStream` can keep answer deltas final-only while exposing tool
 starts in one transient cumulative status. Its shared formatter uses friendly
@@ -194,6 +209,7 @@ editing in place and never changes final-answer delivery.
 | Sanitize or validate reply-part delivery outcomes | `sanitizeReplyPartDeliveryOutcomes`, `isAgentReplyPartDeliveryOutcomes` |
 | Carry stream events across a process boundary | `AgentStreamWireFrame`, `serializeAgentStreamFrame`, `parseAgentStreamFrame` |
 | Exchange process-job state without kernel/app coupling | `ProcessJobProjection`, `ProcessJobState`, `ProcessJobErrorCode`, `parseProcessJobProjection`, `ProcessJobOperator`, `MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES` |
+| Exchange sanitized memory state and owner actions | `MemoryOperatorService`, `MemoryOperatorCapability`, `MemoryOperatorRecord`, `MemoryOperatorGraph`, `MemoryOperatorOperation`, `MemoryOperatorError` |
 | Load adapter settings safely | `readSettingsJson`, `writeSettingsJson`, `layerJsonOntoEnv` |
 | Protect an HTTP listener | `assertSafeBind`, `listen`, `generateBearerToken`, `readAuthorizationBearer` |
 
@@ -334,6 +350,35 @@ MemoryCompletedTurn
 MemoryCompletedTurnAdmissionStatus
 MemoryCompletedTurnResult
 MemoryLoadOptions
+MemoryOperatorActionHistoryItem
+MemoryOperatorActionInput
+MemoryOperatorBackend
+MemoryOperatorCapability
+MemoryOperatorCapabilityStatus
+MemoryOperatorConfirmation
+MemoryOperatorEditInput
+MemoryOperatorError
+MemoryOperatorErrorCode
+MemoryOperatorErrorDetails
+MemoryOperatorGraph
+MemoryOperatorGraphEdge
+MemoryOperatorGraphFidelity
+MemoryOperatorGraphNode
+MemoryOperatorGraphQuery
+MemoryOperatorLifecycle
+MemoryOperatorMutationAdmission
+MemoryOperatorOperation
+MemoryOperatorOperationStatus
+MemoryOperatorOverview
+MemoryOperatorRecord
+MemoryOperatorRecordDetail
+MemoryOperatorRecordPage
+MemoryOperatorRecordQuery
+MemoryOperatorRecordStatus
+MemoryOperatorRecordType
+MemoryOperatorSemanticPatch
+MemoryOperatorService
+MemoryOperatorTier
 MemoryStore
 MemoryWriteResult
 MessageRef
@@ -459,6 +504,7 @@ It does not normalize transport messages, run model providers, build prompts, pe
 - [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/)
 - [Custom channel drivers](https://mono-agent-docs.vercel.app/programmatic/custom-channels/)
 - [Runtime, tools, and guard boundaries](https://mono-agent-docs.vercel.app/runtime/tools-and-guards/)
+- [Memory operator](https://mono-agent-docs.vercel.app/memory/operator/)
 - [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-contracts)
 

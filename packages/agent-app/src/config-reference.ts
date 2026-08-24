@@ -1341,6 +1341,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "memory.llm.trace": true,
     "memory.llm.timeoutMs": 60_000,
     "memory.recallTool.enabled": true,
+    "memory.operatorActions.enabled": false,
     "memory.consolidation.enabled": true,
     "memory.consolidation.cron": "0 */2 * * *",
     "tools.allowedTools": [ALLOW_ALL_TOOLS],
@@ -1538,6 +1539,9 @@ function descriptionFor(id: string): string {
   }
   if (id === "memory.embeddings.provider") {
     return "Embedding service used by Journal/BuJo memory: ollama, lmstudio, or openai.";
+  }
+  if (id === "memory.operatorActions.enabled") {
+    return "Allows API-key-authenticated, revision-checked and idempotent memory edit, forget, and restore actions. Defaults off; the web console additionally enforces exact same-origin proxying, while read-only inspection remains available.";
   }
   if (id === "memory.embeddings.endpoint") {
     return "Provider service root. LM Studio uses <root>/v1/embeddings and defaults to http://localhost:1234.";

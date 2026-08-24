@@ -13,11 +13,18 @@ export interface CanonicalGraphReplacementSupport {
   readonly createdAt: string;
 }
 
+export interface CanonicalGraphSemanticCollection {
+  readonly memoryId: string;
+  readonly collection: string;
+}
+
 export interface CanonicalGraphReplacement {
   readonly entities: readonly EntityRecord[];
   readonly relations: readonly EntityRelationRecord[];
   readonly associations: readonly MemoryEntityAssociation[];
   readonly supports: readonly CanonicalGraphReplacementSupport[];
+  /** Collection values explicitly encoded in canonical memory bullets. */
+  readonly semanticCollections?: readonly CanonicalGraphSemanticCollection[];
 }
 
 /** Store-local shape used by the BuJo replay-projection authority. */

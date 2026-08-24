@@ -56,6 +56,7 @@ import { consolidateBujoMemory, type ConsolidateResult } from "./consolidate.js"
 import { writeFutureLog } from "./projections.js";
 import { listCanonicalFileNames, readCanonicalFileSnapshot } from "./path-safety.js";
 import type { Bullet, BujoLogger, BujoOptions, BujoTier } from "./types.js";
+import type { BujoMemoryOperatorEngine } from "./operator-service.js";
 import { BoundedBatchQueue, type BackgroundQueueSnapshot, type QueueJob } from "./queue.js";
 import {
   BUJO_RUNTIME_SNAPSHOT_STALE_AFTER_MS,
@@ -740,6 +741,21 @@ export class BujoMemoryStore implements MemoryStore {
     };
   }
 
+  /** @internal Same-store capability used by the built-in operator factory. */
+  operatorEngine(): BujoMemoryOperatorEngine {
+    this.assertOpen("operator service");
+    return {
+      root: this.root,
+      tier: this._tier,
+      db: this.db,
+      clock: this.clock,
+      nextId: this.nextId,
+      runMutation: async <T>(run: (abortSignal: AbortSignal) => Promise<T>): Promise<T> =>
+        await this.runAdmittedMutation("operator action", run),
+      flush: async (): Promise<void> => await this.flush(),
+    };
+  }
+
   /**
    * Explicit legacy capture primitive for direct callers. It distills the turn text into atomic
    * candidate memories, reconciles them against the existing index, and extracts graph entities.
@@ -787,7 +803,7 @@ export class BujoMemoryStore implements MemoryStore {
 
   /** Refresh derived projections and report duplicates without changing memory state. */
   async consolidate(): Promise<ConsolidateResult> {
-    return await this.runAdmittedWrite("consolidate", async (abortSignal) => {
+    return await this.runAdmittedMutation("consolidate", async (abortSignal) => {
       abortSignal.throwIfAborted();
       return await consolidateBujoMemory({
         root: this.root,

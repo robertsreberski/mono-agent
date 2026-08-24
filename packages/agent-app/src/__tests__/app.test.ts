@@ -994,6 +994,81 @@ describe("startMonoAgentApp", () => {
     }
   });
 
+  it("preflights malformed operator state before any channel can admit a provider turn", async () => {
+    const memoryRoot = join(dir, ".mono-agent", "memory");
+    const ledger = join(memoryRoot, ".memory-operator-v1.json");
+    await mkdir(memoryRoot, { recursive: true });
+    await writeFile(ledger, "not-json\n", { mode: 0o600 });
+    await writeConfig({
+      ...baseConfig(),
+      memory: {
+        backend: "bujo",
+        mode: "lite",
+        path: "./.mono-agent/memory",
+        writeMode: "append-host-summary",
+        operatorActions: { enabled: true },
+      },
+    });
+    const runtimeRun = vi.fn(async (): Promise<RuntimeResult> => ({ text: "provider reached" }));
+    const capturedResponders: AgentResponder[] = [];
+    const admissionAtStart: string[] = [];
+    const driver = (id: string): ChannelDriver => ({
+      id: id as never,
+      label: id,
+      loadConfig: async () => ({ enabled: true }),
+      isConfigError: () => false,
+      start: async (input) => {
+        capturedResponders.push(input.responder);
+        try {
+          await input.responder.respond({
+            conversationId: `${id}:startup-probe`,
+            text: "must stay provider-zero",
+            abortSignal: new AbortController().signal,
+          }, { append: async () => undefined });
+          admissionAtStart.push("accepted");
+        } catch (error) {
+          admissionAtStart.push((error as { code?: string }).code ?? "unknown");
+        }
+        return { summary: { diagnostic: true }, stop: async () => undefined };
+      },
+    });
+    const drivers = [driver("probe-one"), driver("probe-two")];
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers, runtime: { run: runtimeRun } });
+    try {
+      expect(admissionAtStart).toEqual(["unavailable", "unavailable"]);
+      expect(runtimeRun).not.toHaveBeenCalled();
+      expect(capturedResponders).toHaveLength(2);
+      for (const current of drivers) {
+        expect(app.channelStatus(current.id)).toMatchObject({ kind: "degraded" });
+        expect((app as MonoAgentAppController).running.has(current.id)).toBe(true);
+      }
+      await expect(capturedResponders[0]!.respond({
+        conversationId: "probe-one:after-start",
+        text: "still blocked",
+        abortSignal: new AbortController().signal,
+      }, { append: async () => undefined })).rejects.toMatchObject({ code: "unavailable" });
+      expect(runtimeRun).not.toHaveBeenCalled();
+
+      await rm(ledger);
+      await expect(app.applyConfigChange("operator-integrity-recovery")).resolves.toMatchObject({
+        kind: "applied",
+      });
+      expect(capturedResponders).toHaveLength(4);
+      for (const current of drivers) {
+        expect(app.channelStatus(current.id)).toMatchObject({ kind: "running" });
+      }
+      await expect(capturedResponders.at(-1)!.respond({
+        conversationId: "probe-two:after-healthy-reload",
+        text: "provider may resume",
+        abortSignal: new AbortController().signal,
+      }, { append: async () => undefined })).resolves.toMatchObject({ text: "provider reached" });
+      expect(runtimeRun).toHaveBeenCalledOnce();
+    } finally {
+      await app.stop();
+    }
+  });
+
   it("reuses one cached audit across an acquired/saved/released session burst", async () => {
     await writeConfig(baseConfig());
     const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });

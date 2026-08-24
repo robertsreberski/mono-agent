@@ -108,6 +108,9 @@ function reconcileActionForIntent(action: CaptureIntentAction): ReconcileAction 
   if (action.kind === "supersede") {
     return { kind: "supersede", oldId: action.oldId, newId: action.newId };
   }
+  if (action.kind === "forget") {
+    throw new Error("memory-capture: operator-only forget entered the capture planner.");
+  }
   return { kind: action.kind, id: action.id };
 }
 

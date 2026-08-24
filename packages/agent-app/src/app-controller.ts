@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type {
   AgentResponder,
+  MemoryOperatorService,
+  MemoryStore,
   NotifyDeliveryContext,
   ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
@@ -16,7 +18,12 @@ import type {
 import { createSrtSandboxEngine } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
-import type { AppTraceDefaults, ResolvedExporter } from "./app-config.js";
+import {
+  isAppCoreConfigError,
+  loadAppCoreConfig,
+  type AppTraceDefaults,
+  type ResolvedExporter,
+} from "./app-config.js";
 import type { createConfiguredMemory } from "./configured-agent.js";
 import type { ConfiguredAgentSessionEvent } from "./configured-agent.js";
 import { resolveChannelDrivers } from "./channels.js";
@@ -55,6 +62,13 @@ import * as channelsOperations from "./app-controller-channels.js";
 import * as responderOperations from "./app-controller-responder.js";
 import * as memoryOperations from "./app-controller-memory.js";
 import * as processJobsOperations from "./app-controller-process-jobs.js";
+import {
+  closeMemoryOperator,
+  ensureMemoryOperatorService,
+  guardResponderWithMemoryAdmission,
+  degradeMemoryAdmission,
+  MemoryResponderAdmissionGate,
+} from "./memory-operator-lifecycle.js";
 import { assertUniqueProcessJobChannelSchemes } from "./process-job-channel-routing.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import {
@@ -218,6 +232,7 @@ async function startMonoAgentAppInternal(
       await startedController.startExporters("startup");
       await startedController.startContinuationServiceIfConfigured("startup");
       await startedController.startProcessJobsIfConfigured("startup");
+      await startedController.prepareMemoryOperatorForLifecycle();
     });
     startupPhases.services = roundedMilliseconds(
       (startupPhases.services ?? 0) + processJobsPreparationDuration,
@@ -369,6 +384,13 @@ export class MonoAgentAppController implements MonoAgentApp {
   sharedMemoryRetrieval: MemoryRetrievalService | undefined;
   sharedMemoryBuilt = false;
   sharedMemoryBuild: Promise<Awaited<ReturnType<typeof createConfiguredMemory>>> | undefined;
+  readonly memoryResponderGate = new MemoryResponderAdmissionGate();
+  memoryOperatorValue: (MemoryOperatorService & {
+    drain?(): Promise<void>;
+    close?(): Promise<void>;
+  }) | undefined;
+  memoryOperatorStore: MemoryStore | undefined;
+  memoryOperatorBuild: Promise<MemoryOperatorService | undefined> | undefined;
   configApplyTail: Promise<void> = Promise.resolve();
   stopped = false;
   // Interaction bridge (AskUser + tool progress): lazily started once and shared
@@ -677,6 +699,40 @@ export class MonoAgentAppController implements MonoAgentApp {
     processJobConversationScheme?: string,
   ): Promise<AgentResponder> {
     return responderOperations.buildResponder(this, coreConfig, channelId, processJobConversationScheme);
+  }
+
+  guardMemoryResponder(responder: AgentResponder): AgentResponder {
+    return guardResponderWithMemoryAdmission(responder, this.memoryResponderGate);
+  }
+
+  memoryOperatorService(coreConfig: MonoAgentConfig): Promise<MemoryOperatorService | undefined> {
+    return ensureMemoryOperatorService(this, coreConfig);
+  }
+
+  /**
+   * Establish memory-ledger integrity before a startup/reload publishes any
+   * listener. Invalid core config keeps the normal waiting-for-config posture;
+   * unexpected construction failures remain visible to the lifecycle caller.
+   */
+  async prepareMemoryOperatorForLifecycle(): Promise<void> {
+    try {
+      const coreConfig = await loadAppCoreConfig({
+        env: this.env,
+        cwd: this.cwd,
+        configPath: this.configReadPath,
+      });
+      await this.memoryOperatorService(coreConfig);
+    } catch (error) {
+      if (!isAppCoreConfigError(error)) throw error;
+    }
+  }
+
+  closeMemoryOperator(): Promise<void> {
+    return closeMemoryOperator(this);
+  }
+
+  degradeMemoryAdmission(reason?: string): void {
+    degradeMemoryAdmission(this, reason);
   }
 
   /**

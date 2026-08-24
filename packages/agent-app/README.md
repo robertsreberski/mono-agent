@@ -82,6 +82,10 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Preview, strictly audit, and safely maintain the configured memory backend
   from the same config/env resolution path via `mono-agent memory` (including
   provider-free strict health and payload-free intake inspect/retry/resolve).
+- Project the live built-in Lite, Journal, or BuJo store through a bounded,
+  provider-free memory operator. Owner edit/forget/restore remains disabled by
+  default, requires the actual BuJo tier plus an operator API key, and shares
+  one responder-draining lifecycle gate with config reload and shutdown.
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
   folders non-destructively.
 - Resolve local-first WebSearch/WebFetch settings into every runtime run and
@@ -606,6 +610,31 @@ Unexpected built-in audit failures use the stable `health_check_failed` issue,
 while durable work that exceeds its ownership grace uses `work_stalled`; both
 are fixed metadata-only classifications.
 
+The running host separately composes a sanitized memory operator for the TUI
+endpoint. Live built-in Lite, Journal, and BuJo stores support bounded overview,
+record, and history reads without an embedding or chat-model call; only the
+actual BuJo tier exposes its captured graph. Supermemory reports the v1 operator
+as unsupported. These owner projections contain canonical text and logical
+conversation provenance but exclude paths, raw vectors, provider errors,
+capture queues, and operation-ledger internals.
+
+Edit, forget, and restore require `memory.operatorActions.enabled: true`, a
+configured `tui.apiKey`, and the actual BuJo tier. The opt-in defaults to false
+and maps to `MONO_AGENT_MEMORY_OPERATOR_ACTIONS_ENABLED`. Every action uses an
+expected revision plus idempotency key and returns a durable receipt for exact
+polling. Edit is semantic replacement, forget alone requires a one-use
+confirmation and retains a tombstone, and restore creates a new active id while
+leaving that tombstone intact.
+
+An accepted action enters the same app-wide operation tail as reload and stop.
+The controller closes responder admission synchronously, stops memory rituals,
+drains active turns, applies and flushes the mutation, restarts rituals, and only
+then resumes admission. Recoverable conflicts can reopen the gate; unknown
+durability/replay failures, failed ritual restart, and failed reload degrade the
+channels and keep turn plus memory-operator admission closed until a successful
+full reload. Work that remains queued outside the mutation gate stays durable
+for the next start.
+
 Operator automation should use:
 
 ```bash
@@ -759,9 +788,14 @@ path:
 4. Publish traceability, exporter, sandbox, process-job, continuation, and memory-health
    state while the controller tracks channel states as `disabled`,
    `waiting_for_config`, `running`, `degraded`, or `failed`.
-5. On stop or reload, stop the transport first, then dispose its responder so
-   queued turns and warm provider sessions cannot outlive the config snapshot.
-6. For the managed macOS web console, publish the main and helper LaunchAgent
+5. Memory edit/forget/restore, reload, and stop share one serialized app
+   operation tail. Each pauses new responder admission and drains admitted
+   turns before replacing or mutating the live store; an uncertain lifecycle
+   outcome fails closed instead of reopening an uncoordinated responder.
+6. After that admission pause and drain, stop or reload tears down each
+   transport before disposing its responder so queued turns and warm provider
+   sessions cannot outlive the config snapshot.
+7. For the managed macOS web console, publish the main and helper LaunchAgent
    definitions as one composite-identity pair. The worker only wakes the helper;
    the helper alone rotates after stopped-writer proof under the web lifecycle
    lock and persists bounded recovery status.
@@ -770,12 +804,12 @@ path:
 
 | Area | Modules | Purpose |
 | --- | --- | --- |
-| Stable host facade | `app.ts`, `app-controller.ts`, `app-controller-*.ts`, `app-controller-types.ts` | Startup state plus narrow operation ports for status, reload, channel lifecycle, traceability, and teardown. |
+| Stable host facade | `app.ts`, `app-controller.ts`, `app-controller-*.ts`, `app-controller-types.ts`, `app-controller-operation-tail.ts` | Startup state plus narrow operation ports for status, serialized reload/mutation/stop, channel lifecycle, traceability, and teardown. |
 | Configured agent | `configured-agent.ts`, `app-controller-responder.ts` | Runtime, harness, memory, history, tools, and recorder composition. |
 | Channel integration | `channels.ts`, `channel-drivers/` | Built-in drivers plus config-loaded plugin resolution. |
 | Interaction and send tools | `interaction-bridge.ts`, `adapter-send-tools*.ts` | Structured `AskUser` state, channel sinks, progress, adapter-send tools, and bounded interaction-history projection. |
 | Operator CLI | `cli*.ts`, `jobs-command.ts`, `init.ts`, `doctor.ts`, `doctor-observability.ts`, `background*.ts`, `launchd*.ts`, `managed-web-logs.ts`, `web-*.ts` | Setup, focused validation sections, paired managed service/log lifecycle, process-job operation, and diagnostics. |
-| Host services | `run-history.ts`, `session-history.ts`, `request-scoped-mcp.ts`, `process-jobs*.ts`, `continuation*.ts`, `memory-*.ts` | Shared request-scoped guards, bounded prior-run/tool-lifecycle evidence, local process-job ownership/wake/recovery, durable continuations, and memory operations. |
+| Host services | `run-history.ts`, `session-history.ts`, `request-scoped-mcp.ts`, `process-jobs*.ts`, `continuation*.ts`, `memory-operator-lifecycle.ts`, `memory-*.ts` | Shared request-scoped guards, bounded prior-run/tool-lifecycle evidence, local process-job ownership/wake/recovery, durable continuations, provider-free memory projection, and responder-drained memory operations. |
 
 ## Public API
 
@@ -794,6 +828,12 @@ path:
 The web maintenance controller and publication helpers remain private CLI
 implementation details; this change adds no new package-level public API for
 that lifecycle.
+
+The live memory-operator service and its admission/drain coordinator are also
+app-private composition details rather than new `@mono-agent/agent-app` exports.
+Programmatic hosts still start the configured application through
+`startMonoAgentApp`; owner clients consume the capability-gated HTTP contract
+advertised by that host's TUI endpoint.
 
 <!-- public-api-inventory:start -->
 <!-- Generated by scripts/generate-public-api-docs.mjs. Do not edit by hand. -->
@@ -1000,6 +1040,7 @@ compose communication adapters; adapters never depend on it.
 - [Quickstart](https://mono-agent-docs.vercel.app/getting-started/quickstart/)
 - [Agent folder layout](https://mono-agent-docs.vercel.app/config/folder-layout/)
 - [Configuration blueprint](https://mono-agent-docs.vercel.app/config/blueprint/)
+- [Memory operator](https://mono-agent-docs.vercel.app/memory/operator/)
 - [CLI reference](https://mono-agent-docs.vercel.app/observability/cli-reference/)
 - [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/composition/)
 - [Channels](https://mono-agent-docs.vercel.app/channels/)

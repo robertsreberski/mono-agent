@@ -13,6 +13,26 @@ The always-on web console deliberately remains a single-owner surface without ap
 
 Webhook and OpenAI-compatible API listeners stay loopback-only unless explicit non-loopback opt-in is paired with a bearer key. A2A also defaults to loopback; public A2A deployments should require a bearer and terminate TLS at a reverse proxy. The repository-level [security policy](https://github.com/robertsreberski/mono-agent/blob/main/SECURITY.md) records vulnerability reporting and the manual local-secret cleanup checklist.
 
+The same default-on loopback operator endpoint can project a live built-in
+memory store. Those reads intentionally expose sanitized canonical memory text
+to the OS owner, but never paths, raw vectors, provider errors, or internal
+intake/action queues. When `tui.apiKey` is configured, the bearer protects reads
+as it does every other operator route; without one, reads retain the endpoint's
+loopback compatibility posture. Memory mutations are never keyless. Edit,
+forget, and restore require the actual BuJo tier, explicit
+`memory.operatorActions.enabled: true`, and a configured/presented `tui.apiKey`.
+The web console proxy additionally enforces its exact same-origin boundary; the
+underlying TUI endpoint itself does not treat an `Origin` header as identity.
+Supermemory is unsupported by this v1 operator. See [Memory operator](/memory/operator/).
+
+Memory mutation is also an app-lifecycle boundary. The host pauses new turns,
+drains already-admitted responders, and stops memory rituals before applying a
+canonical change. The mutation, config reload, and shutdown share one serialized
+operation tail, so store replacement cannot race an accepted action. Unknown
+durability/replay failure keeps responder and memory-operator admission closed
+and degrades running channels until a successful full reload; it does not fall
+back to an uncoordinated store.
+
 ## Readiness is stronger than credential detection
 
 The wizard keeps model discovery, credential detection, and verified readiness separate. After the explicit creation review, it makes one disposable no-tool call for every selected runtime route, in order, with a 90-second cloud or 240-second local deadline per route. A detected Codex or Claude login, or a credential in the Pi auth store, can skip a redundant login prompt but does not make a route ready. Provider failure, timeout, empty output, or any tool action fails that route.

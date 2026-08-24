@@ -25,7 +25,7 @@ export const MAX_REPLAY_PROJECTION_ENTRIES = 131_072;
 const MAX_REPLAY_PROJECTION_TEMPORARIES = 32;
 const REPLAY_PROJECTION_TEMP_RE = /^\.\.replay-projection-v1\.json-[a-f0-9-]{36}\.tmp$/u;
 
-export type ReplayProjectionAuthorityKind = "capture" | "migration" | "legacy-adoption";
+export type ReplayProjectionAuthorityKind = "capture" | "migration" | "operator" | "import" | "legacy-adoption";
 
 interface ReplayProjectionAuthority {
   readonly authorityKind: ReplayProjectionAuthorityKind;
@@ -977,7 +977,8 @@ function normalizeTimestamp(value: unknown, label: string): string {
 }
 
 function normalizeAuthorityKind(value: unknown): ReplayProjectionAuthorityKind {
-  if (value !== "capture" && value !== "migration" && value !== "legacy-adoption") {
+  if (value !== "capture" && value !== "migration" && value !== "operator"
+    && value !== "import" && value !== "legacy-adoption") {
     throw new Error("memory-replay-projection: invalid authority kind.");
   }
   return value;

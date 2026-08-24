@@ -20,7 +20,8 @@ Provides local memory building blocks through three explicit public subpaths.
 `@mono-agent/memory/store` owns SQLite persistence and retrieval,
 `@mono-agent/memory/search` owns embedding providers and circuit-breaking, and
 `@mono-agent/memory/bujo` owns the tiered Markdown/SQLite memory engine and its
-durable completed-turn workflow.
+durable completed-turn workflow plus the sanitized built-in memory-operator
+service.
 
 This package deliberately has **no root export**. Importing from
 `@mono-agent/memory` is unsupported; choose `/store`, `/search`, or `/bujo` so
@@ -85,6 +86,15 @@ retain their identity.
 The config-first guided wizard and provider-native model discovery/probe live in
 `@mono-agent/agent-app`, not this package.
 
+`createBujoMemoryOperatorService()` projects provider-free overview, record,
+terminal action-history, and graph DTOs from an already-open store. Lite and
+Journal are read-only and graph-unavailable. The actual BuJo tier can expose
+revision-checked, idempotent edit/forget/restore when `actionsEnabled` is true;
+forget alone returns a confirmation challenge. Direct embedders must provide a
+mutation gate that serializes these canonical writes with their own responder,
+maintenance, reload, and shutdown lifecycle. `@mono-agent/agent-app` supplies
+that gate for config-first hosts.
+
 ## Architecture
 
 ### Data flow
@@ -101,13 +111,25 @@ The normal write and read paths are:
 4. The store performs bounded FTS/vector retrieval and returns a `MemoryBlock`
    to the host.
 
+The operator path reads the same authoritative store without calling an
+embedding or chat provider. A semantic edit creates a replacement and
+supersedes the old record; forget retains a tombstone; restore creates a new
+active id. Each accepted action is persisted before it enters the caller's
+mutation gate and can recover its exact outcome after restart.
+Full terminal receipts are retained for up to 7 days and the newest 512
+entries, while compact idempotency commitments remain for up to 30 days within
+the aggregate 1,024-entry/4 MiB ledger bound. Pending work is never pruned. An
+exact replay after receipt compaction reports `replay_expired`; changed reuse of
+that key remains an `idempotency_conflict`. After the 30-day commitment expires,
+the key is reusable subject to the record's current revision and lifecycle.
+
 ### Package structure
 
 | Source area | Responsibility |
 | --- | --- |
 | `src/store/` | SQLite schema, FTS5/sqlite-vec indexes, graph projection, ranking, and low-level database maintenance. |
 | `src/search/` | Ollama, LM Studio, and OpenAI embedding clients plus the embedding circuit breaker. |
-| `src/bujo/` | Lite/Journal/BuJo tiers, canonical Markdown, durable intake, capture/reconciliation, recall composition, health, rebuild, rollback, and explicit forget/recovery. Rebuild source validation and SQLite writer fencing are isolated in `rebuild-source-validation.ts` and `rebuild-sqlite-safety.ts`. |
+| `src/bujo/` | Lite/Journal/BuJo tiers, canonical Markdown, durable intake, capture/reconciliation, recall composition, sanitized operator service/action ledger, health, rebuild, rollback, and explicit forget/recovery. Rebuild source validation and SQLite writer fencing are isolated in `rebuild-source-validation.ts` and `rebuild-sqlite-safety.ts`. |
 
 Run config-aware maintenance through `mono-agent memory <subcommand>` from the
 agent folder. The retired `memory-bujo` executable is no longer packaged.
@@ -295,6 +317,7 @@ supersede or merge records, rewrite canonical memories, or call a chat model.
 | Subpath | API | Use it for |
 | --- | --- | --- |
 | `@mono-agent/memory/bujo` | `createBujoMemoryStore` | Construct a Lite, Journal, or BuJo store for direct embedding. |
+| `@mono-agent/memory/bujo` | `createBujoMemoryOperatorService` | Project sanitized provider-free state and optional durable BuJo actions from an open store. |
 | `@mono-agent/memory/bujo` | `auditBujoMemoryHealth` | Produce the closed, provider-free built-in health report. |
 | `@mono-agent/memory/bujo` | `safeRebuildMemoryIndex` | Build and activate a validated side-by-side index generation. |
 | `@mono-agent/memory/search` | `createEmbeddingProvider` | Construct one Ollama, LM Studio, or OpenAI embedding provider. |
@@ -322,8 +345,12 @@ ApplyMemoryBundleImportOptions
 BUJO_MEMORY_HEALTH_SCHEMA_VERSION
 BUJO_RUNTIME_SNAPSHOT_SCHEMA_VERSION
 BUJO_RUNTIME_SNAPSHOT_STALE_AFTER_MS
+BuiltinMemoryOperatorService
 BujoMemoryHealthOptions
 BujoMemoryHealthReport
+BujoMemoryOperatorHooks
+BujoMemoryOperatorService
+BujoMemoryOperatorServiceOptions
 BujoMemoryStore
 BujoOptions
 BujoRuntimeCounters
@@ -403,6 +430,7 @@ MemoryHealthStatus
 MemoryModelError
 MemoryModelKind
 MemoryModelOutputError
+MemoryOperatorMutationGate
 MigrateDeps
 MigrateResult
 PrepareMemoryBundleImportOptions
@@ -425,6 +453,7 @@ auditCompletedTurnIntake
 captureTurn
 captureTurnStrict
 composeRecallBlock
+createBujoMemoryOperatorService
 createBujoMemoryStore
 createIdFactory
 createOllamaLlm
@@ -489,6 +518,7 @@ createEmbeddingProvider
 CanonicalGraphMemoryRecord
 CanonicalGraphReplacement
 CanonicalGraphReplacementSupport
+CanonicalGraphSemanticCollection
 CanonicalGraphSnapshot
 CanonicalGraphSupportEdge
 ContentHashRecord
@@ -508,6 +538,7 @@ MemoryEdgeKind
 MemoryEntityAssociation
 MemoryLoadOptions
 MemoryRecord
+MemoryRecordListOptions
 MemorySource
 MemoryStatus
 MemoryStore
@@ -531,12 +562,18 @@ This package may depend on core contracts and local persistence/search dependenc
 
 ## What This Package Does Not Own
 
-It does not own host configuration, backend selection, automatic `MemoryRecall` MCP wiring, external Supermemory storage, model runtime execution, communication channels, or run artifact persistence. `@mono-agent/agent-app` chooses which memory backend to build and wires the recall tool, while `@mono-agent/memory-supermemory` owns the external Supermemory backend.
+It does not own host configuration, operator authentication, app-wide responder
+admission, backend selection, automatic `MemoryRecall` MCP wiring, external
+Supermemory storage, model runtime execution, communication channels, or run
+artifact persistence. `@mono-agent/agent-app` chooses which memory backend to
+build, supplies the mutation lifecycle gate, and wires the recall tool, while
+`@mono-agent/memory-supermemory` owns the external Supermemory backend.
 
 ## Related Documentation
 
 - [Memory overview and tier selection](https://mono-agent-docs.vercel.app/memory/)
 - [Write modes, durable capture, and recall](https://mono-agent-docs.vercel.app/memory/capture-and-recall/)
+- [Memory operator](https://mono-agent-docs.vercel.app/memory/operator/)
 - [Embeddings](https://mono-agent-docs.vercel.app/memory/embeddings/)
 - [Validation and config-aware maintenance](https://mono-agent-docs.vercel.app/memory/validation-and-cli/)
 - [Built-in versus Supermemory backends](https://mono-agent-docs.vercel.app/memory/backends-comparison/)

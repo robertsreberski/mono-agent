@@ -120,6 +120,9 @@ new agent.
     "path": "./.mono-agent/memory",        // root directory for all tiers
     "writeMode": "capture",                // disabled | append-host-summary | capture (bujo tier or external backend)
     "maxBytes": 64000,
+    // Provider-free live built-in reads are automatic. Owner edit/forget/restore
+    // requires actual BuJo + tui.apiKey + this explicit default-off opt-in.
+    "operatorActions": { "enabled": false },
     "embeddings": {                        // required for journal and bujo
       "provider": "ollama",                // ollama | lmstudio | openai; exclusive, no fallback
       "model": "nomic-embed-text:v1.5",   // use exact :v1.5 tag (pull first with ollama pull)
@@ -138,7 +141,8 @@ new agent.
     // Consolidation runs in-app; no external cron or launchd needed.
     "consolidation": { "enabled": true, "cron": "0 */2 * * *" }, // default: every two hours
     // For backend: "supermemory", omit path/mode/embeddings/llm/consolidation
-    // and configure the external service instead. Keep API keys in env.
+    // and operatorActions; the memory operator is unsupported for this backend
+    // in v1. Configure the external service instead. Keep API keys in env.
     // "supermemory": {
     //   "baseUrl": "http://127.0.0.1:6767",
     //   Inline "apiKey" remains schema-compatible; source configs use apiKeyEnv.
@@ -446,6 +450,13 @@ mono-agent restart --clear-sessions  # restart AND purge persisted pi sessions (
 A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` / `--env-file` paths there. `start` prints the traceability source (Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts) and one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason. Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it) and run `mono-agent restart` to apply — there is no live browser re-apply.
 
 For BuJo capture and the effective `bujo` tier that runs scheduled consolidation, configure `memory.llm`. Use `provider: "ollama"` with a local Ollama chat model string and optional `endpoint`, or `provider: "agent-host"` with `model` as a normal SDK runtime model reference such as `pi:openai-codex:gpt-5.5` and `executionMode: "sdk"`. `endpoint` is Ollama-only, and CLI-backed refs such as `codex:gpt-5.5` are rejected for memory LLMs until runtimes can enforce no external actions. The same values can be supplied via `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`, and `MONO_AGENT_MEMORY_LLM_ENDPOINT`. Routine BuJo consolidation runs via the in-app scheduler; the standalone `memory-bujo` maintenance CLI was removed (use `mono-agent memory <subcommand>` from the agent folder). `agent-host` LLM capture is an in-app composition path that injects the `LlmComplete` implementation into the BuJo store.
+
+The live memory operator reads sanitized overview, record/history, and (for
+actual BuJo) captured graph data from built-in Lite, Journal, and BuJo without a
+provider call. `memory.operatorActions.enabled` defaults to `false` and maps to
+`MONO_AGENT_MEMORY_OPERATOR_ACTIONS_ENABLED`; edit, forget, and restore still
+require actual BuJo plus a configured `tui.apiKey`. Supermemory is unsupported
+by this v1 operator.
 
 For operator views, run `mono-agent tui` or `mono-agent web` from any directory once the agent is started. Both discover running agents via the trace-source registry. The TUI and assistant-ui web console chat over the default-on `tui` stream endpoint (`"tui": {"enabled": false}` opts out); on macOS, `mono-agent tui --configure` opens a persistent, visibly marked proposal-only SELF-CONFIG conversation against the managed background agent and must not be combined with `--local`. Approval, rejection, and no-change turns continue that session; only quitting exits it. `mono-agent web` is an always-on service namespace, binds `0.0.0.0:5050` by default, and has no app login; use `--loopback` to narrow it. Capable agents expose stable read-only cron channels there. Run-now and runtime enable controls remain hidden unless `tui.apiKey` is configured and `cron.operatorActions.enabled` is explicitly true; every mutation still requires confirmation, is agent-audited, and does not rewrite job config. The former read-only recorder command, package, and relay were removed; use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). The low-level `mono-agent-tui` bin also supports `--responder <file>` (embedded, an ESM module default-exporting an `AgentResponderLike` or exporting `createResponder(env, cwd, configJson)`) and `--url <baseUrl>` (direct connect).
 

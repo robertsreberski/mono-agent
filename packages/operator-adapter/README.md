@@ -1,7 +1,7 @@
 # @mono-agent/operator-adapter
 
-Serve the local bidirectional NDJSON operator protocol used by mono-agent's
-terminal and browser consoles.
+Serve the local bidirectional NDJSON operator protocol and bounded agent-owned
+operator projections used by mono-agent's terminal and browser consoles.
 
 ## Category
 
@@ -18,8 +18,10 @@ Catalog responsibility: Exposes the structured local TUI NDJSON endpoint used by
 
 This communication package exposes a host-provided responder over the `tui`
 HTTP lane. It accepts turns from `mono-agent tui` and `mono-agent web` while
-preserving structured `AgentStreamEvent` frames. The endpoint defaults to
-loopback and refuses a non-loopback bind unless the host explicitly opts in.
+preserving structured `AgentStreamEvent` frames. A host can also attach a
+structural memory-operator service for provider-free built-in memory reads and
+revision-checked BuJo mutations. The endpoint defaults to loopback and refuses
+a non-loopback bind unless the host explicitly opts in.
 
 ## Install / Usage
 
@@ -61,8 +63,9 @@ Keep bearer values out of source config when possible. Set
 
 - `GET {basePath}/v1/info` returns the wire `schema`, process id, and attachment
   capability. `capabilities.liveInput`, `capabilities.historyAppend`,
-  `capabilities.askUser`, `capabilities.askById`, and `capabilities.cron` are
-  advertised additively when their routes are supported. `capabilities.cron`
+  `capabilities.askUser`, `capabilities.askById`, `capabilities.cron`, and
+  `capabilities.memory` are advertised additively when their routes are
+  supported. `capabilities.cron`
   reports `status: "ready" | "degraded"` and separates read support from
   authenticated/agent-enabled actions. `jobs: true` is advertised only when a
   process-job operator and its independent owner bearer are both present. The wire
@@ -126,6 +129,29 @@ including the already-visible job prompt; it does not expose arbitrary config
 keys, credentials, or the console host's copy of the config file. If the cron
 overview itself fails, `/v1/info` remains a `200` liveness response and advertises
 cron as degraded with reads and actions unavailable.
+- `GET {basePath}/v1/memory`, `/v1/memory/records`,
+  `/v1/memory/records/:recordId`, and `/v1/memory/graph` - bounded, sanitized,
+  provider-free overview, record/history, and graph projections supplied by the
+  live agent-owned memory service. Lite and Journal support record reads;
+  captured graph reads require the actual BuJo tier. Supermemory is unsupported
+  in v1.
+- `PATCH {basePath}/v1/memory/records/:recordId` and paired `/forget` and
+  `/restore` routes - optimistic-revision, idempotent BuJo actions. Every
+  mutation requires a configured bearer plus host opt-in; forget alone uses a
+  one-use confirmation challenge.
+- `GET {basePath}/v1/memory/operations/:operationId` - exact durable mutation
+  receipt polling. There is no operation-list or internal-queue route.
+
+Memory reads follow the same compatibility posture: a configured operator API
+key protects them, while an unset key leaves them keyless on the default
+loopback endpoint. Memory mutations are never keyless. They are advertised and
+accepted only when the host supplies the actual BuJo service, explicitly enables
+`memory.operatorActions.enabled`, and configures the operator API key. The
+adapter forwards only the shared sanitized DTOs; paths, raw vectors, provider
+errors, capture queues, and operation-ledger internals never cross this route
+boundary. Unexpected memory failures become bounded stable errors rather than
+raw host exceptions.
+
 - `GET {basePath}/v1/jobs` and `GET {basePath}/v1/jobs/:jobId` - strict bounded
   process-job projections through an independent owner bearer. An app-hosted
   list keeps every queued, starting, and running projection plus a
@@ -150,9 +176,12 @@ agent even though current producers emit at most 256 KiB per frame. See
 1. The host passes an `AgentResponder` to `startTuiAdapter` and publishes the
    returned conversational base URL through its trace-source metadata.
 2. A TUI or web client reads `/v1/info` (including additive live skill, exact
-   ask, and cron capabilities when provided), submits a turn, consumes
+   ask, cron, and memory capabilities when provided), submits a turn, consumes
    structured NDJSON frames until `finish` or `error`, and may offer live input
    while that turn is active; disconnecting the turn stream aborts the request.
+3. When a host supplies `memory`, the adapter exposes only that structural
+   service's bounded capability/read/action contract. It does not open a store,
+   call a provider, or own mutation lifecycle serialization.
 
 Web ProcessJobs wakes carry `deliveryKey` on live-input requests and
 `processJobWakeDeliveryKey` on reserved fallback turns. The server validates
@@ -164,7 +193,7 @@ prompt, history, or JSON wire content.
 
 | Source module | Responsibility |
 | --- | --- |
-| [`tui/server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/tui/server.ts) | Conversational info, turn, live-input, cancel, pending/submitted `AskUser`, history-append, owner-authenticated process-job projection/cancel, attachment, and NDJSON framing routes. |
+| [`tui/server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/tui/server.ts) | Conversational info, turn, live-input, cancel, pending/submitted `AskUser`, history-append, cron, sanitized memory, owner-authenticated process-job projection/cancel, attachment, and NDJSON framing routes. |
 | [`tui/config.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/tui/config.ts) | `tui.*` JSON/env layering, validation, and secret redaction. |
 | [`index.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/index.ts) | Supported public package surface for the operator endpoint. |
 
@@ -176,6 +205,7 @@ prompt, history, or JSON wire content.
 | --- | --- |
 | `startTuiAdapter` | Expose a structural responder over the conversational operator protocol. |
 | `TuiAdapterInfo` | Advertise identity, model choices, model-specific effort support, context windows, and an optional bounded skill registry. |
+| `TuiAdapterOptions.memory` | Attach the host-owned sanitized memory capability/read/action service without giving the adapter store access. |
 | `loadTuiAdapterConfig` / `TUI_CONFIG_FIELDS` | Reuse the config-first host's `tui.*` validation and provenance metadata. |
 
 <!-- public-api-inventory:start -->
@@ -244,13 +274,15 @@ code. Hosts compose it with structural responders.
 ## What This Package Does Not Own
 
 It does not build prompts, run models, persist conversations, discover running
-agents, render operator UIs, implement replay/config views, or own TLS/public
+agents, render operator UIs, implement replay/config views, open a memory store,
+or own memory action admission/drain/recovery. It also does not own TLS/public
 deployment policy. The server binds loopback-only by default; exposing it beyond
 loopback is a host decision guarded by `allowNonLoopback`.
 
 ## Related Documentation
 
 - [Operator stream endpoint](https://mono-agent-docs.vercel.app/channels/tui/)
+- [Memory operator](https://mono-agent-docs.vercel.app/memory/operator/)
 - [Terminal UI](https://mono-agent-docs.vercel.app/observability/tui/)
 - [Always-on web console](https://mono-agent-docs.vercel.app/observability/web-console/)
 - [Artifacts and traces](https://mono-agent-docs.vercel.app/observability/artifacts-and-traces/)

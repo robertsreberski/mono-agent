@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-This page covers how `mono-agent validate` verifies memory configuration and liveness and how `mono-agent memory` audits and safely repairs the configured backend from an agent folder. It also explains the `memory.llm` provider choices (`ollama` vs `agent-host`) that the validator inspects. The standalone `memory-bujo` binary that used to run out-of-band maintenance against a memory root has been [removed](#memory-bujo-cli--removed) — every maintenance operation now runs config-aware through `mono-agent memory`.
+This page covers how `mono-agent validate` verifies memory configuration and liveness and how `mono-agent memory` audits and safely repairs the configured backend from an agent folder. It also explains the `memory.llm` provider choices (`ollama` vs `agent-host`) that the validator inspects. The standalone `memory-bujo` binary that used to run out-of-band maintenance against a memory root has been [removed](#memory-bujo-cli--removed) — every maintenance operation now runs config-aware through `mono-agent memory`. Live sanitized record inspection and opt-in semantic correction are a separate [memory operator](/memory/operator/) surface; they do not replace stopped-store rebuild, rollback, import, or bulk-forget maintenance.
 
 The memory subsystem **never silently downshifts**: invalid tier prerequisites and managed index-identity problems fail validation, while operational provider liveness problems appear explicitly as `waiting` in the Memory section. Run `mono-agent validate` before cutover, after changing the tier/provider/model/dimension, and after loading or pulling any model.
 
@@ -90,7 +90,7 @@ The app's startup and hourly artifact-retention sweep uses one shared three-slot
 
 `memory export` and `memory import` move a BuJo corpus between agents — for backup and machine migration, or to seed one agent from another. Both are built-in BuJo only.
 
-The bundle is a **directory**, not an archive, so no archive dependency enters the runtime; compress or copy it yourself. It contains `manifest.json` plus a `source/` tree shaped exactly like a memory root, holding only the canonical corpus: dated `daily/*.md` (including the supported root-legacy layout), `graph.jsonl`, and `.replay-projection-v1.json`. Managed generations, capture intake and outbox, and the derived `index.md`/`future-log.md` are never exported. `--include-extras` copies `audit/`, `monthly/`, and `legacy/` alongside for the operator; import never reads them, and `monthly/` in particular is excluded because a pending migrate decision replayed into another store would wedge its migration protocol.
+The bundle is a **directory**, not an archive, so no archive dependency enters the runtime; compress or copy it yourself. It contains `manifest.json` plus a `source/` tree shaped exactly like a memory root, holding only the canonical corpus: dated `daily/*.md` (including the supported root-legacy layout), `graph.jsonl`, and `.replay-projection-v1.json`. Managed generations, capture intake and outbox, the memory-operator action ledger, and the derived `index.md`/`future-log.md` are never exported. `--include-extras` copies `audit/`, `monthly/`, and `legacy/` alongside for the operator; import never reads them, and `monthly/` in particular is excluded because a pending migrate decision replayed into another store would wedge its migration protocol.
 
 Export preserves each file's permission mode and modification time at millisecond precision; both values are committed by the bundle tree fingerprint. Move a bundle with an attribute-preserving copy such as `cp -a` or `rsync -a`. A plain recursive copy can change those values and make verification fail. If an archive is required, use a pax-capable `tar` in pax format and preserve modes and times when extracting: traditional tar formats cannot represent subsecond mtimes, so they can destroy the millisecond identity the manifest verifies.
 
@@ -125,6 +125,7 @@ A canonical-only bundle is lossless for everything markdown owns and lossy for e
 | `content_hashes` | SQLite, Journal-only | Recomputed; must be empty for BuJo |
 | Vectors | SQLite | Re-embedded for the whole corpus |
 | `.capture-intake`, `.capture-outbox` | filesystem protocol | Not merged; both stores must be quiet |
+| `.memory-operator-v1.json` | agent-local durable action recovery | Not exported or merged; it is not canonical corpus |
 
 Preserved: id, type, status, text, salience, insight flag, `createdAt`, `dueAt`, `refs`, the `validTo`/`supersededBy`/`supersededAt` lifecycle and thread/supersedes/supports edges carried by the replay projection, and `collection`. Bullets are copied as their verbatim markdown blocks rather than re-serialized from records, which is why `refs` survives.
 

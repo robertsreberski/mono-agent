@@ -801,6 +801,20 @@
             }
           }
         },
+        "operatorActions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "description": "Allows API-key-authenticated, revision-checked and idempotent memory edit, forget, and restore actions. Defaults off; the web console additionally enforces exact same-origin proxying, while read-only inspection remains available.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": false
+            }
+          }
+        },
         "consolidation": {
           "type": "object",
           "additionalProperties": false,

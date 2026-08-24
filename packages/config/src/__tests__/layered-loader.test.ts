@@ -376,6 +376,23 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED).toBe("true");
   });
 
+  it("layers and validates memory.operatorActions.enabled", async () => {
+    const layered = layerJsonOntoEnv(
+      { memory: { mode: "lite", path: ".mono-agent/memory", operatorActions: { enabled: true } } },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_OPERATOR_ACTIONS_ENABLED).toBe("true");
+
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(path, JSON.stringify({
+      memory: { mode: "lite", path: ".mono-agent/memory", operatorActions: { enabled: "yes" } },
+    }), "utf8");
+    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_json",
+      details: { path: "memory.operatorActions.enabled" },
+    });
+  });
+
   it("translates the JSON memory.backend + supermemory block to env keys", () => {
     const layered = layerJsonOntoEnv(
       {

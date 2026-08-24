@@ -1144,6 +1144,7 @@ describe("loadMonoAgentConfig", () => {
       { MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama" },
       { MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest" },
       { MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED: "true" },
+      { MONO_AGENT_MEMORY_OPERATOR_ACTIONS_ENABLED: "true" },
       { MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED: "true" },
       { MONO_AGENT_MEMORY_CONSOLIDATION_CRON: "0 */2 * * *" },
     ]) {
@@ -1181,6 +1182,25 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "memory", MONO_AGENT_MEMORY_MODE: "journal" },
     })).toThrow(/requires an explicit memory\.embeddings/i);
+  });
+
+  it("defaults memory operator actions off and accepts an explicit opt-in", () => {
+    const disabled = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "memory", MONO_AGENT_MEMORY_MODE: "lite" },
+    });
+    expect(disabled.memory?.operatorActions).toEqual({ enabled: false });
+
+    const enabled = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "lite",
+        MONO_AGENT_MEMORY_OPERATOR_ACTIONS_ENABLED: "true",
+      },
+    });
+    expect(enabled.memory?.operatorActions).toEqual({ enabled: true });
   });
 
   it("lets MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED override the recallTool default in both directions", () => {

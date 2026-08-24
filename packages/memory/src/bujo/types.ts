@@ -16,6 +16,14 @@ export interface Bullet {
   readonly createdAt: string;
   readonly refs: readonly string[];
   readonly dueAt?: string;
+  /** Operator-authored semantic fields live in canonical Markdown, never only in SQLite. */
+  readonly validFrom?: string;
+  readonly tags?: readonly string[];
+  readonly collection?: string;
+  /** Logical provenance only. Filesystem provenance remains derived from the canonical source. */
+  readonly conversationId?: string;
+  /** The active status to reinstate when an operator restores a forgotten record. */
+  readonly priorStatus?: Exclude<MemoryStatus, "dropped" | "invalidated">;
 }
 
 export type BujoTier = "lite" | "journal" | "bujo";

@@ -223,6 +223,25 @@ exclusive and does not define fallback behavior. Changing provider, model, or
 dimension on an existing Journal/BuJo root requires the config-aware stopped
 `mono-agent memory rebuild` workflow.
 
+### Memory operator actions
+
+The memory block separates read-only operator inspection from owner mutations:
+
+```json
+{
+  "memory": {
+    "operatorActions": { "enabled": false }
+  }
+}
+```
+
+`memory.operatorActions.enabled` defaults to `false`; its environment mapping
+is `MONO_AGENT_MEMORY_OPERATOR_ACTIONS_ENABLED`. The resolved field opts into
+edit, forget, and restore only. It does not disable built-in provider-free
+inventory reads, configure operator authentication, or make a non-BuJo store
+writable. The host additionally requires the actual BuJo tier and a configured
+operator API key. Supermemory remains unsupported by the v1 memory operator.
+
 ### Provider sessions and conversation history
 
 Continuous provider sessions are configured under `runtime.session` (JSON: `{ "runtime": { "session": { "mode": "continuous", "idleTimeoutMs": 1800000 } } }`):
@@ -272,6 +291,11 @@ Configuration follows one deterministic pipeline:
 4. Consumers use `buildMonoAgentConfigView()` for source-aware display and
    `redactMonoAgentConfig()` before logging or exposing the resolved result.
 
+The source-aware Memory section reports **Operator actions** as `on` only for
+an explicit true value; the default and every absent value resolve to `off`.
+That config view is descriptive and does not claim the runtime's actual tier or
+operator-key gate has made actions available.
+
 ### Package structure
 
 | Module | Purpose |
@@ -294,6 +318,7 @@ Configuration follows one deterministic pipeline:
 | Read or write the JSON source | `readMonoAgentConfigJson`, `writeMonoAgentConfigJson` |
 | Display config provenance safely | `buildMonoAgentConfigView` |
 | Remove secret values before output | `redactMonoAgentConfig` |
+| Resolve the memory action opt-in and env mapping | `MonoAgentConfig.memory.operatorActions`, `MonoAgentConfigJson.memory.operatorActions`, `CONFIG_ENV_KEYS` |
 | Validate or present closed choices | `EFFORT_LEVELS`, `MEMORY_MODES`, `PERMISSION_MODES`, `ROUTE_SAFETY_MODES` |
 | Apply effort-keyword escalation | `detectEffortKeyword`, `maxEffortLevel`, `effortRank` |
 
@@ -403,6 +428,7 @@ It does not load Telegram, WhatsApp, Slack, or other adapter-specific credential
 - [Complete configuration blueprint](https://mono-agent-docs.vercel.app/config/blueprint/)
 - [Environment variable map](https://mono-agent-docs.vercel.app/config/env-vars/)
 - [Generated field reference](https://mono-agent-docs.vercel.app/config/reference/)
+- [Memory operator](https://mono-agent-docs.vercel.app/memory/operator/)
 - [Local-first web research](https://mono-agent-docs.vercel.app/tools/web-research/)
 - [Runtime and provider configuration](https://mono-agent-docs.vercel.app/runtime/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/config)

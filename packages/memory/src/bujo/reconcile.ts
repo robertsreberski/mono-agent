@@ -326,6 +326,7 @@ function commitPreparedActionsDurably(
 
 function intentCreatedAt(action: CaptureIntentAction): string {
   if (action.kind === "supersede") return action.at;
+  if (action.kind === "forget") return action.at;
   if (action.kind === "noop") return action.expected.bullet.createdAt;
   return action.record.createdAt;
 }
@@ -729,7 +730,12 @@ function recordFor(bullet: Bullet, root: string, now: Date): MemoryRecord {
     isInsight: bullet.isInsight,
     createdAt: bullet.createdAt,
     accessCount: 0,
-    tags: [],
-    source: { file: relative(root, dailyFilePath(root, now)) },
+    ...(bullet.validFrom === undefined ? {} : { validFrom: bullet.validFrom }),
+    tags: [...(bullet.tags ?? [])],
+    ...(bullet.collection === undefined ? {} : { collection: bullet.collection }),
+    source: {
+      file: relative(root, dailyFilePath(root, now)),
+      ...(bullet.conversationId === undefined ? {} : { session: bullet.conversationId }),
+    },
   };
 }

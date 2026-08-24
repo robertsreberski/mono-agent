@@ -13,8 +13,10 @@ import type { CanonicalMergeSnapshot } from "./rebuild.js";
 import {
   mergeReplayProjection,
   REPLAY_PROJECTION_FILE,
+  replayProjectionAuthorityId,
   serializeReplayProjection,
   type ReplayProjectionDelta,
+  type ReplayProjectionTerminal,
   type ReplayProjectionV1,
 } from "./replay-projection.js";
 
@@ -167,7 +169,12 @@ export function mergeCanonicalMemoryBundles(
   // must therefore be dropped just like its graph associations. Keeping even
   // one terminal or edge endpoint would apply lifecycle semantics from the
   // wrong memory and can make the written corpus unrebuildable.
-  const replay = filterSkippedReplayEntries(incoming.replay, skippedIds);
+  const replay = filterSkippedReplayEntries(
+    destination.replay,
+    incoming.replay,
+    skippedIds,
+    importedIds,
+  );
   const replayDelta = replay.delta;
   const mergedReplay = assertReplayMergeable(destination.replay, replayDelta);
 
@@ -225,10 +232,28 @@ interface FilteredReplayDelta {
 }
 
 function filterSkippedReplayEntries(
+  destination: ReplayProjectionV1,
   incoming: ReplayProjectionV1,
   skippedIds: ReadonlySet<string>,
+  importedIds: ReadonlySet<string>,
 ): FilteredReplayDelta {
-  const terminals = incoming.terminals.filter((entry) => !skippedIds.has(entry.id));
+  const destinationTerminals = new Map(destination.terminals.map((entry) => [entry.id, entry]));
+  const terminals = incoming.terminals
+    .filter((entry) => !skippedIds.has(entry.id))
+    .map((entry) => {
+      if (importedIds.has(entry.id)) return importedTerminal(entry);
+      if (entry.authorityKind !== "operator") return entry;
+
+      // The first cross-root import deliberately strips local operator restore
+      // authority. On an identical re-import, reproduce that same transformed
+      // terminal so the replay merge remains an exact no-op. A true self-import
+      // still sees the original operator terminal in the destination and keeps
+      // its local authority unchanged.
+      const transformed = importedTerminal(entry);
+      return exactTerminal(destinationTerminals.get(entry.id), transformed)
+        ? transformed
+        : entry;
+    });
   const supersedes = incoming.supersedes.filter(
     (entry) => !skippedIds.has(entry.src) && !skippedIds.has(entry.dst),
   );
@@ -240,6 +265,29 @@ function filterSkippedReplayEntries(
     skippedTerminals: incoming.terminals.length - terminals.length,
     skippedSupersedes: incoming.supersedes.length - supersedes.length,
     skippedThreads: incoming.threads.length - threads.length,
+  };
+}
+
+function exactTerminal(
+  left: ReplayProjectionTerminal | undefined,
+  right: ReplayProjectionTerminal,
+): boolean {
+  return left?.id === right.id
+    && left.at === right.at
+    && left.authorityKind === right.authorityKind
+    && left.authorityId === right.authorityId;
+}
+
+/** Imported operator forgets are historical evidence, never local restore authority. */
+function importedTerminal(terminal: ReplayProjectionTerminal): ReplayProjectionTerminal {
+  if (terminal.authorityKind !== "operator") return terminal;
+  return {
+    ...terminal,
+    authorityKind: "import",
+    authorityId: replayProjectionAuthorityId({
+      kind: "memory-bundle-import-terminal-v1",
+      terminal,
+    }),
   };
 }
 

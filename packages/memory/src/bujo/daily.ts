@@ -255,7 +255,10 @@ export function rewriteBullet(
   root: string,
   file: string,
   id: string,
-  patch: Partial<Pick<Bullet, "text" | "status" | "salience" | "isInsight" | "dueAt" | "refs">>,
+  patch: Partial<Pick<
+    Bullet,
+    "text" | "status" | "salience" | "isInsight" | "dueAt" | "refs" | "priorStatus"
+  >>,
 ): boolean {
   assertCanonicalDailySourcePath(file);
   const snapshot = readCanonicalFileSnapshot(root, file);

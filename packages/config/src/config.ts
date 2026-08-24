@@ -1145,6 +1145,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
       "MONO_AGENT_MEMORY_LLM_TRACE",
       "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
       "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED",
+      "MONO_AGENT_MEMORY_OPERATOR_ACTIONS_ENABLED",
       "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED",
       "MONO_AGENT_MEMORY_CONSOLIDATION_CRON",
     ].find((name) => normalizeOptionalString(env[name]) !== undefined);
@@ -1275,6 +1276,12 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     recallToolDefault,
     invalidEnv,
   );
+  const operatorActionsEnabled = readBoolean(
+    env.MONO_AGENT_MEMORY_OPERATOR_ACTIONS_ENABLED,
+    "MONO_AGENT_MEMORY_OPERATOR_ACTIONS_ENABLED",
+    false,
+    invalidEnv,
+  );
 
   return {
     backend,
@@ -1288,6 +1295,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     ...(embeddingsWithDim === undefined ? {} : { embeddings: embeddingsWithDim }),
     ...(llm === undefined ? {} : { llm }),
     recallTool: { enabled: recallToolEnabled },
+    operatorActions: { enabled: operatorActionsEnabled },
     ...(consolidation === undefined ? {} : { consolidation }),
   };
 }

@@ -43,6 +43,14 @@ mono-agent start
 
 Every channel the user asked for must report `running` with its endpoint facts; anything `failed` is a blocker, not a footnote.
 
+When owner memory actions are requested, confirm the resolved config view shows
+`memory.operatorActions.enabled: true` from the intended JSON or
+`MONO_AGENT_MEMORY_OPERATOR_ACTIONS_ENABLED` source, and that `tui.apiKey` is
+configured. This is not sufficient on its own: the live capability must also
+report the actual BuJo tier and `actions: true`. Lite and Journal support only
+provider-free sanitized reads, and Supermemory reports the v1 operator as
+unsupported.
+
 On macOS, managed start also installs a no-`KeepAlive` recovery helper that runs
 at login and every five minutes. It safely reconciles an inactive worker, a
 changed keyed snapshot, or a different available controller CLI closure without
@@ -127,6 +135,7 @@ pnpm run test:demo
 | Cron | Run a one-off scheduled invocation or wait for one tick. |
 | Observability | Confirm a run writes a JSONL artifact with strings capped: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; retained free text is scanned for a closed set of high-confidence credential shapes. If an `observability.exporters` Phoenix entry is set, confirm the trace appears in Phoenix. |
 | Memory recall tool | With any memory tier configured (`memory.recallTool.enabled` defaults on), ask the agent to recall an old note and confirm `MemoryRecall` appears separately from action-tool allowlists and returns it. |
+| Memory operator | On a running built-in store, read the bounded overview and one record without observing a provider request or any path/vector/queue fields. For actual BuJo with explicit action opt-in and `tui.apiKey`, submit an edit with revision/idempotency and poll its durable receipt; verify replacement uses a new id. Exercise forget's confirmation challenge and restore, verifying the tombstone remains and restore creates another active id. While an action runs, verify new turns close, admitted turns drain, and reload/stop serialize; an injected uncertain durability failure must keep turn/read/action admission closed until a successful reload. |
 | Session tool history | Complete a managed tool call, start a later cold turn in the same logical conversation, and confirm its bounded path-opaque call/result projection is available. After compaction, use `SessionHistory.search` then `get`; verify another conversation and the current run remain unavailable. A crash-dangling call must recover once as `interrupted` without rerun, while a clean writer shutdown must not be reported as crash recovery. |
 | Web research | Run `mono-agent validate` and require the Web search & fetch section to prove configured loopback SearXNG plus `agent-browser >=0.33.1` when rendering is enabled. Then ask for two query variants and one official-page fetch; require canonical ranked URLs, untrusted-content boundaries, and bounded timing metadata without query/URL leakage. |
 | Semantic memory search | With `memory.embeddings` set, first prove the configured provider only: Ollama model advertises `embedding` through `/api/show` and answers `/api/embed`, or LM Studio model has exact `type: "embedding"` in `/api/v1/models` and answers `/v1/embeddings`. Verify the finite vector dimension matches config, then ask a paraphrased question about an old note and confirm `MemoryRecall` returns it. Never accept a cross-provider fallback as proof. |

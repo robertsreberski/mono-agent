@@ -112,6 +112,10 @@ const MEMORY_JSON_SOURCES = {
     "memory.recallTool.enabled",
     (memory) => memory.recallTool?.enabled,
   ),
+  MONO_AGENT_MEMORY_OPERATOR_ACTIONS_ENABLED: jsonMemorySource(
+    "memory.operatorActions.enabled",
+    (memory) => memory.operatorActions?.enabled,
+  ),
   MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: jsonMemorySource(
     "memory.supermemory.baseUrl",
     (memory) => memory.supermemory?.baseUrl,
@@ -363,6 +367,13 @@ function validateJsonMemoryBlocks(
   if (recallTool !== undefined) {
     validateJsonScalarFields(recallTool, "memory.recallTool", env, [
       ["enabled", "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED", "boolean"],
+    ]);
+  }
+
+  const operatorActions = validateOptionalJsonObject(memory.operatorActions, "memory.operatorActions");
+  if (operatorActions !== undefined) {
+    validateJsonScalarFields(operatorActions, "memory.operatorActions", env, [
+      ["enabled", "MONO_AGENT_MEMORY_OPERATOR_ACTIONS_ENABLED", "boolean"],
     ]);
   }
 
@@ -835,6 +846,9 @@ export function layerJsonOntoEnv(
   }
   if (json.memory?.recallTool?.enabled !== undefined) {
     fromJson.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED = String(json.memory.recallTool.enabled);
+  }
+  if (json.memory?.operatorActions?.enabled !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_OPERATOR_ACTIONS_ENABLED = String(json.memory.operatorActions.enabled);
   }
   if (json.memory?.consolidation?.enabled !== undefined) {
     fromJson.MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED = String(json.memory.consolidation.enabled);

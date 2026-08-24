@@ -102,6 +102,13 @@ export type CaptureIntentAction =
     readonly at: string;
   })
   | (CaptureActionBase & {
+    readonly kind: "forget";
+    readonly id: string;
+    readonly before: CanonicalBulletState;
+    readonly after: CanonicalBulletState;
+    readonly at: string;
+  })
+  | (CaptureActionBase & {
     readonly kind: "noop";
     readonly id: string;
     readonly expected: CanonicalBulletState;
@@ -114,6 +121,8 @@ interface CaptureIntent {
   readonly createdAt: string;
   /** Actual durable publication time; legacy intents fall back to pinned file mtime. */
   readonly publishedAt?: string;
+  /** Operator plans share the exact replay protocol without masquerading as model capture. */
+  readonly authorityKind?: "capture" | "operator";
   /** Run-keyed owner that keeps this exact plan replayable until intake resolves. */
   readonly retentionKey?: string;
   readonly actions: readonly CaptureIntentAction[];
@@ -130,6 +139,7 @@ export interface CaptureIntentHandle {
 
 export interface CaptureIntentWriteOptions {
   readonly retentionKey?: string;
+  readonly authorityKind?: "capture" | "operator";
 }
 
 export interface CaptureIntentReplayResult extends GraphBatchResult {
@@ -205,6 +215,9 @@ export function writeCaptureIntent(
     id,
     createdAt,
     publishedAt: new Date().toISOString(),
+    ...(options.authorityKind === undefined || options.authorityKind === "capture"
+      ? {}
+      : { authorityKind: options.authorityKind }),
     ...(options.retentionKey === undefined ? {} : { retentionKey: options.retentionKey }),
     actions: materializeNewIntentThreads(root, actions),
     graph: {
@@ -526,7 +539,7 @@ interface ReplayPlan extends LoadedReplay {
 }
 
 interface ReplayWrite {
-  readonly action: Exclude<CaptureIntentAction, { readonly kind: "noop" }>;
+  readonly action: Exclude<CaptureIntentAction, { readonly kind: "noop" | "forget" }>;
   readonly record: MemoryRecord;
 }
 
@@ -578,7 +591,9 @@ function preflightReplay(root: string, replay: LoadedReplay, db: MemoryDb | unde
 
   const legacySalienceRepairs = new Map<string, LegacySalienceRepair>();
   const writes = db === undefined
-    ? intent.actions.flatMap((action) => action.kind === "noop" ? [] : [{ action, record: action.record }])
+    ? intent.actions.flatMap((action) => (
+        action.kind === "noop" || action.kind === "forget" ? [] : [{ action, record: action.record }]
+      ))
     : intent.actions.flatMap((action) => preflightDbAction(root, db, action, legacySalienceRepairs));
   if (db !== undefined) {
     db.assertPreparedUpserts(
@@ -693,6 +708,7 @@ function applyReplay(
     }
     for (const action of intent.actions) {
       if (action.kind === "supersede") db.markSuperseded(action.oldId, action.newId, action.at);
+      else if (action.kind === "forget") db.markForgotten(action.id, action.at);
     }
     db.replaceReplayProjection(replayProjectionDbReplacement(publishedReplay.projection));
     assertReplayProjectionMatchesDb(db, publishedReplay.projection);
@@ -933,6 +949,28 @@ function preflightDbAction(
     return [{ action, record: mergeLiveRecordState(action.record, current) }];
   }
 
+  if (action.kind === "forget") {
+    const current = db.get(action.id);
+    const beforeMatch = current === undefined
+      ? "different"
+      : replayRecordMatch(root, current, action.before, action.after);
+    const afterMatch = current === undefined ? "different" : replayRecordMatch(root, current, action.after);
+    const before = current !== undefined && beforeMatch !== "different"
+      && current.status !== "dropped" && current.status !== "invalidated"
+      && current.validTo === undefined && current.supersededBy === undefined
+      && current.supersededAt === undefined;
+    const after = current !== undefined && afterMatch !== "different"
+      && current.status === "dropped" && current.validTo === action.at
+      && current.supersededBy === undefined && current.supersededAt === undefined;
+    const awaitingFinalize = current !== undefined && afterMatch !== "different"
+      && current.status === "dropped" && current.validTo === undefined
+      && current.supersededBy === undefined && current.supersededAt === undefined;
+    if (!before && !after && !awaitingFinalize) {
+      throw new Error(`memory-capture: pending forget target ${action.id} conflicts with the active index.`);
+    }
+    return [];
+  }
+
   const old = db.get(action.oldId);
   if (old === undefined) {
     throw new Error(`memory-capture: pending supersede target ${action.oldId} is missing from the active index.`);
@@ -1063,13 +1101,19 @@ function captureReplayDelta(
 ): ReplayProjectionDelta {
   const { state: _state, ...immutableAuthority } = intent;
   const authorityId = replayProjectionAuthorityId(immutableAuthority);
+  const authorityKind = intent.authorityKind ?? "capture";
   return {
-    terminals: [],
+    terminals: intent.actions.flatMap((action) => action.kind === "forget" ? [{
+      id: action.id,
+      at: action.at,
+      authorityKind,
+      authorityId,
+    }] : []),
     supersedes: intent.actions.flatMap((action) => action.kind === "supersede" ? [{
       src: action.oldId,
       dst: action.newId,
       at: action.at,
-      authorityKind: "capture" as const,
+      authorityKind,
       authorityId,
     }] : []),
     threads: intent.actions.flatMap((action) => action.kind === "add"
@@ -1078,7 +1122,7 @@ function captureReplayDelta(
           dst: edge.dst,
           weight: edge.weight,
           at: resolveThreadCreatedAt(root, db, action, edge),
-          authorityKind: "capture" as const,
+          authorityKind,
           authorityId,
         }))
       : []),
@@ -1128,6 +1172,9 @@ function canonicalActionCanApply(root: string, action: CaptureIntentAction): boo
     return bulletState(root, action.after) === "exact" || bulletState(root, action.before) === "exact";
   }
   if (action.kind === "noop") return bulletState(root, action.expected) === "exact";
+  if (action.kind === "forget") {
+    return bulletState(root, action.after) === "exact" || bulletState(root, action.before) === "exact";
+  }
 
   const oldAfter = bulletState(root, action.afterOld);
   const oldBefore = bulletState(root, action.beforeOld);
@@ -1144,6 +1191,10 @@ function dbHasCanonicalOutcome(db: MemoryDb, action: CaptureIntentAction): boole
     : action.kind === "supersede" ? action.afterNew : action.after;
   const record = db.get(state.bullet.id);
   if (record === undefined || !recordMatchesCanonicalState(record, state)) return false;
+  if (action.kind === "forget") {
+    return record.status === "dropped" && record.validTo === action.at
+      && record.supersededBy === undefined && record.supersededAt === undefined;
+  }
   if (action.kind === "noop" || action.vector === undefined) return true;
   // A safe rebuild re-embeds the canonical record under the target identity.
   // Its already-present vector is authoritative; replaying the outbox's old
@@ -1239,6 +1290,12 @@ function assertDbReplayOutcome(
         || !db.edges(action.oldId).some((edge) => edge.kind === "supersedes" && edge.dst === action.newId)) {
         throw new Error(`memory-capture: active index did not reach supersede outcome for ${action.oldId}.`);
       }
+    } else if (action.kind === "forget") {
+      const forgotten = db.get(action.id);
+      if (forgotten === undefined || forgotten.status !== "dropped" || forgotten.validTo !== action.at
+        || forgotten.supersededBy !== undefined || forgotten.supersededAt !== undefined) {
+        throw new Error(`memory-capture: active index did not reach forget outcome for ${action.id}.`);
+      }
     }
   }
   if (!assertGraph) return;
@@ -1303,6 +1360,16 @@ function applyCanonicalAction(root: string, action: CaptureIntentAction): "appli
   if (action.kind === "noop") {
     return bulletState(root, action.expected) === "exact" ? "applied" : "conflict";
   }
+  if (action.kind === "forget") {
+    if (bulletState(root, action.after) === "exact") return "applied";
+    if (bulletState(root, action.before) !== "exact") return "conflict";
+    const priorStatus = action.after.bullet.priorStatus;
+    if (!rewriteBullet(root, action.after.file, action.id, {
+      status: action.after.bullet.status,
+      ...(priorStatus === undefined ? {} : { priorStatus }),
+    })) return "conflict";
+    return bulletState(root, action.after) === "exact" ? "applied" : "conflict";
+  }
 
   const oldAfter = bulletState(root, action.afterOld);
   const oldBefore = bulletState(root, action.beforeOld);
@@ -1356,6 +1423,12 @@ function bulletsEqual(left: Bullet, right: Bullet): boolean {
     && left.isInsight === right.isInsight
     && left.createdAt === right.createdAt
     && left.dueAt === right.dueAt
+    && left.validFrom === right.validFrom
+    && left.collection === right.collection
+    && left.conversationId === right.conversationId
+    && left.priorStatus === right.priorStatus
+    && (left.tags?.length ?? 0) === (right.tags?.length ?? 0)
+    && (left.tags ?? []).every((tag, index) => tag === right.tags?.[index])
     && left.refs.length === right.refs.length
     && left.refs.every((ref, index) => ref === right.refs[index]);
 }
@@ -1366,7 +1439,7 @@ function memoryIdFor(action: CaptureIntentAction): string {
 
 function serializeIntent(intent: CaptureIntent): string {
   const actions = intent.actions.map((action) => {
-    if (action.kind === "noop" || action.vector === undefined) return action;
+    if (action.kind === "noop" || action.kind === "forget" || action.vector === undefined) return action;
     return { ...action, vector: encodeVector(action.vector) };
   });
   return `${JSON.stringify({ ...intent, actions })}\n`;
@@ -1423,6 +1496,8 @@ function parseIntent(raw: string): CaptureIntent {
     || typeof value.createdAt !== "string" || !Number.isFinite(Date.parse(value.createdAt))
     || (value.publishedAt !== undefined
       && (typeof value.publishedAt !== "string" || !Number.isFinite(Date.parse(value.publishedAt))))
+    || (value.authorityKind !== undefined
+      && value.authorityKind !== "capture" && value.authorityKind !== "operator")
     || (value.retentionKey !== undefined && (typeof value.retentionKey !== "string"
       || !/^[a-f0-9]{64}$/u.test(value.retentionKey)))
     || !Array.isArray(value.actions) || value.actions.length > MAX_ACTIONS
@@ -1528,6 +1603,24 @@ function validateAction(action: CaptureIntentAction): void {
     }
     return;
   }
+  if (action.kind === "forget") {
+    validateState(action.before);
+    validateState(action.after);
+    const priorStatus = action.before.bullet.status;
+    if (typeof action.id !== "string" || action.before.bullet.id !== action.id
+      || action.after.bullet.id !== action.id || action.before.file !== action.after.file
+      || typeof action.at !== "string" || !Number.isFinite(Date.parse(action.at))
+      || (priorStatus !== "open" && priorStatus !== "done"
+        && priorStatus !== "scheduled" && priorStatus !== "migrated")
+      || !bulletsEqual({
+        ...action.before.bullet,
+        status: "dropped",
+        priorStatus,
+      }, action.after.bullet)) {
+      throw new Error("memory-capture: invalid forget action in outbox intent.");
+    }
+    return;
+  }
   if (action.kind === "noop") {
     validateState(action.expected);
     if (typeof action.id !== "string" || action.expected.bullet.id !== action.id) {
@@ -1558,6 +1651,7 @@ function validateRecord(record: MemoryRecord, id: string): void {
     || !isRecord(record.source) || typeof record.source.file !== "string"
     || (record.source.line !== undefined && (!Number.isInteger(record.source.line) || Number(record.source.line) <= 0))
     || !Array.isArray(record.tags) || record.tags.some((tag) => typeof tag !== "string")
+    || (record.validFrom !== undefined && typeof record.validFrom !== "string")
     || (record.dueAt !== undefined && typeof record.dueAt !== "string")
     || (record.collection !== undefined && typeof record.collection !== "string")) {
     throw new Error("memory-capture: invalid memory record in outbox intent.");
@@ -1575,7 +1669,12 @@ function assertRecordMatchesBullet(record: MemoryRecord, state: CanonicalBulletS
     || record.salience !== bullet.salience
     || record.isInsight !== bullet.isInsight
     || record.createdAt !== bullet.createdAt
-    || record.dueAt !== bullet.dueAt) {
+    || record.dueAt !== bullet.dueAt
+    || record.validFrom !== bullet.validFrom
+    || record.collection !== bullet.collection
+    || record.tags.length !== (bullet.tags?.length ?? 0)
+    || !record.tags.every((tag, index) => tag === bullet.tags?.[index])
+    || record.source.session !== bullet.conversationId) {
     throw new Error("memory-capture: memory record does not match its canonical bullet outcome.");
   }
 }
@@ -1598,7 +1697,14 @@ function isBullet(value: unknown): value is Bullet {
     && typeof value.isInsight === "boolean"
     && typeof value.createdAt === "string" && Number.isFinite(Date.parse(value.createdAt))
     && Array.isArray(value.refs) && value.refs.length <= 64 && value.refs.every((ref) => typeof ref === "string")
-    && (value.dueAt === undefined || typeof value.dueAt === "string");
+    && (value.dueAt === undefined || typeof value.dueAt === "string")
+    && (value.validFrom === undefined || typeof value.validFrom === "string")
+    && (value.tags === undefined || (Array.isArray(value.tags)
+      && value.tags.every((tag) => typeof tag === "string")))
+    && (value.collection === undefined || typeof value.collection === "string")
+    && (value.conversationId === undefined || typeof value.conversationId === "string")
+    && (value.priorStatus === undefined || value.priorStatus === "open" || value.priorStatus === "done"
+      || value.priorStatus === "scheduled" || value.priorStatus === "migrated");
 }
 
 function isMemoryStatus(value: unknown): value is Bullet["status"] {
