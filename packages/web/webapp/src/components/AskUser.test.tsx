@@ -6,9 +6,13 @@ import { api } from "../api";
 import type { AskSnapshot } from "../types";
 import { AskReconciliationProvider, ToolFallback } from "./Messages";
 
+const storeState = vi.hoisted(() => ({
+  selectedThread: { id: "thread-1", workflowStatus: "todo" } as Record<string, unknown>,
+}));
+
 vi.mock("../console-store", () => ({
   useConsoleStore: () => ({
-    selectedThread: { id: "thread-1" },
+    selectedThread: storeState.selectedThread,
     selectedAgent: { status: "online" },
     connection: "live",
   }),
@@ -82,9 +86,67 @@ async function renderAnsweredSnapshot(answered: AskSnapshot) {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  storeState.selectedThread = { id: "thread-1", workflowStatus: "todo" };
 });
 
 describe("AskUser web form", () => {
+  it("keeps automation questions visible but never actionable or polled", async () => {
+    storeState.selectedThread = {
+      id: "automation-thread",
+      trigger: { kind: "webhook" },
+    };
+    vi.spyOn(api, "pendingAsk");
+    vi.spyOn(api, "ask");
+    vi.spyOn(api, "submitAsk");
+
+    const { container } = render(askUserTool());
+
+    expect(screen.getByText("Morning briefing and reply draft")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("Automation conversations are read-only.");
+    expect(container.querySelector("form")).toBeNull();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Submit/u })).not.toBeInTheDocument();
+    await act(async () => { await Promise.resolve(); });
+    expect(api.pendingAsk).not.toHaveBeenCalled();
+    expect(api.ask).not.toHaveBeenCalled();
+    expect(api.submitAsk).not.toHaveBeenCalled();
+  });
+
+  it("retains a completed automation AskUser outcome without polling", () => {
+    storeState.selectedThread = {
+      id: "automation-thread",
+      trigger: { kind: "cron", jobId: "daily" },
+    };
+    vi.spyOn(api, "pendingAsk");
+    vi.spyOn(api, "ask");
+
+    render(
+      <AskReconciliationProvider>
+        <ToolFallback
+          type="tool-call"
+          toolName="AskUser"
+          toolCallId="tool-answered-automation"
+          args={toolArgs}
+          argsText={JSON.stringify(toolArgs)}
+          result={"The user answered."}
+          artifact={{ structuredResult: { interactionId: "ask-test", answered: true } }}
+          isError={false}
+          status={{ type: "complete" }}
+          addResult={vi.fn()}
+          resume={vi.fn()}
+          respondToApproval={vi.fn()}
+        />
+      </AskReconciliationProvider>,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("Answers submitted.");
+    expect(screen.queryByRole("button", { name: /Submit/u })).not.toBeInTheDocument();
+    expect(api.pendingAsk).not.toHaveBeenCalled();
+    expect(api.ask).not.toHaveBeenCalled();
+  });
+
   it("renders all questions together and submits option plus custom answers atomically", async () => {
     const answered: AskSnapshot = {
       ...snapshot,

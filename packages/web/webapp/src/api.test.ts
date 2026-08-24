@@ -1,6 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, uploadContent, type ReplyAccessRefreshHandler } from "./api";
-import { agent, attachment, processJob } from "./test/fixtures";
+import { agent, attachment, bootstrap, processJob, thread } from "./test/fixtures";
+
+const legacyThread = (
+  id: string,
+  sourceId: string,
+  overrides: Parameters<typeof thread>[2] = {},
+): Readonly<Record<string, unknown>> => Object.fromEntries(
+  Object.entries(thread(id, sourceId, overrides)).filter(([field]) => ![
+    "workflowStatus",
+    "pinned",
+    "collectionId",
+    "runPreference",
+  ].includes(field)),
+);
+
+const legacyBootstrap = (
+  threads: readonly Readonly<Record<string, unknown>>[] = [],
+  agents = [agent("alpha")],
+): Readonly<Record<string, unknown>> => {
+  const current = bootstrap(agents, []);
+  return Object.fromEntries(
+    Object.entries({ ...current, threads }).filter(([field]) => field !== "collections"),
+  );
+};
 
 class FakeXMLHttpRequest {
   static latest: FakeXMLHttpRequest;
@@ -306,6 +329,341 @@ describe("agent favorites", () => {
       expect.objectContaining({
         method: "PATCH",
         body: JSON.stringify({ pinned: true }),
+      }),
+    );
+  });
+});
+
+describe("conversation workspace API", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("normalizes a pre-workspace v1 bootstrap without collections or thread workspace fields", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(legacyBootstrap([
+      legacyThread("empty", "alpha"),
+      legacyThread("active", "alpha", { messageCount: 2 }),
+      legacyThread("cron", "alpha", {
+        messageCount: 4,
+        trigger: { kind: "cron", jobId: "daily" },
+      }),
+    ])));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.bootstrap();
+
+    expect(result.collections).toEqual([]);
+    expect(result.threads[0]).toMatchObject({
+      id: "empty",
+      workflowStatus: "todo",
+      pinned: false,
+      collectionId: null,
+      runPreference: null,
+    });
+    expect(result.threads[1]).toMatchObject({
+      id: "active",
+      workflowStatus: "in_progress",
+      pinned: false,
+      collectionId: null,
+      runPreference: null,
+    });
+    expect(result.threads[2]).toMatchObject({
+      id: "cron",
+      trigger: { kind: "cron", jobId: "daily" },
+      pinned: false,
+      collectionId: null,
+      runPreference: null,
+    });
+    expect(result.threads[2]).not.toHaveProperty("workflowStatus");
+  });
+
+  it("serializes the complete multi-agent workspace query contract", async () => {
+    const response = {
+      threads: [thread("current", "alpha/one", { pinned: true })],
+      nextCursor: "next/current",
+      groups: [{ key: "alpha/one", label: "Alpha", threadIds: ["current"] }],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.workspaceThreads({
+      sourceIds: ["alpha/one", "offline"],
+      archived: false,
+      workflowStatus: "in_progress",
+      collectionId: "unfiled",
+      pinned: true,
+      type: "interactive",
+      q: "  exact answer  ",
+      groupBy: "agent",
+      before: "cursor/one",
+      limit: 75,
+    });
+
+    expect(result).toEqual(response);
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]), window.location.origin);
+    expect(url.pathname).toBe("/api/v1/threads");
+    expect(url.searchParams.getAll("sourceIds")).toEqual(["alpha/one", "offline"]);
+    expect(Object.fromEntries(url.searchParams)).toMatchObject({
+      archived: "false",
+      workflowStatus: "in_progress",
+      collectionId: "unfiled",
+      pinned: "true",
+      type: "interactive",
+      q: "exact answer",
+      groupBy: "agent",
+      before: "cursor/one",
+      limit: "75",
+    });
+  });
+
+  it("keeps an all-agent request bounded with sixty-five discovered agents", async () => {
+    const discovered = Array.from({ length: 65 }, (_, index) => agent(`agent-${String(index)}`));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(bootstrap(discovered, [])))
+      .mockResolvedValueOnce(Response.json({ threads: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.bootstrap();
+    await api.workspaceThreads({ archived: false, type: "interactive", limit: 200 });
+
+    const url = new URL(String(fetchMock.mock.calls[1]?.[0]), window.location.origin);
+    expect(url.searchParams.getAll("sourceIds")).toEqual([]);
+    expect(url.searchParams.has("sourceId")).toBe(false);
+  });
+
+  it("fans an omitted all-agent query out to bootstrap-discovered sources on an old v1 server", async () => {
+    const discovered = Array.from({ length: 65 }, (_, index) => agent(`legacy-${String(index)}`));
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      const call = fetchMock.mock.calls.length;
+      if (call === 1) return Response.json(legacyBootstrap([], discovered));
+      if (call === 2) {
+        return Response.json({
+          error: { code: "invalid_page", message: "sourceId is required." },
+        }, { status: 400 });
+      }
+      const sourceId = discovered[call - 3]?.sourceId;
+      return Response.json({
+        threads: sourceId === undefined ? [] : [legacyThread(`thread-${sourceId}`, sourceId)],
+        nextCursor: "ignored",
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.bootstrap();
+    const result = await api.workspaceThreads({ archived: false, type: "interactive", limit: 200 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(67);
+    const probe = new URL(String(fetchMock.mock.calls[1]?.[0]), window.location.origin);
+    expect(probe.searchParams.getAll("sourceIds")).toEqual([]);
+    const fallbackSources = fetchMock.mock.calls.slice(2).map(([input]) =>
+      new URL(String(input), window.location.origin).searchParams.get("sourceId"));
+    expect(fallbackSources).toEqual(discovered.map(({ sourceId }) => sourceId));
+    expect(new Set(fallbackSources).size).toBe(65);
+    expect(result.threads).toHaveLength(65);
+    expect(result).not.toHaveProperty("nextCursor");
+  });
+
+  it("falls back once per source on the exact old route error and returns one bounded deterministic page", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({
+        error: { code: "invalid_page", message: "sourceId is required." },
+      }, { status: 400 }))
+      .mockResolvedValueOnce(Response.json({
+        threads: [
+          legacyThread("latest", "alpha/one", {
+            updatedAt: "2026-08-24T12:00:00.000Z",
+          }),
+          legacyThread("duplicate", "alpha/one", {
+            revision: 1,
+            updatedAt: "2026-08-24T09:00:00.000Z",
+          }),
+          legacyThread("tie-a", "alpha/one", {
+            updatedAt: "2026-08-24T10:00:00.000Z",
+          }),
+        ],
+        nextCursor: "alpha-cursor",
+      }))
+      .mockResolvedValueOnce(Response.json({
+        threads: [
+          thread("pinned", "beta two", {
+            pinned: true,
+            updatedAt: "2026-08-24T08:00:00.000Z",
+          }),
+          legacyThread("duplicate", "alpha/one", {
+            revision: 2,
+            updatedAt: "2026-08-24T11:00:00.000Z",
+          }),
+          legacyThread("tie-z", "beta two", {
+            updatedAt: "2026-08-24T10:00:00.000Z",
+          }),
+          legacyThread("oldest", "beta two", {
+            updatedAt: "2026-08-24T07:00:00.000Z",
+          }),
+        ],
+        nextCursor: "beta-cursor",
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.workspaceThreads({
+      sourceIds: ["alpha/one", "beta two"],
+      archived: true,
+      type: "interactive",
+      q: "ignored by old server",
+      before: "new-server-cursor",
+      limit: 5,
+    }, controller.signal);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "/api/v1/threads?sourceId=alpha%2Fone&archived=true&limit=5",
+    );
+    expect(fetchMock.mock.calls[2]?.[0]).toBe(
+      "/api/v1/threads?sourceId=beta+two&archived=true&limit=5",
+    );
+    expect(fetchMock.mock.calls.map(([, init]) => (init as RequestInit).signal))
+      .toEqual([controller.signal, controller.signal, controller.signal]);
+    expect(result.threads.map(({ id }) => id)).toEqual([
+      "pinned",
+      "latest",
+      "duplicate",
+      "tie-z",
+      "tie-a",
+    ]);
+    expect(result.threads.find(({ id }) => id === "duplicate")?.revision).toBe(2);
+    expect(result).not.toHaveProperty("nextCursor");
+    expect(result).not.toHaveProperty("groups");
+  });
+
+  it("does not fall back for an unrelated 400 response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+      error: { code: "invalid_page", message: "workflowStatus is invalid." },
+    }, { status: 400 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.workspaceThreads({ sourceIds: ["alpha"], limit: 20 }))
+      .rejects.toMatchObject({
+        status: 400,
+        code: "invalid_page",
+        message: "workflowStatus is invalid.",
+      });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fall back without requested ids or conclusive legacy bootstrap evidence", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(bootstrap([agent("alpha")], [])))
+      .mockResolvedValueOnce(Response.json({
+        error: { code: "invalid_page", message: "sourceId is required." },
+      }, { status: 400 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.bootstrap();
+    await expect(api.workspaceThreads({ archived: false }))
+      .rejects.toMatchObject({ status: 400, code: "invalid_page" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("normalizes old thread DTOs from list, detail, and mutation responses", async () => {
+    const legacy = legacyThread("legacy", "alpha", { messageCount: 3 });
+    const page = { threads: [legacy], nextCursor: "legacy-cursor" };
+    const detail = { thread: legacy, messages: [] };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(page))
+      .mockResolvedValueOnce(Response.json(page))
+      .mockResolvedValueOnce(Response.json(detail))
+      .mockResolvedValueOnce(Response.json({ thread: legacy }))
+      .mockResolvedValueOnce(Response.json({ thread: legacy }))
+      .mockResolvedValueOnce(Response.json({
+        thread: legacy,
+        turn: { id: "turn-one", status: "running" },
+      }, { status: 202 }))
+      .mockResolvedValueOnce(Response.json({ cancelled: true, thread: legacy }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const listed = await api.threads("alpha", false);
+    const workspace = await api.workspaceThreads({ sourceIds: ["alpha"] });
+    const loaded = await api.thread("legacy");
+    const created = await api.createThread("alpha");
+    const patched = await api.patchThread("legacy", { title: "Renamed" });
+    const started = await api.startTurn("legacy", { text: "Continue" });
+    const cancelled = await api.cancelTurn("legacy");
+    const summaries = [
+      listed.threads[0],
+      workspace.threads[0],
+      loaded.thread,
+      created,
+      patched,
+      started.thread,
+      cancelled.thread,
+    ];
+
+    for (const summary of summaries) {
+      expect(summary).toMatchObject({
+        id: "legacy",
+        workflowStatus: "in_progress",
+        pinned: false,
+        collectionId: null,
+        runPreference: null,
+      });
+    }
+    expect(listed.nextCursor).toBe("legacy-cursor");
+    expect(workspace.nextCursor).toBe("legacy-cursor");
+  });
+
+  it("suppresses preference-route 404s only after a missing-collections bootstrap proves legacy v1", async () => {
+    const modernBootstrap = bootstrap([agent("alpha")], []);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(legacyBootstrap()))
+      .mockResolvedValueOnce(Response.json({
+        error: { code: "not_found", message: "Not found." },
+      }, { status: 404 }))
+      .mockResolvedValueOnce(Response.json(modernBootstrap))
+      .mockResolvedValueOnce(Response.json({
+        error: { code: "agent_not_found", message: "Agent alpha was not found." },
+      }, { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.bootstrap();
+    await expect(api.agentPreferences("alpha")).resolves.toEqual({
+      sourceId: "alpha",
+      runPreference: null,
+    });
+
+    await api.bootstrap();
+    await expect(api.agentPreferences("alpha")).rejects.toMatchObject({
+      status: 404,
+      code: "agent_not_found",
+      message: "Agent alpha was not found.",
+    });
+  });
+
+  it("loads the message window anchored at the exact server search hit", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ messages: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.messagesAround("thread/one", "message/two");
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/v1/threads/thread%2Fone/messages?anchor=message%2Ftwo&limit=100",
+    );
+  });
+
+  it("persists independent per-agent web defaults through the preferences endpoint", async () => {
+    const preferences = {
+      sourceId: "agent/one",
+      runPreference: { model: "provider/model", effort: "high" },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ preferences }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.patchAgentPreferences("agent/one", preferences.runPreference))
+      .resolves.toEqual(preferences);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/agents/agent%2Fone/preferences",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ runPreference: preferences.runPreference }),
       }),
     );
   });

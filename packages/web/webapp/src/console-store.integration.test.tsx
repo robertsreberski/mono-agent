@@ -5,21 +5,30 @@ import { api } from "./api";
 import {
   ConsoleStoreProvider,
   cronChannelPath,
+  preferenceKeyForThread,
+  RUN_PREFERENCES_STORAGE_KEY,
   useConsoleStore,
 } from "./console-store";
 import { agent, bootstrap, thread } from "./test/fixtures";
-import type { AgentSkillRegistry, CronOverview, ThreadDetail } from "./types";
+import type { AgentSkillRegistry, Bootstrap, CronOverview, ThreadDetail } from "./types";
 
 vi.mock("./api", () => ({
   api: {
     bootstrap: vi.fn(),
     thread: vi.fn(),
     threads: vi.fn(),
+    workspaceThreads: vi.fn(),
     messages: vi.fn(),
+    messagesAround: vi.fn(),
     createThread: vi.fn(),
     patchThread: vi.fn(),
     deleteThread: vi.fn(),
     patchAgent: vi.fn(),
+    agentPreferences: vi.fn(),
+    patchAgentPreferences: vi.fn(),
+    createCollection: vi.fn(),
+    patchCollection: vi.fn(),
+    deleteCollection: vi.fn(),
     agentSkills: vi.fn(),
     cronOverview: vi.fn(),
     cronRuns: vi.fn(),
@@ -134,11 +143,32 @@ describe("ConsoleStoreProvider integration", () => {
     vi.mocked(api.agentSkills).mockResolvedValue({ status: "unsupported", items: [] });
     vi.mocked(api.threads).mockResolvedValue({ threads: [] });
     vi.mocked(api.messages).mockResolvedValue({ messages: [] });
+    vi.mocked(api.messagesAround).mockResolvedValue({ messages: [] });
+    vi.mocked(api.workspaceThreads).mockResolvedValue({ threads: [] });
+    vi.mocked(api.agentPreferences).mockImplementation(async (sourceId) => ({
+      sourceId,
+      runPreference: null,
+    }));
     vi.mocked(api.cronRuns).mockResolvedValue({ runs: [] });
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("exposes an empty collection list when a legacy v1 bootstrap omits collections", async () => {
+    const legacy = { ...bootstrap([agent("alpha")], []) } as Bootstrap & {
+      collections?: Bootstrap["collections"];
+    };
+    Reflect.deleteProperty(legacy, "collections");
+    vi.mocked(api.bootstrap).mockResolvedValue(legacy);
+
+    const store = await renderStore();
+
+    expect(store.current.collections).toEqual([]);
+    expect(store.current.bootstrap?.collections).toEqual([]);
+    expect(store.current.collectionsLoading).toBe(false);
+    expect(store.current.error).toBeNull();
   });
 
   it("applies the returned pin state and moves the agent into the favorite group", async () => {
@@ -484,5 +514,380 @@ describe("ConsoleStoreProvider integration", () => {
     expect(store.current.cronOverview).toBeNull();
     expect(api.cronOverview).not.toHaveBeenCalled();
     expect(store.current.selectedThread?.canSend).toBe(false);
+  });
+
+  it("keeps the anchored search window when the ordinary detail request finishes later", async () => {
+    const searched = thread("searched", "alpha", {
+      title: "Search result",
+      searchMatch: { messageId: "answer/one", snippet: "exact answer" },
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha")], [searched]));
+    let resolveOrdinary!: (value: ThreadDetail) => void;
+    vi.mocked(api.thread)
+      .mockImplementationOnce(async () => await new Promise<ThreadDetail>((resolve) => {
+        resolveOrdinary = resolve;
+      }))
+      .mockResolvedValue(detail(searched, "coordinated summary"));
+    const anchoredMessage = {
+      id: "answer/one",
+      threadId: searched.id,
+      role: "assistant" as const,
+      parts: [{ type: "text" as const, text: "exact answer" }],
+      attachments: [],
+      createdAt: "2026-08-24T09:00:00.000Z",
+      updatedAt: "2026-08-24T09:00:00.000Z",
+      status: "complete" as const,
+    };
+    vi.mocked(api.messagesAround).mockResolvedValue({ messages: [anchoredMessage] });
+    const store = await renderStore();
+    await waitFor(() => expect(api.thread).toHaveBeenCalledTimes(1));
+
+    act(() => store.current.selectSearchMatch(searched.id, anchoredMessage.id));
+    await waitFor(() => expect(store.current.detail?.messages.map(({ id }) => id))
+      .toEqual([anchoredMessage.id]));
+    expect(api.messagesAround).toHaveBeenCalledWith(searched.id, anchoredMessage.id);
+
+    await act(async () => {
+      resolveOrdinary(detail(searched, "ordinary stale page"));
+      await Promise.resolve();
+    });
+
+    expect(store.current.detail?.messages.map(({ id }) => id)).toEqual([anchoredMessage.id]);
+    expect(store.current.pendingMessageId).toBe(anchoredMessage.id);
+    expect(window.location.pathname).toBe("/conversations/searched");
+    expect(window.location.hash).toBe("#message-answer%2Fone");
+  });
+
+  it("jumps from an anchored window to the authoritative latest tail with over fifty newer messages", async () => {
+    const searched = thread("long-search", "alpha", { title: "Long search result" });
+    const message = (index: number) => ({
+      id: `message-${String(index)}`,
+      threadId: searched.id,
+      role: "assistant" as const,
+      parts: [{ type: "text" as const, text: `message ${String(index)}` }],
+      attachments: [],
+      createdAt: new Date(Date.UTC(2026, 7, 24, 9, index)).toISOString(),
+      updatedAt: new Date(Date.UTC(2026, 7, 24, 9, index)).toISOString(),
+      status: "complete" as const,
+    });
+    const anchored = Array.from({ length: 100 }, (_, index) => message(index));
+    const latest = Array.from({ length: 100 }, (_, index) => message(index + 51));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha")], [searched]));
+    vi.mocked(api.thread).mockResolvedValue({ thread: searched, messages: [message(150)] });
+    vi.mocked(api.messagesAround).mockResolvedValue({ messages: anchored });
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(searched.id));
+    vi.mocked(api.thread)
+      .mockResolvedValueOnce({ thread: searched, messages: latest })
+      .mockResolvedValueOnce({ thread: searched, messages: latest });
+
+    act(() => store.current.selectSearchMatch(searched.id, "message-49"));
+    await waitFor(() => expect(store.current.detail?.messages).toHaveLength(100));
+    expect(store.current.detail?.messages.at(-1)?.id).toBe("message-99");
+    expect(window.location.hash).toBe("#message-message-49");
+
+    await act(async () => store.current.jumpToLatest());
+
+    expect(api.thread).toHaveBeenLastCalledWith(searched.id);
+    expect(store.current.detail?.messages.at(0)?.id).toBe("message-51");
+    expect(store.current.detail?.messages.at(-1)?.id).toBe("message-150");
+    expect(store.current.detail?.messages.some(({ id }) => id === "message-49")).toBe(false);
+    expect(store.current.pendingMessageId).toBeNull();
+    expect(window.location.pathname).toBe("/conversations/long-search");
+    expect(window.location.hash).toBe("");
+  });
+
+  it("restores anchored message windows on reload and same-thread browser navigation", async () => {
+    const searched = thread("deep-link", "alpha");
+    window.history.replaceState(null, "", "/conversations/deep-link#message-answer%2Fone");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha")], [searched]));
+    vi.mocked(api.thread).mockResolvedValue(detail(searched));
+    const pageFor = (id: string) => ({
+      messages: [{
+        id,
+        threadId: searched.id,
+        role: "assistant" as const,
+        parts: [],
+        attachments: [],
+        createdAt: "2026-08-24T09:00:00.000Z",
+        updatedAt: "2026-08-24T09:00:00.000Z",
+        status: "complete" as const,
+      }],
+    });
+    vi.mocked(api.messagesAround).mockImplementation(async (_threadId, anchor) => pageFor(anchor));
+
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.detail?.messages.map(({ id }) => id))
+      .toEqual(["answer/one"]));
+    expect(api.messagesAround).toHaveBeenCalledWith("deep-link", "answer/one");
+
+    act(() => store.current.clearPendingMessage());
+    window.history.pushState(null, "", "/conversations/deep-link#message-answer%2Ftwo");
+    act(() => window.dispatchEvent(new PopStateEvent("popstate")));
+
+    await waitFor(() => expect(store.current.detail?.messages.map(({ id }) => id))
+      .toEqual(["answer/two"]));
+    expect(api.messagesAround).toHaveBeenCalledWith("deep-link", "answer/two");
+  });
+
+  it("does not let a late failed search clear a newer anchor in the same thread", async () => {
+    const searched = thread("same-search-thread", "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha")], [searched]));
+    vi.mocked(api.thread).mockResolvedValue(detail(searched));
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(searched.id));
+    let rejectFirst!: (reason: unknown) => void;
+    vi.mocked(api.thread)
+      .mockImplementationOnce(async () => await new Promise<ThreadDetail>((_resolve, reject) => {
+        rejectFirst = reject;
+      }))
+      .mockResolvedValue(detail(searched));
+    const pageFor = (id: string) => ({
+      messages: [{
+        id,
+        threadId: searched.id,
+        role: "assistant" as const,
+        parts: [],
+        attachments: [],
+        createdAt: "2026-08-24T09:00:00.000Z",
+        updatedAt: "2026-08-24T09:00:00.000Z",
+        status: "complete" as const,
+      }],
+    });
+    vi.mocked(api.messagesAround).mockImplementation(async (_threadId, anchor) => pageFor(anchor));
+
+    act(() => {
+      store.current.selectSearchMatch(searched.id, "answer-a");
+      store.current.selectSearchMatch(searched.id, "answer-b");
+    });
+    await waitFor(() => expect(store.current.detail?.messages.map(({ id }) => id))
+      .toEqual(["answer-b"]));
+
+    await act(async () => {
+      rejectFirst(new Error("obsolete search failed"));
+      await Promise.resolve();
+    });
+
+    expect(store.current.pendingMessageId).toBe("answer-b");
+    expect(store.current.actionError).not.toBe("obsolete search failed");
+  });
+
+  it("reopens the same selected conversation after mobile Back returns to discovery", async () => {
+    const selected = thread("same-thread", "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha")], [selected]));
+    vi.mocked(api.thread).mockResolvedValue(detail(selected));
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(selected.id));
+    expect(store.current.conversationDetailOpen).toBe(false);
+
+    act(() => store.current.selectThread(selected.id));
+    await waitFor(() => expect(store.current.conversationDetailOpen).toBe(true));
+
+    act(() => store.current.openConversationIndex());
+    await waitFor(() => expect(store.current.conversationDetailOpen).toBe(false));
+    expect(store.current.selectedThreadId).toBe(selected.id);
+
+    act(() => store.current.selectThread(selected.id));
+    await waitFor(() => expect(store.current.conversationDetailOpen).toBe(true));
+    expect(window.location.pathname).toBe("/conversations/same-thread");
+  });
+
+  it("serializes rapid independent conversation model and effort overrides", async () => {
+    const preferred = thread("preferred", "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", {
+      defaultEffort: "medium",
+      modelOptions: { "provider/model": { reasoning: true, effortLevels: ["medium", "high"] } },
+    })], [preferred]));
+    vi.mocked(api.thread).mockResolvedValue(detail(preferred));
+    const resolvers: Array<(value: typeof preferred) => void> = [];
+    vi.mocked(api.patchThread).mockImplementation(async () => await new Promise((resolve) => {
+      resolvers.push(resolve);
+    }));
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(preferred.id));
+
+    act(() => {
+      store.current.setModel("provider/model");
+      store.current.setEffort("high");
+    });
+    await waitFor(() => expect(api.patchThread).toHaveBeenCalledTimes(1));
+    expect(api.patchThread).toHaveBeenNthCalledWith(1, preferred.id, {
+      runPreference: { model: "provider/model" },
+    });
+
+    await act(async () => {
+      resolvers[0]!({ ...preferred, revision: 2, runPreference: { model: "provider/model" } });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(api.patchThread).toHaveBeenCalledTimes(2));
+    expect(store.current.selectedThread?.runPreference).toEqual({
+      model: "provider/model",
+      effort: "high",
+    });
+    expect(api.patchThread).toHaveBeenNthCalledWith(2, preferred.id, {
+      runPreference: { model: "provider/model", effort: "high" },
+    });
+
+    await act(async () => {
+      resolvers[1]!({
+        ...preferred,
+        revision: 3,
+        runPreference: { model: "provider/model", effort: "high" },
+      });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(store.current.selectedThread?.revision).toBe(3));
+    expect(store.current.selectedThread?.runPreference).toEqual({
+      model: "provider/model",
+      effort: "high",
+    });
+  });
+
+  it("does not let an older workspace query overwrite newer running workflow state", async () => {
+    const current = thread("revisioned", "alpha", {
+      revision: 2,
+      workflowStatus: "in_progress",
+      runState: { status: "running", id: "turn-2", startedAt: "2026-08-24T09:00:00.000Z" },
+    });
+    const stale = thread("revisioned", "alpha", {
+      revision: 1,
+      workflowStatus: "todo",
+      runState: { status: "idle" },
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha")], [current]));
+    vi.mocked(api.thread).mockResolvedValue(detail(current));
+    vi.mocked(api.workspaceThreads).mockResolvedValue({ threads: [stale] });
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.selectedThread?.revision).toBe(2));
+
+    await act(async () => store.current.queryWorkspaceThreads({
+      sourceIds: ["alpha"],
+      type: "interactive",
+    }));
+
+    expect(store.current.selectedThread).toMatchObject({
+      revision: 2,
+      workflowStatus: "in_progress",
+      runState: { status: "running" },
+    });
+  });
+
+  it("clears an explicit effort only when the newly selected model does not support it", async () => {
+    const preferred = thread("preference-validation", "alpha", {
+      runPreference: { model: "reasoning", effort: "high" },
+    });
+    const source = agent("alpha", {
+      models: ["reasoning", "plain"],
+      defaultModel: "reasoning",
+      modelOptions: {
+        reasoning: { reasoning: true, effortLevels: ["low", "high"] },
+        plain: { reasoningMode: "none" },
+      },
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([source], [preferred]));
+    vi.mocked(api.thread).mockResolvedValue(detail(preferred));
+    vi.mocked(api.patchThread).mockResolvedValue({
+      ...preferred,
+      revision: 2,
+      runPreference: { model: "plain" },
+    });
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(preferred.id));
+
+    act(() => store.current.setModel("plain"));
+
+    await waitFor(() => expect(api.patchThread).toHaveBeenCalledWith(preferred.id, {
+      runPreference: { model: "plain" },
+    }));
+    await waitFor(() => expect(store.current.selectedThread?.runPreference)
+      .toEqual({ model: "plain" }));
+  });
+
+  it("uploads legacy new-agent and thread preferences only into empty server contexts", async () => {
+    const migratedThread = thread("migrated", "alpha");
+    const newAgentKey = preferenceKeyForThread("alpha", null);
+    const threadKey = preferenceKeyForThread("alpha", migratedThread.id);
+    const removedAgentKey = preferenceKeyForThread("removed-agent", null);
+    localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify({
+      [newAgentKey]: { model: "provider/model", effort: "" },
+      [threadKey]: { model: "", effort: "high" },
+      [removedAgentKey]: { model: "provider/model", effort: "" },
+      "not-a-preference-key": { model: "provider/model", effort: "" },
+    }));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", {
+      modelOptions: { "provider/model": { reasoning: true, effortLevels: ["high"] } },
+    })], [migratedThread]));
+    vi.mocked(api.thread).mockResolvedValue(detail(migratedThread));
+    vi.mocked(api.patchAgentPreferences).mockResolvedValue({
+      sourceId: "alpha",
+      runPreference: { model: "provider/model" },
+    });
+    vi.mocked(api.patchThread).mockResolvedValue({
+      ...migratedThread,
+      revision: 2,
+      runPreference: { effort: "high" },
+    });
+
+    await renderStore();
+
+    await waitFor(() => {
+      expect(api.patchAgentPreferences).toHaveBeenCalledWith("alpha", {
+        model: "provider/model",
+      });
+      expect(api.patchThread).toHaveBeenCalledWith(migratedThread.id, {
+        runPreference: { effort: "high" },
+        expectedRevision: migratedThread.revision,
+      });
+      expect(localStorage.getItem(RUN_PREFERENCES_STORAGE_KEY)).toBeNull();
+    });
+  });
+
+  it("discards a legacy override whose model is no longer advertised", async () => {
+    const key = preferenceKeyForThread("alpha", null);
+    localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify({
+      [key]: { model: "removed/model", effort: "" },
+    }));
+
+    await renderStore();
+
+    await waitFor(() => expect(localStorage.getItem(RUN_PREFERENCES_STORAGE_KEY)).toBeNull());
+    expect(api.patchAgentPreferences).not.toHaveBeenCalled();
+  });
+
+  it("does not let the selected-agent preference read overwrite an in-flight migration", async () => {
+    const key = preferenceKeyForThread("alpha", null);
+    localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify({
+      [key]: { model: "provider/model", effort: "" },
+    }));
+    let resolveMigration!: (value: { sourceId: string; runPreference: { model: string } }) => void;
+    vi.mocked(api.patchAgentPreferences).mockImplementation(async () => await new Promise((resolve) => {
+      resolveMigration = resolve;
+    }));
+    const store = await renderStore();
+    await waitFor(() => expect(api.patchAgentPreferences).toHaveBeenCalledTimes(1));
+    expect(api.agentPreferences).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveMigration({ sourceId: "alpha", runPreference: { model: "provider/model" } });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(store.current.agentPreferences.alpha)
+      .toEqual({ model: "provider/model" }));
+    expect(api.agentPreferences).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains a legacy preference until its server migration succeeds", async () => {
+    const key = preferenceKeyForThread("alpha", null);
+    localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify({
+      [key]: { model: "provider/model", effort: "" },
+    }));
+    vi.mocked(api.patchAgentPreferences).mockRejectedValue(new Error("preference unavailable"));
+
+    const store = await renderStore();
+
+    await waitFor(() => expect(store.current.actionError).toBe("preference unavailable"));
+    expect(JSON.parse(localStorage.getItem(RUN_PREFERENCES_STORAGE_KEY) ?? "{}"))
+      .toHaveProperty(key);
   });
 });

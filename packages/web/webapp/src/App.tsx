@@ -12,10 +12,10 @@ import {
   readAgentRailExpanded,
   writeAgentRailExpanded,
 } from "./agent-rail-layout";
-import { AgentRail, BrandMark, MobileAgentPicker } from "./components/AgentRail";
+import { AgentRail, BrandMark } from "./components/AgentRail";
 import { Chat } from "./components/Chat";
+import { ConversationWorkspace } from "./components/ConversationWorkspace";
 import { Icon, type IconName } from "./components/Icon";
-import { ThreadSidebar } from "./components/ThreadSidebar";
 import { useConsoleStore } from "./console-store";
 import { applyConsolePresentation } from "./theme";
 
@@ -265,18 +265,22 @@ function FatalError() {
 }
 
 export function App() {
-  const { loading, bootstrap, error, actionError, clearActionError } = useConsoleStore();
-  const [agentDrawer, setAgentDrawer] = useState(false);
-  const [threadDrawer, setThreadDrawer] = useState(false);
+  const {
+    loading,
+    bootstrap,
+    error,
+    actionError,
+    clearActionError,
+    conversationDetailOpen,
+    openConversationIndex,
+  } = useConsoleStore();
   const [palette, setPalette] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [agentRailExpanded, setAgentRailExpanded] = useState(readAgentRailExpanded);
-  const agentDrawerRef = useRef<HTMLDivElement>(null);
-  const threadDrawerRef = useRef<HTMLDivElement>(null);
+  const detailWasOpen = useRef(false);
   const appStyle = {
     "--agent-rail-width": `${agentRailWidth(agentRailExpanded)}px`,
   } as CSSProperties;
-
   const toggleAgentRail = useCallback(() => {
     setAgentRailExpanded((current) => {
       const next = !current;
@@ -284,29 +288,10 @@ export function App() {
       return next;
     });
   }, []);
-
-  const closeDrawers = useCallback(() => {
-    setAgentDrawer(false);
-    setThreadDrawer(false);
-  }, []);
   const closePalette = useCallback(() => setPalette(false), []);
   const togglePalette = useCallback(() => {
-    closeDrawers();
     setPalette((current) => !current);
-  }, [closeDrawers]);
-  const openAgents = useCallback(() => {
-    setPalette(false);
-    setThreadDrawer(false);
-    setAgentDrawer(true);
   }, []);
-  const openThreads = useCallback(() => {
-    setPalette(false);
-    setAgentDrawer(false);
-    setThreadDrawer(true);
-  }, []);
-
-  useModalFocus(agentDrawer, agentDrawerRef, closeDrawers);
-  useModalFocus(threadDrawer, threadDrawerRef, closeDrawers);
 
   useEffect(() => {
     const onCommand = () => togglePalette();
@@ -335,6 +320,37 @@ export function App() {
     if (!bootstrap) return;
     return applyConsolePresentation(bootstrap.console);
   }, [bootstrap]);
+
+  useEffect(() => {
+    const wasOpen = detailWasOpen.current;
+    detailWasOpen.current = conversationDetailOpen;
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(max-width: 900px)");
+    let timer: number | undefined;
+    const focusSurface = (enteringMobile = false) => {
+      if (!media.matches) return;
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        if (conversationDetailOpen) {
+          document.querySelector<HTMLButtonElement>(".mobile-conversation-back")?.focus();
+        } else if (wasOpen || enteringMobile) {
+          const destination = document.querySelector<HTMLButtonElement>(
+            ".workspace-thread-card.is-active .workspace-thread-open",
+          ) ?? document.querySelector<HTMLElement>(".workspace-search input, .workspace-filter-open");
+          destination?.focus();
+        }
+      }, 0);
+    };
+    const onBreakpointChange = (event: MediaQueryListEvent) => {
+      if (event.matches) focusSurface(true);
+    };
+    focusSurface();
+    media.addEventListener?.("change", onBreakpointChange);
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      media.removeEventListener?.("change", onBreakpointChange);
+    };
+  }, [conversationDetailOpen]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -369,12 +385,11 @@ export function App() {
       }
       if (event.key === "Escape") {
         setPalette(false);
-        closeDrawers();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeDrawers, palette, togglePalette]);
+  }, [palette, togglePalette]);
 
   const store = useConsoleStore();
   useEffect(() => {
@@ -389,39 +404,16 @@ export function App() {
   if (error && !bootstrap) return <FatalError />;
 
   return (
-    <div className="app-shell" style={appStyle}>
+    <div
+      className={`app-shell conversation-layout${conversationDetailOpen ? " has-conversation-detail" : ""}`}
+      style={appStyle}
+    >
       <div className="desktop-agent-rail">
         <AgentRail expanded={agentRailExpanded} onToggleExpanded={toggleAgentRail} />
       </div>
-      <div className="desktop-thread-sidebar"><ThreadSidebar /></div>
-      <Chat onOpenAgents={openAgents} onOpenThreads={openThreads} />
-
-      {(agentDrawer || threadDrawer) && (
-        <button className="drawer-scrim" type="button" onClick={closeDrawers} aria-label="Close navigation" />
-      )}
-      <div
-        ref={agentDrawerRef}
-        className={`mobile-agent-drawer${agentDrawer ? " is-open" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Choose agent"
-        aria-hidden={!agentDrawer}
-        inert={!agentDrawer}
-        tabIndex={-1}
-      >
-        <MobileAgentPicker onSelect={closeDrawers} />
-      </div>
-      <div
-        ref={threadDrawerRef}
-        className={`mobile-thread-drawer${threadDrawer ? " is-open" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Conversations"
-        aria-hidden={!threadDrawer}
-        inert={!threadDrawer}
-        tabIndex={-1}
-      >
-        <ThreadSidebar onSelect={closeDrawers} />
+      <div className="conversation-master"><ConversationWorkspace /></div>
+      <div className="conversation-detail">
+        <Chat onBackToWorkspace={openConversationIndex} />
       </div>
 
       <CommandPalette open={palette} onClose={closePalette} />

@@ -19,11 +19,16 @@ import type {
   ProcessJobProjection,
   StartTurnInput,
   ThreadDetail,
+  ThreadQuery,
   MessagePage,
   ThreadPage,
   ThreadSummary,
   WebAttachment,
+  WebAgentPreferences,
+  WebCollection,
   WebMessage,
+  WebRunPreference,
+  WebWorkflowStatus,
 } from "./types";
 
 export class ApiError extends Error {
@@ -71,6 +76,127 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
   });
   if (!response.ok) throw await readError(response);
   return (await response.json()) as T;
+};
+
+type WireThreadSummary = Omit<
+  ThreadSummary,
+  "workflowStatus" | "pinned" | "collectionId" | "runPreference"
+> & Partial<Pick<
+  ThreadSummary,
+  "workflowStatus" | "pinned" | "collectionId" | "runPreference"
+>>;
+
+type WireThreadPage = Omit<ThreadPage, "threads"> & {
+  readonly threads: readonly WireThreadSummary[];
+};
+
+type WireThreadDetail = Omit<ThreadDetail, "thread"> & {
+  readonly thread: WireThreadSummary;
+};
+
+type WireBootstrap = Omit<Bootstrap, "collections" | "threads"> & {
+  readonly collections?: readonly WebCollection[];
+  readonly threads: readonly WireThreadSummary[];
+};
+
+let legacyV1WithoutCollections = false;
+let legacyV1SourceIds: readonly string[] = [];
+
+const normalizeThreadSummary = (thread: WireThreadSummary): ThreadSummary => {
+  const {
+    workflowStatus,
+    pinned,
+    collectionId,
+    runPreference,
+    ...stable
+  } = thread;
+  return {
+    ...stable,
+    ...(stable.trigger === undefined
+      ? { workflowStatus: workflowStatus ?? (stable.messageCount > 0 ? "in_progress" : "todo") }
+      : {}),
+    pinned: pinned ?? false,
+    collectionId: collectionId ?? null,
+    runPreference: runPreference ?? null,
+  };
+};
+
+const normalizeThreadPage = (page: WireThreadPage): ThreadPage => ({
+  ...page,
+  threads: page.threads.map(normalizeThreadSummary),
+});
+
+const normalizeThreadDetail = (detail: WireThreadDetail): ThreadDetail => ({
+  ...detail,
+  thread: normalizeThreadSummary(detail.thread),
+});
+
+const normalizeBootstrap = (bootstrap: WireBootstrap): Bootstrap => {
+  legacyV1WithoutCollections = bootstrap.collections === undefined;
+  legacyV1SourceIds = legacyV1WithoutCollections
+    ? [...new Set(bootstrap.agents.map(({ sourceId }) => sourceId))]
+    : [];
+  return {
+    ...bootstrap,
+    collections: bootstrap.collections ?? [],
+    threads: bootstrap.threads.map(normalizeThreadSummary),
+  };
+};
+
+const isLegacySourceIdRequired = (error: unknown): error is ApiError =>
+  error instanceof ApiError
+  && error.status === 400
+  && (error.code === "invalid_page" || error.code === "invalid_request")
+  && error.message === "sourceId is required.";
+
+const compareDescendingText = (left: string, right: string): number =>
+  left === right ? 0 : left < right ? 1 : -1;
+
+const compareWorkspaceThreads = (left: ThreadSummary, right: ThreadSummary): number => {
+  const pinOrder = Number(right.pinned) - Number(left.pinned);
+  if (pinOrder !== 0) return pinOrder;
+  const updatedOrder = Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+  if (Number.isFinite(updatedOrder) && updatedOrder !== 0) return updatedOrder;
+  const updatedTextOrder = compareDescendingText(left.updatedAt, right.updatedAt);
+  return updatedTextOrder !== 0
+    ? updatedTextOrder
+    : compareDescendingText(left.id, right.id);
+};
+
+const mergeLegacyThreadPages = (
+  pages: readonly WireThreadPage[],
+  limit: number,
+): ThreadPage => {
+  const threads = new Map<string, ThreadSummary>();
+  for (const page of pages) {
+    for (const candidate of page.threads.map(normalizeThreadSummary)) {
+      const current = threads.get(candidate.id);
+      if (
+        current === undefined
+        || candidate.revision > current.revision
+        || (candidate.revision === current.revision
+          && compareWorkspaceThreads(candidate, current) < 0)
+      ) threads.set(candidate.id, candidate);
+    }
+  }
+  return {
+    threads: [...threads.values()].sort(compareWorkspaceThreads).slice(0, limit),
+  };
+};
+
+const threadQueryString = (input: ThreadQuery): string => {
+  const query = new URLSearchParams();
+  for (const sourceId of input.sourceIds ?? []) query.append("sourceIds", sourceId);
+  if (input.archived !== undefined) query.set("archived", String(input.archived));
+  if (input.workflowStatus !== undefined) query.set("workflowStatus", input.workflowStatus);
+  if (input.collectionId !== undefined) query.set("collectionId", input.collectionId);
+  if (input.pinned !== undefined) query.set("pinned", String(input.pinned));
+  if (input.type !== undefined) query.set("type", input.type);
+  if (input.q !== undefined && input.q.trim()) query.set("q", input.q.trim());
+  if (input.groupBy !== undefined) query.set("groupBy", input.groupBy);
+  if (input.before !== undefined) query.set("before", input.before);
+  query.set("limit", String(input.limit ?? 200));
+  return query.toString();
 };
 
 /** Reject a compromised/stale DTO that tries to move a private rich-part request off origin. */
@@ -234,22 +360,65 @@ const cronMutation = async <T>(path: string, body: Readonly<Record<string, unkno
 };
 
 export const api = {
-  bootstrap: (signal?: AbortSignal) =>
-    request<Bootstrap>("/api/v1/bootstrap", { signal }),
+  bootstrap: async (signal?: AbortSignal) =>
+    normalizeBootstrap(await request<WireBootstrap>("/api/v1/bootstrap", { signal })),
 
-  thread: (threadId: string, signal?: AbortSignal) =>
-    request<ThreadDetail>(`/api/v1/threads/${encodeURIComponent(threadId)}`, {
-      signal,
-    }),
+  thread: async (threadId: string, signal?: AbortSignal) =>
+    normalizeThreadDetail(await request<WireThreadDetail>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}`,
+      { signal },
+    )),
 
-  threads: (sourceId: string, archived: boolean, before?: string, signal?: AbortSignal) => {
+  threads: async (sourceId: string, archived: boolean, before?: string, signal?: AbortSignal) => {
     const query = new URLSearchParams({ sourceId, archived: String(archived), limit: "200" });
     if (before !== undefined) query.set("before", before);
-    return request<ThreadPage>(`/api/v1/threads?${query.toString()}`, { signal });
+    return normalizeThreadPage(await request<WireThreadPage>(
+      `/api/v1/threads?${query.toString()}`,
+      { signal },
+    ));
+  },
+
+  workspaceThreads: async (input: ThreadQuery, signal?: AbortSignal) => {
+    try {
+      return normalizeThreadPage(await request<WireThreadPage>(
+        `/api/v1/threads?${threadQueryString(input)}`,
+        { signal },
+      ));
+    } catch (error) {
+      const sourceIds = input.sourceIds?.length
+        ? [...new Set(input.sourceIds)]
+        : legacyV1WithoutCollections
+          ? legacyV1SourceIds
+          : [];
+      if (!isLegacySourceIdRequired(error) || sourceIds.length === 0) throw error;
+      signal?.throwIfAborted();
+      const archived = input.archived ?? false;
+      const limit = input.limit ?? 200;
+      const pages = await Promise.all(sourceIds.map(async (sourceId) => {
+        const query = new URLSearchParams({
+          sourceId,
+          archived: String(archived),
+          limit: String(limit),
+        });
+        return await request<WireThreadPage>(
+          `/api/v1/threads?${query.toString()}`,
+          { signal },
+        );
+      }));
+      return mergeLegacyThreadPages(pages, limit);
+    }
   },
 
   messages: (threadId: string, before: string, signal?: AbortSignal) => {
     const query = new URLSearchParams({ before, limit: "100" });
+    return request<MessagePage>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/messages?${query.toString()}`,
+      { signal },
+    );
+  },
+
+  messagesAround: (threadId: string, anchor: string, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ anchor, limit: "100" });
     return request<MessagePage>(
       `/api/v1/threads/${encodeURIComponent(threadId)}/messages?${query.toString()}`,
       { signal },
@@ -265,11 +434,11 @@ export const api = {
   },
 
   createThread: async (sourceId: string) => {
-    const result = await request<{ thread: ThreadSummary }>("/api/v1/threads", {
+    const result = await request<{ thread: WireThreadSummary }>("/api/v1/threads", {
       method: "POST",
       body: JSON.stringify({ sourceId }),
     });
-    return result.thread;
+    return normalizeThreadSummary(result.thread);
   },
 
   patchAgent: async (sourceId: string, pinned: boolean) => {
@@ -288,13 +457,79 @@ export const api = {
 
   patchThread: async (
     threadId: string,
-    patch: { title?: string; archived?: boolean },
+    patch: {
+      title?: string;
+      archived?: boolean;
+      workflowStatus?: WebWorkflowStatus;
+      pinned?: boolean;
+      collectionId?: string | null;
+      runPreference?: WebRunPreference | null;
+      expectedRevision?: number;
+    },
   ) => {
-    const result = await request<{ thread: ThreadSummary }>(
+    const result = await request<{ thread: WireThreadSummary }>(
       `/api/v1/threads/${encodeURIComponent(threadId)}`,
       { method: "PATCH", body: JSON.stringify(patch) },
     );
-    return result.thread;
+    return normalizeThreadSummary(result.thread);
+  },
+
+  collections: async (signal?: AbortSignal) => {
+    const result = await request<{ collections: readonly WebCollection[] }>(
+      "/api/v1/collections",
+      { signal },
+    );
+    return result.collections;
+  },
+
+  createCollection: async (name: string) => {
+    const result = await request<{ collection: WebCollection }>("/api/v1/collections", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+    return result.collection;
+  },
+
+  patchCollection: async (collectionId: string, name: string) => {
+    const result = await request<{ collection: WebCollection }>(
+      `/api/v1/collections/${encodeURIComponent(collectionId)}`,
+      { method: "PATCH", body: JSON.stringify({ name }) },
+    );
+    return result.collection;
+  },
+
+  deleteCollection: async (collectionId: string) => {
+    const response = await fetch(`/api/v1/collections/${encodeURIComponent(collectionId)}`, {
+      method: "DELETE",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) throw await readError(response);
+  },
+
+  agentPreferences: async (sourceId: string, signal?: AbortSignal) => {
+    try {
+      const result = await request<{ preferences: WebAgentPreferences }>(
+        `/api/v1/agents/${encodeURIComponent(sourceId)}/preferences`,
+        { signal },
+      );
+      return result.preferences;
+    } catch (error) {
+      if (legacyV1WithoutCollections && error instanceof ApiError && error.status === 404) {
+        return { sourceId, runPreference: null };
+      }
+      throw error;
+    }
+  },
+
+  patchAgentPreferences: async (
+    sourceId: string,
+    runPreference: WebRunPreference | null,
+  ) => {
+    const result = await request<{ preferences: WebAgentPreferences }>(
+      `/api/v1/agents/${encodeURIComponent(sourceId)}/preferences`,
+      { method: "PATCH", body: JSON.stringify({ runPreference }) },
+    );
+    return result.preferences;
   },
 
   deleteThread: async (threadId: string) => {
@@ -305,11 +540,16 @@ export const api = {
     if (!response.ok) throw await readError(response);
   },
 
-  startTurn: async (threadId: string, input: StartTurnInput) =>
-    request<{ thread: ThreadSummary; turn: { id: string; status: string } }>(
+  startTurn: async (threadId: string, input: StartTurnInput) => {
+    const result = await request<{
+      thread: WireThreadSummary;
+      turn: { id: string; status: string };
+    }>(
       `/api/v1/threads/${encodeURIComponent(threadId)}/turns`,
       { method: "POST", body: JSON.stringify(input) },
-    ),
+    );
+    return { ...result, thread: normalizeThreadSummary(result.thread) };
+  },
 
   liveInput: async (threadId: string, text: string) =>
     request<LiveInputReceipt>(
@@ -317,11 +557,13 @@ export const api = {
       { method: "POST", body: JSON.stringify({ text }) },
     ),
 
-  cancelTurn: async (threadId: string) =>
-    request<{ cancelled: true; thread: ThreadSummary }>(
+  cancelTurn: async (threadId: string) => {
+    const result = await request<{ cancelled: true; thread: WireThreadSummary }>(
       `/api/v1/threads/${encodeURIComponent(threadId)}/cancel`,
       { method: "POST" },
-    ),
+    );
+    return { ...result, thread: normalizeThreadSummary(result.thread) };
+  },
 
   pendingAsk: async (threadId: string, signal?: AbortSignal) => {
     const result = await request<{ ask: AskSnapshot | null }>(

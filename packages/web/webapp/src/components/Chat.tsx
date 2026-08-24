@@ -5,6 +5,7 @@ import {
   effortLevelsForAgentModel,
   useConsoleStore,
 } from "../console-store";
+import { isAutomationThread, messageAnchor, messageIdFromHash } from "../conversation-workspace";
 import { conversationConsoleUsage, type ConsoleUsage } from "../usage";
 import { NotificationBell } from "../notifications";
 import { ContextDisplay } from "./assistant-ui/ContextDisplay";
@@ -141,17 +142,19 @@ export function ModelControls() {
   const {
     model,
     effort,
+    effectiveModel,
+    effectiveEffort,
     modelOptions,
     effortOptions,
     setModel,
     setEffort,
     selectedThread,
     selectedAgent,
+    agentPreferences = {},
     detail,
   } = useConsoleStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const disabled = selectedThread?.runState.status === "running";
-  const effectiveModel = model || selectedAgent?.defaultModel;
   const usage = useMemo<ConsoleUsage | null>(() => {
     const projected = conversationConsoleUsage(detail, { selectedModel: effectiveModel });
     if (projected !== null) return projected;
@@ -180,12 +183,18 @@ export function ModelControls() {
   const selectorModels = useMemo<readonly ModelSelectorOption[]>(() => {
     if (!selectedAgent) return [];
     const effortChoices = (reference: string): readonly ModelSelectorEffortOption[] => {
-      const effectiveReference = reference || selectedAgent.defaultModel || modelOptions[0] || "";
+      const effectiveReference = reference || effectiveModel || selectedAgent.defaultModel || modelOptions[0] || "";
       const toggle = selectedAgent.modelOptions?.[effectiveReference]?.reasoningMode === "toggle";
       const levels = effortLevelsForAgentModel(selectedAgent, effectiveReference);
       if (levels.length === 0) return [];
       return [
-        { id: "", name: `Default · ${defaultEffortName(selectedAgent.defaultEffort, toggle)}` },
+        {
+          id: "",
+          name: `Default · ${defaultEffortName(
+            agentPreferences[selectedAgent.sourceId]?.effort ?? selectedAgent.defaultEffort,
+            toggle,
+          )}`,
+        },
         ...levels.map((level) => ({
           id: level,
           name: toggle
@@ -198,9 +207,9 @@ export function ModelControls() {
       {
         id: "",
         name: "Default model",
-        description: selectedAgent.defaultModel
-          ? `Agent default · ${selectedAgent.modelOptions?.[selectedAgent.defaultModel]?.label ?? selectedAgent.defaultModel}`
-          : "Use the agent default",
+        description: effectiveModel
+          ? `Inherited · ${selectedAgent.modelOptions?.[effectiveModel]?.label ?? effectiveModel}`
+          : "Inherit the agent or provider default",
         efforts: effortChoices(""),
       },
       ...modelOptions.map((reference) => ({
@@ -210,9 +219,11 @@ export function ModelControls() {
         efforts: effortChoices(reference),
       })),
     ];
-  }, [modelOptions, selectedAgent]);
+  }, [agentPreferences, effectiveModel, modelOptions, selectedAgent]);
 
-  const hasSettings = modelOptions.length > 0 || effortOptions.length > 0;
+  const hasSettings = selectedThread !== null
+    && !isAutomationThread(selectedThread)
+    && (modelOptions.length > 0 || effortOptions.length > 0);
   return (
     <div className="model-controls" aria-label="Run settings">
       {usage && (
@@ -233,6 +244,12 @@ export function ModelControls() {
           onOpenChange={setSettingsOpen}
           disabled={disabled}
         />
+      )}
+      {hasSettings && (
+        <span className="effective-run-setting sr-only" aria-live="polite">
+          Effective run settings: {effectiveModel || "provider default"}
+          {effectiveEffort ? `, ${effectiveEffort} effort` : ""}
+        </span>
       )}
     </div>
   );
@@ -258,6 +275,7 @@ const defaultEffortName = (effort: string | undefined, toggle: boolean): string 
 function EmptyConversation() {
   const { selectedAgent, createThread, selectedThread } = useConsoleStore();
   const cron = selectedThread?.trigger?.kind === "cron";
+  const automation = selectedThread !== null && isAutomationThread(selectedThread);
   return (
     <ThreadPrimitive.Empty>
       <div className="chat-empty">
@@ -266,15 +284,17 @@ function EmptyConversation() {
           <Icon name="spark" size={22} />
         </div>
         <span className="eyebrow">{selectedAgent?.label ?? "mono-agent"}</span>
-        <h2>{cron ? "No cron runs recorded yet" : selectedThread ? "What should we work on?" : "Start a new conversation"}</h2>
+        <h2>{cron ? "No cron runs recorded yet" : automation ? "No automation activity recorded yet" : selectedThread ? "What should we work on?" : "Start a new conversation"}</h2>
         <p>
           {cron
             ? "Runs will appear here chronologically after the agent admits them."
+            : automation
+              ? "Webhook deliveries and other automation activity will appear here chronologically."
             : selectedAgent
             ? "Messages, reasoning, tool calls, and files stay together in this conversation."
             : "No agents have been discovered yet. Start an agent and it will appear here automatically."}
         </p>
-        {selectedAgent && !selectedThread && !cron && (
+        {selectedAgent && !selectedThread && (
           <button
             type="button"
             className="primary-button"
@@ -290,11 +310,9 @@ function EmptyConversation() {
 }
 
 export function Chat({
-  onOpenAgents,
-  onOpenThreads,
+  onBackToWorkspace,
 }: {
-  readonly onOpenAgents: () => void;
-  readonly onOpenThreads: () => void;
+  readonly onBackToWorkspace: () => void;
 }) {
   const {
     selectedAgent,
@@ -308,6 +326,7 @@ export function Chat({
     loadOlderMessages,
   } = useConsoleStore();
   const runStatus = selectedThread?.runState.status;
+  const automation = selectedThread !== null && isAutomationThread(selectedThread);
   const runNeedsAttention =
     runStatus === "running" ||
     runStatus === "failed" ||
@@ -332,13 +351,12 @@ export function Chat({
 
   return (
     <main className="chat-panel">
+      <SearchAnchorNavigation />
       <header className="chat-header">
         <div className="mobile-navigation">
-          <button type="button" className="icon-button" onClick={onOpenAgents} aria-label="Choose agent">
-            <Icon name="agent" size={19} />
-          </button>
-          <button type="button" className="icon-button" onClick={onOpenThreads} aria-label="Open conversations">
-            <Icon name="menu" size={19} />
+          <button type="button" className="mobile-conversation-back" onClick={onBackToWorkspace} aria-label="Back to conversations">
+            <Icon name="chevron" size={17} />
+            <span>Back</span>
           </button>
         </div>
         <div className="chat-title-block">
@@ -349,7 +367,7 @@ export function Chat({
           </span>
         </div>
         <div className="chat-header-actions">
-          {selectedThread?.trigger?.kind !== "cron" && <ModelControls />}
+          {selectedThread && !automation && <ModelControls />}
           <NotificationBell />
           {selectedThread && (
             <button
@@ -409,6 +427,7 @@ export function Chat({
                   SystemMessage,
                 }}
               />
+              <JumpToLatest />
             </div>
             <ThreadPrimitive.ScrollToBottom className="scroll-bottom" aria-label="Scroll to latest message">
               <Icon name="arrow-down" size={16} />
@@ -424,9 +443,9 @@ export function Chat({
                     Restore to continue
                   </button>
                 </div>
-              ) : selectedThread?.trigger?.kind === "cron" ? (
+              ) : automation ? (
                 <div className="cron-readonly-footer" role="status">
-                  Cron channels are read-only. Open the originating session to continue the conversation.
+                  Automation conversations are read-only. Open the originating session to continue the conversation.
                 </div>
               ) : (
                 <Composer />
@@ -442,4 +461,42 @@ export function Chat({
       </AskReconciliationProvider>
     </main>
   );
+}
+
+export function JumpToLatest() {
+  const { jumpToLatest, selectedThread } = useConsoleStore();
+  if (selectedThread === null || messageIdFromHash() === undefined) return null;
+  return (
+    <button
+      type="button"
+      className="message-history-more"
+      onClick={() => void jumpToLatest().catch(() => undefined)}
+    >
+      Jump to latest
+    </button>
+  );
+}
+
+export function SearchAnchorNavigation() {
+  const {
+    clearPendingMessage,
+    detail,
+    detailLoading,
+    pendingMessageId,
+    selectedThreadId,
+  } = useConsoleStore();
+  const anchorReady = pendingMessageId !== null
+    && detail?.thread.id === selectedThreadId
+    && detail.messages.some(({ id }) => id === pendingMessageId);
+
+  useEffect(() => {
+    if (pendingMessageId === null || detailLoading || !anchorReady) return;
+    const target = document.getElementById(messageAnchor(pendingMessageId));
+    if (target === null) return;
+    target.scrollIntoView({ block: "center" });
+    target.focus({ preventScroll: true });
+    clearPendingMessage();
+  }, [anchorReady, clearPendingMessage, detailLoading, pendingMessageId]);
+
+  return null;
 }

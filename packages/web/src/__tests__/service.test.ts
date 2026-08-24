@@ -103,6 +103,9 @@ describe("WebService", () => {
     expect(() => service.submitLiveInput(threadId, "also not allowed")).toThrowError(
       expect.objectContaining(expected),
     );
+    await expect(service.pendingAsk(threadId)).rejects.toMatchObject(expected);
+    await expect(service.ask(threadId, "ask-one")).rejects.toMatchObject(expected);
+    await expect(service.submitAsk(threadId, "ask-one", [] as const)).rejects.toMatchObject(expected);
     await service.stop();
   });
 
@@ -461,6 +464,17 @@ describe("WebService", () => {
     });
     expect(delivered.thread).toBeDefined();
     const deliveredThread = delivered.thread!;
+    expect(deliveredThread).toMatchObject({ canSend: false, canUpload: false });
+    await expect(service.startTurn(deliveredThread.id, { text: "not interactive" }))
+      .rejects.toMatchObject({ code: "automation_thread_read_only" });
+    expect(() => service.submitLiveInput(deliveredThread.id, "also not interactive"))
+      .toThrowError(expect.objectContaining({ code: "automation_thread_read_only" }));
+    await expect(service.pendingAsk(deliveredThread.id))
+      .rejects.toMatchObject({ code: "automation_thread_read_only" });
+    await expect(service.ask(deliveredThread.id, "ask-one"))
+      .rejects.toMatchObject({ code: "automation_thread_read_only" });
+    await expect(service.submitAsk(deliveredThread.id, "ask-one", [] as const))
+      .rejects.toMatchObject({ code: "automation_thread_read_only" });
     expect(recorded.at(-1)).toEqual({
       conversationId: `web:${deliveredThread.id}`,
       body: { text: "Webhook digest", idempotencyKey: input.deliveryKey },
@@ -1781,6 +1795,127 @@ describe("WebService", () => {
     await expect(service.startTurn(invalid.id, { text: "legacy", model: "other/model" })).rejects.toMatchObject({ code: "invalid_model" });
     await expect(service.startTurn(invalid.id, { text: "legacy", effort: "impossible" })).rejects.toMatchObject({ code: "invalid_effort" });
     await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+});
+
+describe("conversation workspace service", () => {
+  it("persists independent run defaults, resolves precedence, and publishes invalidations", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const turnBodies: Record<string, unknown>[] = [];
+    const options = {
+      stateDir,
+      discoveryIntervalMs: 0,
+      purgeIntervalMs: 0,
+      discoverImpl: async () => [fakeDiscoveredAgent()],
+      fetchImpl: operatorFetch({ onTurn(body) { turnBodies.push(body); } }),
+    } as const;
+    const service = await WebService.create(options);
+    const events: string[] = [];
+    service.subscribe((event) => { events.push(event.type); });
+
+    const collection = service.createCollection("Delivery");
+    expect(service.patchAgentPreferences("agent-one", {
+      runPreference: { model: "provider/fallback", effort: "low" },
+    })).toEqual({
+      sourceId: "agent-one",
+      runPreference: { model: "provider/fallback", effort: "low" },
+    });
+    const thread = service.createThread("agent-one");
+    service.patchThread(thread.id, {
+      collectionId: collection.id,
+      runPreference: { effort: "high" },
+      pinned: true,
+    });
+
+    const started = await service.startTurn(thread.id, { text: "use preferences" });
+    expect(started.thread.workflowStatus).toBe("in_progress");
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(turnBodies[0]?.metadata).toMatchObject({
+      web: { model: "provider/fallback", effort: "high" },
+      tui: { model: "provider/fallback", effort: "high" },
+    });
+    expect(events).toEqual(expect.arrayContaining([
+      "collections.changed",
+      "agent.preferences.changed",
+      "thread.changed",
+      "threads.changed",
+    ]));
+    await service.stop();
+
+    const reopened = await WebService.create(options);
+    expect(reopened.agentPreferences("agent-one")).toEqual({
+      sourceId: "agent-one",
+      runPreference: { model: "provider/fallback", effort: "low" },
+    });
+    expect((await reopened.bootstrap()).collections).toEqual([
+      expect.objectContaining({ id: collection.id, name: "Delivery" }),
+    ]);
+    expect(reopened.thread(thread.id).thread).toMatchObject({
+      collectionId: collection.id,
+      runPreference: { effort: "high" },
+      pinned: true,
+    });
+    await reopened.stop();
+  });
+
+  it("rejects invalid persisted preferences before writing them", async () => {
+    const service = await createService();
+    expect(() => service.patchAgentPreferences("agent-one", {
+      runPreference: { model: "missing/model" },
+    })).toThrowError(expect.objectContaining({ code: "invalid_model" }));
+    expect(service.agentPreferences("agent-one").runPreference).toBeNull();
+    await service.stop();
+  });
+
+  it("applies persisted per-field preferences to queued and assistant-only turns", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({ onTurn(body) { turnBodies.push(body); } }),
+    });
+    service.patchAgentPreferences("agent-one", {
+      runPreference: { model: "provider/fallback", effort: "low" },
+    });
+
+    const queuedThread = service.createThread("agent-one");
+    service.patchThread(queuedThread.id, {
+      workflowStatus: "done",
+      runPreference: { effort: "high" },
+    });
+    expect(service.submitLiveInput(queuedThread.id, "Run the queued follow-up").disposition).toBe("queued");
+    await waitFor(() => turnBodies.length === 1);
+    expect(turnBodies[0]?.metadata).toMatchObject({
+      web: { model: "provider/fallback", effort: "high" },
+      tui: { model: "provider/fallback", effort: "high" },
+    });
+    expect(service.store.getThread(queuedThread.id)?.workflowStatus).toBe("in_progress");
+    await waitFor(() => service.store.getThread(queuedThread.id)?.runState.status !== "running");
+
+    const assistantThread = service.createThread("agent-one");
+    service.patchThread(assistantThread.id, {
+      workflowStatus: "done",
+      runPreference: { effort: "high" },
+    });
+    const processJob = fakeProcessJob({
+      conversationId: `web:${assistantThread.id}`,
+      jobId: "33333333-3333-4333-8333-333333333333",
+      state: "succeeded",
+    });
+    await expect(service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: processJob.wake.deliveryKey,
+      threadId: assistantThread.id,
+      processJob,
+      wakePrompt: "Inspect the background result",
+    })).resolves.toMatchObject({ delivery: { delivered: true, disposition: "follow_up" } });
+    expect(turnBodies[1]?.metadata).toMatchObject({
+      web: { model: "provider/fallback", effort: "high" },
+      tui: { model: "provider/fallback", effort: "high" },
+    });
+    expect(service.store.getThread(assistantThread.id)?.workflowStatus).toBe("in_progress");
     await service.stop();
   });
 });

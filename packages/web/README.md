@@ -1,8 +1,8 @@
 # @mono-agent/web
 
 The persistent browser console for mono-agent. It discovers every running local
-agent, keeps multiple independent conversations in owner-private SQLite state,
-and serves the assistant-ui PWA from one always-on process.
+agent, keeps a searchable cross-agent conversation workspace in owner-private
+SQLite state, and serves the assistant-ui PWA from one always-on process.
 
 ## Category
 
@@ -21,9 +21,10 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   loopback operator endpoints.
 - Publish a separate sanitized ACP import contract with canonical agent-owned
   workspace and compatibility metadata, never operator credentials or paths.
-- Persist agents, threads, messages, structured reasoning/tool/telemetry parts,
-  revisions, turns, attachments, and agent pin preferences under
-  `~/.mono-agent/web`.
+- Persist agents, conversations, collections, workflow state, messages,
+  structured reasoning/tool/telemetry parts, revisions, turns, attachments,
+  agent favorites, conversation pins, and web-only model/effort preferences
+  under `~/.mono-agent/web`.
 - Preserve and render the canonical tool writer's record/state/truncation and
   opaque-artifact metadata carried by structured agent stream events; web
   SQLite remains a client cache, not the canonical lifecycle store.
@@ -99,15 +100,51 @@ managed agent protects its loopback operator endpoint, discovery reads only
 
 On desktop, the agent rail has fixed compact and expanded layouts selected by
 an explicit expand/collapse control. That choice is remembered by the browser.
-Offline agents are hidden behind a subtle count by default; pinned agents and
+Offline agents are hidden behind a subtle count by default; favorite agents and
 the currently selected agent remain visible even while offline. The same
-filter applies to the desktop rail, mobile picker, and command palette. Pin or
-unpin with the star control; pins live in the web service so favorites stay
-consistent over localhost, LAN, and Tailscale.
+filter applies to the desktop rail, mobile picker, and command palette. Add or
+remove an agent favorite with its star control; agent favorites live in the web
+service so they stay consistent over localhost, LAN, and Tailscale.
+
+**Conversations** is a global workspace rather than one thread list per agent.
+Its agent filter accepts multiple sources, while the built-in **All**,
+**Pinned**, and **Unfiled** views and custom collections organize interactive
+conversations across those agents. An interactive conversation belongs to at
+most one custom collection; a null membership appears in **Unfiled**, and
+deleting a collection atomically returns all of its conversations there.
+Conversation pins are durable and the **Pinned** view still respects the
+current filters.
+
+The **List** view can remain ungrouped or group by collection or agent
+(`none | collection | agent`). The **Kanban** view always uses **Todo**, **In
+progress**, and **Done** columns.
+Workflow status is independent of whether a model run is active: a new empty
+conversation starts in **Todo**; the first send, any send from **Done**, and an
+active run put it in **In progress**; **Done** is chosen manually. Archiving a
+conversation clears its pin but retains its collection and workflow status for
+a later restore.
+
+Full-text search matches conversation titles, visible user messages, and only
+completed final assistant answers. It deliberately excludes reasoning, tool
+input/output, telemetry, attachments, and partial or incomplete assistant
+output. Cron channels and webhook-created conversations are automation, so
+they do not join collections, workflow, or Kanban; select the explicit
+automation type filter to see them in List.
+
+Desktop uses a master-detail workspace so navigation and the active chat remain
+visible together. On mobile, chat is full-screen, filters move into a drawer,
+and Kanban shows one workflow-status tab at a time. The existing mobile agent
+picker, offline hiding, and favorite-agent visibility rules remain the same.
 
 The assistant-ui run-settings popover combines searchable model selection with
 the selected model's supported reasoning-effort choices and becomes a
-viewport-safe bottom sheet on narrow screens. Usage telemetry remains internal
+viewport-safe bottom sheet on narrow screens. Model and effort are resolved,
+independently, from a persisted conversation override, then the persisted
+per-agent web default, then the default advertised by the running agent.
+Choosing the inherited setting clears that conversation override. These
+preferences affect interactive web conversations only; they do not rewrite the
+agent config, other channels, or cron/webhook trigger overrides. Usage
+telemetry remains internal
 and is summarized through a context display that keeps exact Pi, Codex,
 OpenCode, and ACP provider-request snapshots separate from last-turn processed
 tokens and conversation cost. Running turns are labeled `Updating`; failed
@@ -284,9 +321,10 @@ cross-resource requests fail. See
 1. `server.ts` accepts the versioned browser API, staged uploads, and SSE
    subscriptions, then delegates stateful work to `WebConsoleService`.
 2. The service discovers agents from the trace-source registry, persists agent,
-   thread, message, part, process-job card, turn, live-input, upload, preference,
-   Web Push subscription/event/delivery, notification, and cron projection
-   records through the SQLite store, and
+   conversation, collection, workflow, search, message, part, process-job card,
+   turn, live-input, upload, model/effort preference, Web Push
+   subscription/event/delivery, notification, and cron projection records
+   through the SQLite store, and
    drives each agent over its loopback operator endpoint.
 3. Service mutations publish invalidations. Browsers consume `/api/v1/events`
    and refetch authoritative projections, including the selected agent's
@@ -344,6 +382,7 @@ ACP_PROTOCOL_VERSION
 AcpBridgeDiscovery
 AcpBridgeSourceDescriptor
 AcpBridgeSourceHealth
+CreateWebCollectionInput
 CreateWebThreadInput
 CreateWebUploadInput
 DEFAULT_WEB_HOST
@@ -364,6 +403,8 @@ OperatorInfo
 OperatorTurnInput
 OperatorTurnResult
 PatchWebAgentInput
+PatchWebAgentPreferencesInput
+PatchWebCollectionInput
 PatchWebThreadInput
 StartWebLiveInputInput
 StartWebServerOptions
@@ -379,10 +420,12 @@ WEB_MAX_STAGED_UPLOAD_BYTES
 WEB_MAX_TURN_ATTACHMENT_BYTES
 WEB_STAGED_UPLOAD_TTL_MS
 WEB_THEMES
+WebAgentPreferences
 WebAgentStatus
 WebAgentSummary
 WebAttachment
 WebBootstrap
+WebCollection
 WebConsoleError
 WebConsoleIdentity
 WebEvent
@@ -397,6 +440,7 @@ WebPushBootstrap
 WebPushSubscriptionState
 WebPushSubscriptionStatus
 WebQuote
+WebRunPreference
 WebRunState
 WebRunStatus
 WebServerHandle
@@ -409,8 +453,13 @@ WebStatePaths
 WebTheme
 WebThread
 WebThreadDetail
+WebThreadGroup
+WebThreadGroupBy
 WebThreadNotificationTriggerKind
+WebThreadPage
+WebThreadSearchMatch
 WebThreadTrigger
+WebWorkflowStatus
 defaultTraceRegistryDir
 defaultWebStateDir
 deliverWebNotification

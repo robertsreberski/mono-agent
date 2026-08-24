@@ -24,9 +24,12 @@ import {
   WEB_API_VERSION,
   WEB_MAX_TURN_TEXT_CHARACTERS,
   WEB_THEMES,
+  type CreateWebCollectionInput,
   type CreateWebThreadInput,
   type CreateWebUploadInput,
+  type PatchWebAgentPreferencesInput,
   type PatchWebAgentInput,
+  type PatchWebCollectionInput,
   type PatchWebThreadInput,
   type StartWebLiveInputInput,
   type StartWebTurnInput,
@@ -148,6 +151,25 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  app.get("/api/v1/agents/:id/preferences", (req, res, next) => {
+    try {
+      res.status(200).json({ preferences: service.agentPreferences(pathParam(req.params.id)) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/v1/agents/:id/preferences", (req, res, next) => {
+    try {
+      const input = parsePatchAgentPreferences(req.body);
+      res.status(200).json({
+        preferences: service.patchAgentPreferences(pathParam(req.params.id), input),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/v1/agents/:id/skills", (req, res, next) => {
     try {
       res.status(200).json(service.agentSkills(pathParam(req.params.id)));
@@ -232,18 +254,83 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  app.get("/api/v1/collections", (_req, res, next) => {
+    try {
+      res.status(200).json({ collections: service.collections() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/collections", (req, res, next) => {
+    try {
+      const input = parseCreateCollection(req.body);
+      res.status(201).json({ collection: service.createCollection(input.name) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/v1/collections/:id", (req, res, next) => {
+    try {
+      const input = parsePatchCollection(req.body);
+      res.status(200).json({
+        collection: service.patchCollection(pathParam(req.params.id), input.name),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/v1/collections/:id", (req, res, next) => {
+    try {
+      service.deleteCollection(pathParam(req.params.id));
+      res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/v1/threads", (req, res, next) => {
     try {
-      const sourceId = requiredQueryString(req.query.sourceId, "sourceId", 512);
-      const archived = req.query.archived === "true"
-        ? true
-        : req.query.archived === "false"
-          ? false
-          : (() => { throw new WebConsoleError("invalid_page", "archived must be true or false.", 400); })();
+      const legacySourceIds = optionalRepeatedQueryStrings(req.query.sourceId, "sourceId", 512);
+      const sourceIds = optionalRepeatedQueryStrings(req.query.sourceIds, "sourceIds", 512);
+      if (legacySourceIds !== undefined && sourceIds !== undefined) {
+        throw new WebConsoleError("invalid_page", "Provide sourceId or sourceIds, not both.", 400);
+      }
+      const selectedSourceIds = sourceIds ?? legacySourceIds;
+      const archived = optionalBooleanQuery(req.query.archived, "archived") ?? false;
+      const workflowStatus = optionalEnumQuery(
+        req.query.workflowStatus,
+        "workflowStatus",
+        ["todo", "in_progress", "done"] as const,
+      );
+      const collectionValue = optionalQueryString(req.query.collectionId, 256);
+      const collectionId = collectionValue === undefined
+        ? undefined
+        : collectionValue === "unfiled" ? null : collectionValue;
+      const pinned = optionalBooleanQuery(req.query.pinned, "pinned");
+      const type = optionalEnumQuery(
+        req.query.type,
+        "type",
+        ["interactive", "cron", "webhook"] as const,
+      );
+      const q = optionalQueryString(req.query.q, 512);
+      const groupBy = optionalEnumQuery(
+        req.query.groupBy,
+        "groupBy",
+        ["none", "collection", "agent"] as const,
+      );
       const before = optionalQueryString(req.query.before, 4_096);
       res.status(200).json(service.threadsPage({
-        sourceId,
+        ...(selectedSourceIds === undefined ? {} : { sourceIds: selectedSourceIds }),
         archived,
+        ...(workflowStatus === undefined ? {} : { workflowStatus }),
+        ...(collectionId === undefined ? {} : { collectionId }),
+        ...(pinned === undefined ? {} : { pinned }),
+        ...(type === undefined ? {} : { type }),
+        ...(q === undefined ? {} : { q }),
+        ...(groupBy === undefined ? {} : { groupBy }),
         limit: boundedQueryLimit(req.query.limit, 200, 200),
         ...(before === undefined ? {} : { before }),
       }));
@@ -263,9 +350,14 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   app.get("/api/v1/threads/:id/messages", (req, res, next) => {
     try {
       const before = optionalQueryString(req.query.before, 4_096);
+      const anchor = optionalQueryString(req.query.anchor, 256);
+      if (before !== undefined && anchor !== undefined) {
+        throw new WebConsoleError("invalid_page", "before and anchor are mutually exclusive.", 400);
+      }
       res.status(200).json(service.messagePage(pathParam(req.params.id), {
         limit: boundedQueryLimit(req.query.limit, 100, 100),
         ...(before === undefined ? {} : { before }),
+        ...(anchor === undefined ? {} : { anchor }),
       }));
     } catch (error) {
       next(error);
@@ -996,10 +1088,28 @@ function parseCreateThread(value: unknown): CreateWebThreadInput {
   return { sourceId: requireString(body.sourceId, "sourceId", 256) };
 }
 
+function parseCreateCollection(value: unknown): CreateWebCollectionInput {
+  const body = requireRecord(value);
+  return { name: requireString(body.name, "name", 80) };
+}
+
+function parsePatchCollection(value: unknown): PatchWebCollectionInput {
+  const body = requireRecord(value);
+  return { name: requireString(body.name, "name", 80) };
+}
+
 function parsePatchAgent(value: unknown): PatchWebAgentInput {
   const body = requireRecord(value);
   if (typeof body.pinned !== "boolean") throw invalidBody("pinned must be boolean.");
   return { pinned: body.pinned };
+}
+
+function parsePatchAgentPreferences(value: unknown): PatchWebAgentPreferencesInput {
+  const body = requireRecord(value);
+  if (!Object.hasOwn(body, "runPreference")) {
+    throw invalidBody("runPreference is required and may be null to inherit.");
+  }
+  return { runPreference: parseRunPreference(body.runPreference) };
 }
 
 function parsePatchThread(value: unknown): PatchWebThreadInput {
@@ -1007,8 +1117,47 @@ function parsePatchThread(value: unknown): PatchWebThreadInput {
   const title = optionalString(body.title, "title", 120);
   const archived = body.archived;
   if (archived !== undefined && typeof archived !== "boolean") throw invalidBody("archived must be boolean.");
-  if (title === undefined && archived === undefined) throw invalidBody("Provide title or archived.");
-  return { ...(title === undefined ? {} : { title }), ...(archived === undefined ? {} : { archived }) };
+  const workflowStatus = body.workflowStatus;
+  if (workflowStatus !== undefined
+    && workflowStatus !== "todo" && workflowStatus !== "in_progress" && workflowStatus !== "done") {
+    throw invalidBody("workflowStatus must be todo, in_progress, or done.");
+  }
+  const pinned = body.pinned;
+  if (pinned !== undefined && typeof pinned !== "boolean") throw invalidBody("pinned must be boolean.");
+  const hasCollectionId = Object.hasOwn(body, "collectionId");
+  const collectionId = hasCollectionId
+    ? body.collectionId === null ? null : requireString(body.collectionId, "collectionId", 256)
+    : undefined;
+  const hasRunPreference = Object.hasOwn(body, "runPreference");
+  const runPreference = hasRunPreference ? parseRunPreference(body.runPreference) : undefined;
+  const expectedRevision = body.expectedRevision;
+  if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || Number(expectedRevision) < 1)) {
+    throw invalidBody("expectedRevision must be a positive integer.");
+  }
+  if (title === undefined && archived === undefined && workflowStatus === undefined && pinned === undefined
+    && !hasCollectionId && !hasRunPreference) {
+    throw invalidBody("Provide thread metadata to update.");
+  }
+  return {
+    ...(title === undefined ? {} : { title }),
+    ...(archived === undefined ? {} : { archived }),
+    ...(workflowStatus === undefined ? {} : { workflowStatus }),
+    ...(pinned === undefined ? {} : { pinned }),
+    ...(hasCollectionId ? { collectionId: collectionId! } : {}),
+    ...(hasRunPreference ? { runPreference: runPreference! } : {}),
+    ...(expectedRevision === undefined ? {} : { expectedRevision: expectedRevision as number }),
+  };
+}
+
+function parseRunPreference(value: unknown): NonNullable<PatchWebThreadInput["runPreference"]> | null {
+  if (value === null) return null;
+  const preference = requireRecord(value);
+  const model = optionalString(preference.model, "runPreference.model", 512);
+  const effort = optionalString(preference.effort, "runPreference.effort", 128);
+  if (model === undefined && effort === undefined) {
+    throw invalidBody("runPreference requires model or effort, or null to inherit.");
+  }
+  return { ...(model === undefined ? {} : { model }), ...(effort === undefined ? {} : { effort }) };
 }
 
 function parseTurn(value: unknown): StartWebTurnInput {
@@ -1155,6 +1304,37 @@ function optionalQueryString(value: unknown, max: number): string | undefined {
     throw new WebConsoleError("invalid_page", "Pagination cursor is invalid.", 400);
   }
   return value;
+}
+
+function optionalRepeatedQueryStrings(
+  value: unknown,
+  field: string,
+  max: number,
+): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  const values = Array.isArray(value) ? value : [value];
+  if (values.length === 0 || values.length > 64
+    || !values.every((entry) => typeof entry === "string" && entry.trim().length > 0 && entry.length <= max)) {
+    throw new WebConsoleError("invalid_page", `${field} must contain 1 to 64 ids.`, 400);
+  }
+  return [...new Set(values as string[])];
+}
+
+function optionalBooleanQuery(value: unknown, field: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new WebConsoleError("invalid_page", `${field} must be true or false.`, 400);
+}
+
+function optionalEnumQuery<const T extends string>(
+  value: unknown,
+  field: string,
+  allowed: readonly T[],
+): T | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string" && (allowed as readonly string[]).includes(value)) return value as T;
+  throw new WebConsoleError("invalid_page", `${field} is invalid.`, 400);
 }
 
 function boundedQueryLimit(value: unknown, maximum: number, fallback: number): number {

@@ -13,7 +13,13 @@ vi.mock("../console-store", async (importOriginal) => {
   };
 });
 
-import { CONNECTION_NOTICE_DELAY_MS, ConnectionBanner, ModelControls } from "./Chat";
+import {
+  CONNECTION_NOTICE_DELAY_MS,
+  ConnectionBanner,
+  JumpToLatest,
+  ModelControls,
+  SearchAnchorNavigation,
+} from "./Chat";
 
 class ResizeObserverStub implements ResizeObserver {
   observe() {}
@@ -52,6 +58,77 @@ describe("ConnectionBanner", () => {
   });
 });
 
+describe("SearchAnchorNavigation", () => {
+  it("keeps an explicit path from a focused search anchor to the latest tail", () => {
+    const jumpToLatest = vi.fn().mockResolvedValue(undefined);
+    window.history.replaceState(null, "", "/conversations/thread#message-answer%2Fone");
+    storeMock.current = {
+      selectedThread: thread("thread", "agent"),
+      jumpToLatest,
+    };
+
+    render(<JumpToLatest />);
+    fireEvent.click(screen.getByRole("button", { name: "Jump to latest" }));
+
+    expect(jumpToLatest).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for the anchored message window after the ordinary detail request finishes", () => {
+    const selected = thread("thread", "agent");
+    const clearPendingMessage = vi.fn();
+    const target = document.createElement("div");
+    const scrollIntoView = vi.fn();
+    target.scrollIntoView = scrollIntoView;
+    target.id = "message-answer%2Fone";
+    target.tabIndex = -1;
+    document.body.append(target);
+    storeMock.current = {
+      selectedThreadId: selected.id,
+      pendingMessageId: "answer/one",
+      detailLoading: false,
+      clearPendingMessage,
+      detail: {
+        thread: selected,
+        messages: [{
+          id: "ordinary-message",
+          threadId: selected.id,
+          role: "assistant",
+          parts: [],
+          attachments: [],
+          createdAt: "2026-07-17T10:00:00.000Z",
+          updatedAt: "2026-07-17T10:00:00.000Z",
+          status: "complete",
+        }],
+      },
+    };
+    const { rerender } = render(<SearchAnchorNavigation />);
+    expect(clearPendingMessage).not.toHaveBeenCalled();
+
+    storeMock.current = {
+      ...storeMock.current,
+      detail: {
+        thread: selected,
+        messages: [{
+          id: "answer/one",
+          threadId: selected.id,
+          role: "assistant",
+          parts: [],
+          attachments: [],
+          createdAt: "2026-07-17T10:01:00.000Z",
+          updatedAt: "2026-07-17T10:01:00.000Z",
+          status: "complete",
+        }],
+      },
+    };
+    rerender(<SearchAnchorNavigation />);
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
+    expect(target).toHaveFocus();
+    expect(clearPendingMessage).toHaveBeenCalledTimes(1);
+    target.remove();
+  });
+});
+
 describe("ModelControls", () => {
   beforeEach(() => {
     storeMock.current = {
@@ -61,7 +138,8 @@ describe("ModelControls", () => {
       effortOptions: ["high"],
       setModel: vi.fn(),
       setEffort: vi.fn(),
-      selectedThread: null,
+      agentPreferences: {},
+      selectedThread: thread("thread", "agent"),
       selectedAgent: agent("agent", {
         models: [MODEL],
         defaultModel: MODEL,
@@ -92,6 +170,24 @@ describe("ModelControls", () => {
 
     fireEvent.click(option);
     expect(store.setModel).toHaveBeenCalledWith(MODEL);
+  });
+
+  it("hides conversation overrides when no interactive conversation is selected", () => {
+    storeMock.current = { ...storeMock.current, selectedThread: null };
+    const { rerender } = render(<ModelControls />);
+    expect(screen.queryByRole("button", { name: "Model and reasoning effort" })).not.toBeInTheDocument();
+
+    storeMock.current = {
+      ...storeMock.current,
+      selectedThread: thread("webhook", "agent", {
+        workflowStatus: undefined,
+        trigger: { kind: "webhook" },
+        canSend: false,
+        canUpload: false,
+      }),
+    };
+    rerender(<ModelControls />);
+    expect(screen.queryByRole("button", { name: "Model and reasoning effort" })).not.toBeInTheDocument();
   });
 
   it("shows the configured default effort while keeping the explicit choices distinct", async () => {
@@ -131,6 +227,54 @@ describe("ModelControls", () => {
       "aria-checked",
       "true",
     );
+  });
+
+  it("builds inherited effort choices from the agent preference model", async () => {
+    const advertised = "provider/advertised";
+    const inherited = "provider/inherited";
+    storeMock.current = {
+      ...storeMock.current,
+      effectiveModel: inherited,
+      effectiveEffort: "high",
+      modelOptions: [advertised, inherited],
+      effortOptions: ["low", "high"],
+      selectedAgent: agent("agent", {
+        models: [advertised, inherited],
+        defaultModel: advertised,
+        modelOptions: {
+          [advertised]: { reasoningMode: "none" },
+          [inherited]: { reasoning: true, effortLevels: ["low", "high"] },
+        },
+      }),
+    };
+    render(<ModelControls />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+
+    const effortGroup = await screen.findByRole("radiogroup", { name: "Reasoning effort" });
+    expect(within(effortGroup).getByRole("radio", { name: "High" })).toBeVisible();
+  });
+
+  it("labels the blank effort choice with the inherited per-agent web preference", async () => {
+    storeMock.current = {
+      ...storeMock.current,
+      effectiveEffort: "high",
+      agentPreferences: { agent: { effort: "high" } },
+      selectedAgent: agent("agent", {
+        models: [MODEL],
+        defaultModel: MODEL,
+        defaultEffort: "medium",
+        modelOptions: {
+          [MODEL]: { reasoning: true, effortLevels: ["medium", "high"] },
+        },
+      }),
+    };
+    render(<ModelControls />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+
+    const effortGroup = await screen.findByRole("radiogroup", { name: "Reasoning effort" });
+    expect(within(effortGroup).getByRole("radio", { name: "Default · High" })).toBeVisible();
   });
 
   it("renders the configured default through a toggle model's on/off vocabulary", async () => {
