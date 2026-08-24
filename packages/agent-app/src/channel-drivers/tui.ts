@@ -1,7 +1,11 @@
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import type { AgentMessageStream, ProcessJobOperator } from "@mono-agent/agent-contracts";
+import type {
+  AgentMessageStream,
+  MemoryOperatorService,
+  ProcessJobOperator,
+} from "@mono-agent/agent-contracts";
 
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
@@ -92,6 +96,7 @@ interface AppOwnedTuiChannelDriver extends ChannelDriver<TuiAdapterConfig> {
   [APP_OWNED_TUI_START](
     input: ChannelStartInput<TuiAdapterConfig>,
     processJobs: ProcessJobOperator | undefined,
+    memoryOperator?: () => Promise<MemoryOperatorService | undefined>,
   ): Promise<RunningChannel>;
 }
 
@@ -106,11 +111,13 @@ export function startAppOwnedTuiChannel(
   driver: ChannelDriver,
   input: ChannelStartInput<unknown>,
   processJobs: ProcessJobOperator | undefined,
+  memoryOperator?: () => Promise<MemoryOperatorService | undefined>,
 ): Promise<RunningChannel> | undefined {
   if (!appOwnedTuiDrivers.has(driver)) return undefined;
   return (driver as AppOwnedTuiChannelDriver)[APP_OWNED_TUI_START](
     input as ChannelStartInput<TuiAdapterConfig>,
     processJobs,
+    memoryOperator,
   );
 }
 
@@ -144,7 +151,7 @@ export function createTuiChannelDriver(
     async start(input) {
       return await this[APP_OWNED_TUI_START](input, undefined);
     },
-    async [APP_OWNED_TUI_START](input, processJobs) {
+    async [APP_OWNED_TUI_START](input, processJobs, memoryOperator) {
       const adapterModule = await loadTuiModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
       const deliverNotification = overrides.deliverNotification ?? deliverWebNotification;
@@ -164,6 +171,7 @@ export function createTuiChannelDriver(
       // Establish a complete first snapshot before the adapter starts listening.
       // Subsequent /v1/info reads are memory-only and cannot block on skill I/O.
       await skillRegistry.prime();
+      const memory = await memoryOperator?.();
 
       const configModelKeys: string[] = [];
       for (const ref of configuredRuntimeModels(input.coreConfig.runtime)) {
@@ -254,6 +262,7 @@ export function createTuiChannelDriver(
           : { processJobs, processJobsBearer: processJobs.operatorToken }),
         ...(input.interaction === undefined ? {} : { interaction: input.interaction }),
         ...(cronOperator?.configured === true ? { cron: cronOperator } : {}),
+        ...(memory === undefined ? {} : { memory }),
         info: buildInfo,
         onServerError: (reason) => input.onFailure(reason),
         ...(input.logger === undefined ? {} : { logger: input.logger }),

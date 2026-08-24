@@ -278,6 +278,15 @@ describe("buildMonoAgentConfigView", () => {
     const memory = section(sections, "memory");
     expect(memory.status).toBe("active");
     expect(field(sections, "memory.mode")).toMatchObject({ value: "lite", source: "env" });
+    expect(field(sections, "memory.operatorActions.enabled")).toMatchObject({ value: "off", source: "default" });
+  });
+
+  it("shows the memory operator action opt-in source", () => {
+    const sections = buildView(
+      baseEnv,
+      { memory: { mode: "lite", path: "/repo/memory", operatorActions: { enabled: true } } },
+    );
+    expect(field(sections, "memory.operatorActions.enabled")).toMatchObject({ value: "on", source: "json" });
   });
 
   it("surfaces consolidation fields for bujo memory and does not expose removed ritual fields", () => {

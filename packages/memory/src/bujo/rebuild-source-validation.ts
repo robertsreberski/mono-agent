@@ -26,6 +26,16 @@ export function assertStrictBulletRaw(raw: string, file: string, line: number): 
   if (due !== undefined && !Number.isFinite(Date.parse(due))) {
     throw new Error(`memory-rebuild: invalid bullet due timestamp at ${file}:${line}.`);
   }
+  const validFrom = fields.get("validFrom");
+  if (validFrom !== undefined && !Number.isFinite(Date.parse(validFrom))) {
+    throw new Error(`memory-rebuild: invalid bullet validFrom timestamp at ${file}:${line}.`);
+  }
+  const priorStatus = fields.get("priorStatus");
+  if (priorStatus !== undefined
+    && priorStatus !== "open" && priorStatus !== "done"
+    && priorStatus !== "scheduled" && priorStatus !== "migrated") {
+    throw new Error(`memory-rebuild: invalid bullet priorStatus at ${file}:${line}.`);
+  }
 }
 
 export function isMissingOnlyIdentity(raw: string): boolean {
@@ -41,7 +51,9 @@ export function isMissingOnlyIdentity(raw: string): boolean {
   if (fields.get("isInsight") !== "0" && fields.get("isInsight") !== "1") return false;
   if (!Number.isFinite(Date.parse(fields.get("created") ?? ""))) return false;
   const due = fields.get("due");
-  return due === undefined || Number.isFinite(Date.parse(due));
+  const validFrom = fields.get("validFrom");
+  return (due === undefined || Number.isFinite(Date.parse(due)))
+    && (validFrom === undefined || Number.isFinite(Date.parse(validFrom)));
 }
 
 export function isLegacySourceRecord(raw: string): boolean {

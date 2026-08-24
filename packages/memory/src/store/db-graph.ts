@@ -84,6 +84,26 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
     tx();
   }
 
+  /** Mark one active record forgotten without re-embedding its unchanged semantic payload. */
+  markForgotten(id: string, at = this.clock().toISOString()): void {
+    const current = this.get(id);
+    if (current === undefined) throw new Error(`memory-store: cannot forget unknown memory "${id}".`);
+    if (current.status === "dropped" && current.validTo === at
+      && current.supersededBy === undefined && current.supersededAt === undefined) return;
+    if (current.status === "dropped" || current.status === "invalidated"
+      || current.validTo !== undefined || current.supersededBy !== undefined
+      || current.supersededAt !== undefined) {
+      throw new Error(`memory-store: cannot forget terminal memory "${id}".`);
+    }
+    const result = this.db.prepare(
+      `UPDATE memories
+       SET status = 'dropped', valid_to = ?, superseded_by = NULL, superseded_at = NULL
+       WHERE id = ? AND status NOT IN ('dropped','invalidated')
+         AND valid_to IS NULL AND superseded_by IS NULL AND superseded_at IS NULL`,
+    ).run(at, id);
+    if (result.changes !== 1) throw new Error(`memory-store: forget compare-and-swap failed for "${id}".`);
+  }
+
   edges(src: string): { src: string; dst: string; kind: string; weight: number }[] {
     return this.db.prepare(`SELECT src, dst, kind, weight FROM edges WHERE src = ?`).all(src) as {
       src: string; dst: string; kind: string; weight: number;
@@ -95,6 +115,25 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
     const rows = this.db.prepare(
       `SELECT src, dst, kind, weight, created_at FROM edges ORDER BY src, dst, kind`,
     ).all() as Array<{ src: string; dst: string; kind: string; weight: number; created_at: string }>;
+    return rows.map((row) => ({
+      src: row.src,
+      dst: row.dst,
+      kind: row.kind,
+      weight: row.weight,
+      createdAt: row.created_at,
+    }));
+  }
+
+  /** Bounded deterministic edge inventory for operator graph projections. */
+  listEdges(limit: number, focusId?: string): { src: string; dst: string; kind: string; weight: number; createdAt: string }[] {
+    assertGraphPageLimit(limit);
+    const rows = this.db.prepare(focusId === undefined
+      ? `SELECT src, dst, kind, weight, created_at FROM edges ORDER BY kind, src, dst LIMIT ?`
+      : `SELECT src, dst, kind, weight, created_at FROM edges
+         WHERE src = ? OR dst = ? ORDER BY kind, src, dst LIMIT ?`)
+      .all(...(focusId === undefined ? [limit] : [focusId, focusId, limit])) as Array<{
+        src: string; dst: string; kind: string; weight: number; created_at: string;
+      }>;
     return rows.map((row) => ({
       src: row.src,
       dst: row.dst,
@@ -345,6 +384,25 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
     }));
   }
 
+  /** Bounded deterministic relation inventory for operator graph projections. */
+  listEntityRelations(limit: number, focusId?: string): EntityRelationRecord[] {
+    assertGraphPageLimit(limit);
+    const rows = this.db.prepare(focusId === undefined
+      ? `SELECT src, dst, relation, created_at FROM entity_relations
+         ORDER BY src, dst, relation LIMIT ?`
+      : `SELECT src, dst, relation, created_at FROM entity_relations
+         WHERE src = ? OR dst = ? ORDER BY src, dst, relation LIMIT ?`)
+      .all(...(focusId === undefined ? [limit] : [focusId, focusId, limit])) as Array<{
+        src: string; dst: string; relation: string; created_at: string;
+      }>;
+    return rows.map((row) => ({
+      src: row.src,
+      dst: row.dst,
+      relation: row.relation,
+      createdAt: row.created_at,
+    }));
+  }
+
   relationsTouching(entityId: string): EntityRelationRecord[] {
     const rows = this.db
       .prepare(`SELECT src, dst, relation, created_at FROM entity_relations WHERE src = ? OR dst = ?`)
@@ -422,6 +480,28 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
     }));
   }
 
+  /** Bounded deterministic association inventory for operator graph projections. */
+  listMemoryAssociations(limit: number, focusId?: string): MemoryEntityAssociation[] {
+    assertGraphPageLimit(limit);
+    const rows = this.db.prepare(focusId === undefined
+      ? `SELECT memory_id, entity_id, provenance, created_at FROM memory_entities
+         ORDER BY memory_id, entity_id LIMIT ?`
+      : `SELECT memory_id, entity_id, provenance, created_at FROM memory_entities
+         WHERE memory_id = ? OR entity_id = ? ORDER BY memory_id, entity_id LIMIT ?`)
+      .all(...(focusId === undefined ? [limit] : [focusId, focusId, limit])) as Array<{
+        memory_id: string;
+        entity_id: string;
+        provenance: MemoryEntityAssociation["provenance"];
+        created_at: string;
+      }>;
+    return rows.map((row) => ({
+      memoryId: row.memory_id,
+      entityId: row.entity_id,
+      provenance: row.provenance,
+      createdAt: row.created_at,
+    }));
+  }
+
   /**
    * Atomically replace the complete graph projection derived from canonical
    * source while retaining only replay-owned thread/supersedes edges.
@@ -468,7 +548,6 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
       this.db.prepare(`DELETE FROM entities`).run();
       this.db.prepare(`DELETE FROM edges WHERE kind IN ('supports','about')`).run();
       this.db.prepare(`UPDATE memories SET collection = NULL WHERE collection IS NOT NULL`).run();
-
       const insertEntity = this.db.prepare(
         `INSERT INTO entities (id, name, type, summary, created_at, updated_at)
          VALUES (@id, @name, @type, @summary, @created_at, @updated_at)`,
@@ -508,6 +587,11 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
         insertSupport.run(support.memoryId, support.entityId, support.weight, support.createdAt);
         if (setCollection.run(support.collection, support.memoryId).changes !== 1) {
           throw new Error(`memory-store: canonical graph replacement lost memory endpoint "${support.memoryId}".`);
+        }
+      }
+      for (const semantic of normalized.semanticCollections) {
+        if (setCollection.run(semantic.collection, semantic.memoryId).changes !== 1) {
+          throw new Error(`memory-store: semantic collection lost memory endpoint "${semantic.memoryId}".`);
         }
       }
       return true;
@@ -715,5 +799,11 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
     return rows
       .filter((row) => entityNameVariants(row.name).some((variant) => variant.join("\u0000") === key))
       .map((row) => row.id);
+  }
+}
+
+function assertGraphPageLimit(limit: number): void {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 501) {
+    throw new Error("memory-store: graph page limit must be an integer from 1 to 501.");
   }
 }

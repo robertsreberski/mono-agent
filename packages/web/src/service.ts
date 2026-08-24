@@ -51,6 +51,16 @@ import {
   type WebLiveInputReceipt,
   type WebMessage,
   type WebMessagePart,
+  type WebMemoryActionInput,
+  type WebMemoryAvailability,
+  type WebMemoryEditInput,
+  type WebMemoryGraph,
+  type WebMemoryGraphQuery,
+  type WebMemoryMutationAdmission,
+  type WebMemoryOperation,
+  type WebMemoryRecordDetail,
+  type WebMemoryRecordPage,
+  type WebMemoryRecordQuery,
   type WebModelOption,
   type WebThreadNotificationTriggerKind,
   type WebSkillRegistry,
@@ -151,6 +161,12 @@ type ProcessJobWakeReceipt = NonNullable<DeliverWebNotificationResult["delivery"
 interface AgentConnection {
   readonly client: OperatorClient;
   readonly info: OperatorInfo;
+  readonly generation: {
+    readonly baseUrl: string;
+    readonly startedAt: string;
+    readonly pid?: number;
+    readonly apiKey?: string;
+  };
 }
 
 interface AskWatch {
@@ -689,6 +705,92 @@ export class WebService {
       return { status: "offline", items: [] };
     }
     return connection.info.skills ?? { status: "unsupported", items: [] };
+  }
+
+  async memoryOverview(sourceId: string): Promise<WebMemoryAvailability> {
+    const connection = this.requireMemoryConnection(sourceId, "overview");
+    const liveCapability = connection.info.memory!;
+    if (!liveCapability.read) return { capability: liveCapability };
+    const overview = await connection.client.memoryOverview(AbortSignal.timeout(INFO_TIMEOUT_MS));
+    const currentConnection = this.ensureCurrentMemoryConnection(sourceId, connection, "overview");
+    const currentCapability = currentConnection.info.memory!;
+    if (!currentCapability.read) return { capability: currentCapability };
+    const effectiveCapability = {
+      ...overview.capability,
+      actions: overview.capability.actions && currentCapability.actions,
+    };
+    if (!effectiveCapability.read) return { capability: effectiveCapability };
+    return {
+      capability: effectiveCapability,
+      overview: { ...overview, capability: effectiveCapability },
+    };
+  }
+
+  async memoryRecords(sourceId: string, query: WebMemoryRecordQuery): Promise<WebMemoryRecordPage> {
+    const connection = this.requireMemoryConnection(sourceId, "read");
+    const page = await connection.client.memoryRecords({
+      ...query,
+      signal: AbortSignal.timeout(INFO_TIMEOUT_MS),
+    });
+    this.ensureCurrentMemoryConnection(sourceId, connection, "read");
+    return page;
+  }
+
+  async memoryRecord(sourceId: string, recordId: string): Promise<WebMemoryRecordDetail> {
+    const connection = this.requireMemoryConnection(sourceId, "read");
+    const detail = await connection.client.memoryRecord(recordId, AbortSignal.timeout(INFO_TIMEOUT_MS));
+    this.ensureCurrentMemoryConnection(sourceId, connection, "read");
+    return detail;
+  }
+
+  async memoryGraph(sourceId: string, query: WebMemoryGraphQuery): Promise<WebMemoryGraph> {
+    const connection = this.requireMemoryConnection(sourceId, "read");
+    const graph = await connection.client.memoryGraph({
+      ...query,
+      signal: AbortSignal.timeout(INFO_TIMEOUT_MS),
+    });
+    this.ensureCurrentMemoryConnection(sourceId, connection, "read");
+    return graph;
+  }
+
+  async memoryEdit(
+    sourceId: string,
+    recordId: string,
+    input: WebMemoryEditInput,
+  ): Promise<Extract<WebMemoryMutationAdmission, { readonly kind: "queued" }>> {
+    const connection = this.requireMemoryConnection(sourceId, "action");
+    const admission = await connection.client.memoryEdit(recordId, input, AbortSignal.timeout(INFO_TIMEOUT_MS));
+    this.ensureCurrentMemoryConnection(sourceId, connection, "action");
+    return admission;
+  }
+
+  async memoryForget(
+    sourceId: string,
+    recordId: string,
+    input: WebMemoryActionInput,
+  ): Promise<WebMemoryMutationAdmission> {
+    const connection = this.requireMemoryConnection(sourceId, "action");
+    const admission = await connection.client.memoryForget(recordId, input, AbortSignal.timeout(INFO_TIMEOUT_MS));
+    this.ensureCurrentMemoryConnection(sourceId, connection, "action");
+    return admission;
+  }
+
+  async memoryRestore(
+    sourceId: string,
+    recordId: string,
+    input: WebMemoryActionInput,
+  ): Promise<Extract<WebMemoryMutationAdmission, { readonly kind: "queued" }>> {
+    const connection = this.requireMemoryConnection(sourceId, "action");
+    const admission = await connection.client.memoryRestore(recordId, input, AbortSignal.timeout(INFO_TIMEOUT_MS));
+    this.ensureCurrentMemoryConnection(sourceId, connection, "action");
+    return admission;
+  }
+
+  async memoryOperation(sourceId: string, operationId: string): Promise<WebMemoryOperation> {
+    const connection = this.requireMemoryConnection(sourceId, "operation");
+    const operation = await connection.client.memoryOperation(operationId, AbortSignal.timeout(INFO_TIMEOUT_MS));
+    this.ensureCurrentMemoryConnection(sourceId, connection, "operation");
+    return operation;
   }
 
   async cronOverview(sourceId: string): Promise<WebCronOverview> {
@@ -1541,7 +1643,16 @@ export class WebService {
       });
       try {
         const info = await client.info(AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]));
-        nextConnections.set(agent.source.sourceId, { client, info });
+        nextConnections.set(agent.source.sourceId, {
+          client,
+          info,
+          generation: {
+            baseUrl: agent.baseUrl,
+            startedAt: agent.source.startedAt,
+            ...(agent.source.pid === undefined ? {} : { pid: agent.source.pid }),
+            ...(agent.apiKey === undefined ? {} : { apiKey: agent.apiKey }),
+          },
+        });
         const efforts = collectEfforts(info);
         return {
           sourceId: agent.source.sourceId,
@@ -1765,6 +1876,42 @@ export class WebService {
       );
     }
     return connection;
+  }
+
+  private requireMemoryConnection(
+    sourceId: string,
+    access: "overview" | "read" | "action" | "operation",
+  ): AgentConnection {
+    const agent = this.store.getAgent(sourceId);
+    if (agent === undefined) {
+      throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    }
+    const connection = this.connections.get(sourceId);
+    if (agent.status === "offline" || connection === undefined) {
+      throw new WebConsoleError("memory_offline", "The agent's live memory operator is offline.", 409);
+    }
+    if (connection.info.memory === undefined) {
+      throw new WebConsoleError("memory_unsupported", "This agent does not expose memory operator state.", 404);
+    }
+    if (access === "read" && !connection.info.memory.read) {
+      throw new WebConsoleError("unavailable", "Memory operator reads are temporarily unavailable.", 503);
+    }
+    if (access === "action" && !connection.info.memory.actions) {
+      throw new WebConsoleError("actions_disabled", "Memory actions are unavailable for this agent.", 403);
+    }
+    return connection;
+  }
+
+  private ensureCurrentMemoryConnection(
+    sourceId: string,
+    connection: AgentConnection,
+    access: "overview" | "read" | "action" | "operation",
+  ): AgentConnection {
+    const current = this.requireMemoryConnection(sourceId, access);
+    if (!sameAgentConnectionGeneration(current, connection)) {
+      throw new WebConsoleError("memory_offline", "The agent's live memory operator changed or went offline.", 409);
+    }
+    return current;
   }
 
   private authorizeReplyPart<T extends "attachment" | "mcp_app">(
@@ -2089,6 +2236,13 @@ function offlineSummary(agent: DiscoveredOperatorAgent): WebAgentSummary {
     supportsAttachments: false,
     updatedAt: agent.source.updatedAt,
   };
+}
+
+function sameAgentConnectionGeneration(left: AgentConnection, right: AgentConnection): boolean {
+  return left.generation.baseUrl === right.generation.baseUrl
+    && left.generation.startedAt === right.generation.startedAt
+    && left.generation.pid === right.generation.pid
+    && left.generation.apiKey === right.generation.apiKey;
 }
 
 function collectEfforts(info: OperatorInfo): readonly string[] {

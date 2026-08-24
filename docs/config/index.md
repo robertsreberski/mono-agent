@@ -69,7 +69,7 @@ Each top-level key maps to one capability area. All are optional except the two 
 | `concurrency` | Per-channel admission and provider-execution bounds | [Sessions and concurrency](/runtime/sessions-concurrency/) |
 | `providers` | Local/self-hosted providers, Pi credentials, pi-native tuning | [Local Providers](/runtime/local-providers/) |
 | `context` | Identity, soul, selected skills | [Context Assembly](/context/assembly/) |
-| `memory` | Tiered memory (lite/journal/bujo), embeddings, consolidation | [Capture & Recall](/memory/capture-and-recall/) |
+| `memory` | Tiered memory, embeddings, consolidation, and opt-in owner actions | [Capture & Recall](/memory/capture-and-recall/), [Memory operator](/memory/operator/) |
 | `tools` | Allow-all-by-default, runtime-enforced allow/deny policy; MCP servers | [Tool Policy](/tools/policy/), [MCP](/tools/mcp/) |
 | `continuations`, `interaction` | Durable asynchronous results, ask-the-user, and progress bridges | [Durable continuations](/tools/durable-continuations/), [Delivery and send tools](/channels/delivery-and-send-tools/) |
 | `sandbox` | Filesystem/network sandboxing for runtime commands | [Sandbox](/tools/sandbox/) |
@@ -85,7 +85,7 @@ Channels start independently. For most channels, omission or `enabled: false` re
 
 Activation depends on the surface:
 
-- **Core behavior is configured by its block.** `memory`, `sandbox`, `concurrency`, and `observability` take effect when configured. Some supporting blocks, such as `providers`, only matter when another selection uses them.
+- **Core behavior is configured by its block.** `memory`, `sandbox`, `concurrency`, and `observability` take effect when configured. Some supporting blocks, such as `providers`, only matter when another selection uses them. Built-in memory inspection is additive when the live store supports it; `memory.operatorActions.enabled` separately opts into owner mutations and defaults off.
 - **Most external channels are opt-in.** `telegram`, `slack`, `webhook`, and `openaiApi` require `enabled: true`. Cron runs only enabled jobs. Plugin channels require a `channels.plugins[]` entry and follow the plugin's own config contract.
 - **The operator endpoint is opt-out.** `tui` defaults to enabled on loopback; set its `enabled` field to `false` to remove it.
 - **Host bridges have their own gates.** `continuations` uses its `enabled` flag. Interaction may auto-start from allowed ask tools, explicit interaction settings, or configured progress delivery.

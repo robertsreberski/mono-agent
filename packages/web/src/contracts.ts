@@ -13,6 +13,32 @@ import {
   type CronOperatorRunSummary,
   type CronOperatorRunTrigger,
   type CronOperatorRunTruncatedField,
+  type MemoryOperatorActionHistoryItem,
+  type MemoryOperatorActionInput,
+  type MemoryOperatorBackend,
+  type MemoryOperatorCapability,
+  type MemoryOperatorCapabilityStatus,
+  type MemoryOperatorConfirmation,
+  type MemoryOperatorEditInput,
+  type MemoryOperatorErrorCode,
+  type MemoryOperatorGraph,
+  type MemoryOperatorGraphEdge,
+  type MemoryOperatorGraphFidelity,
+  type MemoryOperatorGraphNode,
+  type MemoryOperatorGraphQuery,
+  type MemoryOperatorLifecycle,
+  type MemoryOperatorMutationAdmission,
+  type MemoryOperatorOperation,
+  type MemoryOperatorOperationStatus,
+  type MemoryOperatorOverview,
+  type MemoryOperatorRecord,
+  type MemoryOperatorRecordDetail,
+  type MemoryOperatorRecordPage,
+  type MemoryOperatorRecordQuery,
+  type MemoryOperatorRecordStatus,
+  type MemoryOperatorRecordType,
+  type MemoryOperatorSemanticPatch,
+  type MemoryOperatorTier,
   type SessionToolHistoryEventMetadata,
   type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
@@ -396,6 +422,39 @@ export interface WebCronConfirmation {
 export type WebCronMutationResult<T> =
   | { readonly kind: "confirmation_required"; readonly confirmation: WebCronConfirmation }
   | { readonly kind: "completed"; readonly value: T; readonly replayed: boolean };
+
+/** Live, agent-owned memory DTOs. These are never stored in WebStore or bootstrap state. */
+export type WebMemoryTier = MemoryOperatorTier;
+export type WebMemoryBackend = MemoryOperatorBackend;
+export type WebMemoryCapabilityStatus = MemoryOperatorCapabilityStatus;
+export type WebMemoryGraphFidelity = MemoryOperatorGraphFidelity;
+export type WebMemoryCapability = MemoryOperatorCapability;
+export type WebMemoryRecordType = MemoryOperatorRecordType;
+export type WebMemoryRecordStatus = MemoryOperatorRecordStatus;
+export type WebMemoryLifecycle = MemoryOperatorLifecycle;
+export type WebMemoryRecord = MemoryOperatorRecord;
+export type WebMemoryActionHistoryItem = MemoryOperatorActionHistoryItem;
+export type WebMemoryRecordDetail = MemoryOperatorRecordDetail;
+export type WebMemoryOverview = MemoryOperatorOverview;
+/** Live capability is always present; inventory is present only while live reads are enabled. */
+export interface WebMemoryAvailability {
+  readonly capability: WebMemoryCapability;
+  readonly overview?: WebMemoryOverview;
+}
+export type WebMemoryRecordQuery = MemoryOperatorRecordQuery;
+export type WebMemoryRecordPage = MemoryOperatorRecordPage;
+export type WebMemoryGraphNode = MemoryOperatorGraphNode;
+export type WebMemoryGraphEdge = MemoryOperatorGraphEdge;
+export type WebMemoryGraph = MemoryOperatorGraph;
+export type WebMemoryGraphQuery = MemoryOperatorGraphQuery;
+export type WebMemorySemanticPatch = MemoryOperatorSemanticPatch;
+export type WebMemoryActionInput = MemoryOperatorActionInput;
+export type WebMemoryEditInput = MemoryOperatorEditInput;
+export type WebMemoryConfirmation = MemoryOperatorConfirmation;
+export type WebMemoryErrorCode = MemoryOperatorErrorCode;
+export type WebMemoryMutationAdmission = MemoryOperatorMutationAdmission;
+export type WebMemoryOperationStatus = MemoryOperatorOperationStatus;
+export type WebMemoryOperation = MemoryOperatorOperation;
 
 export interface WebChannelConfigViewField {
   readonly id: string;

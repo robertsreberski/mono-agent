@@ -168,8 +168,14 @@ function toRecord(bullet: Bullet, file: string, line: number): MemoryRecord {
     createdAt: bullet.createdAt,
     accessCount: 0,
     ...(bullet.dueAt !== undefined ? { dueAt: bullet.dueAt } : {}),
-    tags: [],
-    source: { file, line },
+    ...(bullet.validFrom !== undefined ? { validFrom: bullet.validFrom } : {}),
+    tags: [...(bullet.tags ?? [])],
+    ...(bullet.collection !== undefined ? { collection: bullet.collection } : {}),
+    source: {
+      file,
+      line,
+      ...(bullet.conversationId === undefined ? {} : { session: bullet.conversationId }),
+    },
   };
 }
 

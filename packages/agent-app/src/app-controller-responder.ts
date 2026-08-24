@@ -133,6 +133,7 @@ export interface ResponderControllerPort {
   }>;
   recordExporterWarning(warning: { readonly phase: string; readonly message: string }): void;
   recordSessionEvent(event: ConfiguredAgentSessionEvent, coreConfig: MonoAgentConfig): void;
+  guardMemoryResponder?(responder: AgentResponder): AgentResponder;
 }
 
 /**
@@ -438,7 +439,8 @@ export async function buildResponder(
   const richReplyResponder = postedReplyHistory.wrapResponder(
     mcpApps === undefined ? replyResponder : mcpApps.wrapResponder(replyResponder),
   );
-  return bindProcessJobWakeContextToResponder(richReplyResponder);
+  const processJobResponder = bindProcessJobWakeContextToResponder(richReplyResponder);
+  return controller.guardMemoryResponder?.(processJobResponder) ?? processJobResponder;
 }
 
 export function requestModelOverrideRuntimeOptions(

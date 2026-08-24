@@ -1,6 +1,6 @@
 ---
 title: "Operator stream endpoint"
-description: "Configure the conversational NDJSON operator endpoint used by local mono-agent consoles."
+description: "Configure the conversational NDJSON and agent-owned memory operator endpoint used by local mono-agent consoles."
 sidebar:
   order: 9
 ---
@@ -57,6 +57,8 @@ Keep the bearer value in `.env` (or an exported environment variable). `mono-age
 existing attachment fields, `capabilities.askUser` tells browser clients that
 the agent supports structured pending-question exchange and
 `capabilities.liveInput` advertises active-turn follow-up settlement.
+`capabilities.memory` independently advertises a sanitized built-in memory
+projection, its actual tier and graph fidelity, and separate read/action gates.
 
 - `POST {basePath}/v1/turns` starts a streamed turn.
 - `GET {basePath}/v1/conversations/:id/ask` returns the pending `AskUser`
@@ -78,11 +80,39 @@ Ask submission is conversation-bound and rejects expired, completed, or
 mismatched interaction ids. The endpoint remains subject to the same loopback,
 non-loopback opt-in, and optional bearer-key policy as streamed turns.
 
+## Memory operator endpoints
+
+A live built-in Lite, Journal, or BuJo store supplies provider-free overview,
+record, terminal action-history, and graph projections. The actual BuJo tier has
+a captured graph; Lite and Journal report it unavailable. Supermemory advertises
+the v1 capability as unsupported rather than exposing or guessing at its remote
+index.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET {basePath}/v1/memory` | Sanitized capability, lifecycle/type counts, access aggregates, and optional embedding identity. |
+| `GET {basePath}/v1/memory/records?q=&lifecycle=&type=&collection=&limit=&before=` | Bounded, cursor-paged canonical record inventory. |
+| `GET {basePath}/v1/memory/records/:recordId` | One record plus terminal edit/forget/restore history. |
+| `GET {basePath}/v1/memory/graph?focusId=&includeHistory=&limit=` | Bounded captured entity/memory graph, or explicit unavailable fidelity. |
+| `PATCH {basePath}/v1/memory/records/:recordId` | Queue a semantic replacement edit. |
+| `POST {basePath}/v1/memory/records/:recordId/forget` | Request or submit the one-use forget confirmation. |
+| `POST {basePath}/v1/memory/records/:recordId/restore` | Queue restoration of an operator-forgotten tombstone to a new active id. |
+| `GET {basePath}/v1/memory/operations/:operationId` | Poll one durable operation receipt; internal queues are not enumerable. |
+
+Reads use the ordinary endpoint bearer policy: they are keyless when no
+`tui.apiKey` is configured and require that bearer when one is configured.
+Mutations are stricter. They require `memory.operatorActions.enabled: true`,
+the actual BuJo tier, and a configured/presented operator API key. Every action
+uses `expectedRevision` plus `idempotencyKey`; only forget returns a `428`
+confirmation challenge. Accepted actions return `202` and are polled to a
+terminal receipt. See [Memory operator](/memory/operator/) for mutation and
+lifecycle semantics.
+
 ## Endpoints & wire protocol
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET {basePath}/v1/info` | `{ schema, pid, capabilities:{attachments:true,liveInput?:true,historyAppend?:true,askUser?:true}, label?, model?, models?, modelOptions?, effort?, skills? }` — identity, additive transport support, model choices, a bounded live skill-registry snapshot, and wire-schema version for skew detection. `skills` is additive and absent on older agents; it reports `ready` items as `inlined`, `on-demand`, or `unavailable`, or an isolated `error` without failing the operator connection. `effort` is the statically configured reasoning-effort level; per-run overrides arrive via the `run_config` runtime_telemetry event instead. |
+| `GET {basePath}/v1/info` | `{ schema, pid, capabilities:{attachments:true,liveInput?:true,historyAppend?:true,askUser?:true,memory?:{...}}, label?, model?, models?, modelOptions?, effort?, skills? }` — identity, additive transport/operator support, model choices, a bounded live skill-registry snapshot, and wire-schema version for skew detection. `skills` and `memory` are additive and absent on older agents; memory failures degrade only that capability instead of turning agent liveness into an error. `effort` is the statically configured reasoning-effort level; per-run overrides arrive via the `run_config` runtime_telemetry event instead. |
 | `POST {basePath}/v1/turns` | Body `{ conversationId, text, attachments?, metadata? }`. Responds with chunked `application/x-ndjson`, one frame per stream callback: `status`, `append`, `replace`, `event` (any `AgentStreamEvent`), then a terminal `finish` (final text + response metadata) or `error` (`cancelled` flagged). Attachment-only turns are accepted when advertised by `/v1/info`. A web client's `metadata.web.model` / `effort` values are preserved and mirrored into the shared `metadata.tui` request-override lane. Closing the socket aborts the in-flight turn. |
 | `POST {basePath}/v1/conversations/:id/live-input` | Authenticated body `{ id, text, receivedAt }`, with text capped at 8,000 characters. Returns `unavailable` immediately when there is no compatible active responder, otherwise holds the request until the offer settles as `applied`, `requeue`, or `discarded`. |
 | `POST {basePath}/v1/conversations/:id/cancel` | Explicit cancel (`202`; `501` if the responder has no cancel). |
@@ -97,6 +127,7 @@ How the endpoint is discovered: the running channel's summary (`baseUrl`) is fol
 - A console conversation uses its own `conversationId`, so it runs concurrently with every other channel; reusing an existing id (e.g. a Telegram conversation's) is possible and queues behind that conversation's in-flight turn.
 - Managed macOS configuration uses a separate opaque configuration conversation id and never reuses the ordinary chat id. The request-scoped proposal extension rotates after each proposal/review or no-change outcome while the console remains visibly in SELF-CONFIG; it never turns a follow-up into ordinary chat.
 - Loopback-only by default; binding further requires `allowNonLoopback` **and** should always pair with `apiKey`. Remember this endpoint streams tool arguments and results: the event-frame cap reduces oversized payloads but is not a redaction boundary, so this remains an operator surface by design.
+- Memory reads are a narrow sanitized projection, not arbitrary filesystem or database access. Memory actions never become keyless: opt-in without `tui.apiKey`, or a key without the memory opt-in, still advertises `actions: false`.
 
 ## Related
 

@@ -31,6 +31,23 @@ import {
   type AgentToolEnvironment,
   type ChannelAskAnswer,
   type ChannelInteractionHub,
+  type MemoryOperatorActionHistoryItem,
+  type MemoryOperatorActionInput,
+  type MemoryOperatorCapability,
+  type MemoryOperatorEditInput,
+  MemoryOperatorError,
+  type MemoryOperatorGraph,
+  type MemoryOperatorGraphEdge,
+  type MemoryOperatorGraphNode,
+  type MemoryOperatorGraphQuery,
+  type MemoryOperatorMutationAdmission,
+  type MemoryOperatorOperation,
+  type MemoryOperatorOverview,
+  type MemoryOperatorRecord,
+  type MemoryOperatorRecordDetail,
+  type MemoryOperatorRecordPage,
+  type MemoryOperatorRecordQuery,
+  type MemoryOperatorService,
   type ProcessJobOperator,
   type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
@@ -156,6 +173,8 @@ export interface TuiAdapterOptions {
   readonly interaction?: ChannelInteractionHub;
   /** Agent-owned cron truth and controls. Absent on older/non-cron hosts. */
   readonly cron?: CronOperatorService;
+  /** Agent-owned, sanitized memory inventory and optional owner mutations. */
+  readonly memory?: MemoryOperatorService;
   /** Owner-authorized process-job control plane; omitted when unavailable. */
   readonly processJobs?: ProcessJobOperator;
   /** Independent owner bearer for process-job routes. Required with processJobs. */
@@ -185,6 +204,31 @@ const MAX_REQUEST_TOOL_ENVIRONMENT_VALUE_BYTES = 16 * 1024;
 const MAX_REQUEST_TOOL_ENVIRONMENT_TOTAL_BYTES = 64 * 1024;
 const MAX_REQUEST_TOOL_ENVIRONMENT_PATHS = 4;
 const MAX_CRON_ACTION_BODY_BYTES = 32 * 1024;
+const MAX_MEMORY_ACTION_BODY_BYTES = 64 * 1024;
+const MAX_MEMORY_OPERATOR_RESPONSE_BYTES = 16 * 1024 * 1024;
+const MAX_MEMORY_RECORD_PAGE = 100;
+const MAX_MEMORY_GRAPH_NODES = 200;
+const MAX_MEMORY_ID_CODE_POINTS = 512;
+const MAX_MEMORY_HTTP_QUERY_CODE_POINTS = 512;
+const MAX_MEMORY_TEXT_CODE_POINTS = 4_000;
+const MAX_MEMORY_TAGS = 32;
+const MAX_MEMORY_TAG_CODE_POINTS = 64;
+const MAX_MEMORY_COLLECTION_CODE_POINTS = 128;
+const MAX_MEMORY_HISTORY_ITEMS = 1_024;
+const MAX_MEMORY_OUTPUT_LABEL_CODE_POINTS = 160;
+const MAX_MEMORY_OUTPUT_METADATA_CODE_POINTS = 512;
+const MAX_MEMORY_SOURCE_ID_BYTES = 4_096;
+const MEMORY_IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$/u;
+const MEMORY_COLLECTION = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const MEMORY_CURSOR = /^[A-Za-z0-9_-]+$/u;
+const MEMORY_OUTPUT_CODE = /^[a-z][a-z0-9_]{0,63}$/u;
+const MEMORY_CONFIRMATION_TOKEN = /^[A-Za-z0-9_-]{1,1024}$/u;
+const INVALID_MEMORY_SEMANTIC_TEXT = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
+const SAFE_MEMORY_CAPABILITY_REASONS = new Set([
+  "Memory action state requires recovery.",
+  "Memory actions are disabled by configuration.",
+  "Memory actions require the active BuJo tier.",
+]);
 const MAX_REPLY_ARTIFACT_ID_BYTES = 128;
 const MAX_REPLY_ARTIFACT_CONVERSATION_BYTES = 4 * 1024;
 const MAX_MCP_APP_IDENTITY_BYTES = 4 * 1024;
@@ -244,6 +288,13 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const cronConfigViewPath = `${basePath}/v1/cron/config-view`;
   const cronRunNowPath = `${basePath}/v1/cron/jobs/:jobId/run`;
   const cronEnabledPath = `${basePath}/v1/cron/jobs/:jobId/effective-enabled`;
+  const memoryOverviewPath = `${basePath}/v1/memory`;
+  const memoryRecordsPath = `${basePath}/v1/memory/records`;
+  const memoryRecordPath = `${basePath}/v1/memory/records/:recordId`;
+  const memoryGraphPath = `${basePath}/v1/memory/graph`;
+  const memoryForgetPath = `${memoryRecordPath}/forget`;
+  const memoryRestorePath = `${memoryRecordPath}/restore`;
+  const memoryOperationPath = `${basePath}/v1/memory/operations/:operationId`;
   const jobsPath = `${basePath}/v1/jobs`;
   const jobPath = `${basePath}/v1/jobs/:jobId`;
   const jobCancelPath = `${basePath}/v1/jobs/:jobId/cancel`;
@@ -266,8 +317,24 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
           });
           return { kind: "degraded" } as const;
         });
-    void Promise.all([resolveInfo(options.info), cronInfo])
-      .then(([info, cronState]) => {
+    const memoryInfo = options.memory === undefined
+      ? Promise.resolve({ kind: "absent" } as const)
+      : Promise.resolve()
+        .then(async () => await options.memory!.capability())
+        .then((capability) => ({
+          kind: "available",
+          capability: projectMemoryCapability(capability),
+        } as const))
+        .catch(() => {
+          logMemoryFailure(
+            options.logger,
+            "Memory operator capability failed during TUI info.",
+            "capability_unavailable",
+          );
+          return { kind: "degraded" } as const;
+        });
+    void Promise.all([resolveInfo(options.info), cronInfo, memoryInfo])
+      .then(([info, cronState, memoryState]) => {
         res.status(200).json({
           schema: TUI_WIRE_SCHEMA,
           pid: process.pid,
@@ -304,6 +371,26 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                     },
                   }),
             ...(options.processJobs === undefined || processJobsBearer === undefined ? {} : { jobs: true }),
+            ...(memoryState.kind === "absent"
+              ? {}
+              : memoryState.kind === "degraded"
+                ? {
+                    memory: {
+                      schema: 1,
+                      backend: "builtin",
+                      status: "degraded",
+                      read: false,
+                      actions: false,
+                      graph: "unavailable",
+                      reason: "Memory operator is temporarily unavailable.",
+                    } satisfies MemoryOperatorCapability,
+                  }
+                : {
+                    memory: {
+                      ...memoryState.capability,
+                      actions: memoryState.capability.actions && apiKey !== undefined,
+                    },
+                  }),
             ...(options.requestToolEnvironment === undefined ? {} : { toolEnvironment: true }),
           },
           ...(info?.label === undefined ? {} : { label: info.label }),
@@ -769,13 +856,176 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     }
   });
 
-  app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
+  app.get(memoryOverviewPath, (req, res, next) => {
+    if (!authorize(req, res, apiKey)) return;
+    if (!requireMemoryService(res, options.memory)) return;
+    const service = options.memory;
+    try {
+      assertMemoryQueryFields(req, []);
+      void readMemoryService(service, () => service.overview())
+        .then((overview) => sendBoundedMemoryJson(res, 200, {
+          overview: projectMemoryOverview(overview),
+        }))
+        .catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get(memoryRecordsPath, (req, res, next) => {
+    if (!authorize(req, res, apiKey)) return;
+    if (!requireMemoryService(res, options.memory)) return;
+    const service = options.memory;
+    try {
+      assertMemoryQueryFields(req, ["q", "lifecycle", "type", "collection", "limit", "before"]);
+      const query = memoryRecordQuery(req);
+      void readMemoryService(service, () => service.records(query))
+        .then((page) => sendBoundedMemoryJson(res, 200, projectMemoryRecordPage(page)))
+        .catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get(memoryRecordPath, (req, res, next) => {
+    if (!authorize(req, res, apiKey)) return;
+    if (!requireMemoryService(res, options.memory)) return;
+    const service = options.memory;
+    try {
+      assertMemoryQueryFields(req, []);
+      const recordId = memoryIdentifier(req.params.recordId, "record");
+      void readMemoryService(service, () => service.record(recordId))
+        .then((detail) => sendBoundedMemoryJson(res, 200, projectMemoryRecordDetail(detail)))
+        .catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get(memoryGraphPath, (req, res, next) => {
+    if (!authorize(req, res, apiKey)) return;
+    if (!requireMemoryService(res, options.memory)) return;
+    const service = options.memory;
+    try {
+      assertMemoryQueryFields(req, ["focusId", "includeHistory", "limit"]);
+      const query = memoryGraphQuery(req);
+      void readMemoryService(service, () => service.graph(query))
+        .then((graph) => sendBoundedMemoryJson(res, 200, { graph: projectMemoryGraph(graph) }))
+        .catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch(
+    memoryRecordPath,
+    express.json({ limit: MAX_MEMORY_ACTION_BODY_BYTES, strict: true }),
+    (req, res, next) => {
+      if (!authorize(req, res, apiKey) || !requireMemoryActionKey(res, apiKey)) return;
+      if (!requireMemoryService(res, options.memory)) return;
+      try {
+        assertMemoryQueryFields(req, []);
+        const recordId = memoryIdentifier(req.params.recordId, "record");
+        const input = memoryEditInput(req.body);
+        void Promise.resolve(options.memory.edit(recordId, input))
+          .then((result) => sendQueuedMemoryMutation(res, result))
+          .catch(next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.post(
+    memoryForgetPath,
+    express.json({ limit: MAX_MEMORY_ACTION_BODY_BYTES, strict: true }),
+    (req, res, next) => {
+      if (!authorize(req, res, apiKey) || !requireMemoryActionKey(res, apiKey)) return;
+      if (!requireMemoryService(res, options.memory)) return;
+      try {
+        assertMemoryQueryFields(req, []);
+        const recordId = memoryIdentifier(req.params.recordId, "record");
+        const input = memoryActionInput(req.body);
+        void Promise.resolve(options.memory.forget(recordId, input))
+          .then((result) => sendForgetMemoryMutation(res, result))
+          .catch(next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.post(
+    memoryRestorePath,
+    express.json({ limit: MAX_MEMORY_ACTION_BODY_BYTES, strict: true }),
+    (req, res, next) => {
+      if (!authorize(req, res, apiKey) || !requireMemoryActionKey(res, apiKey)) return;
+      if (!requireMemoryService(res, options.memory)) return;
+      try {
+        assertMemoryQueryFields(req, []);
+        const recordId = memoryIdentifier(req.params.recordId, "record");
+        const input = memoryActionInput(req.body);
+        void Promise.resolve(options.memory.restore(recordId, input))
+          .then((result) => sendQueuedMemoryMutation(res, result))
+          .catch(next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.get(memoryOperationPath, (req, res, next) => {
+    if (!authorize(req, res, apiKey)) return;
+    if (!requireMemoryService(res, options.memory)) return;
+    try {
+      assertMemoryQueryFields(req, []);
+      const operationId = memoryIdentifier(req.params.operationId, "operation");
+      void Promise.resolve(options.memory.operation(operationId))
+        .then((operation) => sendBoundedMemoryJson(res, 200, {
+          operation: projectMemoryOperation(operation),
+        }))
+        .catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.use((error: unknown, req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) {
       next(error);
       return;
     }
     const parserStatus = (error as { status?: unknown } | null)?.status;
     const parserType = (error as { type?: unknown } | null)?.type;
+    if (isMemoryHttpRequest(req, basePath)) {
+      if (parserStatus === 413 || parserType === "entity.too.large") {
+        sendMemoryErrorResponse(res, 413, "invalid_request", "Memory request body is too large.");
+        return;
+      }
+      const invalidJson = error instanceof SyntaxError && parserStatus === 400;
+      const invalidPathEncoding = error instanceof URIError && parserStatus === 400;
+      if (invalidJson || invalidPathEncoding) {
+        sendMemoryErrorResponse(
+          res,
+          400,
+          "invalid_request",
+          invalidPathEncoding
+            ? "Memory request path is not valid UTF-8."
+            : "Request body is not valid JSON.",
+        );
+        return;
+      }
+      if (error instanceof MemoryOperatorError) {
+        if (error.code === "unavailable") {
+          logMemoryFailure(options.logger, "Memory operator request failed.", "unavailable");
+        }
+        sendSanitizedMemoryOperatorError(res, error.code);
+        return;
+      }
+      logMemoryFailure(options.logger, "Memory operator request failed.", "unexpected_failure");
+      sendSanitizedMemoryOperatorError(res, "unavailable");
+      return;
+    }
     if (parserStatus === 413 || parserType === "entity.too.large") {
       sendJsonError(res, 413, error);
       return;
@@ -1793,6 +2043,843 @@ function sendBoundedCronJson(res: Response, status: number, value: unknown): voi
     );
   }
   res.status(status).type("application/json").send(serialized);
+}
+
+function requireMemoryService(
+  res: Response,
+  service: MemoryOperatorService | undefined,
+): service is MemoryOperatorService {
+  if (service !== undefined) return true;
+  sendJsonError(
+    res,
+    404,
+    new MemoryOperatorError("unavailable", "Memory operator capability is unavailable."),
+  );
+  return false;
+}
+
+function requireMemoryActionKey(res: Response, apiKey: string | undefined): boolean {
+  if (apiKey !== undefined) return true;
+  sendJsonError(
+    res,
+    403,
+    new MemoryOperatorError("actions_disabled", "Memory actions require an operator API key."),
+  );
+  return false;
+}
+
+async function readMemoryService<T>(
+  service: MemoryOperatorService,
+  read: () => T | Promise<T>,
+): Promise<T> {
+  const capability = projectMemoryCapability(await service.capability());
+  if (!capability.read) {
+    throw new MemoryOperatorError("unavailable", "Memory reads are temporarily unavailable.");
+  }
+  return await read();
+}
+
+function projectMemoryCapability(value: unknown): MemoryOperatorCapability {
+  const capability = memoryOutputObject(value);
+  if (capability.schema !== 1
+    || (capability.backend !== "builtin" && capability.backend !== "supermemory")
+    || (capability.status !== "ready" && capability.status !== "degraded" && capability.status !== "unsupported")
+    || typeof capability.read !== "boolean"
+    || typeof capability.actions !== "boolean"
+    || (capability.graph !== "captured" && capability.graph !== "derived" && capability.graph !== "unavailable")) {
+    return invalidMemoryOutput();
+  }
+  if (capability.tier !== undefined
+    && capability.tier !== "lite" && capability.tier !== "journal" && capability.tier !== "bujo") {
+    return invalidMemoryOutput();
+  }
+  let reason: string | undefined;
+  if (capability.reason !== undefined) {
+    const candidate = memoryOutputString(capability.reason, MAX_MEMORY_OUTPUT_METADATA_CODE_POINTS);
+    reason = SAFE_MEMORY_CAPABILITY_REASONS.has(candidate)
+      ? candidate
+      : "Memory operator capability is limited.";
+  }
+  return {
+    schema: 1,
+    backend: capability.backend,
+    ...(capability.tier === undefined ? {} : { tier: capability.tier }),
+    status: capability.status,
+    read: capability.read,
+    actions: capability.actions,
+    graph: capability.graph,
+    ...(reason === undefined ? {} : { reason }),
+  };
+}
+
+function projectMemoryOverview(value: unknown): MemoryOperatorOverview {
+  const overview = memoryOutputObject(value);
+  const counts = memoryOutputObject(overview.counts);
+  const byType = memoryOutputObject(counts.byType);
+  const access = memoryOutputObject(overview.access);
+  const total = memoryOutputInteger(counts.total);
+  const active = memoryOutputInteger(counts.active);
+  const superseded = memoryOutputInteger(counts.superseded);
+  const forgotten = memoryOutputInteger(counts.forgotten);
+  const task = memoryOutputInteger(byType.task);
+  const event = memoryOutputInteger(byType.event);
+  const note = memoryOutputInteger(byType.note);
+  const totalCount = memoryOutputInteger(access.totalCount);
+  const accessedRecords = memoryOutputInteger(access.accessedRecords);
+  if (active + superseded + forgotten !== total
+    || task + event + note !== total
+    || accessedRecords > total
+    || accessedRecords > totalCount) {
+    return invalidMemoryOutput();
+  }
+  let embedding: MemoryOperatorOverview["embedding"];
+  if (overview.embedding !== undefined) {
+    const candidate = memoryOutputObject(overview.embedding);
+    const model = candidate.model === undefined
+      ? undefined
+      : memoryOutputString(candidate.model, MAX_MEMORY_OUTPUT_METADATA_CODE_POINTS);
+    const dimension = candidate.dimension === undefined
+      ? undefined
+      : memoryOutputInteger(candidate.dimension, 1, 1_000_000);
+    embedding = {
+      ...(model === undefined ? {} : { model }),
+      ...(dimension === undefined ? {} : { dimension }),
+    };
+  }
+  return {
+    generatedAt: memoryOutputTimestamp(overview.generatedAt),
+    capability: projectMemoryCapability(overview.capability),
+    counts: {
+      total,
+      active,
+      superseded,
+      forgotten,
+      byType: { task, event, note },
+    },
+    access: { totalCount, accessedRecords },
+    ...(embedding === undefined ? {} : { embedding }),
+  };
+}
+
+function projectMemoryRecordPage(value: unknown): MemoryOperatorRecordPage {
+  const page = memoryOutputObject(value);
+  if (!Array.isArray(page.records) || page.records.length > MAX_MEMORY_RECORD_PAGE) {
+    return invalidMemoryOutput();
+  }
+  const records = page.records.map(projectMemoryRecord);
+  if (new Set(records.map((candidate) => candidate.id)).size !== records.length) {
+    return invalidMemoryOutput();
+  }
+  let nextCursor: string | undefined;
+  if (page.nextCursor !== undefined) {
+    nextCursor = memoryOutputString(page.nextCursor, 4_096);
+    if (!MEMORY_CURSOR.test(nextCursor) || Buffer.byteLength(nextCursor, "utf8") > 4_096) {
+      return invalidMemoryOutput();
+    }
+  }
+  return {
+    records,
+    ...(nextCursor === undefined ? {} : { nextCursor }),
+  };
+}
+
+function projectMemoryRecordDetail(value: unknown): MemoryOperatorRecordDetail {
+  const detail = memoryOutputObject(value);
+  const projectedRecord = projectMemoryRecord(detail.record);
+  if (!Array.isArray(detail.history) || detail.history.length > MAX_MEMORY_HISTORY_ITEMS) {
+    return invalidMemoryOutput();
+  }
+  const history = detail.history.map(projectMemoryHistoryItem);
+  if (history.some((item) => item.recordId !== projectedRecord.id
+    && item.resultRecordId !== projectedRecord.id)) {
+    return invalidMemoryOutput();
+  }
+  return { record: projectedRecord, history };
+}
+
+function projectMemoryRecord(value: unknown): MemoryOperatorRecord {
+  const candidate = memoryOutputObject(value);
+  const id = memoryOutputId(candidate.id);
+  if (typeof candidate.revision !== "string" || !/^[a-f0-9]{64}$/u.test(candidate.revision)
+    || (candidate.lifecycle !== "active" && candidate.lifecycle !== "superseded" && candidate.lifecycle !== "forgotten")
+    || (candidate.type !== "task" && candidate.type !== "event" && candidate.type !== "note")
+    || (candidate.status !== "open" && candidate.status !== "done" && candidate.status !== "scheduled"
+      && candidate.status !== "migrated" && candidate.status !== "dropped" && candidate.status !== "invalidated")
+    || typeof candidate.isInsight !== "boolean") {
+    return invalidMemoryOutput();
+  }
+  const supersededBy = candidate.supersededBy === undefined
+    ? undefined
+    : memoryOutputId(candidate.supersededBy);
+  const expectedLifecycle = candidate.status === "dropped"
+    ? "forgotten"
+    : candidate.status === "invalidated" || supersededBy !== undefined ? "superseded" : "active";
+  if (candidate.lifecycle !== expectedLifecycle) return invalidMemoryOutput();
+  if (!Array.isArray(candidate.tags) || candidate.tags.length > MAX_MEMORY_TAGS) {
+    return invalidMemoryOutput();
+  }
+  const tags = candidate.tags.map((tag) => memoryOutputCanonicalSemanticString(
+    tag,
+    MAX_MEMORY_TAG_CODE_POINTS,
+  ));
+  if (new Set(tags).size !== tags.length) return invalidMemoryOutput();
+  const collection = candidate.collection === undefined
+    ? undefined
+    : memoryOutputCollection(candidate.collection);
+  const lastAccessedAt = optionalMemoryOutputTimestamp(candidate.lastAccessedAt);
+  const validFrom = optionalMemoryOutputTimestamp(candidate.validFrom);
+  const validTo = optionalMemoryOutputTimestamp(candidate.validTo);
+  const dueAt = optionalMemoryOutputTimestamp(candidate.dueAt);
+  const supersededAt = optionalMemoryOutputTimestamp(candidate.supersededAt);
+  if (supersededAt !== undefined && candidate.lifecycle !== "superseded") return invalidMemoryOutput();
+  let source: MemoryOperatorRecord["source"];
+  if (candidate.source !== undefined) {
+    const rawSource = memoryOutputObject(candidate.source);
+    const conversationId = rawSource.conversationId === undefined
+      ? undefined
+      : memoryOutputString(rawSource.conversationId, MAX_MEMORY_SOURCE_ID_BYTES);
+    if (conversationId !== undefined && Buffer.byteLength(conversationId, "utf8") > MAX_MEMORY_SOURCE_ID_BYTES) {
+      return invalidMemoryOutput();
+    }
+    source = { ...(conversationId === undefined ? {} : { conversationId }) };
+  }
+  return {
+    id,
+    revision: candidate.revision,
+    lifecycle: candidate.lifecycle,
+    type: candidate.type,
+    status: candidate.status,
+    text: memoryOutputCanonicalSemanticString(candidate.text, MAX_MEMORY_TEXT_CODE_POINTS, true),
+    salience: memoryOutputFiniteNumber(candidate.salience, 0, 1),
+    isInsight: candidate.isInsight,
+    createdAt: memoryOutputTimestamp(candidate.createdAt),
+    ...(lastAccessedAt === undefined ? {} : { lastAccessedAt }),
+    accessCount: memoryOutputInteger(candidate.accessCount),
+    ...(validFrom === undefined ? {} : { validFrom }),
+    ...(validTo === undefined ? {} : { validTo }),
+    ...(dueAt === undefined ? {} : { dueAt }),
+    tags,
+    ...(collection === undefined ? {} : { collection }),
+    ...(supersededBy === undefined ? {} : { supersededBy }),
+    ...(supersededAt === undefined ? {} : { supersededAt }),
+    ...(source === undefined ? {} : { source }),
+  };
+}
+
+function projectMemoryHistoryItem(value: unknown): MemoryOperatorActionHistoryItem {
+  const item = memoryOutputObject(value);
+  if ((item.action !== "edit" && item.action !== "forget" && item.action !== "restore")
+    || (item.status !== "succeeded" && item.status !== "failed")) {
+    return invalidMemoryOutput();
+  }
+  const createdAt = memoryOutputTimestamp(item.createdAt);
+  const completedAt = memoryOutputTimestamp(item.completedAt);
+  if (Date.parse(completedAt) < Date.parse(createdAt)) return invalidMemoryOutput();
+  const resultRecordId = item.resultRecordId === undefined
+    ? undefined
+    : memoryOutputId(item.resultRecordId);
+  const errorCode = item.errorCode === undefined
+    ? undefined
+    : memoryOutputCode(item.errorCode);
+  if ((item.status === "failed") !== (errorCode !== undefined)) return invalidMemoryOutput();
+  return {
+    id: memoryOutputId(item.id),
+    action: item.action,
+    status: item.status,
+    recordId: memoryOutputId(item.recordId),
+    ...(resultRecordId === undefined ? {} : { resultRecordId }),
+    createdAt,
+    completedAt,
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function projectMemoryGraph(value: unknown): MemoryOperatorGraph {
+  const graph = memoryOutputObject(value);
+  if (graph.fidelity !== "captured" && graph.fidelity !== "derived" && graph.fidelity !== "unavailable") {
+    return invalidMemoryOutput();
+  }
+  if (!Array.isArray(graph.nodes) || graph.nodes.length > MAX_MEMORY_GRAPH_NODES
+    || !Array.isArray(graph.edges) || graph.edges.length > MAX_MEMORY_GRAPH_NODES
+    || (graph.truncated !== undefined && graph.truncated !== true)) {
+    return invalidMemoryOutput();
+  }
+  const nodes = graph.nodes.map(projectMemoryGraphNode);
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  if (nodeIds.size !== nodes.length) return invalidMemoryOutput();
+  const edges = graph.edges.map(projectMemoryGraphEdge);
+  if (edges.some((edge) => !nodeIds.has(edge.source) || !nodeIds.has(edge.target))) {
+    return invalidMemoryOutput();
+  }
+  if (graph.fidelity === "unavailable" && (nodes.length > 0 || edges.length > 0)) {
+    return invalidMemoryOutput();
+  }
+  return {
+    fidelity: graph.fidelity,
+    nodes,
+    edges,
+    ...(graph.truncated === true ? { truncated: true } : {}),
+  };
+}
+
+function projectMemoryGraphNode(value: unknown): MemoryOperatorGraphNode {
+  const node = memoryOutputObject(value);
+  const id = memoryOutputId(node.id);
+  const label = memoryOutputString(node.label, MAX_MEMORY_OUTPUT_LABEL_CODE_POINTS);
+  if (node.kind === "memory") {
+    if ((node.lifecycle !== "active" && node.lifecycle !== "superseded" && node.lifecycle !== "forgotten")
+      || (node.recordType !== "task" && node.recordType !== "event" && node.recordType !== "note")) {
+      return invalidMemoryOutput();
+    }
+    return {
+      kind: "memory",
+      id,
+      label,
+      lifecycle: node.lifecycle,
+      recordType: node.recordType,
+    };
+  }
+  if (node.kind !== "entity") return invalidMemoryOutput();
+  const entityType = node.entityType === undefined
+    ? undefined
+    : memoryOutputString(node.entityType, 128);
+  const summary = node.summary === undefined
+    ? undefined
+    : memoryOutputString(node.summary, MAX_MEMORY_TEXT_CODE_POINTS);
+  return {
+    kind: "entity",
+    id,
+    label,
+    ...(entityType === undefined ? {} : { entityType }),
+    ...(summary === undefined ? {} : { summary }),
+  };
+}
+
+function projectMemoryGraphEdge(value: unknown): MemoryOperatorGraphEdge {
+  const edge = memoryOutputObject(value);
+  if (edge.kind !== "relation" && edge.kind !== "association"
+    && edge.kind !== "supports" && edge.kind !== "supersedes") {
+    return invalidMemoryOutput();
+  }
+  const label = edge.label === undefined
+    ? undefined
+    : memoryOutputString(edge.label, MAX_MEMORY_OUTPUT_METADATA_CODE_POINTS);
+  const weight = edge.weight === undefined
+    ? undefined
+    : memoryOutputFiniteNumber(edge.weight, Number.MIN_VALUE, 1);
+  return {
+    source: memoryOutputId(edge.source),
+    target: memoryOutputId(edge.target),
+    kind: edge.kind,
+    ...(label === undefined ? {} : { label }),
+    ...(weight === undefined ? {} : { weight }),
+  };
+}
+
+function projectMemoryOperation(value: unknown): MemoryOperatorOperation {
+  const operation = memoryOutputObject(value);
+  if ((operation.action !== "edit" && operation.action !== "forget" && operation.action !== "restore")
+    || (operation.status !== "queued" && operation.status !== "draining" && operation.status !== "applying"
+      && operation.status !== "succeeded" && operation.status !== "failed")) {
+    return invalidMemoryOutput();
+  }
+  const createdAt = memoryOutputTimestamp(operation.createdAt);
+  const updatedAt = memoryOutputTimestamp(operation.updatedAt);
+  if (Date.parse(updatedAt) < Date.parse(createdAt)) return invalidMemoryOutput();
+  const resultRecordId = operation.resultRecordId === undefined
+    ? undefined
+    : memoryOutputId(operation.resultRecordId);
+  if ((operation.action === "edit" || operation.action === "restore") !== (resultRecordId !== undefined)) {
+    return invalidMemoryOutput();
+  }
+  const errorCode = operation.errorCode === undefined
+    ? undefined
+    : memoryOutputCode(operation.errorCode);
+  let errorMessage: string | undefined;
+  if (operation.errorMessage !== undefined) {
+    memoryOutputString(operation.errorMessage, MAX_MEMORY_OUTPUT_METADATA_CODE_POINTS);
+    errorMessage = sanitizedMemoryOperationMessage(errorCode);
+  }
+  if ((operation.status === "failed") !== (errorCode !== undefined && errorMessage !== undefined)) {
+    return invalidMemoryOutput();
+  }
+  return {
+    id: memoryOutputId(operation.id),
+    action: operation.action,
+    recordId: memoryOutputId(operation.recordId),
+    status: operation.status,
+    createdAt,
+    updatedAt,
+    ...(resultRecordId === undefined ? {} : { resultRecordId }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+    ...(errorMessage === undefined ? {} : { errorMessage }),
+  };
+}
+
+function projectMemoryMutationAdmission(value: unknown): MemoryOperatorMutationAdmission {
+  const admission = memoryOutputObject(value);
+  if (admission.kind === "queued") {
+    return { kind: "queued", operation: projectMemoryOperation(admission.operation) };
+  }
+  if (admission.kind !== "confirmation_required") return invalidMemoryOutput();
+  const confirmation = memoryOutputObject(admission.confirmation);
+  if (typeof confirmation.token !== "string" || !MEMORY_CONFIRMATION_TOKEN.test(confirmation.token)) {
+    return invalidMemoryOutput();
+  }
+  memoryOutputString(confirmation.message, 1_024);
+  return {
+    kind: "confirmation_required",
+    confirmation: {
+      token: confirmation.token,
+      expiresAt: memoryOutputTimestamp(confirmation.expiresAt),
+      message: "Confirm this memory action?",
+    },
+  };
+}
+
+function memoryOutputObject(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return invalidMemoryOutput();
+  return value;
+}
+
+function memoryOutputId(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0
+    || [...value].length > MAX_MEMORY_ID_CODE_POINTS
+    || INVALID_MEMORY_SEMANTIC_TEXT.test(value)) {
+    return invalidMemoryOutput();
+  }
+  return value;
+}
+
+function memoryOutputString(value: unknown, maxCodePoints: number): string {
+  if (typeof value !== "string" || value.length === 0 || [...value].length > maxCodePoints
+    || INVALID_MEMORY_SEMANTIC_TEXT.test(value)) {
+    return invalidMemoryOutput();
+  }
+  return value;
+}
+
+function memoryOutputCanonicalSemanticString(
+  value: unknown,
+  maxCodePoints: number,
+  rejectDelimiter = false,
+): string {
+  const candidate = memoryOutputString(value, maxCodePoints);
+  if (candidate.normalize("NFKC").trim() !== candidate
+    || (rejectDelimiter && candidate.includes("<!--mem"))) {
+    return invalidMemoryOutput();
+  }
+  return candidate;
+}
+
+function memoryOutputCollection(value: unknown): string {
+  const collection = memoryOutputString(value, MAX_MEMORY_COLLECTION_CODE_POINTS);
+  if (!MEMORY_COLLECTION.test(collection)) return invalidMemoryOutput();
+  return collection;
+}
+
+function memoryOutputCode(value: unknown): string {
+  if (typeof value !== "string" || !MEMORY_OUTPUT_CODE.test(value)) return invalidMemoryOutput();
+  return value;
+}
+
+function memoryOutputInteger(value: unknown, minimum = 0, maximum = Number.MAX_SAFE_INTEGER): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    return invalidMemoryOutput();
+  }
+  return value;
+}
+
+function memoryOutputFiniteNumber(value: unknown, minimum: number, maximum: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < minimum || value > maximum) {
+    return invalidMemoryOutput();
+  }
+  return value;
+}
+
+function memoryOutputTimestamp(value: unknown): string {
+  if (typeof value !== "string") return invalidMemoryOutput();
+  const millis = Date.parse(value);
+  if (!Number.isFinite(millis) || new Date(millis).toISOString() !== value) {
+    return invalidMemoryOutput();
+  }
+  return value;
+}
+
+function optionalMemoryOutputTimestamp(value: unknown): string | undefined {
+  return value === undefined ? undefined : memoryOutputTimestamp(value);
+}
+
+function sanitizedMemoryOperationMessage(code: string | undefined): string {
+  if (code === "revision_conflict") return "Memory record changed before the action completed.";
+  if (code === "not_found") return "Memory record was not found.";
+  if (code === "invalid_request") return "Memory action was not valid for this record.";
+  return "Memory action failed safely.";
+}
+
+function invalidMemoryOutput(): never {
+  throw new MemoryOperatorError("unavailable", "Memory operator returned an invalid response.");
+}
+
+function memoryIdentifier(
+  value: string | readonly string[] | undefined,
+  kind: "record" | "operation",
+): string {
+  if (typeof value !== "string" || value.length === 0
+    || [...value].length > MAX_MEMORY_ID_CODE_POINTS
+    || INVALID_MEMORY_SEMANTIC_TEXT.test(value)) {
+    throw new MemoryOperatorError("invalid_request", `A valid memory ${kind} id is required.`);
+  }
+  return value;
+}
+
+function assertMemoryQueryFields(req: Request, allowed: readonly string[]): void {
+  const unexpected = Object.keys(req.query).find((key) => !allowed.includes(key));
+  if (unexpected !== undefined) {
+    throw new MemoryOperatorError("invalid_request", "Memory query contains an unsupported field.");
+  }
+}
+
+function memoryRecordQuery(req: Request): MemoryOperatorRecordQuery {
+  const query = normalizedMemoryQueryString(
+    req.query.q,
+    "q",
+    MAX_MEMORY_HTTP_QUERY_CODE_POINTS,
+  );
+  const collection = normalizedMemoryQueryString(
+    req.query.collection,
+    "collection",
+    MAX_MEMORY_COLLECTION_CODE_POINTS,
+  );
+  const before = boundedMemoryCursor(req.query.before);
+  const lifecycle = exactMemoryQueryString(req.query.lifecycle, "lifecycle");
+  if (lifecycle !== undefined && lifecycle !== "active" && lifecycle !== "superseded" && lifecycle !== "forgotten") {
+    throw new MemoryOperatorError("invalid_request", "lifecycle must be active, superseded, or forgotten.");
+  }
+  const type = exactMemoryQueryString(req.query.type, "type");
+  if (type !== undefined && type !== "task" && type !== "event" && type !== "note") {
+    throw new MemoryOperatorError("invalid_request", "type must be task, event, or note.");
+  }
+  const limit = boundedMemoryLimit(req.query.limit, MAX_MEMORY_RECORD_PAGE, 50);
+  return {
+    ...(query === undefined ? {} : { query }),
+    ...(lifecycle === undefined ? {} : { lifecycle }),
+    ...(type === undefined ? {} : { type }),
+    ...(collection === undefined ? {} : { collection }),
+    limit,
+    ...(before === undefined ? {} : { before }),
+  };
+}
+
+function memoryGraphQuery(req: Request): MemoryOperatorGraphQuery {
+  const focusId = req.query.focusId === undefined
+    ? undefined
+    : memoryIdentifier(singleMemoryQueryString(req.query.focusId, "focusId"), "record");
+  let includeHistory: boolean | undefined;
+  if (req.query.includeHistory !== undefined) {
+    if (req.query.includeHistory === "true") includeHistory = true;
+    else if (req.query.includeHistory === "false") includeHistory = false;
+    else throw new MemoryOperatorError("invalid_request", "includeHistory must be true or false.");
+  }
+  const limit = boundedMemoryLimit(req.query.limit, MAX_MEMORY_GRAPH_NODES, 100);
+  return {
+    ...(focusId === undefined ? {} : { focusId }),
+    ...(includeHistory === undefined ? {} : { includeHistory }),
+    limit,
+  };
+}
+
+function singleMemoryQueryString(value: unknown, name: string): string {
+  if (typeof value !== "string") {
+    throw new MemoryOperatorError("invalid_request", `${name} must be a single string.`);
+  }
+  return value;
+}
+
+function exactMemoryQueryString(value: unknown, name: string): string | undefined {
+  if (value === undefined) return undefined;
+  return singleMemoryQueryString(value, name);
+}
+
+function normalizedMemoryQueryString(
+  value: unknown,
+  name: string,
+  maxCodePoints: number,
+): string | undefined {
+  if (value === undefined) return undefined;
+  const normalized = singleMemoryQueryString(value, name).normalize("NFKC").trim();
+  if (normalized.length === 0 || [...normalized].length > maxCodePoints) {
+    throw new MemoryOperatorError(
+      "invalid_request",
+      `${name} must be non-empty and at most ${String(maxCodePoints)} Unicode code points.`,
+    );
+  }
+  return normalized;
+}
+
+function boundedMemoryCursor(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const cursor = singleMemoryQueryString(value, "before");
+  if (cursor.length === 0 || Buffer.byteLength(cursor, "utf8") > 4_096) {
+    throw new MemoryOperatorError("invalid_request", "before is not a valid bounded cursor.");
+  }
+  return cursor;
+}
+
+function boundedMemoryLimit(value: unknown, max: number, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== "string" || !/^\d+$/u.test(value)) {
+    throw new MemoryOperatorError("invalid_request", "limit must be a positive integer.");
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > max) {
+    throw new MemoryOperatorError("invalid_request", `limit must be 1-${String(max)}.`);
+  }
+  return parsed;
+}
+
+function memoryActionInput(value: unknown): MemoryOperatorActionInput {
+  if (!isRecord(value)) {
+    throw new MemoryOperatorError("invalid_request", "A JSON action body is required.");
+  }
+  assertMemoryActionKeys(value, ["expectedRevision", "idempotencyKey", "confirmationToken"]);
+  return parseMemoryActionFields(value);
+}
+
+function memoryEditInput(value: unknown): MemoryOperatorEditInput {
+  if (!isRecord(value)) {
+    throw new MemoryOperatorError("invalid_request", "A JSON edit body is required.");
+  }
+  assertMemoryActionKeys(value, ["expectedRevision", "idempotencyKey", "confirmationToken", "patch"]);
+  if (!isRecord(value.patch)) {
+    throw new MemoryOperatorError("invalid_request", "patch must be an object.");
+  }
+  const patch = value.patch;
+  assertMemoryActionKeys(patch, ["text", "type", "tags", "salience", "collection", "dueAt", "validFrom"]);
+  if (Object.keys(patch).length === 0) {
+    throw new MemoryOperatorError("invalid_request", "patch must change at least one semantic field.");
+  }
+
+  let text: string | undefined;
+  if (patch.text !== undefined) {
+    text = normalizeMemorySemanticText(patch.text, "patch.text", MAX_MEMORY_TEXT_CODE_POINTS);
+  }
+  let type: "task" | "event" | "note" | undefined;
+  if (patch.type !== undefined) {
+    if (patch.type !== "task" && patch.type !== "event" && patch.type !== "note") {
+      throw new MemoryOperatorError("invalid_request", "patch.type must be task, event, or note.");
+    }
+    type = patch.type;
+  }
+  let tags: readonly string[] | undefined;
+  if (patch.tags !== undefined) {
+    if (!Array.isArray(patch.tags) || patch.tags.length > MAX_MEMORY_TAGS) {
+      throw new MemoryOperatorError(
+        "invalid_request",
+        `patch.tags must contain at most ${String(MAX_MEMORY_TAGS)} strings.`,
+      );
+    }
+    const parsedTags = patch.tags.map((tag, index) => normalizeMemorySemanticText(
+      tag,
+      `patch.tags[${String(index)}]`,
+      MAX_MEMORY_TAG_CODE_POINTS,
+    ));
+    if (new Set(parsedTags).size !== parsedTags.length) {
+      throw new MemoryOperatorError("invalid_request", "patch.tags must not contain duplicates.");
+    }
+    tags = parsedTags;
+  }
+  let salience: number | undefined;
+  if (patch.salience !== undefined) {
+    if (typeof patch.salience !== "number" || !Number.isFinite(patch.salience) || patch.salience < 0 || patch.salience > 1) {
+      throw new MemoryOperatorError("invalid_request", "patch.salience must be between 0 and 1.");
+    }
+    salience = patch.salience;
+  }
+  const collection = normalizeNullableMemoryCollection(patch.collection);
+  const dueAt = nullableMemoryTimestamp(patch.dueAt, "patch.dueAt");
+  const validFrom = nullableMemoryTimestamp(patch.validFrom, "patch.validFrom");
+  return {
+    ...parseMemoryActionFields(value),
+    patch: {
+      ...(text === undefined ? {} : { text }),
+      ...(type === undefined ? {} : { type }),
+      ...(tags === undefined ? {} : { tags }),
+      ...(salience === undefined ? {} : { salience }),
+      ...(collection === undefined ? {} : { collection }),
+      ...(dueAt === undefined ? {} : { dueAt }),
+      ...(validFrom === undefined ? {} : { validFrom }),
+    },
+  };
+}
+
+function parseMemoryActionFields(value: Record<string, unknown>): MemoryOperatorActionInput {
+  if (typeof value.expectedRevision !== "string" || !/^[a-f0-9]{64}$/u.test(value.expectedRevision)) {
+    throw new MemoryOperatorError("invalid_request", "expectedRevision must be 64 lowercase hexadecimal characters.");
+  }
+  if (typeof value.idempotencyKey !== "string" || !MEMORY_IDEMPOTENCY_KEY.test(value.idempotencyKey)) {
+    throw new MemoryOperatorError("invalid_request", "idempotencyKey has an invalid format.");
+  }
+  let confirmationToken: string | undefined;
+  if (value.confirmationToken !== undefined) {
+    if (typeof value.confirmationToken !== "string" || value.confirmationToken.length === 0
+      || Buffer.byteLength(value.confirmationToken, "utf8") > 1_024) {
+      throw new MemoryOperatorError("invalid_request", "confirmationToken must be a non-empty bounded string.");
+    }
+    confirmationToken = value.confirmationToken;
+  }
+  return {
+    expectedRevision: value.expectedRevision,
+    idempotencyKey: value.idempotencyKey,
+    ...(confirmationToken === undefined ? {} : { confirmationToken }),
+  };
+}
+
+function assertMemoryActionKeys(value: Record<string, unknown>, allowed: readonly string[]): void {
+  const unexpected = Object.keys(value).find((key) => !allowed.includes(key));
+  if (unexpected !== undefined) {
+    throw new MemoryOperatorError("invalid_request", `Unexpected memory action field: ${unexpected}.`);
+  }
+}
+
+function normalizeMemorySemanticText(value: unknown, name: string, maxCodePoints: number): string {
+  if (typeof value !== "string") {
+    throw new MemoryOperatorError("invalid_request", `${name} must be a string.`);
+  }
+  const normalized = value.normalize("NFKC").trim();
+  if (normalized.length === 0 || [...normalized].length > maxCodePoints
+    || INVALID_MEMORY_SEMANTIC_TEXT.test(normalized)
+    || (name === "patch.text" && normalized.includes("<!--mem"))) {
+    throw new MemoryOperatorError(
+      "invalid_request",
+      `${name} is invalid or exceeds ${String(maxCodePoints)} Unicode code points.`,
+    );
+  }
+  return normalized;
+}
+
+function normalizeNullableMemoryCollection(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "string") {
+    throw new MemoryOperatorError("invalid_request", "patch.collection must be a string or null.");
+  }
+  const normalized = value
+    .normalize("NFKC")
+    .trim()
+    .toLocaleLowerCase("en-US")
+    .replace(/[ _]+/gu, "-");
+  if (normalized.length === 0 || [...normalized].length > MAX_MEMORY_COLLECTION_CODE_POINTS
+    || !MEMORY_COLLECTION.test(normalized)) {
+    throw new MemoryOperatorError("invalid_request", "patch.collection must be a bounded slug or null.");
+  }
+  return normalized;
+}
+
+function nullableMemoryTimestamp(value: unknown, name: string): string | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "string") {
+    throw new MemoryOperatorError("invalid_request", `${name} must be an exact ISO timestamp or null.`);
+  }
+  const millis = Date.parse(value);
+  if (!Number.isFinite(millis) || new Date(millis).toISOString() !== value) {
+    throw new MemoryOperatorError("invalid_request", `${name} must be an exact ISO timestamp or null.`);
+  }
+  return value;
+}
+
+function sendQueuedMemoryMutation(
+  res: Response,
+  value: unknown,
+): void {
+  const result = projectMemoryMutationAdmission(value);
+  if (result.kind !== "queued") {
+    throw new MemoryOperatorError("unavailable", "Memory mutation returned an unexpected confirmation challenge.");
+  }
+  sendBoundedMemoryJson(res, 202, result);
+}
+
+function sendForgetMemoryMutation(
+  res: Response,
+  value: unknown,
+): void {
+  const result = projectMemoryMutationAdmission(value);
+  sendBoundedMemoryJson(res, result.kind === "confirmation_required" ? 428 : 202, result);
+}
+
+function sendBoundedMemoryJson(res: Response, status: number, value: unknown): void {
+  const serialized = JSON.stringify(value);
+  if (Buffer.byteLength(serialized, "utf8") > MAX_MEMORY_OPERATOR_RESPONSE_BYTES) {
+    throw new MemoryOperatorError(
+      "unavailable",
+      "Memory operator response exceeded its bounded wire contract.",
+    );
+  }
+  res.status(status).type("application/json").send(serialized);
+}
+
+function memoryOperatorStatus(code: string): number {
+  switch (code) {
+    case "invalid_request": return 400;
+    case "not_found": return 404;
+    case "actions_disabled": return 403;
+    case "confirmation_invalid": return 400;
+    case "revision_conflict":
+    case "idempotency_conflict":
+    case "replay_expired": return 409;
+    case "unavailable": return 503;
+    default: return 500;
+  }
+}
+
+function sendSanitizedMemoryOperatorError(res: Response, code: string): void {
+  const status = memoryOperatorStatus(code);
+  switch (code) {
+    case "invalid_request":
+      sendMemoryErrorResponse(res, status, code, "Memory operator request is invalid.");
+      return;
+    case "not_found":
+      sendMemoryErrorResponse(res, status, code, "Memory resource was not found.");
+      return;
+    case "actions_disabled":
+      sendMemoryErrorResponse(res, status, code, "Memory actions are unavailable.");
+      return;
+    case "revision_conflict":
+      sendMemoryErrorResponse(res, status, code, "Memory record changed; refresh and retry.");
+      return;
+    case "confirmation_invalid":
+      sendMemoryErrorResponse(res, status, code, "Memory action confirmation is invalid or expired.");
+      return;
+    case "idempotency_conflict":
+      sendMemoryErrorResponse(res, status, code, "Memory action key conflicts with an earlier request.");
+      return;
+    case "replay_expired":
+      sendMemoryErrorResponse(res, status, code, "Memory action replay is no longer available.");
+      return;
+    default:
+      sendMemoryErrorResponse(res, 503, "unavailable", "Memory operator is temporarily unavailable.");
+  }
+}
+
+function sendMemoryErrorResponse(res: Response, status: number, code: string, message: string): void {
+  res.status(status).json({ error: { message, code } });
+}
+
+function isMemoryHttpRequest(req: Request, basePath: string): boolean {
+  const prefix = `${basePath}/v1/memory`;
+  const url = req.originalUrl;
+  return url === prefix || url.startsWith(`${prefix}/`) || url.startsWith(`${prefix}?`);
+}
+
+function logMemoryFailure(
+  logger: TuiAdapterLogger | undefined,
+  message: string,
+  category: string,
+): void {
+  try {
+    logger?.error?.(message, { category });
+  } catch {
+    // Logging must not change the public failure or capability posture.
+  }
 }
 
 function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {

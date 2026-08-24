@@ -1,5 +1,16 @@
 export { createBujoMemoryStore, BujoMemoryStore } from "./store.js";
 export {
+  BujoMemoryOperatorService,
+  createBujoMemoryOperatorService,
+} from "./operator-service.js";
+export type {
+  BuiltinMemoryOperatorService,
+  BujoMemoryOperatorHooks,
+  BujoMemoryOperatorServiceOptions,
+  MemoryOperatorIntegrityFailure,
+  MemoryOperatorMutationGate,
+} from "./operator-service.js";
+export {
   AUTO_RECALL_BACKEND_HITS,
   AUTO_RECALL_MAX_BYTES,
   AUTO_RECALL_MAX_HITS,

@@ -50,6 +50,7 @@ npm install "@mono-agent/memory-supermemory@${APP_VERSION}"
 | Setup effort | Pull Ollama models (for `journal`/`bujo`); zero extra services for `lite` | Install the optional mono-agent plugin plus `supermemory-server` (and point it at an LLM) |
 | Lock-in / portability | Open SQLite + markdown; no service | Data lives in Supermemory; no shared index with BuJo |
 | `MemoryRecall` tool | Same tool, same shape | Same tool (proxies Supermemory search behind the same name) |
+| Agent-owned operator inventory/actions | Provider-free reads for every live built-in tier; opt-in edit/forget/restore for actual BuJo | Unsupported in v1; no remote canonical-record projection |
 
 ## How they differ
 
@@ -98,6 +99,19 @@ see [Consolidation](/memory/rituals/). It does not decay salience or automatical
 canonical memories. Supermemory performs its own consolidation server-side, so the BuJo
 scheduler does not run for the Supermemory backend.
 
+### Operator inspection
+
+The built-in backend exposes a sanitized provider-free overview, record pages,
+record action history, and—on the actual BuJo tier—the captured graph. Its
+owner mutations are revision-checked, idempotent, durably queued, and disabled
+unless both `memory.operatorActions.enabled` and an operator API key are set.
+Lite and Journal remain read-only.
+
+Supermemory advertises this operator capability as unsupported in v1. Mono-agent
+does not fetch or synthesize remote canonical records, graph state, or mutation
+history. This does not affect the shared model-facing `MemoryRecall` contract.
+See [Memory operator](/memory/operator/).
+
 ### Privacy & data ownership
 BuJo keeps storage local in formats you own and can inspect. Journal/BuJo still
 send input text to configured embedding/chat endpoints, so use local providers
@@ -121,7 +135,8 @@ BuJo (`bujo` tier — full capture + projection-only consolidation):
     "writeMode": "capture",
     "embeddings": { "provider": "ollama", "model": "nomic-embed-text:v1.5" },
     "llm": { "provider": "agent-host", "model": "claude:claude-sonnet-4-6" },
-    "recallTool": { "enabled": true }
+    "recallTool": { "enabled": true },
+    "operatorActions": { "enabled": false }
   }
 }
 ```
@@ -202,6 +217,7 @@ plugin or MCP boundary rather than sharing a BuJo directory.
 ## See also
 
 - [Memory overview & tiers](/memory/)
+- [Memory operator](/memory/operator/)
 - [Write modes, capture & recall](/memory/capture-and-recall/)
 - [Consolidation](/memory/rituals/)
 - [Embeddings](/memory/embeddings/)

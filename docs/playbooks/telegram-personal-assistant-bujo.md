@@ -60,6 +60,7 @@ Put `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`; the source config omits the c
       "model": "qwen3.6:latest",
       "endpoint": "http://localhost:11434"
     },
+    "operatorActions": { "enabled": false },
     "consolidation": { "enabled": true, "cron": "0 */2 * * *" }
   }
 }
@@ -69,6 +70,13 @@ Keep `botToken` out of the file by setting `MONO_AGENT_TELEGRAM_BOT_TOKEN` in
 `.env` instead. The memory LLM provider/model/endpoint can also come from
 `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, and
 `MONO_AGENT_MEMORY_LLM_ENDPOINT`.
+
+The running agent exposes sanitized, provider-free memory reads to its owner
+endpoint. Keep `operatorActions.enabled` false unless this assistant needs owner
+edit/forget/restore. Enabling those actions also requires `tui.apiKey`; use
+`MONO_AGENT_MEMORY_OPERATOR_ACTIONS_ENABLED=true` and
+`MONO_AGENT_TUI_API_KEY=<owner-bearer>` in `.env` rather than putting the bearer
+in JSON. See [Memory operator](/memory/operator/).
 
 :::note
 Consolidation runs in-app on the schedule above — no external cron or launchd is needed.
@@ -104,6 +112,7 @@ From the allowed Telegram chat, send a message; verify the typing indicator then
 - [Delivery and send tools](/channels/delivery-and-send-tools/)
 - [Memory consolidation](/memory/rituals/)
 - [Capture and recall](/memory/capture-and-recall/)
+- [Memory operator](/memory/operator/)
 - [Embeddings](/memory/embeddings/)
 - [Artifacts and traces](/observability/artifacts-and-traces/) — where the run JSONL lands
 - [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md) — build this agent from one config

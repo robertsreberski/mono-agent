@@ -8,11 +8,14 @@ import type {
 import { MEMORY_STATUSES } from "./types.js";
 import type {
   CanonicalGraphReplacement,
+  CanonicalGraphSemanticCollection,
   CanonicalGraphReplacementSupport,
 } from "./db-projection-types.js";
 
-export interface NormalizedCanonicalGraphReplacement extends CanonicalGraphReplacement {
+export interface NormalizedCanonicalGraphReplacement
+  extends Omit<CanonicalGraphReplacement, "semanticCollections"> {
   readonly memories: readonly CanonicalGraphMemoryRecord[];
+  readonly semanticCollections: readonly CanonicalGraphSemanticCollection[];
 }
 
 export interface CanonicalGraphOwnedEdge {
@@ -45,6 +48,8 @@ export function validateCanonicalGraphReplacement(
   const supports = [...projection.supports].sort((left, right) => (
     canonicalSupportKey(left).localeCompare(canonicalSupportKey(right))
   ));
+  const semanticCollections = [...(projection.semanticCollections ?? [])]
+    .sort((left, right) => left.memoryId.localeCompare(right.memoryId));
 
   assertUniqueCanonicalKeys(memories, (memory) => memory.id, "memory");
   assertUniqueCanonicalKeys(entities, (entity) => entity.id, "entity");
@@ -52,6 +57,7 @@ export function validateCanonicalGraphReplacement(
   assertUniqueCanonicalKeys(associations, canonicalAssociationKey, "association");
   assertUniqueCanonicalKeys(supports, canonicalSupportKey, "support");
   assertUniqueCanonicalKeys(supports, (support) => support.memoryId, "support memory endpoint");
+  assertUniqueCanonicalKeys(semanticCollections, (entry) => entry.memoryId, "semantic collection memory endpoint");
 
   const memoryById = new Map(memories.map((memory) => [memory.id, memory]));
   const entityById = new Map(entities.map((entity) => [entity.id, entity]));
@@ -120,7 +126,18 @@ export function validateCanonicalGraphReplacement(
       throw new Error("memory-store: canonical graph support timestamp is not deterministic.");
     }
   }
-  return { memories, entities, relations, associations, supports };
+  const supportIds = new Set(supports.map((support) => support.memoryId));
+  for (const entry of semanticCollections) {
+    const memory = memoryById.get(entry.memoryId);
+    if (memory === undefined || memory.collection !== entry.collection) {
+      throw new Error("memory-store: semantic collection does not match its memory projection.");
+    }
+    if (supportIds.has(entry.memoryId)) {
+      throw new Error("memory-store: collection cannot be both semantic and graph-owned.");
+    }
+    assertCanonicalGraphValue(entry.collection, "semantic collection");
+  }
+  return { memories, entities, relations, associations, supports, semanticCollections };
 }
 
 export function sameCanonicalGraphReplacement(
@@ -128,7 +145,10 @@ export function sameCanonicalGraphReplacement(
   ownedEdges: readonly CanonicalGraphOwnedEdge[],
   expected: NormalizedCanonicalGraphReplacement,
 ): boolean {
-  const desiredCollections = new Map(expected.supports.map((support) => [support.memoryId, support.collection]));
+  const desiredCollections = new Map([
+    ...expected.supports.map((support) => [support.memoryId, support.collection] as const),
+    ...expected.semanticCollections.map((entry) => [entry.memoryId, entry.collection] as const),
+  ]);
   if (current.memories.some((memory) => memory.collection !== desiredCollections.get(memory.id))) return false;
   const expectedEdges: CanonicalGraphOwnedEdge[] = expected.supports.map((support) => ({
     src: support.memoryId,

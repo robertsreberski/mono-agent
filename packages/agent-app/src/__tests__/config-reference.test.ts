@@ -83,6 +83,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "memory.llm.timeoutMs": "integer",
   "memory.llm.endpoint": "string",
   "memory.recallTool.enabled": "boolean",
+  "memory.operatorActions.enabled": "boolean",
   "memory.consolidation.enabled": "boolean",
   "memory.consolidation.cron": "string",
   "tools.allowedTools": "string[]",

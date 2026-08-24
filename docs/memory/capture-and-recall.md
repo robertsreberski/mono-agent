@@ -302,6 +302,7 @@ See [Tool policy](/tools/policy/) and [MCP tools](/tools/mcp/) for how MCP-provi
 |---------|-----------|-------|
 | `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture`; built-in `capture` requires `mode: bujo`, while Supermemory extraction is service-owned |
 | `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Auto-provisioned `MemoryRecall`; default on for every configured tier |
+| `MONO_AGENT_MEMORY_OPERATOR_ACTIONS_ENABLED` | `memory.operatorActions.enabled` | Owner edit/forget/restore; default off and still requires actual BuJo plus an operator API key |
 | `MONO_AGENT_MEMORY_MODE` | `memory.mode` | `lite` / `journal` / `bujo` |
 | `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline |
 | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama chat endpoint (default `http://localhost:11434`) |
@@ -317,6 +318,7 @@ Journal and BuJo require an explicit, non-empty `memory.embeddings` **block**, b
 ## Related pages
 
 - [Memory overview](/memory/) — tier matrix and the single `memory` config block
+- [Memory operator](/memory/operator/) — provider-free owner inspection and opt-in semantic corrections
 - [Embeddings](/memory/embeddings/) — the provider/model behind vector recall
 - [Consolidation](/memory/rituals/) — scheduled projection refresh and duplicate-group counting, without canonical-memory mutation
 - [Validation & CLI](/memory/validation-and-cli/) — `mono-agent validate` checks and `mono-agent memory` maintenance

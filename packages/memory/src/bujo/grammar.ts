@@ -73,6 +73,13 @@ export function parseBullet(line: string): Bullet | undefined {
     createdAt,
     refs: fields.refs === undefined || fields.refs.length === 0 ? [] : fields.refs.split(","),
     ...(fields.due !== undefined ? { dueAt: fields.due } : {}),
+    ...(fields.validFrom !== undefined ? { validFrom: fields.validFrom } : {}),
+    ...(fields.tags === undefined ? {} : { tags: parseEncodedStringArray(fields.tags, "tags") }),
+    ...(fields.collection === undefined ? {} : { collection: parseEncodedString(fields.collection, "collection") }),
+    ...(fields.conversation === undefined ? {} : {
+      conversationId: parseEncodedString(fields.conversation, "conversation"),
+    }),
+    ...(isRestorableStatus(fields.priorStatus) ? { priorStatus: fields.priorStatus } : {}),
   };
   return bullet;
 }
@@ -91,8 +98,45 @@ export function serializeBullet(bullet: Bullet): string {
     `created=${bullet.createdAt}`,
     `refs=${bullet.refs.join(",")}`,
     ...(bullet.dueAt === undefined ? [] : [`due=${bullet.dueAt}`]),
+    ...(bullet.validFrom === undefined ? [] : [`validFrom=${bullet.validFrom}`]),
+    ...(bullet.tags === undefined ? [] : [`tags=${encodeMetadata(bullet.tags)}`]),
+    ...(bullet.collection === undefined ? [] : [`collection=${encodeMetadata(bullet.collection)}`]),
+    ...(bullet.conversationId === undefined ? [] : [`conversation=${encodeMetadata(bullet.conversationId)}`]),
+    ...(bullet.priorStatus === undefined ? [] : [`priorStatus=${bullet.priorStatus}`]),
   ].join(" ");
   return `- ${marker} ${bullet.text}\n  <!--mem ${meta}-->`;
+}
+
+function encodeMetadata(value: unknown): string {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
+function parseEncodedString(value: string, label: string): string {
+  const decoded = parseEncodedMetadata(value, label);
+  if (typeof decoded !== "string") throw new Error(`memory-bujo: bullet ${label} metadata is invalid.`);
+  return decoded;
+}
+
+function parseEncodedStringArray(value: string, label: string): string[] {
+  const decoded = parseEncodedMetadata(value, label);
+  if (!Array.isArray(decoded) || decoded.some((entry) => typeof entry !== "string")) {
+    throw new Error(`memory-bujo: bullet ${label} metadata is invalid.`);
+  }
+  return decoded;
+}
+
+function parseEncodedMetadata(value: string, label: string): unknown {
+  try {
+    const bytes = Buffer.from(value, "base64url");
+    if (bytes.toString("base64url") !== value) throw new Error("non-canonical encoding");
+    return JSON.parse(bytes.toString("utf8")) as unknown;
+  } catch {
+    throw new Error(`memory-bujo: bullet ${label} metadata is invalid.`);
+  }
+}
+
+function isRestorableStatus(value: string | undefined): value is Bullet["priorStatus"] {
+  return value === "open" || value === "done" || value === "scheduled" || value === "migrated";
 }
 
 function parseBulletParts(line: string): RegExpExecArray | undefined {

@@ -16,6 +16,11 @@ import {
   messageAnchor,
   messageIdFromHash,
 } from "./conversation-workspace";
+import {
+  memoryPath,
+  workspaceRouteFromPath,
+  type WorkspaceRoute,
+} from "./memory-workspace";
 import { DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
   AgentSummary,
@@ -85,6 +90,8 @@ interface ConsoleStoreValue {
   readonly jumpToLatest: () => Promise<void>;
   readonly openConversationIndex: () => void;
   readonly conversationDetailOpen: boolean;
+  readonly workspaceRoute: WorkspaceRoute;
+  readonly openMemory: (sourceId?: string) => void;
   readonly createThread: (sourceId?: string) => Promise<ThreadSummary>;
   readonly renameThread: (threadId: string, title: string) => Promise<void>;
   readonly archiveThread: (threadId: string) => Promise<void>;
@@ -363,9 +370,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     Record<string, WebRunPreference | null | undefined>
   >({});
   const [preferenceMigrationComplete, setPreferenceMigrationComplete] = useState(false);
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(() =>
-    cronRouteSelection()?.sourceId ?? localStorage.getItem(SELECTED_AGENT_STORAGE_KEY),
-  );
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(() => {
+    const route = workspaceRouteFromPath();
+    return route.kind === "memory"
+      ? route.sourceId
+      : cronRouteSelection()?.sourceId ?? localStorage.getItem(SELECTED_AGENT_STORAGE_KEY);
+  });
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ThreadDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -444,14 +454,22 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const conversationRouteThread = conversationRouteId === undefined
       ? undefined
       : normalized.threads.find((thread) => thread.id === conversationRouteId);
-    const selection = routeThread !== undefined
-      ? { agentId: routeThread.sourceId, threadId: routeThread.id }
-      : conversationRouteId !== undefined
-        ? {
-            agentId: conversationRouteThread?.sourceId ?? baseSelection.agentId,
-            threadId: conversationRouteId,
-          }
-        : baseSelection;
+    const workspaceRoute = workspaceRouteFromPath();
+    const selection = workspaceRoute.kind === "memory"
+      ? {
+          agentId: workspaceRoute.sourceId,
+          threadId: baseSelection.agentId === workspaceRoute.sourceId
+            ? baseSelection.threadId
+            : null,
+        }
+      : routeThread !== undefined
+        ? { agentId: routeThread.sourceId, threadId: routeThread.id }
+        : conversationRouteId !== undefined
+          ? {
+              agentId: conversationRouteThread?.sourceId ?? baseSelection.agentId,
+              threadId: conversationRouteId,
+            }
+          : baseSelection;
     selectedAgentRef.current = selection.agentId;
     selectedThreadRef.current = selection.threadId;
     setSelectedAgentId(selection.agentId);
@@ -464,7 +482,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         selected && !selected.archivedAt ? selected.id : null,
       );
     }
-    if (window.location.pathname === "/") {
+    if (workspaceRoute.kind === "malformed-memory") {
+      window.history.replaceState(window.history.state, "", conversationPath());
+    } else if (window.location.pathname === "/") {
       window.history.replaceState(window.history.state, "", conversationPath());
     }
   }, []);
@@ -889,6 +909,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   const selectAgent = useCallback(
     (sourceId: string) => {
+      const remainInMemory = workspaceRouteFromPath().kind === "memory";
       selectedAgentRef.current = sourceId;
       setSelectedAgentId(sourceId);
       localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, sourceId);
@@ -903,7 +924,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       selectedThreadRef.current = recent?.id ?? null;
       setSelectedThreadId(recent?.id ?? null);
       persistThreadId(sourceId, recent?.id ?? null);
-      updateThreadRoute(recent);
+      if (remainInMemory) {
+        const path = memoryPath(sourceId);
+        if (window.location.pathname !== path || window.location.hash) {
+          window.history.pushState(window.history.state, "", path);
+          setRouteRevision((value) => value + 1);
+        }
+      } else {
+        updateThreadRoute(recent);
+      }
       setShowArchived(false);
       setActionError(null);
     },
@@ -1090,8 +1119,46 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, []);
 
-  const conversationDetailOpen = conversationThreadFromPath() !== undefined
-    || cronRouteSelection() !== undefined;
+  const workspaceRoute = useMemo(() => workspaceRouteFromPath(), [routeRevision]);
+
+  const openMemory = useCallback((sourceId?: string) => {
+    const target = sourceId ?? selectedAgentRef.current;
+    if (target === null || target === undefined) {
+      setActionError("Select an agent before opening memory.");
+      return;
+    }
+    const path = memoryPath(target);
+    if (window.location.pathname === path && !window.location.hash) return;
+    window.history.pushState(window.history.state, "", path);
+    setRouteRevision((value) => value + 1);
+    setActionError(null);
+  }, []);
+
+  const conversationDetailOpen = workspaceRoute.kind === "conversations"
+    && (conversationThreadFromPath() !== undefined || cronRouteSelection() !== undefined);
+
+  useEffect(() => {
+    const route = workspaceRouteFromPath();
+    if (route.kind === "malformed-memory") {
+      window.history.replaceState(window.history.state, "", conversationPath());
+      setRouteRevision((value) => value + 1);
+      return;
+    }
+    if (route.kind !== "memory" || selectedAgentRef.current === route.sourceId) return;
+    const persistedId = readPersistedThreadIds()[route.sourceId];
+    const persisted = threads.find((thread) =>
+      thread.id === persistedId && thread.sourceId === route.sourceId && !thread.archivedAt);
+    const recent = persisted ?? [...threads]
+      .filter((thread) => thread.sourceId === route.sourceId && !thread.archivedAt)
+      .sort(byMostRecent)[0];
+    selectedAgentRef.current = route.sourceId;
+    selectedThreadRef.current = recent?.id ?? null;
+    setSelectedAgentId(route.sourceId);
+    setSelectedThreadId(recent?.id ?? null);
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, route.sourceId);
+    persistThreadId(route.sourceId, recent?.id ?? null);
+    setActionError(null);
+  }, [routeRevision, threads]);
 
   useEffect(() => {
     const route = cronRouteSelection();
@@ -1687,6 +1754,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       jumpToLatest,
       openConversationIndex,
       conversationDetailOpen,
+      workspaceRoute,
+      openMemory,
       createThread,
       renameThread,
       archiveThread,
@@ -1768,6 +1837,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       pendingMessageId,
       openConversationIndex,
       conversationDetailOpen,
+      workspaceRoute,
+      openMemory,
       sendTurn,
       sendLiveInput,
       setEffort,

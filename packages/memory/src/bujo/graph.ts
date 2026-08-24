@@ -13,6 +13,7 @@ import {
   readCanonicalFileSnapshot,
   type CanonicalFileIdentity,
 } from "./path-safety.js";
+import { readBullet } from "./daily.js";
 
 const GRAPH_FILE = "graph.jsonl";
 const INVALID_GRAPH_STRING = /[\p{Cc}\p{Cf}\p{Cs}]/u;
@@ -328,6 +329,16 @@ function replaceDbCanonicalGraphProjectionUnchecked(
       createdAt: association.createdAt,
     };
   });
+  const supportMemoryIds = new Set(supports.map((support) => support.memoryId));
+  const semanticCollections = memorySnapshot.flatMap((memory) => {
+    if (memory.collection === undefined || supportMemoryIds.has(memory.id)) return [];
+    const source = db.get(memory.id)?.source.file;
+    if (source === undefined) return [];
+    const bullet = readBullet(root, source, memory.id);
+    return bullet?.collection === memory.collection
+      ? [{ memoryId: memory.id, collection: memory.collection }]
+      : [];
+  });
   // Re-prove the derived memory snapshot immediately before the transaction.
   // MemoryDb's compare-and-swap then fences the remaining guard-to-write gap.
   assertSafeBeforeReplace();
@@ -336,6 +347,7 @@ function replaceDbCanonicalGraphProjectionUnchecked(
     relations: projection.relations,
     associations: projection.associations,
     supports,
+    semanticCollections,
   });
   const confirmed = readCanonicalGraphStrictSnapshot(root);
   if (!sameCanonicalGraphSourceSnapshot(source, confirmed)) {

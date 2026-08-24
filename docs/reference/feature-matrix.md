@@ -77,6 +77,8 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `memory.write-mode` | config | `memory.writeMode` | `MONO_AGENT_MEMORY_WRITE_MODE` | [Capture & recall](/memory/capture-and-recall/) | — |
 | `memory.per-turn-capture` | config | `memory.writeMode: "capture"` (requires `memory.mode: "bujo"`) | `MONO_AGENT_MEMORY_WRITE_MODE=capture`, `MONO_AGENT_MEMORY_MODE=bujo` | [Capture & recall](/memory/capture-and-recall/) | [Telegram BuJo assistant](/playbooks/telegram-personal-assistant-bujo/) |
 | `memory.recall-tool` | config | `memory.recallTool.enabled` | `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | [Capture & recall](/memory/capture-and-recall/) | [Telegram BuJo assistant](/playbooks/telegram-personal-assistant-bujo/) |
+| `memory.operator-read` | auto | Live built-in Lite/Journal/BuJo sanitized overview/records/history; captured graph on actual BuJo; Supermemory unsupported in v1 | — | [Memory operator](/memory/operator/) | — |
+| `memory.operator-actions` | config | `memory.operatorActions.enabled` (default false), plus actual BuJo tier and configured `tui.apiKey`; revision-checked/idempotent edit, confirmation-only forget, restore-to-new-id | `MONO_AGENT_MEMORY_OPERATOR_ACTIONS_ENABLED` | [Memory operator](/memory/operator/) | — |
 | `memory.llm-timeout` | config | `memory.llm.timeoutMs` (in-app; 1000–600000, default 60000) | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | [Validation & CLI](/memory/validation-and-cli/#the-memory-llm-timeout) | — |
 | `memory.custom-store` | code | `createConfiguredAgentResponder({ memory })` | — | [Composition](/programmatic/composition/) | — |
 

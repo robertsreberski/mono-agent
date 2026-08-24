@@ -158,6 +158,16 @@ export interface MemoryStoreStatsOptions {
   readonly topEntitiesLimit?: number;
 }
 
+/** Bounded deterministic inventory query used by operator/read projections. */
+export interface MemoryRecordListOptions {
+  readonly limit: number;
+  readonly before?: { readonly createdAt: string; readonly id: string };
+  readonly statuses?: readonly MemoryStatus[];
+  readonly type?: MemoryType;
+  readonly collection?: string;
+  readonly query?: string;
+}
+
 export type MemoryCountByStatus = Readonly<Record<MemoryStatus, number>>;
 export type MemoryCountByType = Readonly<Record<MemoryType, number>>;
 

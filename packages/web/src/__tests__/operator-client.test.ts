@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { OperatorClient } from "../operator-client.js";
-import { fakeProcessJob } from "./helpers.js";
+import {
+  fakeMemoryCapability,
+  fakeMemoryOperation,
+  fakeMemoryOverview,
+  fakeMemoryRecord,
+  fakeProcessJob,
+  operatorFetch,
+} from "./helpers.js";
 
 function turnInput() {
   return {
@@ -36,6 +43,284 @@ const replyPartOutcomes = [{
 }];
 
 describe("OperatorClient", () => {
+  it("isolates malformed optional memory capability metadata from agent liveness", async () => {
+    const malformed = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: operatorFetch({ memoryCapability: { schema: 2, rootPath: "/private/memory.db" } }),
+    });
+    await expect(malformed.info()).resolves.toMatchObject({ supportsAttachments: true });
+    expect(await malformed.info()).not.toHaveProperty("memory");
+
+    const valid = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: operatorFetch({ memoryCapability: fakeMemoryCapability({ providerMetadata: "drop-me" }) }),
+    });
+    await expect(valid.info()).resolves.toMatchObject({
+      memory: { schema: 1, backend: "builtin", tier: "bujo", read: true, actions: true },
+    });
+    expect((await valid.info()).memory).not.toHaveProperty("providerMetadata");
+  });
+
+  it("uses encoded memory routes, bounded queries, ordinary bearer, and clean wire projections", async () => {
+    const requests: Array<{ readonly url: string; readonly method: string; readonly authorization: string | null }> = [];
+    const encodedId = "🧠/record one";
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({
+        url,
+        method: init?.method ?? "GET",
+        authorization: new Headers(init?.headers).get("authorization"),
+      });
+      if (url.endsWith("/v1/memory")) {
+        return Response.json({ overview: fakeMemoryOverview({ rootPath: "/private/memory.db" }) });
+      }
+      if (url.includes("/operations/")) {
+        return Response.json({
+          operation: fakeMemoryOperation({
+            id: "operation/one",
+            status: "succeeded",
+            privatePath: "/private",
+          }),
+        });
+      }
+      if (url.includes("/graph")) return Response.json({ graph: { fidelity: "captured", nodes: [], edges: [] } });
+      if (url.endsWith("/forget")) {
+        return Response.json({
+          kind: "confirmation_required",
+          confirmation: {
+            token: "confirm-token",
+            expiresAt: "2026-08-24T10:06:00.000Z",
+            message: "/private/memory.db token=secret",
+            rootPath: "/private",
+          },
+        }, { status: 428 });
+      }
+      if (init?.method === "PATCH") {
+        return Response.json({
+          kind: "queued",
+          operation: fakeMemoryOperation({ recordId: encodedId, provider: "secret" }),
+        }, { status: 202 });
+      }
+      if (init?.method === "POST") {
+        return Response.json({
+          kind: "queued",
+          operation: fakeMemoryOperation({ action: "restore", recordId: encodedId, provider: "secret" }),
+        }, { status: 202 });
+      }
+      if (url.includes("?")) {
+        return Response.json({ records: [{ ...fakeMemoryRecord(), vector: [1, 2], rootPath: "/private" }] });
+      }
+      return Response.json({ record: fakeMemoryRecord({ id: encodedId }), history: [], rootPath: "/private" });
+    }) as typeof fetch;
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      apiKey: "ordinary-operator-key",
+      processJobsBearer: "owner-job-key",
+      fetchImpl,
+    });
+    const action = { expectedRevision: "a".repeat(64), idempotencyKey: "intent:one" };
+
+    const overview = await client.memoryOverview();
+    const page = await client.memoryRecords({
+      query: "concise notes",
+      lifecycle: "active",
+      type: "note",
+      collection: "people",
+      limit: 100,
+      before: "older_cursor",
+    });
+    await client.memoryRecord(encodedId);
+    await client.memoryGraph({ focusId: encodedId, includeHistory: true, limit: 200 });
+    const edit = await client.memoryEdit(encodedId, { ...action, patch: { text: "Updated" } });
+    const forget = await client.memoryForget(encodedId, action);
+    const restore = await client.memoryRestore(encodedId, action);
+    const operation = await client.memoryOperation("operation/one");
+
+    expect(overview).not.toHaveProperty("rootPath");
+    expect(page.records[0]).not.toHaveProperty("vector");
+    expect(edit.operation).not.toHaveProperty("provider");
+    expect(forget).toEqual({
+      kind: "confirmation_required",
+      confirmation: {
+        token: "confirm-token",
+        expiresAt: "2026-08-24T10:06:00.000Z",
+        message: "Confirm this memory action?",
+      },
+    });
+    expect(restore.operation.action).toBe("restore");
+    expect(operation.status).toBe("succeeded");
+    expect(requests.map((request) => request.url)).toEqual([
+      "http://127.0.0.1:1234/gui/v1/memory",
+      "http://127.0.0.1:1234/gui/v1/memory/records?q=concise+notes&lifecycle=active&type=note&collection=people&limit=100&before=older_cursor",
+      `http://127.0.0.1:1234/gui/v1/memory/records/${encodeURIComponent(encodedId)}`,
+      `http://127.0.0.1:1234/gui/v1/memory/graph?${new URLSearchParams({
+        focusId: encodedId,
+        includeHistory: "true",
+        limit: "200",
+      }).toString()}`,
+      `http://127.0.0.1:1234/gui/v1/memory/records/${encodeURIComponent(encodedId)}`,
+      `http://127.0.0.1:1234/gui/v1/memory/records/${encodeURIComponent(encodedId)}/forget`,
+      `http://127.0.0.1:1234/gui/v1/memory/records/${encodeURIComponent(encodedId)}/restore`,
+      "http://127.0.0.1:1234/gui/v1/memory/operations/operation%2Fone",
+    ]);
+    expect(requests.every((request) => request.authorization === "Bearer ordinary-operator-key")).toBe(true);
+  });
+
+  it("fails closed on malformed memory data, status/admission mismatches, and oversized bodies", async () => {
+    const malformed = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({ records: [fakeMemoryRecord({ revision: "BAD" })] })) as typeof fetch,
+    });
+    await expect(malformed.memoryRecords()).rejects.toMatchObject({ code: "invalid_operator_memory", status: 502 });
+
+    const wrongAdmission = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        kind: "confirmation_required",
+        confirmation: {
+          token: "confirm",
+          expiresAt: "2026-08-24T10:06:00.000Z",
+          message: "Confirm this memory action?",
+        },
+      }, { status: 202 })) as typeof fetch,
+    });
+    await expect(wrongAdmission.memoryForget("memory-1", {
+      expectedRevision: "a".repeat(64),
+      idempotencyKey: "intent",
+    })).rejects.toMatchObject({ code: "invalid_operator_memory" });
+
+    const nonterminalError = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        operation: fakeMemoryOperation({ status: "succeeded", errorCode: "unavailable" }),
+      })) as typeof fetch,
+    });
+    await expect(nonterminalError.memoryOperation("operation-1"))
+      .rejects.toMatchObject({ code: "invalid_operator_memory" });
+
+    const mixedAdmission = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        kind: "queued",
+        operation: fakeMemoryOperation(),
+        confirmation: {
+          token: "confirm",
+          expiresAt: "2026-08-24T10:06:00.000Z",
+          message: "Confirm this memory action?",
+        },
+      }, { status: 202 })) as typeof fetch,
+    });
+    await expect(mixedAdmission.memoryForget("memory-1", {
+      expectedRevision: "a".repeat(64),
+      idempotencyKey: "intent",
+    })).rejects.toMatchObject({ code: "invalid_operator_memory" });
+
+    const mixedGraphNode = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        graph: {
+          fidelity: "captured",
+          nodes: [{
+            kind: "memory",
+            id: "memory-1",
+            label: "Memory",
+            lifecycle: "active",
+            recordType: "note",
+            entityType: "person",
+          }],
+          edges: [],
+        },
+      })) as typeof fetch,
+    });
+    await expect(mixedGraphNode.memoryGraph()).rejects.toMatchObject({ code: "invalid_operator_memory" });
+
+    const wrongDetailIdentity = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({ record: fakeMemoryRecord({ id: "memory-other" }), history: [] })) as typeof fetch,
+    });
+    await expect(wrongDetailIdentity.memoryRecord("memory-requested"))
+      .rejects.toMatchObject({ code: "invalid_operator_memory" });
+
+    const wrongOperationIdentity = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({ operation: fakeMemoryOperation({ id: "operation-other" }) })) as typeof fetch,
+    });
+    await expect(wrongOperationIdentity.memoryOperation("operation-requested"))
+      .rejects.toMatchObject({ code: "invalid_operator_memory" });
+
+    const wrongMutationIdentity = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        kind: "queued",
+        operation: fakeMemoryOperation({ action: "restore", recordId: "memory-other" }),
+      }, { status: 202 })) as typeof fetch,
+    });
+    await expect(wrongMutationIdentity.memoryEdit("memory-requested", {
+      expectedRevision: "a".repeat(64),
+      idempotencyKey: "intent",
+      patch: { text: "Updated" },
+    })).rejects.toMatchObject({ code: "invalid_operator_memory" });
+
+    const oversized = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => new Response("x".repeat(16 * 1024 * 1024 + 1), { status: 200 })) as typeof fetch,
+    });
+    await expect(oversized.memoryOverview()).rejects.toMatchObject({ code: "operator_memory_too_large" });
+  });
+
+  it("preserves memory error codes and statuses with fixed path-free messages", async () => {
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        error: { code: "revision_conflict", message: "/Users/example/memory.db token=secret" },
+      }, { status: 409 })) as typeof fetch,
+    });
+    const failure = await client.memoryRecord("memory-1").then((): unknown => undefined, (error: unknown) => error);
+    expect(failure).toMatchObject({
+      code: "revision_conflict",
+      status: 409,
+      message: "Memory record changed; refresh and retry.",
+    });
+    expect(String((failure as Error).message)).not.toContain("/Users/example");
+
+    const disappeared = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        error: { code: "unavailable", message: "Memory operator capability is unavailable." },
+      }, { status: 404 })) as typeof fetch,
+    });
+    await expect(disappeared.memoryOverview()).rejects.toMatchObject({
+      code: "unavailable",
+      status: 503,
+      message: "Memory operator is temporarily unavailable.",
+    });
+
+    const unexpected = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => new Response("/Users/example/memory.db token=secret", { status: 500 })) as typeof fetch,
+    });
+    const unexpectedFailure = await unexpected.memoryOverview()
+      .then((): unknown => undefined, (error: unknown) => error);
+    expect(unexpectedFailure).toMatchObject({
+      code: "agent_http_error",
+      status: 502,
+      message: "The agent returned an unexpected memory operator response.",
+    });
+    expect(String((unexpectedFailure as Error).message)).not.toContain("/Users/example");
+
+    const unreachable = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => { throw new Error("connect /Users/example/socket token=secret"); }) as typeof fetch,
+    });
+    const unreachableFailure = await unreachable.memoryOverview()
+      .then((): unknown => undefined, (error: unknown) => error);
+    expect(unreachableFailure).toMatchObject({
+      code: "agent_unreachable",
+      message: "The agent memory operator is unreachable.",
+    });
+    expect(String((unreachableFailure as Error).message)).not.toContain("/Users/example");
+  });
+
   it("parses compact cron pages and bounded detail through distinct encoded routes", async () => {
     const requests: string[] = [];
     const client = new OperatorClient({

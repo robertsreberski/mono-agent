@@ -30,6 +30,8 @@ for the current framework boundary and external-service pattern.
 | Projection-only consolidation (`index.md` + duplicate-group count) | — | — | yes |
 | Auto-scheduled maintenance (in-app scheduler) | — | — | yes |
 | Living `index.md` + retired `future-log.md` stub | — | — | yes |
+| Provider-free operator inventory | yes | yes | yes |
+| Operator edit / forget / restore | — | — | opt-in |
 | **Requires embeddings** | no | **yes** | **yes** |
 | **Requires chat model** | no | no | **yes** |
 
@@ -78,6 +80,25 @@ be a direct Ollama model or an `agent-host` runtime model reference such as
 The tier matrix is strict. `lite` rejects embeddings/LLM configuration, `journal` requires
 embeddings and rejects a memory LLM/consolidation, and `bujo` requires both embeddings and
 the memory LLM. Invalid configuration fails instead of silently downshifting.
+
+## Operator inspection and actions
+
+A live built-in Lite, Journal, or BuJo store exposes a sanitized, provider-free
+overview and canonical record inventory through the agent's operator endpoint.
+The projection can include record lifecycle and terminal action history; only
+the actual BuJo tier exposes its captured entity graph. Reads make no embedding
+or chat-model request and are independent of the model-facing `MemoryRecall`
+tool.
+
+Owner mutations are a separate opt-in. `memory.operatorActions.enabled`
+defaults to `false`; edit, forget, and restore additionally require the actual
+BuJo tier and a configured `tui.apiKey`. Semantic edit and restore create new
+active record ids while retaining the old record as lifecycle history. Forget
+is confirmation-only and retains a tombstone. Supermemory does not expose
+canonical records through this v1 operator.
+
+See [Memory operator](/memory/operator/) for the route, sanitization,
+revision/idempotency, durable polling, and app-wide drain contracts.
 
 ## Local persistence threat model
 
@@ -158,6 +179,7 @@ re-proving the surrounding durability and writer-lease protocol.
       "model": "qwen3.6:latest",         // any local chat model; set MONO_AGENT_MEMORY_LLM_MODEL for CLI
       "endpoint": "http://localhost:11434"
     },
+    "operatorActions": { "enabled": false }, // owner edit/forget/restore opt-in
     // Lightweight consolidation is auto-scheduled in-app for the bujo tier.
     "consolidation": {
       "enabled": true,
@@ -408,4 +430,5 @@ Under the hood `agent-app` exposes a request-scoped loopback MCP endpoint over i
 ## References
 
 - [Memory quality benchmark](/memory/benchmarking/) — disposable offline quality and efficiency gate
-- Feature registry rows: `docs/reference/feature-registry.md` — `memory.lite`, `memory.journal`, `memory.bujo`, `memory.write-mode`, `memory.per-turn-capture`, `memory.recall-tool`
+- [Memory operator](/memory/operator/) — live sanitized inventory and opt-in BuJo actions
+- Feature registry rows: `docs/reference/feature-registry.md` — `memory.lite`, `memory.journal`, `memory.bujo`, `memory.write-mode`, `memory.per-turn-capture`, `memory.recall-tool`, `memory.operator-read`, `memory.operator-actions`

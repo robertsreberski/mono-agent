@@ -11,7 +11,15 @@ import {
 } from "@mono-agent/agent-contracts";
 
 import { WebService, WeightedTurnBudget } from "../service.js";
-import { fakeDiscoveredAgent, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
+import {
+  fakeDiscoveredAgent,
+  fakeMemoryCapability,
+  fakeMemoryOperation,
+  fakeMemoryOverview,
+  fakeProcessJob,
+  operatorFetch,
+  temporaryRoot,
+} from "./helpers.js";
 
 const cleanup: string[] = [];
 
@@ -61,6 +69,231 @@ function operatorCronOverview(overrides: Record<string, unknown> = {}): Record<s
 }
 
 describe("WebService", () => {
+  it("returns live read-disabled capability without inventory and still polls operations", async () => {
+    let memoryRequests = 0;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        memoryCapability: fakeMemoryCapability({
+          status: "degraded",
+          read: false,
+          actions: false,
+          graph: "unavailable",
+          reason: "Memory action state requires recovery.",
+        }),
+        onMemoryRequest(url) {
+          memoryRequests += 1;
+          return url.includes("/operations/")
+            ? Response.json({ operation: fakeMemoryOperation({ status: "succeeded" }) })
+            : undefined;
+        },
+      }),
+    });
+
+    await expect(service.memoryOverview("agent-one")).resolves.toEqual({
+      capability: {
+        schema: 1,
+        backend: "builtin",
+        tier: "bujo",
+        status: "degraded",
+        read: false,
+        actions: false,
+        graph: "unavailable",
+        reason: "Memory action state requires recovery.",
+      },
+    });
+    expect(memoryRequests).toBe(0);
+    await expect(service.memoryRecords("agent-one", { limit: 50 }))
+      .rejects.toMatchObject({ code: "unavailable", status: 503 });
+    await expect(service.memoryOperation("agent-one", "operation-1"))
+      .resolves.toMatchObject({ id: "operation-1", status: "succeeded" });
+    expect(memoryRequests).toBe(1);
+    const agent = (await service.bootstrap()).agents[0]!;
+    service.store.replaceAgents([{ ...agent, status: "offline" }]);
+    await expect(service.memoryOperation("agent-one", "operation-1"))
+      .rejects.toMatchObject({ code: "memory_offline", status: 409 });
+    expect(memoryRequests).toBe(1);
+    await service.stop();
+  });
+
+  it("keeps memory inventory live-only and intersects overview action authority", async () => {
+    let overviewRequests = 0;
+    let mutationRequests = 0;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        memoryCapability: fakeMemoryCapability({ actions: false }),
+        onMemoryRequest(url, init) {
+          if (url.endsWith("/v1/memory")) {
+            overviewRequests += 1;
+            return Response.json({
+              overview: fakeMemoryOverview({
+                capability: fakeMemoryCapability({
+                  status: "degraded",
+                  graph: "derived",
+                  reason: "Memory actions are disabled by configuration.",
+                }),
+              }),
+            });
+          }
+          if (init?.method === "PATCH" || init?.method === "POST") mutationRequests += 1;
+          return undefined;
+        },
+      }),
+    });
+
+    const first = await service.memoryOverview("agent-one");
+    const second = await service.memoryOverview("agent-one");
+    expect(first.capability.actions).toBe(false);
+    expect(first.capability).toMatchObject({
+      status: "degraded",
+      graph: "derived",
+      reason: "Memory actions are disabled by configuration.",
+    });
+    expect(first.overview?.capability.actions).toBe(false);
+    expect(second.overview).toBeDefined();
+    expect(overviewRequests).toBe(2);
+    await expect(service.memoryEdit("agent-one", "memory-1", {
+      expectedRevision: "a".repeat(64),
+      idempotencyKey: "intent-one",
+      patch: { text: "Updated" },
+    })).rejects.toMatchObject({ code: "actions_disabled", status: 403 });
+    expect(mutationRequests).toBe(0);
+    const bootstrap = await service.bootstrap();
+    expect(bootstrap.agents[0]).not.toHaveProperty("memory");
+    expect(JSON.stringify(bootstrap)).not.toContain("memory-1");
+    await service.stop();
+  });
+
+  it("drops raced overview inventory when its fresher capability disables reads", async () => {
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        memoryCapability: fakeMemoryCapability(),
+        onMemoryRequest(url) {
+          return url.endsWith("/v1/memory")
+            ? Response.json({
+                overview: fakeMemoryOverview({
+                  capability: fakeMemoryCapability({
+                    status: "degraded",
+                    read: false,
+                    actions: false,
+                    graph: "unavailable",
+                    reason: "Memory action state requires recovery.",
+                  }),
+                }),
+              })
+            : undefined;
+        },
+      }),
+    });
+    await expect(service.memoryOverview("agent-one")).resolves.toEqual({
+      capability: {
+        schema: 1,
+        backend: "builtin",
+        tier: "bujo",
+        status: "degraded",
+        read: false,
+        actions: false,
+        graph: "unavailable",
+        reason: "Memory action state requires recovery.",
+      },
+    });
+    await service.stop();
+  });
+
+  it("accepts a memory admission across an unchanged discovery refresh", async () => {
+    let resolveAdmission!: (response: Response) => void;
+    const deferredAdmission = new Promise<Response>((resolve) => {
+      resolveAdmission = resolve;
+    });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        memoryCapability: fakeMemoryCapability(),
+        onMemoryRequest(url, init) {
+          if (init?.method !== "PATCH") return undefined;
+          markStarted();
+          return deferredAdmission;
+        },
+      }),
+    });
+
+    const admission = service.memoryEdit("agent-one", "memory-1", {
+      expectedRevision: "a".repeat(64),
+      idempotencyKey: "connection-race",
+      patch: { text: "Updated" },
+    });
+    await started;
+    await service.refreshAgents();
+    resolveAdmission(Response.json({
+      kind: "queued",
+      operation: fakeMemoryOperation(),
+    }, { status: 202 }));
+
+    await expect(admission).resolves.toMatchObject({
+      kind: "queued",
+      operation: { id: "operation-1", action: "edit", recordId: "memory-1" },
+    });
+    await service.stop();
+  });
+
+  it("rejects a memory admission when discovery replaces its operator endpoint in flight", async () => {
+    let resolveAdmission!: (response: Response) => void;
+    const deferredAdmission = new Promise<Response>((resolve) => {
+      resolveAdmission = resolve;
+    });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let baseUrl = "http://127.0.0.1:45123/gui";
+    const service = await createService({
+      discoverImpl: async () => [fakeDiscoveredAgent({ baseUrl })],
+      fetchImpl: operatorFetch({
+        memoryCapability: fakeMemoryCapability(),
+        onMemoryRequest(url, init) {
+          if (init?.method !== "PATCH") return undefined;
+          markStarted();
+          return deferredAdmission;
+        },
+      }),
+    });
+
+    const admission = service.memoryEdit("agent-one", "memory-1", {
+      expectedRevision: "a".repeat(64),
+      idempotencyKey: "endpoint-race",
+      patch: { text: "Updated" },
+    });
+    await started;
+    baseUrl = "http://127.0.0.1:45124/gui";
+    await service.refreshAgents();
+    resolveAdmission(Response.json({
+      kind: "queued",
+      operation: fakeMemoryOperation(),
+    }, { status: 202 }));
+
+    await expect(admission).rejects.toMatchObject({ code: "memory_offline", status: 409 });
+    await service.stop();
+  });
+
+  it("distinguishes live unsupported memory from an offline source without stale fallback", async () => {
+    const unsupported = await createService({ fetchImpl: operatorFetch() });
+    await expect(unsupported.memoryOverview("agent-one"))
+      .rejects.toMatchObject({ code: "memory_unsupported", status: 404 });
+    await unsupported.stop();
+
+    const offline = await createService({
+      discoverImpl: async () => {
+        const { baseUrl: _baseUrl, ...agentWithoutEndpoint } = fakeDiscoveredAgent();
+        return [agentWithoutEndpoint];
+      },
+    });
+    await expect(offline.memoryOverview("agent-one"))
+      .rejects.toMatchObject({ code: "memory_offline", status: 409 });
+    await offline.stop();
+  });
+
   it("feature-detects cron without a wire bump and keeps cached old-agent state read-only and unknown", async () => {
     let modern = true;
     const modernFetch = operatorFetch({ cronOverview: operatorCronOverview() });

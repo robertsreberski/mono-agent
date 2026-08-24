@@ -378,6 +378,43 @@ describe("canonical memory bundle merge", () => {
       expect(plan.counts.newTerminals).toBe(1);
     });
 
+    it("reclassifies an imported operator terminal as non-restorable import authority", () => {
+      const sourceTerminal = {
+        ...terminal("B", "2026-07-30T09:00:00.000Z"),
+        authorityKind: "operator" as const,
+      };
+      const incoming = snapshot({
+        daily: {
+          "daily/2026-07-30.md": [{ id: "B", text: "b", status: "dropped", type: "task" }],
+        },
+        replay: projection({ terminals: [sourceTerminal] }),
+      });
+
+      const plan = merge(snapshot({}), incoming);
+
+      expect(plan.replayDelta.terminals).toContainEqual(expect.objectContaining({
+        id: "B",
+        at: sourceTerminal.at,
+        authorityKind: "import",
+      }));
+      expect(plan.replayDelta.terminals?.[0]?.authorityId).not.toBe(sourceTerminal.authorityId);
+
+      const importedAuthority = plan.replayDelta.terminals![0]!;
+      const importedDestination = snapshot({
+        daily: {
+          "daily/2026-07-30.md": [{ id: "B", text: "b", status: "dropped", type: "task" }],
+        },
+        replay: projection({ terminals: [importedAuthority] }),
+      });
+      const repeated = merge(importedDestination, incoming);
+      expect(repeated.importedMemoryIds).toEqual([]);
+      expect(repeated.identicalMemoryIds).toEqual(["B"]);
+      expect(repeated.replayDelta.terminals).toEqual([importedAuthority]);
+
+      const selfImport = merge(incoming, incoming);
+      expect(selfImport.replayDelta.terminals).toEqual([sourceTerminal]);
+    });
+
     it("drops an incoming terminal for a skipped conflicting memory and reports the omission", () => {
       const destination = snapshot({
         daily: { "daily/2026-07-30.md": [{ id: "A", text: "destination version", type: "task" }] },

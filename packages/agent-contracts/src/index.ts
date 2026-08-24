@@ -35,6 +35,37 @@ export type {
   MemoryStore,
   MemoryWriteResult,
 } from "./memory.js";
+export type {
+  MemoryOperatorActionHistoryItem,
+  MemoryOperatorActionInput,
+  MemoryOperatorBackend,
+  MemoryOperatorCapability,
+  MemoryOperatorCapabilityStatus,
+  MemoryOperatorConfirmation,
+  MemoryOperatorEditInput,
+  MemoryOperatorErrorCode,
+  MemoryOperatorErrorDetails,
+  MemoryOperatorGraph,
+  MemoryOperatorGraphEdge,
+  MemoryOperatorGraphFidelity,
+  MemoryOperatorGraphNode,
+  MemoryOperatorGraphQuery,
+  MemoryOperatorLifecycle,
+  MemoryOperatorMutationAdmission,
+  MemoryOperatorOperation,
+  MemoryOperatorOperationStatus,
+  MemoryOperatorOverview,
+  MemoryOperatorRecord,
+  MemoryOperatorRecordDetail,
+  MemoryOperatorRecordPage,
+  MemoryOperatorRecordQuery,
+  MemoryOperatorRecordStatus,
+  MemoryOperatorRecordType,
+  MemoryOperatorSemanticPatch,
+  MemoryOperatorService,
+  MemoryOperatorTier,
+} from "./memory-operator.js";
+export { MemoryOperatorError } from "./memory-operator.js";
 
 /**
  * Reserved final-text token a notify-enabled cron/webhook turn emits to suppress

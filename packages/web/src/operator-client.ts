@@ -32,16 +32,38 @@ import type {
   WebCronRunDetail,
   WebCronRunPage,
   WebCronRunSummary,
+  WebMemoryActionInput,
+  WebMemoryCapability,
+  WebMemoryEditInput,
+  WebMemoryGraph,
+  WebMemoryGraphQuery,
+  WebMemoryMutationAdmission,
+  WebMemoryOperation,
+  WebMemoryOverview,
+  WebMemoryRecordDetail,
+  WebMemoryRecordPage,
+  WebMemoryRecordQuery,
   WebModelOption,
   WebSkillInfo,
   WebSkillRegistry,
 } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
 import { isTrustedOperatorBaseUrl } from "./discovery.js";
+import {
+  MemoryWireError,
+  parseMemoryCapability,
+  parseMemoryGraphEnvelope,
+  parseMemoryMutationAdmission,
+  parseMemoryOperationEnvelope,
+  parseMemoryOverviewEnvelope,
+  parseMemoryRecordDetail,
+  parseMemoryRecordPage,
+} from "./memory-wire.js";
 
 const OPERATOR_WIRE_SCHEMA = 1;
 const MAX_INFO_BODY_BYTES = 1024 * 1024;
 const MAX_PROCESS_JOBS_BODY_BYTES = 16 * 1024 * 1024;
+const MAX_MEMORY_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 // Compatibility boundary: older operators may emit frames up to 8 MiB. New
 // producers remain independently bounded, but the console must consume both.
@@ -51,6 +73,16 @@ const MAX_MCP_APP_RESULT_BYTES = 1024 * 1024;
 const PRESERVED_MCP_APP_OPERATOR_ERRORS = new Map<string, number>([
   ["app_audit_incomplete", 409],
   ["app_audit_failed", 507],
+]);
+const PRESERVED_MEMORY_OPERATOR_ERRORS = new Map<string, number>([
+  ["invalid_request", 400],
+  ["not_found", 404],
+  ["actions_disabled", 403],
+  ["revision_conflict", 409],
+  ["confirmation_invalid", 400],
+  ["idempotency_conflict", 409],
+  ["replay_expired", 409],
+  ["unavailable", 503],
 ]);
 const CANCEL_TIMEOUT_MS = 2_000;
 const HISTORY_APPEND_TIMEOUT_MS = 5_000;
@@ -93,6 +125,8 @@ export interface OperatorInfo {
     readonly mimeTypes: readonly ["text/html;profile=mcp-app"];
   };
   readonly cron?: { readonly read: true; readonly actions: boolean };
+  /** Live optional capability. Malformed additive metadata is treated as absent. */
+  readonly memory?: WebMemoryCapability;
   readonly supportsJobs?: boolean;
 }
 
@@ -171,6 +205,14 @@ export class OperatorClient {
     const skills = parseSkillRegistry(body.skills);
     const capabilities = record(body.capabilities);
     const cron = record(capabilities?.cron);
+    let memory: WebMemoryCapability | undefined;
+    if (capabilities !== undefined && Object.hasOwn(capabilities, "memory")) {
+      try {
+        memory = parseMemoryCapability(capabilities.memory);
+      } catch (error) {
+        if (!(error instanceof MemoryWireError)) throw error;
+      }
+    }
     const replyAttachments = parseReplyAttachmentsCapability(capabilities?.replyAttachments);
     const mcpApps = parseMcpAppsCapability(capabilities?.mcpApps);
     return {
@@ -190,6 +232,7 @@ export class OperatorClient {
       ...(replyAttachments === undefined ? {} : { replyAttachments }),
       ...(mcpApps === undefined ? {} : { mcpApps }),
       ...(cron?.read === true ? { cron: { read: true, actions: cron.actions === true } } : {}),
+      ...(memory === undefined ? {} : { memory }),
       ...(capabilities?.jobs === true ? { supportsJobs: true } : {}),
     };
   }
@@ -350,6 +393,135 @@ export class OperatorClient {
     );
     const body = record(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_ask_too_large")));
     return body?.ask === null ? undefined : body?.ask as ChannelAskSnapshot | undefined;
+  }
+
+  async memoryOverview(signal?: AbortSignal): Promise<WebMemoryOverview> {
+    const value = await this.memoryJson(
+      `${this.baseUrl}/v1/memory`,
+      { headers: this.headers(false), ...(signal === undefined ? {} : { signal }) },
+      new Set([200]),
+    );
+    return parseMemoryWire(() => parseMemoryOverviewEnvelope(value));
+  }
+
+  async memoryRecords(
+    input: WebMemoryRecordQuery & { readonly signal?: AbortSignal } = {},
+  ): Promise<WebMemoryRecordPage> {
+    const query = new URLSearchParams();
+    if (input.query !== undefined) query.set("q", input.query);
+    if (input.lifecycle !== undefined) query.set("lifecycle", input.lifecycle);
+    if (input.type !== undefined) query.set("type", input.type);
+    if (input.collection !== undefined) query.set("collection", input.collection);
+    if (input.limit !== undefined) query.set("limit", String(input.limit));
+    if (input.before !== undefined) query.set("before", input.before);
+    const suffix = query.size === 0 ? "" : `?${query.toString()}`;
+    const value = await this.memoryJson(
+      `${this.baseUrl}/v1/memory/records${suffix}`,
+      { headers: this.headers(false), ...(input.signal === undefined ? {} : { signal: input.signal }) },
+      new Set([200]),
+    );
+    return parseMemoryWire(() => parseMemoryRecordPage(value));
+  }
+
+  async memoryRecord(recordId: string, signal?: AbortSignal): Promise<WebMemoryRecordDetail> {
+    const value = await this.memoryJson(
+      `${this.baseUrl}/v1/memory/records/${encodeURIComponent(recordId)}`,
+      { headers: this.headers(false), ...(signal === undefined ? {} : { signal }) },
+      new Set([200]),
+    );
+    const detail = parseMemoryWire(() => parseMemoryRecordDetail(value));
+    return detail.record.id === recordId ? detail : invalidMemoryResponse();
+  }
+
+  async memoryGraph(
+    input: WebMemoryGraphQuery & { readonly signal?: AbortSignal } = {},
+  ): Promise<WebMemoryGraph> {
+    const query = new URLSearchParams();
+    if (input.focusId !== undefined) query.set("focusId", input.focusId);
+    if (input.includeHistory !== undefined) query.set("includeHistory", String(input.includeHistory));
+    if (input.limit !== undefined) query.set("limit", String(input.limit));
+    const suffix = query.size === 0 ? "" : `?${query.toString()}`;
+    const value = await this.memoryJson(
+      `${this.baseUrl}/v1/memory/graph${suffix}`,
+      { headers: this.headers(false), ...(input.signal === undefined ? {} : { signal: input.signal }) },
+      new Set([200]),
+    );
+    return parseMemoryWire(() => parseMemoryGraphEnvelope(value));
+  }
+
+  async memoryEdit(
+    recordId: string,
+    input: WebMemoryEditInput,
+    signal?: AbortSignal,
+  ): Promise<Extract<WebMemoryMutationAdmission, { readonly kind: "queued" }>> {
+    const value = await this.memoryJson(
+      `${this.baseUrl}/v1/memory/records/${encodeURIComponent(recordId)}`,
+      {
+        method: "PATCH",
+        headers: this.headers(true),
+        ...(signal === undefined ? {} : { signal }),
+        body: JSON.stringify(input),
+      },
+      new Set([202]),
+    );
+    const result = parseMemoryWire(() => parseMemoryMutationAdmission(value));
+    if (result.kind !== "queued") return invalidMemoryResponse();
+    assertMemoryOperationBinding(result.operation, "edit", recordId);
+    return result;
+  }
+
+  async memoryForget(
+    recordId: string,
+    input: WebMemoryActionInput,
+    signal?: AbortSignal,
+  ): Promise<WebMemoryMutationAdmission> {
+    const response = await this.memoryJsonWithStatus(
+      `${this.baseUrl}/v1/memory/records/${encodeURIComponent(recordId)}/forget`,
+      {
+        method: "POST",
+        headers: this.headers(true),
+        ...(signal === undefined ? {} : { signal }),
+        body: JSON.stringify(input),
+      },
+      new Set([202, 428]),
+    );
+    const result = parseMemoryWire(() => parseMemoryMutationAdmission(response.value));
+    if ((response.status === 428) !== (result.kind === "confirmation_required")) {
+      return invalidMemoryResponse();
+    }
+    if (result.kind === "queued") assertMemoryOperationBinding(result.operation, "forget", recordId);
+    return result;
+  }
+
+  async memoryRestore(
+    recordId: string,
+    input: WebMemoryActionInput,
+    signal?: AbortSignal,
+  ): Promise<Extract<WebMemoryMutationAdmission, { readonly kind: "queued" }>> {
+    const value = await this.memoryJson(
+      `${this.baseUrl}/v1/memory/records/${encodeURIComponent(recordId)}/restore`,
+      {
+        method: "POST",
+        headers: this.headers(true),
+        ...(signal === undefined ? {} : { signal }),
+        body: JSON.stringify(input),
+      },
+      new Set([202]),
+    );
+    const result = parseMemoryWire(() => parseMemoryMutationAdmission(value));
+    if (result.kind !== "queued") return invalidMemoryResponse();
+    assertMemoryOperationBinding(result.operation, "restore", recordId);
+    return result;
+  }
+
+  async memoryOperation(operationId: string, signal?: AbortSignal): Promise<WebMemoryOperation> {
+    const value = await this.memoryJson(
+      `${this.baseUrl}/v1/memory/operations/${encodeURIComponent(operationId)}`,
+      { headers: this.headers(false), ...(signal === undefined ? {} : { signal }) },
+      new Set([200]),
+    );
+    const operation = parseMemoryWire(() => parseMemoryOperationEnvelope(value));
+    return operation.id === operationId ? operation : invalidMemoryResponse();
   }
 
   async cronOverview(signal?: AbortSignal): Promise<Omit<WebCronOverview, "jobs"> & {
@@ -622,6 +794,50 @@ export class OperatorClient {
     return { authorization: `Bearer ${this.processJobsBearer}` };
   }
 
+  private async memoryJson(
+    url: string,
+    init: RequestInit,
+    expectedStatuses: ReadonlySet<number>,
+  ): Promise<unknown> {
+    return (await this.memoryJsonWithStatus(url, init, expectedStatuses)).value;
+  }
+
+  private async memoryJsonWithStatus(
+    url: string,
+    init: RequestInit,
+    expectedStatuses: ReadonlySet<number>,
+  ): Promise<{ readonly status: number; readonly value: unknown }> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, { ...init, redirect: "error" });
+    } catch (error) {
+      if (init.signal?.aborted === true) throw error;
+      throw new WebConsoleError("agent_unreachable", "The agent memory operator is unreachable.", 502);
+    }
+    if (!expectedStatuses.has(response.status)) {
+      const detail = await readBodyPrefix(response, MAX_ERROR_BODY_BYTES).catch(() => "");
+      const preserved = preservedMemoryOperatorError(detail, response.status);
+      if (preserved !== undefined) {
+        throw new WebConsoleError(preserved.code, preserved.message, preserved.status);
+      }
+      throw new WebConsoleError(
+        response.status === 401 ? "agent_unauthorized" : "agent_http_error",
+        response.status === 401
+          ? "The agent rejected the server-held operator credential."
+          : "The agent returned an unexpected memory operator response.",
+        502,
+      );
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(await readBoundedBody(response, MAX_MEMORY_BODY_BYTES, "operator_memory_too_large")) as unknown;
+    } catch (error) {
+      if (error instanceof WebConsoleError) throw error;
+      return invalidMemoryResponse();
+    }
+    return { status: response.status, value };
+  }
+
   private async request(
     url: string,
     init: RequestInit,
@@ -668,8 +884,60 @@ function preservedOperatorError(
   if (code === undefined || expected.get(code) !== status) return undefined;
   const message = typeof error?.message === "string" && error.message.length <= 1_024
     ? error.message
-    : "The MCP App audit operation failed.";
+    : "The agent operation failed safely.";
   return { code, message };
+}
+
+function preservedMemoryOperatorError(
+  body: string,
+  status: number,
+): { readonly code: string; readonly message: string; readonly status: number } | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body) as unknown;
+  } catch {
+    return undefined;
+  }
+  const code = record(record(parsed)?.error)?.code;
+  if (typeof code !== "string"
+    || (PRESERVED_MEMORY_OPERATOR_ERRORS.get(code) !== status
+      && !(code === "unavailable" && status === 404))) return undefined;
+  const stableStatus = code === "unavailable" ? 503 : status;
+  switch (code) {
+    case "invalid_request": return { code, message: "Memory operator request is invalid.", status: stableStatus };
+    case "not_found": return { code, message: "Memory resource was not found.", status: stableStatus };
+    case "actions_disabled": return { code, message: "Memory actions are unavailable.", status: stableStatus };
+    case "revision_conflict": return { code, message: "Memory record changed; refresh and retry.", status: stableStatus };
+    case "confirmation_invalid": return { code, message: "Memory action confirmation is invalid or expired.", status: stableStatus };
+    case "idempotency_conflict": return { code, message: "Memory action key conflicts with an earlier request.", status: stableStatus };
+    case "replay_expired": return { code, message: "Memory action replay is no longer available.", status: stableStatus };
+    default: return { code: "unavailable", message: "Memory operator is temporarily unavailable.", status: 503 };
+  }
+}
+
+function invalidMemoryResponse(): never {
+  throw new WebConsoleError(
+    "invalid_operator_memory",
+    "The agent returned invalid memory operator data.",
+    502,
+  );
+}
+
+function parseMemoryWire<T>(parse: () => T): T {
+  try {
+    return parse();
+  } catch (error) {
+    if (error instanceof MemoryWireError) return invalidMemoryResponse();
+    throw error;
+  }
+}
+
+function assertMemoryOperationBinding(
+  operation: WebMemoryOperation,
+  action: WebMemoryOperation["action"],
+  recordId: string,
+): void {
+  if (operation.action !== action || operation.recordId !== recordId) invalidMemoryResponse();
 }
 
 function invalidCronResponse(): never {

@@ -117,7 +117,11 @@ describe("replay projection sidecar", () => {
       ...valid,
       threads: [{ ...valid.threads[0], ...changes }],
     });
-    expect(() => parseReplayProjectionStrict(raw(mutateThread({ authorityKind: "operator" }))))
+    expect(parseReplayProjectionStrict(raw(mutateThread({ authorityKind: "operator" }))).threads[0])
+      .toMatchObject({ authorityKind: "operator" });
+    expect(parseReplayProjectionStrict(raw(mutateThread({ authorityKind: "import" }))).threads[0])
+      .toMatchObject({ authorityKind: "import" });
+    expect(() => parseReplayProjectionStrict(raw(mutateThread({ authorityKind: "scheduler" }))))
       .toThrow(/authority kind/iu);
     expect(() => parseReplayProjectionStrict(raw(mutateThread({ authorityId: "f".repeat(63) }))))
       .toThrow(/64 hexadecimal/iu);

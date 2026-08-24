@@ -1,5 +1,5 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { AgentResponder, NotifyDeliveryContext } from "@mono-agent/agent-contracts";
+import type { AgentResponder, MemoryOperatorService, NotifyDeliveryContext } from "@mono-agent/agent-contracts";
 
 import {
   isAppCoreConfigError,
@@ -25,6 +25,7 @@ import type { NotifyDeliveryResult } from "./proactive-notify.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import { startAppOwnedTuiChannel } from "./channel-drivers/tui.js";
+import type { MemoryResponderAdmissionGate } from "./memory-operator-lifecycle.js";
 import {
   unsafeProcessJobsProtectionStatus,
   type ProcessJobsProtectionPosture,
@@ -41,6 +42,7 @@ export interface ChannelsControllerPort {
   readonly running: Map<ChannelId, RunningChannel>;
   readonly channelStartGenerations: Map<ChannelId, symbol>;
   readonly startsInFlight: Map<ChannelId, Promise<ChannelStatus>>;
+  readonly memoryResponderGate: MemoryResponderAdmissionGate;
   readonly stopped: boolean;
   readonly traceabilityStatusValue: TraceabilityStatus;
   readonly processJobsService: ProcessJobsServiceHandle | undefined;
@@ -55,6 +57,7 @@ export interface ChannelsControllerPort {
     channelId?: ChannelId,
     processJobConversationScheme?: string,
   ): Promise<AgentResponder>;
+  memoryOperatorService?(coreConfig: MonoAgentConfig): Promise<MemoryOperatorService | undefined>;
   notifyDestination(
     conversationId: string,
     text: string,
@@ -229,6 +232,14 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
         if (entry === undefined) {
           return;
         }
+        const memoryAdmission = controller.memoryResponderGate.status();
+        if (memoryAdmission.kind === "degraded") {
+          controller.setStatus(driver.id, {
+            kind: "degraded",
+            reason: memoryAdmission.reason,
+          });
+          return;
+        }
         if (controller.statuses.get(driver.id)?.kind !== "degraded") {
           return;
         }
@@ -263,6 +274,9 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       driver,
       channelStartInput,
       controller.processJobsService,
+      controller.memoryOperatorService === undefined
+        ? undefined
+        : () => controller.memoryOperatorService!(coreConfig),
     );
     const runningChannel = await (appOwnedTuiStart ?? driver.start(channelStartInput));
     if (!isCurrentGeneration()) {
@@ -307,9 +321,15 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
     // A driver may discover durable control-state corruption or a lease conflict
     // only during start. Preserve that fail-visible degraded status instead of
     // overwriting it with a generic running summary after start returns.
-    const degraded = controller.statuses.get(driver.id);
-    const status = degraded?.kind === "degraded"
-      ? degraded
+    const existingStatus = controller.statuses.get(driver.id);
+    const admissionStatus = controller.memoryResponderGate.status();
+    const degraded = admissionStatus.kind === "degraded"
+      ? { kind: "degraded" as const, reason: admissionStatus.reason }
+      : existingStatus?.kind === "degraded"
+        ? existingStatus
+        : undefined;
+    const status = degraded !== undefined
+      ? controller.setStatus(driver.id, degraded)
       : controller.setStatus(driver.id, { kind: "running", summary });
     controller.logger?.info?.(
       degraded?.kind === "degraded" ? `${driver.label} channel started in degraded mode.` : `${driver.label} channel is running.`,
@@ -361,14 +381,27 @@ async function stopStartedChannel(
   disposeResponder: () => Promise<void>,
   reason: string,
 ): Promise<void> {
+  // Invoke transport stop first so it closes listener admission synchronously,
+  // but do not await it before starting responder disposal. Some transports
+  // join their in-flight handler from stop(); disposal is the cancellation seam
+  // that lets a hung provider/AskUser wait release that handler.
+  let stop: Promise<void>;
   try {
-    await runningChannel.stop();
+    stop = Promise.resolve(runningChannel.stop()).catch((error: unknown) => {
+      controller.logger?.warn?.(`${driver.label} channel did not stop cleanly.`, {
+        reason,
+        error: reasonOf(error),
+      });
+    });
   } catch (error) {
-    controller.logger?.warn?.(`${driver.label} channel did not stop cleanly.`, { reason, error: reasonOf(error) });
+    controller.logger?.warn?.(`${driver.label} channel did not stop cleanly.`, {
+      reason,
+      error: reasonOf(error),
+    });
+    stop = Promise.resolve();
   }
-  // Stop the transport first (so no new turns arrive), then dispose the responder
-  // so the harness/live-session manager and warm provider sessions are retired.
-  await disposeChannelResponder(controller, driver, disposeResponder, reason);
+  const dispose = disposeChannelResponder(controller, driver, disposeResponder, reason);
+  await Promise.all([stop, dispose]);
 }
 
 async function disposeChannelResponder(
@@ -391,6 +424,14 @@ export function setStatus(controller: ChannelsControllerPort, id: ChannelId, sta
 
 export function applyResult(controller: ChannelsControllerPort): ConfigApplyResult {
   const transports = controller.activeTransports();
+  const memoryAdmission = controller.memoryResponderGate.status();
+  if (memoryAdmission.kind === "degraded" || memoryAdmission.kind === "stopped") {
+    return {
+      kind: "failed",
+      message: `Saved config, but live apply failed: ${memoryAdmission.reason}`,
+      transports,
+    };
+  }
   const statusEntries = [...controller.statuses.entries()];
   const statuses = statusEntries.map(([, status]) => status);
   const failedChannel = statuses.find((status) => status.kind === "failed");

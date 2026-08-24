@@ -17,6 +17,7 @@ import {
   type EntityRecord,
   type MemoryDbOptions,
   type MemoryRecord,
+  type MemoryRecordListOptions,
   type RecallHit,
   type RecallOptions,
   type RecallWeights,
@@ -457,6 +458,43 @@ export class MemoryDbCore {
   /** Complete deterministic inventory for rebuild/parity validation. */
   allMemories(): MemoryRecord[] {
     const rows = this.db.prepare(`SELECT * FROM memories ORDER BY id`).all() as Record<string, unknown>[];
+    return rows.map((row) => this.fromRow(row));
+  }
+
+  /** Bounded keyset page; never materializes the full memory inventory. */
+  listMemories(options: MemoryRecordListOptions): MemoryRecord[] {
+    if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 501) {
+      throw new Error("memory-store: listMemories limit must be an integer from 1 to 501.");
+    }
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (options.before !== undefined) {
+      where.push(`(created_at < ? OR (created_at = ? AND id < ?))`);
+      params.push(options.before.createdAt, options.before.createdAt, options.before.id);
+    }
+    if (options.statuses !== undefined) {
+      if (options.statuses.length === 0) return [];
+      where.push(`status IN (${options.statuses.map(() => "?").join(",")})`);
+      params.push(...options.statuses);
+    }
+    if (options.type !== undefined) {
+      where.push("type = ?");
+      params.push(options.type);
+    }
+    if (options.collection !== undefined) {
+      where.push("collection = ?");
+      params.push(options.collection);
+    }
+    if (options.query !== undefined) {
+      const escaped = options.query.toLocaleLowerCase("en-US").replace(/[\\%_]/gu, "\\$&");
+      where.push(`(lower(text) LIKE ? ESCAPE '\\' OR lower(tags) LIKE ? ESCAPE '\\'
+        OR lower(COALESCE(collection, '')) LIKE ? ESCAPE '\\')`);
+      params.push(`%${escaped}%`, `%${escaped}%`, `%${escaped}%`);
+    }
+    const rows = this.db.prepare(
+      `SELECT * FROM memories ${where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`}
+       ORDER BY created_at DESC, id DESC LIMIT ?`,
+    ).all(...params, options.limit) as Record<string, unknown>[];
     return rows.map((row) => this.fromRow(row));
   }
 

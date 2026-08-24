@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, uploadContent, type ReplyAccessRefreshHandler } from "./api";
 import { agent, attachment, bootstrap, processJob, thread } from "./test/fixtures";
+import {
+  memoryAvailability,
+  memoryDetail,
+  memoryGraph,
+  memoryRecord,
+} from "./test/fixtures";
 
 const legacyThread = (
   id: string,
@@ -252,6 +258,142 @@ describe("cron activity API", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "/api/v1/agents/agent%2Fone/cron/jobs/daily%3Abrief/runs/cron%3Adaily%2Fone",
     );
+  });
+});
+
+describe("memory workspace API", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("uses encoded source/record/operation routes, encoded queries, and caller abort signals", async () => {
+    const controller = new AbortController();
+    const availability = memoryAvailability();
+    const detail = memoryDetail(memoryRecord("record/one"));
+    const graph = memoryGraph();
+    const operation = {
+      id: "operation/two",
+      action: "edit" as const,
+      recordId: "record/one",
+      status: "succeeded" as const,
+      createdAt: "2026-08-24T10:00:00.000Z",
+      updatedAt: "2026-08-24T10:00:01.000Z",
+      resultRecordId: "record/new",
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(availability))
+      .mockResolvedValueOnce(Response.json({ records: [detail.record], nextCursor: "next/token" }))
+      .mockResolvedValueOnce(Response.json(detail))
+      .mockResolvedValueOnce(Response.json({ graph }))
+      .mockResolvedValueOnce(Response.json({ operation }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.memoryOverview("agent/one", controller.signal)).resolves.toEqual(availability);
+    await expect(api.memoryRecords("agent/one", {
+      q: " exact phrase ",
+      lifecycle: "forgotten",
+      type: "note",
+      collection: "work notes",
+      limit: 50,
+      before: "next/token",
+    }, controller.signal)).resolves.toMatchObject({ nextCursor: "next/token" });
+    await expect(api.memoryRecord("agent/one", "record/one", controller.signal)).resolves.toEqual(detail);
+    await expect(api.memoryGraph("agent/one", {
+      focusId: "entity/one",
+      includeHistory: true,
+      limit: 100,
+    }, controller.signal)).resolves.toEqual(graph);
+    await expect(api.memoryOperation("agent/one", "operation/two", controller.signal)).resolves.toEqual(operation);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/v1/agents/agent%2Fone/memory",
+      "/api/v1/agents/agent%2Fone/memory/records?q=exact+phrase&lifecycle=forgotten&type=note&collection=work+notes&limit=50&before=next%2Ftoken",
+      "/api/v1/agents/agent%2Fone/memory/records/record%2Fone",
+      "/api/v1/agents/agent%2Fone/memory/graph?focusId=entity%2Fone&includeHistory=true&limit=100",
+      "/api/v1/agents/agent%2Fone/memory/operations/operation%2Ftwo",
+    ]);
+    for (const call of fetchMock.mock.calls) {
+      expect((call[1] as RequestInit).signal).toBe(controller.signal);
+    }
+  });
+
+  it("requires 202 for mutations, accepts 428 only for forget, and sends the exact origin claim", async () => {
+    const queued = {
+      kind: "queued" as const,
+      operation: {
+        id: "operation-one",
+        action: "edit" as const,
+        recordId: "record/one",
+        status: "queued" as const,
+        createdAt: "2026-08-24T10:00:00.000Z",
+        updatedAt: "2026-08-24T10:00:00.000Z",
+      },
+    };
+    const confirmation = {
+      kind: "confirmation_required" as const,
+      confirmation: {
+        token: "token-one",
+        expiresAt: "2026-08-24T10:01:00.000Z",
+        message: "Confirm this memory action?",
+      },
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(queued, { status: 202 }))
+      .mockResolvedValueOnce(Response.json(confirmation, { status: 428 }))
+      .mockResolvedValueOnce(Response.json(confirmation, { status: 428 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const action = { expectedRevision: "a".repeat(64), idempotencyKey: "action-one" };
+
+    await expect(api.editMemoryRecord("agent/one", "record/one", {
+      ...action,
+      patch: { text: "Updated" },
+    })).resolves.toEqual(queued);
+    await expect(api.forgetMemoryRecord("agent/one", "record/one", action)).resolves.toEqual(confirmation);
+    await expect(api.restoreMemoryRecord("agent/one", "record/one", action)).rejects.toMatchObject({ status: 428 });
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/v1/agents/agent%2Fone/memory/records/record%2Fone",
+      "/api/v1/agents/agent%2Fone/memory/records/record%2Fone/forget",
+      "/api/v1/agents/agent%2Fone/memory/records/record%2Fone/restore",
+    ]);
+    for (const call of fetchMock.mock.calls) {
+      const headers = (call[1] as RequestInit).headers as Record<string, string>;
+      expect(headers["X-Mono-Agent-Web-Origin"]).toBe(window.location.origin);
+    }
+  });
+
+  it("rejects mutation admissions whose kind does not match the response status", async () => {
+    const action = { expectedRevision: "a".repeat(64), idempotencyKey: "action-one" };
+    const queued = {
+      kind: "queued" as const,
+      operation: {
+        id: "operation-one",
+        action: "forget" as const,
+        recordId: "record-one",
+        status: "queued" as const,
+        createdAt: "2026-08-24T10:00:00.000Z",
+        updatedAt: "2026-08-24T10:00:00.000Z",
+      },
+    };
+    const confirmation = {
+      kind: "confirmation_required" as const,
+      confirmation: {
+        token: "token-one",
+        expiresAt: "2026-08-24T10:01:00.000Z",
+        message: "Confirm this memory action?",
+      },
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(confirmation, { status: 202 }))
+      .mockResolvedValueOnce(Response.json(queued, { status: 428 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.editMemoryRecord("alpha", "record-one", {
+      ...action,
+      patch: { text: "Updated" },
+    })).rejects.toMatchObject({ status: 502, code: "invalid_memory_response" });
+    await expect(api.forgetMemoryRecord("alpha", "record-one", action))
+      .rejects.toMatchObject({ status: 502, code: "invalid_memory_response" });
   });
 });
 

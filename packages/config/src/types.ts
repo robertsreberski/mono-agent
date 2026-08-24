@@ -372,6 +372,11 @@ export interface MonoAgentConfig {
      * Defaults on for every configured memory tier; explicit false opts out.
      */
     readonly recallTool?: { readonly enabled: boolean };
+    /**
+     * Owner-only web memory mutations. Read-only inspection does not require
+     * this opt-in; edit/forget/restore remain disabled unless explicitly set.
+     */
+    readonly operatorActions?: { readonly enabled: boolean };
     /** Bujo-tier lightweight consolidation. Scheduler default cadence: every two hours. */
     readonly consolidation?: MemoryConsolidationConfig;
   };

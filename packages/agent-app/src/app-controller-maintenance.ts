@@ -23,6 +23,7 @@ import { reasonOf } from "./app-controller-utils.js";
 import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
 import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
 import type { ProcessJobsProtectionPosture } from "./process-jobs-protection.js";
+import type { MemoryResponderAdmissionGate } from "./memory-operator-lifecycle.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 
@@ -49,6 +50,7 @@ export interface MaintenanceControllerPort extends NotifyControllerPort, Destina
   readonly runtime: MonoRuntimeLike | undefined;
   readonly activeRuntimes: MonoRuntimeLike[];
   readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
+  readonly memoryResponderGate: MemoryResponderAdmissionGate;
   stopped: boolean;
   memoryRituals: RunningRituals | undefined;
   artifactRetentionScheduler: RunningArtifactRetentionScheduler | undefined;
@@ -62,6 +64,12 @@ export interface MaintenanceControllerPort extends NotifyControllerPort, Destina
 
 export async function startMemoryRitualsIfConfigured(controller: MaintenanceControllerPort, reason: string): Promise<void> {
   if (controller.stopped) {
+    return;
+  }
+  // An operator integrity callback can fire while the eager TUI service is
+  // still being constructed, before startup reaches this scheduler. Only a
+  // reload that has built a fresh healthy service may arm rituals again.
+  if (!controller.memoryResponderGate.allowsMemoryRitualStart()) {
     return;
   }
   let coreConfig: MonoAgentConfig;
@@ -116,6 +124,13 @@ export async function startMemoryRitualsIfConfigured(controller: MaintenanceCont
       "Memory consolidation scheduler skipped — configured bujo mode resolved to the journal tier because memory.llm is missing.",
       { reason, tier },
     );
+    return;
+  }
+
+  // Recheck after config/store I/O. A live operator request can report an
+  // uncertain publication while startup is resolving this scheduler; there is
+  // no async gap after this fence and before the timer becomes controller-owned.
+  if (!controller.memoryResponderGate.allowsMemoryRitualStart()) {
     return;
   }
 

@@ -28,6 +28,7 @@ my-agent/
       .replay-projection-v1.json # BuJo exact metadata-only replay authority (0600)
       .index/              # managed generations, manifest, runtime snapshot
       .capture-intake/     # owner-only durable completed-turn intake
+      .memory-operator-v1.json # owner-only durable action receipts/recovery
     whatsapp-auth/         # Baileys auth state (WhatsApp channel only)
     sessions/              # optional durable Pi sessions when piSessionsRoot is set
     process-jobs/          # opt-in owner-private Exec/Bash job records and output
@@ -82,7 +83,7 @@ The framework creates and writes everything under `.mono-agent/`. You generally 
 | `.mono-agent/artifacts/` | JSONL run summaries and events — the completed-run record after terminal persistence. `start()` independently replaces empty events plus a `running` summary, later events buffer in RAM, and terminal files are independently replaced; a crash can lose buffered data, and stale reconciliation sees only persisted data. | `artifacts.dir` |
 | `.mono-agent/history/` | Bounded canonical conversation state. Top-level `*.history.json` files keep 64 messages per exact conversation id; `tool-history/tool-lifecycles.sqlite` independently keeps redacted/bounded managed-tool lifecycles, and `.locks/tool-lifecycles-owner.sqlite` enforces one writer. All survive ordinary restarts independently of warm-session mode. | automatic; stored beside `artifacts.dir` |
 | `.mono-agent/workspace/` | The runtime working directory, when `runtime.workspace` is not `"."`. | `runtime.workspace` |
-| `.mono-agent/memory/` | Built-in memory root: canonical daily notes, BuJo `graph.jsonl` and owner-only `.replay-projection-v1.json`, durable intake, and the managed `.index/`. The replay sidecar is exact metadata-only authority for BuJo lifecycle/thread replay; do not edit it or SQLite directly. | `memory.path` |
+| `.mono-agent/memory/` | Built-in memory root: canonical daily notes, BuJo `graph.jsonl` and owner-only `.replay-projection-v1.json`, durable intake, the managed `.index/`, and the bounded `.memory-operator-v1.json` action-recovery ledger after first use. The replay sidecar and action ledger are internal durable authority; neither is returned by operator reads. Do not edit them or SQLite directly. | `memory.path` |
 | `.mono-agent/whatsapp-auth/` | Baileys auth state, written only when the WhatsApp channel is enabled. | (WhatsApp channel) |
 | `.mono-agent/sessions/` | Optional Pi-native provider transcripts used with canonical history for cross-restart resume. Without `piSessionsRoot`, provider sessions are process-local. | `providers.piNative.piSessionsRoot` |
 | `.mono-agent/process-jobs/` | Opt-in owner-private Pi-native Exec/Bash records plus bounded stdout/stderr artifacts. Records survive ordinary restart and `--clear-sessions`; jobs themselves are interrupted at restart. | `processJobs.stateDir` |

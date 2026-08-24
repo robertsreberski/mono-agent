@@ -4,6 +4,7 @@ import type { MemoryDbOptions } from "./types.js";
 export { DEFAULT_EMBEDDING_BATCH_SIZE } from "./db-core.js";
 export type {
   CanonicalGraphReplacement,
+  CanonicalGraphSemanticCollection,
   CanonicalGraphReplacementSupport,
   ReplayProjectionDbReplacement,
   ReplayProjectionDbSnapshot,
