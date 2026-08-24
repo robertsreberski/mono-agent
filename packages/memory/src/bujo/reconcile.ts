@@ -535,7 +535,8 @@ Rules:
 - Preserve every input index exactly once. N is the exact JSON integer from that input item.
 - For noop, update, and supersede, targetId is REQUIRED and copied byte-for-byte from that candidate's existing[].id. add MUST omit targetId.
 - A targetId may be selected by at most one decision in the whole batch.
-- add and noop MUST omit text. update and supersede REQUIRE one complete, non-empty replacement text with no leading/trailing whitespace, at most ${MAX_RECONCILIATION_TEXT_CODE_POINTS} Unicode code points, no control, formatting, surrogate, line-separator, or paragraph-separator characters, and no reserved <!--mem delimiter.
+- LENGTH IS A HARD LIMIT, NOT A TARGET: every replacement text is at most ${MAX_RECONCILIATION_TEXT_CODE_POINTS} Unicode code points. Aim for ${Math.floor(MAX_RECONCILIATION_TEXT_CODE_POINTS * 0.75)}. One text a single code point over discards this entire response — every other decision in the batch is lost too. Merge by keeping what is durable, not by appending. Count before you emit.
+- add and noop MUST omit text. update and supersede REQUIRE one complete, non-empty replacement text with no leading/trailing whitespace, no control, formatting, surrogate, line-separator, or paragraph-separator characters, and no reserved <!--mem delimiter.
 - Every object contains exactly the keys shown for its action. Do not emit duplicate object keys, nulls, extra keys, comments, or prose.
 
 INPUT:
