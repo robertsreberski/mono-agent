@@ -5,6 +5,7 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import {
   failClosedSandboxPolicy,
   mergeSandboxPolicies,
+  modelReferenceKey,
   protectSandboxRoots,
   type RuntimeModelReference,
   type SandboxEngine,
@@ -80,14 +81,19 @@ export function createProcessJobsRuntimeExtension(
       if (retainedRoots
         && options.routesOnlyPiNative !== undefined
         && !options.routesOnlyPiNative(input.request.metadata)) {
-        throw new Error(PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR);
+        throw new Error(
+          `${PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR} Not every route reachable for this request is Pi-native.`,
+        );
       }
       result = options.next === undefined
         ? { runtimeOptions: {}, cleanup: async () => {} }
         : await options.next(input);
       const effectiveModel = runtimeModel(result.runtimeOptions?.model) ?? options.baseModel;
       if (retainedRoots && effectiveModel.sdk !== "pi") {
-        throw new Error(PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR);
+        throw new Error(
+          `${PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR} The effective turn model ${
+            modelReferenceKey(effectiveModel)} is not Pi-native.`,
+        );
       }
       let runtimeOptions = result.runtimeOptions ?? {};
       if (protectedRoots.length > 0 && options.protectionPosture?.suppressSyntheticSandbox !== true) {

@@ -267,7 +267,8 @@ export function requestModelOverrideTargetsPiNative(
  * accepted request override replaces the primary and a configured fallback
  * equal to that effective primary is skipped without otherwise rewriting the
  * configured order. Missing, malformed, or duplicate reachable routes fail
- * closed.
+ * closed — and a resolution failure is WARNED rather than discarded, so it can
+ * be told apart from a genuine non-Pi route.
  */
 export function requestModelOverrideRoutesOnlyPiNative(
   metadata: Record<string, unknown> | undefined,
@@ -297,7 +298,15 @@ export function requestModelOverrideRoutesOnlyPiNative(
       reachable.push(fallback);
     }
     return reachable.every((model) => model.sdk === "pi");
-  } catch {
+  } catch (error) {
+    // Fail CLOSED — an unresolvable chain must not be granted process-job
+    // authority — but never silently. At every call site a resolution failure
+    // is indistinguishable from a genuinely non-Pi route, and discarding the
+    // cause is what made mono-agent#664 undiagnosable from outside.
+    options?.logger?.warn?.(
+      "Treating this request's route chain as non-Pi-native because it could not be resolved.",
+      { reason: error instanceof Error ? error.message : String(error) },
+    );
     return false;
   }
 }

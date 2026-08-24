@@ -68,8 +68,11 @@ afterEach(async () => {
       await expect(lstat(leasePath)).rejects.toMatchObject({ code: "ENOENT" });
     }, { timeout: 2_000, interval: 10 });
   }));
-  memoryState.complete.mockClear();
-  memoryState.embed.mockClear();
+  // mockReset, not mockClear: a queued mockImplementationOnce that its own test
+  // never consumed would otherwise leak into the next test as a never-settling
+  // embed. Reset restores the base implementation given to vi.fn.
+  memoryState.complete.mockReset();
+  memoryState.embed.mockReset();
   await Promise.all(temporaryDirectories.splice(0).map(async (path) =>
     await rm(path, { recursive: true, force: true })));
 });
@@ -92,7 +95,11 @@ describe("direct configured memory provider protection", () => {
     ownership.release();
   });
 
-  it("rejects direct non-Pi LLM and embedding providers before invocation once any private root is retained", async () => {
+  // Regression for #664. These providers used to be rejected outright once any
+  // private root was retained, which made `processJobs.enabled` mutually
+  // exclusive with the bujo/journal memory tiers that REQUIRE an embedding
+  // provider — recall and completed-turn capture failed on every single turn.
+  it("allows direct tool-less LLM and embedding providers while a private root is retained", async () => {
     const fixture = await memoryFixture("sealed");
     const ownership = await seedRegistry(fixture, join(fixture.root, ".state", "jobs"));
     const store = await createConfiguredMemory(memoryConfig(fixture), { cwd: fixture.root }) as unknown as {
@@ -101,19 +108,74 @@ describe("direct configured memory provider protection", () => {
       close(): Promise<void>;
     };
 
-    await expect(store.capture()).rejects.toThrow(
-      "Process-job private state requires a Pi-native runtime.",
-    );
-    await expect(store.recall()).rejects.toThrow(
-      "Process-job private state requires a Pi-native runtime.",
-    );
-    expect(memoryState.complete).not.toHaveBeenCalled();
-    expect(memoryState.embed).not.toHaveBeenCalled();
+    await expect(store.capture()).resolves.toBe("[]");
+    await expect(store.recall()).resolves.toEqual([[0]]);
+    expect(memoryState.complete).toHaveBeenCalledOnce();
+    expect(memoryState.embed).toHaveBeenCalledOnce();
     await store.close();
     ownership.release();
   });
 
-  it("allows direct tool-less LLM and embedding providers only through unsafe app authority while retaining settlement ownership", async () => {
+  it("allows direct tool-less LLM and embedding providers under the safe srt-protected posture", async () => {
+    const fixture = await memoryFixture("srt-protected");
+    const ownership = await seedRegistry(fixture, join(fixture.root, ".state", "jobs"));
+    const config = memoryConfig(fixture);
+    const registry = await loadProcessJobsRootRegistryProtection(fixture.root, fixture.workspace);
+    const posture = resolveProcessJobsProtectionPosture({
+      settings: { enabled: true, unsafeAllowUnprotectedState: false },
+      registry,
+      coreConfig: config,
+    });
+    expect(posture.kind).toBe("srt-protected");
+    expect(posture.suppressSyntheticSandbox).toBe(false);
+    const store = await createConfiguredMemoryForApp(config, { cwd: fixture.root }, posture) as unknown as {
+      capture(): Promise<unknown>;
+      recall(): Promise<unknown>;
+      close(): Promise<void>;
+    };
+
+    await expect(store.capture()).resolves.toBe("[]");
+    await expect(store.recall()).resolves.toEqual([[0]]);
+    expect(memoryState.complete).toHaveBeenCalledOnce();
+    expect(memoryState.embed).toHaveBeenCalledOnce();
+    await store.close();
+    ownership.release();
+  });
+
+  it("retains cooperative root ownership across a permitted embedding call while a private root is retained", async () => {
+    const fixture = await memoryFixture("srt-protected-settlement");
+    const ownership = await seedRegistry(fixture, join(fixture.root, ".state", "jobs"));
+    const config = memoryConfig(fixture);
+    const registry = await loadProcessJobsRootRegistryProtection(fixture.root, fixture.workspace);
+    const posture = resolveProcessJobsProtectionPosture({
+      settings: { enabled: true, unsafeAllowUnprotectedState: false },
+      registry,
+      coreConfig: config,
+    });
+    const leasePath = agentRootLeasePath(ownership.agentRoot, fixture.home);
+    let settleEmbedding: ((value: number[][]) => void) | undefined;
+    memoryState.embed.mockImplementationOnce(async () => await new Promise<number[][]>((resolve) => {
+      settleEmbedding = resolve;
+    }));
+    const store = await createConfiguredMemoryForApp(config, { cwd: fixture.root }, posture) as unknown as {
+      recall(): Promise<unknown>;
+      close(): Promise<void>;
+    };
+
+    const pendingRecall = store.recall();
+    await vi.waitFor(() => expect(memoryState.embed).toHaveBeenCalledOnce());
+    ownership.release();
+    await expect(lstat(leasePath)).resolves.toBeDefined();
+
+    settleEmbedding?.([[3]]);
+    await expect(pendingRecall).resolves.toEqual([[3]]);
+    await vi.waitFor(async () => {
+      await expect(lstat(leasePath)).rejects.toMatchObject({ code: "ENOENT" });
+    }, { timeout: 2_000, interval: 10 });
+    await store.close();
+  });
+
+  it("retains settlement ownership for direct tool-less providers under the unsafe posture", async () => {
     const fixture = await memoryFixture("unsafe-retained");
     const ownership = await seedRegistry(fixture, join(fixture.root, ".state", "jobs"));
     const config = memoryConfig(fixture, true);
