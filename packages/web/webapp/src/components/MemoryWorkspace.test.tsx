@@ -586,7 +586,7 @@ describe("MemoryWorkspace", () => {
     ["agent_not_found", "This route does not match a discovered agent."],
   ])("sanitizes %s overview errors", async (code, expected) => {
     apiMock.memoryOverview.mockRejectedValue(new ApiError(
-      "PRIVATE /Users/operator/raw/provider detail",
+      "PRIVATE /Users/example/raw/provider detail",
       code === "agent_not_found" ? 404 : 503,
       code,
     ));
@@ -596,6 +596,6 @@ describe("MemoryWorkspace", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(expected);
     expect(alert).not.toHaveTextContent("PRIVATE");
-    expect(alert).not.toHaveTextContent("/Users/operator");
+    expect(alert).not.toHaveTextContent("/Users/example");
   });
 });
