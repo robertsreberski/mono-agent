@@ -211,6 +211,25 @@ item without an active runtime retry, or a published capture intent left unrepla
 closed `work_stalled` degraded condition after 90 seconds. Journal lock ownership and advertised
 rollback-source freshness are checked provider-free; the public report remains aggregate-only.
 
+Supersession timestamps are causal: the lifecycle timestamp and replacement
+`createdAt` are never earlier than the memory being superseded, and the
+replacement is written to the daily file for that effective timestamp. A
+completed-turn retry can be admitted before a target that a later turn creates,
+so the effective clock is the later of admission and target creation. Older
+versions used admission time directly. That could leave a retained, run-owned
+pending intent whose canonical replacement, replay authority, and SQLite
+lifecycle all predated its target, making strict startup recovery fail closed.
+
+Writable BuJo startup now recognizes only that exact historical shape and
+repairs it synchronously before the ordinary writer opens. The repair makes no
+embedding or chat-model call, takes the maintenance and writer fences, creates
+a whole-root sibling backup, corrects every authority id/timestamp/path
+(including a cross-midnight daily-file move), replays the retained intent, and
+proves canonical/index/replay parity before committing. A crash resumes from
+the durable transaction; an in-process failure restores the exact original
+tree. Read-only stores never repair, and malformed, unowned, completed, or
+otherwise ambiguous drift still fails closed.
+
 The app CLI additionally exposes payload-free intake inspection and stopped-store
 recovery: `memory inspect [<id>]`, `memory retry [<id>]`, and
 `memory resolve <id> <reason-slug>`. Retry makes dead/delayed work due for a
@@ -233,8 +252,9 @@ per-decision mutator is intentionally not exported from `@mono-agent/memory/bujo
 The app's artifact-retention scheduler calls `pruneExplicitMemoryForgetBackups`
 at startup and hourly. The fixed rollback window keeps the three newest
 snapshots **total** across root-bound managed forget backups, managed import
-backups, and conventional `operator/forget-*` snapshots; forget and import do
-not receive separate three-slot budgets. Snapshots also expire after 30 days.
+backups, automatic capture-clock-repair backups, and conventional
+`operator/forget-*` snapshots; these operations do not receive separate
+three-slot budgets. Snapshots also expire after 30 days.
 The sweep shares the stopped-store maintenance lease, defers during recovery,
 refuses symlinks or foreign manifests, and supports the memory-artifact dry-run
 boundary. Before deletion it atomically renames each selected directory to

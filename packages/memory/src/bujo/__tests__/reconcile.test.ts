@@ -279,6 +279,67 @@ describe("reconcile", () => {
     expect(parsed.bullets.some((b) => b.id === newId && b.text === newText)).toBe(true);
   });
 
+  it("keeps a retried supersession causal and moves its replacement across midnight", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const admittedAt = new Date("2026-06-15T23:59:00.000Z");
+    const targetCreatedAt = new Date("2026-06-16T00:01:00.000Z");
+    const target: Bullet = {
+      id: "FUTURE-TARGET",
+      type: "note",
+      status: "open",
+      text: "Atlas launches in July",
+      salience: 0.7,
+      isInsight: false,
+      createdAt: targetCreatedAt.toISOString(),
+      refs: [],
+    };
+    appendBullet(root, target, targetCreatedAt);
+    await db.upsert({
+      ...target,
+      accessCount: 0,
+      tags: [],
+      source: { file: relative(root, dailyFilePath(root, targetCreatedAt)) },
+    });
+    db.findSimilar = async () => [{ record: db.get(target.id)!, distance: 0.1 }];
+    const llm = fakeLlm([["CLASSIFY", JSON.stringify({
+      action: "supersede",
+      targetId: target.id,
+      text: "Atlas launches in August",
+    })]]);
+
+    const actions = await reconcile([{
+      type: "note",
+      text: "Atlas launches in August, not July",
+      salience: 0.8,
+      isInsight: false,
+    }], makeDeps(db, root, llm, {
+      now: () => admittedAt,
+      nextId: createIdFactory({ clock: () => admittedAt, random: () => 0 }),
+    }));
+
+    const replacementId = actions[0]?.kind === "supersede" ? actions[0].newId : "";
+    expect(replacementId).not.toBe("");
+    expect(db.get(replacementId)).toMatchObject({
+      createdAt: targetCreatedAt.toISOString(),
+      source: { file: "daily/2026-06-16.md" },
+    });
+    expect(db.get(target.id)).toMatchObject({
+      supersededBy: replacementId,
+      supersededAt: targetCreatedAt.toISOString(),
+      validTo: targetCreatedAt.toISOString(),
+    });
+    expect(db.allEdges()).toContainEqual(expect.objectContaining({
+      src: target.id,
+      dst: replacementId,
+      kind: "supersedes",
+      createdAt: targetCreatedAt.toISOString(),
+    }));
+    expect(parseDailyFile(readFileSync(dailyFilePath(root, targetCreatedAt), "utf8")).bullets)
+      .toContainEqual(expect.objectContaining({ id: replacementId, createdAt: targetCreatedAt.toISOString() }));
+    expect(existsSync(dailyFilePath(root, admittedAt))).toBe(false);
+  });
+
   it("case 4 — refinement candidate + LLM says update → target text merged, count unchanged", async () => {
     const root = newRoot();
     const db = openDb(root);

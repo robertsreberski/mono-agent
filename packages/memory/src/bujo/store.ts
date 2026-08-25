@@ -33,6 +33,7 @@ import {
   replayProjectionDbSnapshot,
 } from "./replay-projection.js";
 import { createIdFactory } from "./ids.js";
+import { repairLegacyCaptureClockDriftAtStartup } from "./capture-clock-repair.js";
 import type { LlmComplete } from "./llm.js";
 import type { EmbeddingProvider } from "../search/index.js";
 import { captureTurn, captureTurnStrict } from "./capture.js";
@@ -200,6 +201,9 @@ export class BujoMemoryStore implements MemoryStore {
     }
     this.backgroundDrainTimeoutMs = backgroundDrainTimeoutMs;
     this.readOnly = options.readOnly === true;
+    if (!this.readOnly && tier === "bujo") {
+      repairLegacyCaptureClockDriftAtStartup({ root: options.root, dimension: options.dim! });
+    }
     const writerLease = this.readOnly ? undefined : acquireMemoryWriterLease(options.root);
     this.writerLease = writerLease;
     this.root = writerLease?.root ?? canonicalMemoryRoot(options.root, true);
