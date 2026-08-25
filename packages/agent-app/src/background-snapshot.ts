@@ -502,36 +502,56 @@ async function readRegularFileProof(
     if (
       afterPath.isSymbolicLink()
       || !afterPath.isFile()
-      || !sameRegularFileVersion(before, afterHandle)
-      || !sameRegularFileVersion(before, afterPath)
+      || !sameBackgroundRegularFileVersion(before, afterHandle)
+      || !sameBackgroundRegularFileVersion(before, afterPath)
     ) {
       throw new Error(`Refusing to read ${label} path ${path} because it changed during startup.`);
     }
-    return { bytes, fingerprint: [
-      "file",
-      before.dev.toString(),
-      before.ino.toString(),
-      before.size.toString(),
-      before.mtimeNs.toString(),
-      before.ctimeNs.toString(),
-      before.mode.toString(8),
-      createHmac("sha256", proofKey)
-        .update("mono-agent.background-file.v1\0", "utf8")
-        .update(label, "utf8")
-        .update("\0", "utf8")
-        .update(path, "utf8")
-        .update("\0", "utf8")
-        .update(bytes)
-        .digest("hex"),
-    ].join(":") };
+    return {
+      bytes,
+      fingerprint: fingerprintBackgroundRegularFile({ path, label, proofKey, bytes, version: before }),
+    };
   } finally {
     await handle.close();
   }
 }
 
-function sameRegularFileVersion(
-  left: BigIntStats,
-  right: BigIntStats,
+type BackgroundRegularFileVersion = Pick<
+  BigIntStats,
+  "dev" | "ino" | "size" | "mtimeNs" | "ctimeNs" | "mode"
+>;
+
+/** Build durable evidence without persisting the mount's boot-local device number. */
+export function fingerprintBackgroundRegularFile(input: {
+  readonly path: string;
+  readonly label: string;
+  readonly proofKey: Uint8Array;
+  readonly bytes: Uint8Array;
+  readonly version: BackgroundRegularFileVersion;
+}): string {
+  const proofKey = normalizeProofKey(input.proofKey);
+  return [
+    "file-v2",
+    input.version.ino.toString(),
+    input.version.size.toString(),
+    input.version.mtimeNs.toString(),
+    input.version.ctimeNs.toString(),
+    input.version.mode.toString(8),
+    createHmac("sha256", proofKey)
+      .update("mono-agent.background-file.v2\0", "utf8")
+      .update(input.label, "utf8")
+      .update("\0", "utf8")
+      .update(input.path, "utf8")
+      .update("\0", "utf8")
+      .update(input.bytes)
+      .digest("hex"),
+  ].join(":");
+}
+
+/** Same-access identity fence; device identity remains load-bearing here. */
+export function sameBackgroundRegularFileVersion(
+  left: BackgroundRegularFileVersion,
+  right: BackgroundRegularFileVersion,
 ): boolean {
   return left.dev === right.dev
     && left.ino === right.ino

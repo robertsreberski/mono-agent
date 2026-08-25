@@ -448,6 +448,13 @@ work disperses over 0–119 seconds without an admission lock; a worker-requeste
 wake has the same maximum added delay. The ready worker separately performs an
 overlap-guarded log metadata check immediately and every five minutes, with a
 five-minute startup wake floor and monotonic 5/10/20/40/60-minute cooldown.
+`RunAtLoad` proves that launchd invoked a job, not that the worker reached
+readiness. The approved v2 snapshot keeps same-access device/inode identity
+checks while excluding the boot-local device number from its persisted file
+proof. Unchanged config, Identity, Soul, dotenv, and MCP authority files survive
+macOS volume renumbering; any byte, inode, version metadata, mode, path, or
+keyed-proof change still causes fail-closed drift. Existing v1 proofs are
+republished once by the recovery controller.
 Idle, shared-only, unsafe, and pending-artifact passes start no helper and do no
 config validation or snapshot capture. After dispersion, the helper authenticates its
 launchd-owned PID and takes the per-agent lock without waiting before attestation
