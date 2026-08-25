@@ -20,6 +20,7 @@ import {
 } from "react";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
+import { isAutomationThread, messageAnchor } from "../conversation-workspace";
 import { useConsoleStore } from "../console-store";
 import type { AskAnswer, AskSnapshot, ProcessJobProjection, ProcessJobState, ToolCallArtifact } from "../types";
 import { UserMessageAttachments } from "./Attachments";
@@ -330,6 +331,7 @@ const persistedAskStatus = (value: unknown, depth = 0): TerminalAskStatus | unde
 export function AskReconciliationProvider({ children }: { readonly children: ReactNode }) {
   const { selectedThread, selectedAgent, connection } = useConsoleStore();
   const threadId = selectedThread?.id;
+  const automation = selectedThread !== null && isAutomationThread(selectedThread);
   const requestsRef = useRef(new Map<string, VersionedAskCardRequest>());
   const nextRequestVersionRef = useRef(0);
   const [requestRevision, setRequestRevision] = useState(0);
@@ -381,7 +383,7 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
   }, [threadId]);
 
   useEffect(() => {
-    if (threadId === undefined) return;
+    if (threadId === undefined || automation) return;
     const controller = new AbortController();
 
     // Each awaited request may write only while its exact card version still
@@ -495,7 +497,7 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
     return () => controller.abort();
     // `states` is deliberately not a dependency: one loop owns its backoff and
     // consults terminal state only as an optimization, never as authority.
-  }, [connection, requestRevision, selectedAgent?.status, threadId, versionRequest]);
+  }, [automation, connection, requestRevision, selectedAgent?.status, threadId, versionRequest]);
 
   const value = useMemo<AskReconciliationValue>(
     () => ({ states, register, replace }),
@@ -516,7 +518,9 @@ function AskUserTool({
   toolCallId,
 }: Pick<ToolCallMessagePartProps, "args" | "status" | "toolCallId">
   & { readonly result?: unknown; readonly structuredResult?: unknown }) {
-  const threadId = useConsoleStore().selectedThread?.id;
+  const selectedThread = useConsoleStore().selectedThread;
+  const threadId = selectedThread?.id;
+  const automation = selectedThread !== null && isAutomationThread(selectedThread);
   const coordinator = useContext(AskReconciliationContext);
   const registerAsk = coordinator?.register;
   const replaceAsk = coordinator?.replace;
@@ -532,18 +536,21 @@ function AskUserTool({
     [result, structuredResult],
   );
   const cardState = coordinator?.states[toolCallId];
-  const snapshot = cardState?.snapshot;
+  const snapshot = automation ? undefined : cardState?.snapshot;
   const [selected, setSelected] = useState<Record<string, readonly string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const input = typeof args === "object" && args !== null ? args as Record<string, unknown> : {};
 
-  useEffect(() => registerAsk?.({
-    toolCallId,
-    ...(expectedInteractionId === undefined ? {} : { expectedInteractionId }),
-    running: status.type === "running",
-  }), [expectedInteractionId, registerAsk, status.type, toolCallId]);
+  useEffect(() => {
+    if (automation) return;
+    return registerAsk?.({
+      toolCallId,
+      ...(expectedInteractionId === undefined ? {} : { expectedInteractionId }),
+      running: status.type === "running",
+    });
+  }, [automation, expectedInteractionId, registerAsk, status.type, toolCallId]);
 
   const remaining = snapshot?.questions.slice(snapshot.activeQuestionIndex) ?? [];
   const complete = remaining.length > 0 && remaining.every((question) => {
@@ -580,13 +587,15 @@ function AskUserTool({
     <section className="ask-user-card" aria-label="Question from the agent">
       <div className="ask-user-heading">
         <span className={`tool-status${status.type === "running" ? " is-running" : ""}`} />
-        <strong>Input needed</strong>
+        <strong>{automation ? "Question" : "Input needed"}</strong>
       </div>
       {(snapshot?.message ?? (typeof input.message === "string" ? input.message : undefined)) && (
         <div className="ask-user-context">{snapshot?.message ?? String(input.message)}</div>
       )}
       {snapshot === undefined ? terminalStatus !== undefined ? (
         <p className="ask-user-complete" role="status">{terminalStatus === "answered" ? "Answers submitted." : `Question ${terminalStatus}.`}</p>
+      ) : automation ? (
+        <p className="ask-user-complete" role="status">Automation conversations are read-only.</p>
       ) : cardState?.unavailable === true ? (
         <p className="ask-user-complete">Question unavailable. It may have expired, been evicted, or the agent may be offline.</p>
       ) : (
@@ -1099,8 +1108,9 @@ function AssistantParts() {
 }
 
 export function UserMessage() {
+  const id = useAuiState((state) => state.message.id);
   return (
-    <MessagePrimitive.Root className="message message-user">
+    <MessagePrimitive.Root id={messageAnchor(id)} tabIndex={-1} className="message message-user">
       <div className="message-user-content">
         <UserMessageAttachments />
         <MessagePrimitive.Parts components={parts} />
@@ -1112,8 +1122,9 @@ export function UserMessage() {
 }
 
 export function AssistantMessage() {
+  const id = useAuiState((state) => state.message.id);
   return (
-    <MessagePrimitive.Root className="message message-assistant">
+    <MessagePrimitive.Root id={messageAnchor(id)} tabIndex={-1} className="message message-assistant">
       <div className="assistant-mark" aria-hidden="true">
         <Icon name="spark" size={15} />
       </div>
@@ -1129,8 +1140,9 @@ export function AssistantMessage() {
 }
 
 export function SystemMessage() {
+  const id = useAuiState((state) => state.message.id);
   return (
-    <MessagePrimitive.Root className="message message-system">
+    <MessagePrimitive.Root id={messageAnchor(id)} tabIndex={-1} className="message message-system">
       <MessagePrimitive.Parts components={parts} />
     </MessagePrimitive.Root>
   );

@@ -9,6 +9,13 @@ import {
   useState,
 } from "react";
 import { api } from "./api";
+import {
+  conversationPath,
+  conversationThreadFromPath,
+  effectiveRunPreference,
+  messageAnchor,
+  messageIdFromHash,
+} from "./conversation-workspace";
 import { DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
   AgentSummary,
@@ -17,8 +24,14 @@ import type {
   SkillRegistryState,
   StartTurnInput,
   ThreadDetail,
+  ThreadPage,
+  ThreadQuery,
   ThreadSummary,
+  WebAgentPreferences,
+  WebCollection,
   WebEvent,
+  WebRunPreference,
+  WebWorkflowStatus,
 } from "./types";
 
 export type ConnectionState = "connecting" | "live" | "reconnecting" | "offline";
@@ -28,6 +41,10 @@ interface ConsoleStoreValue {
   readonly agents: readonly AgentSummary[];
   readonly visibleAgents: readonly AgentSummary[];
   readonly threads: readonly ThreadSummary[];
+  readonly collections: readonly WebCollection[];
+  readonly collectionsLoading: boolean;
+  readonly workspaceRevision: number;
+  readonly agentPreferences: Readonly<Record<string, WebRunPreference | null | undefined>>;
   readonly visibleThreads: readonly ThreadSummary[];
   readonly selectedAgent: AgentSummary | null;
   readonly selectedThread: ThreadSummary | null;
@@ -44,6 +61,8 @@ interface ConsoleStoreValue {
   readonly hiddenOfflineAgentCount: number;
   readonly model: string;
   readonly effort: string;
+  readonly effectiveModel: string;
+  readonly effectiveEffort: string;
   readonly modelOptions: readonly string[];
   readonly effortOptions: readonly string[];
   readonly skillRegistry: SkillRegistryState;
@@ -54,12 +73,35 @@ interface ConsoleStoreValue {
   readonly hasOlderMessages: boolean;
   readonly selectAgent: (sourceId: string) => void;
   readonly setAgentPinned: (sourceId: string, pinned: boolean) => Promise<void>;
-  readonly selectThread: (threadId: string) => void;
-  readonly createThread: () => Promise<ThreadSummary>;
+  readonly loadAgentPreferences: (sourceId: string) => Promise<WebAgentPreferences>;
+  readonly setAgentRunPreference: (
+    sourceId: string,
+    preference: WebRunPreference | null,
+  ) => Promise<void>;
+  readonly selectThread: (threadId: string, messageId?: string) => void;
+  readonly selectSearchMatch: (threadId: string, messageId?: string) => void;
+  readonly pendingMessageId: string | null;
+  readonly clearPendingMessage: () => void;
+  readonly jumpToLatest: () => Promise<void>;
+  readonly openConversationIndex: () => void;
+  readonly conversationDetailOpen: boolean;
+  readonly createThread: (sourceId?: string) => Promise<ThreadSummary>;
   readonly renameThread: (threadId: string, title: string) => Promise<void>;
   readonly archiveThread: (threadId: string) => Promise<void>;
   readonly unarchiveThread: (threadId: string) => Promise<void>;
   readonly deleteThread: (threadId: string) => Promise<void>;
+  readonly updateThreadWorkspace: (
+    threadId: string,
+    patch: {
+      readonly workflowStatus?: WebWorkflowStatus;
+      readonly pinned?: boolean;
+      readonly collectionId?: string | null;
+    },
+  ) => Promise<void>;
+  readonly queryWorkspaceThreads: (query: ThreadQuery) => Promise<ThreadPage>;
+  readonly createCollection: (name: string) => Promise<WebCollection>;
+  readonly renameCollection: (collectionId: string, name: string) => Promise<void>;
+  readonly deleteCollection: (collectionId: string) => Promise<void>;
   readonly sendTurn: (
     input: StartTurnInput,
     onThreadResolved?: (threadId: string) => void,
@@ -91,7 +133,10 @@ const mergeThreads = (
   incoming: readonly ThreadSummary[],
 ): ThreadSummary[] => {
   const merged = new Map(current.map((thread) => [thread.id, thread]));
-  for (const thread of incoming) merged.set(thread.id, thread);
+  for (const thread of incoming) {
+    const existing = merged.get(thread.id);
+    if (existing === undefined || thread.revision >= existing.revision) merged.set(thread.id, thread);
+  }
   return [...merged.values()].sort(byMostRecent);
 };
 
@@ -101,11 +146,15 @@ export const cronChannelPath = (sourceId: string, jobId: string): string =>
 const threadRoute = (thread: ThreadSummary | undefined): string =>
   thread?.trigger?.kind === "cron" && thread.trigger.jobId !== undefined
     ? cronChannelPath(thread.sourceId, thread.trigger.jobId)
-    : "/";
+    : conversationPath(thread?.id);
 
-const updateThreadRoute = (thread: ThreadSummary | undefined, replace = false): void => {
-  const path = threadRoute(thread);
-  if (window.location.pathname === path) return;
+const updateThreadRoute = (
+  thread: ThreadSummary | undefined,
+  replace = false,
+  targetMessageId?: string,
+): void => {
+  const path = `${threadRoute(thread)}${targetMessageId ? `#${messageAnchor(targetMessageId)}` : ""}`;
+  if (`${window.location.pathname}${window.location.hash}` === path) return;
   window.history[replace ? "replaceState" : "pushState"](window.history.state, "", path);
 };
 
@@ -129,6 +178,23 @@ export interface StoredRunPreference {
   readonly model: string;
   readonly effort: string;
 }
+
+export const parseStoredPreferenceKey = (
+  key: string,
+): { readonly sourceId: string; readonly threadId: string | null } | undefined => {
+  try {
+    const parsed = JSON.parse(key) as unknown;
+    if (
+      !Array.isArray(parsed)
+      || parsed.length !== 2
+      || typeof parsed[0] !== "string"
+      || typeof parsed[1] !== "string"
+    ) return undefined;
+    return { sourceId: parsed[0], threadId: parsed[1] === "new" ? null : parsed[1] };
+  } catch {
+    return undefined;
+  }
+};
 
 const asciiNoCase = (value: string): string =>
   value.replace(/[A-Z]/g, (character) =>
@@ -290,6 +356,13 @@ export const validateRunPreference = (
 
 export function ConsoleStoreProvider({ children }: { readonly children: ReactNode }) {
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
+  const [collections, setCollections] = useState<readonly WebCollection[]>([]);
+  const [collectionsLoading, setCollectionsLoading] = useState(true);
+  const [workspaceRevision, setWorkspaceRevision] = useState(0);
+  const [agentPreferences, setAgentPreferences] = useState<
+    Record<string, WebRunPreference | null | undefined>
+  >({});
+  const [preferenceMigrationComplete, setPreferenceMigrationComplete] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(() =>
     cronRouteSelection()?.sourceId ?? localStorage.getItem(SELECTED_AGENT_STORAGE_KEY),
   );
@@ -314,16 +387,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const [cronError, setCronError] = useState<string | null>(null);
   const [routeRevision, setRouteRevision] = useState(0);
   const [showOfflineAgents, setShowOfflineAgents] = useState(false);
-  const [modelByContext, setModelByContext] = useState<Record<string, string>>(() =>
-    Object.fromEntries(
-      Object.entries(readStoredRunPreferences()).map(([key, value]) => [key, value.model]),
-    ),
-  );
-  const [effortByContext, setEffortByContext] = useState<Record<string, string>>(() =>
-    Object.fromEntries(
-      Object.entries(readStoredRunPreferences()).map(([key, value]) => [key, value.effort]),
-    ),
-  );
+  const [pendingMessageId, setPendingMessageId] = useState<string | null>(null);
   const selectedThreadRef = useRef<string | null>(null);
   const selectedAgentRef = useRef<string | null>(selectedAgentId);
   const skillRequestGenerationRef = useRef(0);
@@ -332,20 +396,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
   const queueRefreshRef = useRef<() => void>(() => undefined);
-
-  useEffect(() => {
-    const keys = new Set([...Object.keys(modelByContext), ...Object.keys(effortByContext)]);
-    const stored = Object.fromEntries(
-      [...keys].flatMap((key) => {
-        const preference = {
-          model: modelByContext[key] ?? "",
-          effort: effortByContext[key] ?? "",
-        };
-        return preference.model || preference.effort ? [[key, preference]] : [];
-      }),
-    );
-    localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify(stored));
-  }, [effortByContext, modelByContext]);
+  const migrationStartedRef = useRef(false);
+  const pendingAnchorRef = useRef<{ readonly threadId: string; readonly messageId: string } | null>(null);
+  const runPreferenceQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const runPreferenceGenerationRef = useRef(0);
+  const runPreferenceDraftRef = useRef<{
+    readonly threadId: string;
+    readonly preference: WebRunPreference | null;
+  } | null>(null);
 
   useEffect(() => {
     selectedThreadRef.current = selectedThreadId;
@@ -360,11 +418,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [skillRegistryState]);
 
   const applyBootstrap = useCallback((next: Bootstrap) => {
-    setBootstrap(next);
+    const normalized = next.collections === undefined
+      ? { ...next, collections: [] }
+      : next;
+    setBootstrap(normalized);
+    setCollections(normalized.collections);
+    setCollectionsLoading(false);
+    setWorkspaceRevision((revision) => revision + 1);
     setError(null);
     setLoading(false);
     const baseSelection = resolveBootstrapSelection(
-      next,
+      normalized,
       selectedAgentRef.current,
       selectedThreadRef.current,
       readPersistedThreadIds(),
@@ -372,24 +436,36 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const route = cronRouteSelection();
     const routeThread = route === undefined
       ? undefined
-      : next.threads.find((thread) =>
+      : normalized.threads.find((thread) =>
           thread.sourceId === route.sourceId
           && thread.trigger?.kind === "cron"
           && thread.trigger.jobId === route.jobId);
-    const selection = routeThread === undefined
-      ? baseSelection
-      : { agentId: routeThread.sourceId, threadId: routeThread.id };
+    const conversationRouteId = conversationThreadFromPath();
+    const conversationRouteThread = conversationRouteId === undefined
+      ? undefined
+      : normalized.threads.find((thread) => thread.id === conversationRouteId);
+    const selection = routeThread !== undefined
+      ? { agentId: routeThread.sourceId, threadId: routeThread.id }
+      : conversationRouteId !== undefined
+        ? {
+            agentId: conversationRouteThread?.sourceId ?? baseSelection.agentId,
+            threadId: conversationRouteId,
+          }
+        : baseSelection;
     selectedAgentRef.current = selection.agentId;
     selectedThreadRef.current = selection.threadId;
     setSelectedAgentId(selection.agentId);
     setSelectedThreadId(selection.threadId);
     if (selection.agentId) {
       localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, selection.agentId);
-      const selected = next.threads.find((thread) => thread.id === selection.threadId);
+      const selected = normalized.threads.find((thread) => thread.id === selection.threadId);
       persistThreadId(
         selection.agentId,
         selected && !selected.archivedAt ? selected.id : null,
       );
+    }
+    if (window.location.pathname === "/") {
+      window.history.replaceState(window.history.state, "", conversationPath());
     }
   }, []);
 
@@ -447,7 +523,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     setDetailLoading(true);
     try {
       const next = await api.thread(threadId, signal);
-      if (selectedThreadRef.current === threadId) setDetail(next);
+      if (selectedThreadRef.current === threadId) {
+        if (pendingAnchorRef.current?.threadId !== threadId) setDetail(next);
+        setBootstrap((current) => current === null
+          ? current
+          : { ...current, threads: mergeThreads(current.threads, [next.thread]) });
+        if (selectedAgentRef.current !== next.thread.sourceId) {
+          selectedAgentRef.current = next.thread.sourceId;
+          setSelectedAgentId(next.thread.sourceId);
+          localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, next.thread.sourceId);
+        }
+      }
     } catch (loadError) {
       if (!signal.aborted) setActionError(errorMessage(loadError));
     } finally {
@@ -479,7 +565,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         selectedThreadRef.current ? api.thread(selectedThreadRef.current) : Promise.resolve(null),
       ]);
       applyBootstrap(nextBootstrap);
-      if (nextDetail && selectedThreadRef.current === nextDetail.thread.id) setDetail(nextDetail);
+      if (
+        nextDetail
+        && selectedThreadRef.current === nextDetail.thread.id
+        && pendingAnchorRef.current?.threadId !== nextDetail.thread.id
+      ) setDetail(nextDetail);
     } catch (refreshError) {
       setActionError(errorMessage(refreshError));
     } finally {
@@ -508,8 +598,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const events = new EventSource("/api/v1/events");
     const handleEvent = (event: Event) => {
       let eventType: WebEvent["type"] | undefined;
+      let webEvent: WebEvent | undefined;
       try {
-        const webEvent = JSON.parse((event as MessageEvent<string>).data) as WebEvent;
+        webEvent = JSON.parse((event as MessageEvent<string>).data) as WebEvent;
         if (webEvent.version !== 1) return;
         eventType = webEvent.type;
         if (webEvent.type === "push.pending") {
@@ -524,6 +615,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       if (eventType === "ready" || eventType === "agents.changed") {
         setSkillRefreshToken((value) => value + 1);
       }
+      if (eventType === "agent.preferences.changed") {
+        const sourceId = (webEvent?.payload as { readonly sourceId?: unknown } | undefined)?.sourceId;
+        if (typeof sourceId === "string") {
+          setAgentPreferences((current) => {
+            const next = { ...current };
+            delete next[sourceId];
+            return next;
+          });
+        }
+      }
       if (eventType === "ready" || eventType === "agents.changed" || eventType === "cron.changed") {
         setCronRefreshToken((value) => value + 1);
       }
@@ -532,6 +633,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const eventTypes: WebEvent["type"][] = [
       "ready",
       "agents.changed",
+      "agent.preferences.changed",
+      "collections.changed",
       "cron.changed",
       "threads.changed",
       "thread.changed",
@@ -828,38 +931,167 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [queueRefresh]);
 
+  const loadAgentPreferences = useCallback(async (sourceId: string) => {
+    const preferences = await api.agentPreferences(sourceId);
+    setAgentPreferences((current) => ({
+      ...current,
+      [sourceId]: preferences.runPreference,
+    }));
+    return preferences;
+  }, []);
+
+  const setAgentRunPreference = useCallback(async (
+    sourceId: string,
+    preference: WebRunPreference | null,
+  ) => {
+    try {
+      const updated = await api.patchAgentPreferences(sourceId, preference);
+      setAgentPreferences((current) => ({
+        ...current,
+        [sourceId]: updated.runPreference,
+      }));
+      setActionError(null);
+    } catch (preferenceError) {
+      setActionError(errorMessage(preferenceError));
+      throw preferenceError;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (
+      !preferenceMigrationComplete
+      || selectedAgentId === null
+      || agentPreferences[selectedAgentId] !== undefined
+    ) return;
+    const controller = new AbortController();
+    void api.agentPreferences(selectedAgentId, controller.signal).then((preferences) => {
+      if (!controller.signal.aborted) {
+        setAgentPreferences((current) => ({
+          ...current,
+          [selectedAgentId]: preferences.runPreference,
+        }));
+      }
+    }).catch((preferenceError: unknown) => {
+      if (!controller.signal.aborted) setActionError(errorMessage(preferenceError));
+    });
+    return () => controller.abort();
+  }, [agentPreferences, preferenceMigrationComplete, selectedAgentId]);
+
   const selectThread = useCallback(
-    (threadId: string) => {
+    (threadId: string, targetMessageId?: string) => {
+      setPendingMessageId(targetMessageId ?? null);
+      pendingAnchorRef.current = targetMessageId === undefined
+        ? null
+        : { threadId, messageId: targetMessageId };
       const thread = threads.find((candidate) => candidate.id === threadId);
       if (thread) {
         selectedAgentRef.current = thread.sourceId;
         setSelectedAgentId(thread.sourceId);
         localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, thread.sourceId);
         if (!thread.archivedAt) persistThreadId(thread.sourceId, thread.id);
-        updateThreadRoute(thread);
+        updateThreadRoute(thread, false, targetMessageId);
+        setRouteRevision((value) => value + 1);
       }
       selectedThreadRef.current = threadId;
       setSelectedThreadId(threadId);
       setActionError(null);
       if (thread === undefined) {
         void api.thread(threadId).then((next) => {
+          if (selectedThreadRef.current !== threadId) return;
           const canonical = next.thread;
           setBootstrap((current) => current === null
             ? current
             : { ...current, threads: mergeThreads(current.threads, [canonical]) });
-          setDetail(next);
+          if (targetMessageId === undefined) setDetail(next);
           selectedAgentRef.current = canonical.sourceId;
           selectedThreadRef.current = canonical.id;
           setSelectedAgentId(canonical.sourceId);
           setSelectedThreadId(canonical.id);
           localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, canonical.sourceId);
           if (!canonical.archivedAt) persistThreadId(canonical.sourceId, canonical.id);
-          updateThreadRoute(canonical, true);
+          updateThreadRoute(canonical, true, targetMessageId);
+          setRouteRevision((value) => value + 1);
         }).catch((selectionError: unknown) => setActionError(errorMessage(selectionError)));
       }
     },
     [threads],
   );
+
+  const selectSearchMatch = useCallback((threadId: string, messageId?: string) => {
+    selectThread(threadId, messageId);
+    if (messageId === undefined) return;
+    void Promise.all([api.thread(threadId), api.messagesAround(threadId, messageId)]).then(
+      ([threadDetail, page]) => {
+        const pending = pendingAnchorRef.current;
+        if (
+          selectedThreadRef.current !== threadId
+          || pending?.threadId !== threadId
+          || pending.messageId !== messageId
+        ) return;
+        setBootstrap((current) => current === null
+          ? current
+          : { ...current, threads: mergeThreads(current.threads, [threadDetail.thread]) });
+        setDetail({
+          thread: threadDetail.thread,
+          messages: page.messages,
+          ...(page.nextCursor === undefined ? {} : { messagesNextCursor: page.nextCursor }),
+        });
+      },
+    ).catch((selectionError: unknown) => {
+      const pending = pendingAnchorRef.current;
+      if (pending?.threadId === threadId && pending.messageId === messageId) {
+        pendingAnchorRef.current = null;
+        setPendingMessageId(null);
+        setActionError(errorMessage(selectionError));
+      }
+    });
+  }, [selectThread]);
+
+  const clearPendingMessage = useCallback(() => {
+    pendingAnchorRef.current = null;
+    setPendingMessageId(null);
+  }, []);
+
+  const jumpToLatest = useCallback(async () => {
+    const threadId = selectedThreadRef.current;
+    const anchor = messageIdFromHash();
+    if (threadId === null || anchor === undefined) return;
+    try {
+      const latest = await api.thread(threadId);
+      if (selectedThreadRef.current !== threadId || messageIdFromHash() !== anchor) return;
+      const canonical = latest.thread;
+      pendingAnchorRef.current = null;
+      setPendingMessageId(null);
+      selectedAgentRef.current = canonical.sourceId;
+      selectedThreadRef.current = canonical.id;
+      setSelectedAgentId(canonical.sourceId);
+      setSelectedThreadId(canonical.id);
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, canonical.sourceId);
+      if (!canonical.archivedAt) persistThreadId(canonical.sourceId, canonical.id);
+      setBootstrap((current) => current === null
+        ? current
+        : { ...current, threads: mergeThreads(current.threads, [canonical]) });
+      setDetail(latest);
+      updateThreadRoute(canonical, true);
+      setRouteRevision((value) => value + 1);
+      setActionError(null);
+    } catch (latestError) {
+      setActionError(errorMessage(latestError));
+      throw latestError;
+    }
+  }, []);
+
+  const openConversationIndex = useCallback(() => {
+    pendingAnchorRef.current = null;
+    setPendingMessageId(null);
+    if (window.location.pathname !== conversationPath() || window.location.hash) {
+      window.history.pushState(window.history.state, "", conversationPath());
+      setRouteRevision((value) => value + 1);
+    }
+  }, []);
+
+  const conversationDetailOpen = conversationThreadFromPath() !== undefined
+    || cronRouteSelection() !== undefined;
 
   useEffect(() => {
     const route = cronRouteSelection();
@@ -871,27 +1103,33 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (selectedThreadRef.current !== job.threadId) selectThread(job.threadId);
   }, [cronOverview, routeRevision, selectThread, selectedAgentId]);
 
-  const createThread = useCallback(async () => {
-    if (!selectedAgentId) throw new Error("Select an agent before starting a conversation.");
+  useEffect(() => {
+    const threadId = conversationThreadFromPath();
+    if (threadId === undefined) return;
+    const messageId = messageIdFromHash();
+    if (messageId !== undefined) {
+      const pending = pendingAnchorRef.current;
+      if (
+        selectedThreadRef.current !== threadId
+        || pending?.threadId !== threadId
+        || pending.messageId !== messageId
+      ) selectSearchMatch(threadId, messageId);
+      return;
+    }
+    if (selectedThreadRef.current !== threadId) selectThread(threadId);
+  }, [routeRevision, selectSearchMatch, selectThread]);
+
+  const createThread = useCallback(async (sourceId?: string) => {
+    const targetSourceId = sourceId ?? selectedAgentId;
+    if (!targetSourceId) throw new Error("Select an agent before starting a conversation.");
     try {
-      const thread = await api.createThread(selectedAgentId);
-      const draftPreferenceKey = preferenceKeyForThread(selectedAgentId, null);
-      const threadPreferenceKey = preferenceKeyForThread(selectedAgentId, thread.id);
-      setModelByContext((current) => {
-        if (current[draftPreferenceKey] === undefined) return current;
-        const next = { ...current, [threadPreferenceKey]: current[draftPreferenceKey] ?? "" };
-        delete next[draftPreferenceKey];
-        return next;
-      });
-      setEffortByContext((current) => {
-        if (current[draftPreferenceKey] === undefined) return current;
-        const next = { ...current, [threadPreferenceKey]: current[draftPreferenceKey] ?? "" };
-        delete next[draftPreferenceKey];
-        return next;
-      });
+      const thread = await api.createThread(targetSourceId);
+      selectedAgentRef.current = targetSourceId;
+      setSelectedAgentId(targetSourceId);
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, targetSourceId);
       selectedThreadRef.current = thread.id;
       setSelectedThreadId(thread.id);
-      persistThreadId(selectedAgentId, thread.id);
+      persistThreadId(targetSourceId, thread.id);
       setShowArchived(false);
       updateThreadRoute(thread);
       setBootstrap((current) =>
@@ -916,6 +1154,101 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       : { ...current, threads: mergeThreads(current.threads, [fetched.thread]) });
     return fetched.thread;
   }, [detail, threads]);
+
+  useEffect(() => {
+    if (bootstrap === null || migrationStartedRef.current) return;
+    const stored = readStoredRunPreferences();
+    if (Object.keys(stored).length === 0) {
+      localStorage.removeItem(RUN_PREFERENCES_STORAGE_KEY);
+      migrationStartedRef.current = true;
+      setPreferenceMigrationComplete(true);
+      return;
+    }
+    migrationStartedRef.current = true;
+    let remaining = { ...stored };
+    const persistRemaining = () => {
+      if (Object.keys(remaining).length === 0) {
+        localStorage.removeItem(RUN_PREFERENCES_STORAGE_KEY);
+      } else {
+        localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify(remaining));
+      }
+    };
+    void (async () => {
+      for (const [key, legacy] of Object.entries(stored)) {
+        const context = parseStoredPreferenceKey(key);
+        const source = context === undefined
+          ? undefined
+          : bootstrap.agents.find(({ sourceId }) => sourceId === context.sourceId);
+        if (context === undefined || source === undefined) {
+          delete remaining[key];
+          persistRemaining();
+          continue;
+        }
+        const validated = validateRunPreference(source, legacy);
+        const runPreference: WebRunPreference | null = validated.model || validated.effort
+          ? {
+              ...(validated.model ? { model: validated.model } : {}),
+              ...(validated.effort ? { effort: validated.effort } : {}),
+            }
+          : null;
+        if (runPreference === null) {
+          delete remaining[key];
+          persistRemaining();
+          continue;
+        }
+        try {
+          if (context.threadId === null) {
+            const current = await api.agentPreferences(context.sourceId);
+            setAgentPreferences((preferences) => ({
+              ...preferences,
+              [context.sourceId]: current.runPreference,
+            }));
+            if (current.runPreference === null) {
+              const updated = await api.patchAgentPreferences(context.sourceId, runPreference);
+              setAgentPreferences((preferences) => ({
+                ...preferences,
+                [context.sourceId]: updated.runPreference,
+              }));
+            }
+          } else {
+            const current = bootstrap.threads.find(({ id }) => id === context.threadId)
+              ?? (await api.thread(context.threadId)).thread;
+            if (current.sourceId !== context.sourceId || current.workflowStatus === undefined) {
+              delete remaining[key];
+              persistRemaining();
+              continue;
+            }
+            if (current.runPreference === null) {
+              const updated = await api.patchThread(current.id, {
+                runPreference,
+                expectedRevision: current.revision,
+              });
+              setBootstrap((snapshot) => snapshot === null
+                ? snapshot
+                : { ...snapshot, threads: mergeThreads(snapshot.threads, [updated]) });
+              setDetail((snapshot) => snapshot?.thread.id === updated.id
+                ? { ...snapshot, thread: updated }
+                : snapshot);
+            }
+          }
+          delete remaining[key];
+          persistRemaining();
+        } catch (migrationError) {
+          if (
+            migrationError !== null
+            && typeof migrationError === "object"
+            && "status" in migrationError
+            && migrationError.status === 404
+          ) {
+            delete remaining[key];
+            persistRemaining();
+            continue;
+          }
+          setActionError(errorMessage(migrationError));
+        }
+      }
+    })().finally(() => setPreferenceMigrationComplete(true));
+  }, [bootstrap]);
 
   const renameThread = useCallback(async (threadId: string, title: string) => {
     const trimmed = title.trim();
@@ -997,17 +1330,6 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     try {
       const thread = await fetchThreadSummary(threadId);
       await api.deleteThread(thread.id);
-      const preferenceKey = preferenceKeyForThread(thread.sourceId, thread.id);
-      setModelByContext((current) => {
-        const next = { ...current };
-        delete next[preferenceKey];
-        return next;
-      });
-      setEffortByContext((current) => {
-        const next = { ...current };
-        delete next[preferenceKey];
-        return next;
-      });
       setBootstrap((current) => current
         ? { ...current, threads: current.threads.filter((item) => item.id !== thread.id) }
         : current);
@@ -1028,68 +1350,224 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [fetchThreadSummary, visibleThreads]);
 
+  const updateThreadWorkspace = useCallback(async (
+    threadId: string,
+    patch: {
+      readonly workflowStatus?: WebWorkflowStatus;
+      readonly pinned?: boolean;
+      readonly collectionId?: string | null;
+    },
+  ) => {
+    try {
+      const current = await fetchThreadSummary(threadId);
+      const updated = await api.patchThread(current.id, {
+        ...patch,
+        expectedRevision: current.revision,
+      });
+      setBootstrap((snapshot) => snapshot === null
+        ? snapshot
+        : {
+            ...snapshot,
+            threads: snapshot.threads.map((thread) => thread.id === updated.id ? updated : thread),
+          });
+      setDetail((snapshot) => snapshot?.thread.id === updated.id
+        ? { ...snapshot, thread: updated }
+        : snapshot);
+      setActionError(null);
+    } catch (workspaceError) {
+      setActionError(errorMessage(workspaceError));
+      throw workspaceError;
+    }
+  }, [fetchThreadSummary]);
+
+  const queryWorkspaceThreads = useCallback(async (query: ThreadQuery) => {
+    try {
+      const page = await api.workspaceThreads(query);
+      const durableThreads = page.threads.map(({ searchMatch: _searchMatch, ...thread }) => thread);
+      setBootstrap((snapshot) => snapshot === null
+        ? snapshot
+        : { ...snapshot, threads: mergeThreads(snapshot.threads, durableThreads) });
+      setActionError(null);
+      return page;
+    } catch (queryError) {
+      setActionError(errorMessage(queryError));
+      throw queryError;
+    }
+  }, []);
+
+  const createCollection = useCallback(async (name: string) => {
+    try {
+      const collection = await api.createCollection(name.trim());
+      setCollections((current) => [...current, collection]
+        .sort((left, right) => left.name.localeCompare(right.name)));
+      setBootstrap((snapshot) => snapshot === null
+        ? snapshot
+        : { ...snapshot, collections: [...snapshot.collections, collection] });
+      setActionError(null);
+      return collection;
+    } catch (collectionError) {
+      setActionError(errorMessage(collectionError));
+      throw collectionError;
+    }
+  }, []);
+
+  const renameCollection = useCallback(async (collectionId: string, name: string) => {
+    try {
+      const updated = await api.patchCollection(collectionId, name.trim());
+      setCollections((current) => current
+        .map((collection) => collection.id === updated.id ? updated : collection)
+        .sort((left, right) => left.name.localeCompare(right.name)));
+      setBootstrap((snapshot) => snapshot === null
+        ? snapshot
+        : {
+            ...snapshot,
+            collections: snapshot.collections.map((collection) =>
+              collection.id === updated.id ? updated : collection),
+          });
+      setActionError(null);
+    } catch (collectionError) {
+      setActionError(errorMessage(collectionError));
+      throw collectionError;
+    }
+  }, []);
+
+  const deleteCollection = useCallback(async (collectionId: string) => {
+    try {
+      await api.deleteCollection(collectionId);
+      setCollections((current) => current.filter(({ id }) => id !== collectionId));
+      setBootstrap((snapshot) => snapshot === null
+        ? snapshot
+        : {
+            ...snapshot,
+            collections: snapshot.collections.filter(({ id }) => id !== collectionId),
+            threads: snapshot.threads.map((thread) => thread.collectionId === collectionId
+              ? { ...thread, collectionId: null }
+              : thread),
+          });
+      setDetail((snapshot) => snapshot?.thread.collectionId === collectionId
+        ? { ...snapshot, thread: { ...snapshot.thread, collectionId: null } }
+        : snapshot);
+      setActionError(null);
+    } catch (collectionError) {
+      setActionError(errorMessage(collectionError));
+      throw collectionError;
+    }
+  }, []);
+
   const modelOptions = selectedAgent?.models ?? [];
-  const preferenceKey = selectedAgentId
-    ? preferenceKeyForThread(selectedAgentId, selectedThreadId)
+  const conversationPreference = selectedThread?.runPreference;
+  const agentPreference = selectedAgentId === null
+    ? null
+    : agentPreferences[selectedAgentId];
+  const effectivePreference = effectiveRunPreference(
+    conversationPreference,
+    agentPreference,
+    {
+      model: selectedAgent?.defaultModel ?? modelOptions[0],
+      effort: selectedAgent?.defaultEffort,
+    },
+  );
+  const model = conversationPreference?.model
+    && selectedAgent?.models?.includes(conversationPreference.model)
+    ? conversationPreference.model
     : "";
-  const storedPreference = {
-    model: modelByContext[preferenceKey] ?? "",
-    effort: effortByContext[preferenceKey] ?? "",
-  };
-  const validatedPreference = validateRunPreference(selectedAgent, storedPreference);
-  const model = validatedPreference.model;
-  const effectiveModel = selectedAgent
-    ? model || selectedAgent.defaultModel || modelOptions[0] || ""
-    : "";
+  const effectiveModel = effectivePreference.model;
   const effortOptions = effortLevelsForAgentModel(selectedAgent, effectiveModel);
-  const effort = validatedPreference.effort;
+  const effort = conversationPreference?.effort
+    && effortOptions.includes(conversationPreference.effort)
+    ? conversationPreference.effort
+    : "";
+  const effectiveEffort = effortOptions.includes(effectivePreference.effort)
+    ? effectivePreference.effort
+    : "";
 
-  useEffect(() => {
-    if (!preferenceKey) return;
-    if (storedPreference.model !== validatedPreference.model) {
-      setModelByContext((current) => ({
-        ...current,
-        [preferenceKey]: validatedPreference.model,
-      }));
-    }
-    if (storedPreference.effort !== validatedPreference.effort) {
-      setEffortByContext((current) => ({
-        ...current,
-        [preferenceKey]: validatedPreference.effort,
-      }));
-    }
-  }, [
-    preferenceKey,
-    storedPreference.effort,
-    storedPreference.model,
-    validatedPreference.effort,
-    validatedPreference.model,
-  ]);
+  const persistSelectedRunPreference = useCallback((next: WebRunPreference | null) => {
+    const thread = selectedThread;
+    if (!thread || thread.workflowStatus === undefined) return;
+    const generation = ++runPreferenceGenerationRef.current;
+    runPreferenceDraftRef.current = { threadId: thread.id, preference: next };
+    const optimistic = { ...thread, runPreference: next };
+    setBootstrap((current) => current === null
+      ? current
+      : {
+          ...current,
+          threads: current.threads.map((item) => item.id === thread.id ? optimistic : item),
+        });
+    setDetail((current) => current?.thread.id === thread.id
+      ? { ...current, thread: optimistic }
+      : current);
+    const operation = runPreferenceQueueRef.current.then(async () => {
+      const updated = await api.patchThread(thread.id, { runPreference: next });
+      const draft = runPreferenceDraftRef.current;
+      const projected = draft?.threadId === updated.id && generation !== runPreferenceGenerationRef.current
+        ? { ...updated, runPreference: draft.preference }
+        : updated;
+      setBootstrap((current) => current === null
+        ? current
+        : {
+            ...current,
+            threads: current.threads.map((item) => item.id === projected.id ? projected : item),
+          });
+      setDetail((current) => current?.thread.id === projected.id
+        ? { ...current, thread: projected }
+        : current);
+      if (generation === runPreferenceGenerationRef.current) {
+        runPreferenceDraftRef.current = null;
+        setActionError(null);
+      }
+    });
+    runPreferenceQueueRef.current = operation.catch(() => undefined);
+    void operation.catch(async (preferenceError: unknown) => {
+      if (generation !== runPreferenceGenerationRef.current) return;
+      try {
+        const authoritative = await api.thread(thread.id);
+        setBootstrap((current) => current === null
+          ? current
+          : { ...current, threads: mergeThreads(current.threads, [authoritative.thread]) });
+        setDetail((current) => current?.thread.id === authoritative.thread.id
+          ? authoritative
+          : current);
+      } catch {
+        // Keep the optimistic value visible; the normal live refresh can still reconcile it.
+      }
+      runPreferenceDraftRef.current = null;
+      setActionError(errorMessage(preferenceError));
+    });
+  }, [selectedThread]);
 
-  const setModel = useCallback(
-    (next: string) => {
-      if (!selectedAgentId || !preferenceKey) return;
-      setModelByContext((current) => ({ ...current, [preferenceKey]: next }));
-      const nextEffectiveModel =
-        next || selectedAgent?.defaultModel || selectedAgent?.models?.[0] || "";
-      const nextEfforts = effortLevelsForAgentModel(selectedAgent, nextEffectiveModel);
-      setEffortByContext((current) => ({
-        ...current,
-        [preferenceKey]: nextEfforts.includes(current[preferenceKey] ?? "")
-          ? (current[preferenceKey] ?? "")
-          : "",
-      }));
-    },
-    [preferenceKey, selectedAgent, selectedAgentId],
-  );
+  const setModel = useCallback((next: string) => {
+    if (!selectedThread) return;
+    const current = runPreferenceDraftRef.current?.threadId === selectedThread.id
+      ? runPreferenceDraftRef.current.preference
+      : selectedThread.runPreference;
+    const nextEffectiveModel = next
+      || agentPreference?.model
+      || selectedAgent?.defaultModel
+      || selectedAgent?.models?.[0]
+      || "";
+    const validEfforts = effortLevelsForAgentModel(selectedAgent, nextEffectiveModel);
+    const preference: WebRunPreference = {
+      ...(next ? { model: next } : {}),
+      ...(current?.effort && validEfforts.includes(current.effort)
+        ? { effort: current.effort }
+        : {}),
+    };
+    persistSelectedRunPreference(Object.keys(preference).length > 0 ? preference : null);
+  }, [agentPreference?.model, persistSelectedRunPreference, selectedAgent, selectedThread]);
 
-  const setEffort = useCallback(
-    (next: string) => {
-      if (!selectedAgentId || !preferenceKey) return;
-      setEffortByContext((current) => ({ ...current, [preferenceKey]: next }));
-    },
-    [preferenceKey, selectedAgentId],
-  );
+  const setEffort = useCallback((next: string) => {
+    if (!selectedThread) return;
+    const current = runPreferenceDraftRef.current?.threadId === selectedThread.id
+      ? runPreferenceDraftRef.current.preference
+      : selectedThread.runPreference;
+    const preference: WebRunPreference = {
+      ...(current?.model
+        ? { model: current.model }
+        : {}),
+      ...(next ? { effort: next } : {}),
+    };
+    persistSelectedRunPreference(Object.keys(preference).length > 0 ? preference : null);
+  }, [persistSelectedRunPreference, selectedThread]);
 
   const sendTurn = useCallback(
     async (input: StartTurnInput, onThreadResolved?: (threadId: string) => void) => {
@@ -1168,6 +1646,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       agents,
       visibleAgents,
       threads,
+      collections,
+      collectionsLoading,
+      workspaceRevision,
+      agentPreferences,
       visibleThreads,
       selectedAgent,
       selectedThread,
@@ -1184,6 +1666,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       hiddenOfflineAgentCount,
       model,
       effort,
+      effectiveModel,
+      effectiveEffort,
       modelOptions,
       effortOptions,
       skillRegistry,
@@ -1194,12 +1678,25 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       hasOlderMessages,
       selectAgent,
       setAgentPinned,
+      loadAgentPreferences,
+      setAgentRunPreference,
       selectThread,
+      selectSearchMatch,
+      pendingMessageId,
+      clearPendingMessage,
+      jumpToLatest,
+      openConversationIndex,
+      conversationDetailOpen,
       createThread,
       renameThread,
       archiveThread,
       unarchiveThread,
       deleteThread,
+      updateThreadWorkspace,
+      queryWorkspaceThreads,
+      createCollection,
+      renameCollection,
+      deleteCollection,
       sendTurn,
       sendLiveInput,
       cancelTurn,
@@ -1220,25 +1717,36 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }),
     [
       actionError,
+      agentPreferences,
       agents,
       archiveThread,
       bootstrap,
       cancelTurn,
       connection,
+      collections,
+      collectionsLoading,
+      clearPendingMessage,
+      jumpToLatest,
+      workspaceRevision,
       createThread,
+      createCollection,
       cronLoading,
       cronError,
       cronOverview,
       detail,
       detailLoading,
       deleteThread,
+      deleteCollection,
       effort,
+      effectiveEffort,
+      effectiveModel,
       effortOptions,
       error,
       hiddenOfflineAgentCount,
       hasMoreThreads,
       hasOlderMessages,
       loadBootstrap,
+      loadAgentPreferences,
       loadMoreThreads,
       loadOlderMessages,
       loadCronRunActivity,
@@ -1248,12 +1756,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       skillRegistry,
       renameThread,
       refreshCron,
+      renameCollection,
       selectAgent,
+      selectSearchMatch,
       selectThread,
+      setAgentRunPreference,
       selectedAgent,
       selectedAgentId,
       selectedThread,
       selectedThreadId,
+      pendingMessageId,
+      openConversationIndex,
+      conversationDetailOpen,
       sendTurn,
       sendLiveInput,
       setEffort,
@@ -1263,8 +1777,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       showOfflineAgents,
       threads,
       unarchiveThread,
+      updateThreadWorkspace,
       visibleAgents,
       visibleThreads,
+      queryWorkspaceThreads,
     ],
   );
 

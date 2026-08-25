@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { MAX_AGENT_REPLY_PARTS, type AgentReplyPart } from "@mono-agent/agent-contracts";
 
 import type { WebAgentSummary } from "../contracts.js";
+import { prepareWebStatePaths } from "../state-paths.js";
 import { WebStore } from "../store.js";
 import { fakeProcessJob, temporaryRoot } from "./helpers.js";
 
@@ -714,11 +715,23 @@ describe("WebStore", () => {
     const store = await WebStore.open({ stateDir: join(base, "state") });
     store.replaceAgents([agent()]);
     const thread = store.createThread("agent-one");
-    const reserved = store.reserveLiveInput(thread.id, "Run after the current work");
+    store.patchThread(thread.id, { workflowStatus: "done" });
+    const reserved = store.reserveLiveInput(
+      thread.id,
+      "Run after the current work",
+      { model: "provider/default", effort: "high" },
+    );
     expect(reserved).toMatchObject({ offered: false, message: { liveInputStatus: "queued" } });
 
     const promoted = store.promoteNextQueuedLiveInput(thread.id);
-    expect(promoted).toMatchObject({ text: "Run after the current work", userMessageId: reserved.message.id });
+    expect(promoted).toMatchObject({
+      text: "Run after the current work",
+      userMessageId: reserved.message.id,
+      thread: {
+        workflowStatus: "in_progress",
+        runState: { status: "running", model: "provider/default", effort: "high" },
+      },
+    });
     expect(store.getThreadDetail(thread.id)?.messages).toEqual([
       expect.objectContaining({
         id: reserved.message.id,
@@ -1604,9 +1617,19 @@ describe("WebStore", () => {
     const store = await WebStore.open({ stateDir: join(base, "state") });
     store.replaceAgents([agent()]);
     const thread = store.createThread("agent-one");
+    store.patchThread(thread.id, { workflowStatus: "done" });
 
-    const started = store.beginAssistantTurn({ threadId: thread.id, prompt: "Process the worker result" });
+    const started = store.beginAssistantTurn({
+      threadId: thread.id,
+      prompt: "Process the worker result",
+      model: "provider/default",
+      effort: "high",
+    });
     expect(started.text).toBe("Process the worker result");
+    expect(started.thread).toMatchObject({
+      workflowStatus: "in_progress",
+      runState: { status: "running", model: "provider/default", effort: "high" },
+    });
     expect(store.getThreadDetail(thread.id)?.messages).toEqual([
       expect.objectContaining({
         id: started.assistantMessageId,
@@ -1711,14 +1734,14 @@ describe("WebStore", () => {
     const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
     const processJobCards = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'").get();
     inspected.close();
-    expect(version.user_version).toBe(8);
+    expect(version.user_version).toBe(9);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
     expect(liveInputs).toBeDefined();
     expect(processJobCards).toBeDefined();
   });
 
-  it("migrates schema v6 state through v8 process-job wake delivery", async () => {
+  it("migrates schema v6 state through v9 conversation workspace storage", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -1738,7 +1761,7 @@ describe("WebStore", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'",
     ).get();
     inspected.close();
-    expect(version.user_version).toBe(8);
+    expect(version.user_version).toBe(9);
     expect(processJobCards).toBeDefined();
   });
 
@@ -1751,7 +1774,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 9");
+    future.exec("PRAGMA user_version = 10");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 
@@ -1849,6 +1872,324 @@ describe("WebStore", () => {
     const reopened = await WebStore.open({ stateDir });
     expect(reopened.getThreadDetail(thread.id)?.messages.at(-1)?.parts).toEqual([]);
     reopened.close();
+  });
+});
+
+describe("conversation workspace storage", () => {
+  it("atomically files, pins, archives, unfiles, and guards interactive workflow", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const collection = store.createCollection("Projects");
+    const created = store.createThread("agent-one");
+
+    const organized = store.patchThread(created.id, {
+      collectionId: collection.id,
+      workflowStatus: "done",
+      pinned: true,
+      expectedRevision: created.revision,
+    });
+    expect(organized).toMatchObject({
+      collectionId: collection.id,
+      workflowStatus: "done",
+      pinned: true,
+    });
+    expect(() => store.patchThread(created.id, {
+      workflowStatus: "todo",
+      expectedRevision: created.revision,
+    })).toThrowError(expect.objectContaining({ code: "thread_revision_conflict" }));
+
+    const archived = store.patchThread(created.id, { archived: true });
+    expect(archived).toMatchObject({
+      pinned: false,
+      collectionId: collection.id,
+      workflowStatus: "done",
+    });
+    const active = store.patchThread(created.id, { archived: false });
+    const turn = store.beginTurn({ threadId: created.id, text: "resume", attachmentIds: [] });
+    expect(store.getThread(created.id)?.workflowStatus).toBe("in_progress");
+    expect(() => store.patchThread(created.id, { workflowStatus: "done" }))
+      .toThrowError(expect.objectContaining({ code: "workflow_turn_active" }));
+    store.completeTurn(turn.turnId, "resumed");
+    expect(active.collectionId).toBe(collection.id);
+
+    expect(store.deleteCollection(collection.id)).toBe(1);
+    expect(store.getThread(created.id)?.collectionId).toBeNull();
+    expect(store.listCollections()).toEqual([]);
+    expect(() => store.createCollection("Unfiled"))
+      .toThrowError(expect.objectContaining({ code: "reserved_collection_name" }));
+
+    const reservation = store.reserveNotification({
+      sourceId: "agent-one",
+      deliveryKey: "webhook-workspace-exclusion",
+      triggerKind: "webhook",
+      text: "automated",
+    });
+    const automation = store.completeNotification(reservation).thread!;
+    expect(automation).toMatchObject({ canSend: false, canUpload: false });
+    expect(automation.workflowStatus).toBeUndefined();
+    expect(() => store.patchThread(automation.id, { collectionId: null }))
+      .toThrowError(expect.objectContaining({ code: "automation_thread_metadata" }));
+    expect(() => store.beginTurn({ threadId: automation.id, text: "reply", attachmentIds: [] }))
+      .toThrowError(expect.objectContaining({ code: "automation_thread_read_only" }));
+    expect(() => store.reserveLiveInput(automation.id, "follow up"))
+      .toThrowError(expect.objectContaining({ code: "automation_thread_read_only" }));
+    store.close();
+  });
+
+  it("searches only titles, visible user text, and completed assistant text with anchors", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    store.patchThread(thread.id, { title: "Roadmap Alpha" });
+    const turn = store.beginTurn({ threadId: thread.id, text: "visible user phrase", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "assistant_thought", text: "classified reasoning phrase" } },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_started",
+          id: "search-exclusion-tool",
+          name: "Lookup",
+          arguments: { query: "toolonlyneedle" },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "search-exclusion-tool",
+          name: "Lookup",
+          content: "toolonlyneedle",
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "runtime_warning",
+          message: "telemetryonlyneedle",
+          warningKind: "provider",
+        },
+      },
+      { kind: "append", delta: "streamed draft" },
+    ]);
+    const completed = store.completeTurn(turn.turnId, "completed final phrase", undefined, [{
+      type: "attachment",
+      id: "search-exclusion-attachment",
+      reference: { scheme: "mono-agent-artifact", id: "search-exclusion-artifact" },
+      name: "attachmentonlyneedle.txt",
+      mediaType: "text/plain",
+      sizeBytes: 1,
+      integrityId: `sha256:${"c".repeat(64)}`,
+    }]);
+    const assistantId = completed.messages.at(-1)!.id;
+
+    const failedThread = store.createThread("agent-one");
+    const failed = store.beginTurn({ threadId: failedThread.id, text: "ordinary request", attachmentIds: [] });
+    store.applyStreamFrame(failed.turnId, { kind: "append", delta: "failed partial phrase" });
+    store.failTurn(failed.turnId, { message: "provider stopped" });
+
+    expect(store.listThreadsPage({ q: "Roadmap", type: "interactive" }).threads[0]?.searchMatch)
+      .toEqual({ snippet: "Roadmap Alpha" });
+    const userHit = store.listThreadsPage({ q: "visible user", type: "interactive" }).threads[0];
+    expect(userHit?.searchMatch?.messageId).toBe(turn.userMessageId);
+    const assistantHit = store.listThreadsPage({ q: "completed final", type: "interactive" }).threads[0];
+    expect(assistantHit?.searchMatch?.messageId).toBe(assistantId);
+    expect(store.listThreadsPage({ q: "classified reasoning", type: "interactive" }).threads).toEqual([]);
+    expect(store.listThreadsPage({ q: "toolonlyneedle", type: "interactive" }).threads).toEqual([]);
+    expect(store.listThreadsPage({ q: "telemetryonlyneedle", type: "interactive" }).threads).toEqual([]);
+    expect(store.listThreadsPage({ q: "attachmentonlyneedle", type: "interactive" }).threads).toEqual([]);
+    expect(store.listThreadsPage({ q: "failed partial", type: "interactive" }).threads).toEqual([]);
+    expect(store.listMessagesAround(thread.id, assistantId, 5).messages.map((message) => message.id))
+      .toContain(assistantId);
+    store.close();
+  });
+
+  it("keeps pinned-first keyset pagination stable without duplicates", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => new Date("2026-07-17T10:00:00.000Z"),
+    });
+    store.replaceAgents([agent()]);
+    const firstCreated = store.createThread("agent-one");
+    const secondCreated = store.createThread("agent-one");
+    const thirdCreated = store.createThread("agent-one");
+    store.patchThread(firstCreated.id, { pinned: true });
+
+    const firstPage = store.listThreadsPage({ type: "interactive", limit: 2 });
+    expect(firstPage.threads[0]).toMatchObject({ id: firstCreated.id, pinned: true });
+    const cursor = firstPage.nextCursor;
+    if (cursor === undefined) throw new Error("Expected another thread page.");
+    const secondPage = store.listThreadsPage({
+      type: "interactive",
+      limit: 2,
+      before: cursor,
+    });
+    const ids = [...firstPage.threads, ...secondPage.threads].map((thread) => thread.id);
+    expect(new Set(ids)).toEqual(new Set([firstCreated.id, secondCreated.id, thirdCreated.id]));
+    expect(ids).toHaveLength(3);
+    store.close();
+  });
+
+  it("upgrades a v8 database and backfills workflow and FTS state", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const paths = await prepareWebStatePaths({ stateDir });
+    const legacy = new DatabaseSync(paths.database);
+    legacy.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE agents (
+        source_id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        status TEXT NOT NULL,
+        health TEXT,
+        supports_attachments INTEGER NOT NULL DEFAULT 0,
+        models_json TEXT,
+        default_model TEXT,
+        default_effort TEXT,
+        efforts_json TEXT,
+        model_options_json TEXT,
+        cron_read INTEGER NOT NULL DEFAULT 0,
+        cron_actions INTEGER NOT NULL DEFAULT 0,
+        ask_by_id INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE threads (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES agents(source_id),
+        conversation_id TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL,
+        title_manual INTEGER NOT NULL DEFAULT 0,
+        trigger_kind TEXT CHECK (trigger_kind IN ('cron', 'webhook')),
+        archived_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE TABLE turns (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        status TEXT NOT NULL,
+        text TEXT NOT NULL,
+        model TEXT,
+        effort TEXT,
+        assistant_message_id TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        error_code TEXT,
+        error_message TEXT
+      );
+      CREATE TABLE messages (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        turn_id TEXT REFERENCES turns(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,
+        parts_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        status TEXT NOT NULL
+      );
+      CREATE TABLE live_inputs (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+        active_turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+        text TEXT NOT NULL,
+        model TEXT,
+        effort TEXT,
+        status TEXT NOT NULL CHECK (status IN ('offered', 'queued')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO agents (
+        source_id, label, status, health, supports_attachments, models_json,
+        default_model, default_effort, efforts_json, model_options_json,
+        cron_read, cron_actions, ask_by_id, updated_at
+      ) VALUES (
+        'agent-one', 'agent-one', 'online', 'running', 1, '["provider/default"]',
+        'provider/default', NULL, '["low","high"]',
+        '{"provider/default":{"effortLevels":["low","high"]}}',
+        0, 0, 0, '2026-07-17T09:00:00.000Z'
+      );
+      INSERT INTO threads (
+        id, source_id, conversation_id, title, title_manual, trigger_kind,
+        archived_at, created_at, updated_at, revision
+      ) VALUES
+        ('legacy-interactive', 'agent-one', 'legacy-conversation', 'Legacy title', 0, NULL,
+         NULL, '2026-07-17T09:00:00.000Z', '2026-07-17T09:00:00.000Z', 1),
+        ('legacy-empty', 'agent-one', 'legacy-empty-conversation', 'Legacy empty', 0, NULL,
+         NULL, '2026-07-17T09:00:00.000Z', '2026-07-17T09:00:00.000Z', 1),
+        ('legacy-turn-only', 'agent-one', 'legacy-turn-only-conversation', 'Legacy turn only', 0, NULL,
+         NULL, '2026-07-17T09:00:00.000Z', '2026-07-17T09:00:00.000Z', 1),
+        ('legacy-message-only', 'agent-one', 'legacy-message-only-conversation', 'Legacy message only', 0, NULL,
+         NULL, '2026-07-17T09:00:00.000Z', '2026-07-17T09:00:00.000Z', 1),
+        ('legacy-live-input', 'agent-one', 'legacy-live-input-conversation', 'Legacy live input', 0, NULL,
+         NULL, '2026-07-17T09:00:00.000Z', '2026-07-17T09:00:00.000Z', 1),
+        ('legacy-webhook', 'agent-one', 'legacy-webhook-conversation', 'Legacy automation', 0, 'webhook',
+         NULL, '2026-07-17T09:00:00.000Z', '2026-07-17T09:00:00.000Z', 1);
+      INSERT INTO turns (
+        id, thread_id, status, text, assistant_message_id, started_at, finished_at
+      ) VALUES
+        ('legacy-turn', 'legacy-interactive', 'complete', 'migration searchable',
+         'legacy-assistant', '2026-07-17T09:00:00.000Z', '2026-07-17T09:01:00.000Z'),
+        ('legacy-orphan-turn', 'legacy-turn-only', 'complete', 'historic turn only',
+         'legacy-missing-assistant', '2026-07-17T09:00:00.000Z', '2026-07-17T09:01:00.000Z');
+      INSERT INTO messages (
+        id, thread_id, turn_id, role, parts_json, created_at, updated_at, status
+      ) VALUES
+        ('legacy-user', 'legacy-interactive', 'legacy-turn', 'user',
+         '[{"type":"text","text":"migration searchable"}]',
+         '2026-07-17T09:00:00.000Z', '2026-07-17T09:00:00.000Z', 'complete'),
+        ('legacy-assistant', 'legacy-interactive', 'legacy-turn', 'assistant',
+         '[{"type":"text","text":"migration complete"}]',
+         '2026-07-17T09:01:00.000Z', '2026-07-17T09:01:00.000Z', 'complete'),
+        ('legacy-standalone-message', 'legacy-message-only', NULL, 'user',
+         '[{"type":"text","text":"historic message only"}]',
+         '2026-07-17T09:01:00.000Z', '2026-07-17T09:01:00.000Z', 'complete'),
+        ('legacy-live-message', 'legacy-live-input', NULL, 'user',
+         '[{"type":"text","text":"historic queued input"}]',
+         '2026-07-17T09:01:00.000Z', '2026-07-17T09:01:00.000Z', 'complete');
+      INSERT INTO live_inputs (
+        id, thread_id, message_id, active_turn_id, text, model, effort,
+        status, created_at, updated_at
+      ) VALUES (
+        'legacy-queued-input', 'legacy-live-input', 'legacy-live-message', NULL,
+        'historic queued input', NULL, NULL, 'queued',
+        '2026-07-17T09:01:00.000Z', '2026-07-17T09:01:00.000Z'
+      );
+      PRAGMA user_version = 8;
+    `);
+    legacy.close();
+
+    const migrated = await WebStore.open({ stateDir });
+    expect(migrated.getThread("legacy-empty")?.workflowStatus).toBe("todo");
+    for (const threadId of [
+      "legacy-interactive",
+      "legacy-turn-only",
+      "legacy-message-only",
+      "legacy-live-input",
+    ]) expect(migrated.getThread(threadId)?.workflowStatus).toBe("in_progress");
+    expect(migrated.getThread("legacy-webhook")?.workflowStatus).toBeUndefined();
+    expect(migrated.listThreadsPage({ q: "migration complete" }).threads)
+      .toEqual([expect.objectContaining({
+        id: "legacy-interactive",
+        searchMatch: expect.objectContaining({ messageId: "legacy-assistant" }),
+      })]);
+    migrated.close();
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThread("legacy-empty")?.workflowStatus).toBe("todo");
+    expect(reopened.getThread("legacy-interactive")?.workflowStatus).toBe("in_progress");
+    reopened.close();
+    const inspected = new DatabaseSync(paths.database);
+    expect(inspected.prepare("PRAGMA user_version").get()).toEqual({ user_version: 9 });
+    expect(inspected.prepare("SELECT name FROM sqlite_master WHERE name = 'thread_search'").get()).toBeDefined();
+    inspected.close();
   });
 });
 

@@ -446,6 +446,71 @@ describe("web HTTP server", () => {
       expect(response.status).toBe(409);
       expect(await json(response)).toEqual(expected);
     }
+    for (const request of [
+      new Request(`${baseUrl}/api/v1/threads/${threadId}/ask`),
+      new Request(`${baseUrl}/api/v1/threads/${threadId}/ask/ask-one`),
+      new Request(`${baseUrl}/api/v1/threads/${threadId}/ask`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ interactionId: "ask-one", answers: [] }),
+      }),
+    ]) {
+      const response = await fetch(request);
+      expect(response.status).toBe(409);
+      expect(await json(response)).toEqual(expected);
+    }
+  });
+
+  it("keeps webhook notification conversations read-only across browser input routes", async () => {
+    const { handle, baseUrl } = await start({
+      host: "127.0.0.1",
+      fetchImpl: operatorFetch({ supportsHistoryAppend: true }),
+    });
+    const delivered = await deliverWebNotification({
+      sourceId: "agent-one",
+      triggerKind: "webhook",
+      deliveryKey: "webhook:read-only:success",
+      text: "Automation result",
+    }, { stateDir: handle.stateDir });
+    const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${delivered.threadId}`));
+    expect(detail.thread).toMatchObject({
+      trigger: { kind: "webhook" },
+      canSend: false,
+      canUpload: false,
+    });
+
+    for (const endpoint of ["turns", "live-input"] as const) {
+      const response = await fetch(`${baseUrl}/api/v1/threads/${delivered.threadId}/${endpoint}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "not allowed" }),
+      });
+      expect(response.status).toBe(409);
+      expect(await json(response)).toEqual({
+        error: {
+          code: "automation_thread_read_only",
+          message: "Automation conversations are read-only.",
+        },
+      });
+    }
+    for (const request of [
+      new Request(`${baseUrl}/api/v1/threads/${delivered.threadId}/ask`),
+      new Request(`${baseUrl}/api/v1/threads/${delivered.threadId}/ask/ask-one`),
+      new Request(`${baseUrl}/api/v1/threads/${delivered.threadId}/ask`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ interactionId: "ask-one", answers: [] }),
+      }),
+    ]) {
+      const response = await fetch(request);
+      expect(response.status).toBe(409);
+      expect(await json(response)).toEqual({
+        error: {
+          code: "automation_thread_read_only",
+          message: "Automation conversations are read-only.",
+        },
+      });
+    }
   });
 
   it("serves compact cron pages separately from selected-run activity detail", async () => {
@@ -930,6 +995,102 @@ describe("web HTTP server", () => {
     const deleted = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, { method: "DELETE" });
     expect(deleted.status).toBe(204);
     expect(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`)).toMatchObject({ status: 404 });
+  });
+
+  it("serves conversation workspace collections, preferences, filters, FTS matches, and anchors", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const headers = { "content-type": "application/json" };
+    const createdCollection = await fetch(`${baseUrl}/api/v1/collections`, {
+      method: "POST", headers, body: JSON.stringify({ name: "Projects" }),
+    });
+    expect(createdCollection.status).toBe(201);
+    const collection = (await json(createdCollection)).collection as { id: string; name: string };
+    expect(collection.name).toBe("Projects");
+
+    const preferencesResponse = await fetch(`${baseUrl}/api/v1/agents/agent-one/preferences`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ runPreference: { model: "provider/fallback", effort: "high" } }),
+    });
+    expect(preferencesResponse.status).toBe(200);
+    expect(await json(preferencesResponse)).toMatchObject({
+      preferences: {
+        sourceId: "agent-one",
+        runPreference: { model: "provider/fallback", effort: "high" },
+      },
+    });
+
+    const createThreadResponse = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST", headers, body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    const thread = (await json(createThreadResponse)).thread as { id: string; revision: number };
+    const patchedResponse = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        collectionId: collection.id,
+        workflowStatus: "done",
+        pinned: true,
+        runPreference: { effort: "low" },
+        expectedRevision: thread.revision,
+      }),
+    });
+    expect(patchedResponse.status).toBe(200);
+    expect((await json(patchedResponse)).thread).toMatchObject({
+      collectionId: collection.id,
+      workflowStatus: "done",
+      pinned: true,
+      runPreference: { effort: "low" },
+    });
+
+    const turn = await fetch(`${baseUrl}/api/v1/threads/${thread.id}/turns`, {
+      method: "POST", headers, body: JSON.stringify({ text: "anchor user phrase" }),
+    });
+    expect(turn.status).toBe(202);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`));
+      if ((detail.thread as { runState?: { status?: string } }).runState?.status === "complete") break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+
+    const query = new URLSearchParams({
+      sourceIds: "agent-one",
+      archived: "false",
+      workflowStatus: "in_progress",
+      collectionId: collection.id,
+      pinned: "true",
+      type: "interactive",
+      q: "Hello world",
+      groupBy: "collection",
+    });
+    const page = await json(await fetch(`${baseUrl}/api/v1/threads?${query.toString()}`)) as {
+      threads: Array<{ id: string; searchMatch?: { messageId?: string; snippet: string } }>;
+      groups: Array<{ key: string; label: string; threadIds: string[] }>;
+    };
+    expect(page.threads).toEqual([
+      expect.objectContaining({
+        id: thread.id,
+        searchMatch: expect.objectContaining({ messageId: expect.any(String), snippet: "Hello world" }),
+      }),
+    ]);
+    expect(page.groups).toEqual([{ key: collection.id, label: "Projects", threadIds: [thread.id] }]);
+    const messageId = page.threads[0]!.searchMatch!.messageId!;
+    const anchored = await json(await fetch(
+      `${baseUrl}/api/v1/threads/${thread.id}/messages?anchor=${encodeURIComponent(messageId)}&limit=5`,
+    )) as { messages: Array<{ id: string }> };
+    expect(anchored.messages.map((message) => message.id)).toContain(messageId);
+
+    const hidden = await json(await fetch(
+      `${baseUrl}/api/v1/threads?sourceIds=agent-one&type=interactive&q=Reasoning`,
+    )) as { threads: unknown[] };
+    expect(hidden.threads).toEqual([]);
+
+    const removed = await fetch(`${baseUrl}/api/v1/collections/${collection.id}`, { method: "DELETE" });
+    expect(removed.status).toBe(204);
+    expect(await json(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`)))
+      .toMatchObject({ thread: { collectionId: null } });
+    expect(await json(await fetch(`${baseUrl}/api/v1/bootstrap`)))
+      .toMatchObject({ collections: [] });
   });
 
   it("projects process-job rich replies through the thread API with exact message-bound access", async () => {

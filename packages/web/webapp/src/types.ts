@@ -100,6 +100,26 @@ export interface ModelOption {
   readonly contextWindow?: number;
 }
 
+export type WebWorkflowStatus = "todo" | "in_progress" | "done";
+
+/** Optional values are inherited independently from the next preference layer. */
+export interface WebRunPreference {
+  readonly model?: string;
+  readonly effort?: string;
+}
+
+export interface WebCollection {
+  readonly id: string;
+  readonly name: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface WebAgentPreferences {
+  readonly sourceId: string;
+  readonly runPreference: WebRunPreference | null;
+}
+
 export interface AskOption {
   readonly id: string;
   readonly label: string;
@@ -203,6 +223,11 @@ export interface ThreadSummary {
   readonly sourceId: string;
   readonly title: string;
   readonly archivedAt: string | null;
+  /** Automation threads omit workspace metadata and remain list-only. */
+  readonly workflowStatus?: WebWorkflowStatus;
+  readonly pinned: boolean;
+  readonly collectionId: string | null;
+  readonly runPreference: WebRunPreference | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly revision: number;
@@ -214,6 +239,7 @@ export interface ThreadSummary {
   readonly runState: RunState;
   readonly canSend: boolean;
   readonly canUpload: boolean;
+  readonly searchMatch?: { readonly messageId?: string; readonly snippet: string };
 }
 
 export type ToolCallStatus = "running" | "complete" | "failed";
@@ -371,6 +397,26 @@ export interface ThreadDetail {
 export interface ThreadPage {
   readonly threads: readonly ThreadSummary[];
   readonly nextCursor?: string;
+  readonly groups?: readonly {
+    readonly key: string;
+    readonly label: string;
+    readonly threadIds: readonly string[];
+  }[];
+}
+
+export type ThreadListGroupBy = "none" | "collection" | "agent";
+
+export interface ThreadQuery {
+  readonly sourceIds?: readonly string[];
+  readonly archived?: boolean;
+  readonly workflowStatus?: WebWorkflowStatus;
+  readonly collectionId?: string;
+  readonly pinned?: boolean;
+  readonly type?: "interactive" | "cron" | "webhook";
+  readonly q?: string;
+  readonly groupBy?: ThreadListGroupBy;
+  readonly before?: string;
+  readonly limit?: number;
 }
 
 export interface MessagePage {
@@ -471,6 +517,7 @@ export interface Bootstrap {
   readonly console: ConsoleIdentity;
   readonly push: PushBootstrap;
   readonly agents: readonly AgentSummary[];
+  readonly collections: readonly WebCollection[];
   readonly threads: readonly ThreadSummary[];
   readonly currentThreadId?: string;
   readonly limits: UploadLimits;
@@ -482,6 +529,8 @@ export interface WebEvent {
   readonly type:
     | "ready"
     | "agents.changed"
+    | "agent.preferences.changed"
+    | "collections.changed"
     | "cron.changed"
     | "threads.changed"
     | "thread.changed"

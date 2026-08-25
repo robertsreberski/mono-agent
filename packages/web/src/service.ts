@@ -31,13 +31,17 @@ import {
   WEB_MAX_TURN_TEXT_CHARACTERS,
   WEB_MAX_TURN_ATTACHMENT_BYTES,
   WEB_STAGED_UPLOAD_TTL_MS,
+  type PatchWebAgentPreferencesInput,
   type CreateWebUploadInput,
   type PatchWebAgentInput,
+  type PatchWebThreadInput,
   type StartWebTurnInput,
+  type WebAgentPreferences,
   type WebAgentSummary,
   type WebAttachment,
   type WebBootstrap,
   type WebChannelConfigView,
+  type WebCollection,
   type WebCronMutationResult,
   type WebCronOverview,
   type WebCronRunSummary,
@@ -55,6 +59,7 @@ import {
   type WebThreadPage,
   type WebMessagePage,
   type WebPushSubscriptionStatus,
+  type WebRunPreference,
 } from "./contracts.js";
 import {
   discoverOperatorAgents,
@@ -76,6 +81,7 @@ import {
 } from "./push.js";
 import { acquireWebStateLease, prepareWebStatePaths, type WebStateLease, type WebStatePathOptions } from "./state-paths.js";
 import {
+  automationThreadReadOnlyError,
   cronChannelReadOnlyError,
   toWebAttachment,
   WebStore,
@@ -83,6 +89,7 @@ import {
   type StoredAttachment,
   type StoredTurnExecution,
   type StoredWebPushEvent,
+  type ListWebThreadsInput,
   type WebPushIdentity,
 } from "./store.js";
 
@@ -307,6 +314,7 @@ export class WebService {
         serviceWorkerVersion: WEB_PUSH_SERVICE_WORKER_VERSION,
       },
       agents: this.store.listAgents(),
+      collections: this.store.listCollections(),
       threads: this.store.listThreads(),
       ...(currentThreadId === undefined ? {} : { currentThreadId }),
       limits: {
@@ -324,23 +332,63 @@ export class WebService {
     return thread;
   }
 
+  collections(): WebCollection[] {
+    return this.store.listCollections();
+  }
+
+  createCollection(name: string): WebCollection {
+    const collection = this.store.createCollection(name);
+    this.emit("collections.changed", undefined, { collections: this.store.listCollections() });
+    return collection;
+  }
+
+  patchCollection(id: string, name: string): WebCollection {
+    const collection = this.store.patchCollection(id, name);
+    this.emit("collections.changed", undefined, { collections: this.store.listCollections() });
+    return collection;
+  }
+
+  deleteCollection(id: string): void {
+    const affected = this.store.deleteCollection(id);
+    this.emit("collections.changed", undefined, { collections: this.store.listCollections() });
+    if (affected > 0) this.emit("threads.changed");
+  }
+
+  agentPreferences(sourceId: string): WebAgentPreferences {
+    return this.store.getAgentPreferences(sourceId);
+  }
+
+  patchAgentPreferences(sourceId: string, input: PatchWebAgentPreferencesInput): WebAgentPreferences {
+    const agent = this.store.getAgent(sourceId);
+    if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    validateModelAndEffort(
+      agent,
+      input.runPreference?.model ?? agent.defaultModel,
+      input.runPreference?.effort ?? agent.defaultEffort,
+    );
+    const preferences = this.store.setAgentPreferences(sourceId, input.runPreference);
+    this.emit("agent.preferences.changed", undefined, { sourceId, preferences });
+    return preferences;
+  }
+
   thread(id: string): WebThreadDetail {
     const detail = this.store.getThreadDetail(id);
     if (detail === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     return this.decorateThreadDetail(detail);
   }
 
-  threadsPage(input: {
-    readonly sourceId: string;
-    readonly archived: boolean;
-    readonly limit?: number;
-    readonly before?: string;
-  }): WebThreadPage {
+  threadsPage(input: ListWebThreadsInput): WebThreadPage {
     return this.store.listThreadsPage(input);
   }
 
-  messagePage(threadId: string, input: { readonly limit?: number; readonly before?: string }): WebMessagePage {
-    const page = this.store.listMessagesPage(threadId, input);
+  messagePage(threadId: string, input: {
+    readonly limit?: number;
+    readonly before?: string;
+    readonly anchor?: string;
+  }): WebMessagePage {
+    const page = input.anchor === undefined
+      ? this.store.listMessagesPage(threadId, input)
+      : this.store.listMessagesAround(threadId, input.anchor, input.limit);
     return { ...page, messages: page.messages.map((message) => this.decorateMessage(message)) };
   }
 
@@ -546,6 +594,8 @@ export class WebService {
     const thread = this.store.getThread(threadId);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     threadId = thread.id;
+    if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
+    if (thread.trigger !== undefined) throw automationThreadReadOnlyError();
     const connection = this.connections.get(thread.sourceId);
     if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
     if (!connection.info.supportsAskUser) return undefined;
@@ -562,6 +612,8 @@ export class WebService {
   async ask(threadId: string, interactionId: string): Promise<ChannelAskSnapshot | undefined> {
     const thread = this.store.getThread(threadId);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
+    if (thread.trigger !== undefined) throw automationThreadReadOnlyError();
     const connection = this.connections.get(thread.sourceId);
     if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
     if (!connection.info.supportsAskById) return undefined;
@@ -575,6 +627,8 @@ export class WebService {
   ): Promise<ChannelAskSubmissionResult> {
     const thread = this.store.getThread(threadId);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
+    if (thread.trigger !== undefined) throw automationThreadReadOnlyError();
     const connection = this.connections.get(thread.sourceId);
     if (connection === undefined || !connection.info.supportsAskUser) {
       throw new WebConsoleError("ask_user_unavailable", "This agent does not support interactive questions.", 409);
@@ -585,7 +639,19 @@ export class WebService {
     return result;
   }
 
-  patchThread(id: string, patch: { readonly title?: string; readonly archived?: boolean }): WebThread {
+  patchThread(id: string, patch: PatchWebThreadInput): WebThread {
+    const current = this.store.getThread(id);
+    if (current === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    if (Object.hasOwn(patch, "runPreference") && patch.runPreference !== null) {
+      const agent = this.store.getAgent(current.sourceId);
+      if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+      const inherited = this.store.getAgentPreferences(current.sourceId).runPreference;
+      validateModelAndEffort(
+        agent,
+        patch.runPreference?.model ?? inherited?.model ?? agent.defaultModel,
+        patch.runPreference?.effort ?? inherited?.effort ?? agent.defaultEffort,
+      );
+    }
     const thread = this.store.patchThread(id, patch);
     this.emit("thread.changed", thread.id, { thread });
     this.emit("threads.changed", thread.id);
@@ -822,11 +888,18 @@ export class WebService {
     const agent = this.store.getAgent(thread.sourceId);
     const connection = this.connections.get(thread.sourceId);
     if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
+    if (thread.trigger !== undefined) throw automationThreadReadOnlyError();
     if (agent === undefined || connection === undefined || !thread.canSend) {
       throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
     }
-    validateModelAndEffort(agent, input.model, input.effort);
-    const started = this.store.beginTurn({ threadId, text, attachmentIds, ...(input.quote === undefined ? {} : { quote: input.quote }), ...(input.model === undefined ? {} : { model: input.model }), ...(input.effort === undefined ? {} : { effort: input.effort }) });
+    const runPreference = this.resolveRunPreference(thread, input.model, input.effort);
+    const started = this.store.beginTurn({
+      threadId,
+      text,
+      attachmentIds,
+      ...(input.quote === undefined ? {} : { quote: input.quote }),
+      ...runPreference,
+    });
     this.launchTurn(started, connection.client, operatorText);
     this.emit("turn.changed", threadId, { turn: started.thread.runState });
     this.emit("threads.changed", threadId);
@@ -840,9 +913,12 @@ export class WebService {
     const thread = this.store.getThread(threadId);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     threadId = thread.id;
+    if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
+    if (thread.trigger !== undefined) throw automationThreadReadOnlyError();
     const connection = this.connections.get(thread.sourceId);
     const active = this.activeTurns.get(threadId);
-    const reserved = this.store.reserveLiveInput(threadId, text);
+    const runPreference = this.resolveRunPreference(thread);
+    const reserved = this.store.reserveLiveInput(threadId, text, runPreference);
     this.emit("message.changed", threadId, { messageId: reserved.message.id, updatedAt: reserved.message.updatedAt });
     this.emit("threads.changed", threadId);
 
@@ -1289,9 +1365,13 @@ export class WebService {
       }
       let started;
       try {
+        const thread = this.store.getThread(input.threadId);
+        if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+        const runPreference = this.resolveRunPreference(thread);
         started = this.store.beginAssistantTurn({
           threadId: input.threadId,
           prompt: input.wakePrompt,
+          ...runPreference,
         });
       } catch (error) {
         this.store.abandonProcessJobWake({
@@ -1349,6 +1429,24 @@ export class WebService {
       }
       this.releaseProcessJobWakeReservation(input.threadId);
     }
+  }
+
+  /** Resolve each setting independently across turn, conversation, agent, and advertised defaults. */
+  private resolveRunPreference(
+    thread: WebThread,
+    model?: string,
+    effort?: string,
+  ): WebRunPreference {
+    const agent = this.store.getAgent(thread.sourceId);
+    if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const agentPreference = this.store.getAgentPreferences(thread.sourceId).runPreference;
+    const effectiveModel = model ?? thread.runPreference?.model ?? agentPreference?.model ?? agent.defaultModel;
+    const effectiveEffort = effort ?? thread.runPreference?.effort ?? agentPreference?.effort ?? agent.defaultEffort;
+    validateModelAndEffort(agent, effectiveModel, effectiveEffort);
+    return {
+      ...(effectiveModel === undefined ? {} : { model: effectiveModel }),
+      ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
+    };
   }
 
   private retainProcessJobWakeReservation(threadId: string): void {

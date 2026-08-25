@@ -85,6 +85,25 @@ export const WEB_MAX_LIVE_INPUTS_PER_THREAD = AGENT_LIVE_INPUT_MAX_MESSAGES;
 export type WebAgentStatus = "online" | "offline" | "degraded";
 export type WebThreadNotificationTriggerKind = "cron" | "webhook";
 export type WebNotificationTriggerKind = WebThreadNotificationTriggerKind | "job";
+export type WebWorkflowStatus = "todo" | "in_progress" | "done";
+export type WebThreadGroupBy = "none" | "collection" | "agent";
+
+export interface WebRunPreference {
+  readonly model?: string;
+  readonly effort?: string;
+}
+
+export interface WebCollection {
+  readonly id: string;
+  readonly name: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface WebAgentPreferences {
+  readonly sourceId: string;
+  readonly runPreference: WebRunPreference | null;
+}
 
 export type WebThreadTrigger =
   | { readonly kind: "webhook" }
@@ -172,6 +191,13 @@ export interface WebThread {
   readonly sourceId: string;
   readonly title: string;
   readonly archivedAt: string | null;
+  /** Present only for user-created interactive conversations. */
+  readonly workflowStatus?: WebWorkflowStatus;
+  readonly pinned: boolean;
+  /** `null` is the global Unfiled bucket. */
+  readonly collectionId: string | null;
+  /** `null` inherits the persisted agent preference and then the live agent default. */
+  readonly runPreference: WebRunPreference | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly revision: number;
@@ -181,6 +207,12 @@ export interface WebThread {
   readonly runState: WebRunState;
   readonly canSend: boolean;
   readonly canUpload: boolean;
+  readonly searchMatch?: WebThreadSearchMatch;
+}
+
+export interface WebThreadSearchMatch {
+  readonly messageId?: string;
+  readonly snippet: string;
 }
 
 export type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" | "interrupted";
@@ -318,6 +350,14 @@ export interface WebThreadDetail {
 export interface WebThreadPage {
   readonly threads: readonly WebThread[];
   readonly nextCursor?: string;
+  /** Requested grouping projected over this page; `threads` stays flat for API compatibility. */
+  readonly groups?: readonly WebThreadGroup[];
+}
+
+export interface WebThreadGroup {
+  readonly key: string;
+  readonly label: string;
+  readonly threadIds: readonly string[];
 }
 
 export interface WebMessagePage {
@@ -403,6 +443,7 @@ export interface WebBootstrap {
   readonly console: WebConsoleIdentity;
   readonly push: WebPushBootstrap;
   readonly agents: readonly WebAgentSummary[];
+  readonly collections: readonly WebCollection[];
   readonly threads: readonly WebThread[];
   readonly currentThreadId?: string;
   readonly limits: {
@@ -416,6 +457,8 @@ export interface WebBootstrap {
 export type WebEventType =
   | "ready"
   | "agents.changed"
+  | "agent.preferences.changed"
+  | "collections.changed"
   | "cron.changed"
   | "threads.changed"
   | "thread.changed"
@@ -444,6 +487,23 @@ export interface PatchWebAgentInput {
 export interface PatchWebThreadInput {
   readonly title?: string;
   readonly archived?: boolean;
+  readonly workflowStatus?: WebWorkflowStatus;
+  readonly pinned?: boolean;
+  readonly collectionId?: string | null;
+  readonly runPreference?: WebRunPreference | null;
+  readonly expectedRevision?: number;
+}
+
+export interface CreateWebCollectionInput {
+  readonly name: string;
+}
+
+export interface PatchWebCollectionInput {
+  readonly name: string;
+}
+
+export interface PatchWebAgentPreferencesInput {
+  readonly runPreference: WebRunPreference | null;
 }
 
 export interface StartWebTurnInput {

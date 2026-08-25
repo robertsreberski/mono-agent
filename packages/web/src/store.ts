@@ -21,8 +21,11 @@ import {
   WEB_MAX_LIVE_INPUTS_PER_THREAD,
   WEB_MAX_TURN_ATTACHMENT_BYTES,
   WEB_MAX_TURN_TEXT_CHARACTERS,
+  type PatchWebThreadInput,
+  type WebAgentPreferences,
   type WebAgentSummary,
   type WebAttachment,
+  type WebCollection,
   type WebMessage,
   type WebMessagePart,
   type WebMessageStatus,
@@ -34,11 +37,14 @@ import {
   type WebMessagePage,
   type WebThreadNotificationTriggerKind,
   type WebQuote,
+  type WebRunPreference,
   type WebRunState,
   type WebThread,
+  type WebThreadGroupBy,
   type WebToolCall,
   type WebThreadDetail,
   type WebThreadPage,
+  type WebWorkflowStatus,
   type WebPushSubscriptionState,
   type WebPushSubscriptionStatus,
 } from "./contracts.js";
@@ -69,6 +75,11 @@ interface ThreadRow {
   source_id: string;
   title: string;
   archived_at: string | null;
+  workflow_status: string | null;
+  pinned_at: string | null;
+  collection_id: string | null;
+  run_model: string | null;
+  run_effort: string | null;
   created_at: string;
   updated_at: string;
   revision: number;
@@ -78,6 +89,22 @@ interface ThreadRow {
   can_send: number;
   can_upload: number;
   message_count: number;
+  search_message_id?: string | null;
+  search_snippet?: string | null;
+}
+
+interface CollectionRow {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface AgentPreferenceRow {
+  source_id: string;
+  model: string | null;
+  effort: string | null;
+  updated_at: string;
 }
 
 interface NotificationDeliveryRow {
@@ -134,6 +161,10 @@ interface MessagePageRow extends MessageRow {
   ordered_at: string;
   role_rank: number;
   storage_rowid: number;
+}
+
+interface AnchoredMessagePageRow extends MessagePageRow {
+  anchor_position: number;
 }
 
 interface MessageRow {
@@ -301,10 +332,11 @@ export interface ClaimedWebPushDelivery {
   readonly attempts: number;
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 8;
+const WEB_STORAGE_SCHEMA_VERSION = 9;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
 export const WEB_MESSAGE_PAGE_MAX = 100;
+export const WEB_THREAD_SEARCH_MAX_CHARACTERS = 512;
 const MAX_ACTIVE_PUSH_SUBSCRIPTIONS = 32;
 const MAX_PENDING_PUSH_DELIVERIES_PER_SUBSCRIPTION = 200;
 const PUSH_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -340,6 +372,22 @@ export interface BeginStoredTurnResult {
   readonly thread: WebThread;
 }
 
+export interface ListWebThreadsInput {
+  /** Backward-compatible store call; HTTP uses repeated `sourceIds`. */
+  readonly sourceId?: string;
+  readonly sourceIds?: readonly string[];
+  readonly archived?: boolean;
+  readonly workflowStatus?: WebWorkflowStatus;
+  /** `null` addresses the computed Unfiled bucket. */
+  readonly collectionId?: string | null;
+  readonly pinned?: boolean;
+  readonly type?: "interactive" | "cron" | "webhook";
+  readonly q?: string;
+  readonly groupBy?: WebThreadGroupBy;
+  readonly limit?: number;
+  readonly before?: string;
+}
+
 export interface BeginStoredAssistantTurnResult {
   readonly turnId: string;
   readonly conversationId: string;
@@ -347,6 +395,13 @@ export interface BeginStoredAssistantTurnResult {
   readonly assistantMessageId: string;
   readonly attachments: readonly [];
   readonly thread: WebThread;
+}
+
+export interface BeginStoredAssistantTurnInput {
+  readonly threadId: string;
+  readonly prompt: string;
+  readonly model?: string;
+  readonly effort?: string;
 }
 
 export type StoredTurnExecution = BeginStoredTurnResult | BeginStoredAssistantTurnResult;
@@ -398,6 +453,14 @@ export function cronChannelReadOnlyError(): WebConsoleError {
   return new WebConsoleError(
     "cron_channel_read_only",
     "Cron channels are read-only. Scheduled runs and history are managed by the agent.",
+    409,
+  );
+}
+
+export function automationThreadReadOnlyError(): WebConsoleError {
+  return new WebConsoleError(
+    "automation_thread_read_only",
+    "Automation conversations are read-only.",
     409,
   );
 }
@@ -536,6 +599,84 @@ export class WebStore {
     const agent = this.getAgent(sourceId);
     if (agent === undefined) throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
     return agent;
+  }
+
+  listCollections(): WebCollection[] {
+    const rows = this.database.prepare("SELECT * FROM collections ORDER BY name COLLATE NOCASE, id")
+      .all() as unknown as CollectionRow[];
+    return rows.map(mapCollection);
+  }
+
+  createCollection(name: string): WebCollection {
+    name = normalizeCollectionName(name);
+    if (this.collectionByName(name) !== undefined) {
+      throw new WebConsoleError("collection_name_conflict", "A collection with this name already exists.", 409);
+    }
+    const id = randomUUID();
+    const now = this.now();
+    this.database.prepare("INSERT INTO collections (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
+      .run(id, name, now, now);
+    return this.requireCollection(id);
+  }
+
+  patchCollection(id: string, name: string): WebCollection {
+    this.requireCollection(id);
+    name = normalizeCollectionName(name);
+    const conflict = this.collectionByName(name);
+    if (conflict !== undefined && conflict.id !== id) {
+      throw new WebConsoleError("collection_name_conflict", "A collection with this name already exists.", 409);
+    }
+    this.database.prepare("UPDATE collections SET name = ?, updated_at = ? WHERE id = ?")
+      .run(name, this.now(), id);
+    return this.requireCollection(id);
+  }
+
+  /** Delete the collection and move all members to Unfiled in one SQLite transaction. */
+  deleteCollection(id: string): number {
+    this.requireCollection(id);
+    const affectedIds = (this.database.prepare(`
+      SELECT id FROM threads WHERE collection_id = ? ORDER BY id
+    `).all(id) as unknown as Array<{ id: string }>).map((row) => row.id);
+    const now = this.now();
+    this.transaction(() => {
+      this.database.prepare(`
+        UPDATE threads SET collection_id = NULL, updated_at = ?, revision = revision + 1
+        WHERE collection_id = ?
+      `).run(now, id);
+      for (const threadId of affectedIds) this.recordThreadRevision(threadId, "collection_unfiled", now);
+      this.database.prepare("DELETE FROM collections WHERE id = ?").run(id);
+    });
+    return affectedIds.length;
+  }
+
+  getAgentPreferences(sourceId: string): WebAgentPreferences {
+    if (this.getAgent(sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    }
+    const row = this.database.prepare("SELECT * FROM agent_preferences WHERE source_id = ?")
+      .get(sourceId) as unknown as AgentPreferenceRow | undefined;
+    return {
+      sourceId,
+      runPreference: row === undefined ? null : mapRunPreference(row.model, row.effort),
+    };
+  }
+
+  setAgentPreferences(sourceId: string, runPreference: WebRunPreference | null): WebAgentPreferences {
+    if (this.getAgent(sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    }
+    const normalized = normalizeRunPreference(runPreference);
+    if (normalized === null) {
+      this.database.prepare("DELETE FROM agent_preferences WHERE source_id = ?").run(sourceId);
+    } else {
+      this.database.prepare(`
+        INSERT INTO agent_preferences (source_id, model, effort, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(source_id) DO UPDATE SET
+          model = excluded.model, effort = excluded.effort, updated_at = excluded.updated_at
+      `).run(sourceId, normalized.model ?? null, normalized.effort ?? null, this.now());
+    }
+    return this.getAgentPreferences(sourceId);
   }
 
   reserveNotification(input: ReserveWebNotificationInput): WebNotificationReservation {
@@ -1493,8 +1634,8 @@ export class WebStore {
       this.database.prepare(`
         INSERT INTO threads (
           id, source_id, conversation_id, title, title_manual, archived_at,
-          created_at, updated_at, revision
-        ) VALUES (?, ?, ?, 'New conversation', 0, NULL, ?, ?, 1)
+          workflow_status, created_at, updated_at, revision
+        ) VALUES (?, ?, ?, 'New conversation', 0, NULL, 'todo', ?, ?, 1)
       `).run(id, sourceId, `web:${id}`, now, now);
       this.database.prepare("INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at) VALUES ('thread', ?, 1, 'created', ?)")
         .run(id, now);
@@ -1511,46 +1652,90 @@ export class WebStore {
           SELECT id,
                  ROW_NUMBER() OVER (
                    PARTITION BY source_id, CASE WHEN archived_at IS NULL THEN 0 ELSE 1 END
-                   ORDER BY updated_at DESC, id DESC
+                   ORDER BY CASE WHEN pinned_at IS NULL THEN 0 ELSE 1 END DESC, updated_at DESC, id DESC
                  ) AS bucket_row
           FROM threads
         ) WHERE bucket_row <= ${String(WEB_THREAD_PAGE_MAX)}
       )
-      ORDER BY t.updated_at DESC, t.id DESC
+      ORDER BY CASE WHEN t.pinned_at IS NULL THEN 0 ELSE 1 END DESC, t.updated_at DESC, t.id DESC
     `)).all() as unknown as ThreadRow[];
     return rows.map((row) => this.mapThread(row));
   }
 
-  listThreadsPage(input: {
-    readonly sourceId: string;
-    readonly archived: boolean;
-    readonly limit?: number;
-    readonly before?: string;
-  }): WebThreadPage {
-    if (this.getAgent(input.sourceId) === undefined) {
-      throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+  listThreadsPage(input: ListWebThreadsInput): WebThreadPage {
+    if (input.sourceId !== undefined && input.sourceIds !== undefined) {
+      throw new WebConsoleError("invalid_page", "Provide sourceId or sourceIds, not both.", 400);
+    }
+    const sourceIds = input.sourceIds === undefined
+      ? input.sourceId === undefined ? undefined : [input.sourceId]
+      : [...new Set(input.sourceIds)];
+    if (sourceIds?.length === 0) {
+      throw new WebConsoleError("invalid_page", "sourceIds must contain at least one agent id.", 400);
+    }
+    for (const sourceId of sourceIds ?? []) {
+      if (this.getAgent(sourceId) === undefined) {
+        throw new WebConsoleError("agent_not_found", `Agent ${sourceId} was not found.`, 404);
+      }
     }
     const limit = boundedPageLimit(input.limit, WEB_THREAD_PAGE_MAX);
     const cursor = input.before === undefined ? undefined : decodeThreadCursor(input.before);
-    const archivedSql = input.archived ? "t.archived_at IS NOT NULL" : "t.archived_at IS NULL";
-    const beforeSql = cursor === undefined
-      ? ""
-      : "AND (t.updated_at < ? OR (t.updated_at = ? AND t.id < ?))";
-    const values: Array<string | number> = [input.sourceId];
-    if (cursor !== undefined) values.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
+    const clauses = [(input.archived ?? false) ? "t.archived_at IS NOT NULL" : "t.archived_at IS NULL"];
+    const values: Array<string | number> = [];
+    if (sourceIds !== undefined) {
+      clauses.push(`t.source_id IN (${sourceIds.map(() => "?").join(", ")})`);
+      values.push(...sourceIds);
+    }
+    if (input.workflowStatus !== undefined) {
+      clauses.push("t.trigger_kind IS NULL", "t.workflow_status = ?");
+      values.push(input.workflowStatus);
+    }
+    if (Object.hasOwn(input, "collectionId")) {
+      clauses.push("t.trigger_kind IS NULL");
+      if (input.collectionId === null) clauses.push("t.collection_id IS NULL");
+      else {
+        this.requireCollection(input.collectionId!);
+        clauses.push("t.collection_id = ?");
+        values.push(input.collectionId!);
+      }
+    }
+    if (input.pinned !== undefined) clauses.push(input.pinned ? "t.pinned_at IS NOT NULL" : "t.pinned_at IS NULL");
+    if (input.type === "interactive") clauses.push("t.trigger_kind IS NULL");
+    else if (input.type === "cron") clauses.push("t.trigger_kind = 'cron'");
+    else if (input.type === "webhook") clauses.push("t.trigger_kind = 'webhook'");
+    if (input.groupBy === "collection") clauses.push("t.trigger_kind IS NULL");
+    const search = input.q === undefined ? undefined : normalizeSearchQuery(input.q);
+    const searchMatch = search === undefined ? undefined : ftsMatchQuery(search);
+    if (cursor !== undefined) {
+      clauses.push(`(
+        CASE WHEN t.pinned_at IS NULL THEN 0 ELSE 1 END < ?
+        OR (CASE WHEN t.pinned_at IS NULL THEN 0 ELSE 1 END = ? AND t.updated_at < ?)
+        OR (CASE WHEN t.pinned_at IS NULL THEN 0 ELSE 1 END = ? AND t.updated_at = ? AND t.id < ?)
+      )`);
+      values.push(cursor.pinned, cursor.pinned, cursor.updatedAt, cursor.pinned, cursor.updatedAt, cursor.id);
+    }
     values.push(limit + 1);
-    const rows = this.database.prepare(threadSelectSql(`
-      WHERE t.source_id = ? AND ${archivedSql} ${beforeSql}
-      ORDER BY t.updated_at DESC, t.id DESC LIMIT ?
-    `)).all(...values) as unknown as ThreadRow[];
+    const rows = this.database.prepare(searchMatch === undefined
+      ? threadSelectSql(`
+          WHERE ${clauses.join(" AND ")}
+          ORDER BY CASE WHEN t.pinned_at IS NULL THEN 0 ELSE 1 END DESC,
+                   t.updated_at DESC, t.id DESC LIMIT ?
+        `)
+      : threadSearchSelectSql(`
+          WHERE ${clauses.join(" AND ")}
+          ORDER BY CASE WHEN t.pinned_at IS NULL THEN 0 ELSE 1 END DESC,
+                   t.updated_at DESC, t.id DESC LIMIT ?
+        `)).all(...(searchMatch === undefined ? values : [searchMatch, ...values])) as unknown as ThreadRow[];
     const hasMore = rows.length > limit;
     const pageRows = rows.slice(0, limit);
     const last = pageRows.at(-1);
+    const threads = pageRows.map((row) => this.mapThread(row));
+    const groupBy = input.groupBy ?? "none";
     return {
-      threads: pageRows.map((row) => this.mapThread(row)),
+      threads,
       ...(hasMore && last !== undefined
-        ? { nextCursor: encodeCursor({ updatedAt: last.updated_at, id: last.id }) }
+        ? { nextCursor: encodeCursor({ pinned: last.pinned_at === null ? 0 : 1, updatedAt: last.updated_at, id: last.id }) }
         : {}),
+      ...(groupBy === "none" ? {} : { groups: this.groupThreads(threads, groupBy) }),
     };
   }
 
@@ -1654,6 +1839,56 @@ export class WebStore {
     };
   }
 
+  /** Return one bounded window around an exact search-result message anchor. */
+  listMessagesAround(id: string, anchorMessageId: string, limit = WEB_MESSAGE_PAGE_MAX): WebMessagePage {
+    const resolved = this.resolveThreadId(id);
+    if (this.getThread(resolved) === undefined) {
+      throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    }
+    const anchor = this.database.prepare("SELECT id FROM messages WHERE id = ? AND thread_id = ?")
+      .get(anchorMessageId, resolved);
+    if (anchor === undefined) {
+      throw new WebConsoleError("message_not_found", "Search result message was not found in this conversation.", 404);
+    }
+    limit = boundedPageLimit(limit, WEB_MESSAGE_PAGE_MAX);
+    const rank = messageRoleRankSql("m", "t");
+    const orderedAt = "COALESCE(t.started_at, m.created_at)";
+    const before = Math.floor((limit - 1) / 2);
+    const after = limit - before - 1;
+    const rows = this.database.prepare(`
+      WITH ordered AS (
+        SELECT m.*, ${orderedAt} AS ordered_at, ${rank} AS role_rank, m.rowid AS storage_rowid,
+               ROW_NUMBER() OVER (
+                 ORDER BY ${orderedAt}, ${rank}, m.created_at, m.rowid
+               ) AS anchor_position
+        FROM messages m
+        LEFT JOIN turns t ON t.id = m.turn_id
+        WHERE m.thread_id = ?
+      ), selected_anchor AS (
+        SELECT anchor_position FROM ordered WHERE id = ?
+      )
+      SELECT ordered.* FROM ordered, selected_anchor
+      WHERE ordered.anchor_position BETWEEN
+        MAX(1, selected_anchor.anchor_position - ?)
+        AND selected_anchor.anchor_position + ?
+      ORDER BY ordered.anchor_position
+    `).all(resolved, anchorMessageId, before, after) as unknown as AnchoredMessagePageRow[];
+    const oldest = rows[0];
+    return {
+      messages: rows.map((row) => this.mapMessage(row)),
+      ...(oldest !== undefined && oldest.anchor_position > 1
+        ? {
+            nextCursor: encodeCursor({
+              orderedAt: oldest.ordered_at,
+              roleRank: oldest.role_rank,
+              createdAt: oldest.created_at,
+              rowid: oldest.storage_rowid,
+            }),
+          }
+        : {}),
+    };
+  }
+
   currentThreadId(): string | undefined {
     const row = this.database.prepare("SELECT value FROM settings WHERE key = 'current_thread_id'").get() as unknown as { value: string } | undefined;
     if (row === undefined) return undefined;
@@ -1669,15 +1904,53 @@ export class WebStore {
     this.setSetting("current_thread_id", resolved);
   }
 
-  patchThread(id: string, patch: { readonly title?: string; readonly archived?: boolean }): WebThread {
+  patchThread(id: string, patch: PatchWebThreadInput): WebThread {
     id = this.resolveThreadId(id);
     const current = this.requireThread(id);
+    if (patch.expectedRevision !== undefined && patch.expectedRevision !== current.revision) {
+      throw new WebConsoleError("thread_revision_conflict", "The conversation changed before this update was applied.", 409);
+    }
+    const workspacePatch = patch.workflowStatus !== undefined
+      || patch.pinned !== undefined
+      || Object.hasOwn(patch, "collectionId")
+      || Object.hasOwn(patch, "runPreference");
+    if (current.trigger !== undefined && workspacePatch) {
+      throw new WebConsoleError(
+        "automation_thread_metadata",
+        "Automation conversations cannot be pinned, filed, assigned workflow, or given run overrides.",
+        409,
+      );
+    }
+    if (current.runState.status === "running"
+      && patch.workflowStatus !== undefined
+      && patch.workflowStatus !== "in_progress") {
+      throw new WebConsoleError(
+        "workflow_turn_active",
+        "A conversation with an active run must remain in progress.",
+        409,
+      );
+    }
     const now = this.now();
     const title = patch.title === undefined ? undefined : normalizeTitle(patch.title);
     const archivedAt = patch.archived === undefined ? undefined : patch.archived ? now : null;
+    const collectionId = Object.hasOwn(patch, "collectionId") ? patch.collectionId : undefined;
+    if (collectionId !== undefined && collectionId !== null) this.requireCollection(collectionId);
+    const runPreference = Object.hasOwn(patch, "runPreference")
+      ? normalizeRunPreference(patch.runPreference ?? null)
+      : undefined;
+    if (patch.pinned === true && (patch.archived === true || (patch.archived === undefined && current.archivedAt !== null))) {
+      throw new WebConsoleError("thread_archived", "Unarchive this conversation before pinning it.", 409);
+    }
     this.transaction(() => {
+      if (patch.expectedRevision !== undefined) {
+        const row = this.database.prepare("SELECT revision FROM threads WHERE id = ?")
+          .get(id) as unknown as { revision: number } | undefined;
+        if (row?.revision !== patch.expectedRevision) {
+          throw new WebConsoleError("thread_revision_conflict", "The conversation changed before this update was applied.", 409);
+        }
+      }
       const sets = ["updated_at = ?", "revision = revision + 1"];
-      const values: Array<string | null> = [now];
+      const values: Array<string | null | number> = [now];
       if (title !== undefined) {
         sets.push("title = ?", "title_manual = 1");
         values.push(title);
@@ -1685,10 +1958,27 @@ export class WebStore {
       if (archivedAt !== undefined) {
         sets.push("archived_at = ?");
         values.push(archivedAt);
+        if (patch.archived === true) sets.push("pinned_at = NULL");
+      }
+      if (patch.workflowStatus !== undefined) {
+        sets.push("workflow_status = ?");
+        values.push(patch.workflowStatus);
+      }
+      if (patch.pinned !== undefined && patch.archived !== true) {
+        sets.push("pinned_at = ?");
+        values.push(patch.pinned ? now : null);
+      }
+      if (Object.hasOwn(patch, "collectionId")) {
+        sets.push("collection_id = ?");
+        values.push(collectionId ?? null);
+      }
+      if (Object.hasOwn(patch, "runPreference")) {
+        sets.push("run_model = ?", "run_effort = ?");
+        values.push(runPreference?.model ?? null, runPreference?.effort ?? null);
       }
       values.push(id);
       this.database.prepare(`UPDATE threads SET ${sets.join(", ")} WHERE id = ?`).run(...values);
-      this.recordThreadRevision(id, title !== undefined ? "title_changed" : patch.archived ? "archived" : "unarchived", now);
+      this.recordThreadRevision(id, title !== undefined ? "title_changed" : patch.archived ? "archived" : patch.archived === false ? "unarchived" : "metadata_changed", now);
       if (patch.archived === true && this.currentThreadId() === id) {
         this.database.prepare("DELETE FROM settings WHERE key = 'current_thread_id'").run();
       }
@@ -1859,6 +2149,7 @@ export class WebStore {
       throw new WebConsoleError("thread_archived", "Unarchive this conversation before sending another message.", 409);
     }
     if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
+    if (thread.trigger !== undefined) throw automationThreadReadOnlyError();
     if (!thread.canSend) {
       throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
     }
@@ -1942,6 +2233,7 @@ export class WebStore {
       this.database.prepare(`
         UPDATE threads
         SET title = CASE WHEN title_manual = 0 AND title = 'New conversation' THEN ? ELSE title END,
+            workflow_status = CASE WHEN trigger_kind IS NULL THEN 'in_progress' ELSE workflow_status END,
             updated_at = ?, revision = revision + 1
         WHERE id = ?
       `).run(title, now, threadId);
@@ -1962,7 +2254,7 @@ export class WebStore {
   }
 
   /** Begin one host-owned assistant-only follow-up without inventing a user row. */
-  beginAssistantTurn(input: { readonly threadId: string; readonly prompt: string }): BeginStoredAssistantTurnResult {
+  beginAssistantTurn(input: BeginStoredAssistantTurnInput): BeginStoredAssistantTurnResult {
     const threadId = this.resolveThreadId(input.threadId);
     const thread = this.requireThread(threadId);
     if (thread.archivedAt !== null) {
@@ -1987,15 +2279,18 @@ export class WebStore {
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, assistant_message_id,
           started_at, finished_at, error_code, error_message
-        ) VALUES (?, ?, 'running', ?, NULL, NULL, ?, ?, NULL, NULL, NULL)
-      `).run(turnId, threadId, input.prompt, assistantMessageId, now);
+        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, NULL, NULL, NULL)
+      `).run(turnId, threadId, input.prompt, input.model ?? null, input.effort ?? null, assistantMessageId, now);
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
         VALUES (?, ?, ?, 'assistant', '[]', ?, ?, 'running')
       `).run(assistantMessageId, threadId, turnId, now, now);
-      this.database.prepare(
-        "UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?",
-      ).run(now, threadId);
+      this.database.prepare(`
+        UPDATE threads
+        SET workflow_status = CASE WHEN trigger_kind IS NULL THEN 'in_progress' ELSE workflow_status END,
+            updated_at = ?, revision = revision + 1
+        WHERE id = ?
+      `).run(now, threadId);
       this.recordThreadRevision(threadId, "background_follow_up_started", now);
       this.setSetting("current_thread_id", threadId);
     });
@@ -2009,13 +2304,18 @@ export class WebStore {
     };
   }
 
-  reserveLiveInput(threadId: string, text: string): ReserveStoredLiveInputResult {
+  reserveLiveInput(
+    threadId: string,
+    text: string,
+    runPreference: WebRunPreference = {},
+  ): ReserveStoredLiveInputResult {
     threadId = this.resolveThreadId(threadId);
     const thread = this.requireThread(threadId);
     if (thread.archivedAt !== null) {
       throw new WebConsoleError("thread_archived", "Unarchive this conversation before sending another message.", 409);
     }
     if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
+    if (thread.trigger !== undefined) throw automationThreadReadOnlyError();
     if (!thread.canSend) {
       throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
     }
@@ -2061,8 +2361,8 @@ export class WebStore {
         messageId,
         active?.id ?? null,
         text,
-        active?.model ?? null,
-        active?.effort ?? null,
+        active?.model ?? runPreference.model ?? null,
+        active?.effort ?? runPreference.effort ?? null,
         status,
         now,
         now,
@@ -2198,8 +2498,12 @@ export class WebStore {
         VALUES (?, ?, ?, 'assistant', '[]', ?, ?, 'running')
       `).run(assistantMessageId, threadId, turnId, now, now);
       this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(row.id);
-      this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
-        .run(now, threadId);
+      this.database.prepare(`
+        UPDATE threads
+        SET workflow_status = CASE WHEN trigger_kind IS NULL THEN 'in_progress' ELSE workflow_status END,
+            updated_at = ?, revision = revision + 1
+        WHERE id = ?
+      `).run(now, threadId);
       this.recordThreadRevision(threadId, "turn_started", now);
     });
     return {
@@ -2731,6 +3035,19 @@ export class WebStore {
         ask_by_id INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS collections (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS agent_preferences (
+        source_id TEXT PRIMARY KEY REFERENCES agents(source_id) ON DELETE CASCADE,
+        model TEXT,
+        effort TEXT,
+        updated_at TEXT NOT NULL,
+        CHECK (model IS NOT NULL OR effort IS NOT NULL)
+      );
       CREATE TABLE IF NOT EXISTS threads (
         id TEXT PRIMARY KEY,
         source_id TEXT NOT NULL REFERENCES agents(source_id),
@@ -2739,6 +3056,11 @@ export class WebStore {
         title_manual INTEGER NOT NULL DEFAULT 0,
         trigger_kind TEXT CHECK (trigger_kind IN ('cron', 'webhook')),
         archived_at TEXT,
+        workflow_status TEXT CHECK (workflow_status IN ('todo', 'in_progress', 'done')),
+        pinned_at TEXT,
+        collection_id TEXT REFERENCES collections(id) ON DELETE SET NULL,
+        run_model TEXT,
+        run_effort TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         revision INTEGER NOT NULL DEFAULT 1
@@ -2981,6 +3303,7 @@ export class WebStore {
             );
           }
         }
+        if (versionRow.user_version < 9) this.migrateConversationWorkspace();
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
       } catch (error) {
         if (this.database.isTransaction) this.database.exec("ROLLBACK");
@@ -2991,6 +3314,115 @@ export class WebStore {
       if (error instanceof WebConsoleError) throw error;
       throw new WebConsoleError("storage_corrupt", `Unable to initialize web state: ${error instanceof Error ? error.message : String(error)}`, 500);
     }
+  }
+
+  /** Schema-v9 conversation workspace metadata and its bounded FTS projection. */
+  private migrateConversationWorkspace(): void {
+    const threadColumns = new Set((this.database.prepare("PRAGMA table_info(threads)").all() as Array<{ name: string }>)
+      .map((column) => column.name));
+    if (!threadColumns.has("workflow_status")) {
+      this.database.exec("ALTER TABLE threads ADD COLUMN workflow_status TEXT CHECK (workflow_status IN ('todo', 'in_progress', 'done'))");
+    }
+    if (!threadColumns.has("pinned_at")) this.database.exec("ALTER TABLE threads ADD COLUMN pinned_at TEXT");
+    if (!threadColumns.has("collection_id")) {
+      this.database.exec("ALTER TABLE threads ADD COLUMN collection_id TEXT REFERENCES collections(id) ON DELETE SET NULL");
+    }
+    if (!threadColumns.has("run_model")) this.database.exec("ALTER TABLE threads ADD COLUMN run_model TEXT");
+    if (!threadColumns.has("run_effort")) this.database.exec("ALTER TABLE threads ADD COLUMN run_effort TEXT");
+
+    this.database.exec(`
+      UPDATE threads
+      SET workflow_status = CASE
+        WHEN EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = threads.id)
+          OR EXISTS (SELECT 1 FROM turns r WHERE r.thread_id = threads.id)
+          OR EXISTS (SELECT 1 FROM live_inputs l WHERE l.thread_id = threads.id)
+        THEN 'in_progress'
+        ELSE 'todo'
+      END
+      WHERE trigger_kind IS NULL AND workflow_status IS NULL;
+      UPDATE threads
+      SET workflow_status = NULL, pinned_at = NULL, collection_id = NULL,
+          run_model = NULL, run_effort = NULL
+      WHERE trigger_kind IS NOT NULL;
+
+      CREATE INDEX IF NOT EXISTS threads_workspace_order
+        ON threads(archived_at, pinned_at DESC, updated_at DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS threads_by_collection
+        ON threads(collection_id, archived_at, updated_at DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS threads_by_workflow
+        ON threads(workflow_status, archived_at, updated_at DESC, id DESC);
+
+      CREATE TABLE IF NOT EXISTS search_documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        document_key TEXT NOT NULL UNIQUE,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        message_id TEXT REFERENCES messages(id) ON DELETE CASCADE,
+        text TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS search_documents_by_thread
+        ON search_documents(thread_id, message_id);
+      CREATE VIRTUAL TABLE IF NOT EXISTS thread_search USING fts5(
+        text,
+        content = 'search_documents',
+        content_rowid = 'id',
+        tokenize = 'unicode61 remove_diacritics 2'
+      );
+      CREATE TRIGGER IF NOT EXISTS search_documents_ai AFTER INSERT ON search_documents BEGIN
+        INSERT INTO thread_search(rowid, text) VALUES (new.id, new.text);
+      END;
+      CREATE TRIGGER IF NOT EXISTS search_documents_ad AFTER DELETE ON search_documents BEGIN
+        INSERT INTO thread_search(thread_search, rowid, text) VALUES ('delete', old.id, old.text);
+      END;
+      CREATE TRIGGER IF NOT EXISTS search_documents_au AFTER UPDATE ON search_documents BEGIN
+        INSERT INTO thread_search(thread_search, rowid, text) VALUES ('delete', old.id, old.text);
+        INSERT INTO thread_search(rowid, text) VALUES (new.id, new.text);
+      END;
+      CREATE TRIGGER IF NOT EXISTS threads_search_ai AFTER INSERT ON threads BEGIN
+        INSERT INTO search_documents(document_key, thread_id, message_id, text)
+        VALUES ('thread:' || new.id, new.id, NULL, new.title);
+      END;
+      CREATE TRIGGER IF NOT EXISTS threads_search_au AFTER UPDATE OF title ON threads BEGIN
+        UPDATE search_documents SET text = new.title WHERE document_key = 'thread:' || new.id;
+      END;
+      CREATE TRIGGER IF NOT EXISTS messages_search_ai AFTER INSERT ON messages
+      WHEN new.role = 'user' OR (new.role = 'assistant' AND new.status = 'complete') BEGIN
+        INSERT INTO search_documents(document_key, thread_id, message_id, text)
+        SELECT 'message:' || new.id, new.thread_id, new.id,
+          (SELECT group_concat(json_extract(value, '$.text'), ' ')
+           FROM json_each(CASE WHEN json_valid(new.parts_json) THEN new.parts_json ELSE '[]' END)
+           WHERE json_extract(value, '$.type') = 'text')
+        WHERE COALESCE((SELECT group_concat(json_extract(value, '$.text'), ' ')
+                        FROM json_each(CASE WHEN json_valid(new.parts_json) THEN new.parts_json ELSE '[]' END)
+                        WHERE json_extract(value, '$.type') = 'text'), '') <> '';
+      END;
+      CREATE TRIGGER IF NOT EXISTS messages_search_au
+      AFTER UPDATE OF thread_id, role, parts_json, status ON messages BEGIN
+        DELETE FROM search_documents WHERE document_key = 'message:' || old.id;
+        INSERT INTO search_documents(document_key, thread_id, message_id, text)
+        SELECT 'message:' || new.id, new.thread_id, new.id,
+          (SELECT group_concat(json_extract(value, '$.text'), ' ')
+           FROM json_each(CASE WHEN json_valid(new.parts_json) THEN new.parts_json ELSE '[]' END)
+           WHERE json_extract(value, '$.type') = 'text')
+        WHERE (new.role = 'user' OR (new.role = 'assistant' AND new.status = 'complete'))
+          AND COALESCE((SELECT group_concat(json_extract(value, '$.text'), ' ')
+                        FROM json_each(CASE WHEN json_valid(new.parts_json) THEN new.parts_json ELSE '[]' END)
+                        WHERE json_extract(value, '$.type') = 'text'), '') <> '';
+      END;
+
+      INSERT OR IGNORE INTO search_documents(document_key, thread_id, message_id, text)
+      SELECT 'thread:' || id, id, NULL, title FROM threads;
+      INSERT OR IGNORE INTO search_documents(document_key, thread_id, message_id, text)
+      SELECT 'message:' || m.id, m.thread_id, m.id,
+        (SELECT group_concat(json_extract(value, '$.text'), ' ')
+         FROM json_each(CASE WHEN json_valid(m.parts_json) THEN m.parts_json ELSE '[]' END)
+         WHERE json_extract(value, '$.type') = 'text')
+      FROM messages m
+      WHERE (m.role = 'user' OR (m.role = 'assistant' AND m.status = 'complete'))
+        AND COALESCE((SELECT group_concat(json_extract(value, '$.text'), ' ')
+                      FROM json_each(CASE WHEN json_valid(m.parts_json) THEN m.parts_json ELSE '[]' END)
+                      WHERE json_extract(value, '$.type') = 'text'), '') <> '';
+      INSERT INTO thread_search(thread_search) VALUES ('rebuild');
+    `);
   }
 
   /**
@@ -3160,6 +3592,8 @@ export class WebStore {
     }
     const requiredTables = new Set([
       "agents",
+      "collections",
+      "agent_preferences",
       "threads",
       "turns",
       "messages",
@@ -3168,6 +3602,7 @@ export class WebStore {
       "revisions",
       "settings",
       "notification_deliveries",
+      "process_job_wake_deliveries",
       "cron_channels",
       "cron_channel_deletions",
       "cron_overviews",
@@ -3178,6 +3613,8 @@ export class WebStore {
       "push_subscriptions",
       "push_events",
       "push_deliveries",
+      "search_documents",
+      "thread_search",
     ]);
     const tables = this.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as unknown as Array<{ name: string }>;
     for (const table of tables) requiredTables.delete(table.name);
@@ -3369,6 +3806,10 @@ export class WebStore {
       sourceId: row.source_id,
       title: row.title,
       archivedAt: row.archived_at,
+      ...(row.trigger_kind === null ? { workflowStatus: normalizeWorkflowStatus(row.workflow_status) } : {}),
+      pinned: row.pinned_at !== null,
+      collectionId: row.collection_id,
+      runPreference: mapRunPreference(row.run_model, row.run_effort),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       revision: row.revision,
@@ -3388,6 +3829,16 @@ export class WebStore {
       runState,
       canSend: row.can_send === 1,
       canUpload: row.can_upload === 1,
+      ...(row.search_snippet === undefined || row.search_snippet === null
+        ? {}
+        : {
+            searchMatch: {
+              ...(row.search_message_id === undefined || row.search_message_id === null
+                ? {}
+                : { messageId: row.search_message_id }),
+              snippet: row.search_snippet.replace(/\s+/gu, " ").trim(),
+            },
+          }),
     };
   }
 
@@ -3456,6 +3907,39 @@ export class WebStore {
     const thread = this.getThread(id);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     return thread;
+  }
+
+  private collectionByName(name: string): WebCollection | undefined {
+    const row = this.database.prepare("SELECT * FROM collections WHERE name = ? COLLATE NOCASE")
+      .get(name) as unknown as CollectionRow | undefined;
+    return row === undefined ? undefined : mapCollection(row);
+  }
+
+  private requireCollection(id: string): WebCollection {
+    const row = this.database.prepare("SELECT * FROM collections WHERE id = ?")
+      .get(id) as unknown as CollectionRow | undefined;
+    if (row === undefined) throw new WebConsoleError("collection_not_found", "Collection not found.", 404);
+    return mapCollection(row);
+  }
+
+  private groupThreads(
+    threads: readonly WebThread[],
+    groupBy: Exclude<WebThreadGroupBy, "none">,
+  ): NonNullable<WebThreadPage["groups"]> {
+    const labels = groupBy === "collection"
+      ? new Map(this.listCollections().map((collection) => [collection.id, collection.name]))
+      : new Map(this.listAgents().map((agent) => [agent.sourceId, agent.label]));
+    const groups = new Map<string, { key: string; label: string; threadIds: string[] }>();
+    for (const thread of threads) {
+      const key = groupBy === "collection" ? thread.collectionId ?? "unfiled" : thread.sourceId;
+      const label = groupBy === "collection" && thread.collectionId === null
+        ? "Unfiled"
+        : labels.get(key) ?? key;
+      const group = groups.get(key) ?? { key, label, threadIds: [] };
+      group.threadIds.push(thread.id);
+      groups.set(key, group);
+    }
+    return [...groups.values()];
   }
 
   private requireThreadDetail(id: string): WebThreadDetail {
@@ -3716,17 +4200,44 @@ function isValidVapidKeyPair(publicKey: string, privateKey: string): boolean {
 
 function threadSelectSql(suffix: string): string {
   return `
-    SELECT t.id, t.source_id, t.title, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
-           cc.job_id AS cron_job_id, cc.configured AS cron_configured,
-           CASE WHEN t.trigger_kind = 'cron' THEN 0
-                WHEN a.status = 'online' OR a.status = 'degraded' THEN 1 ELSE 0 END AS can_send,
-           CASE WHEN t.trigger_kind = 'cron' THEN 0
-                WHEN (a.status = 'online' OR a.status = 'degraded') AND a.supports_attachments = 1 THEN 1 ELSE 0 END AS can_upload,
-           (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id) AS message_count
+    SELECT ${threadSelectColumns("NULL", "NULL")}
     FROM threads t JOIN agents a ON a.source_id = t.source_id
     LEFT JOIN cron_channels cc ON cc.thread_id = t.id
     ${suffix}
   `;
+}
+
+function threadSearchSelectSql(suffix: string): string {
+  return `
+    WITH matched_documents AS (
+      SELECT d.id, d.thread_id, d.message_id,
+             snippet(thread_search, 0, '', '', ' … ', 24) AS snippet
+      FROM thread_search
+      JOIN search_documents d ON d.id = thread_search.rowid
+      WHERE thread_search MATCH ?
+    ), first_matches AS (
+      SELECT thread_id, MIN(id) AS id FROM matched_documents GROUP BY thread_id
+    )
+    SELECT ${threadSelectColumns("sm.message_id", "sm.snippet")}
+    FROM threads t JOIN agents a ON a.source_id = t.source_id
+    LEFT JOIN cron_channels cc ON cc.thread_id = t.id
+    JOIN first_matches fm ON fm.thread_id = t.id
+    JOIN matched_documents sm ON sm.id = fm.id
+    ${suffix}
+  `;
+}
+
+function threadSelectColumns(searchMessageId: string, searchSnippet: string): string {
+  return `t.id, t.source_id, t.title, t.trigger_kind, t.archived_at,
+           t.workflow_status, t.pinned_at, t.collection_id, t.run_model, t.run_effort,
+           t.created_at, t.updated_at, t.revision,
+           cc.job_id AS cron_job_id, cc.configured AS cron_configured,
+           CASE WHEN t.trigger_kind IS NOT NULL THEN 0
+                WHEN a.status = 'online' OR a.status = 'degraded' THEN 1 ELSE 0 END AS can_send,
+           CASE WHEN t.trigger_kind IS NOT NULL THEN 0
+                WHEN (a.status = 'online' OR a.status = 'degraded') AND a.supports_attachments = 1 THEN 1 ELSE 0 END AS can_upload,
+           (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id) AS message_count,
+           ${searchMessageId} AS search_message_id, ${searchSnippet} AS search_snippet`;
 }
 
 function agentSelectSql(suffix: string): string {
@@ -4043,12 +4554,14 @@ function decodeCursor(value: string): Record<string, unknown> {
   }
 }
 
-function decodeThreadCursor(value: string): { readonly updatedAt: string; readonly id: string } {
+function decodeThreadCursor(value: string): { readonly pinned: number; readonly updatedAt: string; readonly id: string } {
   const cursor = decodeCursor(value);
-  if (typeof cursor.updatedAt !== "string" || typeof cursor.id !== "string") {
+  const pinned = cursor.pinned === undefined ? 0 : cursor.pinned;
+  if ((pinned !== 0 && pinned !== 1)
+    || typeof cursor.updatedAt !== "string" || typeof cursor.id !== "string") {
     throw new WebConsoleError("invalid_page", "Pagination cursor is invalid.", 400);
   }
-  return { updatedAt: cursor.updatedAt, id: cursor.id };
+  return { pinned, updatedAt: cursor.updatedAt, id: cursor.id };
 }
 
 function decodeMessageCursor(value: string): {
@@ -4094,6 +4607,71 @@ function mapAgent(row: AgentRow): WebAgentSummary {
     ...(row.ask_by_id === 1 ? { supportsAskById: true } : {}),
     updatedAt: row.updated_at,
   };
+}
+
+function mapCollection(row: CollectionRow): WebCollection {
+  return {
+    id: row.id,
+    name: row.name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapRunPreference(model: string | null, effort: string | null): WebRunPreference | null {
+  return model === null && effort === null
+    ? null
+    : { ...(model === null ? {} : { model }), ...(effort === null ? {} : { effort }) };
+}
+
+function normalizeRunPreference(value: WebRunPreference | null): WebRunPreference | null {
+  if (value === null) return null;
+  const model = value.model?.trim();
+  const effort = value.effort?.trim();
+  if ((model !== undefined && (model.length === 0 || model.length > 512))
+    || (effort !== undefined && (effort.length === 0 || effort.length > 128))) {
+    throw new WebConsoleError("invalid_run_preference", "Run model or effort preference is invalid.", 400);
+  }
+  if (model === undefined && effort === undefined) {
+    throw new WebConsoleError("invalid_run_preference", "Provide a model or effort, or null to inherit.", 400);
+  }
+  return { ...(model === undefined ? {} : { model }), ...(effort === undefined ? {} : { effort }) };
+}
+
+function normalizeWorkflowStatus(value: string | null): WebWorkflowStatus {
+  if (value === "todo" || value === "in_progress" || value === "done") return value;
+  throw new WebConsoleError("storage_corrupt", "Interactive conversation workflow state is invalid.", 500);
+}
+
+function normalizeCollectionName(value: string): string {
+  const name = value.trim().replace(/\s+/gu, " ");
+  if (name.length === 0 || name.length > 80) {
+    throw new WebConsoleError("invalid_collection", "Collection names must contain 1 to 80 characters.", 400);
+  }
+  if (["all", "pinned", "unfiled"].includes(name.toLocaleLowerCase("en-US"))) {
+    throw new WebConsoleError("reserved_collection_name", "All, Pinned, and Unfiled are built-in views.", 409);
+  }
+  return name;
+}
+
+function normalizeSearchQuery(value: string): string {
+  const query = value.trim().replace(/\s+/gu, " ");
+  if (query.length === 0 || query.length > WEB_THREAD_SEARCH_MAX_CHARACTERS) {
+    throw new WebConsoleError(
+      "invalid_search",
+      `Search text must contain 1 to ${String(WEB_THREAD_SEARCH_MAX_CHARACTERS)} characters.`,
+      400,
+    );
+  }
+  return query;
+}
+
+function ftsMatchQuery(value: string): string {
+  const terms = value.match(/[\p{L}\p{N}_]+/gu) ?? [];
+  if (terms.length === 0) {
+    throw new WebConsoleError("invalid_search", "Search text must contain a letter or number.", 400);
+  }
+  return terms.map((term) => `"${term.replace(/"/gu, '""')}"`).join(" AND ");
 }
 
 function mapStoredAttachment(row: AttachmentRow): StoredAttachment {

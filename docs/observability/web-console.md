@@ -1,6 +1,6 @@
 ---
 title: "Always-on web console"
-description: "Run and secure the persistent assistant-ui console for local-agent discovery, threads, attachments, notifications, and live turns."
+description: "Run and secure the persistent assistant-ui console for cross-agent conversations, search, workflow, attachments, notifications, and live turns."
 sidebar:
   order: 5
 ---
@@ -79,7 +79,7 @@ At startup, mono-agent inspects the existing Tailscale Serve configuration. It p
 | --- | --- |
 | Service | Agent discovery, thread/turn lifecycle, attachment admission, notification ingestion, and the upstream operator connection. |
 | Managed lifecycle | Paired macOS worker and one-shot maintenance LaunchAgents; the foreground worker only requests a wake, while the helper alone owns stopped-writer log rotation and durable recovery. |
-| SQLite store | Authoritative agents, pins, threads, messages, structured parts, revisions, turns, live-input fallback state, uploads, and notification idempotency. |
+| SQLite store | Authoritative agents, collections, conversation pins and workflow, search index, model/effort preferences, messages, structured parts, revisions, turns, live-input fallback state, uploads, and notification idempotency. |
 | `/api/v1` HTTP/SSE | Browser commands and projections. Mutations publish invalidations; browsers refetch current state instead of owning the turn. |
 | Assistant-ui PWA | Responsive thread/message/composer presentation, upload progress, response notifications, and browser-origin preferences. |
 | Notification ingress | Owner-private loopback endpoint recorded under `~/.mono-agent/web/`; `deliverWebNotification` uses its bearer for one bounded cron/webhook delivery. |
@@ -94,9 +94,71 @@ SQLite-backed state.
 
 The left rail lists auto-discovered trace sources and their current health. On desktop, its explicit toggle switches between a fixed compact rail and a fixed expanded rail with full agent names. The chosen state is a browser-local presentation preference, so different browser profiles can keep different layouts without a drag-resize target.
 
-Use the star beside an agent to add or remove it from favorites. The same pin control is available in the mobile agent picker. Pin state is persisted in the web service's SQLite settings rather than in browser storage, so favorites stay consistent when the same console is opened through localhost, a LAN address, or Tailscale. Pinned agents sort first and remain visible while offline.
+Use the star beside an agent to add or remove it from favorites. The same control is available in the mobile agent picker. Agent favorites are persisted in the web service's SQLite settings rather than in browser storage, so they stay consistent when the same console is opened through localhost, a LAN address, or Tailscale. Favorite agents sort first and remain visible while offline.
 
-Selecting an agent filters its conversations; each conversation is permanently bound to that source id so a label change or a different agent cannot inherit its history. Unpinned offline agents are hidden by default behind a subtle **Show N offline** control shared by the desktop rail, mobile picker, and command palette. Pinned agents and the currently selected agent always remain visible. The filter resets to hidden on a full page load; sending stays disabled until that exact source returns.
+### Global Conversations workspace
+
+**Conversations** is the global workspace for every interactive conversation,
+not a separate thread list behind each agent. The agent filter accepts multiple
+sources, while selecting an agent in the rail changes the active agent and chat
+context without silently rewriting that filter. Each conversation remains
+permanently bound to one source id, so a label change or a different agent
+cannot inherit its history. Non-favorite offline agents are
+hidden by default behind a subtle **Show N offline** control shared by the
+desktop rail, mobile picker, and command palette. Favorite agents and the
+currently selected agent always remain visible. The offline visibility control
+resets to hidden on a full page load; sending stays disabled until the exact
+source for the selected conversation returns.
+
+### Collections and workflow
+
+The built-in views are **All**, **Pinned**, and **Unfiled**. Custom collections
+span agents, while each interactive conversation can belong to only one custom
+collection. A null collection membership appears in **Unfiled**. Deleting a
+custom collection is one atomic operation that clears every affected
+membership, so those conversations move to **Unfiled** without being deleted.
+
+Pinning a conversation is durable service state, separate from favoriting its
+agent. **Pinned** continues to respect the current agent, type, and search
+filters. Archiving clears the conversation pin but retains its collection and
+workflow status, so restoring it does not discard how it was organized. Active
+conversations still must be archived before permanent deletion.
+
+The workspace offers two projections over the same conversations:
+
+- **List** can use no grouping or group by **Collection** or **Agent** (the
+  persisted value is `none`, `collection`, or `agent`).
+- **Kanban** has the fixed columns **Todo**, **In progress**, and **Done**.
+
+Workflow status (`todo`, `in_progress`, or `done`) is independent of transient
+run state. A newly created empty conversation starts in **Todo**. Its first
+send, any send from **Done**, and any active run force **In progress**. Moving a
+conversation to **Done** is manual; completion of a model turn does not do it
+automatically.
+
+Cron channels and webhook-created conversations are automation surfaces. They
+do not receive collection membership or workflow status and never appear in
+Kanban. Use the explicit automation type filter to show them in List; they stay
+out of the default interactive workspace.
+
+### Conversation search
+
+Full-text search covers only content that is safe and useful as a conversation
+result: the title, visible user-message text, and completed final assistant
+text. It does not index reasoning, tool inputs or results, telemetry,
+attachments, or partial/incomplete assistant output. Search combines with the
+current collection, agent, type, and pin filters rather than bypassing them.
+
+### Desktop and mobile layout
+
+On desktop, Conversations uses a master-detail layout: the current filters and
+List or Kanban projection remain alongside the selected chat. The existing
+compact/expanded agent-rail toggle remains browser-local.
+
+On mobile, selecting a conversation opens its chat full-screen. Filters move
+into a drawer, and Kanban shows one workflow-status tab at a time instead of
+compressing three columns. The mobile agent picker retains the same favorites
+and offline-visibility rules as the desktop rail.
 
 Threads use the first prompt as their initial title and can be renamed. Active threads must be archived before deletion, and archived threads can be restored. The console permits one active turn per thread while different threads and agents can run concurrently.
 
@@ -220,7 +282,23 @@ The web service and outbox are self-hosted. Web Push itself necessarily sends an
 
 ## Run controls and context
 
-The run-settings control uses a searchable model picker with the selected model's supported reasoning-effort choices in the same popover. On narrow screens it becomes a full-width bottom sheet so every effort level remains reachable without overflowing the viewport. **Default model** delegates model selection to the agent. The default effort names the effective configured value, such as **Default · High**; when the agent leaves that choice to its provider, the control says **Default · Provider** instead of guessing a level. Choosing either default clears the conversation override.
+The run-settings control uses a searchable model picker with the selected model's supported reasoning-effort choices in the same popover. On narrow screens it becomes a full-width bottom sheet so every effort level remains reachable without overflowing the viewport.
+
+Model and effort resolve independently through the same persisted precedence:
+
+1. the selected conversation's override;
+2. that agent's web-console default;
+3. the default advertised by the running agent.
+
+**Default model** and **Default effort** clear the corresponding conversation
+override and reveal the next layer. The effective default effort is named, such
+as **Default · High**; when the agent delegates that choice to its provider, the
+control says **Default · Provider** instead of guessing a level. Conversation
+overrides and per-agent web defaults live in the server's SQLite state, so they
+survive reloads and are shared by every origin that reaches this console. They
+affect only interactive web conversations: they do not mutate agent config,
+Telegram or Slack conversations, or the model/effort rules owned by cron and
+webhook triggers.
 
 The context control uses exact per-request measurements reported by Pi, Codex app-server, OpenCode app-server, and ACP agents that publish `usage_update`. Pi reports every successful assistant request, Codex uses `tokenUsage.last` rather than the thread's cumulative total, OpenCode is accepted only when its completed assistant message includes native `tokens.total`, and ACP's exact `used`/`size` pair is normalized without inventing a token breakdown. A percentage appears only when that same exact event carries the serving model's context window. Direct Claude currently exposes no equivalent exact measurement, so the console says that usage is unavailable instead of estimating it from aggregate work. Durable message/tool-history storage size is never added to a provider measurement; only history actually sent in that request is already included by the provider.
 
@@ -298,7 +376,7 @@ Older running agents that do not advertise attachment support remain usable for 
 
 ## Local state and reset
 
-The service keeps its owner-private SQLite store, settings, notification idempotency ledger, VAPID private key, push subscriptions/outbox, upload stages, logs, and live notification-ingress record under `~/.mono-agent/web/`. Stored messages, quote metadata, attachment metadata, revisions, run state, and pinned agents are local to this computer; they are independent from browser storage and from the agents' provider-side sessions. The desktop agent-rail expansion state, notification opt-in, opaque subscription id, and one-way endpoint digest are intentionally browser-origin-local preferences and are removed when that origin's site data is cleared. Raw push endpoints and key material are never stored in browser preferences.
+The service keeps its owner-private SQLite store, settings, notification idempotency ledger, VAPID private key, push subscriptions/outbox, upload stages, logs, and live notification-ingress record under `~/.mono-agent/web/`. Stored messages, quote metadata, attachment metadata, revisions, run state, agent favorites, collections, conversation workflow/pins, the search index, and conversation/per-agent model-effort preferences are local to this computer; they are independent from browser storage and from the agents' provider-side sessions. The desktop agent-rail expansion state, notification opt-in, opaque subscription id, and one-way endpoint digest are intentionally browser-origin-local preferences and are removed when that origin's site data is cleared. Raw push endpoints and key material are never stored in browser preferences.
 
 Managed stdout/stderr live at `logs/web.out.log` and `logs/web.err.log`.
 Each active file and retained `.1`, `.2`, and `.3` generation is capped at
@@ -332,9 +410,10 @@ mono-agent web reset --all --yes
 
 Reset first requires both the web worker and maintenance helper stopped and both
 plist files absent, then takes their shared web lifecycle lock. It removes the
-web console's conversations, cron projection, notification ledger and stale ingress record,
-VAPID identity, push subscriptions/outbox, committed uploads, staged uploads,
-and server settings, including agent pins. It does not clear browser-local
+web console's conversations, collections, workflow and pin state, search index,
+web model/effort preferences, cron projection, notification ledger and stale
+ingress record, VAPID identity, push subscriptions/outbox, committed uploads,
+staged uploads, and server settings, including agent favorites. It does not clear browser-local
 preferences such as rail expansion or notification opt-in, and it does not
 remove an agent's config, durable conversation history, memory, or recorded run
 artifacts, or agent-owned `.mono-agent/cron-control-v1/` runtime overrides,
@@ -344,7 +423,7 @@ cron channels rebuild from the running agents.
 
 ## Current scope
 
-The web console covers discovery, hostname identity, curated host themes, persistent multi-conversation chat, first-class cron channels, marked webhook notification conversations, structured `AskUser` forms, quoting, durable Web Push with a page-notification fallback, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a host-named PWA when served from a secure browser context.
+The web console covers discovery, hostname identity, curated host themes, a searchable cross-agent Conversations workspace with collections and List/Kanban workflow, persistent multi-conversation chat, first-class cron channels, marked webhook notification conversations, structured `AskUser` forms, quoting, durable Web Push with a page-notification fallback, persisted web model/effort preferences, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a host-named PWA when served from a secure browser context.
 
 General recorded-run replay, source-annotated configuration outside cron's redacted view, and managed conversational configuration remain in the TUI for now. Use:
 

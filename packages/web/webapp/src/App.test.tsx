@@ -1,6 +1,5 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AGENT_RAIL_STORAGE_KEY } from "./agent-rail-layout";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "./styles.css";
 
 const storeMock = vi.hoisted(() => ({
@@ -9,47 +8,44 @@ const storeMock = vi.hoisted(() => ({
   error: null,
   actionError: null,
   clearActionError: vi.fn(),
-  agents: [],
-  visibleAgents: [],
+  conversationDetailOpen: false,
+  openConversationIndex: vi.fn(),
   selectedAgent: null,
   selectedThread: null,
   showArchived: false,
   showOfflineAgents: false,
   hiddenOfflineAgentCount: 0,
+  visibleAgents: [],
   createThread: vi.fn(),
   renameThread: vi.fn(),
   setAgentPinned: vi.fn(),
   setShowArchived: vi.fn(),
   setShowOfflineAgents: vi.fn(),
   selectAgent: vi.fn(),
+  activeCardVisible: true,
 }));
 
-vi.mock("./console-store", () => ({
-  useConsoleStore: () => storeMock,
-}));
-
+vi.mock("./console-store", () => ({ useConsoleStore: () => storeMock }));
 vi.mock("./components/AgentRail", () => ({
-  AgentRail: ({
-    expanded,
-    onToggleExpanded,
-  }: {
-    readonly expanded?: boolean;
-    readonly onToggleExpanded?: () => void;
-  }) => (
-    <div data-testid="agent-rail" data-expanded={String(Boolean(expanded))}>
-      <button type="button" onClick={onToggleExpanded}>Toggle agent sidebar</button>
-    </div>
-  ),
   BrandMark: () => <span>mono-agent</span>,
-  MobileAgentPicker: () => <div>Agents</div>,
+  AgentRail: () => <aside aria-label="Agents">Agents</aside>,
 }));
-
+vi.mock("./components/ConversationWorkspace", () => ({
+  ConversationWorkspace: () => (
+    <section aria-label="Conversation workspace">
+      <label className="workspace-search">Search <input type="search" /></label>
+      {storeMock.activeCardVisible && (
+        <article className="workspace-thread-card is-active">
+          <button type="button" className="workspace-thread-open">Selected conversation</button>
+        </article>
+      )}
+    </section>
+  ),
+}));
 vi.mock("./components/Chat", () => ({
-  Chat: () => <main>Chat</main>,
-}));
-
-vi.mock("./components/ThreadSidebar", () => ({
-  ThreadSidebar: () => <aside>Threads</aside>,
+  Chat: ({ onBackToWorkspace }: { readonly onBackToWorkspace: () => void }) => (
+    <main><button type="button" className="mobile-conversation-back" onClick={onBackToWorkspace}>Back to conversations</button>Chat</main>
+  ),
 }));
 
 import { App } from "./App";
@@ -57,44 +53,67 @@ import { App } from "./App";
 beforeEach(() => {
   localStorage.clear();
   document.title = "mono-agent";
+  storeMock.conversationDetailOpen = false;
+  storeMock.activeCardVisible = true;
+  vi.clearAllMocks();
 });
 
-describe("App agent sidebar toggle", () => {
-  it("toggles between the two fixed states and persists the result", () => {
-    render(<App />);
-    const toggle = screen.getByRole("button", { name: "Toggle agent sidebar" });
-
-    expect(screen.getByTestId("agent-rail")).toHaveAttribute("data-expanded", "false");
-    expect(screen.queryByRole("separator")).not.toBeInTheDocument();
-    fireEvent.click(toggle);
-    expect(screen.getByTestId("agent-rail")).toHaveAttribute("data-expanded", "true");
-    expect(localStorage.getItem(AGENT_RAIL_STORAGE_KEY)).toBe("240");
-
-    fireEvent.click(toggle);
-    expect(screen.getByTestId("agent-rail")).toHaveAttribute("data-expanded", "false");
-    expect(localStorage.getItem(AGENT_RAIL_STORAGE_KEY)).toBe("72");
-  });
-
-  it("treats a legacy expanded width as the expanded state", () => {
-    localStorage.setItem(AGENT_RAIL_STORAGE_KEY, "204");
-    render(<App />);
-    expect(screen.getByTestId("agent-rail")).toHaveAttribute("data-expanded", "true");
-  });
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
-describe("App viewport layout", () => {
-  it("constrains the grid row so long conversation lists cannot push the composer off-screen", () => {
+describe("App conversation workspace layout", () => {
+  it("mounts the conversation workspace and detail as one desktop master-detail shell", () => {
     const { container } = render(<App />);
-    const shell = container.querySelector<HTMLElement>(".app-shell");
 
-    expect(shell).not.toBeNull();
+    expect(screen.getByRole("region", { name: "Conversation workspace" })).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Agents" })).toBeInTheDocument();
+    expect(screen.getByRole("main")).toHaveTextContent("Chat");
+    const shell = container.querySelector<HTMLElement>(".app-shell");
+    expect(shell).toHaveClass("conversation-layout");
     expect(getComputedStyle(shell!).gridTemplateRows).toBe("minmax(0, 1fr)");
+  });
+
+  it("marks a routed conversation detail and moves phone focus between detail and discovery", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: true }));
+    storeMock.conversationDetailOpen = true;
+    const { container, rerender } = render(<App />);
+    expect(container.querySelector(".conversation-layout")).toHaveClass("has-conversation-detail");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to conversations" })).toHaveFocus());
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to conversations" }));
+    expect(storeMock.openConversationIndex).toHaveBeenCalledTimes(1);
+    storeMock.conversationDetailOpen = false;
+    rerender(<App />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Selected conversation" })).toHaveFocus());
   });
 
   it("applies the host identity and selected theme to browser chrome", () => {
     render(<App />);
-
     expect(document.title).toBe("console-host · mono-agent");
     expect(document.documentElement).toHaveAttribute("data-console-theme", "ocean");
+  });
+
+  it("uses a master fallback and reacts when the viewport enters the mobile breakpoint", async () => {
+    let breakpointListener: ((event: MediaQueryListEvent) => void) | undefined;
+    const media = {
+      matches: false,
+      addEventListener: vi.fn((_type: string, listener: (event: MediaQueryListEvent) => void) => {
+        breakpointListener = listener;
+      }),
+      removeEventListener: vi.fn(),
+    };
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue(media));
+    storeMock.conversationDetailOpen = true;
+    const { rerender } = render(<App />);
+
+    media.matches = true;
+    breakpointListener?.({ matches: true } as MediaQueryListEvent);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to conversations" })).toHaveFocus());
+
+    storeMock.activeCardVisible = false;
+    storeMock.conversationDetailOpen = false;
+    rerender(<App />);
+    await waitFor(() => expect(screen.getByRole("searchbox")).toHaveFocus());
   });
 });
