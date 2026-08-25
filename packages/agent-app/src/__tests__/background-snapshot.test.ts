@@ -22,7 +22,9 @@ import {
   captureDurableBackgroundSnapshot,
   decodeBackgroundSnapshot,
   encodeBackgroundSnapshot,
+  fingerprintBackgroundRegularFile,
   materializeBackgroundRuntimeInputs,
+  sameBackgroundRegularFileVersion,
   sameBackgroundSnapshot,
 } from "../background-snapshot.js";
 import {
@@ -93,6 +95,22 @@ describe("background worker snapshots", () => {
       .toThrow("invalid schema");
   });
 
+  it("accepts a loaded v1 proof only as one-time drift from the current v2 snapshot", async () => {
+    const current = await captureBackgroundSnapshot({
+      cwd: dir,
+      configPath: "mono-agent.config.json",
+      envFile: ".env",
+      env: { HOME: dir, PATH: "/safe/bin", MODEL_API_KEY: "top-secret" },
+    });
+    const legacy = {
+      ...current,
+      configFingerprint: current.configFingerprint.replace(/^file-v2:/u, "file:16777231:"),
+    };
+
+    expect(backgroundSnapshotFromMetadata({ backgroundSnapshot: legacy })).toEqual(legacy);
+    expect(sameBackgroundSnapshot(legacy, current)).toBe(false);
+  });
+
   it("detects config, dotenv, identity, and operational environment drift", async () => {
     const baseline = await captureBackgroundSnapshot({
       cwd: dir,
@@ -143,7 +161,7 @@ describe("background worker snapshots", () => {
     });
 
     expect(snapshot.soulPath).toBe(join(dir, "SOUL.md"));
-    expect(snapshot.soulFingerprint).toMatch(/^file:/u);
+    expect(snapshot.soulFingerprint).toMatch(/^file-v2:/u);
     expect(JSON.stringify(snapshot)).not.toContain(
       createHash("sha256").update("# Soul\n\nStay kind.\n").digest("hex"),
     );
@@ -176,6 +194,60 @@ describe("background worker snapshots", () => {
 
     expect(restored.configFingerprint).not.toBe(before.configFingerprint);
     expect(sameBackgroundSnapshot(restored, before)).toBe(false);
+  });
+
+  it("keeps persisted file evidence stable when reboot renumbers only the device", async () => {
+    const path = join(dir, "IDENTITY.md");
+    const bytes = await readFile(path);
+    const info = await stat(path, { bigint: true });
+    const key = Buffer.alloc(32, 0x42);
+    const before = fingerprintBackgroundRegularFile({
+      path,
+      label: "Identity",
+      proofKey: key,
+      bytes,
+      version: info,
+    });
+    const afterReboot = fingerprintBackgroundRegularFile({
+      path,
+      label: "Identity",
+      proofKey: key,
+      bytes,
+      version: { ...info, dev: info.dev + 1n },
+    });
+
+    expect(before).toMatch(/^file-v2:/u);
+    expect(afterReboot).toBe(before);
+    expect(sameBackgroundRegularFileVersion(info, { ...info, dev: info.dev + 1n })).toBe(false);
+  });
+
+  it("keeps inode, version metadata, path, bytes, and proof key load-bearing", async () => {
+    const path = join(dir, "IDENTITY.md");
+    const bytes = await readFile(path);
+    const info = await stat(path, { bigint: true });
+    const key = Buffer.alloc(32, 0x42);
+    const fingerprint = (
+      overrides: Partial<typeof info> = {},
+      inputPath = path,
+      inputBytes = bytes,
+      inputKey = key,
+    ) => fingerprintBackgroundRegularFile({
+      path: inputPath,
+      label: "Identity",
+      proofKey: inputKey,
+      bytes: inputBytes,
+      version: { ...info, ...overrides },
+    });
+    const baseline = fingerprint();
+
+    expect(fingerprint({ ino: info.ino + 1n })).not.toBe(baseline);
+    expect(fingerprint({ size: info.size + 1n })).not.toBe(baseline);
+    expect(fingerprint({ mtimeNs: info.mtimeNs + 1n })).not.toBe(baseline);
+    expect(fingerprint({ ctimeNs: info.ctimeNs + 1n })).not.toBe(baseline);
+    expect(fingerprint({ mode: info.mode ^ 0o100n })).not.toBe(baseline);
+    expect(fingerprint({}, `${path}.other`)).not.toBe(baseline);
+    expect(fingerprint({}, path, Buffer.concat([bytes, Buffer.from("changed")]))).not.toBe(baseline);
+    expect(fingerprint({}, path, bytes, Buffer.alloc(32, 0x43))).not.toBe(baseline);
   });
 
   it("materializes exact config, Identity, and Soul bytes into an owner-only startup copy", async () => {
@@ -241,7 +313,7 @@ describe("background worker snapshots", () => {
     });
 
     expect(snapshot.mcpConfigPath).toBe(mcpConfigPath);
-    expect(snapshot.mcpConfigFingerprint).toMatch(/^file:/u);
+    expect(snapshot.mcpConfigFingerprint).toMatch(/^file-v2:/u);
     expect(JSON.stringify(snapshot)).not.toContain(
       createHash("sha256").update(approvedMcp).digest("hex"),
     );

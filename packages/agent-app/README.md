@@ -273,6 +273,13 @@ is established. Every foreground worker holds one owner-only lifetime lease for 
 canonical config, so a managed and manual host cannot run together. A per-config
 256-bit key in owner-only `~/.mono-agent/background-snapshot-keys/` commits exact
 file bytes without exposing plaintext or offline-testable hashes in argv/traces.
+A persisted v2 proof binds each canonical path, inode, size, nanosecond
+mtime/ctime, mode, and keyed bytes, but excludes the mount's boot-local device
+number. Device plus inode remain mandatory while a file is opened and read, so
+a path or handle swap still fails closed; excluding only the persisted device
+number lets the same unchanged file survive macOS volume renumbering across a
+login or reboot. A loaded v1 proof is treated as one-time drift and republished
+by the recovery controller.
 A managed worker freezes the proven config, Identity, optional Soul, and MCP authority
 file into private read-only copies before app/channel loading, while trace metadata continues to
 name the canonical config. Readiness requires one live launchd-owned trace PID,
