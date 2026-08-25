@@ -31,7 +31,7 @@ afterEach(async () => {
 describe("memory forget-backup retention", () => {
   it("keeps the three newest root-bound snapshots and expires old/stale residues", async () => {
     const root = await memoryFixture();
-    const newestManaged = await writeManaged(root, "a", 1, "applied");
+    const newestManaged = await writeManaged(root, "a", 1, "applied", undefined, "capture-clock-repair");
     const second = await writeOperator(root, "forget-second", 2);
     const thirdManaged = await writeManaged(root, "c", 3, "prepared");
     const overCount = await writeOperator(root, "forget-fourth", 4);
@@ -246,11 +246,19 @@ async function writeManaged(
   ageDays: number,
   status: "prepared" | "applying" | "applied" | "recovered",
   rootFingerprint = createHash("sha256").update(realpathSync(root)).digest("hex"),
-  operation: "forget" | "import" = "forget",
+  operation: "forget" | "import" | "capture-clock-repair" = "forget",
 ): Promise<string> {
   const planDigest = digit.repeat(64);
-  const backupInfix = operation === "forget" ? "forget-backup" : "import-backup";
-  const manifestOperation = operation === "forget" ? "memory-forget-backup" : "memory-import-backup";
+  const backupInfix = operation === "forget"
+    ? "forget-backup"
+    : operation === "import"
+      ? "import-backup"
+      : "capture-clock-repair-backup";
+  const manifestOperation = operation === "forget"
+    ? "memory-forget-backup"
+    : operation === "import"
+      ? "memory-import-backup"
+      : "memory-capture-clock-repair-backup";
   const backup = join(dirname(root), `.${basename(root)}-${backupInfix}-${planDigest.slice(0, 24)}`);
   await mkdir(backup, { mode: 0o700 });
   await writeFile(join(backup, "manifest.json"), `${JSON.stringify({

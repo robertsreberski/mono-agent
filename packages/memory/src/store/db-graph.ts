@@ -50,6 +50,16 @@ export const REPLAY_PROJECTION_STATE_PROBE_SQL = `SELECT
     LIMIT 1
   ) AS edge_present`;
 
+export interface LegacySupersedeClockRepair {
+  readonly oldId: string;
+  readonly newId: string;
+  readonly expectedOldStatus: Exclude<MemoryRecord["status"], "invalidated">;
+  readonly legacyAt: string;
+  readonly effectiveAt: string;
+  readonly legacySourceFile: string;
+  readonly effectiveSourceFile: string;
+}
+
 export class MemoryDbGraph extends MemoryDbMaintenance {
   async supersede(oldId: string, replacement: MemoryRecord): Promise<void> {
     if (oldId === replacement.id) {
@@ -82,6 +92,86 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
       ).run(oldId, replacementId, at);
     });
     tx();
+  }
+
+  /**
+   * Repair only the clock/path fields written by the historical retained
+   * supersede bug. Missing replacement state is left for ordinary replay;
+   * every already-applied field is fenced to the legacy or repaired value.
+   */
+  repairLegacySupersedeClock(input: LegacySupersedeClockRepair): "not-applied" | "repaired" {
+    if (input.oldId.length === 0 || input.newId.length === 0 || input.oldId === input.newId
+      || input.legacyAt === input.effectiveAt
+      || !isCanonicalInstant(input.legacyAt) || !isCanonicalInstant(input.effectiveAt)
+      || Date.parse(input.legacyAt) >= Date.parse(input.effectiveAt)
+      || input.legacySourceFile !== `daily/${input.legacyAt.slice(0, 10)}.md`
+      || input.effectiveSourceFile !== `daily/${input.effectiveAt.slice(0, 10)}.md`) {
+      throw new Error("memory-store: invalid legacy supersede clock repair request.");
+    }
+    return this.db.transaction((): "not-applied" | "repaired" => {
+      const replacement = this.db.prepare(
+        `SELECT created_at, source_file FROM memories WHERE id = ?`,
+      ).get(input.newId) as { created_at: string; source_file: string | null } | undefined;
+      if (replacement === undefined) return "not-applied";
+      if (!oneOf(replacement.created_at, input.legacyAt, input.effectiveAt)
+        || !oneOf(replacement.source_file, input.legacySourceFile, input.effectiveSourceFile)) {
+        throw new Error("memory-store: legacy supersede replacement lost compare-and-swap.");
+      }
+
+      const old = this.db.prepare(
+        `SELECT status, superseded_by, superseded_at, valid_to FROM memories WHERE id = ?`,
+      ).get(input.oldId) as {
+        status: MemoryRecord["status"];
+        superseded_by: string | null;
+        superseded_at: string | null;
+        valid_to: string | null;
+      } | undefined;
+      if (old === undefined) throw new Error("memory-store: legacy supersede target is missing.");
+      const edges = this.db.prepare(
+        `SELECT dst, created_at FROM edges WHERE src = ? AND kind = 'supersedes' ORDER BY dst`,
+      ).all(input.oldId) as Array<{ dst: string; created_at: string }>;
+      const notFinalized = old.status === input.expectedOldStatus
+        && old.superseded_by === null && old.superseded_at === null && old.valid_to === null
+        && edges.length === 0;
+      const finalized = old.status === "invalidated"
+        && old.superseded_by === input.newId
+        && oneOf(old.superseded_at, input.legacyAt, input.effectiveAt)
+        && oneOf(old.valid_to, input.legacyAt, input.effectiveAt)
+        && edges.length === 1 && edges[0]?.dst === input.newId
+        && oneOf(edges[0]?.created_at, input.legacyAt, input.effectiveAt);
+      if (!notFinalized && !finalized) {
+        throw new Error("memory-store: legacy supersede lifecycle lost compare-and-swap.");
+      }
+
+      const replacementUpdate = this.db.prepare(
+        `UPDATE memories SET created_at = ?, source_file = ?
+         WHERE id = ? AND created_at = ? AND source_file IS ?`,
+      ).run(
+        input.effectiveAt,
+        input.effectiveSourceFile,
+        input.newId,
+        replacement.created_at,
+        replacement.source_file,
+      );
+      if (replacementUpdate.changes !== 1) {
+        throw new Error("memory-store: legacy supersede replacement changed during repair.");
+      }
+      if (finalized) {
+        const oldUpdate = this.db.prepare(
+          `UPDATE memories SET superseded_at = ?, valid_to = ?
+           WHERE id = ? AND status = 'invalidated' AND superseded_by = ?
+             AND superseded_at IS ? AND valid_to IS ?`,
+        ).run(input.effectiveAt, input.effectiveAt, input.oldId, input.newId, old.superseded_at, old.valid_to);
+        const edgeUpdate = this.db.prepare(
+          `UPDATE edges SET created_at = ?
+           WHERE src = ? AND dst = ? AND kind = 'supersedes' AND created_at = ?`,
+        ).run(input.effectiveAt, input.oldId, input.newId, edges[0]!.created_at);
+        if (oldUpdate.changes !== 1 || edgeUpdate.changes !== 1) {
+          throw new Error("memory-store: legacy supersede lifecycle changed during repair.");
+        }
+      }
+      return "repaired";
+    })();
   }
 
   edges(src: string): { src: string; dst: string; kind: string; weight: number }[] {
@@ -716,4 +806,13 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
       .filter((row) => entityNameVariants(row.name).some((variant) => variant.join("\u0000") === key))
       .map((row) => row.id);
   }
+}
+
+function oneOf<T>(value: T, left: T, right: T): boolean {
+  return value === left || value === right;
+}
+
+function isCanonicalInstant(value: string): boolean {
+  const millis = Date.parse(value);
+  return Number.isFinite(millis) && new Date(millis).toISOString() === value;
 }

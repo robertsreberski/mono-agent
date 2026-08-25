@@ -452,7 +452,11 @@ function planSupersede(
   }
   const oldSourceFile = old.source.file;
   const beforeOld = requireCanonicalTarget(deps.root, oldSourceFile, targetId);
-  const now = deps.now();
+  const admittedAt = deps.now();
+  // Completed-turn intake can retry an admitted turn after a later-created
+  // target already exists. Supersession time is causal evidence, so it can
+  // never precede the memory it invalidates.
+  const effectiveAt = new Date(Math.max(admittedAt.getTime(), Date.parse(beforeOld.createdAt)));
   const id = deps.nextId();
   const bullet: Bullet = {
     id,
@@ -461,10 +465,10 @@ function planSupersede(
     text: decision.text ?? candidate.text,
     salience: candidate.salience,
     isInsight: candidate.isInsight,
-    createdAt: now.toISOString(),
+    createdAt: effectiveAt.toISOString(),
     refs: [],
   };
-  const record = recordFor(bullet, deps.root, now);
+  const record = recordFor(bullet, deps.root, effectiveAt);
   const newSourceFile = record.source.file!;
   return {
     action: { kind: "supersede", oldId: targetId, newId: id },
@@ -477,7 +481,7 @@ function planSupersede(
       afterOld: { file: oldSourceFile, bullet: { ...beforeOld, status: "invalidated" } },
       afterNew: { file: newSourceFile, bullet },
       record,
-      at: now.toISOString(),
+      at: effectiveAt.toISOString(),
     },
     record,
   };

@@ -107,7 +107,7 @@ export type CaptureIntentAction =
     readonly expected: CanonicalBulletState;
   });
 
-interface CaptureIntent {
+export interface CaptureIntent {
   readonly schemaVersion: 1;
   readonly state: "pending" | "complete";
   readonly id: string;
@@ -122,6 +122,29 @@ interface CaptureIntent {
     readonly relations: readonly EntityRelationRecord[];
     readonly associations: readonly MemoryEntityAssociation[];
   };
+}
+
+export interface LegacyCaptureClockCorrection {
+  readonly oldId: string;
+  readonly newId: string;
+  readonly expectedOldStatus: Exclude<MemoryRecord["status"], "invalidated">;
+  readonly admittedAt: string;
+  readonly effectiveAt: string;
+  readonly oldFile: string;
+  readonly effectiveFile: string;
+}
+
+export interface LegacyCaptureClockRepairIntent {
+  readonly legacy: CaptureIntent;
+  readonly repaired: CaptureIntent;
+  readonly corrections: readonly LegacyCaptureClockCorrection[];
+  readonly legacyAuthorityId: string;
+  readonly repairedAuthorityId: string;
+  readonly planDigest: string;
+}
+
+interface ParseCaptureIntentOptions {
+  readonly allowLegacySupersedeClockDrift?: boolean;
 }
 
 export interface CaptureIntentHandle {
@@ -213,7 +236,7 @@ export function writeCaptureIntent(
       associations: [...(graph.associations ?? [])],
     },
   };
-  const data = serializeIntent(intent);
+  const data = serializeCaptureIntent(intent);
   if (Buffer.byteLength(data, "utf8") > MAX_INTENT_BYTES) {
     throw new Error("memory-capture: prepared capture intent exceeds the durable outbox byte bound.");
   }
@@ -768,7 +791,7 @@ function markReplayIntentComplete(root: string, plan: ReplayPlan): ReplayPlan {
   if (intent.state === "complete") return plan;
 
   const completed: CaptureIntent = { ...intent, state: "complete" };
-  writeCanonicalFileAtomic(root, file, serializeIntent(completed), snapshot.identity);
+  writeCanonicalFileAtomic(root, file, serializeCaptureIntent(completed), snapshot.identity);
   const completeSnapshot = readCanonicalFileSnapshot(root, file, { maxBytes: MAX_INTENT_BYTES });
   if (completeSnapshot === undefined) throw new Error(`memory-capture: completed intent "${file}" disappeared.`);
   return { ...plan, intent: completed, snapshot: completeSnapshot };
@@ -1061,8 +1084,7 @@ function captureReplayDelta(
   intent: CaptureIntent,
   db?: MemoryDb,
 ): ReplayProjectionDelta {
-  const { state: _state, ...immutableAuthority } = intent;
-  const authorityId = replayProjectionAuthorityId(immutableAuthority);
+  const authorityId = captureIntentAuthorityId(intent);
   return {
     terminals: [],
     supersedes: intent.actions.flatMap((action) => action.kind === "supersede" ? [{
@@ -1364,7 +1386,7 @@ function memoryIdFor(action: CaptureIntentAction): string {
   return action.kind === "supersede" ? action.newId : action.id;
 }
 
-function serializeIntent(intent: CaptureIntent): string {
+export function serializeCaptureIntent(intent: CaptureIntent): string {
   const actions = intent.actions.map((action) => {
     if (action.kind === "noop" || action.vector === undefined) return action;
     return { ...action, vector: encodeVector(action.vector) };
@@ -1409,7 +1431,7 @@ function decodeActionVector(value: unknown): unknown {
   return { ...value, vector };
 }
 
-function parseIntent(raw: string): CaptureIntent {
+function parseIntent(raw: string, options: ParseCaptureIntentOptions = {}): CaptureIntent {
   let value: unknown;
   try {
     value = JSON.parse(raw);
@@ -1439,7 +1461,7 @@ function parseIntent(raw: string): CaptureIntent {
   const indexes = new Set<number>();
   const touchedMemoryIds = new Set<string>();
   for (const action of intent.actions) {
-    validateAction(action);
+    validateAction(action, options);
     if (indexes.has(action.candidateIndex)) throw new Error("memory-capture: duplicate candidate index in outbox intent.");
     indexes.add(action.candidateIndex);
     const ids = action.kind === "supersede" ? [action.oldId, action.newId] : [action.id];
@@ -1466,11 +1488,95 @@ function parseIntent(raw: string): CaptureIntent {
   return intent;
 }
 
+/**
+ * Decode only the retained pending-intent shape written by the pre-fix
+ * completed-turn path. Any other invalid payload keeps the original strict
+ * failure and is never normalized opportunistically.
+ */
+export function decodeLegacyCaptureClockRepairIntent(
+  raw: string,
+): LegacyCaptureClockRepairIntent | undefined {
+  let strictError: unknown;
+  try {
+    parseIntent(raw);
+    return undefined;
+  } catch (error) {
+    strictError = error;
+  }
+
+  let legacy: CaptureIntent;
+  try {
+    legacy = parseIntent(raw, { allowLegacySupersedeClockDrift: true });
+  } catch {
+    throw strictError;
+  }
+  if (legacy.state !== "pending" || legacy.retentionKey === undefined) throw strictError;
+  if (legacy.actions.some((action) => action.kind === "add"
+    && action.threads.some((edge) => !isCanonicalInstant(edge.createdAt)))) {
+    throw strictError;
+  }
+
+  const corrections: LegacyCaptureClockCorrection[] = [];
+  const actions = legacy.actions.map((action): CaptureIntentAction => {
+    if (action.kind !== "supersede"
+      || Date.parse(action.at) >= Date.parse(action.beforeOld.bullet.createdAt)) return action;
+    if (!isCanonicalInstant(action.beforeOld.bullet.createdAt)) throw strictError;
+    if (action.beforeOld.bullet.status === "invalidated") throw strictError;
+    const effectiveAt = action.beforeOld.bullet.createdAt;
+    const effectiveFile = `daily/${effectiveAt.slice(0, 10)}.md`;
+    corrections.push({
+      oldId: action.oldId,
+      newId: action.newId,
+      expectedOldStatus: action.beforeOld.bullet.status,
+      admittedAt: action.at,
+      effectiveAt,
+      oldFile: action.afterNew.file,
+      effectiveFile,
+    });
+    return {
+      ...action,
+      at: effectiveAt,
+      afterNew: {
+        file: effectiveFile,
+        bullet: { ...action.afterNew.bullet, createdAt: effectiveAt },
+      },
+      record: {
+        ...action.record,
+        createdAt: effectiveAt,
+        source: { ...action.record.source, file: effectiveFile },
+      },
+    };
+  });
+  if (corrections.length === 0) throw strictError;
+  const repaired: CaptureIntent = { ...legacy, actions };
+  parseIntent(serializeCaptureIntent(repaired));
+  const legacyAuthorityId = captureIntentAuthorityId(legacy);
+  const repairedAuthorityId = captureIntentAuthorityId(repaired);
+  const planDigest = createHash("sha256")
+    .update("mono-agent-memory-capture-clock-repair-v1\0", "utf8")
+    .update(JSON.stringify({
+      intentId: legacy.id,
+      legacyAuthorityId,
+      repairedAuthorityId,
+      corrections,
+    }), "utf8")
+    .digest("hex");
+  return { legacy, repaired, corrections, legacyAuthorityId, repairedAuthorityId, planDigest };
+}
+
+export function captureIntentAuthorityId(intent: CaptureIntent): string {
+  const { state: _state, ...immutableAuthority } = intent;
+  return replayProjectionAuthorityId(immutableAuthority);
+}
+
 function assertRetentionKey(value: string): void {
   if (!/^[a-f0-9]{64}$/u.test(value)) throw new Error("memory-capture: retention key is invalid.");
 }
 
-function validateAction(action: CaptureIntentAction): void {
+function validateAction(
+  action: CaptureIntentAction,
+  options: ParseCaptureIntentOptions = {},
+): void {
   if (!isRecord(action) || !Number.isInteger(action.candidateIndex)
     || action.candidateIndex < 0 || action.candidateIndex >= MAX_ACTIONS) {
     throw new Error("memory-capture: invalid action index in outbox intent.");
@@ -1519,10 +1625,17 @@ function validateAction(action: CaptureIntentAction): void {
       || action.afterOld.bullet.id !== action.oldId
       || action.beforeOld.file !== action.afterOld.file
       || action.record.source.file !== action.afterNew.file
-      || typeof action.at !== "string" || !Number.isFinite(Date.parse(action.at))) {
+      || !isCanonicalInstant(action.at)
+      || action.afterNew.bullet.createdAt !== action.at
+      || action.record.createdAt !== action.at
+      || action.afterNew.file.replaceAll("\\", "/") !== `daily/${action.at.slice(0, 10)}.md`) {
       throw new Error("memory-capture: invalid supersede action in outbox intent.");
     }
     assertRecordMatchesBullet(action.record, action.afterNew);
+    if (Date.parse(action.at) < Date.parse(action.beforeOld.bullet.createdAt)
+      && options.allowLegacySupersedeClockDrift !== true) {
+      throw new Error("memory-capture: supersede action predates its prior memory.");
+    }
     if (!bulletsEqual({ ...action.beforeOld.bullet, status: "invalidated" }, action.afterOld.bullet)) {
       throw new Error("memory-capture: supersede intent has an invalid prior-memory outcome.");
     }
@@ -1536,6 +1649,12 @@ function validateAction(action: CaptureIntentAction): void {
     return;
   }
   throw new Error("memory-capture: unknown action in outbox intent.");
+}
+
+function isCanonicalInstant(value: unknown): value is string {
+  return typeof value === "string"
+    && Number.isFinite(Date.parse(value))
+    && new Date(Date.parse(value)).toISOString() === value;
 }
 
 function validateState(state: CanonicalBulletState): void {

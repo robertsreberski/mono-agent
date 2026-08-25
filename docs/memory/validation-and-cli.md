@@ -84,7 +84,7 @@ Run `apply` only after stopping the configured agent. A package-owned stopped-st
 
 If apply fails after the transaction record exists, the coordinator closes the index, restores the complete snapshot, verifies canonical/index parity and its tree fingerprint, and reports whether recovery succeeded. A process death leaves the fsynced transaction and deterministic backup discoverable; normal store startup refuses until a later apply/restore invocation completes recovery. An explicit `restore` prevalidates the snapshot, rechecks the exact post-apply tree at the commit boundary, then atomically renames the current root into retained quarantine and consumes the sibling snapshot as the restored root. It never makes a third full copy. A failed activation rolls the quarantine back; an unverified quarantine is never deleted. Only the exact active SQLite coordination files are checkpointed and removed while the writer lease is held. Every unrelated file—including arbitrary names ending in `-shm` or `-wal`—participates in freshness and blocks overwrite.
 
-The app's startup and hourly artifact-retention sweep uses one shared three-slot budget for completed forget backups, completed import backups, and conventional `.mono-agent/operator/forget-*` snapshots; it is **not** three backups per operation type. Snapshots also expire after 30 days. The sweep covers root-bound managed siblings such as `.mono-agent/.memory-forget-backup-*` and `.mono-agent/.memory-import-backup-*`, shares the stopped-store maintenance lease, defers while recovery is pending, never follows symlinks, and inherits `artifacts.memoryRetention.dryRun`. Before deletion it atomically renames each selected directory to another reserved retention name, so an interrupted sweep leaves a claim that the next sweep can discover and finish. Copy any backup that must outlive this rollback window outside every reserved managed backup or retention-claim name.
+The app's startup and hourly artifact-retention sweep uses one shared three-slot budget for completed forget backups, completed import backups, automatic capture-clock-repair backups, and conventional `.mono-agent/operator/forget-*` snapshots; it is **not** three backups per operation type. Snapshots also expire after 30 days. The sweep covers root-bound managed siblings such as `.mono-agent/.memory-forget-backup-*`, `.mono-agent/.memory-import-backup-*`, and `.mono-agent/.memory-capture-clock-repair-backup-*`, shares the stopped-store maintenance lease, defers while recovery is pending, never follows symlinks, and inherits `artifacts.memoryRetention.dryRun`. Before deletion it atomically renames each selected directory to another reserved retention name, so an interrupted sweep leaves a claim that the next sweep can discover and finish. Copy any backup that must outlive this rollback window outside every reserved managed backup or retention-claim name.
 
 ### Portable memory bundles: export and import
 
@@ -131,6 +131,26 @@ Preserved: id, type, status, text, salience, insight flag, `createdAt`, `dueAt`,
 Imported memories are not individually stamped with their origin: `source.file`/`source.line` are recomputed against the destination, and adding a bullet metadata key would be silently erased the first time anything rewrites that day's file. Keep the bundle's `manifest.json` if you need to prove provenance later.
 
 ### Strict provider-free health gate
+
+Writable BuJo startup also owns one narrow provider-free compatibility repair.
+Supersession time must be at or after both the superseded memory's creation and
+the replacement's creation, and the replacement must live in the matching
+dated daily file. A historical completed-turn retry could reuse its earlier
+admission time after a later-created target already existed. The resulting
+retained pending intent could partially commit that impossible chronology to
+Markdown, replay authority, and SQLite, after which strict startup correctly
+refused the mismatch.
+
+Startup now recognizes only a retained, run-owned pending intent with exactly
+that backward-clock defect. Before opening the normal writer it takes the
+maintenance and writer fences, creates a whole-root sibling backup, corrects
+the replacement/lifecycle clock and daily path across every authority, replays
+the intent, and validates canonical, replay, and SQLite parity. The path calls
+neither embeddings nor a chat model. Its sibling transaction resumes after a
+process death; an in-process failure restores the exact original tree. A
+prepared backup left before transaction publication is safely reused. Read-only
+stores never run the repair, and any other invalid or ambiguous intent remains
+a hard failure for operator review.
 
 `mono-agent memory audit --strict --json` is the closed, provider-free health contract. It makes no embedding, chat-model, Ollama, LM Studio, OpenAI, or Supermemory request. For the built-in backend it takes a bounded, snapshot-coherent view of managed identity, SQLite integrity and metadata, FTS/vector coverage, canonical source parity (including BuJo's exact replay projection), rollback-source freshness, durable completed-turn intake, capture outbox, temporary artifacts, and the runtime snapshot. SQLite still requires the native modules built for the Node runtime that invokes the command; an unavailable native module reports `unknown` rather than leaking the loader error.
 

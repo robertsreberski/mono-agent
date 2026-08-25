@@ -96,10 +96,19 @@ export const MEMORY_IMPORT_SWAP_OPERATION: DurableRootSwapOperation = {
   backupInfix: "import-backup",
 };
 
+/** Automatic repair of the pre-fix retained supersede clock invariant. */
+export const MEMORY_CAPTURE_CLOCK_REPAIR_SWAP_OPERATION: DurableRootSwapOperation = {
+  label: "memory-capture-clock-repair",
+  backupOperation: "memory-capture-clock-repair-backup",
+  transactionOperation: "memory-capture-clock-repair",
+  backupInfix: "capture-clock-repair-backup",
+};
+
 /** Every operation whose sibling backups share the retention sweep. */
 export const MANAGED_SWAP_OPERATIONS: readonly DurableRootSwapOperation[] = [
   MEMORY_FORGET_SWAP_OPERATION,
   MEMORY_IMPORT_SWAP_OPERATION,
+  MEMORY_CAPTURE_CLOCK_REPAIR_SWAP_OPERATION,
 ];
 
 export interface DurableRootSwapBackupManifest {

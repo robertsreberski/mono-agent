@@ -42,6 +42,77 @@ function replayCaptureOutbox(
 }
 
 describe("capture outbox", () => {
+  it("accepts a causal supersede clock and matching replacement day", () => {
+    const root = tempRoot();
+    const targetAt = "2026-07-11T09:01:00.000Z";
+    const supersededAt = "2026-07-12T00:01:00.000Z";
+    const old = { ...bullet("CAUSAL-OLD", "Earlier memory"), createdAt: targetAt };
+    const replacement = { ...bullet("CAUSAL-NEW", "Later correction"), createdAt: supersededAt };
+    const oldFile = "daily/2026-07-11.md";
+    const newFile = "daily/2026-07-12.md";
+
+    expect(() => writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "supersede",
+      oldId: old.id,
+      newId: replacement.id,
+      beforeOld: { file: oldFile, bullet: old },
+      afterOld: { file: oldFile, bullet: { ...old, status: "invalidated" } },
+      afterNew: { file: newFile, bullet: replacement },
+      record: memoryRecord(replacement, newFile),
+      at: supersededAt,
+    }], {}, supersededAt)).not.toThrow();
+  });
+
+  it.each([
+    {
+      name: "clock before target creation",
+      at: "2026-07-11T09:00:00.000Z",
+      replacementAt: "2026-07-11T09:00:00.000Z",
+      replacementFile: "daily/2026-07-11.md",
+      error: /predates its prior memory/iu,
+    },
+    {
+      name: "replacement clock mismatch",
+      at: "2026-07-11T09:02:00.000Z",
+      replacementAt: "2026-07-11T09:03:00.000Z",
+      replacementFile: "daily/2026-07-11.md",
+      error: /invalid supersede action/iu,
+    },
+    {
+      name: "replacement day mismatch",
+      at: "2026-07-12T00:01:00.000Z",
+      replacementAt: "2026-07-12T00:01:00.000Z",
+      replacementFile: "daily/2026-07-11.md",
+      error: /invalid supersede action/iu,
+    },
+    {
+      name: "noncanonical instant",
+      at: "2026-07-11T09:02:00Z",
+      replacementAt: "2026-07-11T09:02:00Z",
+      replacementFile: "daily/2026-07-11.md",
+      error: /invalid supersede action/iu,
+    },
+  ])("rejects supersede $name before publication", ({ at, replacementAt, replacementFile, error }) => {
+    const root = tempRoot();
+    const old = { ...bullet("INVALID-OLD", "Prior memory"), createdAt: "2026-07-11T09:01:00.000Z" };
+    const replacement = { ...bullet("INVALID-NEW", "Invalid correction"), createdAt: replacementAt };
+    const oldFile = "daily/2026-07-11.md";
+
+    expect(() => writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "supersede",
+      oldId: old.id,
+      newId: replacement.id,
+      beforeOld: { file: oldFile, bullet: old },
+      afterOld: { file: oldFile, bullet: { ...old, status: "invalidated" } },
+      afterNew: { file: replacementFile, bullet: replacement },
+      record: memoryRecord(replacement, replacementFile),
+      at,
+    }], {}, at)).toThrow(error);
+    expect(existsSync(join(root, ".capture-outbox"))).toBe(false);
+  });
+
   it("counts malformed intents and abandoned atomic temps while failing closed", () => {
     const root = tempRoot();
     const handle = writeCaptureIntent(root, [], {}, NOW.toISOString());
