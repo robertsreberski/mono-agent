@@ -405,6 +405,27 @@ export function assertCanonicalGraphRepairBaseParity(root: string, db: MemoryDb)
   assertCanonicalGraphRepairBaseParityForTier(root, db, "bujo");
 }
 
+/**
+ * Exact BuJo parity proof for a caller that already owns the maintenance and
+ * writer leases. The public health probe intentionally reports any visible
+ * maintenance transaction as in-progress, so transactional repair code must
+ * validate its candidate without bypassing the same canonical plan rules.
+ */
+export function assertCanonicalIndexParityUnderMaintenance(root: string, db: MemoryDb): void {
+  const before = snapshotCanonicalSources(root, "bujo");
+  const plan = buildPlan(before, "bujo");
+  const parityError = db.withAuditSnapshot(() => buildPlanParityError(db, "bujo", plan, {
+    allowReplaySourceRepair: true,
+    allowJournalVectorBacklog: true,
+    omitMutableLiveState: true,
+  }));
+  if (parityError !== undefined) throw new Error(parityError);
+  const after = snapshotCanonicalSources(root, "bujo");
+  if (after.fingerprint !== before.fingerprint) {
+    throw new Error("memory-rebuild: canonical source changed during maintenance parity validation.");
+  }
+}
+
 /** Cross-tier recovery variant used only while safe rebuild still owns the stopped prior index. */
 export function assertCanonicalGraphRepairBaseParityForTier(
   root: string,
