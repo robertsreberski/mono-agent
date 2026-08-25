@@ -12,11 +12,17 @@ import {
   readAgentRailExpanded,
   writeAgentRailExpanded,
 } from "./agent-rail-layout";
-import { AgentRail, BrandMark, MobileAgentPicker } from "./components/AgentRail";
+import { AgentRail, BrandMark } from "./components/AgentRail";
+import { AgentDefaultsSheet } from "./components/AgentDefaults";
+import { BoardView } from "./components/board/BoardView";
 import { Chat } from "./components/Chat";
 import { Icon, type IconName } from "./components/Icon";
+import { MobileChatList } from "./components/MobileChatList";
+import { NewConversationSheet } from "./components/NewConversationSheet";
 import { ThreadSidebar } from "./components/ThreadSidebar";
+import { ViewSwitch } from "./components/ViewSwitch";
 import { useConsoleStore } from "./console-store";
+import { DeviceNotificationControl } from "./notifications";
 import { applyConsolePresentation } from "./theme";
 
 interface PaletteAction {
@@ -115,9 +121,11 @@ function CommandPalette({ open, onClose }: { readonly open: boolean; readonly on
         label: "New conversation",
         hint: "⌘⇧O",
         icon: "new",
-        disabled: !store.selectedAgent,
-        run: () => void store.createThread().catch(() => undefined),
+        disabled: store.agents.length === 0,
+        run: () => window.dispatchEvent(new CustomEvent("mono-agent:new-thread")),
       },
+      { id: "go-chats", label: "Go to Chats", icon: "threads", run: () => store.navigate({ view: "chats" }) },
+      { id: "go-board", label: "Go to Board", icon: "archive", run: () => store.navigate({ view: "board" }) },
       {
         id: "rename",
         label: "Rename conversation",
@@ -266,13 +274,12 @@ function FatalError() {
 
 export function App() {
   const { loading, bootstrap, error, actionError, clearActionError } = useConsoleStore();
-  const [agentDrawer, setAgentDrawer] = useState(false);
-  const [threadDrawer, setThreadDrawer] = useState(false);
+  const [newConversation, setNewConversation] = useState(false);
+  const [agentDefaults, setAgentDefaults] = useState(false);
+  const [mobile, setMobile] = useState(() => window.matchMedia("(max-width: 899px)").matches);
   const [palette, setPalette] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [agentRailExpanded, setAgentRailExpanded] = useState(readAgentRailExpanded);
-  const agentDrawerRef = useRef<HTMLDivElement>(null);
-  const threadDrawerRef = useRef<HTMLDivElement>(null);
   const appStyle = {
     "--agent-rail-width": `${agentRailWidth(agentRailExpanded)}px`,
   } as CSSProperties;
@@ -285,28 +292,17 @@ export function App() {
     });
   }, []);
 
-  const closeDrawers = useCallback(() => {
-    setAgentDrawer(false);
-    setThreadDrawer(false);
-  }, []);
   const closePalette = useCallback(() => setPalette(false), []);
   const togglePalette = useCallback(() => {
-    closeDrawers();
     setPalette((current) => !current);
-  }, [closeDrawers]);
-  const openAgents = useCallback(() => {
-    setPalette(false);
-    setThreadDrawer(false);
-    setAgentDrawer(true);
-  }, []);
-  const openThreads = useCallback(() => {
-    setPalette(false);
-    setAgentDrawer(false);
-    setThreadDrawer(true);
   }, []);
 
-  useModalFocus(agentDrawer, agentDrawerRef, closeDrawers);
-  useModalFocus(threadDrawer, threadDrawerRef, closeDrawers);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 899px)");
+    const onChange = () => setMobile(media.matches);
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
 
   useEffect(() => {
     const onCommand = () => togglePalette();
@@ -369,17 +365,16 @@ export function App() {
       }
       if (event.key === "Escape") {
         setPalette(false);
-        closeDrawers();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeDrawers, palette, togglePalette]);
+  }, [palette, togglePalette]);
 
   const store = useConsoleStore();
   useEffect(() => {
     const onNewThread = () => {
-      if (store.selectedAgent) void store.createThread().catch(() => undefined);
+      setNewConversation(true);
     };
     window.addEventListener("mono-agent:new-thread", onNewThread);
     return () => window.removeEventListener("mono-agent:new-thread", onNewThread);
@@ -390,41 +385,19 @@ export function App() {
 
   return (
     <div className="app-shell" style={appStyle}>
-      <div className="desktop-agent-rail">
-        <AgentRail expanded={agentRailExpanded} onToggleExpanded={toggleAgentRail} />
-      </div>
-      <div className="desktop-thread-sidebar"><ThreadSidebar /></div>
-      <Chat onOpenAgents={openAgents} onOpenThreads={openThreads} />
+      {!mobile && <div className="desktop-agent-rail"><ViewSwitch /><AgentRail expanded={agentRailExpanded} onToggleExpanded={toggleAgentRail} /><div className="rail-device-settings"><DeviceNotificationControl /></div></div>}
+      {!mobile && store.activeView === "chats" && <div className="desktop-thread-sidebar"><ThreadSidebar /></div>}
+      {!mobile && store.activeView === "chats" && <Chat onOpenAgents={() => undefined} onOpenThreads={() => undefined} />}
+      {!mobile && store.activeView === "board" && <BoardView />}
 
-      {(agentDrawer || threadDrawer) && (
-        <button className="drawer-scrim" type="button" onClick={closeDrawers} aria-label="Close navigation" />
-      )}
-      <div
-        ref={agentDrawerRef}
-        className={`mobile-agent-drawer${agentDrawer ? " is-open" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Choose agent"
-        aria-hidden={!agentDrawer}
-        inert={!agentDrawer}
-        tabIndex={-1}
-      >
-        <MobileAgentPicker onSelect={closeDrawers} />
-      </div>
-      <div
-        ref={threadDrawerRef}
-        className={`mobile-thread-drawer${threadDrawer ? " is-open" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Conversations"
-        aria-hidden={!threadDrawer}
-        inert={!threadDrawer}
-        tabIndex={-1}
-      >
-        <ThreadSidebar onSelect={closeDrawers} />
-      </div>
+      {mobile && store.activeView === "chats" && !("threadId" in store.route) && <MobileChatList onOpenDefaults={() => setAgentDefaults(true)} />}
+      {mobile && store.activeView === "chats" && "threadId" in store.route && <Chat onOpenAgents={() => undefined} onOpenThreads={() => undefined} onBack={() => { if (window.history.length > 1) window.history.back(); else store.navigate({ view: "chats" }); }} />}
+      {mobile && store.activeView === "board" && <BoardView />}
+      {mobile && !(store.activeView === "chats" && "threadId" in store.route) && <ViewSwitch mobile />}
 
       <CommandPalette open={palette} onClose={closePalette} />
+      <NewConversationSheet open={newConversation} onOpenChange={setNewConversation} />
+      <AgentDefaultsSheet open={agentDefaults} onOpenChange={setAgentDefaults} />
       {(notice || actionError) && (
         <div className="toast" role="alert">
           <span>{notice ?? actionError}</span>

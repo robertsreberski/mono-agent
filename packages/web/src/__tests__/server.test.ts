@@ -90,7 +90,7 @@ describe("web HTTP server", () => {
       push: {
         applicationServerKey: expect.any(String),
         keyFingerprint: expect.any(String),
-        serviceWorkerVersion: 2,
+        serviceWorkerVersion: 3,
       },
     });
     expect(JSON.stringify(body)).not.toContain("privateKey");
@@ -1183,6 +1183,52 @@ describe("web HTTP server", () => {
     });
     expect(unpinned.status).toBe(200);
     expect(await json(unpinned)).toMatchObject({ agent: { sourceId: "agent-two", pinned: false } });
+  });
+
+  it("validates and persists additive thread metadata and agent run defaults", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const headers = { "content-type": "application/json" };
+    const created = await json(await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST", headers, body: JSON.stringify({ sourceId: "agent-one" }),
+    }));
+    const thread = created.thread as { id: string };
+
+    for (const body of [
+      { state: "blocked" },
+      { labels: Array.from({ length: 17 }, (_, index) => `label-${String(index)}`) },
+      { labels: ["x".repeat(65)] },
+      { project: "x".repeat(121) },
+    ]) {
+      const invalid = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+        method: "PATCH", headers, body: JSON.stringify(body),
+      });
+      expect(invalid.status).toBe(400);
+    }
+
+    const patched = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ pinned: true, state: "doing", labels: [" Alpha ", "alpha"], project: " Redesign " }),
+    });
+    expect(patched.status).toBe(200);
+    expect(await json(patched)).toMatchObject({ thread: {
+      pinnedAt: expect.any(String), state: "doing", stateSource: "user", labels: ["Alpha"], project: "Redesign",
+    } });
+
+    const bootstrap = await json(await fetch(`${baseUrl}/api/v1/bootstrap`)) as {
+      agents: Array<{ sourceId: string; defaultModel?: string }>;
+    };
+    const advertised = bootstrap.agents[0]?.defaultModel;
+    expect(advertised).toBeDefined();
+    const defaults = await fetch(`${baseUrl}/api/v1/agents/agent-one`, {
+      method: "PATCH", headers, body: JSON.stringify({ runDefaults: { model: advertised } }),
+    });
+    expect(defaults.status).toBe(200);
+    expect(await json(defaults)).toMatchObject({ agent: { runDefaults: { model: advertised } } });
+    const invalidDefaults = await fetch(`${baseUrl}/api/v1/agents/agent-one`, {
+      method: "PATCH", headers, body: JSON.stringify({ runDefaults: {} }),
+    });
+    expect(invalidDefaults.status).toBe(400);
   });
 
   it("caps SSE clients and permits reconnect/bootstrap semantics", async () => {

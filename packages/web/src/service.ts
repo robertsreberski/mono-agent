@@ -33,6 +33,7 @@ import {
   WEB_STAGED_UPLOAD_TTL_MS,
   type CreateWebUploadInput,
   type PatchWebAgentInput,
+  type PatchWebThreadInput,
   type StartWebTurnInput,
   type WebAgentSummary,
   type WebAttachment,
@@ -585,7 +586,7 @@ export class WebService {
     return result;
   }
 
-  patchThread(id: string, patch: { readonly title?: string; readonly archived?: boolean }): WebThread {
+  patchThread(id: string, patch: PatchWebThreadInput): WebThread {
     const thread = this.store.patchThread(id, patch);
     this.emit("thread.changed", thread.id, { thread });
     this.emit("threads.changed", thread.id);
@@ -610,7 +611,30 @@ export class WebService {
   }
 
   patchAgent(sourceId: string, patch: PatchWebAgentInput): WebAgentSummary {
-    const agent = this.store.setAgentPinned(sourceId, patch.pinned);
+    let agent = this.store.getAgent(sourceId);
+    if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    if (patch.runDefaults !== undefined) {
+      const setsValue = patch.runDefaults !== null
+        && (typeof patch.runDefaults.model === "string" || typeof patch.runDefaults.effort === "string");
+      if (setsValue) {
+        if (agent.status === "offline" || this.connections.get(sourceId) === undefined) {
+          throw new WebConsoleError(
+            "agent_offline",
+            "Bring the agent online before selecting console run defaults.",
+            409,
+          );
+        }
+        const nextModel = patch.runDefaults?.model === undefined
+          ? agent.runDefaults?.model
+          : patch.runDefaults.model ?? undefined;
+        const nextEffort = patch.runDefaults?.effort === undefined
+          ? agent.runDefaults?.effort
+          : patch.runDefaults.effort ?? undefined;
+        validateModelAndEffort(agent, nextModel, nextEffort);
+      }
+      agent = this.store.setAgentRunDefaults(sourceId, patch.runDefaults);
+    }
+    if (patch.pinned !== undefined) agent = this.store.setAgentPinned(sourceId, patch.pinned);
     this.emit("agents.changed", undefined, { agents: this.store.listAgents() });
     return agent;
   }

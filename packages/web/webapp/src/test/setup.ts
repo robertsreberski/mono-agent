@@ -10,6 +10,16 @@ class ResizeObserverStub implements ResizeObserver {
 
 globalThis.ResizeObserver ??= ResizeObserverStub;
 HTMLElement.prototype.scrollIntoView ??= () => undefined;
+window.matchMedia ??= ((query: string) => ({
+  matches: false,
+  media: query,
+  onchange: null,
+  addListener: () => undefined,
+  removeListener: () => undefined,
+  addEventListener: () => undefined,
+  removeEventListener: () => undefined,
+  dispatchEvent: () => false,
+})) as typeof window.matchMedia;
 
 afterEach(() => {
   cleanup();

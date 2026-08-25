@@ -17,7 +17,7 @@ import {
   type WebStore,
 } from "./store.js";
 
-export const WEB_PUSH_SERVICE_WORKER_VERSION = 2 as const;
+export const WEB_PUSH_SERVICE_WORKER_VERSION = 3 as const;
 export const DEFAULT_WEB_PUSH_SUBJECT = "https://github.com/robertsreberski/mono-agent";
 const MAX_ENDPOINT_LENGTH = 2_048;
 const MAX_ENCRYPTED_PAYLOAD_BYTES = 4_096;

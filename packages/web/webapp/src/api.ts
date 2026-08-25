@@ -22,6 +22,8 @@ import type {
   MessagePage,
   ThreadPage,
   ThreadSummary,
+  RunDefaults,
+  ThreadState,
   WebAttachment,
   WebMessage,
 } from "./types";
@@ -272,10 +274,14 @@ export const api = {
     return result.thread;
   },
 
-  patchAgent: async (sourceId: string, pinned: boolean) => {
+  patchAgent: async (
+    sourceId: string,
+    patch: boolean | { readonly pinned?: boolean; readonly runDefaults?: RunDefaults | null },
+  ) => {
+    const body = typeof patch === "boolean" ? { pinned: patch } : patch;
     const result = await request<{ agent: AgentSummary }>(
       `/api/v1/agents/${encodeURIComponent(sourceId)}`,
-      { method: "PATCH", body: JSON.stringify({ pinned }) },
+      { method: "PATCH", body: JSON.stringify(body) },
     );
     return result.agent;
   },
@@ -288,7 +294,14 @@ export const api = {
 
   patchThread: async (
     threadId: string,
-    patch: { title?: string; archived?: boolean },
+    patch: {
+      title?: string;
+      archived?: boolean;
+      pinned?: boolean;
+      state?: ThreadState;
+      labels?: readonly string[];
+      project?: string | null;
+    },
   ) => {
     const result = await request<{ thread: ThreadSummary }>(
       `/api/v1/threads/${encodeURIComponent(threadId)}`,

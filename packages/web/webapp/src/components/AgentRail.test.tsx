@@ -58,6 +58,7 @@ describe("AgentRail", () => {
     );
     expect(screen.getByText("Current offline agent")).toBeVisible();
     expect(screen.queryByText("Hidden offline agent")).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Console connection: live" })).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "Unpin A complete favorite agent name" }));
     expect(store.setAgentPinned).toHaveBeenCalledWith("favorite", false);

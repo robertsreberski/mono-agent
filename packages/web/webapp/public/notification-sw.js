@@ -1,6 +1,8 @@
-const NOTIFICATION_SW_VERSION = 2;
+const NOTIFICATION_SW_VERSION = 3;
 const SELECT_THREAD_MESSAGE = "mono-agent:select-thread";
 const SUBSCRIPTION_REPAIR_DELAYS_MS = [0, 1_000, 3_000];
+const THREAD_NOTIFICATION_CACHE = "mono-agent-thread-notifications-v1";
+const THREAD_NOTIFICATION_CACHE_URL = "/__mono-agent/thread-notification-mutes";
 
 self.addEventListener("message", (event) => {
   if (event.data?.type !== "mono-agent:notification-sw-version") return;
@@ -22,6 +24,7 @@ self.addEventListener("push", (event) => {
     const body = boundedText(notification.body, "Open the console to view the update.");
     const data = isRecord(notification.data) ? notification.data : {};
     const threadId = typeof data.threadId === "string" ? data.threadId : undefined;
+    if (threadId && await threadNotificationsMuted(threadId)) return;
     const navigate = sameOriginNavigate(notification.navigate, threadId);
     await self.registration.showNotification(title, {
       body,
@@ -39,6 +42,16 @@ self.addEventListener("push", (event) => {
     });
   })());
 });
+
+async function threadNotificationsMuted(threadId) {
+  try {
+    const response = await (await caches.open(THREAD_NOTIFICATION_CACHE)).match(THREAD_NOTIFICATION_CACHE_URL);
+    const value = response ? await response.json() : [];
+    return Array.isArray(value) && value.includes(threadId);
+  } catch {
+    return false;
+  }
+}
 
 self.addEventListener("pushsubscriptionchange", (event) => {
   event.waitUntil((async () => {
@@ -72,7 +85,11 @@ self.addEventListener("notificationclick", (event) => {
     });
     const matching = threadId === undefined
       ? undefined
-      : sameOrigin.find((client) => new URL(client.url).searchParams.get("thread") === threadId);
+      : sameOrigin.find((client) => {
+          const candidate = new URL(client.url);
+          return candidate.searchParams.get("thread") === threadId
+            || candidate.pathname === `/threads/${encodeURIComponent(threadId)}`;
+        });
     const target = matching ?? sameOrigin[0];
     if (target) {
       await target.focus();
@@ -91,7 +108,10 @@ function sameOriginNavigate(value, threadId) {
     target = new URL("/", self.location.origin);
   }
   if (target.origin !== self.location.origin) target = new URL("/", self.location.origin);
-  if (threadId) target.searchParams.set("thread", threadId);
+  if (threadId) {
+    target.pathname = `/threads/${encodeURIComponent(threadId)}`;
+    target.search = "";
+  }
   return target.href;
 }
 

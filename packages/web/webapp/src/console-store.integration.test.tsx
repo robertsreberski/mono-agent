@@ -158,6 +158,52 @@ describe("ConsoleStoreProvider integration", () => {
     expect(store.current.actionError).toBeNull();
   });
 
+  it("navigates between Board and canonical thread routes without losing selection", async () => {
+    const conversation = thread("thread-one", "alpha", { title: "Thread one" });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { label: "Alpha" }),
+    ], [conversation], conversation.id));
+    vi.mocked(api.thread).mockResolvedValue({ thread: conversation, messages: [] });
+    const store = await renderStore();
+
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(conversation.id));
+    act(() => store.current.navigate({ view: "board" }));
+    expect(store.current.activeView).toBe("board");
+    expect(window.location.pathname).toBe("/board");
+
+    act(() => store.current.navigate({ view: "chats", threadId: conversation.id }));
+    expect(store.current.activeView).toBe("chats");
+    expect(store.current.selectedThreadId).toBe(conversation.id);
+    expect(window.location.pathname).toBe("/threads/thread-one");
+
+    window.history.replaceState(null, "", "/board");
+    act(() => window.dispatchEvent(new PopStateEvent("popstate")));
+    await waitFor(() => expect(store.current.activeView).toBe("board"));
+    expect(store.current.selectedThreadId).toBe(conversation.id);
+  });
+
+  it("applies server-backed agent run defaults while preserving the advertised fallback", async () => {
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { label: "Alpha", models: ["provider/default", "provider/console"], defaultModel: "provider/default", defaultEffort: "medium", efforts: ["medium", "high"] }),
+    ], []));
+    vi.mocked(api.patchAgent).mockResolvedValue(agent("alpha", {
+      label: "Alpha",
+      models: ["provider/default", "provider/console"],
+      defaultModel: "provider/default",
+      defaultEffort: "medium",
+      efforts: ["medium", "high"],
+      runDefaults: { model: "provider/console", effort: "high" },
+    }));
+    const store = await renderStore();
+
+    expect(store.current.agentDefaultModel).toBe("provider/default");
+    await act(async () => store.current.setAgentRunDefaults("alpha", { model: "provider/console", effort: "high" }));
+
+    expect(api.patchAgent).toHaveBeenCalledWith("alpha", { runDefaults: { model: "provider/console", effort: "high" } });
+    expect(store.current.agentDefaultModel).toBe("provider/console");
+    expect(store.current.agentDefaultEffort).toBe("high");
+  });
+
   it("refreshes from the authoritative store after a successful mutation", async () => {
     vi.mocked(api.patchAgent).mockResolvedValue(agent("beta", {
       label: "Beta",

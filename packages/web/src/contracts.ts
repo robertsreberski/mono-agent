@@ -86,6 +86,18 @@ export type WebAgentStatus = "online" | "offline" | "degraded";
 export type WebThreadNotificationTriggerKind = "cron" | "webhook";
 export type WebNotificationTriggerKind = WebThreadNotificationTriggerKind | "job";
 
+export const WEB_THREAD_STATES = ["todo", "doing", "done"] as const;
+export type WebThreadState = (typeof WEB_THREAD_STATES)[number];
+export type WebThreadStateSource = "user" | "agent";
+export const WEB_MAX_THREAD_LABELS = 16;
+export const WEB_MAX_THREAD_LABEL_LENGTH = 64;
+export const WEB_MAX_THREAD_PROJECT_LENGTH = 120;
+
+export interface WebRunDefaults {
+  readonly model?: string;
+  readonly effort?: string;
+}
+
 export type WebThreadTrigger =
   | { readonly kind: "webhook" }
   | {
@@ -118,6 +130,8 @@ export interface WebAgentSummary {
   readonly models?: readonly string[];
   readonly defaultModel?: string;
   readonly defaultEffort?: string;
+  /** Console-owned defaults. They shadow, but never mutate, the agent configuration. */
+  readonly runDefaults?: WebRunDefaults;
   readonly efforts?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, WebModelOption>>;
   /** Absent when the addressed agent predates first-class cron operator routes. */
@@ -172,6 +186,12 @@ export interface WebThread {
   readonly sourceId: string;
   readonly title: string;
   readonly archivedAt: string | null;
+  readonly pinnedAt: string | null;
+  readonly state: WebThreadState;
+  readonly stateSource?: WebThreadStateSource;
+  readonly stateUpdatedAt?: string;
+  readonly labels: readonly string[];
+  readonly project?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly revision: number;
@@ -200,6 +220,7 @@ export interface WebToolCall {
    */
   readonly structuredResult?: unknown;
   readonly status: WebToolCallStatus;
+  readonly executionMs?: number;
   /** Canonical durable-tool record metadata received on the live event. */
   readonly history?: SessionToolHistoryEventMetadata;
 }
@@ -381,7 +402,7 @@ export interface WebConsoleIdentity {
 export interface WebPushBootstrap {
   readonly applicationServerKey: string;
   readonly keyFingerprint: string;
-  readonly serviceWorkerVersion: 2;
+  readonly serviceWorkerVersion: 3;
 }
 
 export type WebPushSubscriptionState = "active" | "disabled" | "expired";
@@ -438,12 +459,20 @@ export interface CreateWebThreadInput {
 }
 
 export interface PatchWebAgentInput {
-  readonly pinned: boolean;
+  readonly pinned?: boolean;
+  readonly runDefaults?: {
+    readonly model?: string | null;
+    readonly effort?: string | null;
+  } | null;
 }
 
 export interface PatchWebThreadInput {
   readonly title?: string;
   readonly archived?: boolean;
+  readonly pinned?: boolean;
+  readonly state?: WebThreadState;
+  readonly labels?: readonly string[];
+  readonly project?: string | null;
 }
 
 export interface StartWebTurnInput {

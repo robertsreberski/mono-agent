@@ -6,6 +6,9 @@ import { describe, expect, it, vi } from "vitest";
 type WorkerHandler = (event: Record<string, unknown>) => void;
 
 describe("Web Push service worker", () => {
+  const emptyCaches = {
+    open: vi.fn(async () => ({ match: vi.fn(async () => undefined) })),
+  };
   it("renders declarative payloads and confines navigation to the console origin", async () => {
     const handlers = new Map<string, WorkerHandler>();
     const showNotification = vi.fn(async () => undefined);
@@ -17,7 +20,7 @@ describe("Web Push service worker", () => {
       registration: { showNotification },
       clients: {
         matchAll: vi.fn(async () => [{
-          url: "https://console.example.test/?thread=thread-1",
+          url: "https://console.example.test/threads/thread-1",
           focus,
           postMessage,
         }]),
@@ -26,7 +29,7 @@ describe("Web Push service worker", () => {
       addEventListener: (type: string, handler: WorkerHandler) => handlers.set(type, handler),
     };
     const source = await readFile(new URL("../../webapp/public/notification-sw.js", import.meta.url), "utf8");
-    runInNewContext(source, { self: worker, URL, Date });
+    runInNewContext(source, { self: worker, URL, Date, caches: emptyCaches });
 
     let pushWork: Promise<unknown> | undefined;
     handlers.get("push")?.({
@@ -52,7 +55,7 @@ describe("Web Push service worker", () => {
       data: expect.objectContaining({
         eventId: "event-1",
         threadId: "thread-1",
-        url: "https://console.example.test/?thread=thread-1",
+        url: "https://console.example.test/threads/thread-1",
       }),
     }));
 
@@ -94,7 +97,7 @@ describe("Web Push service worker", () => {
       addEventListener: (type: string, handler: WorkerHandler) => handlers.set(type, handler),
     };
     const source = await readFile(new URL("../../webapp/public/notification-sw.js", import.meta.url), "utf8");
-    runInNewContext(source, { self: worker, URL, Date, fetch: fetchMock });
+    runInNewContext(source, { self: worker, URL, Date, fetch: fetchMock, caches: emptyCaches });
     const oldSubscription = { endpoint: "https://push.example.test/send/old" };
     const newSubscription = {
       endpoint: "https://push.example.test/send/new",
@@ -165,7 +168,7 @@ describe("Web Push service worker", () => {
       addEventListener: (type: string, handler: WorkerHandler) => handlers.set(type, handler),
     };
     const source = await readFile(new URL("../../webapp/public/notification-sw.js", import.meta.url), "utf8");
-    runInNewContext(source, { self: worker, URL, Date, fetch: fetchMock, setTimeout: setTimeoutMock });
+    runInNewContext(source, { self: worker, URL, Date, fetch: fetchMock, setTimeout: setTimeoutMock, caches: emptyCaches });
     const oldSubscription = { endpoint: "https://push.example.test/send/old" };
     const newSubscription = {
       endpoint: "https://push.example.test/send/new",
@@ -197,7 +200,8 @@ describe("Web Push service worker", () => {
     expect(retryBodies.every((body) => body.previousEndpoint === "https://push.example.test/send/old"))
       .toBe(true);
     expect(worker.clients.matchAll).toHaveBeenCalledWith({ type: "window", includeUncontrolled: true });
-    expect(source).not.toMatch(/caches\.|indexedDB|localStorage/u);
+    expect(source).toMatch(/caches\.open/u);
+    expect(source).not.toMatch(/indexedDB|localStorage/u);
   });
 
   it("does not retry a permanent subscription repair rejection", async () => {
@@ -220,7 +224,7 @@ describe("Web Push service worker", () => {
       addEventListener: (type: string, handler: WorkerHandler) => handlers.set(type, handler),
     };
     const source = await readFile(new URL("../../webapp/public/notification-sw.js", import.meta.url), "utf8");
-    runInNewContext(source, { self: worker, URL, Date, fetch: fetchMock, setTimeout: setTimeoutMock });
+    runInNewContext(source, { self: worker, URL, Date, fetch: fetchMock, setTimeout: setTimeoutMock, caches: emptyCaches });
     const newSubscription = {
       endpoint: "https://push.example.test/send/new",
       expirationTime: null,

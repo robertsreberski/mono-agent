@@ -13,7 +13,17 @@ interface SubagentCallView {
   readonly toolName: string;
   readonly args?: unknown;
   readonly result?: unknown;
+  readonly executionMs?: number;
+  readonly history?: Record<string, unknown>;
   readonly status: ToolCallStatus;
+}
+
+interface SubagentCallCluster {
+  readonly kind: "cluster";
+  readonly toolName: string;
+  readonly calls: readonly SubagentCallView[];
+  readonly failedCount: number;
+  readonly executionMs?: number;
 }
 
 interface SubagentView {
@@ -115,6 +125,12 @@ const subagentView = (data: unknown): SubagentView | undefined => {
         toolName: call.toolName,
         ...(call.args === undefined || call.args === null ? {} : { args: call.args }),
         ...(call.result === undefined || call.result === null ? {} : { result: call.result }),
+        ...(typeof call.executionMs === "number" && Number.isFinite(call.executionMs)
+          ? { executionMs: call.executionMs }
+          : {}),
+        ...(call.history !== null && typeof call.history === "object" && !Array.isArray(call.history)
+          ? { history: call.history as Record<string, unknown> }
+          : {}),
         status: toolCallStatus(call.status),
       }];
     }),
@@ -144,6 +160,7 @@ function SubagentNote({ title, children }: { readonly title: string; readonly ch
 
 function SubagentCall({ call }: { readonly call: SubagentCallView }) {
   const preview = toolArgumentPreview(call.args);
+  const historyFailure = toolHistoryFailure(call.history);
   // A settled call whose preview already says what it did needs no status word;
   // anything else still has to say where it stands.
   const state = call.status === "complete" && preview !== undefined
@@ -158,16 +175,73 @@ function SubagentCall({ call }: { readonly call: SubagentCallView }) {
         <span className="tool-name">{call.toolName}</span>
         {preview !== undefined && <span className="subagent-call-preview">{preview}</span>}
         {state !== undefined && <span className="tool-state">{state}</span>}
+        {call.executionMs !== undefined && <time className="tool-duration">{formatSeconds(call.executionMs)}</time>}
       </summary>
       <div className="tool-payload">
         <span>Input</span>
         <pre>{safeJson(call.args)}</pre>
         {call.result !== undefined && (
           <>
-            <span>Output</span>
+            <span>{call.status === "failed" ? "Error" : "Output"}</span>
             <pre>{safeJson(call.result)}</pre>
           </>
         )}
+        {historyFailure !== undefined && (
+          <>
+            <span>Error</span>
+            <pre>{historyFailure}</pre>
+          </>
+        )}
+      </div>
+    </details>
+  );
+}
+
+const clusterSubagentCalls = (
+  calls: readonly SubagentCallView[],
+): readonly (SubagentCallView | SubagentCallCluster)[] => {
+  const clustered: Array<SubagentCallView | SubagentCallCluster> = [];
+  for (let index = 0; index < calls.length;) {
+    const call = calls[index]!;
+    if (call.toolName === "AskUser") {
+      clustered.push(call);
+      index += 1;
+      continue;
+    }
+    const run = [call];
+    let cursor = index + 1;
+    while (cursor < calls.length && calls[cursor]!.toolName === call.toolName) {
+      run.push(calls[cursor]!);
+      cursor += 1;
+    }
+    if (run.length === 1) clustered.push(call);
+    else {
+      const durations = run.flatMap((member) => member.executionMs === undefined ? [] : [member.executionMs]);
+      clustered.push({
+        kind: "cluster",
+        toolName: call.toolName,
+        calls: run,
+        failedCount: run.filter((member) => member.status === "failed").length,
+        ...(durations.length === 0 ? {} : { executionMs: durations.reduce((sum, duration) => sum + duration, 0) }),
+      });
+    }
+    index = cursor;
+  }
+  return clustered;
+};
+
+function SubagentCluster({ cluster }: { readonly cluster: SubagentCallCluster }) {
+  return (
+    <details className={`tool-call subagent-cluster${cluster.failedCount > 0 ? " is-error" : ""}`}>
+      <summary>
+        <Icon name="chevron" size={14} />
+        <span className="tool-status" />
+        <span className="tool-name">{cluster.toolName} ×{cluster.calls.length}</span>
+        {cluster.failedCount > 0 && <span className="failed-tag">{cluster.failedCount} failed</span>}
+        {cluster.executionMs !== undefined && <time className="tool-duration">{formatSeconds(cluster.executionMs)}</time>}
+      </summary>
+      <div className="subagent-cluster-calls">
+        {cluster.calls.map((call) => <SubagentCall key={call.toolCallId} call={call} />)}
       </div>
     </details>
   );
@@ -182,6 +256,7 @@ export function SubagentPart({ data }: DataMessagePartProps) {
   const view = subagentView(data);
   if (view === undefined) return null;
   const historyFailure = toolHistoryFailure(view.history);
+  const clusteredCalls = clusterSubagentCalls(view.calls);
   // The block stays folded, so the header carries the whole outcome.
   const summary = [
     `${view.calls.length} tool${view.calls.length === 1 ? "" : "s"}`,
@@ -209,7 +284,9 @@ export function SubagentPart({ data }: DataMessagePartProps) {
         {view.prompt !== undefined && <SubagentNote title="Task">{view.prompt}</SubagentNote>}
         {view.calls.length === 0
           ? <p className="subagent-empty">No tool calls recorded.</p>
-          : view.calls.map((call) => <SubagentCall key={call.toolCallId} call={call} />)}
+          : clusteredCalls.map((call) => "kind" in call
+            ? <SubagentCluster key={call.calls[0]!.toolCallId} cluster={call} />
+            : <SubagentCall key={call.toolCallId} call={call} />)}
         {view.result !== undefined && <SubagentNote title="Report">{safeJson(view.result)}</SubagentNote>}
         {historyFailure !== undefined && <SubagentNote title="History">{historyFailure}</SubagentNote>}
       </div>

@@ -10,6 +10,7 @@ import {
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WebUploadAttachmentAdapter } from "./attachment-adapter";
 import { canSendInConsole, canUploadInConsole } from "./capabilities";
+import { clusterToolCalls } from "./activity-clustering";
 import { useConsoleStore, useUploadLimits } from "./console-store";
 import type {
   MessagePart,
@@ -119,11 +120,12 @@ type ConvertedPart = Exclude<ThreadMessageLike["content"], string>[number];
  * when neither is present, keeping ordinary tool calls unchanged.
  */
 const toolCallArtifact = (part: ToolCall): ToolCallArtifact | undefined =>
-  part.history === undefined && part.structuredResult === undefined
+  part.history === undefined && part.structuredResult === undefined && part.executionMs === undefined
     ? undefined
     : {
         ...(part.history === undefined ? {} : { history: part.history }),
         ...(part.structuredResult === undefined ? {} : { structuredResult: part.structuredResult }),
+        ...(part.executionMs === undefined ? {} : { executionMs: part.executionMs }),
       };
 
 const convertPart = (part: MessagePart): ConvertedPart | null => {
@@ -280,9 +282,10 @@ export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
   // (the store finalizes all three with no final text), so its last prose is
   // narration: folding would invert the chronology and dress that narration up
   // as the answer. Both keep arrival order.
-  const content = message.role === "assistant" && message.status === "complete"
+  const orderedContent = message.role === "assistant" && message.status === "complete"
     ? foldSettledActivity(converted)
     : converted;
+  const content = clusterToolCalls(orderedContent) as typeof orderedContent;
   const status: ThreadMessageLike["status"] =
     message.status === "running"
       ? { type: "running" }
@@ -415,8 +418,8 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
               text: text || undefined,
               quote,
               attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
-              model: store.model || undefined,
-              effort: store.effort || undefined,
+              model: store.effectiveModel || undefined,
+              effort: store.effectiveEffort || undefined,
             },
             (threadId) => {
               resolvedThreadId = threadId;
@@ -481,7 +484,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         })),
       onSwitchToNewThread: async () => {
         if (!store.selectedAgent) return;
-        await store.createThread().catch(() => undefined);
+        window.dispatchEvent(new CustomEvent("mono-agent:new-thread"));
       },
       onSwitchToThread: (threadId: string) => store.selectThread(threadId),
       onRename: async (threadId: string, title: string) => {

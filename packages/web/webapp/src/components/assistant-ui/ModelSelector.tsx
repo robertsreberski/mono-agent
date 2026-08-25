@@ -26,6 +26,7 @@ export type ModelSelectorProps = {
   readonly disabled?: boolean;
   readonly open?: boolean;
   readonly onOpenChange?: (open: boolean) => void;
+  readonly badge?: "custom" | "default";
 };
 
 const commandValue = (model: ModelSelectorOption, index: number) =>
@@ -48,6 +49,7 @@ export function ModelSelector({
   disabled = false,
   open: controlledOpen,
   onOpenChange,
+  badge,
 }: ModelSelectorProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -111,6 +113,7 @@ export function ModelSelector({
           {activeEffort && (
             <span className="model-selector__effort-value">{activeEffort.name}</span>
           )}
+          {badge !== undefined && <span className={`model-selector__badge is-${badge}`}>{badge}</span>}
         </span>
         <Icon name="arrow-down" size={14} />
       </Popover.Trigger>

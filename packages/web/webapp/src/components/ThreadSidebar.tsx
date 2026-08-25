@@ -7,17 +7,8 @@ import { useMemo, useState } from "react";
 import { useConsoleStore } from "../console-store";
 import type { ThreadSummary } from "../types";
 import { Icon } from "./Icon";
-
-const relativeTime = (date: string): string => {
-  const elapsed = Math.max(0, Date.now() - Date.parse(date));
-  const minutes = Math.floor(elapsed / 60_000);
-  if (minutes < 1) return "now";
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  return days < 7 ? `${days}d` : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(date));
-};
+import { AgentDefaultsPanel } from "./AgentDefaults";
+import { relativeTime } from "./time";
 
 function ThreadListItem({
   thread,
@@ -26,6 +17,7 @@ function ThreadListItem({
   readonly thread: ThreadSummary;
   readonly archived: boolean;
 }) {
+  const { setThreadPinned } = useConsoleStore();
   const isActive = useAuiState(
     (state) => state.threads.mainThreadId === state.threadListItem.id,
   );
@@ -56,6 +48,16 @@ function ThreadListItem({
           </span>
         </span>
       </ThreadListItemPrimitive.Trigger>
+      {!archived && (
+        <button
+          type="button"
+          className={`thread-pin${thread.pinnedAt !== null ? " is-pinned" : ""}`}
+          aria-label={thread.pinnedAt === null ? `Pin ${thread.title}` : `Unpin ${thread.title}`}
+          onClick={() => void setThreadPinned(thread.id, thread.pinnedAt === null)}
+        >
+          <Icon name="star" size={15} />
+        </button>
+      )}
       {archived ? (
         <ThreadListItemPrimitive.Unarchive
           className="thread-action"
@@ -88,6 +90,7 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
     loadMoreThreads,
   } = useConsoleStore();
   const [query, setQuery] = useState("");
+  const [defaultsOpen, setDefaultsOpen] = useState(false);
   const normalizedQuery = query.trim().toLowerCase();
   const threadById = useMemo(
     () => new Map(threads.map((thread) => [thread.id, thread])),
@@ -109,16 +112,22 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
           <span className="eyebrow">Conversations</span>
           <h1>{selectedAgent?.label ?? "No agent"}</h1>
         </div>
-        <ThreadListPrimitive.New
+        <button type="button" className={`icon-button defaults-button${defaultsOpen ? " is-active" : ""}`} aria-label="Agent defaults" onClick={() => setDefaultsOpen((value) => !value)} disabled={!selectedAgent}><Icon name="settings" size={17} /></button>
+        <button
+          type="button"
           className="new-thread-button"
           aria-label="New conversation"
           title="New conversation (⌘⇧O)"
-          onClick={onSelect}
+          onClick={() => {
+            onSelect?.();
+            window.dispatchEvent(new CustomEvent("mono-agent:new-thread"));
+          }}
           disabled={!selectedAgent}
         >
           <Icon name="new" size={18} />
-        </ThreadListPrimitive.New>
+        </button>
       </div>
+      {defaultsOpen && selectedAgent && <AgentDefaultsPanel sourceId={selectedAgent.sourceId} />}
       <label className="thread-search">
         <Icon name="search" size={16} />
         <span className="sr-only">Search conversations</span>
@@ -136,6 +145,7 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
       </label>
       <ThreadListPrimitive.Root className="thread-list">
         <div className="thread-list-scroll" onClick={onSelect}>
+          {!showArchived && <div className="thread-section-title"><Icon name="star" size={12} />Pinned</div>}
           <ThreadListPrimitive.Items archived={showArchived}>
             {({ threadListItem }) => {
               const thread = threadById.get(threadListItem.id);
@@ -144,11 +154,24 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
                 !normalizedQuery ||
                 thread.title.toLowerCase().includes(normalizedQuery) ||
                 thread.lastMessagePreview?.toLowerCase().includes(normalizedQuery);
-              return matches ? (
+              return matches && (showArchived || thread.pinnedAt !== null) ? (
                 <ThreadListItem thread={thread} archived={showArchived} />
               ) : null;
             }}
           </ThreadListPrimitive.Items>
+          {!showArchived && (
+            <>
+              <div className="thread-section-title">Recent</div>
+              <ThreadListPrimitive.Items archived={false}>
+                {({ threadListItem }) => {
+                  const thread = threadById.get(threadListItem.id);
+                  if (!thread || thread.pinnedAt !== null) return null;
+                  const matches = !normalizedQuery || thread.title.toLowerCase().includes(normalizedQuery) || thread.lastMessagePreview?.toLowerCase().includes(normalizedQuery);
+                  return matches ? <ThreadListItem thread={thread} archived={false} /> : null;
+                }}
+              </ThreadListPrimitive.Items>
+            </>
+          )}
           {matchingCount === 0 && (
             <div className="thread-list-empty">
               <Icon name={showArchived ? "archive" : "threads"} size={19} />

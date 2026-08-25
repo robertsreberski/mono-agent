@@ -10,7 +10,7 @@ export interface ConsoleIdentity {
 export interface PushBootstrap {
   readonly applicationServerKey: string;
   readonly keyFingerprint: string;
-  readonly serviceWorkerVersion: 2;
+  readonly serviceWorkerVersion: 3;
 }
 
 export interface PushSubscriptionStatus {
@@ -26,6 +26,17 @@ export interface PushSubscriptionStatus {
 
 export type AgentStatus = "online" | "offline" | "degraded";
 export type NotificationTriggerKind = "cron" | "webhook";
+export const THREAD_STATES = ["todo", "doing", "done"] as const;
+export type ThreadState = (typeof THREAD_STATES)[number];
+export type ThreadStateSource = "user" | "agent";
+export const MAX_THREAD_LABELS = 16;
+export const MAX_THREAD_LABEL_LENGTH = 64;
+export const MAX_THREAD_PROJECT_LENGTH = 120;
+
+export interface RunDefaults {
+  readonly model?: string;
+  readonly effort?: string;
+}
 export type ProcessJobState =
   | "queued"
   | "starting"
@@ -147,6 +158,7 @@ export interface AgentSummary {
   readonly models?: readonly string[];
   readonly defaultModel?: string;
   readonly defaultEffort?: string;
+  readonly runDefaults?: RunDefaults;
   readonly efforts?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, ModelOption>>;
   readonly cron?: { readonly read: boolean; readonly actions: boolean };
@@ -203,6 +215,12 @@ export interface ThreadSummary {
   readonly sourceId: string;
   readonly title: string;
   readonly archivedAt: string | null;
+  readonly pinnedAt: string | null;
+  readonly state: ThreadState;
+  readonly stateSource?: ThreadStateSource;
+  readonly stateUpdatedAt?: string;
+  readonly labels: readonly string[];
+  readonly project?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly revision: number;
@@ -239,6 +257,7 @@ export interface SessionToolHistoryMetadata {
 export interface ToolCallArtifact {
   readonly history?: unknown;
   readonly structuredResult?: unknown;
+  readonly executionMs?: number;
 }
 
 /** One tool call, whether the agent made it or one of its subagents did. */
@@ -254,6 +273,7 @@ export interface ToolCall {
    */
   readonly structuredResult?: unknown;
   readonly status: ToolCallStatus;
+  readonly executionMs?: number;
   readonly history?: SessionToolHistoryMetadata;
 }
 

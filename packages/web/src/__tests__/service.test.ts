@@ -61,6 +61,22 @@ function operatorCronOverview(overrides: Record<string, unknown> = {}): Record<s
 }
 
 describe("WebService", () => {
+  it("validates console run defaults and permits offline clears only", async () => {
+    const service = await createService();
+    const online = service.store.getAgent("agent-one")!;
+    const model = online.defaultModel!;
+    expect(service.patchAgent("agent-one", { runDefaults: { model } })).toMatchObject({
+      runDefaults: { model },
+    });
+    expect(() => service.patchAgent("agent-one", { runDefaults: { model: "missing/model" } }))
+      .toThrowError(expect.objectContaining({ code: "invalid_model" }));
+    service.store.replaceAgents([{ ...online, status: "offline" }]);
+    expect(() => service.patchAgent("agent-one", { runDefaults: { effort: "high" } }))
+      .toThrowError(expect.objectContaining({ code: "agent_offline" }));
+    expect(service.patchAgent("agent-one", { runDefaults: null }).runDefaults).toBeUndefined();
+    await service.stop();
+  });
+
   it("feature-detects cron without a wire bump and keeps cached old-agent state read-only and unknown", async () => {
     let modern = true;
     const modernFetch = operatorFetch({ cronOverview: operatorCronOverview() });

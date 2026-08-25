@@ -129,6 +129,7 @@ export function AgentRail({
       </button>
       <span
         className={`rail-connection is-${connection}`}
+        role="status"
         aria-label={`Console connection: ${connection}`}
         title={`Console ${connection}`}
       />

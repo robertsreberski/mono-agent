@@ -23,7 +23,11 @@ import {
   DEFAULT_WEB_THEME,
   WEB_API_VERSION,
   WEB_MAX_TURN_TEXT_CHARACTERS,
+  WEB_MAX_THREAD_LABEL_LENGTH,
+  WEB_MAX_THREAD_LABELS,
+  WEB_MAX_THREAD_PROJECT_LENGTH,
   WEB_THEMES,
+  WEB_THREAD_STATES,
   type CreateWebThreadInput,
   type CreateWebUploadInput,
   type PatchWebAgentInput,
@@ -998,17 +1002,71 @@ function parseCreateThread(value: unknown): CreateWebThreadInput {
 
 function parsePatchAgent(value: unknown): PatchWebAgentInput {
   const body = requireRecord(value);
-  if (typeof body.pinned !== "boolean") throw invalidBody("pinned must be boolean.");
-  return { pinned: body.pinned };
+  const pinned = body.pinned;
+  if (pinned !== undefined && typeof pinned !== "boolean") throw invalidBody("pinned must be boolean.");
+  const rawDefaults = body.runDefaults;
+  let runDefaults: PatchWebAgentInput["runDefaults"];
+  if (rawDefaults === null) {
+    runDefaults = null;
+  } else if (rawDefaults !== undefined) {
+    const defaults = requireRecord(rawDefaults);
+    const model = defaults.model === null ? null : optionalString(defaults.model, "runDefaults.model", 512);
+    const effort = defaults.effort === null ? null : optionalString(defaults.effort, "runDefaults.effort", 128);
+    if (model === undefined && effort === undefined) {
+      throw invalidBody("runDefaults must provide model or effort, or be null.");
+    }
+    runDefaults = {
+      ...(model === undefined ? {} : { model }),
+      ...(effort === undefined ? {} : { effort }),
+    };
+  }
+  if (pinned === undefined && runDefaults === undefined) {
+    throw invalidBody("Provide pinned or runDefaults.");
+  }
+  return {
+    ...(pinned === undefined ? {} : { pinned }),
+    ...(runDefaults === undefined ? {} : { runDefaults }),
+  };
 }
 
 function parsePatchThread(value: unknown): PatchWebThreadInput {
   const body = requireRecord(value);
   const title = optionalString(body.title, "title", 120);
   const archived = body.archived;
+  const pinned = body.pinned;
+  const state = body.state;
+  const labels = body.labels;
+  const project = body.project;
   if (archived !== undefined && typeof archived !== "boolean") throw invalidBody("archived must be boolean.");
-  if (title === undefined && archived === undefined) throw invalidBody("Provide title or archived.");
-  return { ...(title === undefined ? {} : { title }), ...(archived === undefined ? {} : { archived }) };
+  if (pinned !== undefined && typeof pinned !== "boolean") throw invalidBody("pinned must be boolean.");
+  if (state !== undefined && !WEB_THREAD_STATES.includes(state as never)) {
+    throw invalidBody("state must be todo, doing, or done.");
+  }
+  if (labels !== undefined && (
+    !Array.isArray(labels)
+    || labels.length > WEB_MAX_THREAD_LABELS
+    || !labels.every((label) => typeof label === "string" && label.length <= WEB_MAX_THREAD_LABEL_LENGTH)
+  )) {
+    throw invalidBody(
+      `labels must contain at most ${String(WEB_MAX_THREAD_LABELS)} strings of at most ${String(WEB_MAX_THREAD_LABEL_LENGTH)} characters.`,
+    );
+  }
+  if (project !== undefined && project !== null
+    && (typeof project !== "string" || project.length > WEB_MAX_THREAD_PROJECT_LENGTH)) {
+    throw invalidBody(`project must be null or a string of at most ${String(WEB_MAX_THREAD_PROJECT_LENGTH)} characters.`);
+  }
+  if (title === undefined && archived === undefined && pinned === undefined && state === undefined
+    && labels === undefined && project === undefined) {
+    throw invalidBody("Provide title, archived, pinned, state, labels, or project.");
+  }
+  return {
+    ...(title === undefined ? {} : { title }),
+    ...(archived === undefined ? {} : { archived }),
+    ...(pinned === undefined ? {} : { pinned }),
+    ...(state === undefined ? {} : { state: state as NonNullable<PatchWebThreadInput["state"]> }),
+    ...(labels === undefined ? {} : { labels: labels as readonly string[] }),
+    ...(project === undefined ? {} : { project: project as string | null }),
+  };
 }
 
 function parseTurn(value: unknown): StartWebTurnInput {
