@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { SubagentPart, toolArgumentPreview } from "./Subagent";
@@ -60,6 +60,24 @@ describe("SubagentPart", () => {
     // an unsettled one still says where it stands.
     expect(within(nested[0] as HTMLElement).queryByText("done")).not.toBeInTheDocument();
     expect(within(nested[1] as HTMLElement).getByText("failed")).toBeInTheDocument();
+  });
+
+  it("clusters repeated nested calls and exposes durations and errors per step", () => {
+    render(part({
+      ...delegation,
+      calls: [
+        { toolCallId: "t1", toolName: "Read", args: { path: "one.md" }, result: "one", executionMs: 100, status: "complete" },
+        { toolCallId: "t2", toolName: "Read", args: { path: "two.md" }, result: { error: "denied" }, executionMs: 200, status: "failed", history: { persistence: "failed", errorCode: "history_writer_closed", untrusted: true } },
+      ],
+    }));
+
+    expect(screen.getByText("Read ×2")).toBeInTheDocument();
+    expect(screen.getByText("1 failed")).toBeInTheDocument();
+    expect(screen.getByText("300ms")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Read ×2").closest("summary")!);
+    expect(screen.getByText("100ms")).toBeInTheDocument();
+    expect(screen.getByText("200ms")).toBeInTheDocument();
+    expect(screen.getByText(/history_writer_closed/u)).toBeInTheDocument();
   });
 
   it("falls back to the status word when a call carries no previewable argument", () => {

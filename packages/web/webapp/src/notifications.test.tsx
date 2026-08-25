@@ -30,7 +30,7 @@ import {
   PUSH_PENDING_DELETE_STORAGE_KEY,
   PUSH_SUBSCRIPTION_ENDPOINT_DIGEST_STORAGE_KEY,
   PUSH_SUBSCRIPTION_ID_STORAGE_KEY,
-  NotificationBell,
+  DeviceNotificationControl,
   NotificationsProvider,
   responseArrivals,
   responseNotificationTitle,
@@ -108,7 +108,7 @@ const enablePushSupport = () => {
   vi.stubGlobal("MessageChannel", FakeMessageChannel);
   serviceWorker.controller = {
     postMessage: (_message, ports) => {
-      (ports[0] as { reply: (data: unknown) => void }).reply({ version: 2 });
+      (ports[0] as { reply: (data: unknown) => void }).reply({ version: 3 });
     },
   };
 };
@@ -351,7 +351,7 @@ describe("response notifications", () => {
     });
     const notificationTree = () => (
       <NotificationsProvider>
-        <NotificationBell />
+        <DeviceNotificationControl />
       </NotificationsProvider>
     );
     const view = render(notificationTree());
@@ -384,7 +384,7 @@ describe("response notifications", () => {
     storeMock.current = createStore(running);
     const notificationTree = () => (
       <NotificationsProvider>
-        <NotificationBell />
+        <DeviceNotificationControl />
       </NotificationsProvider>
     );
     const view = render(notificationTree());
@@ -402,7 +402,7 @@ describe("response notifications", () => {
     storeMock.current = createStore();
     render(
       <NotificationsProvider>
-        <NotificationBell />
+        <DeviceNotificationControl />
       </NotificationsProvider>,
     );
 
@@ -423,7 +423,7 @@ describe("response notifications", () => {
     storeMock.current = createStore();
     render(
       <NotificationsProvider>
-        <NotificationBell />
+        <DeviceNotificationControl />
       </NotificationsProvider>,
     );
     FakeNotification.requestPermission.mockImplementationOnce(async () => {
@@ -451,7 +451,7 @@ describe("response notifications", () => {
 
     render(
       <NotificationsProvider>
-        <NotificationBell />
+        <DeviceNotificationControl />
       </NotificationsProvider>,
     );
 
@@ -476,7 +476,7 @@ describe("response notifications", () => {
 
     render(
       <NotificationsProvider>
-        <NotificationBell />
+        <DeviceNotificationControl />
       </NotificationsProvider>,
     );
 
@@ -502,7 +502,7 @@ describe("response notifications", () => {
 
     render(
       <NotificationsProvider>
-        <NotificationBell />
+        <DeviceNotificationControl />
       </NotificationsProvider>,
     );
 
@@ -533,7 +533,7 @@ describe("response notifications", () => {
 
     render(
       <NotificationsProvider>
-        <NotificationBell />
+        <DeviceNotificationControl />
       </NotificationsProvider>,
     );
 
@@ -553,7 +553,7 @@ describe("response notifications", () => {
 
     render(
       <NotificationsProvider>
-        <NotificationBell />
+        <DeviceNotificationControl />
       </NotificationsProvider>,
     );
 
@@ -572,7 +572,7 @@ describe("response notifications", () => {
 
     render(
       <NotificationsProvider>
-        <NotificationBell />
+        <DeviceNotificationControl />
       </NotificationsProvider>,
     );
 
@@ -591,7 +591,7 @@ describe("response notifications", () => {
     storeMock.current = createStore(complete);
     render(
       <NotificationsProvider>
-        <NotificationBell />
+        <DeviceNotificationControl />
       </NotificationsProvider>,
     );
     await waitFor(() => expect(api.pushSubscription).toHaveBeenCalledWith("subscription-1"));
@@ -618,7 +618,7 @@ describe("response notifications", () => {
     storeMock.current = createStore(running);
     const notificationTree = () => (
       <NotificationsProvider>
-        <NotificationBell />
+        <DeviceNotificationControl />
       </NotificationsProvider>
     );
     const view = render(notificationTree());

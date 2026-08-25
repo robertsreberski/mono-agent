@@ -23,6 +23,7 @@ import {
 import { Composer } from "./Composer";
 import { CronChannelHeader } from "./CronChannelHeader";
 import { Icon } from "./Icon";
+import { ConversationDetails } from "./ConversationDetails";
 
 const runLabel: Record<string, string> = {
   idle: "Ready",
@@ -148,10 +149,14 @@ export function ModelControls() {
     selectedThread,
     selectedAgent,
     detail,
+    effectiveModel,
+    agentDefaultModel,
+    agentDefaultEffort,
+    hasRunOverride,
+    resetRunOverride,
   } = useConsoleStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const disabled = selectedThread?.runState.status === "running";
-  const effectiveModel = model || selectedAgent?.defaultModel;
   const usage = useMemo<ConsoleUsage | null>(() => {
     const projected = conversationConsoleUsage(detail, { selectedModel: effectiveModel });
     if (projected !== null) return projected;
@@ -180,12 +185,12 @@ export function ModelControls() {
   const selectorModels = useMemo<readonly ModelSelectorOption[]>(() => {
     if (!selectedAgent) return [];
     const effortChoices = (reference: string): readonly ModelSelectorEffortOption[] => {
-      const effectiveReference = reference || selectedAgent.defaultModel || modelOptions[0] || "";
+      const effectiveReference = reference || agentDefaultModel || selectedAgent.defaultModel || modelOptions[0] || "";
       const toggle = selectedAgent.modelOptions?.[effectiveReference]?.reasoningMode === "toggle";
       const levels = effortLevelsForAgentModel(selectedAgent, effectiveReference);
       if (levels.length === 0) return [];
       return [
-        { id: "", name: `Default · ${defaultEffortName(selectedAgent.defaultEffort, toggle)}` },
+        { id: "", name: `Default · ${defaultEffortName(agentDefaultEffort || selectedAgent.defaultEffort, toggle)}` },
         ...levels.map((level) => ({
           id: level,
           name: toggle
@@ -197,9 +202,9 @@ export function ModelControls() {
     return [
       {
         id: "",
-        name: "Default model",
-        description: selectedAgent.defaultModel
-          ? `Agent default · ${selectedAgent.modelOptions?.[selectedAgent.defaultModel]?.label ?? selectedAgent.defaultModel}`
+        name: `Default · ${(selectedAgent.modelOptions?.[agentDefaultModel]?.label ?? agentDefaultModel) || "agent"}`,
+        description: agentDefaultModel
+          ? `Agent default · ${agentDefaultModel}`
           : "Use the agent default",
         efforts: effortChoices(""),
       },
@@ -210,7 +215,7 @@ export function ModelControls() {
         efforts: effortChoices(reference),
       })),
     ];
-  }, [modelOptions, selectedAgent]);
+  }, [agentDefaultEffort, agentDefaultModel, modelOptions, selectedAgent]);
 
   const hasSettings = modelOptions.length > 0 || effortOptions.length > 0;
   return (
@@ -223,7 +228,7 @@ export function ModelControls() {
         />
       )}
       {hasSettings && (
-        <ModelSelector
+        <><ModelSelector
           models={selectorModels}
           value={model}
           effort={effort}
@@ -232,7 +237,8 @@ export function ModelControls() {
           open={settingsOpen}
           onOpenChange={setSettingsOpen}
           disabled={disabled}
-        />
+          badge={hasRunOverride ? "custom" : "default"}
+        />{hasRunOverride && <button type="button" className="model-reset" onClick={resetRunOverride}>Reset</button>}</>
       )}
     </div>
   );
@@ -256,7 +262,7 @@ const defaultEffortName = (effort: string | undefined, toggle: boolean): string 
 };
 
 function EmptyConversation() {
-  const { selectedAgent, createThread, selectedThread } = useConsoleStore();
+  const { selectedAgent, selectedThread } = useConsoleStore();
   const cron = selectedThread?.trigger?.kind === "cron";
   return (
     <ThreadPrimitive.Empty>
@@ -278,7 +284,7 @@ function EmptyConversation() {
           <button
             type="button"
             className="primary-button"
-            onClick={() => void createThread().catch(() => undefined)}
+            onClick={() => window.dispatchEvent(new CustomEvent("mono-agent:new-thread"))}
           >
             <Icon name="new" size={16} />
             New conversation
@@ -292,9 +298,11 @@ function EmptyConversation() {
 export function Chat({
   onOpenAgents,
   onOpenThreads,
+  onBack,
 }: {
   readonly onOpenAgents: () => void;
   readonly onOpenThreads: () => void;
+  readonly onBack?: () => void;
 }) {
   const {
     selectedAgent,
@@ -307,6 +315,7 @@ export function Chat({
     hasOlderMessages,
     loadOlderMessages,
   } = useConsoleStore();
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const runStatus = selectedThread?.runState.status;
   const runNeedsAttention =
     runStatus === "running" ||
@@ -334,12 +343,7 @@ export function Chat({
     <main className="chat-panel">
       <header className="chat-header">
         <div className="mobile-navigation">
-          <button type="button" className="icon-button" onClick={onOpenAgents} aria-label="Choose agent">
-            <Icon name="agent" size={19} />
-          </button>
-          <button type="button" className="icon-button" onClick={onOpenThreads} aria-label="Open conversations">
-            <Icon name="menu" size={19} />
-          </button>
+          {onBack ? <button type="button" className="icon-button mobile-back" onClick={onBack} aria-label="Back to chats"><Icon name="chevron" size={19} /></button> : <><button type="button" className="icon-button" onClick={onOpenAgents} aria-label="Choose agent"><Icon name="agent" size={19} /></button><button type="button" className="icon-button" onClick={onOpenThreads} aria-label="Open conversations"><Icon name="menu" size={19} /></button></>}
         </div>
         <div className="chat-title-block">
           <ConversationTitle />
@@ -351,6 +355,7 @@ export function Chat({
         <div className="chat-header-actions">
           {selectedThread?.trigger?.kind !== "cron" && <ModelControls />}
           <NotificationBell />
+          {selectedThread && <button type="button" className="icon-button header-details" aria-label="Conversation details" onClick={() => setDetailsOpen(true)}><Icon name="more" size={17} /></button>}
           {selectedThread && (
             <button
               type="button"
@@ -440,6 +445,7 @@ export function Chat({
           )}
         </ThreadPrimitive.Root>
       </AskReconciliationProvider>
+      <ConversationDetails open={detailsOpen} onOpenChange={setDetailsOpen} />
     </main>
   );
 }

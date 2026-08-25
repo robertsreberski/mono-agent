@@ -21,8 +21,9 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   loopback operator endpoints.
 - Publish a separate sanitized ACP import contract with canonical agent-owned
   workspace and compatibility metadata, never operator credentials or paths.
-- Persist agents, threads, messages, structured reasoning/tool/telemetry parts,
-  revisions, turns, attachments, and agent pin preferences under
+- Persist agents, threads, workflow metadata, messages, structured
+  reasoning/tool/telemetry parts, revisions, turns, attachments, and agent/chat
+  preferences under
   `~/.mono-agent/web`.
 - Preserve and render the canonical tool writer's record/state/truncation and
   opaque-artifact metadata carried by structured agent stream events; web
@@ -119,6 +120,21 @@ Structured reasoning, routine tools, and one update-in-place row per compaction
 share the stream-aware Activity disclosure, which collapses at every terminal
 message state without reordering answer parts.
 
+The console has two workspace views: **Chats** and **Board**. Chats keeps the
+agent-scoped desktop rail/sidebar and uses an all-agents conversation list on
+phones. Board organizes the same active conversations as Kanban or grouped
+list views with server-persisted To do/In progress/Done state, labels, project,
+and pin state. Conversation cards and notifications use canonical
+`/threads/<threadId>` routes; `/board`, cron routes, browser back/forward, and
+legacy `?thread=` notification links remain routable. Memory is intentionally
+not part of this iteration.
+
+Every workspace-level **New conversation** action opens an explicit agent
+chooser. Thread stars roam with the server state, while the sidebar gear edits
+server-backed per-agent console defaults for model and effort. A chat override
+still stays in browser storage and resolves ahead of the console default, which
+resolves ahead of the running agent's advertised default.
+
 Background-job completion first targets the exact active run in its originating
 web thread. If no run is active, or the provider explicitly declines the live
 input, the service starts one assistant-only follow-up turn: the user timeline
@@ -154,8 +170,11 @@ receives one completed `↪️ Steered: “<safe preview>”` tool row with resu
 `Applied to current run`. The original follow-up remains the full human message;
 the synthetic activity carries only a one-line, redacted, 40-code-point preview.
 
-The header bell explicitly enables standards-based Web Push. Permission and
-subscription creation happen only after that click; the server keeps one
+The device Push control in app/agent settings explicitly enables standards-based
+Web Push. Permission and subscription creation happen only after that click;
+the per-conversation header bell instead mutes or unmutes that thread on the
+current browser device. The mute is mirrored into Cache Storage so the service
+worker can enforce it while no page is open. The server keeps one
 owner-private VAPID identity, subscription secrets, and a durable SQLite
 outbox. Completed responses, cron/webhook `web:new` results, blocking `AskUser`
 questions, and failed/cancelled/interrupted runs can therefore notify an
@@ -293,9 +312,10 @@ cross-resource requests fail. See
    memory-only live skill registry, so reloads and concurrent tabs do not own or
    interrupt upstream turns.
 4. The bundled assistant-ui webapp maps those DTOs—including canonical
-   lifecycle metadata—into its external store, thread list, messages, tool
-   cards, composer, attachments, activity, and push-subscription UI; its service
-   worker handles background delivery and same-origin clicks.
+   lifecycle metadata—into its external store, routed Chats/Board views,
+   responsive thread list, messages, tool clusters, composer, details/defaults
+   sheets, attachments, and notification UI; its service worker handles
+   background delivery, thread mute enforcement, and same-origin clicks.
 5. `deliverWebNotification` reads the owner-private live ingress record and
    performs one bearer-authenticated loopback delivery. Cron/webhook delivery
    first appends the result to agent history, then atomically exposes an
@@ -309,10 +329,10 @@ cross-resource requests fail. See
 | --- | --- |
 | [`server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/server.ts) | HTTP service, `/api/v1` routes, host/theme bootstrap identity, per-host PWA manifest, uploads, SSE invalidations, host/origin checks, and static webapp serving. |
 | [`service.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/service.ts) | Application lifecycle for discovery, threads, turns, live-input delivery/fallback, attachments, `AskUser` snapshots/submission, cancellation, notifications, and invalidation. |
-| [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence. |
+| [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence, including thread pin/workflow metadata and per-agent run defaults. |
 | [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, and owner-authenticated process-job reads/cancel over the operator protocol. |
 | [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook thread delivery and source/thread-bound process-job card updates. |
-| [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including atomic `AskUser` forms, tests, and its own dependency lockfile. |
+| [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA with routed Chats/Board views, responsive bottom-sheet IA, clustered Activity, atomic `AskUser` forms, tests, and its own dependency lockfile. |
 
 ## Public API
 
@@ -376,9 +396,13 @@ WEB_MAX_LIVE_INPUTS_PER_THREAD
 WEB_MAX_QUEUED_ATTACHMENT_TURNS
 WEB_MAX_STAGED_UPLOADS
 WEB_MAX_STAGED_UPLOAD_BYTES
+WEB_MAX_THREAD_LABELS
+WEB_MAX_THREAD_LABEL_LENGTH
+WEB_MAX_THREAD_PROJECT_LENGTH
 WEB_MAX_TURN_ATTACHMENT_BYTES
 WEB_STAGED_UPLOAD_TTL_MS
 WEB_THEMES
+WEB_THREAD_STATES
 WebAgentStatus
 WebAgentSummary
 WebAttachment
@@ -397,6 +421,7 @@ WebPushBootstrap
 WebPushSubscriptionState
 WebPushSubscriptionStatus
 WebQuote
+WebRunDefaults
 WebRunState
 WebRunStatus
 WebServerHandle
@@ -410,6 +435,8 @@ WebTheme
 WebThread
 WebThreadDetail
 WebThreadNotificationTriggerKind
+WebThreadState
+WebThreadStateSource
 WebThreadTrigger
 defaultTraceRegistryDir
 defaultWebStateDir
@@ -458,6 +485,11 @@ Its compatibility-stable `status` remains `ok` while the additive `push` field
 reports `ok` or `degraded`.
 The additive `WebBootstrap.console` object carries the server-derived
 `hostName` and effective `theme`; the browser API remains version `1`.
+`PATCH /threads/:id` additively accepts pin, workflow state, normalized labels,
+and project changes. `PATCH /agents/:id` still accepts the legacy
+`{ pinned: boolean }` body and additionally supports merge-patching or clearing
+console run defaults. These preferences change web-console turns only; they do
+not rewrite agent configuration.
 `POST /threads/:id/turns` accepts optional
 `quote: { text, messageId }` metadata in addition to the authored `text`.
 `POST /threads/:id/live-input` accepts `{ text }` and returns a persisted message
@@ -467,6 +499,13 @@ Permanent deletion is limited to archived, inactive conversations. It removes
 database descendants transactionally and deletes committed attachment files;
 startup and scheduled cleanup remove any file orphaned by a crash or transient
 filesystem failure after the database commit.
+
+The thread metadata gate upgrades `state.sqlite` from schema 8 to schema 9 in
+one transaction. It adds nullable/defaulted columns and leaves every existing
+thread, message, attachment reference, and revision intact. A schema-8 binary
+deliberately refuses a schema-9 store rather than hiding conversations or
+partially reading newer state; downgrade therefore requires restoring or
+reverse-migrating an offline copy, never editing `user_version` alone.
 
 ## Dependency Boundary
 
@@ -487,6 +526,7 @@ import a communication adapter or another operator surface.
 - CLI background-process, launchd, or conflict-safe Tailscale Serve lifecycle.
 - Recorded-run replay, which belongs to `@mono-agent/tui`.
 - Authentication. Network reachability is the intentional security boundary.
+- Agent memory browsing or mutation; this release has no Memory route or API.
 - Host filesystem browsing: attachments come only from the browser device's
   native file picker.
 

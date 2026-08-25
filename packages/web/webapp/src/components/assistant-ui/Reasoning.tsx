@@ -44,7 +44,7 @@ const ACTIVITY_GROUP_BY_TYPE = groupPartByType({
  * `note` is the prose a settled turn wrote between its tool calls: working-out,
  * not the answer, so it belongs in the log with the rows it narrates.
  */
-const ACTIVITY_DATA_PARTS = new Set(["context-compaction", "subagent", "note"]);
+const ACTIVITY_DATA_PARTS = new Set(["context-compaction", "subagent", "note", "tool-cluster"]);
 
 export const ACTIVITY_GROUP_BY: typeof ACTIVITY_GROUP_BY_TYPE = (part, context) =>
   part.type === "data" && ACTIVITY_DATA_PARTS.has(part.name)
@@ -264,10 +264,12 @@ const renderParagraph = (paragraph: string, paragraphIndex: number) => (
 
 const ReasoningImpl: ReasoningMessagePartComponent = ({ text }) => {
   if (text.length === 0) return null;
+  const preview = text.replace(/\s+/gu, " ").trim();
   return (
-    <div data-slot="reasoning-part" className="reasoning-part">
-      {text.split(/\n{2,}/u).map(renderParagraph)}
-    </div>
+    <details data-slot="reasoning-part" className="reasoning-part thinking-row">
+      <summary><Icon name="spark" size={13} /><span>Thinking</span><small>{`Preview · ${preview.length > 52 ? `${preview.slice(0, 51)}…` : preview}`}</small><Icon name="chevron" size={13} /></summary>
+      <div>{text.split(/\n{2,}/u).map(renderParagraph)}</div>
+    </details>
   );
 };
 
@@ -281,7 +283,9 @@ export interface ReasoningGroupProps extends PropsWithChildren {
 
 export interface ActivityGroupProps extends PropsWithChildren {
   readonly className?: string;
+  readonly elapsedMs?: number;
   readonly status?: { readonly type: string };
+  readonly stepCount?: number;
   readonly streaming?: boolean;
 }
 
@@ -328,10 +332,17 @@ ReasoningGroup.displayName = "ReasoningGroup";
 const ActivityGroupImpl = ({
   children,
   className,
+  elapsedMs,
   status,
+  stepCount,
   streaming,
 }: ActivityGroupProps) => {
   const isStreaming = streaming ?? status?.type === "running";
+  const elapsed = elapsedMs === undefined
+    ? undefined
+    : elapsedMs < 1_000
+      ? `${Math.round(elapsedMs)}ms`
+      : `${(elapsedMs / 1_000).toFixed(1)}s`;
   return (
     <ReasoningRoot
       className={joinClassNames("activity-root", className)}
@@ -340,9 +351,17 @@ const ActivityGroupImpl = ({
       streaming={isStreaming}
     >
       <ReasoningTrigger active={isStreaming} className="activity-trigger">
+        <span className={`activity-pulse${isStreaming ? " is-running" : ""}`} aria-hidden="true" />
         <span className="reasoning-trigger-label">
           Activity{isStreaming && <span className="sr-only"> in progress</span>}
         </span>
+        {(stepCount !== undefined || elapsed !== undefined) && (
+          <span className="activity-meta" aria-hidden="true">
+            {stepCount === undefined ? null : `${stepCount} ${stepCount === 1 ? "step" : "steps"}`}
+            {stepCount !== undefined && elapsed !== undefined ? " · " : null}
+            {elapsed}
+          </span>
+        )}
         <Icon className="reasoning-trigger-chevron" name="chevron" size={14} />
       </ReasoningTrigger>
       <ReasoningContent className="activity-content" aria-busy={isStreaming}>

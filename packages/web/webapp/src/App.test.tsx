@@ -10,7 +10,10 @@ const storeMock = vi.hoisted(() => ({
   actionError: null,
   clearActionError: vi.fn(),
   agents: [],
+  threads: [],
   visibleAgents: [],
+  activeView: "chats" as const,
+  route: { view: "chats" as const },
   selectedAgent: null,
   selectedThread: null,
   showArchived: false,
@@ -22,6 +25,7 @@ const storeMock = vi.hoisted(() => ({
   setShowArchived: vi.fn(),
   setShowOfflineAgents: vi.fn(),
   selectAgent: vi.fn(),
+  navigate: vi.fn(),
 }));
 
 vi.mock("./console-store", () => ({
@@ -50,6 +54,10 @@ vi.mock("./components/Chat", () => ({
 
 vi.mock("./components/ThreadSidebar", () => ({
   ThreadSidebar: () => <aside>Threads</aside>,
+}));
+
+vi.mock("./notifications", () => ({
+  DeviceNotificationControl: () => <button type="button">Push settings</button>,
 }));
 
 import { App } from "./App";

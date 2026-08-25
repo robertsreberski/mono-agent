@@ -205,6 +205,7 @@ describe("AssistantMessage grouped parts", () => {
       "false",
     );
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(screen.getByText("Thinking").closest("summary")!);
     expect(screen.getByText("Inspect the real state.")).toBeVisible();
     expect(screen.getByText("inspect_workspace")).toBeVisible();
     expect(screen.getByRole("status", {
@@ -216,6 +217,33 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.getByRole("button", { name: "Copy response" }).parentElement).toHaveClass(
       "is-persistent",
     );
+  });
+
+  it("clusters repeated tools with step counts, durations, previews, and failures", () => {
+    const calls: WebMessage["parts"] = ["one.md", "two.md", "three.md", "four.md"].map((path, index) => ({
+      type: "tool-call" as const,
+      toolCallId: `read-${String(index)}`,
+      toolName: "read_file",
+      args: { path },
+      result: index === 2 ? { error: "unreadable" } : { text: path },
+      status: index === 2 ? "failed" as const : "complete" as const,
+      executionMs: 100,
+    }));
+    render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      parts: [...calls, { type: "text", text: "Finished." }],
+    }} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(screen.getByText("4 steps · 400ms")).toBeVisible();
+    expect(screen.getByText("Read ×4")).toBeVisible();
+    expect(screen.getByText("one.md, two.md +2")).toBeVisible();
+    expect(screen.getByText("1 failed")).toBeVisible();
+
+    fireEvent.click(screen.getByText("Read ×4").closest("summary")!);
+    expect(screen.getAllByText("read_file")).toHaveLength(4);
+    fireEvent.click(screen.getAllByText("read_file")[2]!.closest("summary")!);
+    expect(screen.getByText("unreadable", { exact: false })).toBeVisible();
   });
 
   it("collects a settled turn's interleaved work into one Activity block over the answer", () => {

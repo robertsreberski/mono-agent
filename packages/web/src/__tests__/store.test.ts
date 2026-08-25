@@ -33,6 +33,64 @@ function agent(sourceId = "agent-one", supportsAttachments = true): WebAgentSumm
 }
 
 describe("WebStore", () => {
+  it("persists normalized conversation metadata and console agent defaults", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const created = store.createThread("agent-one");
+
+    expect(created).toMatchObject({ pinnedAt: null, state: "todo", labels: [] });
+    const patched = store.patchThread(created.id, {
+      pinned: true,
+      state: "doing",
+      labels: [" Planning ", "planning", "Ｃustomer"],
+      project: " Console redesign ",
+    });
+    expect(patched).toMatchObject({
+      state: "doing",
+      stateSource: "user",
+      labels: ["Planning", "Customer"],
+      project: "Console redesign",
+    });
+    expect(patched.pinnedAt).toMatch(/^\d{4}-/u);
+    expect(store.patchThread(created.id, { project: null, pinned: false })).toMatchObject({
+      pinnedAt: null,
+      labels: ["Planning", "Customer"],
+    });
+
+    expect(store.setAgentRunDefaults("agent-one", { model: "provider/default" })).toMatchObject({
+      runDefaults: { model: "provider/default" },
+    });
+    expect(store.setAgentRunDefaults("agent-one", { effort: "high" })).toMatchObject({
+      runDefaults: { model: "provider/default", effort: "high" },
+    });
+    store.replaceAgents([agent()]);
+    expect(store.getAgent("agent-one")?.runDefaults).toEqual({ model: "provider/default", effort: "high" });
+    expect(store.setAgentRunDefaults("agent-one", { model: null })).toMatchObject({ runDefaults: { effort: "high" } });
+    expect(store.setAgentRunDefaults("agent-one", null).runDefaults).toBeUndefined();
+    store.close();
+  });
+
+  it("keeps old pinned conversations outside the per-agent bootstrap window", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    let clockMs = Date.parse("2026-01-01T00:00:00.000Z");
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => new Date(clockMs),
+    });
+    store.replaceAgents([agent()]);
+    const pinned = store.createThread("agent-one");
+    store.patchThread(pinned.id, { pinned: true });
+    clockMs += 24 * 60 * 60 * 1_000;
+    Array.from({ length: 200 }, () => store.createThread("agent-one"));
+    expect(store.listThreads()).toHaveLength(201);
+    expect(store.listThreads().some((thread) => thread.id === pinned.id && thread.pinnedAt !== null)).toBe(true);
+    store.close();
+  });
+
   it("persists agent pins independently of discovery and sorts pinned agents first", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -83,7 +141,7 @@ describe("WebStore", () => {
       { kind: "append", delta: "Answer" },
       { kind: "event", event: { type: "assistant_thought", text: "Think" } },
       { kind: "event", event: { type: "tool_call_started", id: "tool-1", name: "Search", arguments: { q: "x" } } },
-      { kind: "event", event: { type: "tool_call_completed", id: "tool-1", name: "Search", content: "done" } },
+      { kind: "event", event: { type: "tool_call_completed", id: "tool-1", name: "Search", content: "done", executionMs: 450 } },
     ]);
     const detail = store.completeTurn(turn.turnId, "Final answer");
 
@@ -94,7 +152,7 @@ describe("WebStore", () => {
     expect(detail.messages[1]?.parts).toEqual([
       { type: "text", text: "Final answer" },
       { type: "reasoning", text: "Think" },
-      { type: "tool-call", toolCallId: "tool-1", toolName: "Search", args: { q: "x" }, result: "done", status: "complete" },
+      { type: "tool-call", toolCallId: "tool-1", toolName: "Search", args: { q: "x" }, result: "done", status: "complete", executionMs: 450 },
     ]);
 
     const archived = store.patchThread(created.id, { archived: true });
@@ -1711,14 +1769,14 @@ describe("WebStore", () => {
     const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
     const processJobCards = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'").get();
     inspected.close();
-    expect(version.user_version).toBe(8);
+    expect(version.user_version).toBe(9);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
     expect(liveInputs).toBeDefined();
     expect(processJobCards).toBeDefined();
   });
 
-  it("migrates schema v6 state through v8 process-job wake delivery", async () => {
+  it("migrates schema v6 state through v9 process-job and conversation metadata", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -1738,8 +1796,75 @@ describe("WebStore", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'",
     ).get();
     inspected.close();
-    expect(version.user_version).toBe(8);
+    expect(version.user_version).toBe(9);
     expect(processJobCards).toBeDefined();
+  });
+
+  it("migrates a populated schema v8 database to v9 without losing conversations", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const initial = await WebStore.open({ stateDir });
+    initial.replaceAgents([agent()]);
+    const first = initial.createThread("agent-one");
+    const second = initial.createThread("agent-one");
+    const turn = initial.beginTurn({ threadId: first.id, text: "keep this message", attachmentIds: [] });
+    initial.completeTurn(turn.turnId, "kept response");
+    const databasePath = initial.paths.database;
+    initial.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      PRAGMA foreign_keys = OFF;
+      BEGIN IMMEDIATE;
+      CREATE TABLE threads_v8 (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES agents(source_id),
+        conversation_id TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL,
+        title_manual INTEGER NOT NULL DEFAULT 0,
+        trigger_kind TEXT CHECK (trigger_kind IN ('cron', 'webhook')),
+        archived_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 1
+      );
+      INSERT INTO threads_v8 (
+        id, source_id, conversation_id, title, title_manual, trigger_kind,
+        archived_at, created_at, updated_at, revision
+      ) SELECT id, source_id, conversation_id, title, title_manual, trigger_kind,
+        archived_at, created_at, updated_at, revision FROM threads;
+      DROP TABLE threads;
+      ALTER TABLE threads_v8 RENAME TO threads;
+      PRAGMA user_version = 8;
+      COMMIT;
+      PRAGMA foreign_keys = ON;
+    `);
+    const before = legacy.prepare("SELECT (SELECT COUNT(*) FROM threads) AS threads, (SELECT COUNT(*) FROM messages) AS messages").get();
+    legacy.close();
+
+    const migrated = await WebStore.open({ stateDir });
+    expect(migrated.listThreads().map((thread) => thread.id)).toEqual(expect.arrayContaining([first.id, second.id]));
+    expect(migrated.getThreadDetail(first.id)?.messages.map((message) => message.parts)).toEqual([
+      [{ type: "text", text: "keep this message" }],
+      [{ type: "text", text: "kept response" }],
+    ]);
+    migrated.close();
+
+    const inspected = new DatabaseSync(databasePath);
+    const after = inspected.prepare("SELECT (SELECT COUNT(*) FROM threads) AS threads, (SELECT COUNT(*) FROM messages) AS messages").get();
+    const version = inspected.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+    const columns = inspected.prepare("PRAGMA table_info(threads)").all() as unknown as Array<{ name: string }>;
+    const integrity = inspected.prepare("PRAGMA integrity_check").get() as unknown as { integrity_check: string };
+    const foreignKeys = inspected.prepare("PRAGMA foreign_key_check").all();
+    inspected.close();
+    expect(after).toEqual(before);
+    expect(version.user_version).toBe(9);
+    expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      "pinned_at", "state", "state_source", "state_updated_at", "labels_json", "project",
+    ]));
+    expect(integrity.integrity_check).toBe("ok");
+    expect(foreignKeys).toEqual([]);
   });
 
   it("rejects a future schema without retaining the failed database handle", async () => {
@@ -1751,7 +1876,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 9");
+    future.exec("PRAGMA user_version = 10");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 
@@ -1912,6 +2037,7 @@ describe("WebStore subagent parts", () => {
           id: "agent:call-1:t1",
           name: "researcher▸Read",
           content: "file body",
+          executionMs: 120,
           metadata: subagent("call-1", "researcher"),
         },
       },
@@ -1949,6 +2075,7 @@ describe("WebStore subagent parts", () => {
         toolName: "Read",
         args: { file_path: "/repo/a.ts" },
         result: "file body",
+        executionMs: 120,
         status: "complete",
       }],
     });

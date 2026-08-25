@@ -31,7 +31,7 @@ import {
 import { Icon } from "./Icon";
 import { safeJson } from "./json";
 import { toolHistoryFailure } from "./tool-history";
-import { SubagentPart } from "./Subagent";
+import { SubagentPart, toolArgumentPreview } from "./Subagent";
 import { QuoteBlock } from "./assistant-ui/Quote";
 import { cronRunAnchor } from "./CronChannelHeader";
 import { McpAppPart, ReplyAttachmentPart, ReplyFailurePart } from "./ReplyParts";
@@ -690,6 +690,9 @@ export function ToolFallback({
   const isRunning = status.type === "running";
   const history = sessionToolHistory(envelope?.history);
   const historyFailure = toolHistoryFailure(history);
+  const elapsed = typeof envelope?.executionMs === "number" && Number.isFinite(envelope.executionMs)
+    ? formatToolDuration(envelope.executionMs)
+    : undefined;
   const displayedState = typeof history?.terminalState === "string"
     ? history.terminalState
     : isRunning ? "running" : isError ? "failed" : result === undefined ? "called" : "done";
@@ -701,6 +704,7 @@ export function ToolFallback({
         <span className="tool-state">
           {displayedState}
         </span>
+        {elapsed !== undefined && <time className="tool-duration">{elapsed}</time>}
         <Icon name="chevron" size={14} />
       </summary>
       <div className="tool-payload">
@@ -906,6 +910,71 @@ function NotePart({ data }: DataMessagePartProps) {
   return <p className="activity-note">{text.trim()}</p>;
 }
 
+const formatToolDuration = (milliseconds: number): string =>
+  milliseconds < 1_000
+    ? `${Math.round(milliseconds)}ms`
+    : `${(milliseconds / 1_000).toFixed(1)}s`;
+
+const humanToolName = (name: string): string => {
+  const normalized = name.toLocaleLowerCase();
+  if (normalized === "read" || normalized.startsWith("read_")) return "Read";
+  if (normalized === "write" || normalized.startsWith("write_")) return "Write";
+  if (normalized.includes("search") || normalized === "grep") return "Search";
+  if (normalized === "bash" || normalized === "exec" || normalized.includes("command")) return "Run";
+  return name.replaceAll(/[_-]+/gu, " ").replace(/^./u, (character) => character.toLocaleUpperCase());
+};
+
+function ToolClusterPart({ data }: DataMessagePartProps) {
+  const payload = data as {
+    readonly toolName?: unknown;
+    readonly status?: unknown;
+    readonly failedCount?: unknown;
+    readonly totalMs?: unknown;
+    readonly calls?: unknown;
+  };
+  const calls = Array.isArray(payload.calls) ? payload.calls : [];
+  const failed = typeof payload.failedCount === "number" ? payload.failedCount : 0;
+  const totalMs = typeof payload.totalMs === "number" ? payload.totalMs : undefined;
+  const previews = [...new Set(calls.flatMap((raw) => {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const preview = toolArgumentPreview((raw as Record<string, unknown>).args);
+    return preview === undefined ? [] : [preview];
+  }))];
+  const previewSummary = previews.length === 0
+    ? undefined
+    : `${previews.slice(0, 2).join(", ")}${previews.length > 2 ? ` +${String(previews.length - 2)}` : ""}`;
+  return (
+    <details className={`tool-cluster is-${String(payload.status ?? "complete")}`}>
+      <summary>
+        <span className={`tool-status${payload.status === "running" ? " is-running" : ""}`} />
+        <strong>{humanToolName(String(payload.toolName ?? "Tool"))} ×{String(calls.length)}</strong>
+        {previewSummary !== undefined && <span className="tool-cluster-preview">{previewSummary}</span>}
+        {failed > 0 && <span className="failed-tag">{String(failed)} failed</span>}
+        {totalMs !== undefined && <time>{formatToolDuration(totalMs)}</time>}
+        <Icon name="chevron" size={14} />
+      </summary>
+      <div className="tool-cluster-calls">
+        {calls.map((raw, index) => {
+          const call = raw !== null && typeof raw === "object" && !Array.isArray(raw)
+            ? raw as Record<string, unknown>
+            : {};
+          const artifact = toolCallArtifact(call.artifact);
+          const historyFailure = toolHistoryFailure(sessionToolHistory(artifact?.history));
+          const duration = typeof artifact?.executionMs === "number" && Number.isFinite(artifact.executionMs)
+            ? formatToolDuration(artifact.executionMs)
+            : undefined;
+          return (
+            <details key={String(call.toolCallId ?? index)} className={`tool-call${call.isError === true ? " is-error" : ""}`}>
+              <summary><span className="tool-status" /><span className="tool-name">{String(call.toolName ?? payload.toolName ?? "Tool")}</span><span className="tool-state">{call.isError === true ? "failed" : "done"}</span>{duration !== undefined && <time className="tool-duration">{duration}</time>}<Icon name="chevron" size={13} /></summary>
+              <div className="tool-payload"><span>Input</span><pre>{safeJson(call.args)}</pre>{call.result !== undefined && <><span>{call.isError === true ? "Error" : "Output"}</span><pre>{safeJson(call.result)}</pre></>}{historyFailure !== undefined && <><span>Error</span><pre>{historyFailure}</pre></>}</div>
+            </details>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
+
 // Runtime/provider telemetry remains attached to the message so the context
 // display can summarize it. Compaction alone is promoted into Activity; other
 // transport diagnostics remain out of the transcript UI.
@@ -1047,6 +1116,7 @@ const parts = {
       "cron-run": CronRunPart,
       subagent: SubagentPart,
       note: NotePart,
+      "tool-cluster": ToolClusterPart,
       error: ErrorPart,
       "reply-attachment": ReplyAttachmentPart,
       "mcp-app": McpAppPart,
@@ -1056,16 +1126,63 @@ const parts = {
   },
 } as const;
 
+const finiteDuration = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+
+const activityMetrics = (content: readonly unknown[]): { readonly stepCount: number; readonly elapsedMs?: number } => {
+  let stepCount = 0;
+  let elapsedMs = 0;
+  let hasElapsed = false;
+  for (const raw of content) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const part = raw as Record<string, unknown>;
+    if (part.type === "reasoning") {
+      stepCount += 1;
+      continue;
+    }
+    if (part.type === "tool-call") {
+      stepCount += 1;
+      const artifact = part.artifact;
+      const duration = artifact !== null && typeof artifact === "object" && !Array.isArray(artifact)
+        ? finiteDuration((artifact as Record<string, unknown>).executionMs)
+        : undefined;
+      if (duration !== undefined) {
+        elapsedMs += duration;
+        hasElapsed = true;
+      }
+      continue;
+    }
+    const name = part.type === "data" && typeof part.name === "string"
+      ? part.name
+      : typeof part.type === "string" && part.type.startsWith("data-")
+        ? part.type.slice(5)
+        : undefined;
+    if (name === undefined || !["tool-cluster", "subagent", "context-compaction", "note", "process-job"].includes(name)) continue;
+    const data = part.data !== null && typeof part.data === "object" && !Array.isArray(part.data)
+      ? part.data as Record<string, unknown>
+      : {};
+    stepCount += name === "tool-cluster" && Array.isArray(data.calls) ? data.calls.length : 1;
+    const duration = finiteDuration(name === "tool-cluster" ? data.totalMs : data.executionMs);
+    if (duration !== undefined) {
+      elapsedMs += duration;
+      hasElapsed = true;
+    }
+  }
+  return { stepCount, ...(hasElapsed ? { elapsedMs } : {}) };
+};
+
 function AssistantParts() {
   const isMessageRunning = useAuiState(
     (state) => state.message.status?.type === "running",
   );
+  const content = useAuiState((state) => state.message.content);
+  const metrics = useMemo(() => activityMetrics(content), [content]);
   return (
     <MessagePrimitive.GroupedParts groupBy={ACTIVITY_GROUP_BY} indicator="no-text">
       {({ part, children }) => {
         switch (part.type) {
           case "group-activity":
-            return <ActivityGroup streaming={isMessageRunning}>{children}</ActivityGroup>;
+            return <ActivityGroup streaming={isMessageRunning} stepCount={metrics.stepCount} elapsedMs={metrics.elapsedMs}>{children}</ActivityGroup>;
           case "text":
             return part.text.length > 0
               ? <MarkdownText />
@@ -1082,6 +1199,7 @@ function AssistantParts() {
             if (part.name === "cron-run") return <CronRunPart {...part} />;
             if (part.name === "subagent") return <SubagentPart {...part} />;
             if (part.name === "note") return <NotePart {...part} />;
+            if (part.name === "tool-cluster") return <ToolClusterPart {...part} />;
             if (part.name === "error") return <ErrorPart {...part} />;
             if (part.name === "reply-attachment") return <ReplyAttachmentPart {...part} />;
             if (part.name === "mcp-app") return <McpAppPart {...part} />;

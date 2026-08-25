@@ -19,6 +19,9 @@ import {
 import {
   WEB_MAX_FILES_PER_TURN,
   WEB_MAX_LIVE_INPUTS_PER_THREAD,
+  WEB_MAX_THREAD_LABEL_LENGTH,
+  WEB_MAX_THREAD_LABELS,
+  WEB_MAX_THREAD_PROJECT_LENGTH,
   WEB_MAX_TURN_ATTACHMENT_BYTES,
   WEB_MAX_TURN_TEXT_CHARACTERS,
   type WebAgentSummary,
@@ -36,6 +39,8 @@ import {
   type WebQuote,
   type WebRunState,
   type WebThread,
+  type WebThreadState,
+  type PatchWebThreadInput,
   type WebToolCall,
   type WebThreadDetail,
   type WebThreadPage,
@@ -51,6 +56,7 @@ interface AgentRow {
   label: string;
   status: string;
   pinned: number;
+  run_defaults_json: string | null;
   health: string | null;
   supports_attachments: number;
   models_json: string | null;
@@ -69,6 +75,12 @@ interface ThreadRow {
   source_id: string;
   title: string;
   archived_at: string | null;
+  pinned_at: string | null;
+  state: string;
+  state_source: string | null;
+  state_updated_at: string | null;
+  labels_json: string;
+  project: string | null;
   created_at: string;
   updated_at: string;
   revision: number;
@@ -301,7 +313,7 @@ export interface ClaimedWebPushDelivery {
   readonly attempts: number;
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 8;
+const WEB_STORAGE_SCHEMA_VERSION = 9;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
 export const WEB_MESSAGE_PAGE_MAX = 100;
@@ -535,6 +547,37 @@ export class WebStore {
     else this.database.prepare("DELETE FROM settings WHERE key = ?").run(key);
     const agent = this.getAgent(sourceId);
     if (agent === undefined) throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
+    return agent;
+  }
+
+  setAgentRunDefaults(
+    sourceId: string,
+    patch: { readonly model?: string | null; readonly effort?: string | null } | null,
+  ): WebAgentSummary {
+    const current = this.getAgent(sourceId);
+    if (current === undefined) {
+      throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
+    }
+    const next = patch === null
+      ? {}
+      : {
+          ...(patch.model === undefined
+            ? current.runDefaults?.model === undefined ? {} : { model: current.runDefaults.model }
+            : patch.model === null ? {} : { model: patch.model }),
+          ...(patch.effort === undefined
+            ? current.runDefaults?.effort === undefined ? {} : { effort: current.runDefaults.effort }
+            : patch.effort === null ? {} : { effort: patch.effort }),
+        };
+    const key = agentRunDefaultsSettingKey(sourceId);
+    if (next.model === undefined && next.effort === undefined) {
+      this.database.prepare("DELETE FROM settings WHERE key = ?").run(key);
+    } else {
+      this.setSetting(key, JSON.stringify(next));
+    }
+    const agent = this.getAgent(sourceId);
+    if (agent === undefined) {
+      throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
+    }
     return agent;
   }
 
@@ -1516,6 +1559,7 @@ export class WebStore {
           FROM threads
         ) WHERE bucket_row <= ${String(WEB_THREAD_PAGE_MAX)}
       )
+      OR t.pinned_at IS NOT NULL
       ORDER BY t.updated_at DESC, t.id DESC
     `)).all() as unknown as ThreadRow[];
     return rows.map((row) => this.mapThread(row));
@@ -1669,12 +1713,15 @@ export class WebStore {
     this.setSetting("current_thread_id", resolved);
   }
 
-  patchThread(id: string, patch: { readonly title?: string; readonly archived?: boolean }): WebThread {
+  patchThread(id: string, patch: PatchWebThreadInput): WebThread {
     id = this.resolveThreadId(id);
     const current = this.requireThread(id);
     const now = this.now();
     const title = patch.title === undefined ? undefined : normalizeTitle(patch.title);
     const archivedAt = patch.archived === undefined ? undefined : patch.archived ? now : null;
+    const pinnedAt = patch.pinned === undefined ? undefined : patch.pinned ? now : null;
+    const labels = patch.labels === undefined ? undefined : normalizeThreadLabels(patch.labels);
+    const project = patch.project === undefined ? undefined : normalizeThreadProject(patch.project);
     this.transaction(() => {
       const sets = ["updated_at = ?", "revision = revision + 1"];
       const values: Array<string | null> = [now];
@@ -1686,9 +1733,33 @@ export class WebStore {
         sets.push("archived_at = ?");
         values.push(archivedAt);
       }
+      if (pinnedAt !== undefined) {
+        sets.push("pinned_at = ?");
+        values.push(pinnedAt);
+      }
+      if (patch.state !== undefined) {
+        sets.push("state = ?", "state_source = 'user'", "state_updated_at = ?");
+        values.push(patch.state, now);
+      }
+      if (labels !== undefined) {
+        sets.push("labels_json = ?");
+        values.push(JSON.stringify(labels));
+      }
+      if (project !== undefined) {
+        sets.push("project = ?");
+        values.push(project);
+      }
       values.push(id);
       this.database.prepare(`UPDATE threads SET ${sets.join(", ")} WHERE id = ?`).run(...values);
-      this.recordThreadRevision(id, title !== undefined ? "title_changed" : patch.archived ? "archived" : "unarchived", now);
+      const events = [
+        ...(title === undefined ? [] : ["title_changed"]),
+        ...(archivedAt === undefined ? [] : [patch.archived ? "archived" : "unarchived"]),
+        ...(pinnedAt === undefined ? [] : [patch.pinned ? "pinned" : "unpinned"]),
+        ...(patch.state === undefined ? [] : ["state_changed"]),
+        ...(labels === undefined ? [] : ["labels_changed"]),
+        ...(project === undefined ? [] : ["project_changed"]),
+      ];
+      for (const event of events) this.recordThreadRevision(id, event, now);
       if (patch.archived === true && this.currentThreadId() === id) {
         this.database.prepare("DELETE FROM settings WHERE key = 'current_thread_id'").run();
       }
@@ -2739,6 +2810,12 @@ export class WebStore {
         title_manual INTEGER NOT NULL DEFAULT 0,
         trigger_kind TEXT CHECK (trigger_kind IN ('cron', 'webhook')),
         archived_at TEXT,
+        pinned_at TEXT,
+        state TEXT NOT NULL DEFAULT 'todo' CHECK (state IN ('todo', 'doing', 'done')),
+        state_source TEXT CHECK (state_source IN ('user', 'agent')),
+        state_updated_at TEXT,
+        labels_json TEXT NOT NULL DEFAULT '[]',
+        project TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         revision INTEGER NOT NULL DEFAULT 1
@@ -2980,6 +3057,22 @@ export class WebStore {
               "ALTER TABLE cron_overviews ADD COLUMN jobs_truncated INTEGER NOT NULL DEFAULT 0 CHECK (jobs_truncated IN (0, 1))",
             );
           }
+        }
+        if (versionRow.user_version < 9) {
+          const columns = new Set((this.database.prepare("PRAGMA table_info(threads)").all() as Array<{ name: string }>)
+            .map((column) => column.name));
+          if (!columns.has("pinned_at")) this.database.exec("ALTER TABLE threads ADD COLUMN pinned_at TEXT");
+          if (!columns.has("state")) {
+            this.database.exec("ALTER TABLE threads ADD COLUMN state TEXT NOT NULL DEFAULT 'todo' CHECK (state IN ('todo', 'doing', 'done'))");
+          }
+          if (!columns.has("state_source")) {
+            this.database.exec("ALTER TABLE threads ADD COLUMN state_source TEXT CHECK (state_source IN ('user', 'agent'))");
+          }
+          if (!columns.has("state_updated_at")) this.database.exec("ALTER TABLE threads ADD COLUMN state_updated_at TEXT");
+          if (!columns.has("labels_json")) {
+            this.database.exec("ALTER TABLE threads ADD COLUMN labels_json TEXT NOT NULL DEFAULT '[]'");
+          }
+          if (!columns.has("project")) this.database.exec("ALTER TABLE threads ADD COLUMN project TEXT");
         }
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
       } catch (error) {
@@ -3369,6 +3462,14 @@ export class WebStore {
       sourceId: row.source_id,
       title: row.title,
       archivedAt: row.archived_at,
+      pinnedAt: row.pinned_at,
+      state: normalizeThreadState(row.state),
+      ...(row.state_source === "user" || row.state_source === "agent"
+        ? { stateSource: row.state_source }
+        : {}),
+      ...(row.state_updated_at === null ? {} : { stateUpdatedAt: row.state_updated_at }),
+      labels: parseThreadLabels(row.labels_json),
+      ...(row.project === null ? {} : { project: row.project }),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       revision: row.revision,
@@ -3716,7 +3817,9 @@ function isValidVapidKeyPair(publicKey: string, privateKey: string): boolean {
 
 function threadSelectSql(suffix: string): string {
   return `
-    SELECT t.id, t.source_id, t.title, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
+    SELECT t.id, t.source_id, t.title, t.trigger_kind, t.archived_at, t.pinned_at,
+           t.state, t.state_source, t.state_updated_at, t.labels_json, t.project,
+           t.created_at, t.updated_at, t.revision,
            cc.job_id AS cron_job_id, cc.configured AS cron_configured,
            CASE WHEN t.trigger_kind = 'cron' THEN 0
                 WHEN a.status = 'online' OR a.status = 'degraded' THEN 1 ELSE 0 END AS can_send,
@@ -3735,7 +3838,9 @@ function agentSelectSql(suffix: string): string {
            CASE WHEN EXISTS (
              SELECT 1 FROM settings s
              WHERE s.key = 'agent_pin:' || a.source_id AND s.value = '1'
-           ) THEN 1 ELSE 0 END AS pinned
+           ) THEN 1 ELSE 0 END AS pinned,
+           (SELECT s.value FROM settings s
+            WHERE s.key = 'agent_run_defaults:' || a.source_id) AS run_defaults_json
     FROM agents a
     ${suffix}
   `;
@@ -3743,6 +3848,10 @@ function agentSelectSql(suffix: string): string {
 
 function agentPinSettingKey(sourceId: string): string {
   return `agent_pin:${sourceId}`;
+}
+
+function agentRunDefaultsSettingKey(sourceId: string): string {
+  return `agent_run_defaults:${sourceId}`;
 }
 
 function notificationThreadId(sourceId: string, deliveryKey: string): string {
@@ -4076,6 +4185,7 @@ function mapAgent(row: AgentRow): WebAgentSummary {
   const models = parseStringArray(row.models_json);
   const efforts = parseStringArray(row.efforts_json);
   const modelOptions = parseRecord(row.model_options_json);
+  const runDefaults = parseRunDefaults(row.run_defaults_json);
   return {
     sourceId: row.source_id,
     label: row.label,
@@ -4086,6 +4196,7 @@ function mapAgent(row: AgentRow): WebAgentSummary {
     ...(models === undefined ? {} : { models }),
     ...(row.default_model === null ? {} : { defaultModel: row.default_model }),
     ...(row.default_effort === null ? {} : { defaultEffort: row.default_effort }),
+    ...(runDefaults === undefined ? {} : { runDefaults }),
     ...(efforts === undefined ? {} : { efforts }),
     ...(modelOptions === undefined ? {} : { modelOptions }),
     ...(row.cron_read === 1
@@ -4205,6 +4316,7 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
         ...(event.arguments === undefined ? {} : { args: event.arguments }),
         ...(event.content === undefined ? {} : { result: event.content }),
         ...(event.structuredContent === undefined ? {} : { structuredResult: event.structuredContent }),
+        ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }),
         status,
       }, historyUpdate);
       return;
@@ -4232,6 +4344,7 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
       // re-render an answered question after a reload, so keep the structured
       // payload beside the prose rather than reparsing the sentence.
       ...(event.structuredContent === undefined ? {} : { structuredResult: event.structuredContent }),
+      ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }),
       status,
     }, historyUpdate);
     return;
@@ -4571,6 +4684,47 @@ function normalizeTitle(value: string): string {
   const title = value.trim().replace(/\s+/gu, " ").slice(0, 120);
   if (title.length === 0) throw new WebConsoleError("invalid_title", "A conversation title cannot be empty.", 400);
   return title;
+}
+
+function normalizeThreadLabels(labels: readonly string[]): readonly string[] {
+  if (labels.length > WEB_MAX_THREAD_LABELS) {
+    throw new WebConsoleError(
+      "invalid_thread_metadata",
+      `A conversation can have at most ${String(WEB_MAX_THREAD_LABELS)} labels.`,
+      400,
+    );
+  }
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const value of labels) {
+    const label = value.normalize("NFKC").trim();
+    if (label.length === 0) continue;
+    if (label.length > WEB_MAX_THREAD_LABEL_LENGTH) {
+      throw new WebConsoleError(
+        "invalid_thread_metadata",
+        `Conversation labels cannot exceed ${String(WEB_MAX_THREAD_LABEL_LENGTH)} characters.`,
+        400,
+      );
+    }
+    const key = label.toLocaleLowerCase("en-US");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(label);
+  }
+  return normalized;
+}
+
+function normalizeThreadProject(value: string | null): string | null {
+  if (value === null) return null;
+  const project = value.normalize("NFKC").trim();
+  if (project.length > WEB_MAX_THREAD_PROJECT_LENGTH) {
+    throw new WebConsoleError(
+      "invalid_thread_metadata",
+      `A conversation project cannot exceed ${String(WEB_MAX_THREAD_PROJECT_LENGTH)} characters.`,
+      400,
+    );
+  }
+  return project.length === 0 ? null : project;
 }
 
 const REPLY_FAILURE_CODES = new Set([
@@ -4975,6 +5129,8 @@ function isWebToolCall(value: unknown): boolean {
   return typeof call.toolCallId === "string"
     && typeof call.toolName === "string"
     && isWebToolCallStatus(call.status)
+    && (call.executionMs === undefined
+      || (typeof call.executionMs === "number" && Number.isFinite(call.executionMs) && call.executionMs >= 0))
     && (call.history === undefined || isSessionToolHistoryMetadata(call.history));
 }
 
@@ -5292,6 +5448,37 @@ function parseStringArray(value: string | null): readonly string[] | undefined {
   try {
     const parsed = JSON.parse(value) as unknown;
     return Array.isArray(parsed) && parsed.every((entry) => typeof entry === "string") ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseThreadLabels(value: string): readonly string[] {
+  return parseStringArray(value) ?? [];
+}
+
+function normalizeThreadState(value: string): WebThreadState {
+  return value === "doing" || value === "done" ? value : "todo";
+}
+
+function parseRunDefaults(value: string | null): WebAgentSummary["runDefaults"] | undefined {
+  if (value === null) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+    const record = parsed as Record<string, unknown>;
+    const model = typeof record.model === "string" && record.model.length > 0
+      ? record.model
+      : undefined;
+    const effort = typeof record.effort === "string" && record.effort.length > 0
+      ? record.effort
+      : undefined;
+    return model === undefined && effort === undefined
+      ? undefined
+      : {
+          ...(model === undefined ? {} : { model }),
+          ...(effort === undefined ? {} : { effort }),
+        };
   } catch {
     return undefined;
   }

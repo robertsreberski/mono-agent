@@ -61,6 +61,11 @@ describe("ModelControls", () => {
       effortOptions: ["high"],
       setModel: vi.fn(),
       setEffort: vi.fn(),
+      resetRunOverride: vi.fn(),
+      effectiveModel: MODEL,
+      agentDefaultModel: MODEL,
+      agentDefaultEffort: "high",
+      hasRunOverride: false,
       selectedThread: null,
       selectedAgent: agent("agent", {
         models: [MODEL],
@@ -84,7 +89,8 @@ describe("ModelControls", () => {
     const trigger = screen.getByRole("button", { name: "Model and reasoning effort" });
     const store = storeMock.current as { setModel: ReturnType<typeof vi.fn> };
 
-    expect(trigger).toHaveTextContent("Default model");
+    expect(trigger).toHaveTextContent("Default · GPT-5.5 Codex");
+    expect(trigger).toHaveTextContent("default");
     fireEvent.click(trigger);
     const dialog = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
     const option = within(dialog).getByRole("option", { name: /^GPT-5\.5 Codex/u });
@@ -92,6 +98,16 @@ describe("ModelControls", () => {
 
     fireEvent.click(option);
     expect(store.setModel).toHaveBeenCalledWith(MODEL);
+  });
+
+  it("marks and clears a conversation override", () => {
+    storeMock.current = { ...storeMock.current, model: MODEL, hasRunOverride: true };
+    render(<ModelControls />);
+    const store = storeMock.current as { resetRunOverride: ReturnType<typeof vi.fn> };
+
+    expect(screen.getByRole("button", { name: "Model and reasoning effort" })).toHaveTextContent("custom");
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    expect(store.resetRunOverride).toHaveBeenCalledOnce();
   });
 
   it("shows the configured default effort while keeping the explicit choices distinct", async () => {
@@ -112,6 +128,7 @@ describe("ModelControls", () => {
   it("names a provider-selected default without guessing its effort", async () => {
     storeMock.current = {
       ...storeMock.current,
+      agentDefaultEffort: "",
       selectedAgent: agent("agent", {
         models: [MODEL],
         defaultModel: MODEL,
@@ -136,6 +153,7 @@ describe("ModelControls", () => {
   it("renders the configured default through a toggle model's on/off vocabulary", async () => {
     storeMock.current = {
       ...storeMock.current,
+      agentDefaultEffort: "none",
       selectedAgent: agent("agent", {
         models: [MODEL],
         defaultModel: MODEL,

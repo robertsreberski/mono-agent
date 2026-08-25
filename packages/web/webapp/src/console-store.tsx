@@ -9,6 +9,14 @@ import {
   useState,
 } from "react";
 import { api } from "./api";
+import {
+  cronChannelPath,
+  cronRouteSelection,
+  parseRoute,
+  routePath,
+  type ConsoleRoute,
+  type ConsoleView,
+} from "./routes";
 import { DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
   AgentSummary,
@@ -16,6 +24,8 @@ import type {
   CronOverview,
   SkillRegistryState,
   StartTurnInput,
+  RunDefaults,
+  ThreadState,
   ThreadDetail,
   ThreadSummary,
   WebEvent,
@@ -39,11 +49,18 @@ interface ConsoleStoreValue {
   readonly error: string | null;
   readonly actionError: string | null;
   readonly connection: ConnectionState;
+  readonly activeView: ConsoleView;
+  readonly route: ConsoleRoute;
   readonly showArchived: boolean;
   readonly showOfflineAgents: boolean;
   readonly hiddenOfflineAgentCount: number;
   readonly model: string;
   readonly effort: string;
+  readonly effectiveModel: string;
+  readonly effectiveEffort: string;
+  readonly agentDefaultModel: string;
+  readonly agentDefaultEffort: string;
+  readonly hasRunOverride: boolean;
   readonly modelOptions: readonly string[];
   readonly effortOptions: readonly string[];
   readonly skillRegistry: SkillRegistryState;
@@ -54,12 +71,17 @@ interface ConsoleStoreValue {
   readonly hasOlderMessages: boolean;
   readonly selectAgent: (sourceId: string) => void;
   readonly setAgentPinned: (sourceId: string, pinned: boolean) => Promise<void>;
+  readonly setAgentRunDefaults: (sourceId: string, runDefaults: RunDefaults | null) => Promise<void>;
   readonly selectThread: (threadId: string) => void;
-  readonly createThread: () => Promise<ThreadSummary>;
+  readonly createThread: (sourceId?: string) => Promise<ThreadSummary>;
   readonly renameThread: (threadId: string, title: string) => Promise<void>;
   readonly archiveThread: (threadId: string) => Promise<void>;
   readonly unarchiveThread: (threadId: string) => Promise<void>;
   readonly deleteThread: (threadId: string) => Promise<void>;
+  readonly setThreadPinned: (threadId: string, pinned: boolean) => Promise<void>;
+  readonly setThreadState: (threadId: string, state: ThreadState) => Promise<void>;
+  readonly setThreadLabels: (threadId: string, labels: readonly string[]) => Promise<void>;
+  readonly setThreadProject: (threadId: string, project: string | null) => Promise<void>;
   readonly sendTurn: (
     input: StartTurnInput,
     onThreadResolved?: (threadId: string) => void,
@@ -70,6 +92,9 @@ interface ConsoleStoreValue {
   readonly setShowOfflineAgents: (show: boolean) => void;
   readonly setModel: (model: string) => void;
   readonly setEffort: (effort: string) => void;
+  readonly resetRunOverride: () => void;
+  readonly navigate: (route: ConsoleRoute) => void;
+  readonly loadBoardThreads: () => Promise<void>;
   readonly retry: () => void;
   readonly clearActionError: () => void;
   readonly loadMoreThreads: () => Promise<void>;
@@ -95,28 +120,17 @@ const mergeThreads = (
   return [...merged.values()].sort(byMostRecent);
 };
 
-export const cronChannelPath = (sourceId: string, jobId: string): string =>
-  `/agents/${encodeURIComponent(sourceId)}/cron/${encodeURIComponent(jobId)}`;
+export { cronChannelPath };
 
 const threadRoute = (thread: ThreadSummary | undefined): string =>
   thread?.trigger?.kind === "cron" && thread.trigger.jobId !== undefined
     ? cronChannelPath(thread.sourceId, thread.trigger.jobId)
-    : "/";
+    : thread === undefined ? "/" : routePath({ view: "chats", threadId: thread.id });
 
 const updateThreadRoute = (thread: ThreadSummary | undefined, replace = false): void => {
   const path = threadRoute(thread);
   if (window.location.pathname === path) return;
   window.history[replace ? "replaceState" : "pushState"](window.history.state, "", path);
-};
-
-const cronRouteSelection = (): { readonly sourceId: string; readonly jobId: string } | undefined => {
-  const match = /^\/agents\/([^/]+)\/cron\/([^/]+)\/?$/u.exec(window.location.pathname);
-  if (match === null) return undefined;
-  try {
-    return { sourceId: decodeURIComponent(match[1]!), jobId: decodeURIComponent(match[2]!) };
-  } catch {
-    return undefined;
-  }
 };
 
 export const SELECTED_AGENT_STORAGE_KEY = "mono-agent.web.selected-agent";
@@ -273,12 +287,13 @@ export const effortLevelsForAgentModel = (
 export const validateRunPreference = (
   agent: AgentSummary | null,
   preference: StoredRunPreference,
+  fallbackModel?: string,
 ): StoredRunPreference => {
   if (!agent) return { model: "", effort: "" };
   const model = preference.model && agent.models?.includes(preference.model)
     ? preference.model
     : "";
-  const effectiveModel = model || agent.defaultModel || agent.models?.[0] || "";
+  const effectiveModel = model || fallbackModel || agent.defaultModel || agent.models?.[0] || "";
   const efforts = effortLevelsForAgentModel(agent, effectiveModel);
   return {
     model,
@@ -289,6 +304,8 @@ export const validateRunPreference = (
 };
 
 export function ConsoleStoreProvider({ children }: { readonly children: ReactNode }) {
+  const [route, setRoute] = useState<ConsoleRoute>(() => parseRoute(window.location.pathname));
+  const activeView = route.view;
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(() =>
     cronRouteSelection()?.sourceId ?? localStorage.getItem(SELECTED_AGENT_STORAGE_KEY),
@@ -313,6 +330,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const [cronLoading, setCronLoading] = useState(false);
   const [cronError, setCronError] = useState<string | null>(null);
   const [routeRevision, setRouteRevision] = useState(0);
+  const boardLoadedRef = useRef(false);
   const [showOfflineAgents, setShowOfflineAgents] = useState(false);
   const [modelByContext, setModelByContext] = useState<Record<string, string>>(() =>
     Object.fromEntries(
@@ -369,13 +387,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       selectedThreadRef.current,
       readPersistedThreadIds(),
     );
-    const route = cronRouteSelection();
-    const routeThread = route === undefined
-      ? undefined
-      : next.threads.find((thread) =>
-          thread.sourceId === route.sourceId
-          && thread.trigger?.kind === "cron"
-          && thread.trigger.jobId === route.jobId);
+    const currentRoute = parseRoute(window.location.pathname);
+    setRoute(currentRoute);
+    const cronSelection = cronRouteSelection(currentRoute);
+    const routeThread = "threadId" in currentRoute
+      ? next.threads.find((thread) => thread.id === currentRoute.threadId)
+      : cronSelection === undefined
+        ? undefined
+        : next.threads.find((thread) =>
+            thread.sourceId === cronSelection.sourceId
+            && thread.trigger?.kind === "cron"
+            && thread.trigger.jobId === cronSelection.jobId);
     const selection = routeThread === undefined
       ? baseSelection
       : { agentId: routeThread.sourceId, threadId: routeThread.id };
@@ -410,10 +432,31 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [loadBootstrap]);
 
   useEffect(() => {
-    const onPopState = () => setRouteRevision((value) => value + 1);
+    const onPopState = () => {
+      setRoute(parseRoute(window.location.pathname));
+      setRouteRevision((value) => value + 1);
+    };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
+
+  const navigate = useCallback((next: ConsoleRoute) => {
+    const path = routePath(next);
+    if (window.location.pathname !== path) {
+      window.history.pushState(window.history.state, "", path);
+    }
+    setRoute(next);
+    if (next.view === "chats" && "threadId" in next) {
+      const thread = (bootstrap?.threads ?? []).find((candidate) => candidate.id === next.threadId);
+      if (thread !== undefined) {
+        selectedAgentRef.current = thread.sourceId;
+        selectedThreadRef.current = thread.id;
+        setSelectedAgentId(thread.sourceId);
+        setSelectedThreadId(thread.id);
+        localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, thread.sourceId);
+      }
+    }
+  }, [bootstrap?.threads]);
 
   const loadThreadBucket = useCallback(async (
     sourceId: string,
@@ -606,6 +649,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     || (selectedAgent?.cron?.read === true
       && selectedCronChannelKey !== undefined
       && typeof cronRunCursorByChannel[selectedCronChannelKey] === "string");
+
+  const loadBoardThreads = useCallback(async () => {
+    if (boardLoadedRef.current) return;
+    boardLoadedRef.current = true;
+    try {
+      for (const agent of agents) await loadThreadBucket(agent.sourceId, false);
+    } catch (boardError) {
+      boardLoadedRef.current = false;
+      setActionError(errorMessage(boardError));
+      throw boardError;
+    }
+  }, [agents, loadThreadBucket]);
 
   const loadMoreThreads = useCallback(async () => {
     if (selectedAgentId === null) return;
@@ -801,6 +856,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setSelectedThreadId(recent?.id ?? null);
       persistThreadId(sourceId, recent?.id ?? null);
       updateThreadRoute(recent);
+      setRoute(recent === undefined ? { view: "chats" } : { view: "chats", threadId: recent.id });
       setShowArchived(false);
       setActionError(null);
     },
@@ -828,6 +884,26 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [queueRefresh]);
 
+  const setAgentRunDefaults = useCallback(async (
+    sourceId: string,
+    runDefaults: RunDefaults | null,
+  ) => {
+    try {
+      const agent = await api.patchAgent(sourceId, { runDefaults });
+      setBootstrap((current) => current === null
+        ? current
+        : {
+            ...current,
+            agents: current.agents.map((item) => item.sourceId === sourceId ? agent : item),
+          });
+      setActionError(null);
+      queueRefresh();
+    } catch (defaultsError) {
+      setActionError(errorMessage(defaultsError));
+      throw defaultsError;
+    }
+  }, [queueRefresh]);
+
   const selectThread = useCallback(
     (threadId: string) => {
       const thread = threads.find((candidate) => candidate.id === threadId);
@@ -837,6 +913,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, thread.sourceId);
         if (!thread.archivedAt) persistThreadId(thread.sourceId, thread.id);
         updateThreadRoute(thread);
+        setRoute({ view: "chats", threadId: thread.id });
       }
       selectedThreadRef.current = threadId;
       setSelectedThreadId(threadId);
@@ -855,6 +932,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, canonical.sourceId);
           if (!canonical.archivedAt) persistThreadId(canonical.sourceId, canonical.id);
           updateThreadRoute(canonical, true);
+          setRoute({ view: "chats", threadId: canonical.id });
         }).catch((selectionError: unknown) => setActionError(errorMessage(selectionError)));
       }
     },
@@ -871,12 +949,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (selectedThreadRef.current !== job.threadId) selectThread(job.threadId);
   }, [cronOverview, routeRevision, selectThread, selectedAgentId]);
 
-  const createThread = useCallback(async () => {
-    if (!selectedAgentId) throw new Error("Select an agent before starting a conversation.");
+  useEffect(() => {
+    const currentRoute = parseRoute(window.location.pathname);
+    if (currentRoute.view !== "chats" || !("threadId" in currentRoute)) return;
+    if (selectedThreadRef.current !== currentRoute.threadId) selectThread(currentRoute.threadId);
+  }, [bootstrap, routeRevision, selectThread]);
+
+  const createThread = useCallback(async (sourceId = selectedAgentId ?? undefined) => {
+    if (!sourceId) throw new Error("Select an agent before starting a conversation.");
     try {
-      const thread = await api.createThread(selectedAgentId);
-      const draftPreferenceKey = preferenceKeyForThread(selectedAgentId, null);
-      const threadPreferenceKey = preferenceKeyForThread(selectedAgentId, thread.id);
+      const thread = await api.createThread(sourceId);
+      const draftPreferenceKey = preferenceKeyForThread(sourceId, null);
+      const threadPreferenceKey = preferenceKeyForThread(sourceId, thread.id);
       setModelByContext((current) => {
         if (current[draftPreferenceKey] === undefined) return current;
         const next = { ...current, [threadPreferenceKey]: current[draftPreferenceKey] ?? "" };
@@ -890,10 +974,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         return next;
       });
       selectedThreadRef.current = thread.id;
+      selectedAgentRef.current = sourceId;
+      setSelectedAgentId(sourceId);
       setSelectedThreadId(thread.id);
-      persistThreadId(selectedAgentId, thread.id);
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, sourceId);
+      persistThreadId(sourceId, thread.id);
       setShowArchived(false);
       updateThreadRoute(thread);
+      setRoute({ view: "chats", threadId: thread.id });
       setBootstrap((current) =>
         current ? { ...current, threads: [thread, ...current.threads] } : current,
       );
@@ -916,6 +1004,46 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       : { ...current, threads: mergeThreads(current.threads, [fetched.thread]) });
     return fetched.thread;
   }, [detail, threads]);
+
+  const patchThreadMetadata = useCallback(async (
+    threadId: string,
+    patch: Parameters<typeof api.patchThread>[1],
+  ): Promise<void> => {
+    try {
+      await fetchThreadSummary(threadId);
+      const thread = await api.patchThread(threadId, patch);
+      setBootstrap((current) => current === null
+        ? current
+        : {
+            ...current,
+            threads: current.threads.map((item) => item.id === thread.id ? thread : item),
+          });
+      setDetail((current) => current?.thread.id === thread.id
+        ? { ...current, thread }
+        : current);
+      setActionError(null);
+    } catch (patchError) {
+      setActionError(errorMessage(patchError));
+      throw patchError;
+    }
+  }, [fetchThreadSummary]);
+
+  const setThreadPinned = useCallback(
+    async (threadId: string, pinned: boolean) => patchThreadMetadata(threadId, { pinned }),
+    [patchThreadMetadata],
+  );
+  const setThreadState = useCallback(
+    async (threadId: string, state: ThreadState) => patchThreadMetadata(threadId, { state }),
+    [patchThreadMetadata],
+  );
+  const setThreadLabels = useCallback(
+    async (threadId: string, labels: readonly string[]) => patchThreadMetadata(threadId, { labels }),
+    [patchThreadMetadata],
+  );
+  const setThreadProject = useCallback(
+    async (threadId: string, project: string | null) => patchThreadMetadata(threadId, { project }),
+    [patchThreadMetadata],
+  );
 
   const renameThread = useCallback(async (threadId: string, title: string) => {
     const trimmed = title.trim();
@@ -959,6 +1087,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           setSelectedThreadId(replacement?.id ?? null);
           persistThreadId(thread.sourceId, replacement?.id ?? null);
           updateThreadRoute(replacement, true);
+          setRoute(replacement === undefined ? { view: "chats" } : { view: "chats", threadId: replacement.id });
         } else if (readPersistedThreadIds()[thread.sourceId] === target.id) {
           persistThreadId(thread.sourceId, null);
         }
@@ -987,6 +1116,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       persistThreadId(thread.sourceId, thread.id);
       setShowArchived(false);
       updateThreadRoute(thread, true);
+      setRoute({ view: "chats", threadId: thread.id });
     } catch (unarchiveError) {
       setActionError(errorMessage(unarchiveError));
       throw unarchiveError;
@@ -1017,6 +1147,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         setSelectedThreadId(replacement?.id ?? null);
         setDetail(null);
         updateThreadRoute(replacement, true);
+        setRoute(replacement === undefined ? { view: "chats" } : { view: "chats", threadId: replacement.id });
       }
       if (readPersistedThreadIds()[thread.sourceId] === thread.id) {
         persistThreadId(thread.sourceId, null);
@@ -1036,13 +1167,23 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     model: modelByContext[preferenceKey] ?? "",
     effort: effortByContext[preferenceKey] ?? "",
   };
-  const validatedPreference = validateRunPreference(selectedAgent, storedPreference);
+  const advertisedModel = selectedAgent?.defaultModel || modelOptions[0] || "";
+  const defaultPreference = validateRunPreference(selectedAgent, {
+    model: selectedAgent?.runDefaults?.model ?? "",
+    effort: selectedAgent?.runDefaults?.effort ?? "",
+  });
+  const agentDefaultModel = defaultPreference.model || advertisedModel;
+  const validatedPreference = validateRunPreference(selectedAgent, storedPreference, agentDefaultModel);
   const model = validatedPreference.model;
-  const effectiveModel = selectedAgent
-    ? model || selectedAgent.defaultModel || modelOptions[0] || ""
-    : "";
+  const effectiveModel = model || agentDefaultModel;
   const effortOptions = effortLevelsForAgentModel(selectedAgent, effectiveModel);
   const effort = validatedPreference.effort;
+  const advertisedEffort = selectedAgent?.defaultEffort ?? "";
+  const agentDefaultEffort = effortOptions.includes(defaultPreference.effort)
+    ? defaultPreference.effort
+    : effortOptions.includes(advertisedEffort) ? advertisedEffort : "";
+  const effectiveEffort = effort || agentDefaultEffort;
+  const hasRunOverride = model.length > 0 || effort.length > 0;
 
   useEffect(() => {
     if (!preferenceKey) return;
@@ -1090,6 +1231,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     },
     [preferenceKey, selectedAgentId],
   );
+
+  const resetRunOverride = useCallback(() => {
+    if (!preferenceKey) return;
+    setModelByContext((current) => ({ ...current, [preferenceKey]: "" }));
+    setEffortByContext((current) => ({ ...current, [preferenceKey]: "" }));
+  }, [preferenceKey]);
 
   const sendTurn = useCallback(
     async (input: StartTurnInput, onThreadResolved?: (threadId: string) => void) => {
@@ -1179,11 +1326,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       error,
       actionError,
       connection,
+      activeView,
+      route,
       showArchived,
       showOfflineAgents,
       hiddenOfflineAgentCount,
       model,
       effort,
+      effectiveModel,
+      effectiveEffort,
+      agentDefaultModel,
+      agentDefaultEffort,
+      hasRunOverride,
       modelOptions,
       effortOptions,
       skillRegistry,
@@ -1194,12 +1348,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       hasOlderMessages,
       selectAgent,
       setAgentPinned,
+      setAgentRunDefaults,
       selectThread,
       createThread,
       renameThread,
       archiveThread,
       unarchiveThread,
       deleteThread,
+      setThreadPinned,
+      setThreadState,
+      setThreadLabels,
+      setThreadProject,
       sendTurn,
       sendLiveInput,
       cancelTurn,
@@ -1207,6 +1366,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setShowOfflineAgents,
       setModel,
       setEffort,
+      resetRunOverride,
+      navigate,
+      loadBoardThreads,
       retry: () => {
         setLoading(true);
         setError(null);
@@ -1220,6 +1382,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }),
     [
       actionError,
+      activeView,
+      agentDefaultEffort,
+      agentDefaultModel,
       agents,
       archiveThread,
       bootstrap,
@@ -1233,21 +1398,28 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       detailLoading,
       deleteThread,
       effort,
+      effectiveEffort,
+      effectiveModel,
       effortOptions,
       error,
       hiddenOfflineAgentCount,
       hasMoreThreads,
       hasOlderMessages,
+      hasRunOverride,
       loadBootstrap,
       loadMoreThreads,
       loadOlderMessages,
       loadCronRunActivity,
+      loadBoardThreads,
       loading,
       model,
       modelOptions,
+      navigate,
       skillRegistry,
       renameThread,
       refreshCron,
+      resetRunOverride,
+      route,
       selectAgent,
       selectThread,
       selectedAgent,
@@ -1258,6 +1430,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       sendLiveInput,
       setEffort,
       setAgentPinned,
+      setAgentRunDefaults,
+      setThreadLabels,
+      setThreadPinned,
+      setThreadProject,
+      setThreadState,
       setModel,
       showArchived,
       showOfflineAgents,

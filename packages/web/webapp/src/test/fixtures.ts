@@ -53,6 +53,9 @@ export const thread = (
   sourceId,
   title: id,
   archivedAt: null,
+  pinnedAt: null,
+  state: "todo",
+  labels: [],
   createdAt: "2026-07-17T10:00:00.000Z",
   updatedAt: "2026-07-17T10:00:00.000Z",
   revision: 1,
@@ -118,7 +121,7 @@ export const bootstrap = (
   push: {
     applicationServerKey: "B".repeat(87),
     keyFingerprint: "test-fingerprint",
-    serviceWorkerVersion: 2,
+    serviceWorkerVersion: 3,
   },
   agents,
   threads,

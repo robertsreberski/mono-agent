@@ -1,6 +1,6 @@
 ---
 title: "Always-on web console"
-description: "Run and secure the persistent assistant-ui console for local-agent discovery, threads, attachments, notifications, and live turns."
+description: "Run and secure the persistent assistant-ui console for routed chats, conversation boards, attachments, notifications, and live turns."
 sidebar:
   order: 5
 ---
@@ -79,9 +79,9 @@ At startup, mono-agent inspects the existing Tailscale Serve configuration. It p
 | --- | --- |
 | Service | Agent discovery, thread/turn lifecycle, attachment admission, notification ingestion, and the upstream operator connection. |
 | Managed lifecycle | Paired macOS worker and one-shot maintenance LaunchAgents; the foreground worker only requests a wake, while the helper alone owns stopped-writer log rotation and durable recovery. |
-| SQLite store | Authoritative agents, pins, threads, messages, structured parts, revisions, turns, live-input fallback state, uploads, and notification idempotency. |
+| SQLite store | Authoritative agents, pins/defaults, thread workflow metadata, messages, structured parts, revisions, turns, live-input fallback state, uploads, and notification idempotency. |
 | `/api/v1` HTTP/SSE | Browser commands and projections. Mutations publish invalidations; browsers refetch current state instead of owning the turn. |
-| Assistant-ui PWA | Responsive thread/message/composer presentation, upload progress, response notifications, and browser-origin preferences. |
+| Assistant-ui PWA | Routed Chats/Board views, responsive thread/message/composer presentation, bottom sheets, upload progress, response notifications, and browser-origin preferences. |
 | Notification ingress | Owner-private loopback endpoint recorded under `~/.mono-agent/web/`; `deliverWebNotification` uses its bearer for one bounded cron/webhook delivery. |
 
 The browser never talks directly to a running agent. It talks to this persistent
@@ -99,6 +99,34 @@ Use the star beside an agent to add or remove it from favorites. The same pin co
 Selecting an agent filters its conversations; each conversation is permanently bound to that source id so a label change or a different agent cannot inherit its history. Unpinned offline agents are hidden by default behind a subtle **Show N offline** control shared by the desktop rail, mobile picker, and command palette. Pinned agents and the currently selected agent always remain visible. The filter resets to hidden on a full page load; sending stays disabled until that exact source returns.
 
 Threads use the first prompt as their initial title and can be renamed. Active threads must be archived before deletion, and archived threads can be restored. The console permits one active turn per thread while different threads and agents can run concurrently.
+
+### Chats, Board, and responsive navigation
+
+The top-level console has **Chats** and **Board** views. Their canonical routes
+are `/`, `/threads/<threadId>`, and `/board`; browser back/forward restores the
+view and selection, cron URLs keep their source-qualified form, and old
+`?thread=<id>` notification links normalize to the canonical thread path.
+Memory is intentionally absent from this release—`/memory` safely returns to
+Chats instead of exposing a partial surface.
+
+On desktop, Chats keeps the agent rail, a Pinned/Recent thread sidebar, and the
+conversation. A thread star is server-persisted, so it roams between localhost,
+LAN, and Tailscale origins and an old pinned thread remains in bootstrap even
+outside the normal 200-row recent window. On phones, Chats becomes a combined
+all-agents list with agent chips; opening a thread pushes a full-screen chat and
+browser/OS back returns to the list. The fixed bottom bar switches Chats and
+Board, and Base UI drawers provide keyboard-aware details, model, and agent-
+defaults sheets. Every workspace-level **New conversation** action asks which
+agent should own the thread; an offline agent cannot be selected.
+
+Board is a workspace-wide view over the same active threads. Kanban always
+shows To do, In progress, and Done columns; List can group by state, agent,
+label, or project. Search and multi-agent chips filter client-side over the
+bounded per-agent projection. Clicking a state chip cycles it without opening
+the card, while card activation opens the canonical chat route. State, up to 16
+normalized labels, a free-form project, and pinning all live in the web SQLite
+projection, so desktop and phone stay consistent. Board metadata is explicitly
+user-owned in this version; it does not infer state from whether a run is active.
 
 Cron jobs and webhook endpoints can explicitly target `notifyConversationId: "web:new"` with `notify: true`. Webhook results retain one assistant-only thread per delivery. Cron results instead fold into one durable, source-qualified channel per job, with the stable route `/agents/<sourceId>/cron/<jobId>`. Its chronological feed includes scheduled/manual admission, running, queued, succeeded, failed, cancelled, overlap-skipped, and dropped states, plus artifact/session links when the agent reports them. The header shows the agent-authoritative schedule, timezone, declared/effective state, last/next run, and health; it never computes next-run locally. Cron channels are read-only in this release, so console interaction cannot occupy the cron job's own conversation and cause a scheduled firing to overlap.
 
@@ -208,7 +236,17 @@ await fetch(`/api/v1/threads/${threadId}/turns`, {
 
 ## Response notifications
 
-Use the header bell to opt into durable Web Push. The permission prompt and initial subscription are triggered only by that click. The server notifies for a completed response (including a cron/webhook-created **CRON** or **WEBHOOK** thread), a blocking `AskUser` question, and failed, cancelled, or interrupted runs. A test notification is queued immediately after registration. Notification clicks focus or open the exact same-origin conversation.
+Use the device Push control in app/agent settings to opt into durable Web Push.
+The permission prompt and initial subscription are triggered only by that
+explicit action. The bell in a conversation header/details sheet has a separate
+job: it mutes or unmutes that thread on this browser device. The preference is
+written to origin-local storage and mirrored into Cache Storage, allowing the
+service worker to suppress a muted thread even while no console page is open.
+The server notifies for a completed response (including a cron/webhook-created
+**CRON** or **WEBHOOK** thread), a blocking `AskUser` question, and failed,
+cancelled, or interrupted runs. A test notification is queued immediately after
+registration. Notification clicks focus or open `/threads/<threadId>` on the
+exact same origin.
 
 The opt-in is stored per browser origin, so localhost, a LAN hostname, and a Tailscale HTTPS hostname have independent preferences and permissions. The browser keeps only the opaque server subscription id and a one-way digest of its endpoint, then reconciles its `PushManager` subscription with the server on load. A browser-reported subscription rotation is registered from the service worker even with no console window open and atomically retires the old endpoint; transient repair failures receive bounded in-event retries, and the page digest repairs rotations on the next load when that lifecycle event is unavailable or the retry window is exhausted. Application-server-key rotation unsubscribes and reconnects when browser permission allows it. Disabling the bell records the local opt-out first, retires the server subscription, and unsubscribes locally; an interrupted server deletion is retried on the next load, and an already-deleted record counts as complete cleanup. Browsers without a confirmed active push subscription keep the older hidden/unfocused response-notification path while the page is alive, avoiding a silent regression and disabling that fallback as soon as push is confirmed.
 
@@ -220,7 +258,17 @@ The web service and outbox are self-hosted. Web Push itself necessarily sends an
 
 ## Run controls and context
 
-The run-settings control uses a searchable model picker with the selected model's supported reasoning-effort choices in the same popover. On narrow screens it becomes a full-width bottom sheet so every effort level remains reachable without overflowing the viewport. **Default model** delegates model selection to the agent. The default effort names the effective configured value, such as **Default · High**; when the agent leaves that choice to its provider, the control says **Default · Provider** instead of guessing a level. Choosing either default clears the conversation override.
+The run-settings control uses a searchable model picker with the selected
+model's supported reasoning-effort choices in the same popover. On narrow
+screens it becomes a full-width bottom sheet so every effort level remains
+reachable without overflowing the viewport. The sidebar gear stores per-agent
+console defaults for model and effort in the web service. Resolution is
+conversation override → console agent default → agent-advertised default, and
+the client sends the resulting explicit values for each web turn. **Reset to
+agent default** clears only the browser-local conversation override. Clearing a
+console default returns to the advertised value; no path writes
+`mono-agent.config.json` or changes turns started by TUI, ACP, or another
+channel.
 
 The context control uses exact per-request measurements reported by Pi, Codex app-server, OpenCode app-server, and ACP agents that publish `usage_update`. Pi reports every successful assistant request, Codex uses `tokenUsage.last` rather than the thread's cumulative total, OpenCode is accepted only when its completed assistant message includes native `tokens.total`, and ACP's exact `used`/`size` pair is normalized without inventing a token breakdown. A percentage appears only when that same exact event carries the serving model's context window. Direct Claude currently exposes no equivalent exact measurement, so the console says that usage is unavailable instead of estimating it from aggregate work. Durable message/tool-history storage size is never added to a provider measurement; only history actually sent in that request is already included by the provider.
 
@@ -232,7 +280,21 @@ The popover keeps aggregate last-turn processed tokens and accumulated conversat
 
 Reported cost and processed tokens include what the run's subagents spent. A delegation is work the run asked for and is billed to the same account, so the Pi runtime folds each subagent's reported usage into the parent run's own before publishing it — which is also why the TUI status bar and the exported metrics agree with the console. The trade is attribution: a subagent running on a different model has its spend reported under the parent run's model, which is the right answer for a run total and the wrong one for a per-model breakdown.
 
-Assistant reasoning, routine tool calls, subagent delegations, and context compactions share one compact **Activity** disclosure without changing their order. Each compaction is one row that updates from running to succeeded, skipped, failed, or interrupted instead of producing duplicate start/end rows. Pi's before/after token counts are estimates and carry a `~` prefix; provider summary text is never displayed. Activity opens while the message is running and force-collapses when the message completes, fails, is cancelled, or is interrupted; it can be reopened afterward, and individual tool payloads remain collapsed inside it. Standalone interactive tools remain outside the group.
+Assistant reasoning, routine tool calls, subagent delegations, and context
+compactions share one compact **Activity** disclosure without changing their
+order. Its header reports the underlying step count and sums only real
+`executionMs` values reported by the runtime. Consecutive calls to the same
+non-interactive tool cluster into one row with argument previews, failure count,
+and known duration; expanding it retains each call's Input/Output/Error panels.
+Thinking is a collapsed preview row, and repeated calls inside a subagent cluster
+the same way. Missing historical durations stay absent rather than becoming
+zero. Each compaction is one row that updates from running to succeeded, skipped,
+failed, or interrupted instead of producing duplicate start/end rows. Pi's
+before/after token counts are estimates and carry a `~` prefix; provider summary
+text is never displayed. Activity opens while the message is running and force-
+collapses when the message completes, fails, is cancelled, or is interrupted;
+it can be reopened afterward. `AskUser` and other standalone interactive tools
+remain outside clustering.
 
 An `Agent` call is one foldable row inside Activity — profile name, the model's short task label, and a `4 tools · 12.4s · $0.0042` summary — that **owns** the tool calls its subagent made rather than listing them as siblings. The price appears when the runtime priced that subagent's model, and is the one place a single expensive delegation is identifiable; the run total it folds into cannot say which one spent it. Opening the row reveals each child call indented, individually foldable for its input and output, followed by the report the subagent sent back. Nesting is what keeps concurrent delegations readable: subagents run in parallel and their events interleave, so a flat transcript would shuffle several agents' work together. A child that failed is marked without marking the delegation that contains it, and a delegation whose parent call was never observed (a truncated or replayed stream) still renders from its children alone.
 
@@ -298,7 +360,27 @@ Older running agents that do not advertise attachment support remain usable for 
 
 ## Local state and reset
 
-The service keeps its owner-private SQLite store, settings, notification idempotency ledger, VAPID private key, push subscriptions/outbox, upload stages, logs, and live notification-ingress record under `~/.mono-agent/web/`. Stored messages, quote metadata, attachment metadata, revisions, run state, and pinned agents are local to this computer; they are independent from browser storage and from the agents' provider-side sessions. The desktop agent-rail expansion state, notification opt-in, opaque subscription id, and one-way endpoint digest are intentionally browser-origin-local preferences and are removed when that origin's site data is cleared. Raw push endpoints and key material are never stored in browser preferences.
+The service keeps its owner-private SQLite store, settings, notification
+idempotency ledger, VAPID private key, push subscriptions/outbox, upload stages,
+logs, and live notification-ingress record under `~/.mono-agent/web/`. Stored
+messages, quote metadata, attachment metadata, revisions, run state, agent/chat
+pins, workflow state, labels, projects, and console agent defaults are local to
+this computer; they are independent from browser storage and from the agents'
+provider-side sessions. The desktop agent-rail expansion state, Board layout,
+conversation run overrides, notification opt-in, per-thread mute list, opaque
+subscription id, and one-way endpoint digest are browser-origin-local and are
+removed when that origin's site data is cleared. The mute list is additionally
+mirrored to the origin's Cache Storage solely for service-worker delivery
+decisions. Raw push endpoints and key material are never stored in browser
+preferences.
+
+The schema-9 upgrade is one transaction over the existing schema-8 store and
+adds defaulted/nullable thread metadata columns; migration tests reopen a
+populated schema-8 database and compare conversation/message counts, foreign
+keys, and integrity afterward. Older schema-8 binaries intentionally refuse a
+schema-9 store. To downgrade, stop the writer and restore or reverse-migrate an
+offline copy including its WAL/SHM companions—changing `user_version` alone can
+hide conversations and is not a rollback.
 
 Managed stdout/stderr live at `logs/web.out.log` and `logs/web.err.log`.
 Each active file and retained `.1`, `.2`, and `.3` generation is capped at
@@ -344,7 +426,14 @@ cron channels rebuild from the running agents.
 
 ## Current scope
 
-The web console covers discovery, hostname identity, curated host themes, persistent multi-conversation chat, first-class cron channels, marked webhook notification conversations, structured `AskUser` forms, quoting, durable Web Push with a page-notification fallback, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a host-named PWA when served from a secure browser context.
+The web console covers discovery, hostname identity, curated host themes,
+routed persistent multi-conversation Chats, a workflow Board, full mobile pushed-
+thread IA, first-class cron channels, marked webhook notification conversations,
+structured `AskUser` forms, quoting, durable device Push with per-thread mute,
+three-tier model/effort defaults, clustered streamed Activity, internal
+telemetry-backed context usage, cancellation, and attachments. It is responsive
+down to narrow phone widths and installable as a host-named PWA when served from
+a secure browser context. Memory browsing remains out of scope for this release.
 
 General recorded-run replay, source-annotated configuration outside cron's redacted view, and managed conversational configuration remain in the TUI for now. Use:
 

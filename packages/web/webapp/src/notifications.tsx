@@ -3,6 +3,14 @@ import { api, ApiError } from "./api";
 import { Icon } from "./components/Icon";
 import { useConsoleStore } from "./console-store";
 import type { PushBootstrap, PushSubscriptionStatus, ThreadDetail, ThreadSummary } from "./types";
+import { routePath } from "./routes";
+import {
+  isThreadNotificationsMuted,
+  setThreadNotificationsMuted,
+  syncThreadNotificationsToWorker,
+  THREAD_NOTIFICATION_CHANGED,
+  threadNotificationsMuted,
+} from "./thread-notifications";
 
 export const NOTIFICATIONS_STORAGE_KEY = "mono-agent.web.notifications-enabled";
 export const PUSH_SUBSCRIPTION_ID_STORAGE_KEY = "mono-agent.web.push-subscription-id";
@@ -108,6 +116,10 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
   const handledDeepLink = useRef<string | null>(null);
   const pendingThreadSelection = useRef<string | null>(null);
   const reconciling = useRef(false);
+
+  useEffect(() => {
+    void syncThreadNotificationsToWorker();
+  }, []);
 
   const reconcile = useCallback(async (allowCreate: boolean) => {
     if (reconciling.current || !store.bootstrap || !pushSupported()) return;
@@ -257,12 +269,20 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
 
   useEffect(() => {
     const onPending = (event: Event) => {
-      if (!pushActive || document.visibilityState !== "visible" || !document.hasFocus()) return;
+      if (!pushActive) return;
       const detail = (event as CustomEvent<unknown>).detail;
-      if (!isPendingPushDetail(detail) || store.selectedThread?.id !== detail.threadId) return;
+      if (!isPendingPushDetail(detail)) return;
       const subscriptionId = localStorage.getItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY);
       if (!subscriptionId) return;
-      void api.acknowledgePushEvent(detail.eventId, subscriptionId, detail.ackToken).catch(() => undefined);
+      void (async () => {
+        const muted = await isThreadNotificationsMuted(detail.threadId);
+        const focused = document.visibilityState === "visible"
+          && document.hasFocus()
+          && store.selectedThread?.id === detail.threadId;
+        if (muted || focused) {
+          await api.acknowledgePushEvent(detail.eventId, subscriptionId, detail.ackToken).catch(() => undefined);
+        }
+      })();
     };
     window.addEventListener(PUSH_PENDING_EVENT_TYPE, onPending);
     return () => window.removeEventListener(PUSH_PENDING_EVENT_TYPE, onPending);
@@ -299,8 +319,11 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
     if (!threadId || handledDeepLink.current === threadId) return;
     handledDeepLink.current = threadId;
     store.selectThread(threadId);
-    url.searchParams.delete("thread");
-    window.history.replaceState(window.history.state, "", url);
+    window.history.replaceState(
+      window.history.state,
+      "",
+      routePath({ view: "chats", threadId }),
+    );
   }, [store]);
 
   // Keep the existing page-derived response path only as a compatibility
@@ -325,12 +348,12 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
       const agent = store.agents.find((candidate) => candidate.sourceId === arrival.thread.sourceId);
       void (async () => {
         try {
+          if (await isThreadNotificationsMuted(arrival.thread.id)) return;
           const detail = await api.thread(arrival.thread.id);
           const registration = await navigator.serviceWorker.ready;
           const tag = `mono-agent-turn-${arrival.turnId}`;
           if ((await registration.getNotifications({ tag })).length > 0) return;
-          const target = new URL(window.location.href);
-          target.searchParams.set("thread", arrival.thread.id);
+          const target = new URL(routePath({ view: "chats", threadId: arrival.thread.id }), window.location.href);
           await registration.showNotification(
             responseNotificationTitle(agent?.label ?? "mono-agent", arrival.thread),
             {
@@ -355,9 +378,9 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
   );
 }
 
-export function NotificationBell() {
+export function DeviceNotificationControl({ compact = true }: { readonly compact?: boolean }) {
   const notifications = useContext(NotificationsContext);
-  if (!notifications) throw new Error("NotificationBell must be used inside NotificationsProvider.");
+  if (!notifications) throw new Error("DeviceNotificationControl must be used inside NotificationsProvider.");
   const enabled = notifications.preference === "enabled";
   const unavailable = notifications.preference === "unsupported";
   const blocked = notifications.preference === "denied";
@@ -374,7 +397,7 @@ export function NotificationBell() {
   return (
     <button
       type="button"
-      className={`icon-button header-notifications${enabled ? " is-enabled" : ""}${degraded ? " is-degraded" : ""}`}
+      className={`${compact ? "icon-button" : "settings-row"} device-notifications${enabled ? " is-enabled" : ""}${degraded ? " is-degraded" : ""}`}
       aria-label={label}
       aria-pressed={enabled}
       title={label}
@@ -382,6 +405,42 @@ export function NotificationBell() {
       onClick={() => void notifications.toggle()}
     >
       <Icon name={blocked ? "bell-off" : "bell"} size={17} />
+      {!compact && <span>Device push notifications</span>}
+    </button>
+  );
+}
+
+export function NotificationBell() {
+  const { selectedThread } = useConsoleStore();
+  const [muted, setMuted] = useState(() => selectedThread === null
+    ? false
+    : threadNotificationsMuted(selectedThread.id));
+
+  useEffect(() => {
+    setMuted(selectedThread === null ? false : threadNotificationsMuted(selectedThread.id));
+  }, [selectedThread?.id]);
+
+  useEffect(() => {
+    const onChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ threadId?: string; muted?: boolean }>).detail;
+      if (detail.threadId === selectedThread?.id && typeof detail.muted === "boolean") setMuted(detail.muted);
+    };
+    window.addEventListener(THREAD_NOTIFICATION_CHANGED, onChanged);
+    return () => window.removeEventListener(THREAD_NOTIFICATION_CHANGED, onChanged);
+  }, [selectedThread?.id]);
+
+  if (selectedThread === null) return null;
+  const label = muted ? "Unmute this conversation" : "Mute this conversation";
+  return (
+    <button
+      type="button"
+      className={`icon-button thread-notifications${muted ? " is-muted" : ""}`}
+      aria-label={label}
+      aria-pressed={muted}
+      title={label}
+      onClick={() => void setThreadNotificationsMuted(selectedThread.id, !muted)}
+    >
+      <Icon name={muted ? "bell-off" : "bell"} size={17} />
     </button>
   );
 }
