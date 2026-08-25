@@ -11,10 +11,11 @@ console untouched.
 
 ## Runtime topology
 
-- The normal mono-agent `main` checkout is the live source for the global local
-  CLI and Personal Agent. Its checkout-backed provenance is intentional.
-- Other `com.mono-agent.*` instances may use copied managed runtimes. Their
-  serving process and instance wrappers must agree with that managed snapshot.
+- The normal mono-agent `main` checkout is the adoption source for the global
+  local CLI and Personal Agent. Personal Agent's serving process uses the same
+  immutable managed-runtime installation as other `com.mono-agent.*` instances.
+- Every `com.mono-agent.*` serving process and instance wrapper must agree with
+  its managed snapshot.
 - `~/a8c-agents` has its own package graph, lifecycle manager, and runbook. It
   is never part of an inferred mono-agent fleet deployment.
 
@@ -53,25 +54,32 @@ fast-forward, stop and preserve the state.
 
 ## 3. Personal Agent
 
-Personal Agent intentionally follows the clean local `main` checkout. Restart
-it directly through its existing LaunchAgent:
+Personal Agent adopts the clean local `main` checkout through the normal
+managed-runtime restart path:
 
 ```bash
 PERSONAL_LABEL=com.mono-agent.personal-agent-059657c8
-launchctl kickstart -k "gui/$(id -u)/$PERSONAL_LABEL"
-launchctl print "gui/$(id -u)/$PERSONAL_LABEL" | grep -E 'state =|pid =|last exit code'
 cd "$HOME/personal-agent"
+mono-agent restart
+launchctl print "gui/$(id -u)/$PERSONAL_LABEL" | grep -E 'state =|pid =|last exit code'
 mono-agent --version
 mono-agent validate
 mono-agent status
 ```
 
-Then prove the running command actually resolves into the mono-agent checkout:
+Do not substitute a raw LaunchAgent kickstart for `mono-agent restart`. A raw
+kickstart only relaunches the snapshot already recorded in the plist and can
+silently keep the process on the prior version.
+
+Then prove the running command resolves into the newly installed managed
+runtime, not merely that the checkout CLI reports the desired version:
 
 ```bash
 PERSONAL_PID=$(launchctl print "gui/$(id -u)/$PERSONAL_LABEL" | awk '/pid =/{print $3; exit}')
 test -n "$PERSONAL_PID"
-ps -p "$PERSONAL_PID" -o pid=,command=
+PERSONAL_COMMAND=$(ps -p "$PERSONAL_PID" -o command=)
+printf '%s\n' "$PERSONAL_COMMAND"
+printf '%s\n' "$PERSONAL_COMMAND" | grep -F '/.mono-agent/runtimes/agent-app/'
 git -C "$MONO_DEPLOY_REPO" rev-parse HEAD
 ```
 
@@ -123,7 +131,7 @@ when the user explicitly requests its real provider-backed capture proof.
 Do not invoke or post from `scripts/fleet-green-check.mjs` as part of current
 development, release, or deployment work. The implementation remains for
 historical compatibility, but it is not an active workflow authority and does
-not describe Personal Agent's checkout-backed runtime.
+not describe Personal Agent's managed serving runtime.
 
 ## Completion evidence
 

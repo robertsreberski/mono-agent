@@ -39,14 +39,14 @@ bounded recent churn window.
 
 ## Provenance rules
 
-Different consumers intentionally use different runtime sources:
+Different consumer classes intentionally use different runtime sources:
 
-- Personal Agent: its CLI wrappers and launchd command should resolve into the
-  clean local mono-agent `main` checkout. This is expected and healthy.
-- Other managed `com.mono-agent.*` instances: wrappers should agree with the
-  copied runtime referenced by their plist.
+- Every managed `com.mono-agent.*` instance, including Personal Agent: its
+  launchd command and instance wrappers must agree with the immutable managed
+  runtime referenced by its plist. The checkout CLI version is not serving-
+  process provenance.
 - A8C services: use the installed package graph and `./bin/agents versions`
-  from `~/a8c-agents`; do not compare them to Personal Agent's checkout path.
+  from `~/a8c-agents`; do not compare them to a mono-agent managed-runtime path.
 
 A mismatch within one consumer is a finding. A difference between these
 consumer classes is not.
