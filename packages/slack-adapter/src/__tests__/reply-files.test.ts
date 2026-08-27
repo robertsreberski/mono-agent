@@ -182,7 +182,7 @@ describe("Slack native reply files", () => {
   it("replaces local paths and capability URLs in error messages", async () => {
     const { delivery, target, openReplyArtifact, warn } = fixture();
     openReplyArtifact.mockRejectedValueOnce(new Error(
-      "Failed /Users/operator/private/report.txt via https://uploads.slack.test/private-capability.",
+      "Failed /var/tmp/reply-artifacts/report.txt via https://uploads.slack.test/private-capability.",
     ));
 
     await expect(delivery.deliver([part], target)).resolves.toEqual([part]);
