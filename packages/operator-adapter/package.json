@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/operator-adapter",
-  "version": "0.20.5",
+  "version": "0.20.6",
   "description": "Loopback operator adapter for mono-agent structured TUI and web NDJSON turns.",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -31,7 +31,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.20.5",
+    "@mono-agent/agent-contracts": "workspace:0.20.6",
     "express": "^5.1.0"
   },
   "devDependencies": {
