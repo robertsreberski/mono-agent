@@ -17,7 +17,7 @@ function jsonResponse(payload: unknown, init?: ResponseInit): Response {
 }
 
 describe("SlackWebApiClient", () => {
-  it("performs Slack's modern external file upload flow without sending auth to the capability URL", async () => {
+  it("form-encodes Slack's modern external upload metadata without authenticating the capability URL", async () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
       if (url.endsWith("/files.getUploadURLExternal")) {
@@ -49,7 +49,14 @@ describe("SlackWebApiClient", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     const [getUrl, getInit] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
     expect(String(getUrl)).toBe("https://slack.example/api/files.getUploadURLExternal");
-    expect(JSON.parse(String(getInit?.body))).toEqual({ filename: "report.txt", length: 5 });
+    expect(getInit?.headers).toEqual({
+      authorization: `Bearer ${BOT_TOKEN}`,
+      "content-type": "application/x-www-form-urlencoded; charset=utf-8",
+    });
+    expect(Object.fromEntries(new URLSearchParams(String(getInit?.body)))).toEqual({
+      filename: "report.txt",
+      length: "5",
+    });
     const [uploadUrl, uploadInit] = vi.mocked(fetchImpl).mock.calls[1] ?? [];
     expect(String(uploadUrl)).toBe("https://uploads.slack.test/opaque-capability");
     expect(uploadInit?.headers).toEqual({
@@ -59,8 +66,13 @@ describe("SlackWebApiClient", () => {
     expect(JSON.stringify(uploadInit?.headers)).not.toContain(BOT_TOKEN);
     const [completeUrl, completeInit] = vi.mocked(fetchImpl).mock.calls[2] ?? [];
     expect(String(completeUrl)).toBe("https://slack.example/api/files.completeUploadExternal");
-    expect(JSON.parse(String(completeInit?.body))).toEqual({
-      files: [{ id: "F123", title: "report.txt" }],
+    expect(completeInit?.headers).toEqual({
+      authorization: `Bearer ${BOT_TOKEN}`,
+      "content-type": "application/x-www-form-urlencoded; charset=utf-8",
+    });
+    const completeBody = Object.fromEntries(new URLSearchParams(String(completeInit?.body)));
+    expect(completeBody).toEqual({
+      files: JSON.stringify([{ id: "F123", title: "report.txt" }]),
       channel_id: "C1",
       thread_ts: "100.1",
     });
