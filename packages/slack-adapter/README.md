@@ -394,8 +394,9 @@ integrity-checked bytes, then complete the upload in the destination
 channel/thread. The bot token needs Slack's `files:write` scope. A file is
 removed from textual fallback only after completion succeeds; an unavailable
 API method or failed upload leaves a concise warning and never exposes the
-local artifact path or private URL. Confirmed uploads are deduplicated by file
-integrity plus channel/thread, including proactive retries.
+local artifact path or private URL. The warning names the failed stage and only
+bounded, redacted Slack error fields. Confirmed uploads are deduplicated by
+file integrity plus channel/thread, including proactive retries.
 
 Custom `SlackWebApi` implementations may omit the three optional external-file
 methods and retain fallback-only behavior. See
