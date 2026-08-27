@@ -164,9 +164,9 @@ export class SlackWebApiClient implements SlackWebApi {
     params: SlackFilesGetUploadUrlExternalParams,
     options?: SlackRequestOptions,
   ): Promise<SlackFilesGetUploadUrlExternalResult> {
-    return this.request<SlackFilesGetUploadUrlExternalResult>(
+    return this.requestForm<SlackFilesGetUploadUrlExternalResult>(
       "files.getUploadURLExternal",
-      params,
+      { filename: params.filename, length: params.length },
       this.botToken,
       options,
     );
@@ -220,9 +220,13 @@ export class SlackWebApiClient implements SlackWebApi {
     params: SlackFilesCompleteUploadExternalParams,
     options?: SlackRequestOptions,
   ): Promise<SlackFilesCompleteUploadExternalResult> {
-    return this.request<SlackFilesCompleteUploadExternalResult>(
+    return this.requestForm<SlackFilesCompleteUploadExternalResult>(
       "files.completeUploadExternal",
-      params,
+      {
+        files: JSON.stringify(params.files),
+        channel_id: params.channel_id,
+        ...(params.thread_ts === undefined ? {} : { thread_ts: params.thread_ts }),
+      },
       this.botToken,
       options,
     );
@@ -433,6 +437,32 @@ export class SlackWebApiClient implements SlackWebApi {
           "content-type": "application/json; charset=utf-8",
         },
         body: JSON.stringify(params),
+      },
+      options,
+    );
+  }
+
+  private requestForm<T extends { ok: true }>(
+    method: string,
+    params: Readonly<Record<string, string | number>>,
+    token: string,
+    options?: SlackRequestOptions,
+  ): Promise<T> {
+    const body = new URLSearchParams();
+    for (const [name, value] of Object.entries(params)) {
+      body.set(name, String(value));
+    }
+    const url = `${this.apiBaseUrl}/${method}`;
+    return this.executeRequest<T>(
+      method,
+      url,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/x-www-form-urlencoded; charset=utf-8",
+        },
+        body: body.toString(),
       },
       options,
     );
