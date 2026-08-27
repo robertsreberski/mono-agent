@@ -118,7 +118,7 @@ Communication adapters are edge packages. They accept an `AgentResponder` and ow
 
 | Surface | Package | First smoke |
 | --- | --- | --- |
-| Telegram | `@mono-agent/telegram-adapter` | Allowed chat receives text and a generated reply file through `sendDocument` |
+| Telegram | `@mono-agent/telegram-adapter` | Allowed chat receives text, a native reply supplies bounded quoted context, and a generated reply file arrives through `sendDocument` |
 | Slack | `@mono-agent/slack-adapter` | Allowed channel or DM receives text and a generated reply file through the external upload flow |
 | WhatsApp | `@mono-agent/whatsapp-adapter` (external channel plugin) | Allowed sender/group trigger produces a reply |
 | OpenAI-compatible API | `@mono-agent/openai-api-adapter` | `curl /v1/models` and `/v1/chat/completions` |
