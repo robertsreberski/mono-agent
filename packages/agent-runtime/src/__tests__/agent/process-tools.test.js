@@ -44,6 +44,12 @@ describe("Exec", () => {
       .toEqual(expect.objectContaining({ type: "boolean" }));
     expect(withController.find((tool) => tool.name === "Exec").parameters.properties.background.description)
       .toContain("Do not use for commands that daemonize");
+    for (const name of ["Exec", "Bash"]) {
+      expect(withController.find((tool) => tool.name === name).parameters.properties.description)
+        .toEqual(expect.objectContaining({ type: "string" }));
+      expect(withController.find((tool) => tool.name === name).parameters.properties.description.description)
+        .toContain("Always provide this when background=true");
+    }
 
     const disabledAgain = getPiBuiltinTools(["Exec", "Bash"]);
     expect(Object.fromEntries(disabledAgain.map((tool) => [tool.name, JSON.stringify(tool.parameters)]))).toEqual(baseline);
@@ -75,6 +81,7 @@ describe("Exec", () => {
     const result = await execToolRun({
       executable: process.execPath,
       args: ["--eval", "setTimeout(() => process.stdout.write('done'), 180)"],
+      description: "Running the process-job handoff test",
       background: true,
     }, { ctx: { workspace, sandbox }, processJobsController: { start } });
 
@@ -93,6 +100,7 @@ describe("Exec", () => {
     expect(start.mock.calls[0][0].prepared.sandboxSettingsPath).toBe(resolve(workspace, "settings.json"));
     expect(start.mock.calls[0][0].summary).toBe("Exec command (2 arguments; values redacted)");
     expect(start.mock.calls[0][0].summary).not.toContain(process.execPath);
+    expect(start.mock.calls[0][0].description).toBe("Running the process-job handoff test");
     expect(cleanup).not.toHaveBeenCalled();
     await terminal;
     expect(cleanup).toHaveBeenCalledTimes(1);
@@ -817,18 +825,28 @@ describe("Exec", () => {
 
     await bash.execute("job-long-bash", {
       command: `"${process.execPath}" --version`,
+      description: "Checking the Bash runtime version",
       timeout_ms: 14_400_000,
       background: true,
     });
     await exec.execute("job-long-exec", {
       executable: process.execPath,
       args: ["--version"],
+      description: "Checking the Exec runtime version",
       timeout_ms: 14_400_000,
       background: true,
     });
 
-    expect(start.mock.calls[0][0]).toMatchObject({ tool: "Bash", timeoutMs: 14_400_000 });
-    expect(start.mock.calls[1][0]).toMatchObject({ tool: "Exec", timeoutMs: 14_400_000 });
+    expect(start.mock.calls[0][0]).toMatchObject({
+      tool: "Bash",
+      description: "Checking the Bash runtime version",
+      timeoutMs: 14_400_000,
+    });
+    expect(start.mock.calls[1][0]).toMatchObject({
+      tool: "Exec",
+      description: "Checking the Exec runtime version",
+      timeoutMs: 14_400_000,
+    });
   });
 
   it("keeps the legacy background timeout in seconds without capping it", async () => {

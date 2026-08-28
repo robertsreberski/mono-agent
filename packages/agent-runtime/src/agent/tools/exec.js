@@ -25,7 +25,7 @@ const MAX_EXEC_ARGS = 256;
 /** @typedef {import("./shared/process-jobs.js").ProcessJobsController} ProcessJobsController */
 
 /**
- * @param {{executable: string, args?: string[], workdir?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean}} params
+ * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean}} params
  * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: ProcessJobsController}} [options]
  */
 export async function execToolImpl(params, options = {}) {
@@ -35,7 +35,7 @@ export async function execToolImpl(params, options = {}) {
 /**
  * Execute an argv vector directly, without shell parsing.
  *
- * @param {{executable: string, args?: string[], workdir?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean}} params
+ * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean}} params
  * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: ProcessJobsController}} [options]
  */
 export async function execToolRun(
@@ -43,6 +43,7 @@ export async function execToolRun(
     executable,
     args = [],
     workdir,
+    description,
     timeout_ms,
     max_output_chars,
     background,
@@ -101,6 +102,7 @@ export async function execToolRun(
       tool: "Exec",
       prepared,
       summary: `Exec command (${args.length} argument${args.length === 1 ? "" : "s"}; values redacted)`,
+      description,
       // Re-derived from the raw param: `timeoutMs` carries the foreground
       // ceiling, and a background job is bounded by processJobs instead.
       timeoutMs: timeout_ms === undefined ? undefined : normalizeBackgroundTimeoutMs(timeout_ms),

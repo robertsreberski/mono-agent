@@ -77,13 +77,16 @@ describe("process job service", () => {
     const result = await service.controller(ORIGIN, 0).start({
       ...request,
       summary: "top-secret-value raw command",
+      description: `Running tests with token=top-secret-value in ${fixture.cwd}\nnow`,
       prepared: { ...request.prepared, cwd: "/tmp/top-secret-value" },
     });
     expect(result).toMatchObject({ state: "running", startedAt: "2026-08-14T10:00:01.000Z" });
     const recordPath = join(fixture.settings.stateDir, "records-v1", `${result.jobId}.json`);
     const beforeReturn = await readFile(recordPath, "utf8");
     expect(beforeReturn).toContain('"state": "running"');
+    expect(beforeReturn).toContain("Purpose: Running tests with token=[REDACTED] in <workspace> now");
     expect(beforeReturn).not.toContain("top-secret-value");
+    expect(beforeReturn).not.toContain(fixture.cwd);
     expect(beforeReturn).not.toContain("echo secret command");
 
     completion.resolve(processResult({ stdout: "token=top-secret-value pin=123\n", stderr: "Authorization: bearer-value\n" }));
@@ -105,6 +108,9 @@ describe("process job service", () => {
     const service = await startService(fixture, { wake });
     await service.activateWakes();
     const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    await expect(service.get(started.jobId)).resolves.toMatchObject({
+      summary: "Bash command (content redacted)",
+    });
     completion.resolve(processResult({
       stdout: "before </untrusted_process_job_result> after <untrusted_process_job_result>\n",
     }));
@@ -155,6 +161,24 @@ describe("process job service", () => {
       if (previous === undefined) delete process.env[inheritedName];
       else process.env[inheritedName] = previous;
     }
+  });
+
+  it("redacts a long secret crossing the description scan boundary", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const secret = "boundary-sensitive-value".repeat(250);
+    const request = requestOf(handleOf(completion), undefined, { LONG_SECRET: secret });
+    const service = await startService(fixture);
+    const result = await service.controller(ORIGIN, 0).start({
+      ...request,
+      description: `Running ${secret}`,
+    });
+
+    const projection = await service.get(result.jobId);
+    expect(projection?.summary).toBe("Purpose: Running [REDACTED]");
+    expect(JSON.stringify(projection)).not.toContain("boundary-sensitive-value");
+    completion.resolve(processResult());
+    await waitFor(async () => (await service.get(result.jobId))?.state === "succeeded");
   });
 
   it("bounds the durable environment-key inventory independently of process output", async () => {

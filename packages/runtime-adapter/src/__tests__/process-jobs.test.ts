@@ -74,6 +74,7 @@ describe("process-jobs kernel bridge", () => {
         sandboxed: false,
       },
       summary: "true (0 arguments; values redacted)",
+      description: "Checking whether the runtime is ready",
       launch,
     };
     await expect(controller.start(request)).resolves.toEqual({
@@ -102,6 +103,13 @@ describe("process-jobs kernel bridge", () => {
       timeoutMs: -1,
       launch: vi.fn(),
     })).rejects.toThrow(/invalid/u);
+    await expect(controller.start({
+      tool: "Exec",
+      prepared: { command: "/bin/true", args: [], cwd: "/tmp", sandboxed: true },
+      summary: "Exec command (values redacted)",
+      description: 42,
+      launch: vi.fn(),
+    } as unknown as ProcessJobStartRequest)).rejects.toThrow(/invalid/u);
     expect(start).not.toHaveBeenCalled();
   });
 });
