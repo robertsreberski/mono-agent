@@ -1824,7 +1824,7 @@ describe("WebService", () => {
     expect((await service.bootstrap()).currentThreadId).toBe(two.id);
 
     const cloud = service.createThread("agent-one");
-    await expect(service.startTurn(cloud.id, { text: "cloud", model: "cloud", effort: "ultra" })).resolves.toBeDefined();
+    await expect(service.startTurn(cloud.id, { text: "cloud", model: "cloud", effort: "ultra" })).rejects.toMatchObject({ code: "invalid_effort" });
     const toggle = service.createThread("agent-one");
     await expect(service.startTurn(toggle.id, { text: "toggle", model: "toggle", effort: "minimal" })).rejects.toMatchObject({ code: "invalid_effort" });
     await expect(service.startTurn(toggle.id, { text: "toggle", model: "toggle", effort: "high" })).resolves.toBeDefined();

@@ -45,6 +45,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@mono-agent/agent-contracts": "workspace:0.20.8",
     "@mono-agent/agent-harness": "workspace:0.20.8",
+    "@mono-agent/agent-runtime": "workspace:0.20.8",
     "@mono-agent/config": "workspace:0.20.8",
     "@mono-agent/cron-adapter": "workspace:0.20.8",
     "@mono-agent/operator-adapter": "workspace:0.20.8",

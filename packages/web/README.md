@@ -110,7 +110,10 @@ consistent over localhost, LAN, and Tailscale.
 
 The assistant-ui run-settings popover combines searchable model selection with
 the selected model's supported reasoning-effort choices and becomes a
-viewport-safe bottom sheet on narrow screens. Usage telemetry remains internal
+viewport-safe bottom sheet on narrow screens. Exact choices come from the
+running agent's startup capability snapshot; when a model does not advertise
+exact levels, the console offers provider/config default only instead of the
+global effort ladder. Usage telemetry remains internal
 and is summarized through a context display that keeps exact Pi, Codex,
 OpenCode, and ACP provider-request snapshots separate from last-turn processed
 tokens and conversation cost. Running turns are labeled `Updating`; failed
