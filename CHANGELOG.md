@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Upgrade the exact-pinned Pi AI catalog and TUI to 0.84.3, including GitHub
+  Copilot support for Gemini 3.7 Flash and Grok 4.6, provider-required OAuth
+  cancellation signals, and the current GPT-5.6 Terra pricing metadata. Keep
+  Pi Agent Core at 0.83.0 because 0.84.3's replacement durable harness does not
+  yet implement mono-agent's prompt, subscription, compaction, or abort paths.
+
 ## 0.20.3 — Subscription-backed web search (2026-08-17)
 
 - Add an ordered WebSearch pipeline that tries a configured local SearXNG

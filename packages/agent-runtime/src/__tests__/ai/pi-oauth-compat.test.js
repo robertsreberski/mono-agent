@@ -99,6 +99,9 @@ describe("resolveOAuthApiKey", () => {
     });
 
     expect(refresh).toHaveBeenCalledOnce();
+    expect(refresh.mock.calls[0][0]).toEqual(expect.objectContaining({ access: "access-token" }));
+    expect(refresh.mock.calls[0][1]).toBeInstanceOf(AbortSignal);
+    expect(refresh.mock.calls[0][1].aborted).toBe(false);
     expect(result?.apiKey).toBe("fresh-access");
     // Pure: the refreshed credential comes back for pi-auth.js to persist.
     expect(result?.newCredentials).toBe(refreshed);
@@ -220,9 +223,11 @@ describe("toAuthInteraction", () => {
       .not.toThrow();
   });
 
-  it("forwards an abort signal only when one was supplied", () => {
+  it("forwards an abort signal or supplies the provider-required default", () => {
     const signal = new AbortController().signal;
     expect(toAuthInteraction(callbacks({ signal })).signal).toBe(signal);
-    expect(Object.hasOwn(toAuthInteraction(callbacks()), "signal")).toBe(false);
+    const defaultSignal = toAuthInteraction(callbacks()).signal;
+    expect(defaultSignal).toBeInstanceOf(AbortSignal);
+    expect(defaultSignal.aborted).toBe(false);
   });
 });
