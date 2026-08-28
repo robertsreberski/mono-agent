@@ -172,6 +172,9 @@ importers:
       '@mono-agent/agent-harness':
         specifier: workspace:0.20.8
         version: link:../agent-harness
+      '@mono-agent/agent-runtime':
+        specifier: workspace:0.20.8
+        version: link:../agent-runtime
       '@mono-agent/config':
         specifier: workspace:0.20.8
         version: link:../config

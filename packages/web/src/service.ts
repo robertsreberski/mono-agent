@@ -2036,19 +2036,23 @@ function validateModelAndEffort(agent: WebAgentSummary, model: string | undefine
   }
   const effectiveModel = model ?? agent.defaultModel;
   const option = effectiveModel === undefined ? undefined : agent.modelOptions?.[effectiveModel];
-  const allowedEfforts = option === undefined ? agent.efforts : effortLevelsForOption(option);
+  const allowedEfforts = agent.modelOptions === undefined
+    ? agent.efforts
+    : effortLevelsForOption(option);
   if (effort !== undefined && (allowedEfforts === undefined || !allowedEfforts.includes(effort))) {
     throw new WebConsoleError("invalid_effort", "This agent did not advertise the selected effort for this model.", 400);
   }
 }
 
 function effortLevelsForOption(option: WebModelOption | undefined): readonly string[] {
-  if (option !== undefined
-    && (option.reasoning === false || option.reasoningMode === "none" || option.effortLevels?.length === 0)) {
+  if (option === undefined
+    || option.reasoning === false
+    || option.reasoningMode === "none"
+    || option.effortLevels?.length === 0) {
     return [];
   }
-  if (option?.reasoningMode === "toggle") return ["high", "none"];
-  return option?.effortLevels ?? EFFORT_LEVELS;
+  if (option.reasoningMode === "toggle") return ["high", "none"];
+  return option.effortLevels ?? [];
 }
 
 function normalizeFilename(value: string): string {

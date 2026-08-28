@@ -11,10 +11,10 @@ import type {
   TuiAdapterStartResult,
 } from "@mono-agent/operator-adapter";
 import {
+  discoverClaudeSdkModels,
   discoverLocalProviderModels,
   modelReferenceKey,
   parseMonoRuntimeModelReference,
-  resolveModelEffortLevels,
 } from "@mono-agent/runtime-adapter";
 import type {
   DiscoveredLocalModel,
@@ -30,8 +30,20 @@ import {
 
 import { buildChannelConfigView } from "../channel-config-view.js";
 import type { ChannelDriver, ChannelStartInput, RunningChannel } from "../channels.js";
+import {
+  codexModelDiscoveryEnvironment,
+  requestCodexModelList,
+  type CodexCatalogModel,
+} from "../codex-model-catalog.js";
+import {
+  resolveAdvertisedModelEffort,
+  type ClaudeEffortCatalogEntry,
+} from "../model-effort-capabilities.js";
 import { agentAppPackageVersion } from "../package-version.js";
-import { configuredRuntimeModels } from "../runtime-routes.js";
+import {
+  configuredRuntimeFallbackModels,
+  configuredRuntimeModels,
+} from "../runtime-routes.js";
 import { createSkillRegistryMonitor } from "../skill-registry.js";
 import type { CronOperatorRegistry } from "../cron-operator-service.js";
 
@@ -40,9 +52,6 @@ type TuiAdapterModule = typeof import("@mono-agent/operator-adapter");
 let tuiModule: TuiAdapterModule | undefined;
 const loadTuiModule = async (): Promise<TuiAdapterModule> =>
   (tuiModule ??= await import("@mono-agent/operator-adapter"));
-
-/** `/v1/info` local-provider discovery cache lifetime. */
-const LOCAL_MODEL_DISCOVERY_TTL_MS = 30_000;
 
 const builtinModelCatalog = builtinModels();
 
@@ -82,6 +91,12 @@ export interface TuiChannelOverrides {
   readonly discoverModels?: (
     providers: readonly LocalProviderDefinition[] | undefined,
   ) => Promise<readonly DiscoveredLocalModel[]>;
+  /** Test seam: replaces bounded Claude SDK catalog discovery at channel start. */
+  readonly discoverClaudeModels?: (
+    authoredModelRefs: readonly string[],
+  ) => Promise<readonly ClaudeEffortCatalogEntry[]>;
+  /** Test seam: replaces bounded Codex app-server model/list discovery at channel start. */
+  readonly discoverCodexModels?: () => Promise<readonly CodexCatalogModel[]>;
   /** Test/embedding seam for the owner-private local web ingress. */
   readonly deliverNotification?: typeof deliverWebNotification;
 }
@@ -149,6 +164,10 @@ export function createTuiChannelDriver(
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
       const deliverNotification = overrides.deliverNotification ?? deliverWebNotification;
       const discoverModels = overrides.discoverModels ?? discoverLocalProviderModels;
+      const discoverClaudeModels = overrides.discoverClaudeModels
+        ?? ((authoredModelRefs: readonly string[]) => discoverClaudeSdkModels({ authoredModelRefs }));
+      const discoverCodexModels = overrides.discoverCodexModels
+        ?? (() => requestCodexModelList(1_200, codexModelDiscoveryEnvironment()));
       const localProviders = input.coreConfig.providers?.local;
       const skillRegistry = createSkillRegistryMonitor({
         ...(input.coreConfig.context.skillsRoot === undefined
@@ -165,30 +184,40 @@ export function createTuiChannelDriver(
       // Subsequent /v1/info reads are memory-only and cannot block on skill I/O.
       await skillRegistry.prime();
 
+      const configuredRefs = [...configuredRuntimeModels(input.coreConfig.runtime)];
       const configModelKeys: string[] = [];
-      for (const ref of configuredRuntimeModels(input.coreConfig.runtime)) {
+      for (const ref of configuredRefs) {
         const key = modelReferenceKey(ref);
         if (!configModelKeys.includes(key)) {
           configModelKeys.push(key);
         }
       }
-
-      let discoveryCache: { readonly expiresAt: number; readonly models: readonly DiscoveredLocalModel[] } | undefined;
-      const discoverModelsCached = async (): Promise<readonly DiscoveredLocalModel[]> => {
-        const now = Date.now();
-        if (discoveryCache !== undefined && now < discoveryCache.expiresAt) {
-          return discoveryCache.models;
-        }
-        const models = await discoverModels(localProviders);
-        discoveryCache = { expiresAt: now + LOCAL_MODEL_DISCOVERY_TTL_MS, models };
-        return models;
-      };
+      const directOpenCodeInFallbacks = configuredRuntimeFallbackModels(input.coreConfig.runtime)
+        .some((ref) => ref.sdk === "opencode");
+      const claudeRefs = configuredRefs
+        .filter((ref) => ref.sdk === "claude")
+        .map((ref) => modelReferenceKey(ref));
+      const needsCodex = configuredRefs.some((ref) => ref.sdk === "codex");
+      let claudeCatalog: readonly ClaudeEffortCatalogEntry[] = [];
+      let codexCatalog: readonly CodexCatalogModel[] = [];
+      const [claudeResult, codexResult] = await Promise.allSettled([
+        claudeRefs.length > 0 ? discoverClaudeModels(claudeRefs) : Promise.resolve([]),
+        needsCodex ? discoverCodexModels() : Promise.resolve([]),
+      ]);
+      if (claudeResult.status === "fulfilled") claudeCatalog = claudeResult.value;
+      if (codexResult.status === "fulfilled") codexCatalog = codexResult.value;
+      let discoveredModels: readonly DiscoveredLocalModel[] = [];
+      try {
+        discoveredModels = await discoverModels(localProviders);
+      } catch {
+        // Provider discovery is advisory. A failed startup snapshot must not
+        // make /v1/info block or expand unknown capabilities later.
+      }
 
       const buildInfo = async (): Promise<TuiAdapterInfo> => {
-        const discovered = await discoverModelsCached();
-        const labelByRef = new Map(discovered.map((model) => [model.ref, model.label]));
+        const labelByRef = new Map(discoveredModels.map((model) => [model.ref, model.label]));
         const models = [...configModelKeys];
-        for (const model of discovered) {
+        for (const model of discoveredModels) {
           if (!models.includes(model.ref)) {
             models.push(model.ref);
           }
@@ -208,7 +237,12 @@ export function createTuiChannelDriver(
           } catch {
             continue;
           }
-          const resolved = resolveModelEffortLevels(parsedRef, localProviders);
+          const resolved = resolveAdvertisedModelEffort(parsedRef, {
+            ...(localProviders === undefined ? {} : { localProviders }),
+            claudeCatalog,
+            codexCatalog,
+            suppressExplicitEffort: parsedRef.sdk === "opencode" || directOpenCodeInFallbacks,
+          });
           const contextWindow = resolveContextWindow(parsedRef, localProviders);
           const label = labelByRef.get(ref);
           const entry = {

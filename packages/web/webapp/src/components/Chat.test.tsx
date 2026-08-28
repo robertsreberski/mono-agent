@@ -94,6 +94,32 @@ describe("ModelControls", () => {
     expect(store.setModel).toHaveBeenCalledWith(MODEL);
   });
 
+  it("shows only the selected model's exact efforts and hides unspecified cloud grades", async () => {
+    const cloud = "claude:claude-fable-5";
+    storeMock.current = {
+      ...storeMock.current,
+      model: MODEL,
+      modelOptions: [MODEL, cloud],
+      selectedAgent: agent("agent", {
+        models: [MODEL, cloud],
+        defaultModel: MODEL,
+        modelOptions: {
+          [MODEL]: { reasoning: true, effortLevels: ["low", "high"] },
+          [cloud]: { reasoning: true },
+        },
+      }),
+    };
+    const { rerender } = render(<ModelControls />);
+    fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+    const first = await screen.findByRole("radiogroup", { name: "Reasoning effort" });
+    expect(within(first).getByRole("radio", { name: "High" })).toBeVisible();
+    expect(within(first).queryByRole("radio", { name: "Ultra" })).not.toBeInTheDocument();
+
+    storeMock.current = { ...storeMock.current, model: cloud };
+    rerender(<ModelControls />);
+    expect(screen.queryByRole("radiogroup", { name: "Reasoning effort" })).not.toBeInTheDocument();
+  });
+
   it("shows the configured default effort while keeping the explicit choices distinct", async () => {
     render(<ModelControls />);
 
