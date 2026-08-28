@@ -38,6 +38,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   conversation, independent of daily rollover buckets.
 - Expose the sibling request-scoped read-only `SessionHistory` tool over the
   harness's canonical retained managed-tool lifecycle sidecar.
+- Expose the request-scoped `SetConversationTitle` tool only to writable
+  interactive web turns, so the agent can keep an automatic semantic thread
+  title current without overriding a title the user renamed.
 - Opt in to Pi-native Exec/Bash process jobs through `processJobs.*`: keep the
   owner-private queue/store/process-group lifecycle, adapter-neutral opted-in
   Slack/Telegram/web/WhatsApp wake routing with exact active-run steering and a
@@ -574,6 +577,24 @@ terminal record in place. A newer tool-history schema hard-fails downgrade until
 persisted conversation state is purged; an older compatible version is reported
 as upgrade-pending for the next writer.
 
+### Web conversation titles
+
+`SetConversationTitle` requires no config key. For an ordinary interactive web
+turn whose title is still automatic, the app supplies a request-scoped MCP tool
+that accepts one normalized title of at most 80 characters. Its model-facing
+guidance asks for a concise semantic title after the topic becomes clear and a
+new title only when the conversation materially changes direction. The web
+console applies successful tool results quietly while retaining the tool call in
+the collapsed Activity disclosure.
+
+The tool is available under allow-all; a restrictive `tools.allowedTools` must
+name `SetConversationTitle`, and deny policy wins. Trigger-created and archived
+threads are ineligible. A browser rename permanently locks that thread against
+later agent updates, including an update racing with the rename. Routes that can
+select direct OpenCode suppress the tool because that bridge has no compatible
+host MCP seam. When the tool is absent or unused, the existing first-user-message
+title remains the fallback.
+
 ### Channel interactions and conversation history
 
 For missing context, the agent should use active conversation history first,
@@ -782,7 +803,7 @@ path:
 | Channel integration | `channels.ts`, `channel-drivers/` | Built-in drivers plus config-loaded plugin resolution. |
 | Interaction and send tools | `interaction-bridge.ts`, `adapter-send-tools*.ts` | Structured `AskUser` state, channel sinks, progress, adapter-send tools, and bounded interaction-history projection. |
 | Operator CLI | `cli*.ts`, `jobs-command.ts`, `init.ts`, `doctor.ts`, `doctor-observability.ts`, `background*.ts`, `launchd*.ts`, `managed-web-logs.ts`, `web-*.ts` | Setup, focused validation sections, paired managed service/log lifecycle, process-job operation, and diagnostics. |
-| Host services | `run-history.ts`, `session-history.ts`, `request-scoped-mcp.ts`, `process-jobs*.ts`, `continuation*.ts`, `memory-*.ts` | Shared request-scoped guards, bounded prior-run/tool-lifecycle evidence, local process-job ownership/wake/recovery, durable continuations, and memory operations. |
+| Host services | `run-history.ts`, `session-history.ts`, `conversation-title.ts`, `request-scoped-mcp.ts`, `process-jobs*.ts`, `continuation*.ts`, `memory-*.ts` | Shared request-scoped guards, bounded prior-run/tool-lifecycle evidence, automatic web conversation titles, local process-job ownership/wake/recovery, durable continuations, and memory operations. |
 
 ## Public API
 
