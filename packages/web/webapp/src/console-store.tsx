@@ -257,8 +257,9 @@ export const effortLevelsForAgentModel = (
   model: string,
 ): readonly string[] => {
   if (!agent) return [];
-  const option = agent.modelOptions?.[model];
-  if (!option) return agent.efforts ?? [];
+  if (agent.modelOptions === undefined) return agent.efforts ?? GLOBAL_EFFORT_LEVELS;
+  const option = agent.modelOptions[model];
+  if (!option) return [];
   if (
     option.reasoning === false ||
     option.reasoningMode === "none" ||
@@ -267,7 +268,7 @@ export const effortLevelsForAgentModel = (
     return [];
   }
   if (option.reasoningMode === "toggle") return ["high", "none"];
-  return option.effortLevels ?? GLOBAL_EFFORT_LEVELS;
+  return option.effortLevels ?? [];
 };
 
 export const validateRunPreference = (
