@@ -61,6 +61,7 @@ import {
   type DiscoverOperatorAgentsOptions,
   type DiscoveredOperatorAgent,
 } from "./discovery.js";
+import { conversationTitleFromFrame } from "./conversation-title.js";
 import { errorCode, errorMessage, WebConsoleError } from "./errors.js";
 import { OperatorClient, type OperatorInfo } from "./operator-client.js";
 import {
@@ -1063,12 +1064,20 @@ export class WebService {
         attachments,
         signal: controller.signal,
         metadata: {
-          web: { threadId: started.thread.id, turnId: started.turnId, ...modelMetadata },
+          web: {
+            threadId: started.thread.id,
+            turnId: started.turnId,
+            ...modelMetadata,
+            ...(processJobWakeDeliveryKey === undefined && this.store.canApplyAgentTitle(started.thread.id)
+              ? { conversationTitle: { schema: 1, writable: true } }
+              : {}),
+          },
           tui: modelMetadata,
         },
         ...(processJobWakeDeliveryKey === undefined ? {} : { processJobWakeDeliveryKey }),
         onFrame: (frame) => {
           this.observeAskUserFrame(started.thread.id, started.turnId, frame);
+          this.observeConversationTitleFrame(started.thread.id, started.turnId, frame);
           coalescer.push(frame);
         },
       });
@@ -1570,6 +1579,24 @@ export class WebService {
       if (this.askWatches.get(key)?.promise === promise) this.askWatches.delete(key);
     });
     this.askWatches.set(key, { controller, promise });
+  }
+
+  private observeConversationTitleFrame(threadId: string, turnId: string, frame: AgentStreamWireFrame): void {
+    if (this.stopped || this.store.activeTurn(threadId)?.id !== turnId) return;
+    const title = conversationTitleFromFrame(frame);
+    if (title === undefined) return;
+    try {
+      const thread = this.store.applyAgentTitle(threadId, title);
+      if (thread === undefined) return;
+      this.emit("thread.changed", threadId, { revision: thread.revision });
+      this.emit("threads.changed", threadId, { thread });
+    } catch (error) {
+      this.options.logger?.warn?.("Agent conversation-title update failed; the turn is continuing.", {
+        threadId,
+        turnId,
+        error: errorMessage(error),
+      });
+    }
   }
 
   private async watchForPendingAsk(threadId: string, turnId: string, signal: AbortSignal): Promise<void> {

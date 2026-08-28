@@ -82,12 +82,14 @@ companion, not an MCP server injected into every composed agent. Add project
 MCP servers to the agent's own `mcp.json`; do not copy the documentation server
 there unless the resulting agent itself must answer mono-agent framework questions.
 
-`RunHistory` and `SessionHistory` are app-owned request-scoped read tools, not
-entries for `mcp.json`. `SessionHistory` searches the current logical session's
-retained managed-tool calls/results and needs no config key. Allow-all exposes
-it on compatible routes; a specific allowlist must name `SessionHistory`.
-Direct OpenCode/ACP retain and cold-project lifecycle evidence but cannot expose
-that request-scoped tool.
+`RunHistory`, `SessionHistory`, and `SetConversationTitle` are app-owned
+request-scoped tools, not entries for `mcp.json`. `SessionHistory` searches the
+current logical session's retained managed-tool calls/results and needs no config
+key. `SetConversationTitle` appears only for writable interactive web threads;
+it keeps automatic semantic titles current, while a user rename permanently
+wins. Allow-all exposes eligible tools on compatible routes; a specific
+allowlist must name each one. Direct OpenCode suppresses all three; direct ACP
+retains and cold-projects lifecycle evidence but cannot expose `SessionHistory`.
 `@mono-agent/agent-app` also owns rich reply composition. `PublishReplyFile`
 copies a confined generated file into owner-private integrity storage and is
 available under allow-all (or by exact name in a restrictive policy). Supported

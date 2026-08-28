@@ -24,6 +24,9 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 - Persist agents, threads, messages, structured reasoning/tool/telemetry parts,
   revisions, turns, attachments, and agent pin preferences under
   `~/.mono-agent/web`.
+- Let an MCP-capable agent replace the interim first-message title with a short
+  semantic title and evolve it after a material topic shift, while treating any
+  user rename as a permanent lock.
 - Preserve and render the canonical tool writer's record/state/truncation and
   opaque-artifact metadata carried by structured agent stream events; web
   SQLite remains a client cache, not the canonical lifecycle store.
@@ -118,6 +121,16 @@ from aggregate work.
 Structured reasoning, routine tools, and one update-in-place row per compaction
 share the stream-aware Activity disclosure, which collapses at every terminal
 message state without reordering answer parts.
+
+New interactive threads initially use the first user message as their fallback
+title. On compatible routes, an allowlisted app-owned `SetConversationTitle`
+tool lets the agent quietly replace that text with a concise semantic title and
+update it when the topic materially changes. The successful call remains
+inspectable inside the collapsed Activity disclosure; it does not add an extra
+chat message. Renaming the thread in the web UI permanently disables agent title
+updates for that thread, even if a tool result arrives concurrently. Trigger
+threads, archived threads, restrictive policies that omit or deny the tool, and
+direct OpenCode routes keep the normal fallback/manual behavior.
 
 Background-job completion first targets the exact active run in its originating
 web thread. If no run is active, or the provider explicitly declines the live
@@ -308,8 +321,8 @@ cross-resource requests fail. See
 | Source area | Responsibility |
 | --- | --- |
 | [`server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/server.ts) | HTTP service, `/api/v1` routes, host/theme bootstrap identity, per-host PWA manifest, uploads, SSE invalidations, host/origin checks, and static webapp serving. |
-| [`service.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/service.ts) | Application lifecycle for discovery, threads, turns, live-input delivery/fallback, attachments, `AskUser` snapshots/submission, cancellation, notifications, and invalidation. |
-| [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence. |
+| [`service.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/service.ts) | Application lifecycle for discovery, threads, turns, agent-authored automatic titles, live-input delivery/fallback, attachments, `AskUser` snapshots/submission, cancellation, notifications, and invalidation. |
+| [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence, including race-safe automatic-title updates that never overwrite a user rename. |
 | [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, and owner-authenticated process-job reads/cancel over the operator protocol. |
 | [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook thread delivery and source/thread-bound process-job card updates. |
 | [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including atomic `AskUser` forms, tests, and its own dependency lockfile. |

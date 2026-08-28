@@ -29,6 +29,7 @@ import { MonoAgentAppController } from "../app-controller.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
 import { loadAppCoreConfig, resolveAppTraceSourceId } from "../app-config.js";
 import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME } from "../adapter-send-tools.js";
+import { SET_CONVERSATION_TITLE_MCP_SERVER_NAME } from "../conversation-title.js";
 import { RUN_HISTORY_MCP_SERVER_NAME } from "../run-history.js";
 import {
   createSlackChannelDriver,
@@ -2225,7 +2226,19 @@ describe("startMonoAgentApp", () => {
     try {
       expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
       await responder?.respond(
-        { conversationId: "direct", text: "ping", abortSignal: new AbortController().signal },
+        {
+          conversationId: "web:direct-thread",
+          text: "ping",
+          abortSignal: new AbortController().signal,
+          metadata: {
+            source: "web",
+            web: {
+              threadId: "direct-thread",
+              turnId: "direct-turn",
+              conversationTitle: { schema: 1, writable: true },
+            },
+          },
+        },
         { append: async () => undefined },
       );
       expect(runtimeCalls[0]?.model).toEqual(expect.objectContaining({ sdk: "opencode" }));
@@ -2239,7 +2252,19 @@ describe("startMonoAgentApp", () => {
       expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
 
       await responder?.respond(
-        { conversationId: "pi", text: "ping", abortSignal: new AbortController().signal },
+        {
+          conversationId: "web:pi-thread",
+          text: "ping",
+          abortSignal: new AbortController().signal,
+          metadata: {
+            source: "web",
+            web: {
+              threadId: "pi-thread",
+              turnId: "pi-turn",
+              conversationTitle: { schema: 1, writable: true },
+            },
+          },
+        },
         { append: async () => undefined },
       );
       expect(runtimeCalls[1]?.model).toEqual(expect.objectContaining({ sdk: "pi" }));
@@ -2250,6 +2275,7 @@ describe("startMonoAgentApp", () => {
       expect(JSON.parse(server?.env?.MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS ?? "[]")).toContain("AskUser");
       expect(server?.env?.MONO_AGENT_INTERACTION_BRIDGE_TOKEN).toBeDefined();
       expect(runtimeCalls[1]?.mcpServers?.[RUN_HISTORY_MCP_SERVER_NAME]).toBeDefined();
+      expect(runtimeCalls[1]?.mcpServers?.[SET_CONVERSATION_TITLE_MCP_SERVER_NAME]).toBeDefined();
     } finally {
       await app.stop();
     }

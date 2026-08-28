@@ -17,6 +17,7 @@ All three are configured in `mono-agent.config.json`; enforcement depends on the
 | Searching and fetching the public web | `@mono-agent/agent-runtime` | `tools.web.*` | [Local-first web research](/tools/web-research/) |
 | Letting local Exec/Bash calls finish after the turn | `@mono-agent/agent-app` + Pi runtime | `processJobs.*` | [Background process jobs](/tools/background-process-jobs/) |
 | Attaching external MCP servers | `@mono-agent/agent-harness` | `tools.mcpConfigPath` → `mcp.json` | [MCP Servers](/tools/mcp/) |
+| Maintaining semantic web conversation titles | `@mono-agent/agent-app` + `@mono-agent/web` | `SetConversationTitle` tool policy | [MCP Servers](/tools/mcp/#setconversationtitle-web-conversation-naming) |
 | Publishing files and interactive app replies | `@mono-agent/agent-app` | `tools.allowedTools` + runtime capability | [Reply files and MCP Apps](/tools/rich-replies/) |
 | Searching version-matched docs while authoring | `@mono-agent/docs-mcp` | harness MCP entry installed with the composer | [Documentation MCP companion](/tools/documentation-mcp/) |
 | Returning trusted asynchronous results | `@mono-agent/agent-app` + harness | `tools.continuationServers` + `continuations.*` | [Durable continuations](/tools/durable-continuations/) |

@@ -68,6 +68,7 @@ interface ThreadRow {
   id: string;
   source_id: string;
   title: string;
+  title_manual: number;
   archived_at: string | null;
   created_at: string;
   updated_at: string;
@@ -1694,6 +1695,39 @@ export class WebStore {
       }
     });
     return { ...this.requireThread(id), sourceId: current.sourceId };
+  }
+
+  /** Whether the current interactive thread still accepts agent-proposed titles. */
+  canApplyAgentTitle(id: string): boolean {
+    id = this.resolveThreadId(id);
+    const row = this.database.prepare(`
+      SELECT title_manual, trigger_kind, archived_at FROM threads WHERE id = ?
+    `).get(id) as unknown as {
+      title_manual: number;
+      trigger_kind: string | null;
+      archived_at: string | null;
+    } | undefined;
+    return row?.title_manual === 0 && row.trigger_kind === null && row.archived_at === null;
+  }
+
+  /** Apply one agent title without weakening the permanent manual-title lock. */
+  applyAgentTitle(id: string, value: string): WebThread | undefined {
+    id = this.resolveThreadId(id);
+    const title = normalizeTitle(value);
+    const now = this.now();
+    let changed = false;
+    this.transaction(() => {
+      const result = this.database.prepare(`
+        UPDATE threads
+        SET title = ?, updated_at = ?, revision = revision + 1
+        WHERE id = ? AND title_manual = 0 AND trigger_kind IS NULL
+          AND archived_at IS NULL AND title <> ?
+      `).run(title, now, id, title);
+      if (result.changes !== 1) return;
+      changed = true;
+      this.recordThreadRevision(id, "title_changed", now);
+    });
+    return changed ? this.requireThread(id) : undefined;
   }
 
   async deleteArchivedThread(id: string): Promise<{ readonly orphanedFiles: number }> {
@@ -3716,7 +3750,7 @@ function isValidVapidKeyPair(publicKey: string, privateKey: string): boolean {
 
 function threadSelectSql(suffix: string): string {
   return `
-    SELECT t.id, t.source_id, t.title, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
+    SELECT t.id, t.source_id, t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
            cc.job_id AS cron_job_id, cc.configured AS cron_configured,
            CASE WHEN t.trigger_kind = 'cron' THEN 0
                 WHEN a.status = 'online' OR a.status = 'degraded' THEN 1 ELSE 0 END AS can_send,

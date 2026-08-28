@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-This page covers how mono-agent attaches [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers to your agent through `tools.mcpConfigPath`, how the path is resolved and forwarded to the runtime, and the one rule that surprises people: **external MCP-server tools are not gated by `tools.allowedTools`**. App-owned MCP tools can define a narrower policy boundary; `RunHistory`, `SessionHistory`, and the adapter send tools do. Coverage type: `config`.
+This page covers how mono-agent attaches [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers to your agent through `tools.mcpConfigPath`, how the path is resolved and forwarded to the runtime, and the one rule that surprises people: **external MCP-server tools are not gated by `tools.allowedTools`**. App-owned MCP tools can define a narrower policy boundary; `RunHistory`, `SessionHistory`, `SetConversationTitle`, and the adapter send tools do. Coverage type: `config`.
 
 ## What `tools.mcpConfigPath` does
 
@@ -26,8 +26,8 @@ Point `tools.mcpConfigPath` at an `mcp.json` file describing one or more MCP ser
 | `tools.mcpConfigPath` | string | Path to an `mcp.json`. Resolved against the workspace, not the config file. |
 | `tools.mcpRequestContextServers` | string[] | Opt-in stdio server names that receive trusted per-run producing-conversation, run-id, output-directory, current-request attachment, and scoped progress context. HTTP/SSE and unlisted servers are unchanged. |
 | `tools.continuationServers` | string[] | Opt-in stdio or loopback-HTTP server names that receive a host-bound claim capability for durable asynchronous results. Remote HTTP, SSE, and unlisted servers fail closed or remain unchanged. |
-| `tools.allowedTools` | string[] | Allowlist for **built-in** runtime tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`) and policy-gated app-owned tools such as `RunHistory`, `SessionHistory`, and adapter send tools. Omit (or `["*"]`) for allow-all; a specific list narrows to those names. Does not affect external MCP-server tools. |
-| `tools.disallowedTools` | string[] | Denylist; deny always wins, even under allow-all. Filters built-ins, `ReadSkill`, `RunHistory`, `SessionHistory`, and adapter send tools. On the pi-native runtime it does **not** filter external MCP-server tools (see below). |
+| `tools.allowedTools` | string[] | Allowlist for **built-in** runtime tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`) and policy-gated app-owned tools such as `RunHistory`, `SessionHistory`, `SetConversationTitle`, and adapter send tools. Omit (or `["*"]`) for allow-all; a specific list narrows to those names. Does not affect external MCP-server tools. |
+| `tools.disallowedTools` | string[] | Denylist; deny always wins, even under allow-all. Filters built-ins, `ReadSkill`, `RunHistory`, `SessionHistory`, `SetConversationTitle`, and adapter send tools. On the pi-native runtime it does **not** filter external MCP-server tools (see below). |
 
 Environment overrides: `MONO_AGENT_MCP_CONFIG_PATH` sets `tools.mcpConfigPath`, `MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS` selects request-context stdio servers, and `MONO_AGENT_CONTINUATION_SERVERS` selects continuation-capable stdio/loopback-HTTP servers.
 
@@ -153,7 +153,7 @@ How the servers reach the underlying runtime depends on the backend:
 
 - **SDK runtimes** — the servers are **inlined** into the runtime options the agent passes to the provider session. The `mcp.json` is read and its `mcpServers` are merged into the request.
 - **Supported CLI runtimes** — mono-agent translates or forwards the server config into the provider-native shape.
-- **Direct OpenCode** — MCP is intentionally unsupported because provider-owned shell tools inherit the server environment. Any configured server, `MemoryRecall`, hosted Supermemory MCP, or real adapter send-tool injection fails validation and the bridge before startup. The host's implicit `RunHistory` and `SessionHistory` tools plus bridge-backed `AskUser` are omitted for a direct OpenCode primary/fallback and for an accepted per-trigger direct OpenCode turn; they do not make an otherwise minimal effective-allow-all config unusable. A rejected per-trigger override stays on its base runtime and keeps those tools. Use a Pi runtime, including `pi:opencode-go:*`, when MCP or host-mediated questions are required.
+- **Direct OpenCode** — MCP is intentionally unsupported because provider-owned shell tools inherit the server environment. Any configured server, `MemoryRecall`, hosted Supermemory MCP, or real adapter send-tool injection fails validation and the bridge before startup. The host's implicit `RunHistory`, `SessionHistory`, and `SetConversationTitle` tools plus bridge-backed `AskUser` are omitted for a direct OpenCode primary/fallback and for an accepted per-trigger direct OpenCode turn; they do not make an otherwise minimal effective-allow-all config unusable. A rejected per-trigger override stays on its base runtime and keeps those tools. Use a Pi runtime, including `pi:opencode-go:*`, when MCP or host-mediated questions are required.
 - **Direct ACP** — lifecycle persistence and cold projection work, but this route has no compatible request-scoped host seam for the new `SessionHistory` tool, so that tool is omitted for any chain or accepted per-trigger override that can attempt direct ACP. `validate` / `doctor` reports `unsupported_route`. Issue #626 deliberately preserves `RunHistory`'s pre-existing direct-ACP route wiring; use a Pi, Claude, or Codex app-server route when the model must call `SessionHistory`.
 
 For supported backends, you author one `mcp.json` and mono-agent does the translation. See [Runtime backends](/runtime/backends/) for the exact capability boundary.
@@ -168,9 +168,30 @@ Consequences:
 - An MCP tool's availability is governed by whether its server is **declared** in `mcp.json` / `tools.mcpServers`, not by the allowlist. To withhold an MCP tool, remove or don't declare its server.
 - On **direct Codex**, a valid declared server also authorizes Codex-generated `mcp_tool_call` approval elicitations for that exact server name. The bridge does not persist the approval and does not accept inherited/unconfigured servers or genuine downstream MCP form/URL elicitations. `permissionMode: "plan"` still permits these declared MCP calls, so their server-owned side effects are outside Codex's read-only filesystem sandbox.
 - On the **pi-native runtime**, `disallowedTools` does **not** filter external MCP-server tools either — declaring the server is the only lever. Claude Code receives `--disallowedTools`; direct Codex has no native name-policy projection and therefore rejects any normal-run restrictive policy instead of partially enforcing it. To hard-restrict an external MCP tool on pi, don't declare its server.
-- App-injected MCP tools define their own boundary. `MemoryRecall` and `AskCollaborator` are gated by their own enablement/composition switches; `RunHistory`, `SessionHistory`, and adapter send tools are deliberately governed by the normal tool policy.
+- App-injected MCP tools define their own boundary. `MemoryRecall` and `AskCollaborator` are gated by their own enablement/composition switches; `RunHistory`, `SessionHistory`, `SetConversationTitle`, and adapter send tools are deliberately governed by the normal tool policy.
 
 The `MemoryRecall` description is written to direct **proactive** recall: the agent is told to call it whenever context is missing or uncertain, before assuming or asking. This is behavioral guidance, not a gate — `MemoryRecall`'s availability is still governed by `config.memory.recallTool.enabled`. See [Capture & recall](/memory/capture-and-recall/).
+
+## `SetConversationTitle`: web conversation naming
+
+`SetConversationTitle` is an app-owned request-scoped MCP tool, not an entry in
+`mcp.json`. The host injects it only for an ordinary interactive `web:<threadId>`
+request whose web service still considers the title writable. Its strict input
+is `{ "title": "..." }`: surrounding/internal whitespace is normalized, control
+characters are rejected, and the result is capped at 80 characters. The tool
+description asks the model to choose a concise semantic title after the topic is
+clear and call again only after a material topic shift.
+
+Allow-all exposes the tool automatically on compatible routes. A restrictive
+policy must name `SetConversationTitle`, while `disallowedTools` can remove it.
+Any configured or accepted direct OpenCode route suppresses it. Trigger-created
+and archived web threads never advertise title write authority. The web service
+consumes only a successful structured result from this exact tool during the
+active turn, performs a conditional SQLite update, and emits the normal thread
+invalidation. A browser rename sets a permanent manual lock, so a later or
+racing agent result cannot overwrite it. The call remains visible in the
+collapsed Activity disclosure but creates no assistant message. If the tool is
+absent or unused, the first user message remains the automatic fallback title.
 
 ## `RunHistory`: prior-run evidence
 

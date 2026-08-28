@@ -61,6 +61,126 @@ function operatorCronOverview(overrides: Record<string, unknown> = {}): Record<s
 }
 
 describe("WebService", () => {
+  it("applies evolving semantic titles from completed tool calls and retains the calls in Activity", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    let turn = 0;
+    const titles = ["Web console naming", "Runtime title policy"];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => {
+          const title = titles[turn++]!;
+          return [
+            JSON.stringify({
+              kind: "event",
+              event: { type: "tool_call_started", id: `title-${String(turn)}`, name: "SetConversationTitle", arguments: { title } },
+            }),
+            JSON.stringify({
+              kind: "event",
+              event: {
+                type: "tool_call_completed",
+                id: `title-${String(turn)}`,
+                name: "SetConversationTitle",
+                arguments: { title },
+                content: `Conversation title proposed: ${title}`,
+                structuredContent: { schema: 1, title },
+              },
+            }),
+            JSON.stringify({ kind: "finish", finalText: "Done" }),
+            "",
+          ].join("\n");
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const events: string[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event.type); });
+
+    await service.startTurn(thread.id, { text: "Help me name web conversations" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(service.store.getThread(thread.id)?.title).toBe("Web console naming");
+
+    await service.startTurn(thread.id, { text: "Now focus on runtime policy" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(service.store.getThread(thread.id)?.title).toBe("Runtime title policy");
+    expect(turnBodies).toHaveLength(2);
+    for (const body of turnBodies) {
+      expect(body).toMatchObject({
+        metadata: {
+          web: { conversationTitle: { schema: 1, writable: true } },
+        },
+      });
+    }
+    expect(events.filter((event) => event === "thread.changed").length).toBeGreaterThanOrEqual(2);
+    expect(service.thread(thread.id).messages.at(-1)?.parts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "tool-call",
+        toolName: "SetConversationTitle",
+        status: "complete",
+        structuredResult: { schema: 1, title: "Runtime title policy" },
+      }),
+    ]));
+    unsubscribe();
+    await service.stop();
+  });
+
+  it("lets a manual rename win during a run and suppresses title capability on later turns", async () => {
+    const encoder = new TextEncoder();
+    let firstStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    let turn = 0;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => {
+          turn += 1;
+          if (turn === 1) {
+            return new ReadableStream<Uint8Array>({ start(controller) { firstStream = controller; } });
+          }
+          return [
+            JSON.stringify({
+              kind: "event",
+              event: {
+                type: "tool_call_completed",
+                id: "late-title",
+                name: "SetConversationTitle",
+                structuredContent: { schema: 1, title: "Agent overwrite" },
+              },
+            }),
+            JSON.stringify({ kind: "finish", finalText: "Done" }),
+            "",
+          ].join("\n");
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Initial topic" });
+    await waitFor(() => firstStream !== undefined);
+    service.patchThread(thread.id, { title: "My permanent title" });
+    firstStream?.enqueue(encoder.encode(`${JSON.stringify({
+      kind: "event",
+      event: {
+        type: "tool_call_completed",
+        id: "concurrent-title",
+        name: "SetConversationTitle",
+        structuredContent: { schema: 1, title: "Concurrent agent title" },
+      },
+    })}\n${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+    firstStream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(service.store.getThread(thread.id)?.title).toBe("My permanent title");
+
+    await service.startTurn(thread.id, { text: "Later topic" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(service.store.getThread(thread.id)?.title).toBe("My permanent title");
+    expect(turnBodies[0]).toMatchObject({
+      metadata: { web: { conversationTitle: { schema: 1, writable: true } } },
+    });
+    expect((turnBodies[1]?.metadata as { web?: Record<string, unknown> } | undefined)?.web)
+      .not.toHaveProperty("conversationTitle");
+    await service.stop();
+  });
+
   it("feature-detects cron without a wire bump and keeps cached old-agent state read-only and unknown", async () => {
     let modern = true;
     const modernFetch = operatorFetch({ cronOverview: operatorCronOverview() });
