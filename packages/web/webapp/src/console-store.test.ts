@@ -137,13 +137,20 @@ describe("effortLevelsForAgentModel", () => {
     expect(effortLevelsForAgentModel(source, "empty")).toEqual([]);
   });
 
-  it("honors provider grades and exposes the complete cloud ladder when unspecified", () => {
+  it("honors provider grades and fail-closes when a present option omits effort levels", () => {
     expect(effortLevelsForAgentModel(source, "graded")).toEqual([
       "low",
       "medium",
       "xhigh",
     ]);
-    expect(effortLevelsForAgentModel(source, "cloud")).toEqual(GLOBAL_EFFORT_LEVELS);
+    expect(effortLevelsForAgentModel(source, "cloud")).toEqual([]);
+  });
+
+  it("keeps the compatibility ladder only for legacy agents without modelOptions", () => {
+    expect(effortLevelsForAgentModel(
+      agent("legacy", { models: ["legacy/model"], efforts: [...GLOBAL_EFFORT_LEVELS] }),
+      "legacy/model",
+    )).toEqual([...GLOBAL_EFFORT_LEVELS]);
   });
 });
 
@@ -184,5 +191,20 @@ describe("run setting isolation", () => {
         { model: "removed", effort: "ultra" },
       ),
     ).toEqual({ model: "", effort: "" });
+  });
+
+  it("clears an incompatible stored effort when the selected model changes", () => {
+    expect(
+      validateRunPreference(
+        agent("agent", {
+          models: ["graded", "cloud"],
+          modelOptions: {
+            graded: { reasoning: true, effortLevels: ["low", "medium"] },
+            cloud: { reasoning: true },
+          },
+        }),
+        { model: "cloud", effort: "medium" },
+      ),
+    ).toEqual({ model: "cloud", effort: "" });
   });
 });

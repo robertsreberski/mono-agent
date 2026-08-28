@@ -60,6 +60,7 @@ flowchart TB
   P_mono_agent_a2a_adapter --> P_mono_agent_agent_contracts
   P_mono_agent_agent_app --> P_mono_agent_agent_contracts
   P_mono_agent_agent_app --> P_mono_agent_agent_harness
+  P_mono_agent_agent_app --> P_mono_agent_agent_runtime
   P_mono_agent_agent_app --> P_mono_agent_config
   P_mono_agent_agent_app --> P_mono_agent_cron_adapter
   P_mono_agent_agent_app --> P_mono_agent_memory
@@ -103,7 +104,7 @@ flowchart TB
 
 | Package | Direct workspace dependencies |
 | --- | --- |
-| `@mono-agent/agent-app` | `@mono-agent/agent-contracts`, `@mono-agent/agent-harness`, `@mono-agent/config`, `@mono-agent/cron-adapter`, `@mono-agent/memory`, `@mono-agent/observability`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/runtime-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui`, `@mono-agent/web`, `@mono-agent/webhook-adapter` |
+| `@mono-agent/agent-app` | `@mono-agent/agent-contracts`, `@mono-agent/agent-harness`, `@mono-agent/agent-runtime`, `@mono-agent/config`, `@mono-agent/cron-adapter`, `@mono-agent/memory`, `@mono-agent/observability`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/runtime-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui`, `@mono-agent/web`, `@mono-agent/webhook-adapter` |
 | `create-mono-agent` | `@mono-agent/agent-app` |
 | `@mono-agent/tui` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/observability` |
 | `@mono-agent/web` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/observability` |
