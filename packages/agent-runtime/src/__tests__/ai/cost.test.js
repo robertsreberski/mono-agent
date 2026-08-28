@@ -113,6 +113,6 @@ describe("estimateCost", () => {
     expect(estimateCost({
       model: "codex:gpt-5.6-terra",
       cacheWriteTokens: 100_000,
-    })).toBeCloseTo(0.3125, 6);
+    })).toBeCloseTo(0.25, 6);
   });
 });

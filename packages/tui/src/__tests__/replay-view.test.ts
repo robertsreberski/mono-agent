@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { TUI } from "@earendil-works/pi-tui";
+import { TuiMainScreen } from "@earendil-works/pi-tui";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 
 function setup(): ReplayView {
-  const tui = new TUI(new TestTerminal(100, 30));
+  const tui = new TuiMainScreen(new TestTerminal(100, 30));
   return new ReplayView({ tui });
 }
 

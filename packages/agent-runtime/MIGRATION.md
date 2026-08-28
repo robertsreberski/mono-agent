@@ -74,8 +74,8 @@ the configuration schema.
   `@earendil-works/pi-ai` only for catalog, reasoning, or OAuth behavior should
   switch to `listPiBuiltinModels`, `getPiBuiltinModel`,
   `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` from
-  `@mono-agent/agent-runtime/ai`. The runtime keeps Pi AI and Pi Agent Core
-  exact-pinned at `0.83.0`; the façade returns cloned model and credential
+  `@mono-agent/agent-runtime/ai`. The runtime exact-pins Pi AI at `0.84.3` and Pi Agent Core at `0.83.0`;
+  the façade returns cloned model and credential
   snapshots rather than exposing upstream provider objects.
 - **Claude test seam:** downstream tests should pass
   `RuntimeRunOptions.claudeAgentQuery` instead of mocking
@@ -165,7 +165,7 @@ This baseline carries the whole 0.15.x contract forward and adds:
   to rediscover by trial and error what its parent could look up.
 - Provider failover detail reaches whoever is watching the run rather than being
   flattened at the boundary.
-- Pi SDK 0.83.0.
+- Pi AI 0.84.3 with Pi Agent Core 0.83.0.
 
 ## 0.15.x
 
@@ -422,11 +422,17 @@ key-resolution contract is unchanged**: an `apiKeys` map entry wins, else the ho
 falls back to its own env vars, exactly as returning `undefined` from the old hook
 did). **No host action needed** — `resolvePiApiKey` behaves as before.
 
-Dependency bump: **`@earendil-works/pi-ai` and `@earendil-works/pi-agent-core` are
-now `0.83.0`** (the initial Pi 0.80 migration landed at `0.80.5`, from
-`^0.79.1`, and ran at `0.80.6` until the 0.83 upgrade). Compaction is driven
+Dependency bump: **`@earendil-works/pi-ai` is now `0.84.3`; `@earendil-works/pi-agent-core` remains `0.83.0`**
+(the initial Pi 0.80 migration landed at `0.80.5`, from `^0.79.1`, ran at
+`0.80.6` until the 0.83 upgrade, and then at `0.83.0`). Agent Core 0.84.3 is
+held back because its replacement durable harness does not yet implement the
+prompt, subscription, compaction, or abort paths used here. Compaction is driven
 natively (section 3), and model-native `max` reasoning plus Pi's request-wide
 pricing tiers are preserved.
+
+Packed npm consumers consequently retain Agent Core's nested Pi AI 0.83.0
+compatibility copy beside the runtime-owned Pi AI 0.84.3 catalog/provider copy.
+The release guard resolves and verifies both exact paths independently.
 
 The 0.83 upgrade carries two upstream removals, both absorbed inside the runtime
 so hosts need no action:
@@ -510,15 +516,16 @@ Worklab's runtime fork:
 2. **Remove direct provider ownership.** Delete Worklab production imports from
    `@earendil-works/pi-ai`, its separate Pi version constraint, and local copies
    of provider bridge code. Move tests off Pi's faux-provider helpers too; until
-   that is complete, isolate the fixture or pin its development-only Pi
-   dependency to exact `0.83.0` rather than a floating range. Do not restore the
+   that is complete, isolate the fixture or pin its development-only dependencies
+   to the exact Pi AI `0.84.3` and Pi Agent Core `0.83.0` compatibility pins
+   rather than floating ranges. Do not restore the
    removed `pi-sdk.js` subpath.
 3. **Use the public Pi surfaces.** Run models through
    `generatePiNativeResponse` or the runtime registry. Use
    `listPiBuiltinModels`, `getPiBuiltinModel`,
    `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` for
    catalog and OAuth integration. Those façades keep Pi provider objects and the
-   exact `0.83.0` compatibility pin inside the runtime. OAuth login adapters
+   exact Pi AI `0.84.3` and Pi Agent Core `0.83.0` compatibility pins inside the runtime. OAuth login adapters
    must supply `onAuth`, `onDeviceCode`, `onPrompt`, and `onSelect`; the façade
    rejects an incomplete callback contract before starting provider login.
 4. **Inject Claude tests.** Replace package-level mocks of

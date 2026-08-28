@@ -1,4 +1,4 @@
-import { TUI } from "@earendil-works/pi-tui";
+import { TuiMainScreen } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
@@ -12,7 +12,7 @@ function setup(onTurnSettled?: (event: ChatTurnSettledEvent) => void | Promise<v
   status: () => string;
   rendered: () => string;
 } {
-  const tui = new TUI(new TestTerminal(100, 30));
+  const tui = new TuiMainScreen(new TestTerminal(100, 30));
   const statusBar = new StatusBar();
   const chat = new ChatView({
     tui,

@@ -34,7 +34,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@earendil-works/pi-tui": "0.83.0",
+    "@earendil-works/pi-tui": "0.84.3",
     "@mono-agent/agent-contracts": "workspace:0.20.7",
     "@mono-agent/config": "workspace:0.20.7",
     "@mono-agent/observability": "workspace:0.20.7"

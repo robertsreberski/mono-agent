@@ -41,7 +41,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
 
 ## Version pins (do not "unify" them)
 
-- `packages/agent-runtime`: `@earendil-works/pi-ai` + `pi-agent-core` at `0.83.0`.
+- `packages/agent-runtime`: `@earendil-works/pi-ai` at `0.84.3`; `pi-agent-core` at `0.83.0`.
   The old reason to hold at `0.80.6` was that it still exported the runtime
   OAuth registry; `./oauth` is now a type-only entry point (literally
   `export {}` at runtime) and the per-provider flows under `dist/auth/oauth/*`
@@ -56,17 +56,27 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   `resolvePiOAuthApiKey`, and `loginPiOAuth`. The model APIs return cloned
   snapshots, and the OAuth APIs do not expose Pi provider instances.
   A consumer test that still imports Pi's faux helpers must use an isolated
-  fixture or the runtime's exact `0.83.0` as a development-only pin; a floating
+  fixture or the runtime's exact Pi AI `0.84.3` and Pi Agent Core `0.83.0`
+  compatibility pins as development-only pins; a floating
   host range can otherwise satisfy Pi Agent Core's upstream dependency with a
   different copy.
-- `packages/tui`: `@earendil-works/pi-tui` at `0.83.0`. This was held at
+- `packages/tui`: `@earendil-works/pi-tui` at `0.84.3`. This was held at
   `0.79.10` because the 0.80 API broke the TUI; it type-checks and builds clean
-  at 0.83.0, but that bump rode along with the pi-ai upgrade rather than being
-  exercised on its own — **verify the console interactively** before trusting it.
+  at 0.83.0, and the 0.84.3 bump again rides with the pi-ai upgrade rather than
+  being exercised on its own — **verify the console interactively** before trusting it.
 - `pi-agent-core` 0.83.0 removed `env` from `AgentHarnessOptions`; an
   `ExecutionEnv` now reaches tools through the generic per-turn `toolContext`.
   mono-agent needs neither, since it uses none of pi's built-in file/shell tools
   and its own tools close over what they need.
+- Do not bump `pi-agent-core` to 0.84.3 yet. Its replacement durable
+  `AgentHarness` has a private constructor and requires `AgentHarness.create()`,
+  but the shipped implementation still marks prompt, event hooks, subscription,
+  compaction, abort, and wait-for-idle operations as unavailable. Those are all
+  required by mono-agent's sole Pi runtime bridge.
+- A packed npm consumer therefore has two intentional Pi AI copies: the
+  runtime-owned exact `0.84.3` catalog/provider copy and Agent Core's nested
+  `^0.83.0` compatibility copy, which must resolve to exact `0.83.0`. The release
+  guard verifies both paths independently.
 
 Pi AI's `@anthropic-ai/sdk@0.91.1` pin cannot satisfy the Claude Agent SDK's
 `>=0.93.0` peer range. Two isolated Anthropic SDK versions are therefore the

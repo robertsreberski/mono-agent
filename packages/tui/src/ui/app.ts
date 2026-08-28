@@ -1,5 +1,5 @@
-import { Container, matchesKey, SelectList, Text, TruncatedText, TUI, visibleWidth } from "@earendil-works/pi-tui";
-import type { Component, OverlayHandle, SelectItem, SlashCommand, Terminal } from "@earendil-works/pi-tui";
+import { Container, matchesKey, SelectList, Text, TruncatedText, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui";
+import type { Component, OverlayHandle, SelectItem, SlashCommand, Terminal, TUI } from "@earendil-works/pi-tui";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import { EFFORT_LEVELS } from "@mono-agent/config";
 
@@ -236,7 +236,7 @@ export class MonoAgentTuiApp {
 
   constructor(options: MonoAgentTuiAppOptions) {
     this.options = options;
-    this.tui = new TUI(options.terminal);
+    this.tui = new TuiMainScreen(options.terminal);
     this.exitPromise = new Promise((resolve) => {
       this.exitResolve = resolve;
     });

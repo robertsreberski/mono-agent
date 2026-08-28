@@ -2,7 +2,7 @@ import { constants as fsConstants } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
 import { createInterface } from "node:readline";
 
-import type { AuthInteraction, OAuthAuth } from "@earendil-works/pi-ai";
+import type { OAuthAuth, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
 export interface PiOAuthLoginIo {
@@ -14,6 +14,7 @@ export interface RunPiOAuthLoginOptions {
   readonly authPath?: string;
   readonly provider?: OAuthAuth;
   readonly io?: PiOAuthLoginIo;
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -56,7 +57,8 @@ export async function runPiOAuthLogin(
   };
 
   try {
-    const interaction: AuthInteraction = {
+    const interaction: ProviderAuthInteraction = {
+      signal: options.signal ?? new AbortController().signal,
       notify: (event) => {
         if (event.type === "auth_url") {
           io.write(`\nOpen this URL in your browser:\n${event.url}\n`);

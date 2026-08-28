@@ -50,7 +50,8 @@ try {
   // pi-ai 0.83.0 made `@earendil-works/pi-ai/oauth` type-only and made the
   // login flows private provider implementations, so `loginAnthropic` is gone.
   // The same real implementation is now reached through `provider.auth.oauth`,
-  // driven by the `prompt`/`notify` interaction rather than six callbacks.
+  // driven by the `prompt`/`notify` interaction rather than six callbacks. Pi
+  // 0.84 also requires the normalized provider interaction to carry a signal.
   const { builtinProviders } = await import("@earendil-works/pi-ai/providers/all");
   const anthropicOAuth = builtinProviders().find((provider) => provider.id === "anthropic")?.auth.oauth;
   if (anthropicOAuth === undefined) {
@@ -58,6 +59,7 @@ try {
   }
   try {
     await anthropicOAuth.login({
+      signal: new AbortController().signal,
       notify: () => undefined,
       prompt: async (prompt) => {
         if (prompt.type === "manual_code") {

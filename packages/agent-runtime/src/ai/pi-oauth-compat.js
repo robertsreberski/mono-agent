@@ -24,7 +24,7 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 /**
  * @typedef {import("@earendil-works/pi-ai").OAuthAuth} OAuthAuth
  * @typedef {import("@earendil-works/pi-ai").OAuthCredential} OAuthCredential
- * @typedef {import("@earendil-works/pi-ai").AuthInteraction} AuthInteraction
+ * @typedef {import("@earendil-works/pi-ai").ProviderAuthInteraction} ProviderAuthInteraction
  * @typedef {import("@earendil-works/pi-ai").AuthPrompt} AuthPrompt
  * @typedef {import("@earendil-works/pi-ai").AuthEvent} AuthEvent
  * @typedef {import("@earendil-works/pi-ai/oauth").OAuthLoginCallbacks} OAuthLoginCallbacks
@@ -112,7 +112,10 @@ export async function resolveOAuthApiKey(providerId, credentials) {
 
   if (Date.now() >= credential.expires) {
     try {
-      credential = await oauth.refresh(credential);
+      // Pi 0.84 requires provider refreshes to receive an AbortSignal. This
+      // legacy resolver has no cancellation input, so give the refresh its own
+      // non-aborted signal while keeping the public contract unchanged.
+      credential = await oauth.refresh(credential, new AbortController().signal);
     } catch {
       throw new Error(`Failed to refresh OAuth token for ${providerId}`);
     }
@@ -126,15 +129,17 @@ export async function resolveOAuthApiKey(providerId, credentials) {
 }
 
 /**
- * Bridge the legacy six-callback OAuth surface onto 0.83.0's single
- * `prompt`/`notify` pair.
+ * Bridge the legacy six-callback OAuth surface onto Pi's single
+ * `prompt`/`notify` pair. Pi 0.84 requires every provider login interaction to
+ * carry an AbortSignal, so callbacks without one receive a private non-aborted
+ * signal.
  *
  * `manual_code` must stay wired to `onManualCodeInput`: Anthropic races its
  * localhost callback against a pasted redirect URL, and that path is the reason
  * `agent-app`'s `runPiOAuthLogin` exists at all.
  *
  * @param {OAuthLoginCallbacks} callbacks
- * @returns {AuthInteraction}
+ * @returns {ProviderAuthInteraction}
  */
 export function toAuthInteraction(callbacks) {
   if (callbacks === null || typeof callbacks !== "object") {
@@ -142,7 +147,7 @@ export function toAuthInteraction(callbacks) {
   }
 
   return {
-    ...(callbacks.signal === undefined ? {} : { signal: callbacks.signal }),
+    signal: callbacks.signal ?? new AbortController().signal,
 
     /** @param {AuthPrompt} prompt */
     async prompt(prompt) {
