@@ -33,6 +33,31 @@ function agent(sourceId = "agent-one", supportsAttachments = true): WebAgentSumm
 }
 
 describe("WebStore", () => {
+  it("applies agent titles idempotently until a manual rename permanently locks the thread", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+
+    expect(store.canApplyAgentTitle(thread.id)).toBe(true);
+    expect(store.applyAgentTitle(thread.id, "Semantic topic title")).toMatchObject({
+      title: "Semantic topic title",
+      revision: 2,
+    });
+    expect(store.applyAgentTitle(thread.id, "Semantic topic title")).toBeUndefined();
+    expect(store.getThread(thread.id)?.revision).toBe(2);
+
+    expect(store.patchThread(thread.id, { title: "My permanent title" })).toMatchObject({
+      title: "My permanent title",
+      revision: 3,
+    });
+    expect(store.canApplyAgentTitle(thread.id)).toBe(false);
+    expect(store.applyAgentTitle(thread.id, "Agent overwrite")).toBeUndefined();
+    expect(store.getThread(thread.id)).toMatchObject({ title: "My permanent title", revision: 3 });
+    store.close();
+  });
+
   it("persists agent pins independently of discovery and sorts pinned agents first", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

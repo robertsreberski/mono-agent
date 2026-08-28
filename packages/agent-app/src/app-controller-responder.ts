@@ -24,6 +24,10 @@ import {
   createAdapterSendToolsRuntimeExtension,
   resolveAdapterSendToolsSettings,
 } from "./adapter-send-tools.js";
+import {
+  createSetConversationTitleRuntimeExtension,
+  isSetConversationTitleToolAllowed,
+} from "./conversation-title.js";
 import { composeRuntimeOptionExtensions, type RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 import { createLocalConfigurationRuntimeExtension } from "./local-configuration.js";
 import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "./run-history.js";
@@ -260,6 +264,10 @@ export async function buildResponder(
       })
     : undefined;
   const mcpAppsBase = mcpApps?.createExtension;
+  const conversationTitleBase = isSetConversationTitleToolAllowed(coreConfig.tools)
+    && !runtimeRouteContainsDirectOpenCode(coreConfig)
+    ? createSetConversationTitleRuntimeExtension()
+    : undefined;
   const replyArtifactsBase = isPublishReplyFileToolAllowed(coreConfig.tools)
     && !runtimeRouteContainsDirectOpenCode(coreConfig)
     ? replyArtifacts.createExtension
@@ -316,6 +324,11 @@ export async function buildResponder(
   const adapterSendToolsExtension = adapterSendTools.createExtension?.(
     requestModelOverride.targetsDirectOpenCode,
   );
+  const conversationTitleExtension: RuntimeOptionsExtension | undefined = conversationTitleBase === undefined
+    ? undefined
+    : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
+      ? { runtimeOptions: {}, cleanup: async () => {} }
+      : await conversationTitleBase(requestInput);
   const mcpAppsExtension: RuntimeOptionsExtension | undefined = mcpAppsBase === undefined
     ? undefined
     : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
@@ -346,6 +359,7 @@ export async function buildResponder(
     supermemoryMcp,
     runHistoryExtension,
     sessionHistoryExtension,
+    conversationTitleExtension,
     mcpAppsExtension,
     replyArtifactsExtension,
     adapterSendToolsExtension,
