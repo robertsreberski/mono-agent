@@ -26,7 +26,7 @@ import {
   attestProcessJobsRootRegistration,
   type ProcessJobsRootRegistrationProof,
 } from "./process-jobs-root-registry.js";
-import { isSensitiveEnvironmentName } from "./redact-secrets.js";
+import { isSensitiveEnvironmentName, redactSecrets } from "./redact-secrets.js";
 import {
   currentProcessIncarnation,
   isSameProcessIncarnation,
@@ -593,9 +593,11 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         const admittedAt = this.now();
         const maxRuntimeMs = Math.min(this.settings.maxRuntimeMs, request.timeoutMs ?? this.settings.maxRuntimeMs);
         const previewChars = Math.min(this.settings.previewChars, request.maxOutputChars ?? this.settings.previewChars);
-        const summary = request.tool === "Exec"
-          ? "Exec command (values redacted)"
-          : "Bash command (content redacted)";
+        const summary = processJobSummary(
+          request,
+          processDescriptionSecrets(request.prepared.env),
+          this.options.workspace,
+        );
         const record: DurableProcessJobRecord = {
           schemaVersion: 1,
           generation: randomUUID(),
@@ -1790,6 +1792,34 @@ function pendingRequest(request: ProcessJobStartRequest): PendingProcessJob {
   };
 }
 
+const PROCESS_JOB_DESCRIPTION_SCAN_CHARS = 4_096;
+const PROCESS_JOB_DESCRIPTION_MAX_CHARS = 160;
+
+function processJobSummary(
+  request: ProcessJobStartRequest,
+  secrets: readonly string[],
+  workspace: string,
+): string {
+  const fallback = request.tool === "Exec"
+    ? "Exec command (values redacted)"
+    : "Bash command (content redacted)";
+  if (typeof request.description !== "string" || request.description.trim().length === 0) {
+    return fallback;
+  }
+  let description = request.description.slice(0, PROCESS_JOB_DESCRIPTION_SCAN_CHARS);
+  const truncatedAtEnd = request.description.length > PROCESS_JOB_DESCRIPTION_SCAN_CHARS;
+  const resolvedWorkspace = resolve(workspace);
+  if (resolvedWorkspace !== "/") description = description.replaceAll(resolvedWorkspace, "<workspace>");
+  const home = homedir();
+  if (home !== "/") description = description.replaceAll(home, "~");
+  description = description.replace(/[\p{Cc}\p{Cf}]+/gu, " ");
+  const sanitized = redactSecrets(redactOutput(description, secrets, truncatedAtEnd), {
+    fallback: "Process job",
+    maxChars: PROCESS_JOB_DESCRIPTION_MAX_CHARS,
+  });
+  return `Purpose: ${sanitized}`;
+}
+
 function captureMutationSnapshot(draft: ProcessJobStoreMutationDraft): ProcessJobMutationSnapshot {
   // Do not structuredClone(draft): the copy-on-read Map subclass deliberately
   // keeps its base Map slots empty, so structuredClone would silently lose its
@@ -2113,6 +2143,26 @@ function processOutputSecrets(
     if (typeof value === "string"
       && value.length > 0
       && (explicitNames.has(name) || value.length >= 4 || isSensitiveEnvironmentName(name))) {
+      values.push(value);
+    }
+  }
+  return [...new Set(values)].sort((left, right) => right.length - left.length);
+}
+
+function processDescriptionSecrets(
+  overrides: Readonly<Record<string, string | undefined>> | undefined,
+): readonly string[] {
+  const effective = new Map(Object.entries(process.env));
+  const explicitNames = new Set(Object.keys(overrides ?? {}));
+  for (const [name, value] of Object.entries(overrides ?? {})) {
+    if (value === undefined) effective.delete(name);
+    else effective.set(name, value);
+  }
+  const values: string[] = [];
+  for (const [name, value] of effective) {
+    if (typeof value === "string"
+      && value.length > 0
+      && (explicitNames.has(name) || isSensitiveEnvironmentName(name))) {
       values.push(value);
     }
   }

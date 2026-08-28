@@ -50,6 +50,11 @@ export interface ProcessJobStartRequest {
   readonly prepared: PreparedSandboxCommand;
   /** Kernel-produced summary that contains no argument/command values. */
   readonly summary: string;
+  /**
+   * Model-authored purpose for user-visible lifecycle messages. The host must
+   * bound and redact this before retaining it; never persist the raw value.
+   */
+  readonly description?: string;
   /** Explicit per-call narrowing; omission delegates to compiled host config. */
   readonly timeoutMs?: number;
   /** Explicit per-call preview narrowing; omission delegates to host config. */
@@ -121,6 +126,7 @@ function assertKernelStartRequest(request: ProcessJobStartRequest): void {
   if (request === null || typeof request !== "object"
     || (request.tool !== "Exec" && request.tool !== "Bash")
     || typeof request.summary !== "string"
+    || (request.description !== undefined && typeof request.description !== "string")
     || typeof request.launch !== "function"
     || request.prepared === null
     || typeof request.prepared !== "object"

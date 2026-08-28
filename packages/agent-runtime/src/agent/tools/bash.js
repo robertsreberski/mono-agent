@@ -82,7 +82,7 @@ export function normalizeBackgroundBashTimeoutMs(value) {
 /**
  * Compatibility wrapper retained for direct callers and tests.
  *
- * @param {{command: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean}} params
+ * @param {{command: string, description?: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean}} params
  * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: import("./shared/process-jobs.js").ProcessJobsController}} [options]
  */
 export async function bashToolImpl(params, options = {}) {
@@ -92,12 +92,13 @@ export async function bashToolImpl(params, options = {}) {
 /**
  * Structured Bash execution used by the Pi bridge.
  *
- * @param {{command: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean}} params
+ * @param {{command: string, description?: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean}} params
  * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: import("./shared/process-jobs.js").ProcessJobsController}} [options]
  */
 export async function bashToolRun(
   {
     command,
+    description,
     timeout,
     timeout_ms,
     max_output_chars,
@@ -166,6 +167,7 @@ export async function bashToolRun(
       tool: "Bash",
       prepared,
       summary: `Bash command (${command.length} characters; content redacted)`,
+      description,
       timeoutMs: requestedTimeoutMs,
       maxOutputChars: max_output_chars === undefined ? undefined : maxChars,
       startedAt,
