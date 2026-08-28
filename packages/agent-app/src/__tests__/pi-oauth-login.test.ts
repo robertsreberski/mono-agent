@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import type { AuthInteraction, OAuthAuth } from "@earendil-works/pi-ai";
+import type { OAuthAuth, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -43,7 +43,9 @@ describe("Pi OAuth terminal wrapper", () => {
     let received = "";
     const provider = {
       name: "Anthropic",
-      login: vi.fn(async (interaction: AuthInteraction) => {
+      login: vi.fn(async (interaction: ProviderAuthInteraction) => {
+        expect(interaction.signal).toBeInstanceOf(AbortSignal);
+        expect(interaction.signal.aborted).toBe(false);
         interaction.notify({
           type: "auth_url",
           url: "https://claude.ai/oauth/authorize?state=expected-state",

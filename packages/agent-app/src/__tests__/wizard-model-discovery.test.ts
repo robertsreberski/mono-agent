@@ -218,6 +218,14 @@ describe("supported wizard model catalog", () => {
     expect(pi.some((candidate) => candidate.value.startsWith("pi:openai:"))).toBe(false);
     expect(pi.every((candidate) => candidate.availability === "catalog_available")).toBe(true);
     expect(pi.some((candidate) => candidate.supportedEfforts?.includes("minimal"))).toBe(true);
+    expect(pi.find((candidate) => candidate.value === "pi:github-copilot:gemini-3.7-flash")).toMatchObject({
+      authState: "auth_required",
+      setupRequired: true,
+    });
+    expect(pi.find((candidate) => candidate.value === "pi:github-copilot:grok-4.6")).toMatchObject({
+      authState: "auth_required",
+      setupRequired: true,
+    });
     expect(pi.find((candidate) => candidate.value === "pi:openai-codex:gpt-5.6-sol")).toMatchObject({
       authState: "auth_required",
       setupRequired: true,
