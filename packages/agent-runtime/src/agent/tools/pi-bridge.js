@@ -515,6 +515,10 @@ export function getPiBuiltinTools(allowedTools, {
         : ` This host runs a background job for up to ${formatDurationForModel(backgroundLimitMs)}; \`timeout_ms\` may lower that but never raise it, and the start receipt reports \`max_runtime_ms\`, the budget actually granted — check it, because a job is killed at that limit.`
     }`,
   };
+  const processDescriptionSchema = {
+    type: "string",
+    description: "Short present-participle phrase describing what the command is doing, shown in tool activity and background-job lifecycle messages (for example, \"Running the full repository test suite\"). Always provide this when background=true. Describe the purpose, not command syntax; never include arguments, paths, credentials, or secrets.",
+  };
   // Per-tool closure config (cwd/event sink/limits/policy) plus the per-instance
   // ToolContext `ctx` that the tool impls and shared helpers read from.
   const toolContext = {
@@ -571,7 +575,7 @@ export function getPiBuiltinTools(allowedTools, {
     Bash: createBuiltinTool("Bash", "Bash", "Execute a shell command for pipelines, redirection, conditionals, or other shell syntax. Prefer Exec for one executable with an argv array. This is macOS: do not assume GNU-only commands or flags.", objectSchema({
       command: { type: "string" },
       workdir: { type: "string" },
-      description: { type: "string" },
+      description: processDescriptionSchema,
       timeout_ms: processTimeoutSchema,
       timeout: legacyBashTimeoutSchema,
       max_output_chars: bashLimitSchema,
@@ -581,6 +585,7 @@ export function getPiBuiltinTools(allowedTools, {
       executable: { type: "string", minLength: 1 },
       args: { type: "array", items: { type: "string" }, maxItems: 256 },
       workdir: { type: "string" },
+      description: processDescriptionSchema,
       timeout_ms: processTimeoutSchema,
       max_output_chars: bashLimitSchema,
       ...(processJobsController ? { background: backgroundSchema } : {}),

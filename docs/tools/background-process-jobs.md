@@ -280,6 +280,7 @@ Use the existing tool exactly as before and add `background: true`:
   "executable": "pnpm",
   "args": ["test"],
   "workdir": ".",
+  "description": "Running the full repository test suite",
   "timeout_ms": 900000,
   "max_output_chars": 4000,
   "background": true
@@ -291,6 +292,12 @@ literal argv semantics. Both reuse the exact sandbox-prepared command that a
 foreground call would launch. The immediate result contains only an opaque
 `job_id`, `state`, and `started_at`; it does not expose argv, environment,
 process ids, paths, or secrets.
+
+`description` is a short statement of the work's purpose. For background jobs,
+the host bounds and redacts it before showing the same safe summary throughout
+the lifecycle surface and durable terminal record. The raw description is not
+persisted; argv, command content, environment values, and host-specific
+workspace/home paths remain hidden.
 
 The agent is told when to reach for this and what not to do afterwards in three
 places, all gated on the same availability check as the schema itself: the

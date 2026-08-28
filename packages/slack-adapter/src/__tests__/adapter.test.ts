@@ -890,8 +890,10 @@ describe("SlackAdapter", () => {
       expect(respond).not.toHaveBeenCalled();
       expect(api.postMessageCalls).toHaveLength(1);
       expect(api.postMessageCalls[0]).toMatchObject({ channel: "C1", thread_ts: "171.5" });
+      expect(api.postMessageCalls[0]?.text).toContain("Purpose: Running the full repository test suite");
       expect(api.updateCalls).toHaveLength(1);
       expect(api.updateCalls[0]).toMatchObject({ channel: "C1", ts: "200.000001" });
+      expect(api.updateCalls[0]?.text).toContain("Purpose: Running the full repository test suite");
       expect(api.updateCalls[0]?.text).toContain(state.replaceAll("_", " "));
     },
   );
@@ -4562,7 +4564,7 @@ function processJobProjection(
     jobId,
     tool: "Exec",
     state,
-    summary: "Exec command (values redacted)",
+    summary: "Purpose: Running the full repository test suite",
     origin: {
       conversationId: "slack:C1:171.5#2026-08-15",
       channel: "slack",
