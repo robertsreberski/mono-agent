@@ -21,6 +21,7 @@ import type {
   ThreadDetail,
   MessagePage,
   ThreadPage,
+  ThreadSearchPage,
   ThreadSummary,
   WebAttachment,
   WebMessage,
@@ -246,6 +247,19 @@ export const api = {
     const query = new URLSearchParams({ sourceId, archived: String(archived), limit: "200" });
     if (before !== undefined) query.set("before", before);
     return request<ThreadPage>(`/api/v1/threads?${query.toString()}`, { signal });
+  },
+
+  /**
+   * Server-side search over titles and message prose. Unlike `threads`, this is
+   * not limited to a loaded page: it is the only way to reach a conversation
+   * older than the sidebar has fetched.
+   */
+  searchThreads: (sourceId: string, query: string, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ sourceId, q: query });
+    return request<ThreadSearchPage>(
+      `/api/v1/threads/search?${params.toString()}`,
+      { signal },
+    );
   },
 
   messages: (threadId: string, before: string, signal?: AbortSignal) => {

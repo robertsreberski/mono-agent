@@ -10,6 +10,7 @@ import {
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WebUploadAttachmentAdapter } from "./attachment-adapter";
 import { canSendInConsole, canUploadInConsole } from "./capabilities";
+import { clusterToolCalls } from "./activity-clustering";
 import { useConsoleStore, useUploadLimits } from "./console-store";
 import type {
   MessagePart,
@@ -119,11 +120,12 @@ type ConvertedPart = Exclude<ThreadMessageLike["content"], string>[number];
  * when neither is present, keeping ordinary tool calls unchanged.
  */
 const toolCallArtifact = (part: ToolCall): ToolCallArtifact | undefined =>
-  part.history === undefined && part.structuredResult === undefined
+  part.history === undefined && part.structuredResult === undefined && part.executionMs === undefined
     ? undefined
     : {
         ...(part.history === undefined ? {} : { history: part.history }),
         ...(part.structuredResult === undefined ? {} : { structuredResult: part.structuredResult }),
+        ...(part.executionMs === undefined ? {} : { executionMs: part.executionMs }),
       };
 
 const convertPart = (part: MessagePart): ConvertedPart | null => {
@@ -280,9 +282,13 @@ export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
   // (the store finalizes all three with no final text), so its last prose is
   // narration: folding would invert the chronology and dress that narration up
   // as the answer. Both keep arrival order.
-  const content = message.role === "assistant" && message.status === "complete"
+  const ordered = message.role === "assistant" && message.status === "complete"
     ? foldSettledActivity(converted)
     : converted;
+  // Clustering runs after folding so a settled turn and the streaming turn that
+  // preceded it cluster the same runs; folding first would regroup the parts
+  // underneath an already-built cluster.
+  const content = clusterToolCalls(ordered) as typeof ordered;
   const status: ThreadMessageLike["status"] =
     message.status === "running"
       ? { type: "running" }

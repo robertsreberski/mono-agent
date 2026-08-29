@@ -205,7 +205,15 @@ describe("AssistantMessage grouped parts", () => {
       "false",
     );
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    expect(screen.getByText("Inspect the real state.")).toBeVisible();
+    // Thinking collapses to a one-line row inside Activity: the summary shows a
+    // preview, and the thought itself renders only once that row is opened.
+    const thought = () => screen.getByText(
+      "Inspect the real state.",
+      { selector: '[data-slot="reasoning-paragraph"]' },
+    );
+    expect(thought()).not.toBeVisible();
+    fireEvent.click(screen.getByText("Thinking").closest("summary")!);
+    expect(thought()).toBeVisible();
     expect(screen.getByText("inspect_workspace")).toBeVisible();
     expect(screen.getByRole("status", {
       name: "Context compacted, proactive, ~80k → ~20k tokens",
@@ -216,6 +224,86 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.getByRole("button", { name: "Copy response" }).parentElement).toHaveClass(
       "is-persistent",
     );
+  });
+
+  it("clusters repeated tools with step counts, durations, previews, and failures", () => {
+    const calls: WebMessage["parts"] = ["one.md", "two.md", "three.md", "four.md"].map(
+      (path, index) => ({
+        type: "tool-call" as const,
+        toolCallId: `read-${String(index)}`,
+        toolName: "read_file",
+        args: { path },
+        result: index === 2 ? { error: "unreadable" } : { text: path },
+        status: index === 2 ? "failed" as const : "complete" as const,
+        executionMs: 100,
+      }),
+    );
+    render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      parts: [...calls, { type: "text", text: "Finished." }],
+    }} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(screen.getByText("4 steps \u00b7 400ms")).toBeVisible();
+    expect(screen.getByText("Read \u00d74")).toBeVisible();
+    expect(screen.getByText("one.md, two.md +2")).toBeVisible();
+    expect(screen.getByText("1 failed")).toBeVisible();
+
+    fireEvent.click(screen.getByText("Read \u00d74").closest("summary")!);
+    expect(screen.getAllByText("read_file")).toHaveLength(4);
+    fireEvent.click(screen.getAllByText("read_file")[2]!.closest("summary")!);
+    expect(screen.getByText(/unreadable/u)).toBeVisible();
+  });
+
+  it("summarizes each Activity band from its own parts, not the whole message", () => {
+    const read = (id: string, ms: number) => ({
+      type: "tool-call" as const,
+      toolCallId: id,
+      toolName: "read_file",
+      args: { path: `${id}.md` },
+      result: { text: id },
+      status: "complete" as const,
+      executionMs: ms,
+    });
+    // Prose between two runs of work splits the turn into two Activity bands.
+    render(<MessageHarness message={{
+      ...assistantMessage("cancelled"),
+      parts: [
+        read("one", 100),
+        { type: "text", text: "Checked the first half." },
+        read("two", 400),
+        read("three", 400),
+      ],
+    }} />);
+
+    const triggers = screen.getAllByRole("button", { name: "Activity" });
+    expect(triggers).toHaveLength(2);
+    // 1 step / 100ms, then 2 steps / 800ms — never the message-wide 3 / 900ms.
+    expect(triggers[0]).toHaveTextContent("1 step · 100ms");
+    expect(triggers[1]).toHaveTextContent("2 steps · 800ms");
+    expect(screen.queryByText(/3 steps/u)).toBeNull();
+  });
+
+  it("shows no duration at all when the runtime reported none", () => {
+    render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      parts: [
+        {
+          type: "tool-call",
+          toolCallId: "solo",
+          toolName: "inspect_workspace",
+          args: { depth: 1 },
+          result: { ok: true },
+          status: "complete",
+        },
+        { type: "text", text: "Done." },
+      ],
+    }} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(screen.getByText("1 step")).toBeVisible();
+    expect(screen.queryByText(/ms$/u)).toBeNull();
+    expect(screen.queryByText(/0\.0s/u)).toBeNull();
   });
 
   it("collects a settled turn's interleaved work into one Activity block over the answer", () => {

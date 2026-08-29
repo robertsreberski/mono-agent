@@ -39,6 +39,12 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   proxy validated answer submission back to that same model run.
 - Accept browser-selected files through bounded staged uploads and forward the
   exact transport-neutral `AgentAttachment` contract used by Telegram.
+- Search every conversation of one agent by title and message prose through a
+  SQLite FTS5 index maintained by triggers on message writes, ranked with bm25
+  and returned with highlighted snippets. Answers are indexed when their turn
+  settles rather than on every streaming snapshot, with an open-time sweep for
+  turns a restart cut short. Reasoning and tool payloads are deliberately not
+  indexed; archived conversations are.
 - Serve the assistant-ui PWA and its versioned JSON/SSE API.
 - Accept explicit cron/webhook `web:new` notification delivery through an
   owner-private, bearer-authenticated loopback ingress. Webhooks retain one
@@ -381,6 +387,7 @@ OperatorTurnInput
 OperatorTurnResult
 PatchWebAgentInput
 PatchWebThreadInput
+SearchWebThreadsInput
 StartWebLiveInputInput
 StartWebServerOptions
 StartWebTurnInput
@@ -393,8 +400,12 @@ WEB_MAX_QUEUED_ATTACHMENT_TURNS
 WEB_MAX_STAGED_UPLOADS
 WEB_MAX_STAGED_UPLOAD_BYTES
 WEB_MAX_TURN_ATTACHMENT_BYTES
+WEB_SEARCH_HIGHLIGHT_CLOSE
+WEB_SEARCH_HIGHLIGHT_OPEN
 WEB_STAGED_UPLOAD_TTL_MS
 WEB_THEMES
+WEB_THREAD_SEARCH_MAX
+WEB_THREAD_SEARCH_MIN_QUERY
 WebAgentStatus
 WebAgentSummary
 WebAttachment
@@ -426,6 +437,8 @@ WebTheme
 WebThread
 WebThreadDetail
 WebThreadNotificationTriggerKind
+WebThreadSearchHit
+WebThreadSearchPage
 WebThreadTrigger
 defaultTraceRegistryDir
 defaultWebStateDir

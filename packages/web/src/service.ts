@@ -53,6 +53,8 @@ import {
   type WebThread,
   type WebThreadDetail,
   type WebThreadPage,
+  type WebThreadSearchPage,
+  type SearchWebThreadsInput,
   type WebMessagePage,
   type WebPushSubscriptionStatus,
 } from "./contracts.js";
@@ -338,6 +340,14 @@ export class WebService {
     readonly before?: string;
   }): WebThreadPage {
     return this.store.listThreadsPage(input);
+  }
+
+  /**
+   * Read-only, so it emits nothing: a search changes no state that another
+   * console tab needs to hear about.
+   */
+  searchThreads(input: SearchWebThreadsInput): WebThreadSearchPage {
+    return this.store.searchThreads(input);
   }
 
   messagePage(threadId: string, input: { readonly limit?: number; readonly before?: string }): WebMessagePage {

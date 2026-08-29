@@ -200,6 +200,12 @@ export interface WebToolCall {
    */
   readonly structuredResult?: unknown;
   readonly status: WebToolCallStatus;
+  /**
+   * How long the runtime spent executing the call, when it reported a timing.
+   * Historical rows recorded before the console preserved it have none, so
+   * renderers must treat a missing duration as normal rather than as zero.
+   */
+  readonly executionMs?: number;
   /** Canonical durable-tool record metadata received on the live event. */
   readonly history?: SessionToolHistoryEventMetadata;
 }
@@ -323,6 +329,34 @@ export interface WebThreadPage {
 export interface WebMessagePage {
   readonly messages: readonly WebMessage[];
   readonly nextCursor?: string;
+}
+
+/** One conversation that matched a search, with the evidence for the match. */
+export interface WebThreadSearchHit {
+  readonly thread: WebThread;
+  /**
+   * The best-ranked matching message, with each match wrapped in the
+   * `WEB_SEARCH_HIGHLIGHT_*` sentinels. Absent when only the title matched.
+   */
+  readonly snippet?: string;
+  /**
+   * Matching messages inside the bounded scan window, so a term used hundreds
+   * of times reports the window figure rather than the true total.
+   */
+  readonly messageMatches: number;
+  readonly titleMatch: boolean;
+}
+
+export interface WebThreadSearchPage {
+  readonly hits: readonly WebThreadSearchHit[];
+  /** Some matches were cut: the counts and the list are a bounded view. */
+  readonly truncated: boolean;
+}
+
+export interface SearchWebThreadsInput {
+  readonly sourceId: string;
+  readonly query: string;
+  readonly limit?: number;
 }
 
 export type WebCronRunTrigger = CronOperatorRunTrigger;
