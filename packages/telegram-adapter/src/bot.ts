@@ -708,6 +708,26 @@ function resolveTelegramAlbumTrigger(
   );
 }
 
+/** Keep the first album part as the reply target while carrying reply provenance from the part that has it. */
+function telegramAlbumRequestMessage(
+  messages: readonly TelegramMessage[],
+): TelegramMessage | undefined {
+  const primary = messages[0];
+  if (primary === undefined || primary.reply_to_message !== undefined) {
+    return primary;
+  }
+  const replySource = messages.find((message) => message.reply_to_message !== undefined);
+  if (replySource?.reply_to_message === undefined) {
+    return primary;
+  }
+  const { reply_to_message: _reply, quote: _quote, ...primaryWithoutReply } = primary;
+  return {
+    ...primaryWithoutReply,
+    reply_to_message: replySource.reply_to_message,
+    ...(replySource.quote === undefined ? {} : { quote: replySource.quote }),
+  };
+}
+
 function isTelegramGroup(message: TelegramMessage): boolean {
   return message.chat.type === "group" || message.chat.type === "supergroup";
 }
@@ -1686,7 +1706,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         offer = options.responder.offerLiveInput({
           conversationId: `telegram:${String(chatId)}`,
           id: `${String(chatId)}:${String(triggeredMessage.message_id)}`,
-          text: triggeredMessage.text,
+          // Use the same normalized, quote-aware body as a queued turn. Native
+          // reply context must not disappear merely because this message was
+          // accepted as live guidance instead of starting its own turn.
+          text: input.text,
           receivedAt: new Date((triggeredMessage.date ?? Math.floor(Date.now() / 1_000)) * 1_000).toISOString(),
         });
       } catch (error) {
@@ -1853,7 +1876,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       settleAsNoop();
       return;
     }
-    const primary = triggeredParts[0];
+    const primary = telegramAlbumRequestMessage(triggeredParts);
     const input = mergeTelegramMessageInputs(triggeredParts);
     if (primary === undefined || input === undefined) {
       settleAsNoop();

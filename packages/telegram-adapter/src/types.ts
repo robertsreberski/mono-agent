@@ -26,6 +26,16 @@ export interface TelegramMessageEntity {
   user?: TelegramUser;
 }
 
+/** Telegram-selected excerpt from the message targeted by a native reply. */
+export interface TelegramTextQuote {
+  text: string;
+  entities?: TelegramMessageEntity[];
+  /** Offset in the source message, measured in UTF-16 code units. */
+  position: number;
+  /** True when the sender selected the excerpt manually. */
+  is_manual?: true;
+}
+
 export interface TelegramMessage {
   message_id: number;
   date?: number;
@@ -36,6 +46,7 @@ export interface TelegramMessage {
   caption?: string;
   caption_entities?: TelegramMessageEntity[];
   reply_to_message?: TelegramMessage;
+  quote?: TelegramTextQuote;
   /** Set on each message of a multi-photo/video album; shared across the group. */
   media_group_id?: string;
   animation?: unknown;

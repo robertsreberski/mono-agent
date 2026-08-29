@@ -113,6 +113,23 @@ The canonical shared constants are `DEFAULT_AGENT_ATTACHMENT_MAX_BYTES` and
 `DEFAULT_ATTACHMENT_MAX_BYTES` and `DEFAULT_ATTACHMENT_MIME_ALLOWLIST` names are
 Telegram compatibility aliases with the same values.
 
+### Native reply context
+
+An inbound Telegram native reply carries its referenced message in the update,
+so the adapter prepends a bounded, model-visible quotation to the current user
+text. This also works for a proactive or otherwise artificial bot message that
+was never recorded in agent history. Telegram's sender-selected `quote.text`
+wins when present; otherwise the adapter uses the replied-to text, caption, or a
+safe attachment summary. It never downloads media from the quoted message.
+
+The envelope labels the quotation as untrusted context, includes a sanitized
+author and valid timestamp when available, and caps the quoted body at 4,096
+Unicode code points. Numeric Telegram user and message ids remain host-only in
+`metadata.telegram.replyToMessage`. The same normalized body is used for normal
+turns, requeued turns, and live follow-up steering, and the host persists it as
+the user message. Messages that are not replies keep their existing text
+unchanged.
+
 ### Voice transcription (optional)
 
 Set `telegram.transcription` to transcribe inbound voice, audio, and round-video
@@ -387,6 +404,7 @@ TelegramSendOutcome
 TelegramSendPhotoParams
 TelegramSendToolsConfig
 TelegramSentMessage
+TelegramTextQuote
 TelegramTranscriber
 TelegramTranscriptionConfig
 TelegramUpdate

@@ -12,6 +12,7 @@ export type {
   TelegramMessage,
   TelegramMessageEntity,
   TelegramMessageSender,
+  TelegramTextQuote,
   TelegramPhotoSize,
   TelegramRequestOptions,
   TelegramSendDocumentParams,
