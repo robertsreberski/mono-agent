@@ -61,6 +61,22 @@ function operatorCronOverview(overrides: Record<string, unknown> = {}): Record<s
 }
 
 describe("WebService", () => {
+  it("delegates conversation search to the store and emits nothing for it", async () => {
+    const service = await createService({});
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "reindex the tailscale exporter" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    const events: string[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event.type); });
+    const page = service.searchThreads({ sourceId: "agent-one", query: "tailscale" });
+    unsubscribe();
+
+    expect(page.hits).toMatchObject([{ thread: { id: thread.id } }]);
+    // A read changes nothing, so no other console tab needs waking.
+    expect(events).toEqual([]);
+  });
+
   it("applies evolving semantic titles from completed tool calls and retains the calls in Activity", async () => {
     const turnBodies: Record<string, unknown>[] = [];
     let turn = 0;

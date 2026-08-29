@@ -5,19 +5,11 @@ import {
 } from "@assistant-ui/react";
 import { useMemo, useState } from "react";
 import { useConsoleStore } from "../console-store";
+import { MIN_SEARCH_QUERY, useThreadSearch } from "../thread-search";
 import type { ThreadSummary } from "../types";
 import { Icon } from "./Icon";
-
-const relativeTime = (date: string): string => {
-  const elapsed = Math.max(0, Date.now() - Date.parse(date));
-  const minutes = Math.floor(elapsed / 60_000);
-  if (minutes < 1) return "now";
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  return days < 7 ? `${days}d` : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(date));
-};
+import { ThreadSearchResults } from "./ThreadSearchResults";
+import { relativeTime } from "./time";
 
 function ThreadListItem({
   thread,
@@ -88,18 +80,17 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
     loadMoreThreads,
   } = useConsoleStore();
   const [query, setQuery] = useState("");
-  const normalizedQuery = query.trim().toLowerCase();
+  // Searching goes to the server, which reads every conversation of this agent
+  // rather than only the page the sidebar has loaded.
+  const searching = query.trim().length >= MIN_SEARCH_QUERY;
+  const search = useThreadSearch(selectedAgentId, query);
   const threadById = useMemo(
     () => new Map(threads.map((thread) => [thread.id, thread])),
     [threads],
   );
-  const matchingCount = threads.filter(
+  const visibleCount = threads.filter(
     (thread) =>
-      thread.sourceId === selectedAgentId &&
-      Boolean(thread.archivedAt) === showArchived &&
-      (!normalizedQuery ||
-        thread.title.toLowerCase().includes(normalizedQuery) ||
-        thread.lastMessagePreview?.toLowerCase().includes(normalizedQuery)),
+      thread.sourceId === selectedAgentId && Boolean(thread.archivedAt) === showArchived,
   ).length;
 
   return (
@@ -125,7 +116,7 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search"
+          placeholder="Search conversations"
           type="search"
         />
         {query && (
@@ -135,43 +126,40 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
         )}
       </label>
       <ThreadListPrimitive.Root className="thread-list">
-        <div className="thread-list-scroll" onClick={onSelect}>
-          <ThreadListPrimitive.Items archived={showArchived}>
-            {({ threadListItem }) => {
-              const thread = threadById.get(threadListItem.id);
-              if (!thread) return null;
-              const matches =
-                !normalizedQuery ||
-                thread.title.toLowerCase().includes(normalizedQuery) ||
-                thread.lastMessagePreview?.toLowerCase().includes(normalizedQuery);
-              return matches ? (
-                <ThreadListItem thread={thread} archived={showArchived} />
-              ) : null;
-            }}
-          </ThreadListPrimitive.Items>
-          {matchingCount === 0 && (
-            <div className="thread-list-empty">
-              <Icon name={showArchived ? "archive" : "threads"} size={19} />
-              <span>
-                {normalizedQuery
-                  ? "No matching conversations"
-                  : showArchived
-                    ? "No archived conversations"
-                    : "Start a conversation"}
-              </span>
-            </div>
-          )}
-          {hasMoreThreads && !normalizedQuery && (
-            <button
-              type="button"
-              className="thread-load-more"
-              onClick={(event) => {
-                event.stopPropagation();
-                void loadMoreThreads().catch(() => undefined);
-              }}
-            >
-              Load older conversations
-            </button>
+        <div className="thread-list-scroll" onClick={searching ? undefined : onSelect}>
+          {searching ? (
+            <ThreadSearchResults query={query} search={search} onSelect={onSelect} />
+          ) : (
+            <>
+              <ThreadListPrimitive.Items archived={showArchived}>
+                {({ threadListItem }) => {
+                  const thread = threadById.get(threadListItem.id);
+                  return thread ? (
+                    <ThreadListItem thread={thread} archived={showArchived} />
+                  ) : null;
+                }}
+              </ThreadListPrimitive.Items>
+              {visibleCount === 0 && (
+                <div className="thread-list-empty">
+                  <Icon name={showArchived ? "archive" : "threads"} size={19} />
+                  <span>
+                    {showArchived ? "No archived conversations" : "Start a conversation"}
+                  </span>
+                </div>
+              )}
+              {hasMoreThreads && (
+                <button
+                  type="button"
+                  className="thread-load-more"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void loadMoreThreads().catch(() => undefined);
+                  }}
+                >
+                  Load older conversations
+                </button>
+              )}
+            </>
           )}
         </div>
       </ThreadListPrimitive.Root>

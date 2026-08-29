@@ -36,6 +36,7 @@ import {
   type WebTheme,
 } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
+import { WEB_THREAD_SEARCH_MAX } from "./store.js";
 import {
   MCP_APP_PROXY_CONTENT_SECURITY_POLICY,
   MCP_APP_PROXY_DOCUMENT,
@@ -246,6 +247,21 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         archived,
         limit: boundedQueryLimit(req.query.limit, 200, 200),
         ...(before === undefined ? {} : { before }),
+      }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Registered above `/threads/:id` so Express matches the literal segment
+  // rather than treating "search" as a conversation id.
+  app.get("/api/v1/threads/search", (req, res, next) => {
+    try {
+      const sourceId = requiredQueryString(req.query.sourceId, "sourceId", 512);
+      res.status(200).json(service.searchThreads({
+        sourceId,
+        query: optionalSearchQuery(req.query.q, 512),
+        limit: boundedQueryLimit(req.query.limit, WEB_THREAD_SEARCH_MAX, WEB_THREAD_SEARCH_MAX),
       }));
     } catch (error) {
       next(error);
@@ -1145,6 +1161,23 @@ function requireRecord(value: unknown): Record<string, unknown> {
 function requiredQueryString(value: unknown, field: string, max: number): string {
   if (typeof value !== "string" || value.trim().length === 0 || value.length > max) {
     throw new WebConsoleError("invalid_page", `${field} is required.`, 400);
+  }
+  return value;
+}
+
+/**
+ * A search box is typed into and cleared, so an empty or absent `q` is an
+ * ordinary state answered with an empty page — not the invalid cursor that
+ * `optionalQueryString` would report it as.
+ */
+function optionalSearchQuery(value: unknown, max: number): string {
+  if (value === undefined) return "";
+  if (typeof value !== "string" || value.length > max) {
+    throw new WebConsoleError(
+      "invalid_page",
+      `q must be a string of at most ${String(max)} characters.`,
+      400,
+    );
   }
   return value;
 }

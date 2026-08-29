@@ -39,6 +39,8 @@ import {
   type WebToolCall,
   type WebThreadDetail,
   type WebThreadPage,
+  type WebThreadSearchHit,
+  type WebThreadSearchPage,
   type WebPushSubscriptionState,
   type WebPushSubscriptionStatus,
 } from "./contracts.js";
@@ -302,7 +304,127 @@ export interface ClaimedWebPushDelivery {
   readonly attempts: number;
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 8;
+/**
+ * The searchable text of one message row, derived in SQL so the index cannot
+ * drift from `parts_json`: every write path in this store goes through the
+ * triggers below rather than remembering to maintain a second copy.
+ *
+ * Only `text` parts are indexed. Reasoning is the agent's working-out and tool
+ * payloads are machine JSON; both would drown a search of what was actually
+ * said in a conversation.
+ *
+ * The two highlight sentinels are stripped here rather than trusted to be
+ * absent: a message that quotes one would otherwise come back in a snippet as
+ * an unbalanced marker and corrupt the client's highlighting.
+ */
+const MESSAGE_SEARCH_BODY_SQL = `
+  SELECT replace(replace(group_concat(json_extract(value, '$.text'), ' '), char(2), ''), char(3), '')
+    FROM json_each(%SOURCE%.parts_json)
+   WHERE json_extract(value, '$.type') = 'text'
+     AND json_extract(value, '$.text') IS NOT NULL`;
+
+const messageSearchBody = (source: "new" | "m"): string =>
+  MESSAGE_SEARCH_BODY_SQL.replaceAll("%SOURCE%", source);
+
+/**
+ * `unicode61 remove_diacritics 2` folds accents, so an unaccented query still
+ * finds accented prose. The write triggers are guarded on `json_valid` because
+ * an unindexed message is one missing search hit, while a failed insert would
+ * be a lost message.
+ */
+const MESSAGE_SEARCH_REINDEX_SQL = `
+        DELETE FROM message_search WHERE rowid = old.rowid;
+        INSERT INTO message_search(rowid, body)
+        SELECT new.rowid, (${messageSearchBody("new")});`;
+
+/**
+ * A streaming answer is rewritten every ~50 ms, and re-extracting a large
+ * message's text on each snapshot costs several times the row write itself
+ * (measured at ~6x, and ~23 ms per snapshot on the largest real messages). A
+ * running message is therefore left out of the index entirely — including at
+ * insert, because a cron run is inserted with real prose while still running,
+ * and indexing that body once would freeze it: the thread would keep matching
+ * narration it no longer contains. It is swept in when it settles, by either
+ * statement shape, since some paths write `parts_json` and `status` together and
+ * others write only one of them. `reindexUnsettledMessages` closes the remaining
+ * hole, a process that dies mid-turn.
+ */
+const MESSAGE_SEARCH_SCHEMA_SQL = `
+      CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5(
+        body,
+        tokenize='unicode61 remove_diacritics 2'
+      );
+      CREATE TRIGGER IF NOT EXISTS message_search_insert
+        AFTER INSERT ON messages
+        WHEN json_valid(new.parts_json) AND new.status <> 'running' BEGIN
+        INSERT INTO message_search(rowid, body)
+        SELECT new.rowid, (${messageSearchBody("new")});
+      END;
+      CREATE TRIGGER IF NOT EXISTS message_search_update
+        AFTER UPDATE OF parts_json ON messages
+        WHEN json_valid(new.parts_json) AND new.status <> 'running' BEGIN
+        ${MESSAGE_SEARCH_REINDEX_SQL}
+      END;
+      CREATE TRIGGER IF NOT EXISTS message_search_settle
+        AFTER UPDATE OF status ON messages
+        WHEN json_valid(new.parts_json) AND old.status = 'running' AND new.status <> 'running' BEGIN
+        ${MESSAGE_SEARCH_REINDEX_SQL}
+      END;
+      CREATE TRIGGER IF NOT EXISTS message_search_delete
+        AFTER DELETE ON messages BEGIN
+        DELETE FROM message_search WHERE rowid = old.rowid;
+      END;`;
+
+/**
+ * Messages still marked running carry whatever text the last snapshot left, and
+ * the triggers deliberately skipped them. Sweeping them at open means a turn
+ * killed by a crash is searchable rather than silently missing forever.
+ */
+const MESSAGE_SEARCH_UNSETTLED_SQL = `
+      DELETE FROM message_search
+       WHERE rowid IN (SELECT rowid FROM messages WHERE status = 'running');
+      INSERT INTO message_search(rowid, body)
+      SELECT m.rowid, (${messageSearchBody("m")})
+        FROM messages m
+       WHERE m.status = 'running' AND json_valid(m.parts_json);`;
+
+const MESSAGE_SEARCH_BACKFILL_SQL = `
+      DELETE FROM message_search;
+      INSERT INTO message_search(rowid, body)
+      SELECT m.rowid, (${messageSearchBody("m")})
+        FROM messages m
+       WHERE json_valid(m.parts_json);`;
+
+/** Rows scanned before ranking cuts off; bounds the cost of a one-letter term. */
+const MESSAGE_SEARCH_SCAN_LIMIT = 400;
+export const WEB_THREAD_SEARCH_MAX = 50;
+/** Below this a query matches almost everything, so it is not worth running. */
+export const WEB_THREAD_SEARCH_MIN_QUERY = 2;
+/**
+ * Wrap each match inside a returned snippet so the client can highlight it.
+ * Control characters, and stripped from the indexed body above, so a snippet's
+ * markers are always the ones `snippet()` added.
+ */
+export const WEB_SEARCH_HIGHLIGHT_OPEN = "\u0002";
+export const WEB_SEARCH_HIGHLIGHT_CLOSE = "\u0003";
+
+/**
+ * An FTS5 MATCH expression for a typed query. Each token is quoted (so the
+ * user's punctuation can never be read as FTS operator syntax) and given a
+ * prefix `*` so typing narrows results as you go. Tokens are ANDed: adding a
+ * word should cut the result list, not grow it.
+ */
+export function messageSearchMatchExpression(raw: string): string | undefined {
+  const tokens = raw.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  return tokens.length === 0 ? undefined : tokens.map((token) => `"${token}"*`).join(" ");
+}
+
+/** Escape the LIKE wildcards so a literal `%` in a title search stays literal. */
+export function escapeLikeTerm(raw: string): string {
+  return raw.replaceAll(/[\\%_]/gu, (character) => `\\${character}`);
+}
+
+const WEB_STORAGE_SCHEMA_VERSION = 9;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
 export const WEB_MESSAGE_PAGE_MAX = 100;
@@ -450,6 +572,9 @@ export class WebStore {
       store.recoverInterruptedTurns();
       store.recoverLiveInputs();
       store.recoverWebPushDeliveries();
+      // After recovery, so anything the recovery settled is already indexed by
+      // its own trigger and this only sweeps what genuinely stayed running.
+      store.reindexUnsettledMessages();
       return store;
     } catch (error) {
       store.close();
@@ -1552,6 +1677,121 @@ export class WebStore {
       ...(hasMore && last !== undefined
         ? { nextCursor: encodeCursor({ updatedAt: last.updated_at, id: last.id }) }
         : {}),
+    };
+  }
+
+  /**
+   * Conversations of one agent whose title or message prose matches `query`.
+   *
+   * The sidebar filter this replaces could only see the threads already loaded
+   * into the browser, so anything past the first page was unfindable. This runs
+   * against the whole store instead: the FTS index ranks message hits by bm25
+   * and returns a highlighted snippet, and a separate title pass catches
+   * conversations named after something never said inside them.
+   */
+  searchThreads(input: {
+    readonly sourceId: string;
+    readonly query: string;
+    readonly limit?: number;
+  }): WebThreadSearchPage {
+    if (this.getAgent(input.sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    }
+    const query = input.query.trim();
+    const limit = boundedPageLimit(input.limit, WEB_THREAD_SEARCH_MAX);
+    const match = query.length < WEB_THREAD_SEARCH_MIN_QUERY
+      ? undefined
+      : messageSearchMatchExpression(query);
+    if (match === undefined) return { hits: [], truncated: false };
+
+    const messageRows = this.database.prepare(`
+      SELECT m.thread_id AS thread_id,
+             snippet(message_search, 0, ?, ?, char(8230), 12) AS snippet,
+             bm25(message_search) AS rank
+        FROM message_search
+        JOIN messages m ON m.rowid = message_search.rowid
+        JOIN threads t ON t.id = m.thread_id
+       WHERE message_search MATCH ? AND t.source_id = ?
+       ORDER BY rank
+       LIMIT ?
+    `).all(
+      WEB_SEARCH_HIGHLIGHT_OPEN,
+      WEB_SEARCH_HIGHLIGHT_CLOSE,
+      match,
+      input.sourceId,
+      MESSAGE_SEARCH_SCAN_LIMIT + 1,
+    ) as unknown as Array<{ thread_id: string; snippet: string | null; rank: number }>;
+
+    // Ranked rows arrive best-first, so the first row seen for a thread is that
+    // thread's best snippet and its rank. The extra probe row exists only to
+    // detect truncation and must not inflate a count or admit a thread.
+    const byThread = new Map<string, { snippet?: string; rank: number; matches: number }>();
+    for (const row of messageRows.slice(0, MESSAGE_SEARCH_SCAN_LIMIT)) {
+      const existing = byThread.get(row.thread_id);
+      if (existing === undefined) {
+        byThread.set(row.thread_id, {
+          ...(row.snippet === null || row.snippet.length === 0 ? {} : { snippet: row.snippet }),
+          rank: row.rank,
+          matches: 1,
+        });
+        continue;
+      }
+      byThread.set(row.thread_id, { ...existing, matches: existing.matches + 1 });
+    }
+
+    // A conversation the user renamed after what it is about may not repeat that
+    // word in any message, so titles are matched separately — as a substring,
+    // because a title is short enough to scan and short enough to type part of.
+    const titleRows = this.database.prepare(`
+      SELECT t.id AS id FROM threads t
+       WHERE t.source_id = ? AND t.title LIKE '%' || ? || '%' ESCAPE '\\'
+       ORDER BY t.updated_at DESC, t.id DESC
+       LIMIT ?
+    `).all(input.sourceId, escapeLikeTerm(query), limit + 1) as unknown as Array<{ id: string }>;
+    const titleMatches = new Set(titleRows.slice(0, limit).map((row) => row.id));
+
+    const rankedIds = [...byThread.entries()]
+      .map(([threadId, hit]) => ({ threadId, ...hit }))
+      .sort((left, right) => left.rank - right.rank)
+      .map((hit) => hit.threadId)
+      .filter((threadId) => !titleMatches.has(threadId));
+    // Title hits lead, because naming a conversation is a deliberate act. But
+    // titles are auto-derived from first prompts, so a common word can match
+    // more of them than fit one page — and letting titles take every slot would
+    // silently return this feature to the title-only search it replaces. Half
+    // the page is therefore reserved for ranked message hits whenever there are
+    // any, and each side takes the other's unused room.
+    const titleIds = [...titleMatches];
+    const titleBudget = rankedIds.length === 0
+      ? limit
+      : Math.max(limit - rankedIds.length, Math.ceil(limit / 2));
+    const ordering = [
+      ...titleIds.slice(0, titleBudget),
+      ...rankedIds,
+      ...titleIds.slice(titleBudget),
+    ];
+
+    const selectThread = this.database.prepare(threadSelectSql("WHERE t.id = ?"));
+    const hits: WebThreadSearchHit[] = [];
+    for (const threadId of ordering) {
+      if (hits.length >= limit) break;
+      const row = selectThread.get(threadId) as unknown as ThreadRow | undefined;
+      if (row === undefined) continue;
+      const hit = byThread.get(threadId);
+      hits.push({
+        thread: this.mapThread(row),
+        messageMatches: hit?.matches ?? 0,
+        titleMatch: titleMatches.has(threadId),
+        ...(hit?.snippet === undefined ? {} : { snippet: hit.snippet }),
+      });
+    }
+    return {
+      hits,
+      // Both queries fetch one row past their cap, so this reports a real cut
+      // rather than firing on an exact fill.
+      truncated: messageRows.length > MESSAGE_SEARCH_SCAN_LIMIT
+        || titleRows.length > limit
+        || ordering.length > hits.length,
     };
   }
 
@@ -2996,6 +3236,7 @@ export class WebStore {
       );
       CREATE INDEX IF NOT EXISTS push_deliveries_due
         ON push_deliveries(status, next_attempt_at, created_at);
+      ${MESSAGE_SEARCH_SCHEMA_SQL}
       `);
         if (versionRow.user_version === 1) {
           const columns = this.database.prepare("PRAGMA table_info(threads)").all() as unknown as Array<{ name: string }>;
@@ -3015,6 +3256,11 @@ export class WebStore {
             );
           }
         }
+        // The search index derives from parts_json, so an existing database has
+        // to be swept once. Migration writes no message, so the triggers above
+        // cannot have fired yet; the clear-then-insert is a no-op on a fresh
+        // database and idempotent if the sweep is ever re-run.
+        if (versionRow.user_version < 9) this.database.exec(MESSAGE_SEARCH_BACKFILL_SQL);
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
       } catch (error) {
         if (this.database.isTransaction) this.database.exec("ROLLBACK");
@@ -3212,6 +3458,7 @@ export class WebStore {
       "push_subscriptions",
       "push_events",
       "push_deliveries",
+      "message_search",
     ]);
     const tables = this.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as unknown as Array<{ name: string }>;
     for (const table of tables) requiredTables.delete(table.name);
@@ -3226,6 +3473,17 @@ export class WebStore {
         throw new WebConsoleError("storage_corrupt", `Message ${message.id} contains invalid persisted parts.`, 500);
       }
     }
+  }
+
+  /**
+   * Index the messages the streaming gate skipped and nothing settled — the
+   * residue of a process that died mid-turn. Bounded to whatever is still
+   * marked running, which is at most one message per interrupted thread.
+   */
+  private reindexUnsettledMessages(): void {
+    this.transaction(() => {
+      this.database.exec(MESSAGE_SEARCH_UNSETTLED_SQL);
+    });
   }
 
   private recoverInterruptedTurns(): void {
@@ -4221,6 +4479,7 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
   if (event.type === "tool_call_completed") {
     const status = event.isError === true ? "failed" : "complete";
     const historyUpdate = canonicalEventHistoryUpdate(event.history);
+    const executionMs = canonicalExecutionMs(event.executionMs);
     const subagent = subagentOf(event);
     if (subagent !== undefined) {
       const group = ensureSubagentPart(parts, subagent);
@@ -4228,7 +4487,7 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
         replaceSubagentPart(parts, withEventHistoryUpdate({
           ...group,
           status,
-          ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }),
+          ...(executionMs === undefined ? {} : { executionMs }),
           ...(subagent.costUsd === undefined ? {} : { costUsd: subagent.costUsd }),
         }, historyUpdate));
         return;
@@ -4239,6 +4498,7 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
         ...(event.arguments === undefined ? {} : { args: event.arguments }),
         ...(event.content === undefined ? {} : { result: event.content }),
         ...(event.structuredContent === undefined ? {} : { structuredResult: event.structuredContent }),
+        ...(executionMs === undefined ? {} : { executionMs }),
         status,
       }, historyUpdate);
       return;
@@ -4251,7 +4511,7 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
         ...group,
         status,
         ...(event.content === undefined ? {} : { result: event.content }),
-        ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }),
+        ...(executionMs === undefined ? {} : { executionMs }),
       }, historyUpdate));
       return;
     }
@@ -4266,6 +4526,7 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
       // re-render an answered question after a reload, so keep the structured
       // payload beside the prose rather than reparsing the sentence.
       ...(event.structuredContent === undefined ? {} : { structuredResult: event.structuredContent }),
+      ...(executionMs === undefined ? {} : { executionMs }),
       status,
     }, historyUpdate);
     return;
@@ -4314,6 +4575,17 @@ type SessionToolHistoryMetadata = NonNullable<WebToolCall["history"]>;
 
 interface EventHistoryUpdate {
   readonly value: SessionToolHistoryMetadata | undefined;
+}
+
+/**
+ * A duration is only worth persisting when it is a finite, non-negative number.
+ * The stream wire validates `type` and nothing else, and providers derive this
+ * from raw wall-clock subtraction, so a backward clock step or a provider that
+ * reports `NaN` would otherwise be written verbatim and then rejected by the
+ * read-back validator — permanently refusing to open the store.
+ */
+function canonicalExecutionMs(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 function canonicalEventHistoryUpdate(value: unknown): EventHistoryUpdate | undefined {
@@ -5009,6 +5281,12 @@ function isWebToolCall(value: unknown): boolean {
   return typeof call.toolCallId === "string"
     && typeof call.toolName === "string"
     && isWebToolCallStatus(call.status)
+    // Nullish is accepted, not just absent: `JSON.stringify` writes NaN and
+    // Infinity as `null`, so a database written before durations were
+    // canonicalized can hold one. `validateStorage()` re-parses every message at
+    // open, so being strict here would refuse the whole store over a
+    // display-only value the renderers already drop.
+    && (call.executionMs == null || typeof call.executionMs === "number")
     && (call.history === undefined || isSessionToolHistoryMetadata(call.history));
 }
 
@@ -5162,7 +5440,7 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
     return typeof part.toolCallId === "string"
       && typeof part.name === "string"
       && (part.label === undefined || typeof part.label === "string")
-      && (part.executionMs === undefined || typeof part.executionMs === "number")
+      && (part.executionMs == null || typeof part.executionMs === "number")
       && (part.costUsd === undefined || typeof part.costUsd === "number")
       && (part.history === undefined || isSessionToolHistoryMetadata(part.history))
       && isWebToolCallStatus(part.status)

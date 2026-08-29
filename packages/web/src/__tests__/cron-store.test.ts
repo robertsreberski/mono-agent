@@ -137,6 +137,39 @@ describe("WebStore first-class cron channels", () => {
     store.close();
   });
 
+  it("keeps an in-flight run out of conversation search until it settles", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const threadId = syncCronJob(store).jobs[0]!.threadId;
+    const runId = "cron:daily%3Abrief:2026-08-14T10:00:00.000Z";
+
+    // A cron message is inserted with real prose while its run is still going,
+    // so indexing it at insert would freeze that first body: the channel would
+    // keep matching narration it no longer contains.
+    store.reconcileCronRuns("agent-one", "daily:brief", [
+      cronRun({ runId, sequence: 1, status: "running", text: "alphaunique early narration" }),
+    ]);
+    expect(store.searchThreads({ sourceId: "agent-one", query: "alphaunique" }).hits).toEqual([]);
+
+    store.reconcileCronRuns("agent-one", "daily:brief", [
+      cronRun({ runId, sequence: 1, status: "running", text: "betaunique later narration" }),
+    ]);
+    expect(store.searchThreads({ sourceId: "agent-one", query: "alphaunique" }).hits).toEqual([]);
+    expect(store.searchThreads({ sourceId: "agent-one", query: "betaunique" }).hits).toEqual([]);
+
+    store.reconcileCronRuns("agent-one", "daily:brief", [
+      cronRun({ runId, sequence: 1, status: "succeeded", text: "gammaunique final narration" }),
+    ]);
+    const settled = store.searchThreads({ sourceId: "agent-one", query: "gammaunique" });
+    expect(settled.hits).toMatchObject([{ thread: { id: threadId } }]);
+    // Only the settled text is searchable; no superseded body was ever indexed.
+    expect(store.searchThreads({ sourceId: "agent-one", query: "alphaunique" }).hits).toEqual([]);
+    expect(store.searchThreads({ sourceId: "agent-one", query: "betaunique" }).hits).toEqual([]);
+    store.close();
+  });
+
   it("marks an omitted job snapshot removed while retaining its offline channel and run history", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

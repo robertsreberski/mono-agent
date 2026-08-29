@@ -239,6 +239,7 @@ export interface SessionToolHistoryMetadata {
 export interface ToolCallArtifact {
   readonly history?: unknown;
   readonly structuredResult?: unknown;
+  readonly executionMs?: number;
 }
 
 /** One tool call, whether the agent made it or one of its subagents did. */
@@ -254,6 +255,12 @@ export interface ToolCall {
    */
   readonly structuredResult?: unknown;
   readonly status: ToolCallStatus;
+  /**
+   * How long the runtime spent executing the call, when it reported a timing.
+   * Messages recorded before the console preserved it have none, so a missing
+   * duration is normal and must never render as zero.
+   */
+  readonly executionMs?: number;
   readonly history?: SessionToolHistoryMetadata;
 }
 
@@ -371,6 +378,28 @@ export interface ThreadDetail {
 export interface ThreadPage {
   readonly threads: readonly ThreadSummary[];
   readonly nextCursor?: string;
+}
+
+/** One conversation that matched a search, with the evidence for the match. */
+export interface ThreadSearchHit {
+  readonly thread: ThreadSummary;
+  /**
+   * The best-ranked matching message, with each match wrapped in the
+   * `SEARCH_HIGHLIGHT_*` sentinels. Absent when only the title matched.
+   */
+  readonly snippet?: string;
+  /**
+   * Matching messages inside the server's bounded scan window, so a very common
+   * term reports the window figure rather than a true total.
+   */
+  readonly messageMatches: number;
+  readonly titleMatch: boolean;
+}
+
+export interface ThreadSearchPage {
+  readonly hits: readonly ThreadSearchHit[];
+  /** Some matches were cut: the counts and the list are a bounded view. */
+  readonly truncated: boolean;
 }
 
 export interface MessagePage {

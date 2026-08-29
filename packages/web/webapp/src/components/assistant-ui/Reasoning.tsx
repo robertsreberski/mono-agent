@@ -20,6 +20,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { formatToolDuration } from "../duration";
 import { Icon } from "../Icon";
 
 const ANIMATION_DURATION_MS = 200;
@@ -44,7 +45,9 @@ const ACTIVITY_GROUP_BY_TYPE = groupPartByType({
  * `note` is the prose a settled turn wrote between its tool calls: working-out,
  * not the answer, so it belongs in the log with the rows it narrates.
  */
-const ACTIVITY_DATA_PARTS = new Set(["context-compaction", "subagent", "note"]);
+export const ACTIVITY_DATA_PARTS: ReadonlySet<string> = new Set(
+  ["context-compaction", "subagent", "note", "tool-cluster"],
+);
 
 export const ACTIVITY_GROUP_BY: typeof ACTIVITY_GROUP_BY_TYPE = (part, context) =>
   part.type === "data" && ACTIVITY_DATA_PARTS.has(part.name)
@@ -262,12 +265,32 @@ const renderParagraph = (paragraph: string, paragraphIndex: number) => (
   </p>
 );
 
+const THINKING_PREVIEW_LIMIT = 52;
+
+const thinkingPreview = (text: string): string => {
+  const collapsed = text.replace(/\s+/gu, " ").trim();
+  return collapsed.length > THINKING_PREVIEW_LIMIT
+    ? `${collapsed.slice(0, THINKING_PREVIEW_LIMIT - 1)}\u2026`
+    : collapsed;
+};
+
+/**
+ * Thinking is working-out, not an answer: it collapses to one row so a long
+ * chain of thought cannot bury the tool calls it sits between, and expands in
+ * place for anyone who wants to read it.
+ */
 const ReasoningImpl: ReasoningMessagePartComponent = ({ text }) => {
   if (text.length === 0) return null;
   return (
-    <div data-slot="reasoning-part" className="reasoning-part">
-      {text.split(/\n{2,}/u).map(renderParagraph)}
-    </div>
+    <details data-slot="reasoning-part" className="reasoning-part thinking-row">
+      <summary>
+        <Icon name="spark" size={13} />
+        <span>Thinking</span>
+        <small>{thinkingPreview(text)}</small>
+        <Icon name="chevron" size={13} />
+      </summary>
+      <div>{text.split(/\n{2,}/u).map(renderParagraph)}</div>
+    </details>
   );
 };
 
@@ -281,7 +304,10 @@ export interface ReasoningGroupProps extends PropsWithChildren {
 
 export interface ActivityGroupProps extends PropsWithChildren {
   readonly className?: string;
+  /** Summed tool durations, omitted when the turn reported none. */
+  readonly elapsedMs?: number;
   readonly status?: { readonly type: string };
+  readonly stepCount?: number;
   readonly streaming?: boolean;
 }
 
@@ -328,10 +354,17 @@ ReasoningGroup.displayName = "ReasoningGroup";
 const ActivityGroupImpl = ({
   children,
   className,
+  elapsedMs,
   status,
+  stepCount,
   streaming,
 }: ActivityGroupProps) => {
   const isStreaming = streaming ?? status?.type === "running";
+  const elapsed = elapsedMs === undefined ? undefined : formatToolDuration(elapsedMs);
+  const meta = [
+    stepCount === undefined ? undefined : `${String(stepCount)} ${stepCount === 1 ? "step" : "steps"}`,
+    elapsed,
+  ].filter((value): value is string => value !== undefined).join(" \u00b7 ");
   return (
     <ReasoningRoot
       className={joinClassNames("activity-root", className)}
@@ -340,9 +373,16 @@ const ActivityGroupImpl = ({
       streaming={isStreaming}
     >
       <ReasoningTrigger active={isStreaming} className="activity-trigger">
+        <span className={`activity-pulse${isStreaming ? " is-running" : ""}`} aria-hidden="true" />
         <span className="reasoning-trigger-label">
           Activity{isStreaming && <span className="sr-only"> in progress</span>}
         </span>
+        {/* Scanning aids only. They change on every streaming snapshot, so keeping
+            them out of the accessible name stops the trigger being re-announced
+            each tick; the rows themselves carry the same detail. */}
+        {meta.length > 0 && (
+          <span className="activity-meta" aria-hidden="true">{meta}</span>
+        )}
         <Icon className="reasoning-trigger-chevron" name="chevron" size={14} />
       </ReasoningTrigger>
       <ReasoningContent className="activity-content" aria-busy={isStreaming}>

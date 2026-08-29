@@ -24,14 +24,16 @@ import { useConsoleStore } from "../console-store";
 import type { AskAnswer, AskSnapshot, ProcessJobProjection, ProcessJobState, ToolCallArtifact } from "../types";
 import { UserMessageAttachments } from "./Attachments";
 import {
+  ACTIVITY_DATA_PARTS,
   ACTIVITY_GROUP_BY,
   ActivityGroup,
   Reasoning,
 } from "./assistant-ui/Reasoning";
+import { finiteDuration, formatToolDuration } from "./duration";
 import { Icon } from "./Icon";
 import { safeJson } from "./json";
 import { toolHistoryFailure } from "./tool-history";
-import { SubagentPart } from "./Subagent";
+import { SubagentPart, toolArgumentPreview } from "./Subagent";
 import { QuoteBlock } from "./assistant-ui/Quote";
 import { cronRunAnchor } from "./CronChannelHeader";
 import { McpAppPart, ReplyAttachmentPart, ReplyFailurePart } from "./ReplyParts";
@@ -690,6 +692,7 @@ export function ToolFallback({
   const isRunning = status.type === "running";
   const history = sessionToolHistory(envelope?.history);
   const historyFailure = toolHistoryFailure(history);
+  const elapsed = finiteDuration(envelope?.executionMs);
   const displayedState = typeof history?.terminalState === "string"
     ? history.terminalState
     : isRunning ? "running" : isError ? "failed" : result === undefined ? "called" : "done";
@@ -701,6 +704,9 @@ export function ToolFallback({
         <span className="tool-state">
           {displayedState}
         </span>
+        {elapsed !== undefined && (
+          <time className="tool-duration">{formatToolDuration(elapsed)}</time>
+        )}
         <Icon name="chevron" size={14} />
       </summary>
       <div className="tool-payload">
@@ -906,6 +912,111 @@ function NotePart({ data }: DataMessagePartProps) {
   return <p className="activity-note">{text.trim()}</p>;
 }
 
+/**
+ * Tool names are machine identifiers (`read_file`, `Bash`); a cluster header is
+ * read at a glance, so the common ones get their plain verb and everything else
+ * degrades to a de-underscored version of its own name.
+ */
+const humanToolName = (name: string): string => {
+  const normalized = name.toLocaleLowerCase();
+  if (normalized === "read" || normalized.startsWith("read_")) return "Read";
+  if (normalized === "write" || normalized.startsWith("write_")) return "Write";
+  if (normalized.includes("search") || normalized === "grep") return "Search";
+  if (normalized === "bash" || normalized === "exec" || normalized.includes("command")) return "Run";
+  return name.replaceAll(/[_-]+/gu, " ").replace(/^./u, (character) => character.toLocaleUpperCase());
+};
+
+const CLUSTER_PREVIEW_LIMIT = 2;
+
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+
+/**
+ * A run of identical tool calls reads as one row. The header answers what ran,
+ * how many times, against what, and whether anything failed; the calls stay
+ * individually expandable underneath so nothing is actually hidden.
+ */
+function ToolClusterPart({ data }: DataMessagePartProps) {
+  const payload = asRecord(data);
+  const calls = Array.isArray(payload.calls) ? payload.calls : [];
+  const failed = typeof payload.failedCount === "number" ? payload.failedCount : 0;
+  const totalMs = finiteDuration(payload.totalMs);
+  const status = typeof payload.status === "string" ? payload.status : "complete";
+  const previews = [...new Set(calls.flatMap((raw) => {
+    const preview = toolArgumentPreview(asRecord(raw).args);
+    return preview === undefined ? [] : [preview];
+  }))];
+  const previewSummary = previews.length === 0
+    ? undefined
+    : `${previews.slice(0, CLUSTER_PREVIEW_LIMIT).join(", ")}${
+      previews.length > CLUSTER_PREVIEW_LIMIT
+        ? ` +${String(previews.length - CLUSTER_PREVIEW_LIMIT)}`
+        : ""
+    }`;
+  return (
+    <details className={`tool-cluster is-${status}`}>
+      <summary>
+        <span className={`tool-status${status === "running" ? " is-running" : ""}`} />
+        <strong>
+          {humanToolName(typeof payload.toolName === "string" ? payload.toolName : "Tool")}
+          {` \u00d7${String(calls.length)}`}
+        </strong>
+        {previewSummary !== undefined && (
+          <span className="tool-cluster-preview">{previewSummary}</span>
+        )}
+        {failed > 0 && <span className="failed-tag">{`${String(failed)} failed`}</span>}
+        {totalMs !== undefined && <time>{formatToolDuration(totalMs)}</time>}
+        <Icon name="chevron" size={14} />
+      </summary>
+      <div className="tool-cluster-calls">
+        {calls.map((raw, index) => {
+          const call = asRecord(raw);
+          const artifact = toolCallArtifact(call.artifact);
+          const historyFailure = toolHistoryFailure(sessionToolHistory(artifact?.history));
+          const duration = finiteDuration(artifact?.executionMs);
+          const isError = call.isError === true;
+          return (
+            <details
+              key={typeof call.toolCallId === "string" ? call.toolCallId : index}
+              className={`tool-call${isError ? " is-error" : ""}`}
+            >
+              <summary>
+                <span className="tool-status" />
+                <span className="tool-name">
+                  {String(call.toolName ?? payload.toolName ?? "Tool")}
+                </span>
+                <span className="tool-state">{isError ? "failed" : "done"}</span>
+                {duration !== undefined && (
+                  <time className="tool-duration">{formatToolDuration(duration)}</time>
+                )}
+                <Icon name="chevron" size={13} />
+              </summary>
+              <div className="tool-payload">
+                <span>Input</span>
+                <pre>{safeJson(call.args)}</pre>
+                {call.result !== undefined && (
+                  <>
+                    <span>{isError ? "Error" : "Output"}</span>
+                    <pre>{safeJson(call.result)}</pre>
+                  </>
+                )}
+                {historyFailure !== undefined && (
+                  <>
+                    <span>History</span>
+                    <pre>{historyFailure}</pre>
+                  </>
+                )}
+              </div>
+            </details>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
+
 // Runtime/provider telemetry remains attached to the message so the context
 // display can summarize it. Compaction alone is promoted into Activity; other
 // transport diagnostics remain out of the transcript UI.
@@ -1047,6 +1158,7 @@ const parts = {
       "cron-run": CronRunPart,
       subagent: SubagentPart,
       note: NotePart,
+      "tool-cluster": ToolClusterPart,
       error: ErrorPart,
       "reply-attachment": ReplyAttachmentPart,
       "mcp-app": McpAppPart,
@@ -1056,16 +1168,77 @@ const parts = {
   },
 } as const;
 
+const dataPartName = (part: Record<string, unknown>): string | undefined => {
+  if (part.type === "data" && typeof part.name === "string") return part.name;
+  return typeof part.type === "string" && part.type.startsWith("data-")
+    ? part.type.slice("data-".length)
+    : undefined;
+};
+
+/**
+ * How much work the turn did, for the collapsed Activity header. Elapsed time
+ * is summed only over the calls whose duration the runtime reported, and stays
+ * undefined when none did rather than claiming a turn took no time.
+ */
+const activityMetrics = (
+  content: readonly unknown[],
+): { readonly stepCount: number; readonly elapsedMs?: number } => {
+  let stepCount = 0;
+  let elapsedMs = 0;
+  let hasElapsed = false;
+  const addDuration = (duration: number | undefined): void => {
+    if (duration === undefined) return;
+    elapsedMs += duration;
+    hasElapsed = true;
+  };
+  for (const raw of content) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const part = raw as Record<string, unknown>;
+    if (part.type === "reasoning") {
+      stepCount += 1;
+      continue;
+    }
+    if (part.type === "tool-call") {
+      stepCount += 1;
+      addDuration(finiteDuration(toolCallArtifact(part.artifact)?.executionMs));
+      continue;
+    }
+    // Counted against the same set that decides what the band contains, so the
+    // header can never advertise a step that renders outside it.
+    const name = dataPartName(part);
+    if (name === undefined || !ACTIVITY_DATA_PARTS.has(name)) continue;
+    const data = asRecord(part.data);
+    stepCount += name === "tool-cluster" && Array.isArray(data.calls) ? data.calls.length : 1;
+    addDuration(finiteDuration(name === "tool-cluster" ? data.totalMs : data.executionMs));
+  }
+  return { stepCount, ...(hasElapsed ? { elapsedMs } : {}) };
+};
+
 function AssistantParts() {
   const isMessageRunning = useAuiState(
     (state) => state.message.status?.type === "running",
   );
+  const content = useAuiState((state) => state.message.content);
   return (
     <MessagePrimitive.GroupedParts groupBy={ACTIVITY_GROUP_BY} indicator="no-text">
       {({ part, children }) => {
         switch (part.type) {
-          case "group-activity":
-            return <ActivityGroup streaming={isMessageRunning}>{children}</ActivityGroup>;
+          case "group-activity": {
+            // Grouping coalesces ADJACENT parts, so prose between two runs of
+            // work splits a turn into several Activity bands. Each one must
+            // summarize its own parts; message-wide totals would make every
+            // band claim the whole turn's work.
+            const metrics = activityMetrics(part.indices.map((index) => content[index]));
+            return (
+              <ActivityGroup
+                streaming={isMessageRunning}
+                stepCount={metrics.stepCount}
+                elapsedMs={metrics.elapsedMs}
+              >
+                {children}
+              </ActivityGroup>
+            );
+          }
           case "text":
             return part.text.length > 0
               ? <MarkdownText />
@@ -1082,6 +1255,7 @@ function AssistantParts() {
             if (part.name === "cron-run") return <CronRunPart {...part} />;
             if (part.name === "subagent") return <SubagentPart {...part} />;
             if (part.name === "note") return <NotePart {...part} />;
+            if (part.name === "tool-cluster") return <ToolClusterPart {...part} />;
             if (part.name === "error") return <ErrorPart {...part} />;
             if (part.name === "reply-attachment") return <ReplyAttachmentPart {...part} />;
             if (part.name === "mcp-app") return <McpAppPart {...part} />;

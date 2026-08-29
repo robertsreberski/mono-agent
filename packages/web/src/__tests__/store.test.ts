@@ -7,7 +7,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { MAX_AGENT_REPLY_PARTS, type AgentReplyPart } from "@mono-agent/agent-contracts";
 
 import type { WebAgentSummary } from "../contracts.js";
-import { WebStore } from "../store.js";
+import {
+  WEB_SEARCH_HIGHLIGHT_CLOSE,
+  WEB_SEARCH_HIGHLIGHT_OPEN,
+  WEB_THREAD_SEARCH_MAX,
+  WEB_THREAD_SEARCH_MIN_QUERY,
+  WebStore,
+} from "../store.js";
 import { fakeProcessJob, temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
@@ -1709,7 +1715,7 @@ describe("WebStore", () => {
     reopened.close();
   });
 
-  it("migrates schema v1 state through notification and live-input storage", async () => {
+  it("migrates schema v1 state through notification, live-input, and search storage", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -1736,14 +1742,14 @@ describe("WebStore", () => {
     const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
     const processJobCards = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'").get();
     inspected.close();
-    expect(version.user_version).toBe(8);
+    expect(version.user_version).toBe(9);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
     expect(liveInputs).toBeDefined();
     expect(processJobCards).toBeDefined();
   });
 
-  it("migrates schema v6 state through v8 process-job wake delivery", async () => {
+  it("migrates schema v6 state through v9 process-job wake delivery and search", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -1763,7 +1769,7 @@ describe("WebStore", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'",
     ).get();
     inspected.close();
-    expect(version.user_version).toBe(8);
+    expect(version.user_version).toBe(9);
     expect(processJobCards).toBeDefined();
   });
 
@@ -1776,7 +1782,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 9");
+    future.exec("PRAGMA user_version = 10");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 
@@ -2386,6 +2392,452 @@ describe("WebStore subagent parts", () => {
     const reopened = await WebStore.open({ stateDir });
     const parts = reopened.getThreadDetail(thread.id)?.messages.at(-1)?.parts ?? [];
     expect(parts.find((part) => part.type === "subagent")).toMatchObject({ type: "subagent", calls: [{ toolName: "Read" }] });
+    reopened.close();
+  });
+});
+
+describe("WebStore tool durations", () => {
+  it("preserves the runtime's reported duration on plain and subagent calls", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "time it", attachmentIds: [] });
+
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_started", id: "tool-1", name: "Search", arguments: { q: "x" } } },
+      { kind: "event", event: { type: "tool_call_completed", id: "tool-1", name: "Search", content: "done", executionMs: 450 } },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "child-1",
+          name: "Read",
+          content: "body",
+          executionMs: 120,
+          metadata: { subagent: { id: "agent-call", name: "researcher" } },
+        },
+      },
+    ] as never);
+    const detail = store.completeTurn(turn.turnId, "Final answer");
+
+    expect(detail.messages[1]?.parts).toContainEqual({
+      type: "tool-call",
+      toolCallId: "tool-1",
+      toolName: "Search",
+      args: { q: "x" },
+      result: "done",
+      executionMs: 450,
+      status: "complete",
+    });
+    expect(detail.messages[1]?.parts.find((part) => part.type === "subagent"))
+      .toMatchObject({ calls: [expect.objectContaining({ executionMs: 120 })] });
+    store.close();
+
+    // A duration recorded once has to survive the reload the console does on
+    // resume, which re-validates every persisted part.
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThreadDetail(thread.id)?.messages[1]?.parts).toContainEqual(
+      expect.objectContaining({ toolCallId: "tool-1", executionMs: 450 }),
+    );
+    reopened.close();
+  });
+
+  it("opens a database whose durations were serialized as null", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "legacy", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_completed", id: "t1", name: "Search", content: "ok", executionMs: 12 } },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "child",
+          name: "Read",
+          content: "ok",
+          executionMs: 12,
+          metadata: { subagent: { id: "agent-call", name: "researcher" } },
+        },
+      },
+    ] as never);
+    store.completeTurn(turn.turnId, "Final answer");
+    const databasePath = store.paths.database;
+    store.close();
+
+    // `JSON.stringify` writes NaN and Infinity as `null`, and releases before
+    // durations were canonicalized persisted them unchecked. `validateStorage()`
+    // re-parses every message at open, so a strict guard here would refuse the
+    // whole store over a value nothing renders.
+    const legacy = new DatabaseSync(databasePath);
+    const row = legacy.prepare("SELECT id, parts_json FROM messages WHERE role = 'assistant'")
+      .get() as unknown as { id: string; parts_json: string };
+    legacy.prepare("UPDATE messages SET parts_json = ? WHERE id = ?")
+      .run(row.parts_json.replaceAll('"executionMs":12', '"executionMs":null'), row.id);
+    legacy.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThreadDetail(thread.id)?.messages).toHaveLength(2);
+    reopened.close();
+  });
+
+  it("drops a hostile duration at the write boundary instead of refusing to reopen", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "bad clocks", attachmentIds: [] });
+
+    // The stream wire validates `type` and nothing else, and providers derive
+    // this from raw wall-clock subtraction, so a backward clock step really can
+    // produce these. None may reach SQLite: `validateStorage()` re-parses every
+    // message at open, so one poisoned row would refuse the entire store.
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_completed", id: "neg", name: "Search", content: "a", executionMs: -1 } },
+      { kind: "event", event: { type: "tool_call_completed", id: "nan", name: "Search", content: "b", executionMs: Number.NaN } },
+      { kind: "event", event: { type: "tool_call_completed", id: "inf", name: "Search", content: "c", executionMs: Number.POSITIVE_INFINITY } },
+      { kind: "event", event: { type: "tool_call_completed", id: "str", name: "Search", content: "d", executionMs: "500" } },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "child",
+          name: "Read",
+          content: "e",
+          executionMs: -7,
+          metadata: { subagent: { id: "agent-call", name: "researcher" } },
+        },
+      },
+    ] as never);
+    const detail = store.completeTurn(turn.turnId, "Final answer");
+
+    for (const part of detail.messages[1]?.parts ?? []) {
+      if (part.type === "tool-call") expect(part).not.toHaveProperty("executionMs");
+      if (part.type === "subagent") {
+        for (const call of part.calls) expect(call).not.toHaveProperty("executionMs");
+      }
+    }
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThreadDetail(thread.id)?.messages).toHaveLength(2);
+    reopened.close();
+  });
+
+  it("omits the duration entirely when the runtime reported none", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "no timing", attachmentIds: [] });
+
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_completed", id: "tool-1", name: "Search", content: "done" } },
+    ] as never);
+    const detail = store.completeTurn(turn.turnId, "Final answer");
+
+    expect(detail.messages[1]?.parts.find((part) => part.type === "tool-call"))
+      .not.toHaveProperty("executionMs");
+    store.close();
+  });
+});
+
+describe("WebStore conversation search", () => {
+  // Duplicated in `webapp/src/thread-search.ts`, which cannot import this
+  // package. Both sides pin the literals so a change to one is a red test
+  // rather than silently broken highlighting in the browser.
+  it("pins the highlight sentinels the webapp mirrors", () => {
+    expect(WEB_SEARCH_HIGHLIGHT_OPEN).toBe("\u0002");
+    expect(WEB_SEARCH_HIGHLIGHT_CLOSE).toBe("\u0003");
+    expect(WEB_THREAD_SEARCH_MIN_QUERY).toBe(2);
+  });
+
+  const openSearchStore = async (): Promise<{
+    readonly store: WebStore;
+    readonly stateDir: string;
+    readonly threadId: string;
+  }> => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent(), agent("agent-two")]);
+    return { store, stateDir, threadId: store.createThread("agent-one").id };
+  };
+
+  const say = (store: WebStore, threadId: string, prompt: string, answer: string): void => {
+    const turn = store.beginTurn({ threadId, text: prompt, attachmentIds: [] });
+    store.completeTurn(turn.turnId, answer);
+  };
+
+  it("finds a conversation by words only its messages contain", async () => {
+    const { store, threadId } = await openSearchStore();
+    store.patchThread(threadId, { title: "Unrelated title" });
+    say(store, threadId, "how do I reach the exporter", "Point it at the Tailscale address.");
+
+    const page = store.searchThreads({ sourceId: "agent-one", query: "tailscale" });
+
+    expect(page.hits).toHaveLength(1);
+    expect(page.hits[0]?.thread.id).toBe(threadId);
+    expect(page.hits[0]).toMatchObject({ titleMatch: false, messageMatches: 1 });
+    expect(page.hits[0]?.snippet).toContain("Tailscale");
+    expect(page.truncated).toBe(false);
+    store.close();
+  });
+
+  it("wraps each match in the highlight sentinels", async () => {
+    const { store, threadId } = await openSearchStore();
+    say(store, threadId, "reach the exporter", "Point it at the Tailscale address.");
+
+    const [hit] = store.searchThreads({ sourceId: "agent-one", query: "tailscale" }).hits;
+
+    expect(hit?.snippet).toContain(
+      `${WEB_SEARCH_HIGHLIGHT_OPEN}Tailscale${WEB_SEARCH_HIGHLIGHT_CLOSE}`,
+    );
+    store.close();
+  });
+
+  it("matches a title even when no message repeats it", async () => {
+    const { store, threadId } = await openSearchStore();
+    store.patchThread(threadId, { title: "Quarterly planning" });
+    say(store, threadId, "kick this off", "Sure.");
+
+    const page = store.searchThreads({ sourceId: "agent-one", query: "quarterly" });
+
+    expect(page.hits).toHaveLength(1);
+    expect(page.hits[0]).toMatchObject({ titleMatch: true, messageMatches: 0 });
+    expect(page.hits[0]?.snippet).toBeUndefined();
+    store.close();
+  });
+
+  it("narrows as terms are added, and matches on a prefix as it is typed", async () => {
+    const { store, threadId } = await openSearchStore();
+    say(store, threadId, "deploy the phoenix exporter", "Done.");
+    const other = store.createThread("agent-one");
+    say(store, other.id, "deploy the docs website", "Done.");
+
+    expect(store.searchThreads({ sourceId: "agent-one", query: "deploy" }).hits).toHaveLength(2);
+    expect(store.searchThreads({ sourceId: "agent-one", query: "deploy phoen" }).hits)
+      .toMatchObject([{ thread: { id: threadId } }]);
+    store.close();
+  });
+
+  it("scopes results to the addressed agent", async () => {
+    const { store, threadId } = await openSearchStore();
+    say(store, threadId, "shared vocabulary", "Done.");
+    const elsewhere = store.createThread("agent-two");
+    say(store, elsewhere.id, "shared vocabulary", "Done.");
+
+    expect(store.searchThreads({ sourceId: "agent-one", query: "vocabulary" }).hits)
+      .toMatchObject([{ thread: { id: threadId } }]);
+    store.close();
+  });
+
+  it("returns archived conversations, so archiving stops hiding them from search", async () => {
+    const { store, threadId } = await openSearchStore();
+    say(store, threadId, "the archived subject", "Done.");
+    store.patchThread(threadId, { archived: true });
+
+    const page = store.searchThreads({ sourceId: "agent-one", query: "archived subject" });
+
+    expect(page.hits).toHaveLength(1);
+    expect(page.hits[0]?.thread.archivedAt).not.toBeNull();
+    store.close();
+  });
+
+  it("indexes conversation prose only, not reasoning or tool payloads", async () => {
+    const { store, threadId } = await openSearchStore();
+    const turn = store.beginTurn({ threadId, text: "look around", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "assistant_thought", text: "considering zymurgy carefully" } },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "t1",
+          name: "Search",
+          arguments: { q: "kumquat" },
+          content: "rutabaga",
+        },
+      },
+    ] as never);
+    store.completeTurn(turn.turnId, "All set.");
+
+    expect(store.searchThreads({ sourceId: "agent-one", query: "zymurgy" }).hits).toEqual([]);
+    expect(store.searchThreads({ sourceId: "agent-one", query: "kumquat" }).hits).toEqual([]);
+    expect(store.searchThreads({ sourceId: "agent-one", query: "rutabaga" }).hits).toEqual([]);
+    expect(store.searchThreads({ sourceId: "agent-one", query: "all set" }).hits).toHaveLength(1);
+    store.close();
+  });
+
+  it("folds diacritics so an unaccented query still matches accented prose", async () => {
+    const { store, threadId } = await openSearchStore();
+    say(store, threadId, "rename the héro button", "Renamed.");
+
+    expect(store.searchThreads({ sourceId: "agent-one", query: "hero" }).hits).toHaveLength(1);
+    store.close();
+  });
+
+  it("indexes an answer when its turn settles, not on every streaming snapshot", async () => {
+    const { store, threadId } = await openSearchStore();
+    const turn = store.beginTurn({ threadId, text: "first wording", attachmentIds: [] });
+
+    // Re-extracting a large message's text on every ~50ms snapshot costs several
+    // times the row write, so a running answer stays out of the index. Interim
+    // wording is transient and never worth indexing on its own.
+    store.applyStreamFrames(turn.turnId, [{ kind: "append", delta: "the phoenix exporter" }] as never);
+    expect(store.searchThreads({ sourceId: "agent-one", query: "phoenix" }).hits).toEqual([]);
+
+    // Appending more while still running keeps it out; only settling admits it.
+    store.applyStreamFrames(turn.turnId, [{ kind: "append", delta: " and the grafana one" }] as never);
+    expect(store.searchThreads({ sourceId: "agent-one", query: "grafana" }).hits).toEqual([]);
+
+    store.completeTurn(turn.turnId, "the grafana exporter");
+    expect(store.searchThreads({ sourceId: "agent-one", query: "grafana" }).hits).toHaveLength(1);
+    store.close();
+  });
+
+  it("indexes an interrupted answer, so a crashed turn is not lost to search", async () => {
+    const { store, stateDir, threadId } = await openSearchStore();
+    const turn = store.beginTurn({ threadId, text: "start", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [{ kind: "append", delta: "the phoenix exporter" }] as never);
+    // Close without completing the turn: the process died mid-answer.
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+
+    expect(reopened.searchThreads({ sourceId: "agent-one", query: "phoenix" }).hits)
+      .toHaveLength(1);
+    reopened.close();
+  });
+
+  it("re-indexes an edited answer and forgets a deleted conversation", async () => {
+    const { store, threadId } = await openSearchStore();
+    say(store, threadId, "first prompt", "the phoenix exporter");
+    expect(store.searchThreads({ sourceId: "agent-one", query: "phoenix" }).hits).toHaveLength(1);
+
+    store.patchThread(threadId, { archived: true });
+    await store.deleteArchivedThread(threadId);
+    expect(store.searchThreads({ sourceId: "agent-one", query: "phoenix" }).hits).toEqual([]);
+    store.close();
+  });
+
+  it("reserves room for message hits when many titles match the same word", async () => {
+    const { store } = await openSearchStore();
+    // Titles are auto-derived from first prompts, so a common word matches many
+    // of them. The one conversation that says the word only inside a message is
+    // exactly what this feature exists to find; it must not be crowded out.
+    for (let index = 0; index < 60; index += 1) {
+      const noisy = store.createThread("agent-one");
+      store.patchThread(noisy.id, { title: `report ${String(index)}` });
+      say(store, noisy.id, "unrelated body", "Nothing here.");
+    }
+    const buried = store.createThread("agent-one");
+    store.patchThread(buried.id, { title: "zzz" });
+    say(store, buried.id, "the report is inside the message", "Filed.");
+
+    const page = store.searchThreads({ sourceId: "agent-one", query: "report" });
+
+    expect(page.hits).toHaveLength(WEB_THREAD_SEARCH_MAX);
+    expect(page.hits.map((hit) => hit.thread.id)).toContain(buried.id);
+    expect(page.truncated).toBe(true);
+    store.close();
+  });
+
+  it("still fills the page from titles alone when no message matched", async () => {
+    const { store } = await openSearchStore();
+    for (let index = 0; index < 5; index += 1) {
+      const named = store.createThread("agent-one");
+      store.patchThread(named.id, { title: `budget ${String(index)}` });
+      say(store, named.id, "unrelated body", "Nothing here.");
+    }
+
+    const page = store.searchThreads({ sourceId: "agent-one", query: "budget" });
+
+    expect(page.hits).toHaveLength(5);
+    expect(page.hits.every((hit) => hit.titleMatch)).toBe(true);
+    expect(page.truncated).toBe(false);
+    store.close();
+  });
+
+  it("strips the highlight sentinels from indexed text so a snippet cannot lie", async () => {
+    const { store, threadId } = await openSearchStore();
+    say(
+      store,
+      threadId,
+      `injected ${WEB_SEARCH_HIGHLIGHT_OPEN}fake${WEB_SEARCH_HIGHLIGHT_CLOSE} sentinel needle`,
+      "Filed.",
+    );
+
+    const [hit] = store.searchThreads({ sourceId: "agent-one", query: "needle" }).hits;
+
+    // Exactly one highlighted run, and it is the term that actually matched.
+    expect(hit?.snippet?.split(WEB_SEARCH_HIGHLIGHT_OPEN)).toHaveLength(2);
+    expect(hit?.snippet).toContain(
+      `${WEB_SEARCH_HIGHLIGHT_OPEN}needle${WEB_SEARCH_HIGHLIGHT_CLOSE}`,
+    );
+    expect(hit?.snippet).toContain("injected fake sentinel");
+    store.close();
+  });
+
+  it("reports truncation only when matches were actually cut", async () => {
+    const { store, threadId } = await openSearchStore();
+    say(store, threadId, "one solitary needle", "Filed.");
+
+    expect(store.searchThreads({ sourceId: "agent-one", query: "needle" }).truncated).toBe(false);
+    store.close();
+  });
+
+  it("treats a too-short or wordless query as no query at all", async () => {
+    const { store, threadId } = await openSearchStore();
+    say(store, threadId, "anything at all", "Done.");
+
+    for (const query of ["a", "  ", '"*(-)']) {
+      expect(store.searchThreads({ sourceId: "agent-one", query }))
+        .toEqual({ hits: [], truncated: false });
+    }
+    store.close();
+  });
+
+  it("rejects a search against an agent it does not know", async () => {
+    const { store } = await openSearchStore();
+
+    expect(() => store.searchThreads({ sourceId: "ghost", query: "anything" }))
+      .toThrowError(/Agent not found/u);
+    store.close();
+  });
+
+  it("backfills the index for a database written before it existed", async () => {
+    const { store, stateDir, threadId } = await openSearchStore();
+    say(store, threadId, "the migrated subject", "Done.");
+    store.close();
+
+    // Wind a real database back to schema 8 by removing the index and its
+    // triggers, so initialize() has to rebuild and repopulate them.
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    for (const trigger of ["insert", "update", "delete"]) {
+      database.exec(`DROP TRIGGER message_search_${trigger}`);
+    }
+    database.exec("DROP TABLE message_search");
+    database.exec("PRAGMA user_version = 8");
+    database.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.searchThreads({ sourceId: "agent-one", query: "migrated" }).hits)
+      .toHaveLength(1);
+    expect(
+      new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true })
+        .prepare("PRAGMA user_version").get(),
+    ).toMatchObject({ user_version: 9 });
     reopened.close();
   });
 });

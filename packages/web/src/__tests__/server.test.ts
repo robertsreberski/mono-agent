@@ -932,6 +932,77 @@ describe("web HTTP server", () => {
     expect(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`)).toMatchObject({ status: 404 });
   });
 
+  it("searches conversation text through a route the :id parameter cannot swallow", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const created = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    const thread = (await json(created)).thread as { id: string };
+    await fetch(`${baseUrl}/api/v1/threads/${thread.id}/turns`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "reindex the tailscale exporter" }),
+    });
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`));
+      if ((detail.thread as { runState?: { status?: string } }).runState?.status === "complete") break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+
+    const searched = await fetch(
+      `${baseUrl}/api/v1/threads/search?sourceId=agent-one&q=tailscale`,
+    );
+
+    expect(searched.status).toBe(200);
+    const page = await json(searched) as {
+      hits: Array<{ thread: { id: string }; snippet?: string; messageMatches: number }>;
+      truncated: boolean;
+    };
+    // "search" resolves to this route rather than being read as a thread id,
+    // which would otherwise 404 through GET /api/v1/threads/:id.
+    expect(page.hits).toHaveLength(1);
+    expect(page.hits[0]?.thread.id).toBe(thread.id);
+    expect(page.hits[0]?.snippet).toContain("tailscale");
+    expect(page.truncated).toBe(false);
+  });
+
+  it("validates the search query string and bounds its page size", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+
+    const missingSource = await fetch(`${baseUrl}/api/v1/threads/search?q=anything`);
+    expect(missingSource.status).toBe(400);
+    expect(await json(missingSource)).toMatchObject({ error: { code: "invalid_page" } });
+
+    const unknownAgent = await fetch(`${baseUrl}/api/v1/threads/search?sourceId=ghost&q=anything`);
+    expect(unknownAgent.status).toBe(404);
+    expect(await json(unknownAgent)).toMatchObject({ error: { code: "agent_not_found" } });
+
+    // A one-character or absent query is answered rather than rejected: the box
+    // is typed into character by character.
+    for (const query of ["", "a"]) {
+      const short = await fetch(
+        `${baseUrl}/api/v1/threads/search?sourceId=agent-one&q=${query}`,
+      );
+      expect(short.status).toBe(200);
+      expect(await json(short)).toEqual({ hits: [], truncated: false });
+    }
+
+    // Bounded exactly like every other paginated route: an over-max limit is a
+    // client error rather than a silent clamp.
+    const overLimit = await fetch(
+      `${baseUrl}/api/v1/threads/search?sourceId=agent-one&q=anything&limit=5000`,
+    );
+    expect(overLimit.status).toBe(400);
+    expect(await json(overLimit)).toMatchObject({ error: { code: "invalid_page" } });
+
+    const withinLimit = await fetch(
+      `${baseUrl}/api/v1/threads/search?sourceId=agent-one&q=anything&limit=5`,
+    );
+    expect(withinLimit.status).toBe(200);
+  });
+
   it("projects process-job rich replies through the thread API with exact message-bound access", async () => {
     const { baseUrl, handle } = await start({ host: "127.0.0.1" });
     const created = await fetch(`${baseUrl}/api/v1/threads`, {

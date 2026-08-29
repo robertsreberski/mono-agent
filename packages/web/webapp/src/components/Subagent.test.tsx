@@ -50,6 +50,55 @@ describe("SubagentPart", () => {
     expect(section).not.toHaveClass("is-error");
   });
 
+  it("folds a run of same-tool calls into one row with duration and failure count", () => {
+    const { container } = render(part({
+      ...delegation,
+      calls: [
+        { toolCallId: "t1", toolName: "Read", args: { path: "one.md" }, result: "one", executionMs: 100, status: "complete" },
+        { toolCallId: "t2", toolName: "Read", args: { path: "two.md" }, result: { error: "denied" }, executionMs: 200, status: "failed" },
+        { toolCallId: "t3", toolName: "Grep", args: { pattern: "x" }, status: "complete" },
+      ],
+    }));
+
+    const cluster = container.querySelector("details.subagent-cluster");
+    expect(cluster).toBeInTheDocument();
+    expect(cluster).toHaveClass("is-error");
+    expect(within(cluster as HTMLElement).getByText("Read \u00d72")).toBeInTheDocument();
+    expect(within(cluster as HTMLElement).getByText("1 failed")).toBeInTheDocument();
+    expect(within(cluster as HTMLElement).getByText("300ms")).toBeInTheDocument();
+    // The lone Grep call keeps its own row rather than being swept into a cluster.
+    expect(container.querySelectorAll("details.subagent-cluster")).toHaveLength(1);
+    expect(within(cluster as HTMLElement).getAllByText("Read")).toHaveLength(2);
+  });
+
+  it("labels a failed call's payload as an error and surfaces a lost history record", () => {
+    const { container } = render(part({
+      ...delegation,
+      calls: [{
+        toolCallId: "t1",
+        toolName: "Read",
+        args: { path: "one.md" },
+        result: { error: "denied" },
+        status: "failed",
+        history: { persistence: "failed", errorCode: "history_writer_closed", untrusted: true },
+      }],
+    }));
+
+    const nested = container.querySelector("details.tool-call.is-nested") as HTMLElement;
+    expect(within(nested).getByText("Error")).toBeInTheDocument();
+    expect(within(nested).queryByText("Output")).toBeNull();
+    expect(
+      within(nested).getByText(/Tool history for this call was not saved \(history_writer_closed\)\./u),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no per-call duration when the runtime reported none", () => {
+    const { container } = render(part(delegation));
+
+    const nested = container.querySelector("details.tool-call.is-nested") as HTMLElement;
+    expect(nested.querySelector("time.tool-duration")).toBeNull();
+  });
+
   it("previews each call's key argument so repeated tools stay distinguishable", () => {
     const { container } = render(part(delegation));
 
