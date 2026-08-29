@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/observability",
-  "version": "0.20.8",
+  "version": "0.20.9",
   "description": "Run event recording and artifact summaries for agent hosts.",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -43,7 +43,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.20.8",
+    "@mono-agent/agent-contracts": "workspace:0.20.9",
     "@opentelemetry/otlp-transformer": "0.219.0",
     "@opentelemetry/sdk-trace-base": "2.8.0"
   },
