@@ -102,7 +102,7 @@ Threads use the first prompt as their initial title and can be renamed. Active t
 
 Cron jobs and webhook endpoints can explicitly target `notifyConversationId: "web:new"` with `notify: true`. Webhook results retain one assistant-only thread per delivery. Cron results instead fold into one durable, source-qualified channel per job, with the stable route `/agents/<sourceId>/cron/<jobId>`. Its chronological feed includes scheduled/manual admission, running, queued, succeeded, failed, cancelled, overlap-skipped, and dropped states, plus artifact/session links when the agent reports them. The header shows the agent-authoritative schedule, timezone, declared/effective state, last/next run, and health; it never computes next-run locally. Cron channels are read-only in this release, so console interaction cannot occupy the cron job's own conversation and cause a scheduled firing to overlap.
 
-The console retains at most 500 run rows per cron job. Thread bootstrap and paging are independently bounded to 200 rows per `(sourceId, archived)` bucket, message pages to 100, and all older-page queries use opaque keyset cursors. A selected thread outside the current window is fetched through redirect-resolving `GET /threads/:id` before a mutation instead of silently no-oping.
+The console retains at most 500 run rows per cron job. Thread bootstrap and paging are independently bounded to 200 rows per `(sourceId, archived)` bucket, message pages to 100, and all older-page queries use opaque keyset cursors. Conversation search is bounded to 50 conversations per query. A selected thread outside the current window is fetched through redirect-resolving `GET /threads/:id` before a mutation instead of silently no-oping.
 
 Configured cron channels may be archived but not deleted. If a job disappears from config, the channel becomes a `configured:false` historical tombstone; an archived tombstone may be deleted. Deletion retains a local suppression marker plus threadless notification-delivery receipts, so authoritative historical overviews and late or replayed deliveries cannot resurrect it. The marker clears only if that job id becomes configured again.
 
@@ -111,6 +111,63 @@ Configured cron channels may be archived but not deleted. If a job disappears fr
 The service, not the browser tab, owns the upstream operator connection. A browser disconnect or reload can therefore reconnect through the event stream while the turn continues. Brief event-stream reconnects do not raise the full reconnect banner; it appears after five seconds, while a browser-offline event is shown immediately. If the web service itself restarts, any turn that was still active is marked interrupted instead of being shown as permanently running.
 
 During a turn the transcript shows streamed GitHub-Flavored Markdown, reasoning, tool calls and results, context-compaction lifecycle rows, user-facing errors, and the final outcome. Tables, task lists, strikethrough, autolinks, and footnotes render as real elements; a table wider than the transcript keeps its column alignment and scrolls horizontally inside its own keyboard-focusable region, and links to external sites open outside the console window. Raw HTML in a reply is never rendered. Other raw runtime, provider, and usage telemetry remains internal; measured token and cost data appears only through the context control. The composer exposes the selected agent's available model and effort controls. Copy, cancel, archive, unarchive, and steering a running turn are supported; edit/regenerate/branch and browser-defined client tools are deliberately not enabled.
+
+Repeated tool calls fold together: a run of two or more consecutive calls to the
+same tool renders as one expandable row (**Read ×4**) carrying a deduplicated
+argument preview, a failure count, and the combined duration, with every member
+call still individually expandable underneath. The same folding applies to a
+subagent's own nested steps. Reasoning renders as a collapsed **Thinking** row
+with a one-line preview that expands in place. The Activity header summarizes
+the turn as a step count and elapsed time.
+
+Durations come from the timing the runtime reports for each tool call. Messages
+recorded before the console preserved that timing have none, and a missing
+duration is shown as nothing at all rather than as zero.
+
+
+### Search conversations
+
+The sidebar search box searches the full text of an agent's conversations, not
+just their titles. It queries the web service rather than filtering the page the
+browser has already loaded, so a phrase used once in a conversation from months
+ago is reachable without paging back to it. Titles are matched as substrings;
+message text is matched with SQLite FTS5 over an index the service maintains in
+SQLite alongside the conversations themselves.
+
+Only conversation prose is indexed: user messages and the agent's answers.
+Reasoning and tool inputs/outputs are deliberately excluded, so a search returns
+what was said rather than the machine payloads behind it.
+
+Message text and titles match differently, because they are matched by different
+means. Message text is tokenized: each query word matches from the start of a
+word, so `deploy phoen` finds "deploy the phoenix exporter" but `hoenix` does
+not, and accents are folded so an unaccented query still matches accented prose.
+Titles are matched as a plain substring, so `hoenix` does find a conversation
+*titled* "deploy the phoenix exporter", and title matching folds ASCII case only
+— `reunion` will not match a title spelled "Réunion". Adding a word narrows the
+results either way.
+
+The tokenizer splits on letters and digits, which suits languages that put
+spaces between words. Text in a language written without them — Chinese,
+Japanese, Thai — is treated as one long token, so only a query repeating the
+whole run will match it.
+
+An answer becomes searchable when its turn settles rather than on every
+streaming snapshot, because re-extracting a large message's text every ~50 ms
+costs several times the write itself. A turn cut short by a service restart is
+indexed on the next open, so nothing is permanently missing from search.
+
+Results are scoped to the selected agent and cover archived conversations,
+which appear under their own **Archived** heading rather than being hidden
+behind the archive toggle. Each hit shows a highlighted snippet of its best
+matching message and, when several matched, how many; a conversation matched
+only by its title says so instead. Queries shorter than two characters are not
+run.
+
+Titles lead the results, but never take the whole page: half of it is held for
+ranked message hits whenever there are any, so a common word appearing in many
+auto-derived titles cannot crowd out the one conversation that only mentions it
+in a message. A result set that had to be cut says so.
 
 ### Discover and reference skills
 
@@ -295,6 +352,15 @@ A web turn additionally permits at most 10 files and 64 MiB in aggregate. Attach
 Telegram's optional audio transcription is adapter-specific and is not reused here. Browser-selected audio and video retain their ordinary attachment MIME and document classification unless a future transport-neutral capability changes that contract.
 
 Older running agents that do not advertise attachment support remain usable for text chat, but the upload control is disabled for them rather than sending a request they cannot interpret.
+
+## Storage schema
+
+The web state database is at schema 9. Schema 9 adds the `message_search` FTS5
+index and the triggers that maintain it; the migration is additive and
+transactional, and it backfills the index from existing messages on first open.
+An older `@mono-agent/web` binary refuses to open a schema-9 database rather
+than reading it incorrectly, so downgrading means restoring a pre-upgrade copy
+of `~/.mono-agent/web/state.sqlite`.
 
 ## Local state and reset
 

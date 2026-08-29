@@ -103,8 +103,18 @@ export type {
   WebSkillUnavailableReason,
   WebThread,
   WebThreadDetail,
+  WebThreadSearchHit,
+  WebThreadSearchPage,
+  SearchWebThreadsInput,
   WebThreadTrigger,
   WebTheme,
 } from "./contracts.js";
+
+export {
+  WEB_SEARCH_HIGHLIGHT_CLOSE,
+  WEB_SEARCH_HIGHLIGHT_OPEN,
+  WEB_THREAD_SEARCH_MAX,
+  WEB_THREAD_SEARCH_MIN_QUERY,
+} from "./store.js";
 
 export { WebConsoleError } from "./errors.js";
