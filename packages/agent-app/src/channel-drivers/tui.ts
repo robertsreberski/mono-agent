@@ -11,7 +11,6 @@ import type {
   TuiAdapterStartResult,
 } from "@mono-agent/operator-adapter";
 import {
-  discoverClaudeSdkModels,
   discoverLocalProviderModels,
   modelReferenceKey,
   parseMonoRuntimeModelReference,
@@ -30,15 +29,7 @@ import {
 
 import { buildChannelConfigView } from "../channel-config-view.js";
 import type { ChannelDriver, ChannelStartInput, RunningChannel } from "../channels.js";
-import {
-  codexModelDiscoveryEnvironment,
-  requestCodexModelList,
-  type CodexCatalogModel,
-} from "../codex-model-catalog.js";
-import {
-  resolveAdvertisedModelEffort,
-  type ClaudeEffortCatalogEntry,
-} from "../model-effort-capabilities.js";
+import { resolveAdvertisedModelEffort } from "../model-effort-capabilities.js";
 import { agentAppPackageVersion } from "../package-version.js";
 import {
   configuredRuntimeFallbackModels,
@@ -91,12 +82,6 @@ export interface TuiChannelOverrides {
   readonly discoverModels?: (
     providers: readonly LocalProviderDefinition[] | undefined,
   ) => Promise<readonly DiscoveredLocalModel[]>;
-  /** Test seam: replaces bounded Claude SDK catalog discovery at channel start. */
-  readonly discoverClaudeModels?: (
-    authoredModelRefs: readonly string[],
-  ) => Promise<readonly ClaudeEffortCatalogEntry[]>;
-  /** Test seam: replaces bounded Codex app-server model/list discovery at channel start. */
-  readonly discoverCodexModels?: () => Promise<readonly CodexCatalogModel[]>;
   /** Test/embedding seam for the owner-private local web ingress. */
   readonly deliverNotification?: typeof deliverWebNotification;
 }
@@ -164,10 +149,6 @@ export function createTuiChannelDriver(
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
       const deliverNotification = overrides.deliverNotification ?? deliverWebNotification;
       const discoverModels = overrides.discoverModels ?? discoverLocalProviderModels;
-      const discoverClaudeModels = overrides.discoverClaudeModels
-        ?? ((authoredModelRefs: readonly string[]) => discoverClaudeSdkModels({ authoredModelRefs }));
-      const discoverCodexModels = overrides.discoverCodexModels
-        ?? (() => requestCodexModelList(1_200, codexModelDiscoveryEnvironment()));
       const localProviders = input.coreConfig.providers?.local;
       const skillRegistry = createSkillRegistryMonitor({
         ...(input.coreConfig.context.skillsRoot === undefined
@@ -194,18 +175,6 @@ export function createTuiChannelDriver(
       }
       const directOpenCodeInFallbacks = configuredRuntimeFallbackModels(input.coreConfig.runtime)
         .some((ref) => ref.sdk === "opencode");
-      const claudeRefs = configuredRefs
-        .filter((ref) => ref.sdk === "claude")
-        .map((ref) => modelReferenceKey(ref));
-      const needsCodex = configuredRefs.some((ref) => ref.sdk === "codex");
-      let claudeCatalog: readonly ClaudeEffortCatalogEntry[] = [];
-      let codexCatalog: readonly CodexCatalogModel[] = [];
-      const [claudeResult, codexResult] = await Promise.allSettled([
-        claudeRefs.length > 0 ? discoverClaudeModels(claudeRefs) : Promise.resolve([]),
-        needsCodex ? discoverCodexModels() : Promise.resolve([]),
-      ]);
-      if (claudeResult.status === "fulfilled") claudeCatalog = claudeResult.value;
-      if (codexResult.status === "fulfilled") codexCatalog = codexResult.value;
       let discoveredModels: readonly DiscoveredLocalModel[] = [];
       try {
         discoveredModels = await discoverModels(localProviders);
@@ -239,8 +208,6 @@ export function createTuiChannelDriver(
           }
           const resolved = resolveAdvertisedModelEffort(parsedRef, {
             ...(localProviders === undefined ? {} : { localProviders }),
-            claudeCatalog,
-            codexCatalog,
             suppressExplicitEffort: parsedRef.sdk === "opencode" || directOpenCodeInFallbacks,
           });
           const contextWindow = resolveContextWindow(parsedRef, localProviders);

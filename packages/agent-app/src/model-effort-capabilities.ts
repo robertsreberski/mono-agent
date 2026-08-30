@@ -1,6 +1,5 @@
 import { EFFORT_LEVELS } from "@mono-agent/config";
 import {
-  curatedClaudeSdkModels,
   getPiBuiltinModel,
   reasoningLevelsForPiModel,
 } from "@mono-agent/agent-runtime";
@@ -11,20 +10,10 @@ import type {
 } from "@mono-agent/runtime-adapter";
 import { resolveModelEffortLevels } from "@mono-agent/runtime-adapter";
 
-import type { CodexCatalogModel } from "./codex-model-catalog.js";
-
 const KNOWN_EFFORTS = new Set<string>(EFFORT_LEVELS);
-
-export interface ClaudeEffortCatalogEntry {
-  readonly model: string;
-  readonly reference?: string;
-  readonly supportedEfforts: readonly string[];
-}
 
 export interface AdvertisedModelEffortCatalog {
   readonly localProviders?: readonly LocalProviderDefinition[];
-  readonly claudeCatalog?: readonly ClaudeEffortCatalogEntry[];
-  readonly codexCatalog?: readonly CodexCatalogModel[];
   readonly suppressExplicitEffort?: boolean;
 }
 
@@ -44,14 +33,6 @@ function gradedEffort(levels: readonly string[]): ModelEffortLevels {
     reasoningMode: "effort",
     effortLevels,
   };
-}
-
-function claudeCatalogEntry(
-  ref: RuntimeModelReference,
-  catalog: readonly ClaudeEffortCatalogEntry[] | undefined,
-): ClaudeEffortCatalogEntry | undefined {
-  const reference = `claude:${ref.model}`;
-  return catalog?.find((entry) => entry.model === ref.model || entry.reference === reference);
 }
 
 /**
@@ -76,20 +57,6 @@ export function resolveAdvertisedModelEffort(
     if (builtin === undefined) return noExplicitEffort(true);
     if (builtin.reasoning !== true) return noExplicitEffort(false);
     return gradedEffort(reasoningLevelsForPiModel(builtin));
-  }
-
-  if (ref.sdk === "claude") {
-    const discovered = claudeCatalogEntry(ref, catalog.claudeCatalog);
-    if (discovered !== undefined) return gradedEffort(discovered.supportedEfforts);
-    const pinned = claudeCatalogEntry(ref, curatedClaudeSdkModels());
-    if (pinned !== undefined) return gradedEffort(pinned.supportedEfforts);
-    return noExplicitEffort(true);
-  }
-
-  if (ref.sdk === "codex") {
-    const match = catalog.codexCatalog?.find((entry) => entry.id === ref.model);
-    if (match === undefined) return noExplicitEffort(true);
-    return gradedEffort(match.supportedEfforts);
   }
 
   return noExplicitEffort(true);

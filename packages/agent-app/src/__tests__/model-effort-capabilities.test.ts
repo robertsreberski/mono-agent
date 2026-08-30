@@ -44,56 +44,6 @@ describe("resolveAdvertisedModelEffort", () => {
     });
   });
 
-  it("does not infer direct Codex efforts from the Pi catalog", () => {
-    const piCodex = getPiBuiltinModel("openai-codex", "gpt-5.6-terra");
-    expect(piCodex).toBeDefined();
-    expect(reasoningLevelsForPiModel(piCodex!).length).toBeGreaterThan(0);
-    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("codex:gpt-5.6-terra")))
-      .toEqual({ reasoning: true });
-  });
-
-  it("uses supplied live Codex catalog entries and fail-closes when the exact model is absent", () => {
-    const catalog = [{
-      id: "gpt-5.6-terra",
-      displayName: "GPT-5.6 Terra",
-      supportedEfforts: ["low", "medium", "high"] as const,
-    }];
-    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("codex:gpt-5.6-terra"), {
-      codexCatalog: catalog,
-    })).toEqual({
-      reasoning: true,
-      reasoningMode: "effort",
-      effortLevels: ["low", "medium", "high"],
-    });
-    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("codex:gpt-5.6-sol"), {
-      codexCatalog: catalog,
-    })).toEqual({ reasoning: true });
-  });
-
-  it("uses the pinned Claude SDK catalog and overlays discovered authored refs", () => {
-    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("claude:claude-sonnet-5")))
-      .toEqual({
-        reasoning: true,
-        reasoningMode: "effort",
-        effortLevels: ["low", "medium", "high", "xhigh", "max"],
-      });
-    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("claude:claude-haiku-4-5-20251001")))
-      .toEqual({ reasoning: true });
-    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("claude:claude-fable-5"), {
-      claudeCatalog: [{
-        model: "claude-fable-5",
-        reference: "claude:claude-fable-5",
-        supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
-      }],
-    })).toEqual({
-      reasoning: true,
-      reasoningMode: "effort",
-      effortLevels: ["low", "medium", "high", "xhigh", "max"],
-    });
-    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("claude:claude-fable-5")))
-      .toEqual({ reasoning: true });
-  });
-
   it("keeps configured local Pi toggle, graded, and non-reasoning metadata", () => {
     expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("pi:lmstudio:qwen/qwen3-8b"), {
       localProviders: LOCAL_LMSTUDIO,
@@ -117,7 +67,7 @@ describe("resolveAdvertisedModelEffort", () => {
       .toEqual({ reasoning: true });
     expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("pi:unknown-provider:unknown-model")))
       .toEqual({ reasoning: true });
-    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("claude:claude-sonnet-5"), {
+    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("pi:anthropic:claude-sonnet-4-6"), {
       suppressExplicitEffort: true,
     })).toEqual({ reasoning: true });
   });

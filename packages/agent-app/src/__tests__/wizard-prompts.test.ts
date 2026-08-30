@@ -107,7 +107,6 @@ describe("wizard prompt builders", () => {
       "codex:gpt-5.6-terra",
       "codex:gpt-5.6-sol",
     ]);
-    expect(values).toContain("claude:claude-sonnet-5");
     expect(values).toContain("__pi_other__");
     expect(values).toContain("__other__");
     expect(values[values.length - 2]).toBe("__pi_other__");
@@ -576,7 +575,6 @@ describe("wizard model discovery", () => {
     });
 
     const values = result.candidates.map((candidate) => candidate.value);
-    expect(values).toContain("claude:claude-sonnet-5");
     expect(values).toContain("pi:openai-codex:gpt-5.6-terra");
     expect(values).toContain("pi:openai-codex:gpt-5.6-sol");
     expect(values).toContain("codex:gpt-5.6-terra");
@@ -609,7 +607,6 @@ describe("wizard model discovery", () => {
     expect(result.statuses.map((status) => status.status)).toEqual([
       "detected",
       "detected",
-      "setup_available",
       "detected",
       "detected",
       "detected",
@@ -794,7 +791,6 @@ describe("wizard model discovery", () => {
     expect(result.candidates.map((candidate) => candidate.value).indexOf("codex:gpt-5.6-terra"))
       .toBeLessThan(result.candidates.map((candidate) => candidate.value).indexOf("pi:openai-codex:gpt-5.6-terra"));
     expect(result.statuses.map((status) => status.status)).toEqual([
-      "setup_available",
       "setup_available",
       "setup_available",
       "unavailable",
