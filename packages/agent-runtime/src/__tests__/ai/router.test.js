@@ -17,6 +17,10 @@ const { passthroughSandbox } = await import("../../agent/sandbox-seam.js");
 const { resetToolRuntime } = await import("../../agent/tools/shared/runtime-context.js");
 const { createFakeSandbox } = await import("../helpers/fake-sandbox.js");
 
+function modelRef(provider, model) {
+  return { provider, model, reference: `${provider}:${model}` };
+}
+
 beforeEach(() => {
   executeMock.mockReset();
   resolveRuntimeBridgeMock.mockReset();
@@ -37,8 +41,8 @@ describe("createRouterRuntime — basic", () => {
     executeMock.mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
-        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
+        modelRef("anthropic", "claude-opus-4-7"),
+        modelRef("anthropic", "claude-sonnet-4-6"),
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -70,8 +74,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
     const events = [];
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
-        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
+        modelRef("anthropic", "claude-opus-4-7"),
+        modelRef("anthropic", "claude-sonnet-4-6"),
       ],
     });
     const result = await router.run("sys", { messages: [], onEvent: (e) => events.push(e) });
@@ -85,15 +89,15 @@ describe("createRouterRuntime — fallback on retryable", () => {
     expect(failoverEvents).toEqual([
       {
         type: "provider_failover_started",
-        from: "pi:anthropic:claude-opus-4-7",
-        to: "pi:anthropic:claude-sonnet-4-6",
+        from: "anthropic:claude-opus-4-7",
+        to: "anthropic:claude-sonnet-4-6",
         attemptIndex: 1,
         reason: "overloaded",
       },
       {
         type: "provider_failover_completed",
         attemptIndex: 1,
-        model: "pi:anthropic:claude-sonnet-4-6",
+        model: "anthropic:claude-sonnet-4-6",
       },
     ]);
   });
@@ -118,9 +122,9 @@ describe("createRouterRuntime — fallback on retryable", () => {
 
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
-        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
-        { sdk: "pi", provider: "ollama", model: "qwen3:8b" },
+        modelRef("openai-codex", "gpt-5.6-sol"),
+        modelRef("anthropic", "claude-sonnet-4-6"),
+        modelRef("ollama", "qwen3:8b"),
       ],
     });
 
@@ -180,8 +184,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
     };
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
-        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
+        modelRef("anthropic", "claude-opus-4-7"),
+        modelRef("anthropic", "claude-sonnet-4-6"),
       ],
     });
 
@@ -221,8 +225,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
 
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
-        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
+        modelRef("anthropic", "claude-opus-4-7"),
+        modelRef("anthropic", "claude-sonnet-4-6"),
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -257,8 +261,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
 
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
-        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
+        modelRef("anthropic", "claude-opus-4-7"),
+        modelRef("anthropic", "claude-sonnet-4-6"),
       ],
     });
     const result = await router.run("Original system prompt", { messages: [] });
@@ -291,8 +295,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
       });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
-        { sdk: "pi", provider: "opencode-go", model: "kimi-k2.6" },
+        modelRef("openai-codex", "gpt-5.6-sol"),
+        modelRef("opencode-go", "kimi-k2.6"),
       ],
     });
 
@@ -319,8 +323,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
     });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
-        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
+        modelRef("anthropic", "claude-opus-4-7"),
+        modelRef("anthropic", "claude-sonnet-4-6"),
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -339,8 +343,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
     });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
-        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
+        modelRef("anthropic", "claude-opus-4-7"),
+        modelRef("anthropic", "claude-sonnet-4-6"),
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -367,8 +371,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
       });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", model: "openai-codex:gpt-5.5" },
-        { sdk: "pi", model: "opencode-go:kimi-k2.6" },
+        modelRef("openai-codex", "gpt-5.5"),
+        modelRef("opencode-go", "kimi-k2.6"),
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -394,8 +398,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
       });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "github-copilot", model: "gpt-5.1" },
-        { sdk: "pi", provider: "opencode-go", model: "kimi-k2.6" },
+        modelRef("github-copilot", "gpt-5.1"),
+        modelRef("opencode-go", "kimi-k2.6"),
       ],
     });
 
@@ -404,7 +408,7 @@ describe("createRouterRuntime — fallback on retryable", () => {
     expect(result.text).toBe("recovered through Pi");
     expect(result.failoverHistory).toEqual([
       expect.objectContaining({
-        model: expect.objectContaining({ sdk: "pi", provider: "github-copilot" }),
+        model: expect.objectContaining({ provider: "github-copilot" }),
         failureKind: "provider_auth",
       }),
     ]);
@@ -423,8 +427,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
       .mockResolvedValueOnce({ text: "recovered", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "openai-codex", model: "gpt-5.5" },
-        { sdk: "pi", provider: "github-copilot", model: "gpt-5.1" },
+        modelRef("openai-codex", "gpt-5.5"),
+        modelRef("github-copilot", "gpt-5.1"),
       ],
     });
 
@@ -463,8 +467,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
       });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", model: "openai-codex:gpt-5.5" },
-        { sdk: "pi", model: "opencode-go:kimi-k2.6" },
+        modelRef("openai-codex", "gpt-5.5"),
+        modelRef("opencode-go", "kimi-k2.6"),
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -484,8 +488,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
     });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", model: "openai-codex:gpt-5.5" },
-        { sdk: "pi", model: "opencode-go:kimi-k2.6" },
+        modelRef("openai-codex", "gpt-5.5"),
+        modelRef("opencode-go", "kimi-k2.6"),
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -508,8 +512,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
     });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
-        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
+        modelRef("anthropic", "claude-opus-4-7"),
+        modelRef("anthropic", "claude-sonnet-4-6"),
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -539,8 +543,8 @@ describe("createRouterRuntime — transcript replay on fallback", () => {
     });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
-        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
+        modelRef("anthropic", "claude-opus-4-7"),
+        modelRef("anthropic", "claude-sonnet-4-6"),
       ],
     });
     await router.run("Original system prompt", { messages: [] });
@@ -577,9 +581,9 @@ describe("createRouterRuntime — transcript replay on fallback", () => {
     });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "openai-codex", model: "first" },
-        { sdk: "pi", provider: "anthropic", model: "mismatch" },
-        { sdk: "pi", provider: "openai", model: "success" },
+        modelRef("openai-codex", "first"),
+        modelRef("anthropic", "mismatch"),
+        modelRef("openai", "success"),
       ],
     });
 
@@ -598,8 +602,8 @@ describe("createRouterRuntime — capability filtering", () => {
     executeMock.mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { model: { sdk: "pi", provider: "anthropic", model: "x" }, requires: { kind: "does-not-exist" } },
-        { sdk: "pi", provider: "openai", model: "openai-gpt-4" },
+        { model: modelRef("anthropic", "x"), requires: { kind: "does-not-exist" } },
+        modelRef("openai", "openai-gpt-4"),
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -611,8 +615,8 @@ describe("createRouterRuntime — capability filtering", () => {
   it("does not report provider availability exhaustion when no provider entry executed", async () => {
     const router = createRouterRuntime({
       chain: [
-        { model: { sdk: "pi", provider: "anthropic", model: "x" }, requires: { kind: "does-not-exist" } },
-        { model: { sdk: "pi", provider: "openai", model: "openai-gpt-4" }, requires: { kind: "also-missing" } },
+        { model: modelRef("anthropic", "x"), requires: { kind: "does-not-exist" } },
+        { model: modelRef("openai", "openai-gpt-4"), requires: { kind: "also-missing" } },
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -634,8 +638,8 @@ describe("createRouterRuntime — capability filtering", () => {
       .mockResolvedValueOnce({ text: "recovered", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "anthropic", model: "first" },
-        { sdk: "pi", provider: "openai", model: "second" },
+        modelRef("anthropic", "first"),
+        modelRef("openai", "second"),
       ],
     });
 
@@ -659,8 +663,8 @@ describe("createRouterRuntime — capability filtering", () => {
       .mockResolvedValueOnce({ text: "recovered", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
-        { sdk: "pi", provider: "openai", model: "openai-gpt-4" },
+        modelRef("anthropic", "claude-opus-4-7"),
+        modelRef("openai", "openai-gpt-4"),
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -676,12 +680,12 @@ describe("createRouterRuntime — chain entry shorthand", () => {
   it("accepts bare ModelRef entries", async () => {
     executeMock.mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
     const router = createRouterRuntime({
-      chain: [{ sdk: "pi", provider: "anthropic", model: "x" }],
+      chain: [modelRef("anthropic", "x")],
     });
     const result = await router.run("sys", { messages: [] });
     expect(result.text).toBe("ok");
     const call = executeMock.mock.calls[0][1];
-    expect(call.model).toEqual({ sdk: "pi", provider: "anthropic", model: "x" });
+    expect(call.model).toEqual(modelRef("anthropic", "x"));
   });
 });
 
@@ -693,9 +697,9 @@ describe("createRouterRuntime — production fallback contracts", () => {
       .mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { model: { sdk: "pi", provider: "anthropic", model: "inherit" } },
-        { model: { sdk: "pi", provider: "ollama", model: "provider-default" }, effort: null },
-        { model: { sdk: "pi", provider: "openai", model: "fixed" }, effort: "ultra" },
+        { model: modelRef("anthropic", "inherit") },
+        { model: modelRef("ollama", "provider-default"), effort: null },
+        { model: modelRef("openai", "fixed"), effort: "ultra" },
       ],
     });
 
@@ -712,8 +716,8 @@ describe("createRouterRuntime — production fallback contracts", () => {
       .mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "openai-codex", model: "primary" },
-        { sdk: "pi", provider: "anthropic", model: "fallback" },
+        modelRef("openai-codex", "primary"),
+        modelRef("anthropic", "fallback"),
       ],
     });
 
@@ -738,8 +742,8 @@ describe("createRouterRuntime — production fallback contracts", () => {
     const seen = [];
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "local-a", model: "a" },
-        { sdk: "pi", provider: "openai", model: "b" },
+        modelRef("local-a", "a"),
+        modelRef("openai", "b"),
       ],
       resolveAttempt: ({ model }) => {
         seen.push(model.provider);
@@ -769,8 +773,8 @@ describe("createRouterRuntime — production fallback contracts", () => {
       .mockResolvedValueOnce({ text: "fallback ok", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "openai-codex", model: "gpt-5.5" },
-        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
+        modelRef("openai-codex", "gpt-5.5"),
+        modelRef("anthropic", "claude-sonnet-4-6"),
       ],
       resolveAttempt: ({ model }) => ({
         policyOptions: model.provider === "openai-codex"
@@ -804,8 +808,8 @@ describe("createRouterRuntime — production fallback contracts", () => {
       .mockResolvedValueOnce({ text: "builtin recovered", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "local", model: "custom-primary" },
-        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
+        modelRef("local", "custom-primary"),
+        modelRef("anthropic", "claude-sonnet-4-6"),
       ],
     });
     const primaryMetadata = {
@@ -832,7 +836,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
       sandbox: createFakeSandbox(),
     });
     const router = createRouterRuntime({
-      chain: [{ sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" }],
+      chain: [modelRef("anthropic", "claude-sonnet-4-6")],
       resolveAttempt: () => ({ runtime: resolvedRuntime }),
     });
     router.configureTools({ workspace: "/tmp/configured" });
@@ -851,7 +855,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
   it("fails before execution when a resolver-supplied Pi runtime cannot accept tool context", async () => {
     const suppliedRun = vi.fn();
     const router = createRouterRuntime({
-      chain: [{ sdk: "pi", provider: "openai", model: "gpt-5.5" }],
+      chain: [modelRef("openai", "gpt-5.5")],
       resolveAttempt: () => ({ runtime: { run: suppliedRun } }),
     });
 
@@ -864,7 +868,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
 
   it("does not expose credentials from resolver failures", async () => {
     const router = createRouterRuntime({
-      chain: [{ sdk: "pi", provider: "ollama", model: "private" }],
+      chain: [modelRef("ollama", "private")],
       resolveAttempt: () => {
         throw new Error("failed with api_key=route-secret-value");
       },
@@ -896,9 +900,9 @@ describe("createRouterRuntime — production fallback contracts", () => {
       .mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "openai-codex", model: "one" },
-        { sdk: "pi", provider: "anthropic", model: "two" },
-        { sdk: "pi", provider: "ollama", model: "three" },
+        modelRef("openai-codex", "one"),
+        modelRef("anthropic", "two"),
+        modelRef("ollama", "three"),
       ],
     });
 
@@ -913,19 +917,19 @@ describe("createRouterRuntime — production fallback contracts", () => {
   it("rejects duplicate chains before creating a run", () => {
     expect(() => createRouterRuntime({
       chain: [
-        { sdk: "pi", provider: "anthropic", model: "same" },
-        { model: { sdk: "pi", provider: "anthropic", model: "same" }, effort: "high" },
+        modelRef("anthropic", "same"),
+        { model: modelRef("anthropic", "same"), effort: "high" },
       ],
     })).toThrow(/duplicate model/u);
     expect(() => createRouterRuntime({
-      chain: [{ model: { sdk: "pi", provider: "anthropic", model: "bad-effort" }, effort: " " }],
+      chain: [{ model: modelRef("anthropic", "bad-effort"), effort: " " }],
     })).toThrow(/non-empty trimmed string/u);
   });
 });
 
 describe("createRouterRuntime — same-model retry", () => {
-  const OPUS = { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" };
-  const SONNET = { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" };
+  const OPUS = modelRef("anthropic", "claude-opus-4-7");
+  const SONNET = modelRef("anthropic", "claude-sonnet-4-6");
   const overloaded = () => ({
     text: null,
     error: "Anthropic API overloaded — try again later",

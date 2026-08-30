@@ -102,7 +102,7 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
 
       const runtime = createMonoRuntime();
       runtime.run("SYSTEM", {
-        model: { sdk: "pi", provider: "faux", model: "sandbox-test" },
+        model: { provider: "faux", model: "sandbox-test", reference: "faux:sandbox-test" },
         messages: [],
         abortSignal: new AbortController().signal,
         // @ts-expect-error request extensions may supply policy/engine data, never the implementation.
@@ -142,7 +142,11 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
     if (false) {
       const runtime = createRuntime();
       void runtime.run("SYSTEM", {
-        model: { sdk: "pi", provider: "faux", model: "lifecycle-type-contract" },
+        model: {
+          provider: "faux",
+          model: "lifecycle-type-contract",
+          reference: "faux:lifecycle-type-contract",
+        },
         messages: [],
         toolLifecycleSink: async (event) => {
           if (event.phase === "invocation") {
@@ -301,7 +305,7 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
   });
 
   it("parseRuntimeModelReference keeps its real string-in signature", () => {
-    expectTypeOf(parseRuntimeModelReference).toBeCallableWith("pi:anthropic:claude-sonnet-4-6");
+    expectTypeOf(parseRuntimeModelReference).toBeCallableWith("anthropic:claude-sonnet-4-6");
     expectTypeOf(parseRuntimeModelReference).returns.toExtend<RuntimeModelReference>();
   });
 

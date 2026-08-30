@@ -20,24 +20,16 @@ describe("AI runtime bridge registry", () => {
 
   it("resolves Pi to the native AgentHarness bridge", async () => {
     const { piNativeRuntimeBridge } = await import("../../ai/providers/pi-native.js");
-    const model = { sdk: "pi", provider: "openai", model: "gpt-5.5" };
+    const model = { provider: "openai", model: "gpt-5.5", reference: "openai:gpt-5.5" };
     const bridge = await resolveRuntimeBridge(model);
 
     expect(bridge).toMatchObject({ id: "pi", execute: expect.any(Function) });
     expect(bridge.execute).toBe(piNativeRuntimeBridge.execute);
   });
 
-  it.each(["acp", "claude", "codex", "opencode"])(
-    "rejects the removed %s runtime SDK",
-    async (sdk) => {
-      await expect(resolveRuntimeBridge({ sdk, model: "removed-model" }))
-        .rejects.toThrow(`unsupported sdk: ${sdk}`);
-    },
-  );
-
-  it("rejects an unknown runtime SDK", async () => {
-    await expect(resolveRuntimeBridge({ sdk: "imaginary", model: "x" }))
-      .rejects.toThrow("unsupported sdk: imaginary");
+  it("rejects a malformed model reference before loading the sole bridge", async () => {
+    await expect(resolveRuntimeBridge({ model: "x", reference: "missing:x" }))
+      .rejects.toThrow("unsupported model reference: expected <provider>:<model>");
   });
 
   it("exposes Pi-owned capabilities", () => {

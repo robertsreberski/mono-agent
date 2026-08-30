@@ -155,7 +155,7 @@ async function discoverProviderModels(
     const models: DiscoveredLocalModel[] = [];
     for (const entry of body.data) {
       if (isPlainObject(entry) && typeof entry.id === "string" && entry.id.length > 0) {
-        models.push({ ref: `pi:${normalized.id}:${entry.id}`, label: entry.id, providerId: normalized.id });
+        models.push({ ref: `${normalized.id}:${entry.id}`, label: entry.id, providerId: normalized.id });
       }
     }
     return models;
@@ -195,10 +195,10 @@ export interface ModelEffortLevels {
 
 /**
  * Resolves the reasoning support + effort levels for a parsed model reference.
- * Local provider models (`ref.sdk === "pi"` with a configured local provider)
- * get precise levels via the same capability resolution `runtimeOptionsForLocalProvider`
- * uses for execution. Everything else (cloud pi/claude/codex, or a local ref
- * whose provider isn't configured here) deliberately degrades to
+ * Models whose provider matches a configured local provider get precise levels
+ * via the same capability resolution `runtimeOptionsForLocalProvider`
+ * uses for execution. Everything else (a cloud provider, or a local ref whose
+ * provider isn't configured here) deliberately degrades to
  * `{ reasoning: true }` with `effortLevels` left undefined — resolving cloud
  * reasoning levels precisely would require reaching into the pi-ai model
  * registry from this package, which would cycle back through config; the TUI
@@ -209,7 +209,7 @@ export function resolveModelEffortLevels(
   providers: readonly LocalProviderDefinition[] | undefined,
 ): ModelEffortLevels {
   try {
-    if (ref.sdk === "pi" && ref.provider !== undefined && providers !== undefined) {
+    if (providers !== undefined) {
       const provider = providers.find((candidate) => candidate.id === ref.provider);
       if (provider !== undefined) {
         const normalized = validateLocalProviderDefinition(provider);
@@ -231,7 +231,7 @@ export function runtimeOptionsForLocalProvider(
   model: RuntimeModelReference,
   providers: readonly LocalProviderDefinition[] | undefined,
 ): LocalProviderRuntimeOptions {
-  if (model.sdk !== "pi" || model.provider === undefined || providers === undefined || providers.length === 0) {
+  if (providers === undefined || providers.length === 0) {
     return {};
   }
 

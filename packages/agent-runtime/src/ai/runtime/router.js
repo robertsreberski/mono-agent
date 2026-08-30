@@ -458,8 +458,8 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
 
 /**
  * @param {ReadonlyArray<*>} chain ReadonlyArray<RuntimeModelRef|RouterChainEntryInput>, loosened
- *   here because distinguishing the two shapes is a runtime duck-type check
- *   (`entry.sdk && entry.model`), not something a union type narrows cleanly.
+ *   here because distinguishing the two shapes is a runtime duck-type check,
+ *   not something a union type narrows cleanly.
  * @returns {Array<RouterChainEntry>}
  */
 function normaliseChain(chain) {
@@ -467,8 +467,8 @@ function normaliseChain(chain) {
   return /** @type {Array<RouterChainEntry>} */ (chain
     .map((entry) => {
       if (!entry) return null;
-      if (entry.sdk && entry.model) {
-        // ModelRef shorthand: { sdk, model, ... }
+      if (typeof entry.provider === "string" && typeof entry.model === "string") {
+        // ModelRef shorthand: { provider, model, reference }
         return { model: entry, effort: undefined, requires: null, attempts: 1 };
       }
       if (entry.model) {
@@ -563,8 +563,7 @@ function assertUniqueEntries(entries) {
 
 /** @param {RuntimeModelRef} model */
 function modelKey(model) {
-  const provider = typeof model.provider === "string" && model.provider.length > 0 ? `${model.provider}:` : "";
-  return `${model.sdk}:${provider}${model.model}`;
+  return model.reference;
 }
 
 /**

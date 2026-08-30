@@ -15,12 +15,11 @@ import {
 } from "../index.js";
 
 describe("runtime adapter model references", () => {
-  it("parses canonical Pi model references", () => {
+  it("canonicalizes the legacy pi wrapper", () => {
     expect(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5")).toEqual({
-      sdk: "pi",
       provider: "openai-codex",
       model: "gpt-5.5",
-      reference: "pi:openai-codex:gpt-5.5",
+      reference: "openai-codex:gpt-5.5",
     });
   });
 
@@ -33,8 +32,20 @@ describe("runtime adapter model references", () => {
     }
   });
 
+  it("preserves the parser's concrete replacement in error details", () => {
+    try {
+      parseMonoRuntimeModelReference("codex:gpt-5.6-sol");
+      throw new Error("Expected the removed runtime reference to be rejected.");
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: "invalid_model_reference",
+        details: { reason: expect.stringContaining("openai-codex:gpt-5.6-sol") },
+      });
+    }
+  });
+
   it("exposes one frozen Pi backend descriptor", () => {
-    const model = parseMonoRuntimeModelReference("pi:github-copilot:gpt-4.1");
+    const model = parseMonoRuntimeModelReference("github-copilot:gpt-4.1");
     const backends = listMonoRuntimeBackends();
 
     expect(backends).toHaveLength(1);
@@ -63,7 +74,7 @@ describe("runtime adapter model references", () => {
   });
 
   it("describes every parsed model through the sole Pi backend", () => {
-    const model = parseMonoRuntimeModelReference("pi:ollama:qwen3:8b");
+    const model = parseMonoRuntimeModelReference("ollama:qwen3:8b");
     expect(describeMonoRuntimeSupport(model)).toEqual({
       model,
       compatible: true,
@@ -105,7 +116,7 @@ describe("runtime adapter fallback chain", () => {
     const runtime = createMonoRuntime({
       fallbackChain: [
         { model: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5") },
-        { model: parseMonoRuntimeModelReference("pi:anthropic:claude-sonnet-4-6") },
+        { model: parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6") },
       ],
     });
     expect(typeof runtime.run).toBe("function");
@@ -135,7 +146,7 @@ describe("runtime adapter fallback chain", () => {
         return { text: "ok", events: [], cancelled: false, usage: {} };
       },
     };
-    const model = parseMonoRuntimeModelReference("pi:anthropic:claude-sonnet-4-6");
+    const model = parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6");
     const runtime = createMonoRuntime({
       fallbackChain: [{ model, effort: null }],
       resolveAttempt: (context) => {
@@ -149,7 +160,7 @@ describe("runtime adapter fallback chain", () => {
     });
 
     const result = await runtime.run("SYSTEM", {
-      model: parseMonoRuntimeModelReference("pi:openai-codex:ignored-by-chain"),
+      model: parseMonoRuntimeModelReference("openai-codex:ignored-by-chain"),
       effort: "high",
       messages: [{ role: "user", content: "hi" }],
       abortSignal: new AbortController().signal,
@@ -166,7 +177,7 @@ describe("runtime adapter fallback chain", () => {
   it("rejects malformed effort values", () => {
     expect(() => createMonoRuntime({
       fallbackChain: [{
-        model: parseMonoRuntimeModelReference("pi:anthropic:claude-sonnet-4-6"),
+        model: parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6"),
         effort: " high",
       }],
     })).toThrow(RuntimeAdapterError);
@@ -175,13 +186,13 @@ describe("runtime adapter fallback chain", () => {
   it("rejects chain entries with unparsed model references", () => {
     expect(() =>
       createMonoRuntime({
-        fallbackChain: [{ model: { sdk: "", model: "" } }],
+        fallbackChain: [{ model: { provider: "", model: "", reference: "" } }],
       }),
     ).toThrow(RuntimeAdapterError);
   });
 
   it("rejects non-object chain entries with a typed error", () => {
-    for (const entry of [null, undefined, "pi:anthropic:claude-sonnet-4-6", ["pi"]]) {
+    for (const entry of [null, undefined, "anthropic:claude-sonnet-4-6", ["anthropic"]]) {
       expect(() =>
         createMonoRuntime({
           fallbackChain: [entry as never],
@@ -189,12 +200,21 @@ describe("runtime adapter fallback chain", () => {
       ).toThrow(RuntimeAdapterError);
     }
   });
+
+  it("rejects duplicate routes authored with mixed pi-wrapper spellings", () => {
+    expect(() => createMonoRuntime({
+      fallbackChain: [
+        { model: parseMonoRuntimeModelReference("pi:anthropic:claude-sonnet-4-6") },
+        { model: parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6") },
+      ],
+    })).toThrow(/duplicate model anthropic:claude-sonnet-4-6/u);
+  });
 });
 
 describe("runtime adapter local providers", () => {
   it("maps Ollama provider config to agent-runtime custom Pi options", () => {
     const options = runtimeOptionsForLocalProvider(
-      parseMonoRuntimeModelReference("pi:ollama:qwen3:8b"),
+      parseMonoRuntimeModelReference("ollama:qwen3:8b"),
       [
         {
           id: "ollama",
@@ -234,7 +254,7 @@ describe("runtime adapter local providers", () => {
 
   it("preserves disabled local providers so agent-runtime can fail honestly", () => {
     const options = runtimeOptionsForLocalProvider(
-      parseMonoRuntimeModelReference("pi:ollama:llama3"),
+      parseMonoRuntimeModelReference("ollama:llama3"),
       [
         {
           id: "ollama",
@@ -252,7 +272,7 @@ describe("runtime adapter local providers", () => {
     });
   });
 
-  it("does nothing for built-in Pi providers and non-Pi model references", () => {
+  it("does nothing for providers that are not configured locally", () => {
     const localProviders = [
       {
         id: "ollama",
@@ -263,18 +283,18 @@ describe("runtime adapter local providers", () => {
     ];
 
     expect(runtimeOptionsForLocalProvider(
-      parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"),
+      parseMonoRuntimeModelReference("openai-codex:gpt-5.5"),
       localProviders,
     )).toEqual({});
     expect(runtimeOptionsForLocalProvider(
-      parseMonoRuntimeModelReference("codex:gpt-5.5"),
+      parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6"),
       localProviders,
     )).toEqual({});
   });
 
   it("rejects untrusted public HTTP local-provider URLs", () => {
     expect(() => runtimeOptionsForLocalProvider(
-      parseMonoRuntimeModelReference("pi:gateway:gpt-oss"),
+      parseMonoRuntimeModelReference("gateway:gpt-oss"),
       [
         {
           id: "gateway",
@@ -288,7 +308,7 @@ describe("runtime adapter local providers", () => {
 
   it("maps LM Studio and trusted OpenAI-compatible providers through the same custom-provider contract", () => {
     const lmStudio = runtimeOptionsForLocalProvider(
-      parseMonoRuntimeModelReference("pi:lmstudio:local-model"),
+      parseMonoRuntimeModelReference("lmstudio:local-model"),
       [
         {
           id: "lmstudio",
@@ -306,7 +326,7 @@ describe("runtime adapter local providers", () => {
     expect(lmStudio.isPrivateProvider).toBe(true);
 
     const gateway = runtimeOptionsForLocalProvider(
-      parseMonoRuntimeModelReference("pi:local-gateway:gpt-oss"),
+      parseMonoRuntimeModelReference("local-gateway:gpt-oss"),
       [
         {
           id: "local-gateway",
@@ -329,7 +349,7 @@ describe("runtime adapter local providers", () => {
 });
 
 describe("createMonoRuntime same-model retry options", () => {
-  const model = { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6", reference: "pi:anthropic:claude-sonnet-4-6" } as const;
+  const model = { provider: "anthropic", model: "claude-sonnet-4-6", reference: "anthropic:claude-sonnet-4-6" } as const;
 
   it.each([0, 11, 1.5, "2" as unknown as number])("rejects a fallback attempts value of %s", (attempts) => {
     expect(() => createMonoRuntime({ fallbackChain: [{ model, attempts }] }))

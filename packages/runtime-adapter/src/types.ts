@@ -13,10 +13,9 @@ export interface MonoRuntimeSandboxEngine {
 }
 
 export interface RuntimeModelReference {
-  readonly sdk: string;
+  readonly provider: string;
   readonly model: string;
-  readonly provider?: string;
-  readonly reference?: string;
+  readonly reference: string;
 }
 
 export interface MonoRuntimeBackendCapabilities {
@@ -486,8 +485,7 @@ export interface RuntimeToolOptions {
 
 /** A parsed model reference as agent-runtime's pricing resolvers receive it (see ai/cost.js's ParsedModelReference). */
 export interface MonoRuntimeParsedPricingModel {
-  readonly sdk: string | null;
-  readonly provider?: string;
+  readonly provider: string;
   readonly model: string;
 }
 

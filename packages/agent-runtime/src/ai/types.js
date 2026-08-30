@@ -10,8 +10,8 @@
 //
 /**
  * @typedef {"pi"} RuntimeSdkId
- * Canonical active runtime id. See ACTIVE_RUNTIME_KINDS (model-refs.js) for
- * the enforced-at-runtime vocabulary.
+ * Runtime-result and telemetry label. Model references no longer carry this
+ * field because Pi is the sole runtime bridge.
  */
 
 /**
@@ -21,15 +21,9 @@
 
 /**
  * @typedef {Object} RuntimeModelRef
- * @property {string} sdk                 Runtime selection input. The registry accepts only
- *                                         `"pi"`, but the legacy model-reference parser and
- *                                         router still carry removed ids until their owning
- *                                         migrations collapse that input surface.
+ * @property {string} provider            Pi provider id.
  * @property {string} model               Provider model id.
- * @property {string} [reference]         Original canonical model reference; always set by
- *                                         parseRuntimeModelReference, but router.js's chain
- *                                         shorthand accepts bare {sdk, model} refs without one.
- * @property {string} [provider]          Pi provider id when sdk === "pi".
+ * @property {string} reference           Canonical `<provider>:<model>` reference.
  */
 
 /**
@@ -441,7 +435,7 @@
  * @property {RuntimePromptOverrides} [prompts] Host-level prompt-fragment override defaults; a per-run `options.prompts` field wins over these (see resolvePrompts, runtime.js).
  * @property {ReadonlyArray<*>} [observers] Observer instances (see RuntimeObserver); loose because observer.js is not a kernel seam file.
  * @property {*} [runtimeBrand] See resolveRuntimeBrand (runtime-brand.js); accepts a partial RuntimeBrand.
- * @property {(parsed: {sdk: (string|null), provider?: string, model: string}) => (import('./cost.js').NormalizedPricing|null)} [resolveCustomPricing] See resolvePricing (ai/cost.js).
+ * @property {(parsed: {provider: string, model: string}) => (import('./cost.js').NormalizedPricing|null)} [resolveCustomPricing] See resolvePricing (ai/cost.js).
  * @property {import('../pi-auth.js').PiApiKeyResolver} [resolvePiApiKey] See createPiOAuthApiKeyResolver (pi-auth.js) for a ready-made implementation.
  * @property {(artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: (string|null)}) => (string|null)} [persistArtifact]
  * @property {(record: CompactionRecordedPayload) => void} [onCompactionRecorded]

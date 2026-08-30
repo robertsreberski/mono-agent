@@ -178,7 +178,6 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/agent-runtime`**
 
 ```text
-ACTIVE_RUNTIME_KINDS
 ALLOWLIST_MODE_ALL
 ALLOWLIST_MODE_CUSTOM
 APPROVAL_DECISIONS
@@ -187,7 +186,6 @@ BridgeSpec
 DEFAULT_RUNTIME_BRAND
 DEFAULT_TOOL_BLOAT_CONFIG
 MAX_TOOL_RESULT_BYTES
-RESERVED_RUNTIME_KINDS
 RISK_TIERS
 RUNTIME_CAPABILITIES
 RuntimeBridge
@@ -197,7 +195,6 @@ RuntimeModelRef
 UNKNOWN_CAPABILITY
 buildCapabilitiesUsed
 buildTranscriptTailSnapshot
-canonicalizeLegacyModelReference
 configureToolRuntime
 createApprovalManager
 createMetricsObserver
@@ -208,13 +205,11 @@ createRuntime
 createSessionRegistry
 disposeAllProviderSessions
 disposeProviderSession
-executionModeIncompatibilityReason
 generatePiNativeResponse
 getPiBuiltinModel
 inferAllowlistMode
 invalidateProviderSession
 isLikelyContextTermination
-isModelCompatibleWithExecutionMode
 listPiBuiltinModels
 listRuntimeBridges
 loginPiOAuth
@@ -237,7 +232,6 @@ resolvePiOAuthApiKey
 resolveRuntimeBrand
 resolveRuntimeBridge
 runtimeCapabilities
-sdkFromModelReference
 storedAllowlistMode
 syncProviderSession
 toolCompactionAppliedFromWarnings
@@ -370,9 +364,7 @@ renderResumeSnapshot
 **`@mono-agent/agent-runtime/ai`**
 
 ```text
-ACTIVE_RUNTIME_KINDS
 BridgeSpec
-RESERVED_RUNTIME_KINDS
 RUNTIME_CAPABILITIES
 RuntimeBridge
 RuntimeBridgeDescriptor
@@ -380,17 +372,14 @@ RuntimeBridgeId
 RuntimeModelRef
 UNKNOWN_CAPABILITY
 buildCapabilitiesUsed
-canonicalizeLegacyModelReference
 createMetricsObserver
 createObserverHub
 createSessionRegistry
 disposeAllProviderSessions
 disposeProviderSession
-executionModeIncompatibilityReason
 generatePiNativeResponse
 getPiBuiltinModel
 invalidateProviderSession
-isModelCompatibleWithExecutionMode
 listPiBuiltinModels
 listRuntimeBridges
 loginPiOAuth
@@ -402,7 +391,6 @@ refreshProviderSession
 resolvePiOAuthApiKey
 resolveRuntimeBridge
 runtimeCapabilities
-sdkFromModelReference
 syncProviderSession
 toolCompactionAppliedFromWarnings
 ```
@@ -475,15 +463,9 @@ utf8Head
 **`@mono-agent/agent-runtime/ai/runtime/model-refs.js`**
 
 ```text
-ACTIVE_RUNTIME_KINDS
-RESERVED_RUNTIME_KINDS
 RuntimeModelRef
-canonicalizeLegacyModelReference
-executionModeIncompatibilityReason
-isModelCompatibleWithExecutionMode
 normalizeRuntimeModelReference
 parseRuntimeModelReference
-sdkFromModelReference
 ```
 
 **`@mono-agent/agent-runtime/ai/runtime/registry.js`**

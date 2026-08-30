@@ -161,7 +161,7 @@ describe("two createRuntime instances in one process — no cross-contamination"
     const capA = collectToolResults(eventsA);
     const capB = collectToolResults(eventsB);
 
-    const model = (m) => ({ sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:faux-model", _m: m });
+    const model = (m) => ({ provider: "faux", model: "faux-model", reference: "faux:faux-model", _m: m });
 
     // Interleaved: both turns in flight concurrently.
     const [resultA, resultB] = await Promise.all([
@@ -243,14 +243,14 @@ describe("two createRuntime instances in one process — no cross-contamination"
     const [rA, rB] = await Promise.all([
       runtimeA.run("system", {
         ...base,
-        model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:faux-model" },
+        model: { provider: "faux", model: "faux-model", reference: "faux:faux-model" },
         piResolvedModel: fauxA.model,
         piResolvedModels: fauxA.models,
         messages: [{ role: "user", content: "go A" }],
       }),
       runtimeB.run("system", {
         ...base,
-        model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:faux-model" },
+        model: { provider: "faux", model: "faux-model", reference: "faux:faux-model" },
         piResolvedModel: fauxB.model,
         piResolvedModels: fauxB.models,
         messages: [{ role: "user", content: "go B" }],

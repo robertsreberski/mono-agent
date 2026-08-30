@@ -63,14 +63,9 @@ export function parseMonoRuntimeModelReference(value: string): RuntimeModelRefer
   }
 }
 
-/**
- * Stable canonical string for a model reference — its authored `reference` when
- * present, else `sdk[:provider]:model`. The one place this format lives, so
- * callers comparing/caching/keying by model (harness override selection, app
- * runtime cache, host/doctor display ids) stay in agreement.
- */
+/** Stable canonical string used for model comparison, caching, and display. */
 export function modelReferenceKey(model: RuntimeModelReference): string {
-  return model.reference ?? `${model.sdk}:${model.provider === undefined ? "" : `${model.provider}:`}${model.model}`;
+  return model.reference;
 }
 
 export function listMonoRuntimeBackends(): readonly MonoRuntimeBackendDescriptor[] {
@@ -381,22 +376,29 @@ function normalizeRuntimeModelReference(value: unknown): RuntimeModelReference {
   if (!isRecord(value) || Array.isArray(value)) {
     throw new RuntimeAdapterError(
       "invalid_model_reference",
-      "Runtime model reference must be a parsed object with sdk and model.",
+      "Runtime model reference must be a parsed object with provider, model, and reference.",
     );
   }
 
-  const sdk = normalizedRequiredString(value.sdk, "sdk");
+  const provider = normalizedRequiredString(value.provider, "provider");
   const model = normalizedRequiredString(value.model, "model");
-  const normalized: { sdk: string; model: string; provider?: string; reference?: string } = { sdk, model };
-
-  if (value.provider !== undefined) {
-    normalized.provider = normalizedRequiredString(value.provider, "provider");
+  const reference = normalizedRequiredString(value.reference, "reference");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(provider)) {
+    throw new RuntimeAdapterError(
+      "invalid_model_reference",
+      "Runtime model reference provider has invalid characters.",
+      { field: "provider" },
+    );
   }
-  if (value.reference !== undefined) {
-    normalized.reference = normalizedRequiredString(value.reference, "reference");
+  if (reference !== `${provider}:${model}`) {
+    throw new RuntimeAdapterError(
+      "invalid_model_reference",
+      "Runtime model reference must use its canonical <provider>:<model> spelling.",
+      { field: "reference" },
+    );
   }
 
-  return normalized;
+  return { provider, model, reference };
 }
 
 function capabilitiesForRuntimeBridge(
@@ -424,7 +426,7 @@ const PI_RUNTIME_BACKEND = Object.freeze<MonoRuntimeBackendDescriptor>({
   sdk: "pi",
   transport: "sdk",
   providerBoundary: "Pi SDK provider gateway via @mono-agent/agent-runtime",
-  modelReferenceExamples: Object.freeze(["pi:openai-codex:gpt-5.5", "pi:github-copilot:gpt-4.1"]),
+  modelReferenceExamples: Object.freeze(["openai-codex:gpt-5.5", "github-copilot:gpt-4.1"]),
   acceptsProviderIds: true,
   capabilities: Object.freeze(capabilitiesForRuntimeBridge("pi")),
 });

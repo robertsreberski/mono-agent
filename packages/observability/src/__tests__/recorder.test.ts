@@ -112,14 +112,14 @@ describe("JsonlRunRecorder", () => {
       artifactDir: dir,
       systemPrompt: "You are the private memory maintenance LLM.",
     });
-    const summary = await recorder.finish({ model: "pi:opencode-go:kimi-k2.6" });
-    expect(summary.model).toBe("pi:opencode-go:kimi-k2.6");
+    const summary = await recorder.finish({ model: "opencode-go:kimi-k2.6" });
+    expect(summary.model).toBe("opencode-go:kimi-k2.6");
     expect(summary.systemPrompt).toBe("You are the private memory maintenance LLM.");
     const onDisk = JSON.parse(await readFile(summary.artifactPaths[1]!, "utf8")) as {
       model?: string;
       systemPrompt?: string;
     };
-    expect(onDisk.model).toBe("pi:opencode-go:kimi-k2.6");
+    expect(onDisk.model).toBe("opencode-go:kimi-k2.6");
     expect(onDisk.systemPrompt).toBe("You are the private memory maintenance LLM.");
   });
 
@@ -132,7 +132,7 @@ describe("JsonlRunRecorder", () => {
       artifactKind: "memory",
     });
 
-    const summary = await recorder.finish({ model: "pi:opencode-go:kimi-k2.6" });
+    const summary = await recorder.finish({ model: "opencode-go:kimi-k2.6" });
 
     expect(summary.artifactPaths[0]).toBe(join(dir, "memory", "mem-capture-distill-1.events.jsonl"));
     expect(summary.artifactPaths[1]).toBe(join(dir, "memory", "mem-capture-distill-1.summary.json"));
@@ -641,15 +641,15 @@ describe("JsonlRunRecorder", () => {
       error: "503 Service Unavailable",
       failureKind: "provider_unavailable_exhausted",
       failoverHistory: [
-        { model: { reference: "pi:openai-codex:gpt-5.5" }, failureKind: "provider_unavailable", retryableSubkind: "timeout", requestId: null },
-        { model: { reference: "pi:opencode-go:kimi-k2.6" }, failureKind: "provider_unavailable", retryableSubkind: "server_error", requestId: "abc123" },
+        { model: { reference: "openai-codex:gpt-5.5" }, failureKind: "provider_unavailable", retryableSubkind: "timeout", requestId: null },
+        { model: { reference: "opencode-go:kimi-k2.6" }, failureKind: "provider_unavailable", retryableSubkind: "server_error", requestId: "abc123" },
       ],
     });
     expect(summary.status).toBe("failed");
     expect(summary.error).toBe("503 Service Unavailable");
     expect(summary.failoverHistory).toEqual([
-      { model: "pi:openai-codex:gpt-5.5", failureKind: "provider_unavailable", subkind: "timeout" },
-      { model: "pi:opencode-go:kimi-k2.6", failureKind: "provider_unavailable", subkind: "server_error", requestId: "abc123" },
+      { model: "openai-codex:gpt-5.5", failureKind: "provider_unavailable", subkind: "timeout" },
+      { model: "opencode-go:kimi-k2.6", failureKind: "provider_unavailable", subkind: "server_error", requestId: "abc123" },
     ]);
     const onDisk = JSON.parse(await readFile(summary.artifactPaths[1]!, "utf8")) as {
       error?: string;

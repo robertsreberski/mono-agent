@@ -13,9 +13,9 @@ describe("runtime smoke matrix", () => {
   it("loads every registered bridge through the public resolver", async () => {
     const descriptors = listRuntimeBridges();
     const resolved = await Promise.all(descriptors.map((descriptor) => resolveRuntimeBridge({
-      sdk: descriptor.id,
       provider: "openai",
       model: "gpt-5.5",
+      reference: "openai:gpt-5.5",
     })));
 
     expect(resolved.map((bridge) => bridge.id))
@@ -30,11 +30,8 @@ describe("runtime smoke matrix", () => {
     }
   });
 
-  it.each(["acp", "claude", "codex", "opencode", "imaginary"])(
-    "cannot load the removed or unknown %s SDK",
-    async (sdk) => {
-      await expect(resolveRuntimeBridge({ sdk, model: "x" }))
-        .rejects.toThrow(`unsupported sdk: ${sdk}`);
-    },
-  );
+  it("cannot load a malformed reference", async () => {
+    await expect(resolveRuntimeBridge({ provider: "", model: "x", reference: ":x" }))
+      .rejects.toThrow("unsupported model reference: expected <provider>:<model>");
+  });
 });
