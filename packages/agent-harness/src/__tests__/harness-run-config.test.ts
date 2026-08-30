@@ -14,7 +14,7 @@ import { requestOverridesModel, runSourceFromRequest } from "../harness.js";
 import type { AgentHarnessRecorderFactoryInput, AgentHarnessRequest } from "../types.js";
 
 const tempDirs: string[] = [];
-const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
+const model = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" } as const;
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -113,37 +113,41 @@ describe("runSourceFromRequest", () => {
 });
 
 describe("requestOverridesModel", () => {
-  const defaultModel = parseMonoRuntimeModelReference("claude:claude-fable-5");
+  const defaultModel = parseMonoRuntimeModelReference("anthropic:claude-fable-5");
   function req(metadata?: Record<string, unknown>): AgentHarnessRequest {
     return { conversationId: "c", text: "hi", ...(metadata === undefined ? {} : { metadata }) } as unknown as AgentHarnessRequest;
   }
 
   it("returns true for a tui model override that differs from the default", () => {
-    expect(requestOverridesModel(req({ tui: { model: "claude:claude-opus-4-8" } }), defaultModel)).toBe(true);
+    expect(requestOverridesModel(req({ tui: { model: "anthropic:claude-opus-4-8" } }), defaultModel)).toBe(true);
   });
 
   it("returns true for a web model override that differs from the default", () => {
-    expect(requestOverridesModel(req({ web: { model: "claude:claude-opus-4-8" } }), defaultModel)).toBe(true);
+    expect(requestOverridesModel(req({ web: { model: "anthropic:claude-opus-4-8" } }), defaultModel)).toBe(true);
   });
 
   it("returns true for a Telegram model override that differs from the default", () => {
-    expect(requestOverridesModel(req({ telegram: { model: "claude:claude-opus-4-8" } }), defaultModel)).toBe(true);
+    expect(requestOverridesModel(req({ telegram: { model: "anthropic:claude-opus-4-8" } }), defaultModel)).toBe(true);
+  });
+
+  it("returns true for a Slack model override that differs from the default", () => {
+    expect(requestOverridesModel(req({ slack: { model: "anthropic:claude-opus-4-8" } }), defaultModel)).toBe(true);
   });
 
   it("keeps the shared session for same-model and effort-only Telegram overrides", () => {
-    expect(requestOverridesModel(req({ telegram: { model: "claude:claude-fable-5" } }), defaultModel)).toBe(false);
+    expect(requestOverridesModel(req({ telegram: { model: "anthropic:claude-fable-5" } }), defaultModel)).toBe(false);
     expect(requestOverridesModel(req({ telegram: { effort: "high" } }), defaultModel)).toBe(false);
   });
 
   it("prefers the web override over its compatibility TUI mirror", () => {
     expect(requestOverridesModel(req({
-      web: { model: "claude:claude-fable-5" },
-      tui: { model: "claude:claude-opus-4-8" },
+      web: { model: "anthropic:claude-fable-5" },
+      tui: { model: "anthropic:claude-opus-4-8" },
     }), defaultModel)).toBe(false);
   });
 
   it("returns false for a tui model override equal to the default", () => {
-    expect(requestOverridesModel(req({ tui: { model: "claude:claude-fable-5" } }), defaultModel)).toBe(false);
+    expect(requestOverridesModel(req({ tui: { model: "anthropic:claude-fable-5" } }), defaultModel)).toBe(false);
   });
 
   it("returns false for a tui effort-only override (no model string)", () => {
@@ -155,8 +159,8 @@ describe("requestOverridesModel", () => {
   });
 
   it("still honors webhook and cron overrides alongside tui", () => {
-    expect(requestOverridesModel(req({ webhook: { model: "codex:gpt-5.5" } }), defaultModel)).toBe(true);
-    expect(requestOverridesModel(req({ cron: { model: "codex:gpt-5.5" } }), defaultModel)).toBe(true);
+    expect(requestOverridesModel(req({ webhook: { model: "openai-codex:gpt-5.5" } }), defaultModel)).toBe(true);
+    expect(requestOverridesModel(req({ cron: { model: "openai-codex:gpt-5.5" } }), defaultModel)).toBe(true);
   });
 });
 
@@ -262,7 +266,7 @@ describe("AgentHarness recorderFactory source/sourceDetail plumbing", () => {
 });
 
 describe("AgentHarness run_config synthetic event", () => {
-  it("emits run_config to both recorder.onEvent and the host onEvent with resolved model/effort/executionMode, overridden:false", async () => {
+  it("emits run_config to both recorder.onEvent and the host onEvent with resolved model/effort, overridden:false", async () => {
     const identityPath = await identityFixture();
     const fake = createFakeRuntime();
     const recorder = new SpyRecorder();
@@ -270,7 +274,6 @@ describe("AgentHarness run_config synthetic event", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       effort: "low",
       recorderFactory: () => recorder,
     });
@@ -289,9 +292,8 @@ describe("AgentHarness run_config synthetic event", () => {
     expect(hostRunConfig).toBeDefined();
     expect(recorderRunConfig).toMatchObject({
       type: "run_config",
-      model: "pi:openai-codex:gpt-5.5",
+      model: "openai-codex:gpt-5.5",
       effort: "low",
-      executionMode: "sdk",
       overridden: false,
     });
     expect(typeof recorderRunConfig?.timestamp).toBe("string");
@@ -306,7 +308,6 @@ describe("AgentHarness run_config synthetic event", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       effort: "low",
       recorderFactory: () => recorder,
       runtimeOptionsForRequest: () => ({ runtimeOptions: { effort: "high" } }),

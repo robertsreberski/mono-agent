@@ -148,7 +148,7 @@ describe("AgentHarness turn_context synthetic event", () => {
       { role: "assistant", content: "seed", timestamp: "2026-06-01T00:00:00Z" },
     ]);
     const fake = createFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     // Turn 1 establishes the warm session (cold, history present).
     const first: RuntimeEventLike[] = [];
@@ -176,7 +176,7 @@ describe("AgentHarness turn_context synthetic event", () => {
     const fake = createFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-durable" }));
     const recorder = new SpyRecorder();
     const harness = createAgentHarness({
-      identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session,
+      identityPath, runtime: fake.runtime, model, historyStore, session,
       piSessionsRoot, recorderFactory: () => recorder,
     });
 
@@ -204,7 +204,7 @@ describe("AgentHarness turn_context synthetic event", () => {
       }
       return { text: "recovered", providerSessionId: "ps-next" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     // Turn 1 goes fresh (no session) and captures ps-next.
     await harness.run(request("conv-replay", "first"));

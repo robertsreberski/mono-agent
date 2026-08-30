@@ -56,7 +56,7 @@ describe("AgentHarness progressive skill disclosure wiring", () => {
     const { identityPath, skillsRoot } = await fixture(["research", "writing"]);
     const fake = createFakeRuntime();
     const harness = createAgentHarness({
-      identityPath, runtime: fake.runtime, model, executionMode: "sdk", skillsRoot, skillDisclosure: "index",
+      identityPath, runtime: fake.runtime, model, skillsRoot, skillDisclosure: "index",
     });
 
     await harness.run(request());
@@ -83,7 +83,7 @@ describe("AgentHarness progressive skill disclosure wiring", () => {
     const { identityPath, skillsRoot } = await fixture(["research"]);
     const fake = createFakeRuntime();
     const harness = createAgentHarness({
-      identityPath, runtime: fake.runtime, model, executionMode: "sdk", skillsRoot, skillDisclosure: "index",
+      identityPath, runtime: fake.runtime, model, skillsRoot, skillDisclosure: "index",
     });
 
     await harness.run(request());
@@ -95,7 +95,7 @@ describe("AgentHarness progressive skill disclosure wiring", () => {
   it("does not thread skills/skillsRoot when no skillsRoot is configured (legacy behavior)", async () => {
     const { identityPath } = await fixture([]);
     const fake = createFakeRuntime();
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk" });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model });
 
     await harness.run(request());
 
@@ -110,7 +110,7 @@ describe("AgentHarness progressive skill disclosure wiring", () => {
     // skillDisclosure unset — the default is "full", so ReadSkill must NOT be wired
     // even when a skillsRoot is configured (byte-for-byte legacy behavior).
     const harness = createAgentHarness({
-      identityPath, runtime: fake.runtime, model, executionMode: "sdk", skillsRoot,
+      identityPath, runtime: fake.runtime, model, skillsRoot,
     });
 
     await harness.run(request());
