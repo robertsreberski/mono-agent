@@ -26,6 +26,11 @@ export type ModelSelectorProps = {
   readonly disabled?: boolean;
   readonly open?: boolean;
   readonly onOpenChange?: (open: boolean) => void;
+  readonly badge?: "custom" | "default";
+  /** Marks the row this agent starts new conversations on. */
+  readonly agentDefaultId?: string;
+  /** Offered only while a conversation override is in force. */
+  readonly onReset?: () => void;
 };
 
 const commandValue = (model: ModelSelectorOption, index: number) =>
@@ -48,6 +53,9 @@ export function ModelSelector({
   disabled = false,
   open: controlledOpen,
   onOpenChange,
+  badge,
+  agentDefaultId,
+  onReset,
 }: ModelSelectorProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -111,6 +119,7 @@ export function ModelSelector({
           {activeEffort && (
             <span className="model-selector__effort-value">{activeEffort.name}</span>
           )}
+          {badge !== undefined && <span className={`model-selector__badge is-${badge}`}>{badge}</span>}
         </span>
         <Icon name="arrow-down" size={14} />
       </Popover.Trigger>
@@ -194,6 +203,9 @@ export function ModelSelector({
                             </span>
                           )}
                         </span>
+                        {model.id !== "" && model.id === agentDefaultId && (
+                          <span className="model-selector__item-default">agent default</span>
+                        )}
                         {selected && (
                           <span
                             data-slot="model-selector-selected-indicator"
@@ -240,6 +252,21 @@ export function ModelSelector({
                       </Radio.Root>
                     ))}
                   </RadioGroup>
+                </div>
+              )}
+
+              {onReset !== undefined && (
+                <div className="model-selector__reset">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onReset();
+                      setOpen(false);
+                    }}
+                  >
+                    <Icon name="restore" size={13} />
+                    Reset to agent default
+                  </button>
                 </div>
               )}
             </Command>

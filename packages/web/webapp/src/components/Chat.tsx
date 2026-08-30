@@ -1,18 +1,9 @@
 import { ThreadPrimitive } from "@assistant-ui/react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  type ConnectionState,
-  effortLevelsForAgentModel,
-  useConsoleStore,
-} from "../console-store";
-import { conversationConsoleUsage, type ConsoleUsage } from "../usage";
+import { useEffect, useRef, useState } from "react";
+import { type ConnectionState, useConsoleStore } from "../console-store";
 import { NotificationBell } from "../notifications";
 import { ContextDisplay } from "./assistant-ui/ContextDisplay";
-import {
-  ModelSelector,
-  type ModelSelectorEffortOption,
-  type ModelSelectorOption,
-} from "./assistant-ui/ModelSelector";
+import { ModelSelector } from "./assistant-ui/ModelSelector";
 import { SelectionToolbar } from "./assistant-ui/Quote";
 import {
   AskReconciliationProvider,
@@ -23,6 +14,7 @@ import {
 import { Composer } from "./Composer";
 import { CronChannelHeader } from "./CronChannelHeader";
 import { Icon } from "./Icon";
+import { useRunControls } from "./run-controls";
 
 const runLabel: Record<string, string> = {
   idle: "Ready",
@@ -139,80 +131,18 @@ function ConversationTitle() {
 
 export function ModelControls() {
   const {
-    model,
-    effort,
-    modelOptions,
-    effortOptions,
-    setModel,
-    setEffort,
-    selectedThread,
-    selectedAgent,
-    detail,
-  } = useConsoleStore();
+    usage, selectorModels, model, effort, setModel, setEffort,
+    agentDefaultModel, hasRunOverride, resetRunOverride, disabled, hasSettings,
+  } = useRunControls();
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const disabled = selectedThread?.runState.status === "running";
-  const effectiveModel = model || selectedAgent?.defaultModel;
-  const usage = useMemo<ConsoleUsage | null>(() => {
-    const projected = conversationConsoleUsage(detail, { selectedModel: effectiveModel });
-    if (projected !== null) return projected;
-    if (selectedThread === null) return null;
-    return {
-      context: selectedThread.runState.status === "running"
-        ? {
-            status: "updating",
-            reason: "The conversation is loading while the current turn updates context.",
-          }
-        : {
-            status: "unavailable",
-            reason: "Context measurements are loading for this conversation.",
-          },
-    };
-  }, [detail, effectiveModel, selectedThread]);
 
+  // The composer's slash command opens the same picker the header does.
   useEffect(() => {
-    const openSettings = () => setSettingsOpen(true);
+    const openSettings = () => { setSettingsOpen(true); };
     window.addEventListener("mono-agent:run-settings", openSettings);
-    return () => {
-      window.removeEventListener("mono-agent:run-settings", openSettings);
-    };
+    return () => { window.removeEventListener("mono-agent:run-settings", openSettings); };
   }, []);
 
-  const selectorModels = useMemo<readonly ModelSelectorOption[]>(() => {
-    if (!selectedAgent) return [];
-    const effortChoices = (reference: string): readonly ModelSelectorEffortOption[] => {
-      const effectiveReference = reference || selectedAgent.defaultModel || modelOptions[0] || "";
-      const toggle = selectedAgent.modelOptions?.[effectiveReference]?.reasoningMode === "toggle";
-      const levels = effortLevelsForAgentModel(selectedAgent, effectiveReference);
-      if (levels.length === 0) return [];
-      return [
-        { id: "", name: `Default · ${defaultEffortName(selectedAgent.defaultEffort, toggle)}` },
-        ...levels.map((level) => ({
-          id: level,
-          name: toggle
-            ? level === "none" ? "Off" : "On"
-            : effortName(level),
-        })),
-      ];
-    };
-    return [
-      {
-        id: "",
-        name: "Default model",
-        description: selectedAgent.defaultModel
-          ? `Agent default · ${selectedAgent.modelOptions?.[selectedAgent.defaultModel]?.label ?? selectedAgent.defaultModel}`
-          : "Use the agent default",
-        efforts: effortChoices(""),
-      },
-      ...modelOptions.map((reference) => ({
-        id: reference,
-        name: selectedAgent.modelOptions?.[reference]?.label ?? reference,
-        description: reference,
-        efforts: effortChoices(reference),
-      })),
-    ];
-  }, [modelOptions, selectedAgent]);
-
-  const hasSettings = modelOptions.length > 0 || effortOptions.length > 0;
   return (
     <div className="model-controls" aria-label="Run settings">
       {usage && (
@@ -232,28 +162,14 @@ export function ModelControls() {
           open={settingsOpen}
           onOpenChange={setSettingsOpen}
           disabled={disabled}
+          badge={hasRunOverride ? "custom" : "default"}
+          agentDefaultId={agentDefaultModel}
+          {...(hasRunOverride ? { onReset: resetRunOverride } : {})}
         />
       )}
     </div>
   );
 }
-
-const effortName = (effort: string): string => ({
-  none: "Off",
-  minimal: "Minimal",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra high",
-  max: "Max",
-  ultra: "Ultra",
-}[effort] ?? effort);
-
-const defaultEffortName = (effort: string | undefined, toggle: boolean): string => {
-  if (effort === undefined) return "Provider";
-  if (toggle) return effort === "none" ? "Off" : "On";
-  return effortName(effort);
-};
 
 function EmptyConversation() {
   const { selectedAgent, createThread, selectedThread } = useConsoleStore();

@@ -1,14 +1,17 @@
 import type { SVGProps } from "react";
 
 export type IconName =
+  | "activity"
   | "agent"
   | "archive"
   | "arrow-down"
   | "attach"
   | "bell"
   | "bell-off"
+  | "bulb"
   | "check"
   | "chevron"
+  | "chevron-down"
   | "close"
   | "command"
   | "copy"
@@ -30,6 +33,7 @@ export type IconName =
   | "threads";
 
 const paths: Record<IconName, React.ReactNode> = {
+  activity: <path d="M3 12h4l3-8 4 16 3-8h4" />,
   agent: (
     <>
       <rect x="5" y="7" width="14" height="12" rx="4" />
@@ -55,8 +59,15 @@ const paths: Record<IconName, React.ReactNode> = {
       <path d="m3 3 18 18M8.3 5.1A6 6 0 0 1 18 8c0 2.5.4 4.1 1 5.2M6 8c0 7-3 7-3 9h14M10 21h4" />
     </>
   ),
+  bulb: (
+    <>
+      <path d="M12 4a6 6 0 0 1 6 6c0 2.2-1.2 3.5-2.2 4.7-.6.8-.8 1.3-.8 2.3h-6c0-1-.2-1.5-.8-2.3C7.2 13.5 6 12.2 6 10a6 6 0 0 1 6-6z" />
+      <path d="M10 20h4" />
+    </>
+  ),
   check: <path d="m5 12 4 4L19 6" />,
   chevron: <path d="m9 18 6-6-6-6" />,
+  "chevron-down": <path d="m6 9 6 6 6-6" />,
   close: <path d="m6 6 12 12M18 6 6 18" />,
   command: (
     <>

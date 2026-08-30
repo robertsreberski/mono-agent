@@ -112,13 +112,29 @@ The service, not the browser tab, owns the upstream operator connection. A brows
 
 During a turn the transcript shows streamed GitHub-Flavored Markdown, reasoning, tool calls and results, context-compaction lifecycle rows, user-facing errors, and the final outcome. Tables, task lists, strikethrough, autolinks, and footnotes render as real elements; a table wider than the transcript keeps its column alignment and scrolls horizontally inside its own keyboard-focusable region, and links to external sites open outside the console window. Raw HTML in a reply is never rendered. Other raw runtime, provider, and usage telemetry remains internal; measured token and cost data appears only through the context control. The composer exposes the selected agent's available model and effort controls. Copy, cancel, archive, unarchive, and steering a running turn are supported; edit/regenerate/branch and browser-defined client tools are deliberately not enabled.
 
+Activity is one panel, and every entry in it is the same row: a status glyph, a
+name, a summary of what it acted on, a failure tag when there is one, a duration,
+and a chevron. A single tool call, a folded run of them, a thought, and a subagent
+delegation all read as that row — only the glyph and what expanding reveals
+differ. The panel header summarizes the turn as a step count and elapsed time.
+
 Repeated tool calls fold together: a run of two or more consecutive calls to the
-same tool renders as one expandable row (**Read ×4**) carrying a deduplicated
-argument preview, a failure count, and the combined duration, with every member
-call still individually expandable underneath. The same folding applies to a
-subagent's own nested steps. Reasoning renders as a collapsed **Thinking** row
-with a one-line preview that expands in place. The Activity header summarizes
-the turn as a step count and elapsed time.
+same tool renders as one row (**Read ×4**) carrying a deduplicated summary, a
+failure count, and the combined duration, with every member still individually
+expandable on a rail beneath it. The same folding applies to a subagent's own
+nested steps.
+
+A settled call says nothing about being settled — the absence of a failure tag is
+the success signal. A failed one is tagged, and where the durable tool record
+knows *how* it failed, that canonical terminal state names the tag (`timeout`
+rather than a generic `failed`). Tool names come from a table rather than a
+guess, so `memory_search` is never shortened to "Search"; an unlisted tool is
+de-underscored rather than renamed.
+
+A thought still arriving stays open, because watching the model work is the whole
+reason Activity opens itself while a turn runs; it folds away once it settles.
+Its row shows a plain-prose preview with markdown markers stripped, while
+expanding shows exactly what the model wrote.
 
 Durations come from the timing the runtime reports for each tool call. Messages
 recorded before the console preserved that timing have none, and a missing
@@ -277,7 +293,9 @@ The web service and outbox are self-hosted. Web Push itself necessarily sends an
 
 ## Run controls and context
 
-The run-settings control uses a searchable model picker with the selected model's supported reasoning-effort choices in the same popover. The running agent captures those capabilities at startup from configured/local Pi metadata, Pi's built-in catalog, the Claude SDK catalog, or Codex `model/list`, as appropriate for each exact runtime reference. If that snapshot cannot confirm exact levels, or a retained fallback is direct OpenCode, the picker offers provider/config default only instead of substituting the global effort ladder. Older agents that omit per-model metadata retain the global ladder for protocol compatibility. On narrow screens the picker becomes a full-width bottom sheet so every advertised effort level remains reachable without overflowing the viewport. **Default model** delegates model selection to the agent. The default effort names the effective configured value, such as **Default · High**; when the agent leaves that choice to its provider, the control says **Default · Provider** instead of guessing a level. Choosing either default clears the conversation override.
+The run-settings control marks whether the conversation is running on the agent's
+default or on a choice made here, and while an override is in force the picker
+offers to reset back to the agent default. It uses a searchable model picker with the selected model's supported reasoning-effort choices in the same popover. The running agent captures those capabilities at startup from configured/local Pi metadata, Pi's built-in catalog, the Claude SDK catalog, or Codex `model/list`, as appropriate for each exact runtime reference. If that snapshot cannot confirm exact levels, or a retained fallback is direct OpenCode, the picker offers provider/config default only instead of substituting the global effort ladder. Older agents that omit per-model metadata retain the global ladder for protocol compatibility. On narrow screens the picker becomes a full-width bottom sheet so every advertised effort level remains reachable without overflowing the viewport. **Default model** delegates model selection to the agent. The default effort names the effective configured value, such as **Default · High**; when the agent leaves that choice to its provider, the control says **Default · Provider** instead of guessing a level. Choosing either default clears the conversation override.
 
 The context control uses exact per-request measurements reported by Pi, Codex app-server, OpenCode app-server, and ACP agents that publish `usage_update`. Pi reports every successful assistant request, Codex uses `tokenUsage.last` rather than the thread's cumulative total, OpenCode is accepted only when its completed assistant message includes native `tokens.total`, and ACP's exact `used`/`size` pair is normalized without inventing a token breakdown. A percentage appears only when that same exact event carries the serving model's context window. Direct Claude currently exposes no equivalent exact measurement, so the console says that usage is unavailable instead of estimating it from aggregate work. Durable message/tool-history storage size is never added to a provider measurement; only history actually sent in that request is already included by the provider.
 

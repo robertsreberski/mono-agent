@@ -61,6 +61,10 @@ describe("ModelControls", () => {
       effortOptions: ["high"],
       setModel: vi.fn(),
       setEffort: vi.fn(),
+      effectiveModel: MODEL,
+      effectiveEffort: "high",
+      hasRunOverride: false,
+      resetRunOverride: vi.fn(),
       selectedThread: null,
       selectedAgent: agent("agent", {
         models: [MODEL],
@@ -84,7 +88,10 @@ describe("ModelControls", () => {
     const trigger = screen.getByRole("button", { name: "Model and reasoning effort" });
     const store = storeMock.current as { setModel: ReturnType<typeof vi.fn> };
 
-    expect(trigger).toHaveTextContent("Default model");
+    // The trigger names the model a new turn would actually use, and says
+    // whether that is the agent default or a choice made here.
+    expect(trigger).toHaveTextContent("Default · GPT-5.5 Codex");
+    expect(trigger).toHaveTextContent("default");
     fireEvent.click(trigger);
     const dialog = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
     const option = within(dialog).getByRole("option", { name: /^GPT-5\.5 Codex/u });
@@ -92,6 +99,31 @@ describe("ModelControls", () => {
 
     fireEvent.click(option);
     expect(store.setModel).toHaveBeenCalledWith(MODEL);
+  });
+
+  it("marks a conversation override and offers to clear it", async () => {
+    storeMock.current = { ...storeMock.current, model: MODEL, hasRunOverride: true };
+    render(<ModelControls />);
+    const store = storeMock.current as { resetRunOverride: ReturnType<typeof vi.fn> };
+
+    const trigger = screen.getByRole("button", { name: "Model and reasoning effort" });
+    expect(trigger).toHaveTextContent("custom");
+
+    // Reset lives in the picker, not the header: it only exists while there is
+    // an override to clear, so it must not take permanent room in the bar.
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
+    fireEvent.click(within(dialog).getByRole("button", { name: /Reset to agent default/u }));
+    expect(store.resetRunOverride).toHaveBeenCalledOnce();
+  });
+
+  it("does not offer a reset when the conversation runs on the agent default", () => {
+    render(<ModelControls />);
+
+    const trigger = screen.getByRole("button", { name: "Model and reasoning effort" });
+    expect(trigger).toHaveTextContent("default");
+    fireEvent.click(trigger);
+    expect(screen.queryByRole("button", { name: /Reset to agent default/u })).toBeNull();
   });
 
   it("shows only the selected model's exact efforts and hides unspecified cloud grades", async () => {

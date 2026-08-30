@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { SubagentPart, toolArgumentPreview } from "./Subagent";
@@ -30,101 +30,79 @@ describe("SubagentPart", () => {
   it("renders one foldable section that owns the subagent's tool calls", () => {
     const { container } = render(part(delegation));
 
-    const section = container.querySelector("details.subagent");
+    const section = container.querySelector("details.activity-row.is-subagent");
     expect(section).toBeInTheDocument();
     // Closed by default: the operator clicks to see the calls, exactly like
-    // every other tool row in the transcript.
+    // every other row in the activity log.
     expect(section).not.toHaveAttribute("open");
-    expect(screen.getByText("researcher")).toBeVisible();
-    expect(screen.getByText("read the router")).toBeVisible();
+    // The summary names which delegation this is; the meta slot says what it cost.
+    expect(screen.getByText("researcher — read the router")).toBeVisible();
     expect(screen.getByText("2 tools · 12.4s")).toBeVisible();
 
     // The calls live inside the collapsed section — present in the DOM but
     // hidden until the operator opens it, which is the whole point of folding.
-    const nested = section?.querySelectorAll("details.tool-call.is-nested") ?? [];
-    expect(nested).toHaveLength(2);
-    expect(within(nested[0] as HTMLElement).getByText("Read")).not.toBeVisible();
-    expect(within(nested[1] as HTMLElement).getByText("Grep")).toBeInTheDocument();
+    const nested = section?.querySelectorAll("details.activity-step") ?? [];
+    expect(nested).toHaveLength(4);
+    expect(within(nested[1] as HTMLElement).getByText("Read")).not.toBeVisible();
+    expect(within(nested[2] as HTMLElement).getByText("Grep")).toBeInTheDocument();
     // A failed child is marked without failing the delegation that contains it.
-    expect(nested[1]).toHaveClass("is-error");
-    expect(section).not.toHaveClass("is-error");
-  });
-
-  it("folds a run of same-tool calls into one row with duration and failure count", () => {
-    const { container } = render(part({
-      ...delegation,
-      calls: [
-        { toolCallId: "t1", toolName: "Read", args: { path: "one.md" }, result: "one", executionMs: 100, status: "complete" },
-        { toolCallId: "t2", toolName: "Read", args: { path: "two.md" }, result: { error: "denied" }, executionMs: 200, status: "failed" },
-        { toolCallId: "t3", toolName: "Grep", args: { pattern: "x" }, status: "complete" },
-      ],
-    }));
-
-    const cluster = container.querySelector("details.subagent-cluster");
-    expect(cluster).toBeInTheDocument();
-    expect(cluster).toHaveClass("is-error");
-    expect(within(cluster as HTMLElement).getByText("Read \u00d72")).toBeInTheDocument();
-    expect(within(cluster as HTMLElement).getByText("1 failed")).toBeInTheDocument();
-    expect(within(cluster as HTMLElement).getByText("300ms")).toBeInTheDocument();
-    // The lone Grep call keeps its own row rather than being swept into a cluster.
-    expect(container.querySelectorAll("details.subagent-cluster")).toHaveLength(1);
-    expect(within(cluster as HTMLElement).getAllByText("Read")).toHaveLength(2);
-  });
-
-  it("labels a failed call's payload as an error and surfaces a lost history record", () => {
-    const { container } = render(part({
-      ...delegation,
-      calls: [{
-        toolCallId: "t1",
-        toolName: "Read",
-        args: { path: "one.md" },
-        result: { error: "denied" },
-        status: "failed",
-        history: { persistence: "failed", errorCode: "history_writer_closed", untrusted: true },
-      }],
-    }));
-
-    const nested = container.querySelector("details.tool-call.is-nested") as HTMLElement;
-    expect(within(nested).getByText("Error")).toBeInTheDocument();
-    expect(within(nested).queryByText("Output")).toBeNull();
-    expect(
-      within(nested).getByText(/Tool history for this call was not saved \(history_writer_closed\)\./u),
-    ).toBeInTheDocument();
-  });
-
-  it("shows no per-call duration when the runtime reported none", () => {
-    const { container } = render(part(delegation));
-
-    const nested = container.querySelector("details.tool-call.is-nested") as HTMLElement;
-    expect(nested.querySelector("time.tool-duration")).toBeNull();
+    expect(within(nested[2] as HTMLElement).getByText("failed")).toBeInTheDocument();
+    expect(section).not.toHaveClass("is-failed");
   });
 
   it("previews each call's key argument so repeated tools stay distinguishable", () => {
     const { container } = render(part(delegation));
 
-    const nested = container.querySelectorAll("details.tool-call.is-nested");
-    expect(within(nested[0] as HTMLElement).getByText("/repo/a.ts")).toBeInTheDocument();
-    expect(within(nested[1] as HTMLElement).getByText("x")).toBeInTheDocument();
-    // A settled call that has a preview does not also repeat its status word;
-    // an unsettled one still says where it stands.
-    expect(within(nested[0] as HTMLElement).queryByText("done")).not.toBeInTheDocument();
-    expect(within(nested[1] as HTMLElement).getByText("failed")).toBeInTheDocument();
+    const nested = container.querySelectorAll("details.activity-step");
+    expect(within(nested[1] as HTMLElement).getByText("/repo/a.ts")).toBeInTheDocument();
+    expect(within(nested[2] as HTMLElement).getByText("x")).toBeInTheDocument();
+    // A step says nothing about a call that simply worked; a failure is the one
+    // thing worth calling out at this depth.
+    expect(within(nested[1] as HTMLElement).queryByText("done")).not.toBeInTheDocument();
+    expect(within(nested[2] as HTMLElement).getByText("failed")).toBeInTheDocument();
   });
 
-  it("falls back to the status word when a call carries no previewable argument", () => {
-    const { container } = render(part({
+  it("clusters repeated nested calls and exposes durations and errors per step", () => {
+    render(part({
       ...delegation,
-      calls: [{ toolCallId: "t1", toolName: "Bash", args: {}, result: "ok", status: "complete" }],
+      calls: [
+        { toolCallId: "t1", toolName: "Read", args: { path: "one.md" }, result: "one", executionMs: 100, status: "complete" },
+        { toolCallId: "t2", toolName: "Read", args: { path: "two.md" }, result: { error: "denied" }, executionMs: 200, status: "failed", history: { persistence: "failed", errorCode: "history_writer_closed", untrusted: true } },
+      ],
     }));
 
-    const row = container.querySelector("details.tool-call.is-nested") as HTMLElement;
-    expect(within(row).getByText("done")).toBeInTheDocument();
+    // A delegation never grows a third tier of disclosure: repeated calls become
+    // one step whose payload holds every member.
+    expect(screen.getByText("Read ×2")).toBeInTheDocument();
+    expect(screen.getByText("1 failed")).toBeInTheDocument();
+    expect(screen.getByText("300ms")).toBeInTheDocument();
+    const step = screen.getByText("Read ×2").closest("details")!;
+    fireEvent.click(screen.getByText("Read ×2").closest("summary")!);
+    const input = step.querySelector(".activity-payload pre")!;
+    expect(input.textContent).toContain("one.md");
+    expect(input.textContent).toContain("two.md");
+    expect(screen.getByText(/history_writer_closed/u)).toBeInTheDocument();
+  });
+
+  it("says where an unsettled call stands, and stays quiet about a settled one", () => {
+    const { container } = render(part({
+      ...delegation,
+      calls: [
+        { toolCallId: "t1", toolName: "Bash", args: {}, result: "ok", status: "complete" },
+        { toolCallId: "t2", toolName: "Sleep", args: {}, status: "running" },
+      ],
+    }));
+
+    const steps = container.querySelectorAll("details.activity-step");
+    expect(within(steps[1] as HTMLElement).queryByText("done")).not.toBeInTheDocument();
+    expect(within(steps[2] as HTMLElement).getByText("running")).toBeInTheDocument();
   });
 
   it("shows the delegated task and the report as their own folded rows", () => {
     const { container } = render(part(delegation));
 
-    const notes = container.querySelectorAll("details.tool-call.subagent-note");
+    const notes = [...container.querySelectorAll("details.activity-step")].filter((note) =>
+      ["Task", "Report"].includes(note.querySelector(".activity-step-tool")?.textContent ?? ""));
     expect(notes).toHaveLength(2);
     // Both are folded: the point of the block is that it stays one line until
     // the operator asks for more.
@@ -150,8 +128,8 @@ describe("SubagentPart", () => {
     expect(
       screen.getByText("Tool history for this call was not saved (history_persistence_timeout)."),
     ).toBeInTheDocument();
-    expect(container.querySelectorAll("details.tool-call.is-nested")).toHaveLength(2);
-    expect(container.querySelectorAll("details.tool-call.subagent-note")).toHaveLength(3);
+    // Two calls plus the Task, Report, and History notes.
+    expect(container.querySelectorAll("details.activity-step")).toHaveLength(5);
   });
 
   it("omits the task row when the delegation carries no prompt", () => {
@@ -164,8 +142,11 @@ describe("SubagentPart", () => {
   it("marks a failed delegation and says so when it recorded no calls", () => {
     const { container } = render(part({ ...delegation, status: "failed", calls: [], result: undefined }));
 
-    expect(container.querySelector("details.subagent")).toHaveClass("is-error");
-    expect(screen.getByText("0 tools · failed · 12.4s")).toBeVisible();
+    // The row's own colour and tag carry the outcome, so the meta slot does not
+    // repeat it.
+    expect(container.querySelector("details.activity-row.is-subagent")).toHaveClass("is-failed");
+    expect(screen.getByText("failed")).toBeVisible();
+    expect(screen.getByText("0 tools · 12.4s")).toBeVisible();
     expect(screen.getByText("No tool calls recorded.")).toBeInTheDocument();
     expect(screen.queryByText("Report")).not.toBeInTheDocument();
   });
@@ -173,8 +154,8 @@ describe("SubagentPart", () => {
   it("keeps a running delegation's pulse until it settles", () => {
     const { container } = render(part({ ...delegation, status: "running", executionMs: undefined }));
 
-    expect(container.querySelector(".tool-status.is-running")).toBeInTheDocument();
-    expect(screen.getByText("2 tools · running")).toBeVisible();
+    expect(container.querySelector(".activity-row.is-subagent.is-running")).toBeInTheDocument();
+    expect(screen.getByText("2 tools")).toBeVisible();
   });
 
   it("prices a delegation in its header, where an expensive one is identifiable", () => {
@@ -209,7 +190,8 @@ describe("SubagentPart", () => {
       calls: [{ toolCallId: "ok", toolName: "Read", status: "complete" }, { toolName: 42 }, null],
     }));
 
-    expect(container.querySelectorAll("details.tool-call.is-nested")).toHaveLength(1);
+    // The surviving call, plus the Task and Report notes.
+    expect(container.querySelectorAll("details.activity-step")).toHaveLength(3);
     expect(screen.getByText("1 tool · 12.4s")).toBeVisible();
   });
 });

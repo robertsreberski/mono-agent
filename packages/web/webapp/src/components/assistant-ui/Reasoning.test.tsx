@@ -10,6 +10,61 @@ import {
 } from "./Reasoning";
 
 describe("Reasoning", () => {
+  it("streams a live thought open and lets a settled one fold away", () => {
+    const thought = (type: string) => (
+      <Reasoning
+        type="reasoning"
+        text="Working out where the state actually lives."
+        status={{ type } as never}
+      />
+    );
+    // Watching the model work is the whole reason Activity auto-opens, so a
+    // thought still arriving must not be hidden behind a disclosure.
+    const { container, rerender } = render(thought("running"));
+    const row = container.querySelector("details.activity-row.is-thinking");
+    expect(row).toHaveAttribute("open");
+
+    // Settling removes the attribute rather than forcing the row shut, so a
+    // reader who opened it by hand keeps it open.
+    rerender(thought("complete"));
+    expect(container.querySelector("details.activity-row.is-thinking"))
+      .not.toHaveAttribute("open");
+  });
+
+  it("reads a thought's preview as prose, not as raw markdown", () => {
+    const { container } = render(
+      <Reasoning
+        type="reasoning"
+        text={"**Planning the fix**\n\nStart with `store.ts`"}
+        status={{ type: "complete" }}
+      />,
+    );
+
+    // The row's summary is the only thing most readers see; emphasis markers
+    // would be the first characters their eye lands on.
+    expect(container.querySelector(".activity-row-summary")?.textContent)
+      .toBe("Planning the fix Start with store.ts");
+    // The expanded body still shows what the model actually wrote.
+    expect(container.querySelector(".activity-thought")?.textContent)
+      .toContain("**Planning the fix**");
+  });
+
+  it("previews a long thought on the row and keeps the full text inside", () => {
+    const { container } = render(
+      <Reasoning
+        type="reasoning"
+        text={`${"considering the options ".repeat(6)}and then deciding`}
+        status={{ type: "complete" }}
+      />,
+    );
+
+    const summary = container.querySelector(".activity-row-summary");
+    expect(summary?.textContent).toHaveLength(52);
+    expect(summary?.textContent?.endsWith("\u2026")).toBe(true);
+    expect(container.querySelector(".activity-thought")?.textContent)
+      .toContain("and then deciding");
+  });
+
   it("renders plain reasoning paragraphs while preserving single line breaks", () => {
     const { container } = render(
       <Reasoning
@@ -63,7 +118,9 @@ describe("Reasoning", () => {
 });
 
 describe("ActivityGroup", () => {
-  it("shows all running activity without an inner scroll and restores the settled bound", () => {
+  // Activity is a panel of rows, not a quoted aside: a reopened log scrolls with
+  // the page instead of trapping the operator in a 256px window inside a message.
+  it("never clamps its rows into an inner scroll, running or settled", () => {
     const { container, rerender } = render(
       <ActivityGroup streaming>
         <p>Live activity</p>
@@ -75,7 +132,8 @@ describe("ActivityGroup", () => {
     const runningStyle = getComputedStyle(runningText!);
     expect(runningStyle.maxHeight).toBe("none");
     expect(runningStyle.overflowY).toBe("visible");
-    expect(runningStyle.maskImage).toBe("none");
+    // No clamp means no fade-out hinting at content below the fold.
+    expect(runningStyle.maskImage).not.toContain("gradient");
 
     rerender(
       <ActivityGroup streaming={false}>
@@ -87,8 +145,8 @@ describe("ActivityGroup", () => {
     const settledText = container.querySelector<HTMLElement>("[data-slot='reasoning-text']");
     expect(settledText).not.toBeNull();
     const settledStyle = getComputedStyle(settledText!);
-    expect(settledStyle.maxHeight).toBe("256px");
-    expect(settledStyle.overflowY).toBe("auto");
+    expect(settledStyle.maxHeight).toBe("none");
+    expect(settledStyle.overflowY).toBe("visible");
   });
 
   it("stays open while running, force-collapses on settle, and can be reopened afterward", () => {
