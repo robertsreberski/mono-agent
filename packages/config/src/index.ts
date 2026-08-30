@@ -1,8 +1,10 @@
 export {
+  assertConfiguredProviderCoverage,
   MAX_AGENT_NAME_LENGTH,
   loadMonoAgentConfig,
   MonoAgentConfigError,
   redactMonoAgentConfig,
+  resolveConfiguredProviders,
   resolveSupermemoryContainer,
 } from "./config.js";
 export type {
@@ -39,6 +41,8 @@ export type {
   RedactedObservabilityExporterConfig,
   RedactedPhoenixExporterConfig,
   RedactedLocalProviderDefinition,
+  RedactedProviderDefinition,
+  ResolvedProviders,
   SessionMode,
 } from "./types.js";
 export {
@@ -53,6 +57,7 @@ export type {
   MonoAgentArtifactRetentionJson,
   MonoAgentLocalProviderJson,
   MonoAgentLocalProviderModelJson,
+  MonoAgentProviderJson,
   MonoAgentMemoryEmbeddingsCircuitBreakerJson,
   MonoAgentMemoryConsolidationJson,
   MonoAgentMemoryEmbeddingsJson,
@@ -90,3 +95,4 @@ export type {
   ConfigViewSectionStatus,
   RemovedConfigWarningsInput,
 } from "./config-view.js";
+export type { ProviderDefinition } from "@mono-agent/runtime-adapter";

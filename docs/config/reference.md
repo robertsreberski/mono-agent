@@ -112,7 +112,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `processJobs.retention.maxRecords` | `integer` | `--` | 1000 | `1000` | Maximum retained terminal process-job records (compiled cap 10000). |
 | `processJobs.stateDir` | `string` | `--` | .mono-agent/process-jobs | `.mono-agent/process-jobs` | Agent-root-confined owner-private process-job records and artifacts; must be disjoint from every restart --clear-sessions purge root. |
 | `processJobs.unsafeAllowUnprotectedState` | `boolean` | `--` | false | `false` | Dangerous trusted-host opt-in: with explicit sandbox.mode=off and Pi-only routes, retain ProcessJobs state without synthetic SRT protection; state and the operator secret become model-accessible. |
-| `providers.local` | `array` | `MONO_AGENT_LOCAL_PROVIDERS_JSON` | unset | `[]` | Configures local for the providers section. |
+| `providers` | `object` | `MONO_AGENT_PROVIDERS_JSON` | unset | `{"openai-codex":{},"ollama":{"baseUrl":"http://localhost:11434"}}` | Provider-id map that widens or narrows the selectable Pi model catalog; MONO_AGENT_PROVIDERS_JSON projects the whole object because provider ids are dynamic. |
 | `providers.piAuthPath` | `string` | `MONO_AGENT_PI_AUTH_PATH` | unset | `~/.pi/agent/auth.json` | Configures piAuthPath for the providers section. |
 | `providers.piNative.maxRetryDelayMs` | `integer` | `MONO_AGENT_MAX_RETRY_DELAY_MS` | 60000 | `60000` | Configures piNative.maxRetryDelayMs for the providers section. |
 | `providers.piNative.piMaxRetries` | `integer` | `MONO_AGENT_PI_MAX_RETRIES` | 2 | `2` | Configures piNative.piMaxRetries for the providers section. |

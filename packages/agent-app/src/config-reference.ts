@@ -542,37 +542,15 @@ function setStructuredAppSchemas(root: Record<string, JsonSchema>): void {
   });
   setSchemaPath(root, ["providers", "local"], {
     type: "array",
-    items: {
-      type: "object",
-      additionalProperties: false,
-      required: ["id", "type"],
-      properties: {
-        id: { type: "string", minLength: 1 },
-        type: { enum: ["ollama", "lmstudio", "openai_compat"] },
-        baseUrl: { type: "string" },
-        enabled: { type: "boolean" },
-        trustPublicUrl: { type: "boolean" },
-        apiKey: { type: "string" },
-        apiKeyEnv: { type: "string" },
-        models: {
-          type: "array",
-          items: {
-            type: "object",
-            additionalProperties: false,
-            required: ["name"],
-            properties: {
-              name: { type: "string", minLength: 1 },
-              alias: { type: "string", minLength: 1 },
-              displayName: { type: "string", minLength: 1 },
-              enabled: { type: "boolean" },
-              capabilities: { type: "object", additionalProperties: true },
-              pricing: { type: "object", additionalProperties: true },
-            },
-          },
-        },
-      },
-    },
+    items: providerEntrySchema(true),
   });
+  const providersSchema = schemaAt(root, ["providers"]);
+  if (providersSchema !== undefined) {
+    // Provider ids are intentionally open because pi-ai and self-hosted
+    // endpoints own that namespace. The entry itself remains typed and closed,
+    // unlike plugin payloads whose complete nested shape is package-owned.
+    (providersSchema as Record<string, unknown>).additionalProperties = providerEntrySchema(false);
+  }
   setSchemaPath(root, ["cron", "jobs"], {
     type: "array",
     items: cronJobSchema(),
@@ -634,6 +612,40 @@ function setStructuredAppSchemas(root: Record<string, JsonSchema>): void {
       timezone: { type: "string", minLength: 1 },
     },
   });
+}
+
+function providerEntrySchema(includeId: boolean): JsonSchema {
+  return {
+    type: "object",
+    additionalProperties: false,
+    ...(includeId ? { required: ["id", "type"] } : {}),
+    properties: {
+      ...(includeId ? { id: { type: "string", minLength: 1 } } : {}),
+      type: { enum: ["ollama", "lmstudio", "openai_compat"] },
+      baseUrl: { type: "string" },
+      enabled: { type: "boolean" },
+      trustPublicUrl: { type: "boolean" },
+      apiKey: { type: "string" },
+      apiKeyEnv: { type: "string" },
+      maxAdvertisedModels: { type: "integer", minimum: 1, maximum: 200, default: 100 },
+      models: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["name"],
+          properties: {
+            name: { type: "string", minLength: 1 },
+            alias: { type: "string", minLength: 1 },
+            displayName: { type: "string", minLength: 1 },
+            enabled: { type: "boolean" },
+            capabilities: { type: "object", additionalProperties: true },
+            pricing: { type: "object", additionalProperties: true },
+          },
+        },
+      },
+    },
+  };
 }
 
 function cronJobSchema(): JsonSchema {
@@ -1241,6 +1253,9 @@ function inferType(id: string): ConfigReferenceType {
   if (id === "subagents") {
     return "object";
   }
+  if (id === "providers") {
+    return "object";
+  }
   if (id === "providers.piNative.transport") {
     return "string";
   }
@@ -1267,7 +1282,7 @@ function inferType(id: string): ConfigReferenceType {
   if (/(Ms|Bytes|Count|Days|Turns|Retries|Attempts|Delay|port|dim|threshold|Hours|Runs)$/iu.test(id) || id.endsWith(".port")) {
     return "integer";
   }
-  if (id === "providers.local" || id === "observability.exporters") {
+  if (id === "observability.exporters") {
     return "array";
   }
   return "string";
@@ -1441,6 +1456,10 @@ function exampleFor(id: string): SettingsJsonValue {
     "traceability.sourceLabel": "My Agent",
     "tools.mcpRequestContextServers": ["transcribe"],
     "tools.web.search.endpoint": "http://127.0.0.1:8088",
+    providers: {
+      "openai-codex": {},
+      ollama: { baseUrl: "http://localhost:11434" },
+    },
     "providers.piAuthPath": "~/.pi/agent/auth.json",
     "providers.piNative.transport": "sse",
     "telegram.botToken": "env:MONO_AGENT_TELEGRAM_BOT_TOKEN",
@@ -1485,6 +1504,9 @@ function exampleFor(id: string): SettingsJsonValue {
 function descriptionFor(id: string): string {
   const section = id.split(".")[0] ?? "config";
   const name = id.split(".").slice(1).join(".");
+  if (id === "providers") {
+    return "Provider-id map that widens or narrows the selectable Pi model catalog; MONO_AGENT_PROVIDERS_JSON projects the whole object because provider ids are dynamic.";
+  }
   if (id === "tui.requestToolEnvironment.allowedKeys") {
     return "Explicit environment-variable names an ACP request may pass to Bash, Exec, and nested subagents for one turn. Disabled when empty; dangerous process-loader, shell-startup, home, temp, and PATH keys are rejected.";
   }

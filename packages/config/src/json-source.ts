@@ -76,17 +76,28 @@ export type MonoAgentLocalProviderJson = {
   readonly apiKey?: string;
   readonly apiKeyEnv?: string;
   readonly models?: readonly MonoAgentLocalProviderModelJson[];
+  readonly maxAdvertisedModels?: number;
+};
+
+/** Map entry form; its provider id is the containing `providers` key. */
+export type MonoAgentProviderJson = Omit<MonoAgentLocalProviderJson, "id">;
+
+type MonoAgentPiNativeProviderJson = {
+  readonly transport?: PiTransport;
+  readonly piMaxRetries?: number;
+  readonly maxRetryDelayMs?: number;
+  readonly piSessionsRoot?: string;
 };
 
 export type MonoAgentProvidersJson = {
   readonly piAuthPath?: string;
   readonly local?: readonly MonoAgentLocalProviderJson[];
-  readonly piNative?: {
-    readonly transport?: PiTransport;
-    readonly piMaxRetries?: number;
-    readonly maxRetryDelayMs?: number;
-    readonly piSessionsRoot?: string;
-  };
+  readonly piNative?: MonoAgentPiNativeProviderJson;
+  readonly [providerId: string]:
+    | string
+    | readonly MonoAgentLocalProviderJson[]
+    | MonoAgentPiNativeProviderJson
+    | MonoAgentProviderJson;
 };
 
 export type MonoAgentMemoryLlmJson = {

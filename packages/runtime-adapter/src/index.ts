@@ -87,10 +87,15 @@ export type {
 } from "./sandbox.js";
 export {
   discoverLocalProviderModels,
+  isAutodiscoverableProviderId,
   isPrivateBaseUrl,
+  isPiBuiltinProvider,
+  localProviderDefinitionFor,
   resolveModelEffortLevels,
   runtimeOptionsForLocalProvider,
   validateLocalProviderDefinition,
+  validateProviderBaseUrl,
+  validateProviderDefinition,
 } from "./local-providers.js";
 export type {
   AgentRuntimeCustomModel,
@@ -104,7 +109,15 @@ export type {
   LocalProviderRuntimeOptions,
   LocalProviderType,
   ModelEffortLevels,
+  ProviderDefinition,
 } from "./local-providers.js";
+export {
+  discoverLocalProviders,
+} from "./provider-discovery.js";
+export type {
+  DiscoveredProvider,
+  DiscoverLocalProvidersInput,
+} from "./provider-discovery.js";
 export type {
   MonoRuntimeApprovalDecision,
   MonoRuntimeApprovalRequest,

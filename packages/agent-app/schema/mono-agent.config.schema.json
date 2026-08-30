@@ -1417,7 +1417,75 @@
     },
     "providers": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "enum": [
+              "ollama",
+              "lmstudio",
+              "openai_compat"
+            ]
+          },
+          "baseUrl": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "trustPublicUrl": {
+            "type": "boolean"
+          },
+          "apiKey": {
+            "type": "string"
+          },
+          "apiKeyEnv": {
+            "type": "string"
+          },
+          "maxAdvertisedModels": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 100
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "alias": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "displayName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "capabilities": {
+                  "type": "object",
+                  "additionalProperties": true
+                },
+                "pricing": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      },
       "properties": {
         "piAuthPath": {
           "description": "Configures piAuthPath for the providers section.",
@@ -1504,6 +1572,12 @@
               },
               "apiKeyEnv": {
                 "type": "string"
+              },
+              "maxAdvertisedModels": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200,
+                "default": 100
               },
               "models": {
                 "type": "array",

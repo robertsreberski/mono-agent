@@ -352,6 +352,7 @@ MonoAgentMemoryEmbeddingsCircuitBreakerJson
 MonoAgentMemoryEmbeddingsJson
 MonoAgentMemoryLlmJson
 MonoAgentObservabilityExporterJson
+MonoAgentProviderJson
 MonoAgentProvidersJson
 MonoAgentRuntimeFallbackJson
 ObservabilityExporterConfig
@@ -359,7 +360,7 @@ PERMISSION_MODES
 PermissionMode
 PhoenixExporterConfig
 PiNativeProviderConfig
-ROUTE_SAFETY_MODES
+ProviderDefinition
 ReadMonoAgentConfigJsonResult
 RedactedLocalProviderDefinition
 RedactedMemoryConfig
@@ -369,10 +370,12 @@ RedactedMonoAgentConfig
 RedactedObservabilityConfig
 RedactedObservabilityExporterConfig
 RedactedPhoenixExporterConfig
+RedactedProviderDefinition
 RemovedConfigWarningsInput
-RouteSafetyMode
+ResolvedProviders
 RuntimeFallbackConfig
 SessionMode
+assertConfiguredProviderCoverage
 buildMonoAgentConfigView
 detectEffortKeyword
 effortRank
@@ -383,6 +386,7 @@ loadMonoAgentConfigWithSources
 maxEffortLevel
 readMonoAgentConfigJson
 redactMonoAgentConfig
+resolveConfiguredProviders
 resolveSupermemoryContainer
 writeMonoAgentConfigJson
 ```

@@ -160,7 +160,9 @@ CodedError
 CreateMonoRuntimeOptions
 DEFAULT_DENY_WRITE
 DiscoverLocalProviderModelsOptions
+DiscoverLocalProvidersInput
 DiscoveredLocalModel
+DiscoveredProvider
 LocalProviderCapabilities
 LocalProviderDefinition
 LocalProviderModelDefinition
@@ -197,6 +199,7 @@ ProcessJobProcessResult
 ProcessJobStartRequest
 ProcessJobStartResult
 ProcessJobsController
+ProviderDefinition
 RuntimeAdapterError
 RuntimeAdapterErrorCode
 RuntimeAdapterErrorDetails
@@ -253,14 +256,18 @@ createSrtSandboxEngine
 describeMonoRuntimeSupport
 describeSandboxEffectiveState
 discoverLocalProviderModels
+discoverLocalProviders
 failClosedSandboxPolicy
 inspectCodexSubscriptionSearch
+isAutodiscoverableProviderId
 isCodedError
+isPiBuiltinProvider
 isPlainObject
 isPrivateBaseUrl
 isRuntimeSubagentActivityEvent
 isValidMcpServerName
 listMonoRuntimeBackends
+localProviderDefinitionFor
 managedSrtInstallRoot
 mergeSandboxPolicies
 modelReferenceKey
@@ -282,6 +289,8 @@ sandboxPolicyToRuntimeOptions
 sandboxRequired
 srtSettingsForPolicy
 validateLocalProviderDefinition
+validateProviderBaseUrl
+validateProviderDefinition
 ```
 
 <!-- public-api-inventory:end -->
