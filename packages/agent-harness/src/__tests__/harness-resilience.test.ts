@@ -58,7 +58,6 @@ describe("AgentHarness resilience + caching", () => {
       identityPath,
       runtime: fakeRuntime(),
       model,
-      executionMode: "sdk",
       memory,
     });
 
@@ -116,7 +115,6 @@ describe("AgentHarness resilience + caching", () => {
       identityPath,
       runtime: fakeRuntime({ text: "provider succeeded", providerSessionId: "ps-2" }),
       model,
-      executionMode: "sdk",
       memory,
       memoryWriteMode: "append-host-summary",
       onMemoryWarning: (message) => {
@@ -158,7 +156,6 @@ describe("AgentHarness resilience + caching", () => {
       identityPath,
       runtime: fakeRuntime({ text: "provider succeeded" }),
       model,
-      executionMode: "sdk",
       memoryWriteMode: "append-host-summary",
       memory: {
         load: async () => undefined,
@@ -192,7 +189,6 @@ describe("AgentHarness resilience + caching", () => {
       identityPath,
       runtime: fakeRuntime(),
       model,
-      executionMode: "sdk",
       skillsRoot: "/skills-root",
       selectedSkills: ["alpha"],
       skillsCache,

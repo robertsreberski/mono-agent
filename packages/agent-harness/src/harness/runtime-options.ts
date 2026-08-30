@@ -1,11 +1,8 @@
 import {
-  assertExecutionModeCompatible,
-  defaultExecutionModeForModel,
   mergeSandboxPolicies,
   modelReferenceKey,
 } from "@mono-agent/runtime-adapter";
 import type {
-  RuntimeExecutionMode,
   RuntimeModelReference,
   SandboxPolicy,
 } from "@mono-agent/runtime-adapter";
@@ -79,30 +76,14 @@ function asSandboxPolicy(value: unknown): SandboxPolicy | undefined {
 
 /** Narrow a merged-options value to a RuntimeModelReference (a per-request model override). */
 export function isRuntimeModelReference(value: unknown): value is RuntimeModelReference {
-  return isRecord(value) && typeof value.sdk === "string" && typeof value.model === "string";
+  return isRecord(value)
+    && typeof value.provider === "string"
+    && typeof value.model === "string"
+    && typeof value.reference === "string";
 }
 
 export function sameRuntimeModel(a: RuntimeModelReference, b: RuntimeModelReference): boolean {
   return modelReferenceKey(a) === modelReferenceKey(b);
-}
-
-/**
- * Execution mode for an override model: keep the host's configured mode when the
- * override model supports it, otherwise the override model's default mode.
- */
-export function executionModeForOverride(
-  model: RuntimeModelReference,
-  hostMode: RuntimeExecutionMode | undefined,
-): RuntimeExecutionMode {
-  if (hostMode !== undefined) {
-    try {
-      assertExecutionModeCompatible(model, hostMode);
-      return hostMode;
-    } catch {
-      // Host mode is incompatible with the override model — use the model default.
-    }
-  }
-  return defaultExecutionModeForModel(model);
 }
 
 function mergeStringLists(current: unknown, next: unknown): readonly string[] {

@@ -10,13 +10,13 @@ import { createAgentHarness } from "../index.js";
 import type { AgentHarnessSessionOptions } from "../index.js";
 
 const tempDirs: string[] = [];
-const defaultModel = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
-const claudeModel = { sdk: "claude", model: "claude-opus-4-8", reference: "claude:claude-opus-4-8" } as const;
-const codexModel = { sdk: "codex", model: "gpt-5.5", reference: "codex:gpt-5.5" } as const;
+const defaultModel = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" } as const;
+const claudeModel = { provider: "anthropic", model: "claude-opus-4-8", reference: "anthropic:claude-opus-4-8" } as const;
+const codexModel = { provider: "openai-codex", model: "gpt-5.6-codex", reference: "openai-codex:gpt-5.6-codex" } as const;
 // All-LOCAL default + override targets for the endpoint-block ownership tests.
-const localDefaultModel = { sdk: "pi", provider: "lmstudio", model: "qwen", reference: "pi:lmstudio:qwen" } as const;
-const otherLocalModel = { sdk: "pi", provider: "ollama", model: "llama3", reference: "pi:ollama:llama3" } as const;
-const openAiCloudModel = { sdk: "pi", provider: "openai", model: "gpt-4o", reference: "pi:openai:gpt-4o" } as const;
+const localDefaultModel = { provider: "lmstudio", model: "qwen", reference: "lmstudio:qwen" } as const;
+const otherLocalModel = { provider: "ollama", model: "llama3", reference: "ollama:llama3" } as const;
+const openAiCloudModel = { provider: "openai", model: "gpt-4o", reference: "openai:gpt-4o" } as const;
 const lmstudioDefaultBlock = {
   customProvider: { id: "lmstudio", provider_type: "lmstudio", base_url: "http://localhost:1234" },
   customModel: { provider_id: "lmstudio", model_name: "qwen" },
@@ -59,24 +59,21 @@ function request(conversationId = "conv-1", userMessage = "hello") {
 }
 
 describe("AgentHarness per-request model/effort override", () => {
-  it("runs an override on the runtimeForModel runtime; an incompatible host mode falls back to the model default", async () => {
+  it("runs a different-model override on the runtimeForModel runtime", async () => {
     const identityPath = await identityFixture();
     const base = createFakeRuntime();
     const override = createFakeRuntime();
-    const factoryCalls: Array<{ model: RuntimeModelReference; executionMode: string | undefined }> = [];
+    const factoryCalls: RuntimeModelReference[] = [];
 
     const harness = createAgentHarness({
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
-      executionMode: "sdk",
       effort: "low",
-      runtimeForModel: (model, executionMode) => {
-        factoryCalls.push({ model, executionMode });
+      runtimeForModel: (model) => {
+        factoryCalls.push(model);
         return override.runtime;
       },
-      // codex override under an sdk host → codex is cli-only, so the harness
-      // derives executionMode "cli" (model default), not the host's "sdk".
       runtimeOptionsForRequest: () => ({ runtimeOptions: { model: codexModel, effort: "high" } }),
     });
 
@@ -84,38 +81,11 @@ describe("AgentHarness per-request model/effort override", () => {
 
     expect(base.calls).toHaveLength(0);
     expect(override.calls).toHaveLength(1);
-    expect(factoryCalls).toEqual([{ model: codexModel, executionMode: "cli" }]);
+    expect(factoryCalls).toEqual([codexModel]);
 
     const options = override.calls[0]?.options as Record<string, unknown>;
     expect(options.model).toEqual(codexModel);
     expect(options.effort).toBe("high");
-    expect(options.executionMode).toBe("cli");
-  });
-
-  it("preserves a compatible host executionMode across a same-family override", async () => {
-    const identityPath = await identityFixture();
-    const base = createFakeRuntime();
-    const override = createFakeRuntime();
-    const factoryCalls: Array<{ model: RuntimeModelReference; executionMode: string | undefined }> = [];
-
-    const harness = createAgentHarness({
-      identityPath,
-      runtime: base.runtime,
-      model: defaultModel,
-      // Host runs in cli mode; claude supports cli, so the override keeps cli
-      // rather than being flipped to the model default (sdk).
-      executionMode: "cli",
-      runtimeForModel: (model, executionMode) => {
-        factoryCalls.push({ model, executionMode });
-        return override.runtime;
-      },
-      runtimeOptionsForRequest: () => ({ runtimeOptions: { model: claudeModel } }),
-    });
-
-    await harness.run(request());
-
-    expect(factoryCalls).toEqual([{ model: claudeModel, executionMode: "cli" }]);
-    expect((override.calls[0]?.options as Record<string, unknown>).executionMode).toBe("cli");
   });
 
   it("uses the shared runtime and harness defaults when no override is returned", async () => {
@@ -127,7 +97,6 @@ describe("AgentHarness per-request model/effort override", () => {
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
-      executionMode: "sdk",
       effort: "low",
       runtimeForModel: () => {
         factoryCalled = true;
@@ -142,7 +111,6 @@ describe("AgentHarness per-request model/effort override", () => {
     expect(base.calls).toHaveLength(1);
     const options = base.calls[0]?.options as Record<string, unknown>;
     expect(options.model).toEqual(defaultModel);
-    expect(options.executionMode).toBe("sdk");
     expect(options.effort).toBe("low");
   });
 
@@ -154,7 +122,6 @@ describe("AgentHarness per-request model/effort override", () => {
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
-      executionMode: "sdk",
       runtimeOptionsForRequest: () => ({
         // messages is harness-owned; an extension value must not leak through.
         runtimeOptions: { messages: [{ role: "user", content: "HIJACKED" }] } as never,
@@ -183,7 +150,6 @@ describe("AgentHarness per-request override OWNS the local-provider endpoint blo
       identityPath,
       runtime: base.runtime,
       model: localDefaultModel,
-      executionMode: "sdk",
       // Host default endpoint block, computed once from the local default model.
       runtimeOptions: lmstudioDefaultBlock,
       // Cloud override: sets the cloud model and null-CLEARS the four endpoint
@@ -223,7 +189,6 @@ describe("AgentHarness per-request override OWNS the local-provider endpoint blo
       identityPath,
       runtime: base.runtime,
       model: localDefaultModel,
-      executionMode: "sdk",
       runtimeOptions: lmstudioDefaultBlock,
       runtimeOptionsForRequest: () => ({ runtimeOptions: { model: otherLocalModel, ...overrideBlock } }),
     });
@@ -245,7 +210,6 @@ describe("AgentHarness per-request override OWNS the local-provider endpoint blo
       identityPath,
       runtime: base.runtime,
       model: localDefaultModel,
-      executionMode: "sdk",
       runtimeOptions: lmstudioDefaultBlock,
       // No model → the extension emits no endpoint keys, so the default block for
       // the (unchanged) default model must survive the merge.
@@ -312,6 +276,15 @@ function telegramOverrideRequest(
   };
 }
 
+function slackOverrideRequest(conversationId: string, model: string) {
+  return {
+    conversationId,
+    userMessage: "slack turn",
+    abortSignal: new AbortController().signal,
+    metadata: { slack: { channelId: "C1", model } },
+  };
+}
+
 describe("AgentHarness per-request override session isolation", () => {
   it("a model-override turn neither resumes nor persists the shared session", async () => {
     const identityPath = await identityFixture();
@@ -321,7 +294,6 @@ describe("AgentHarness per-request override session isolation", () => {
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
-      executionMode: "sdk",
       session: continuousSession,
       piSessionsRoot: "/tmp/host-durable-pi",
       runtimeForModel: () => override.runtime,
@@ -349,7 +321,7 @@ describe("AgentHarness per-request override session isolation", () => {
 
     // A webhook model-override turn runs on the override runtime and is isolated:
     // no resume keys, so it cannot inherit or corrupt the base-model session.
-    await harness.run(webhookOverrideRequest("conv", "claude:claude-opus-4-8"));
+    await harness.run(webhookOverrideRequest("conv", claudeModel.reference));
     expect(override.calls).toHaveLength(1);
     expect(override.calls[0]?.options.sessionId).toBeUndefined();
     expect(override.calls[0]?.options.providerSessionId).toBeUndefined();
@@ -370,7 +342,6 @@ describe("AgentHarness per-request override session isolation", () => {
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
-      executionMode: "sdk",
       session: continuousSession,
       runtimeForModel: () => override.runtime,
       runtimeOptionsForRequest: (input) => {
@@ -401,6 +372,35 @@ describe("AgentHarness per-request override session isolation", () => {
     expect(base.calls[1]?.options.sessionId).toBe("ps-1");
   });
 
+  it("isolates a metadata.slack.model override without triggering the undeclared-model guard", async () => {
+    const identityPath = await identityFixture();
+    const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
+    const override = createFakeRuntime();
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: base.runtime,
+      model: defaultModel,
+      session: continuousSession,
+      runtimeForModel: () => override.runtime,
+      runtimeOptionsForRequest: (input) => {
+        const slack = (input.request.metadata as { slack?: { model?: string } } | undefined)?.slack;
+        return { runtimeOptions: slack?.model === undefined ? {} : { model: claudeModel } };
+      },
+    });
+
+    await harness.run(request("slack:C1", "warm chat"));
+    const response = await harness.run(slackOverrideRequest("slack:C1", claudeModel.reference));
+
+    expect(response.failure).toBeUndefined();
+    expect(override.calls).toHaveLength(1);
+    expect(override.calls[0]?.options.sessionId).toBeUndefined();
+    expect(override.calls[0]?.options.providerSessionId).toBeUndefined();
+    expect(override.calls[0]?.options.sessionKeepAlive).toBeUndefined();
+
+    await harness.run(request("slack:C1", "resume chat"));
+    expect(base.calls[1]?.options.sessionId).toBe("ps-1");
+  });
+
   it("keeps same-model and effort-only Telegram turns on the shared session", async () => {
     const identityPath = await identityFixture();
     const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
@@ -408,7 +408,6 @@ describe("AgentHarness per-request override session isolation", () => {
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
-      executionMode: "sdk",
       session: continuousSession,
       runtimeOptionsForRequest: (input) => {
         const telegram = (input.request.metadata as {
@@ -431,7 +430,7 @@ describe("AgentHarness per-request override session isolation", () => {
     expect(base.calls[1]?.options.effort).toBe("high");
   });
 
-  it("fails closed before provider execution when a continuous-session model override was not declared before context assembly", async () => {
+  it("keeps the undeclared_model_override guard fail-closed before provider execution", async () => {
     const identityPath = await identityFixture();
     const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
     const override = createFakeRuntime({ text: "wrong runtime", providerSessionId: "override-session" });
@@ -439,7 +438,6 @@ describe("AgentHarness per-request override session isolation", () => {
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
-      executionMode: "sdk",
       session: continuousSession,
       runtimeForModel: () => override.runtime,
       runtimeOptionsForRequest: ({ request: activeRequest }) => ({
@@ -464,7 +462,6 @@ describe("AgentHarness per-request override session isolation", () => {
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
-      executionMode: "sdk",
       session: continuousSession,
       runtimeForModel: () => override.runtime,
       // Mirror the app extension: a webhook `model` that parses to the SAME model
@@ -500,7 +497,6 @@ describe("AgentHarness per-request override session isolation", () => {
       identityPath,
       runtime: base.runtime,
       model: defaultModel,
-      executionMode: "sdk",
       session: continuousSession,
       // Mirror the app extension: a cron `effort` in metadata → an effort override
       // (no model, so the turn is NOT isolated).
