@@ -56,19 +56,10 @@ interface StartOptions extends BuildInputOptions {
   readonly discoverModels?: (
     providers: readonly LocalProviderDefinition[] | undefined,
   ) => Promise<readonly DiscoveredLocalModel[]>;
-  readonly discoverClaudeModels?: (
-    authoredModelRefs: readonly string[],
-  ) => Promise<readonly { model: string; supportedEfforts: readonly string[] }[]>;
-  readonly discoverCodexModels?: () => Promise<readonly {
-    id: string;
-    displayName: string;
-    supportedEfforts: readonly ("none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra")[];
-  }[]>;
 }
 
-const NOOP_CAPABILITY_DISCOVERY = {
-  discoverClaudeModels: async () => [],
-  discoverCodexModels: async () => [],
+const NOOP_MODEL_DISCOVERY = {
+  discoverModels: async () => [],
 };
 
 async function startCapturingTui(options: StartOptions = {}): Promise<TuiAdapterOptions> {
@@ -86,14 +77,8 @@ async function startCapturingTui(options: StartOptions = {}): Promise<TuiAdapter
         stop: () => Promise.resolve(),
       });
     },
-    ...NOOP_CAPABILITY_DISCOVERY,
+    ...NOOP_MODEL_DISCOVERY,
     ...(options.discoverModels === undefined ? {} : { discoverModels: options.discoverModels }),
-    ...(options.discoverClaudeModels === undefined
-      ? {}
-      : { discoverClaudeModels: options.discoverClaudeModels }),
-    ...(options.discoverCodexModels === undefined
-      ? {}
-      : { discoverCodexModels: options.discoverCodexModels }),
   });
 
   await driver.start(baseInput(options));
@@ -123,7 +108,7 @@ describe("tui channel driver — info composition", () => {
         port: 0,
         stop: async () => {},
       }),
-      ...NOOP_CAPABILITY_DISCOVERY,
+      ...NOOP_MODEL_DISCOVERY,
       discoverModels: async () => [],
     });
 
@@ -356,34 +341,23 @@ describe("tui channel driver — info composition", () => {
     }
   });
 
-  it("advertises exact per-model effort levels for a heterogeneous primary/fallback chain", async () => {
-    const discoverClaudeModels = vi.fn(async () => [{
-      model: "claude-fable-5",
-      supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
-    }]);
-    const discoverCodexModels = vi.fn(async () => [{
-      id: "gpt-5.6-terra",
-      displayName: "GPT-5.6 Terra",
-      supportedEfforts: ["low", "medium", "high"] as const,
-    }]);
+  it("advertises exact Pi effort levels while other retained refs fail closed", async () => {
     const captured = await startCapturingTui({
       fallbackModels: [
         { sdk: "codex", model: "gpt-5.6-terra" },
         { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
         { sdk: "acp", model: "gemini" },
       ],
-      discoverClaudeModels,
-      discoverCodexModels,
     });
     const info = await resolveInfo(captured);
 
-    expect(info.modelOptions?.["claude:claude-fable-5"]?.effortLevels)
-      .toEqual(["low", "medium", "high", "xhigh", "max"]);
-    expect(info.modelOptions?.["codex:gpt-5.6-terra"]?.effortLevels).toEqual(["low", "medium", "high"]);
+    expect(info.modelOptions?.["claude:claude-fable-5"]).toEqual({ reasoning: true });
+    expect(info.modelOptions?.["codex:gpt-5.6-terra"]).toEqual({
+      reasoning: true,
+      contextWindow: 272_000,
+    });
     expect(info.modelOptions?.["pi:anthropic:claude-sonnet-4-6"]?.effortLevels?.length).toBeGreaterThan(0);
     expect(info.modelOptions?.["acp:gemini"]).toEqual({ reasoning: true });
-    expect(discoverClaudeModels).toHaveBeenCalledTimes(1);
-    expect(discoverCodexModels).toHaveBeenCalledTimes(1);
   });
 
   it("suppresses explicit effort for every advertised model when a retained fallback is direct OpenCode", async () => {
@@ -400,21 +374,13 @@ describe("tui channel driver — info composition", () => {
     expect(info.modelOptions?.["opencode:opencode-go:kimi-k2.6"]).toEqual({ reasoning: true });
   });
 
-  it("fail-closes capability discovery without blocking later /v1/info reads", async () => {
+  it("fail-closes local capability discovery without blocking later /v1/info reads", async () => {
     const discoverModels = vi.fn(async () => {
       throw new Error("local catalog unavailable");
-    });
-    const discoverClaudeModels = vi.fn(async () => {
-      throw new Error("claude catalog unavailable");
-    });
-    const discoverCodexModels = vi.fn(async () => {
-      throw new Error("codex app-server unavailable");
     });
     const captured = await startCapturingTui({
       fallbackModels: [{ sdk: "codex", model: "gpt-5.6-terra" }],
       discoverModels,
-      discoverClaudeModels,
-      discoverCodexModels,
     });
 
     const first = await resolveInfo(captured);
@@ -427,8 +393,6 @@ describe("tui channel driver — info composition", () => {
     });
     expect(second).toEqual(first);
     expect(discoverModels).toHaveBeenCalledTimes(1);
-    expect(discoverClaudeModels).toHaveBeenCalledTimes(1);
-    expect(discoverCodexModels).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -475,7 +439,7 @@ describe("tui channel driver — process jobs", () => {
           stop: async () => undefined,
         };
       },
-      ...NOOP_CAPABILITY_DISCOVERY,
+      ...NOOP_MODEL_DISCOVERY,
       discoverModels: async () => [],
       deliverNotification,
     });
@@ -666,7 +630,7 @@ async function runningWebChannel(
       port: 0,
       stop: async () => undefined,
     }),
-    ...NOOP_CAPABILITY_DISCOVERY,
+    ...NOOP_MODEL_DISCOVERY,
     discoverModels: async () => [],
     deliverNotification: deliverNotification as never,
   });

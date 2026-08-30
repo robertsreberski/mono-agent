@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { EffortLevel } from "@mono-agent/config";
-import { discoverClaudeSdkModels } from "@mono-agent/runtime-adapter";
 
 import {
   codexModelDiscoveryEnvironment,
@@ -69,7 +68,7 @@ export interface WizardModelCandidate {
 }
 
 export interface ModelDiscoveryStatus {
-  readonly provider: "Claude" | "Codex" | "Pi" | "OpenCode-Go" | "Ollama" | "LM Studio";
+  readonly provider: "Codex" | "Pi" | "OpenCode-Go" | "Ollama" | "LM Studio";
   readonly status: "detected" | "setup_available" | "unavailable";
   readonly detail: string;
 }
@@ -101,7 +100,6 @@ export interface DiscoverWizardModelsOptions {
   readonly timeoutMs?: number;
   readonly verifiedModelRefs?: readonly string[];
   readonly codexModelList?: () => Promise<readonly CodexCatalogModel[]>;
-  readonly claudeModelList?: () => ReturnType<typeof discoverClaudeSdkModels>;
 }
 
 function providerDiscoveryCommand(opts: DiscoverWizardModelsOptions): DiscoveryCommandRunner {
@@ -143,30 +141,15 @@ const OPENAI_CODEX_MODELS: readonly CuratedOpenAiCodexModel[] = [
 
 export const STATIC_MODEL_CANDIDATES: readonly WizardModelCandidate[] = [
   ...OPENAI_CODEX_MODELS.map(staticDirectCodexCandidate),
-  ...[
-    ["claude-sonnet-5", "Claude Sonnet 5", ["low", "medium", "high", "xhigh", "max"]],
-    ["claude-opus-4-8[1m]", "Claude Opus 4.8 (1M context)", ["low", "medium", "high", "xhigh", "max"]],
-    ["claude-haiku-4-5-20251001", "Claude Haiku 4.5", []],
-  ].map(([model, label, efforts]) => ({
-    value: `claude:${model as string}`,
-    label: label as string,
-    hint: "SDK-versioned cached catalog; sign-in required",
-    source: "claude" as const,
-    availability: "catalog_available" as const,
-    authState: "auth_required" as const,
-    supportedEfforts: efforts as EffortLevel[],
-    setupRequired: true,
-  })),
 ];
 
 export async function discoverWizardModelCandidates(
   opts: DiscoverWizardModelsOptions = {},
 ): Promise<ModelDiscoveryResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS;
-  const [codex, pi, claude, opencode, ollama, lmstudio] = await Promise.all([
+  const [codex, pi, opencode, ollama, lmstudio] = await Promise.all([
     discoverDirectCodex({ ...opts, timeoutMs }),
     discoverPiModels({ ...opts, timeoutMs }),
-    discoverClaudeModels({ ...opts, timeoutMs }),
     discoverOpenCodeModels({
       ...opts,
       timeoutMs: opts.timeoutMs ?? DEFAULT_OPENCODE_DISCOVERY_TIMEOUT_MS,
@@ -179,12 +162,11 @@ export async function discoverWizardModelCandidates(
     candidates: rankWizardModelCandidates([
       ...codex.candidates,
       ...pi.candidates,
-      ...claude.candidates,
       ...opencode.candidates,
       ...ollama.candidates,
       ...lmstudio.candidates,
     ]),
-    statuses: [codex.status, pi.status, claude.status, opencode.status, ollama.status, lmstudio.status],
+    statuses: [codex.status, pi.status, opencode.status, ollama.status, lmstudio.status],
   };
 }
 
@@ -434,81 +416,6 @@ function isCredentialString(value: unknown): value is string {
     && value.trim().length > 0
     && value.length <= 65_536
     && !value.includes("\0");
-}
-
-async function discoverClaudeModels(
-  opts: Required<Pick<DiscoverWizardModelsOptions, "timeoutMs">> & DiscoverWizardModelsOptions,
-): Promise<{ candidates: WizardModelCandidate[]; status: ModelDiscoveryStatus }> {
-  const run = providerDiscoveryCommand(opts);
-  const verified = new Set(opts.verifiedModelRefs ?? []);
-  let credentialDetected = hasDurableProviderEnvironmentCredential(
-    "claude:claude-sonnet-5",
-    opts.persistedEnv ?? {},
-  );
-  const durableCredential = credentialDetected;
-  const shellOnlyCredential = !durableCredential
-    && hasDurableProviderEnvironmentCredential("claude:claude-sonnet-5", process.env);
-  if (!credentialDetected) {
-    try {
-      await run("claude", ["auth", "status", "--json"], {
-        timeout: opts.timeoutMs,
-        env: credentialNeutralProviderStatusEnvironment(process.env, opts.persistedEnv),
-      });
-      credentialDetected = true;
-    } catch {
-      // Catalog discovery is deliberately independent from account state.
-    }
-  }
-  let catalog: Awaited<ReturnType<typeof discoverClaudeSdkModels>> = [];
-  try {
-    catalog = opts.claudeModelList !== undefined
-      ? await opts.claudeModelList()
-      : opts.execFile === undefined
-        ? await discoverClaudeSdkModels({ timeoutMs: Math.max(opts.timeoutMs, 2_000) })
-        : await discoverClaudeSdkModels({ timeoutMs: 1 });
-  } catch {
-    // Static SDK-versioned rows remain available through STATIC_MODEL_CANDIDATES.
-  }
-  const candidates = catalog.map((model): WizardModelCandidate => {
-    const value = model.reference;
-    const authState: WizardModelAuthState = verified.has(value)
-      ? "verified"
-      : credentialDetected
-        ? "credential_detected"
-        : "auth_required";
-    const supportedEfforts = normalizeEfforts(model.supportedEfforts);
-    return {
-      value,
-      label: model.displayName,
-      hint: `${model.source === "discovered" ? "discovered from Claude SDK" : "SDK-versioned cached catalog"}; ${
-        authState === "verified" ? "verified" : authState === "credential_detected" ? "credential detected; live readiness pending" : "sign-in required"
-      }`,
-      source: "claude",
-      availability: "catalog_available",
-      authState,
-      supportedEfforts,
-      ...(authState === "verified" ? { discovered: true } : {}),
-      ...(authState === "auth_required" ? { setupRequired: true } : {}),
-    };
-  });
-  return {
-    candidates,
-    status: credentialDetected
-      ? {
-          provider: "Claude",
-          status: "detected",
-          detail: `${durableCredential ? "durable provider credential" : "sign-in"} detected (live readiness not yet verified)`,
-        }
-      : {
-          provider: "Claude",
-          status: "setup_available",
-          detail: `${
-            shellOnlyCredential
-              ? "durable sign-in required; shell-only Claude credential ignored"
-              : "sign-in required"
-          }; catalog remains available`,
-        },
-  };
 }
 
 async function discoverOpenCodeModels(

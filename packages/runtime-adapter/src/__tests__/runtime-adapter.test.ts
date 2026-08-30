@@ -38,7 +38,11 @@ describe("runtime adapter model references", () => {
     const backends = listMonoRuntimeBackends();
 
     expect(backends).toHaveLength(1);
-    expect(backends[0]).toMatchObject({
+    const backend = backends[0];
+    if (backend === undefined) {
+      throw new Error("Expected the sole Pi runtime backend.");
+    }
+    expect(backend).toMatchObject({
       id: "pi-sdk",
       runtimeBridgeId: "pi",
       sdk: "pi",
@@ -52,10 +56,10 @@ describe("runtime adapter model references", () => {
         tool_policy: "projected",
       }),
     });
-    expect(runtimeBackendForModel(model)).toBe(backends[0]);
+    expect(runtimeBackendForModel(model)).toBe(backend);
     expect(Object.isFrozen(backends)).toBe(true);
-    expect(Object.isFrozen(backends[0])).toBe(true);
-    expect(Object.isFrozen(backends[0].capabilities)).toBe(true);
+    expect(Object.isFrozen(backend)).toBe(true);
+    expect(Object.isFrozen(backend.capabilities)).toBe(true);
   });
 
   it("describes every parsed model through the sole Pi backend", () => {
