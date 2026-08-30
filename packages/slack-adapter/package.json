@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/slack-adapter",
-  "version": "0.20.9",
+  "version": "0.20.10",
   "description": "Slack Socket Mode communication adapter for host-compatible runtimes.",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -31,7 +31,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.20.9",
+    "@mono-agent/agent-contracts": "workspace:0.20.10",
     "ws": "^8.21.1"
   },
   "devDependencies": {
