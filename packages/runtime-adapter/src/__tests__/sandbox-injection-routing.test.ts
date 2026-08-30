@@ -109,7 +109,6 @@ describe("createMonoRuntime routed sandbox authority", () => {
     });
     const createOptions = Object.freeze({
       fallbackChain: Object.freeze([{ model }]),
-      routeSafety: "per-route-native" as const,
       resolveAttempt: vi.fn(() => resolution as unknown as MonoRuntimeAttemptResolution),
     });
     const runtime = createMonoRuntime(createOptions as unknown as CreateMonoRuntimeOptions);

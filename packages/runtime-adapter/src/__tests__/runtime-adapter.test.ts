@@ -1,10 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  assertExecutionModeCompatible,
   createPiOAuthApiKeyResolver,
   createMonoRuntime,
-  defaultExecutionModeForModel,
   describeMonoRuntimeSupport,
   listMonoRuntimeBackends,
   monoRuntimeSupportsLiveInput,
@@ -26,29 +24,6 @@ describe("runtime adapter model references", () => {
     });
   });
 
-  it("parses Codex model references and defaults them to CLI", () => {
-    const model = parseMonoRuntimeModelReference("codex:gpt-5.5");
-    expect(model).toEqual({ sdk: "codex", model: "gpt-5.5", reference: "codex:gpt-5.5" });
-    expect(defaultExecutionModeForModel(model)).toBe("cli");
-  });
-
-  it("parses OpenCode model references and defaults them to CLI", () => {
-    const model = parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1");
-    expect(model).toEqual({
-      sdk: "opencode",
-      provider: "github-copilot",
-      model: "gpt-4.1",
-      reference: "opencode:github-copilot:gpt-4.1",
-    });
-    expect(defaultExecutionModeForModel(model)).toBe("cli");
-  });
-
-  it("parses ACP profile references and defaults them to the dedicated ACP transport", () => {
-    const model = parseMonoRuntimeModelReference("acp:personal-agent");
-    expect(model).toEqual({ sdk: "acp", model: "personal-agent", reference: "acp:personal-agent" });
-    expect(defaultExecutionModeForModel(model)).toBe("acp");
-  });
-
   it("rejects raw or legacy-invalid model references with a stable error", () => {
     expect(() => parseMonoRuntimeModelReference("haiku")).toThrow(RuntimeAdapterError);
     try {
@@ -58,147 +33,53 @@ describe("runtime adapter model references", () => {
     }
   });
 
-  it("rejects incompatible execution modes before calling the runtime", () => {
-    const model = parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5");
-    expect(() => assertExecutionModeCompatible(model, "cli")).toThrow(/only runs under SDK execution mode/u);
-    expect(() => assertExecutionModeCompatible(model, "other")).toThrow(/sdk, cli, or acp/u);
-  });
-
-  it("accepts compatible execution modes", () => {
-    expect(() => assertExecutionModeCompatible(parseMonoRuntimeModelReference("acp:personal-agent"), "acp")).not.toThrow();
-    expect(() => assertExecutionModeCompatible(parseMonoRuntimeModelReference("acp:personal-agent"), "cli"))
-      .toThrow(/require ACP execution mode/i);
-    expect(() => assertExecutionModeCompatible(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli")).not.toThrow();
-    expect(() => assertExecutionModeCompatible(parseMonoRuntimeModelReference("codex:gpt-5.5"), "cli")).not.toThrow();
-    expect(() => assertExecutionModeCompatible(parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1"), "cli")).not.toThrow();
-  });
-
-  it("lists the runtime backend matrix exposed by agent-runtime", () => {
+  it("exposes one frozen Pi backend descriptor", () => {
+    const model = parseMonoRuntimeModelReference("pi:github-copilot:gpt-4.1");
     const backends = listMonoRuntimeBackends();
-    expect(backends.map((backend) => backend.id)).toEqual([
-      "acp-stdio",
-      "claude-sdk",
-      "claude-code-cli",
-      "codex-app-cli",
-      "opencode-app-cli",
-      "pi-sdk",
-    ]);
-    expect(backends.find((backend) => backend.id === "acp-stdio")).toMatchObject({
-      runtimeBridgeId: "acp-stdio",
-      sdk: "acp",
-      executionMode: "acp",
-      transport: "acp",
-      capabilities: expect.objectContaining({
-        kind: "acp",
-        supports_session_resume: true,
-        supports_mcp: false,
-        tool_policy: "allow_all_only",
-      }),
-    });
-    expect(backends.find((backend) => backend.id === "claude-sdk")).toMatchObject({
-      runtimeBridgeId: "claude",
-      sdk: "claude",
-      executionMode: "sdk",
+
+    expect(backends).toHaveLength(1);
+    expect(backends[0]).toMatchObject({
+      id: "pi-sdk",
+      runtimeBridgeId: "pi",
+      sdk: "pi",
       transport: "sdk",
-      capabilities: expect.objectContaining({ tool_policy: "projected" }),
-    });
-    expect(backends.find((backend) => backend.id === "codex-app-cli")?.capabilities).toMatchObject({
-      kind: "codex-app",
-      supports_mcp: true,
-      tool_policy: "allow_all_only",
-    });
-    expect(backends.find((backend) => backend.id === "opencode-app-cli")).toMatchObject({
-      runtimeBridgeId: "opencode-app",
-      sdk: "opencode",
-      executionMode: "cli",
-      transport: "cli",
       acceptsProviderIds: true,
       capabilities: expect.objectContaining({
-        kind: "opencode-app",
-        supports_mcp: false,
-        supports_session_resume: false,
-        tool_policy: "allow_all_only",
+        kind: "pi",
+        supports_session_resume: true,
+        supports_live_input: true,
+        supports_mcp_apps: true,
+        tool_policy: "projected",
       }),
     });
-    expect(backends.find((backend) => backend.id === "pi-sdk")).toMatchObject({
-      acceptsProviderIds: true,
-      capabilities: expect.objectContaining({ tool_policy: "projected" }),
-    });
+    expect(runtimeBackendForModel(model)).toBe(backends[0]);
+    expect(Object.isFrozen(backends)).toBe(true);
+    expect(Object.isFrozen(backends[0])).toBe(true);
+    expect(Object.isFrozen(backends[0].capabilities)).toBe(true);
   });
 
-  it("resolves runtime backend support by model and execution mode", () => {
-    expect(runtimeBackendForModel(parseMonoRuntimeModelReference("acp:personal-agent")).id).toBe("acp-stdio");
-    expect(runtimeBackendForModel(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6")).id).toBe("claude-sdk");
-    expect(runtimeBackendForModel(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli").id).toBe("claude-code-cli");
-    expect(runtimeBackendForModel(parseMonoRuntimeModelReference("codex:gpt-5.5")).id).toBe("codex-app-cli");
-    expect(runtimeBackendForModel(parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1")).id).toBe("opencode-app-cli");
-    expect(runtimeBackendForModel(parseMonoRuntimeModelReference("pi:github-copilot:gpt-4.1")).id).toBe("pi-sdk");
-  });
-
-  it("describes OpenCode support through the registered CLI bridge", () => {
-    expect(describeMonoRuntimeSupport(
-      parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1"),
-    )).toMatchObject({
-      executionMode: "cli",
+  it("describes every parsed model through the sole Pi backend", () => {
+    const model = parseMonoRuntimeModelReference("pi:ollama:qwen3:8b");
+    expect(describeMonoRuntimeSupport(model)).toEqual({
+      model,
       compatible: true,
-      backend: {
-        id: "opencode-app-cli",
-        runtimeBridgeId: "opencode-app",
-      },
+      backend: runtimeBackendForModel(model),
     });
-  });
-
-  it("describes incompatible runtime support without hiding the reason", () => {
-    expect(describeMonoRuntimeSupport(parseMonoRuntimeModelReference("codex:gpt-5.5"), "sdk")).toMatchObject({
-      compatible: false,
-      incompatibilityReason: "Codex CLI requires CLI execution mode.",
-    });
-    expect(describeMonoRuntimeSupport(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"), "cli")).toMatchObject({
-      compatible: false,
-      incompatibilityReason: "Provider `openai-codex` only runs under SDK execution mode; use codex:<model> for Codex CLI.",
-    });
-    expect(() => runtimeBackendForModel(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"), "cli"))
-      .toThrow(RuntimeAdapterError);
   });
 });
 
-describe("runtime adapter Pi auth exports", () => {
+describe("runtime adapter Pi exports and capabilities", () => {
   it("re-exports the Pi OAuth API key resolver factory", () => {
     expect(typeof createPiOAuthApiKeyResolver).toBe("function");
   });
-});
 
-describe("runtime adapter provider sessions", () => {
-  it("reports MCP Apps support only for the host-routed Pi runtime", () => {
-    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"))).toBe(true);
-    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "sdk")).toBe(false);
-    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli")).toBe(false);
-    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("codex:gpt-5.5"), "cli")).toBe(false);
-    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1"), "cli")).toBe(false);
-    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("acp:personal-agent"), "acp")).toBe(false);
+  it("reads constant capabilities from the sole backend", () => {
+    expect(monoRuntimeSupportsMcpApps()).toBe(true);
+    expect(monoRuntimeSupportsLiveInput()).toBe(true);
+    expect(monoRuntimeSupportsSessionResume()).toBe(true);
   });
 
-  it("reports live-input support from the selected runtime backend", () => {
-    expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "sdk")).toBe(true);
-    expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli")).toBe(false);
-    expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("codex:gpt-5.5"), "cli")).toBe(true);
-    expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"))).toBe(true);
-    expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1"), "cli")).toBe(false);
-  });
-
-  it("reports session resume support for every backend", () => {
-    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "sdk")).toBe(true);
-    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli")).toBe(true);
-    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("codex:gpt-5.5"), "cli")).toBe(true);
-    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"))).toBe(true);
-  });
-
-  it("resolves the default execution mode when omitted", () => {
-    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"))).toBe(true);
-    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("codex:gpt-5.5"))).toBe(true);
-  });
-
-  it("exposes session sync, strict refresh, disposal, and invalidation on the mono runtime", async () => {
+  it("exposes session lifecycle on the mono runtime", async () => {
     const runtime = createMonoRuntime();
     expect(typeof runtime.syncSession).toBe("function");
     expect(typeof runtime.refreshSession).toBe("function");
@@ -215,75 +96,12 @@ describe("runtime adapter provider sessions", () => {
   });
 });
 
-describe("runtime adapter ACP run contracts", () => {
-  it("rejects request-scoped MCP servers before resolving a direct ACP profile", async () => {
-    const resolveAcpProfile = vi.fn();
-    const runtime = createMonoRuntime();
-
-    await expect(runtime.run("SYSTEM", {
-      model: parseMonoRuntimeModelReference("acp:personal-agent"),
-      messages: [{ role: "user", content: "hi" }],
-      abortSignal: new AbortController().signal,
-      resolveAcpProfile,
-      mcpServers: { filesystem: { command: "/absolute/mcp-server" } },
-    })).rejects.toMatchObject({
-      name: "RuntimeAdapterError",
-      code: "invalid_runtime_options",
-      details: expect.objectContaining({ option: "mcpServers" }),
-    });
-    expect(resolveAcpProfile).not.toHaveBeenCalled();
-  });
-
-  it("capability-skips an ACP-only route chain carrying request-scoped MCP servers", async () => {
-    const resolveAcpProfile = vi.fn();
-    const resolveAttempt = vi.fn(() => ({ options: { resolveAcpProfile } }));
-    const runtime = createMonoRuntime({
-      fallbackChain: [{ model: parseMonoRuntimeModelReference("acp:personal-agent") }],
-      resolveAttempt,
-    });
-
-    const result = await runtime.run("SYSTEM", {
-      model: parseMonoRuntimeModelReference("acp:personal-agent"),
-      messages: [{ role: "user", content: "hi" }],
-      abortSignal: new AbortController().signal,
-      mcpServers: { filesystem: { command: "/absolute/mcp-server" } },
-    });
-
-    expect(result.failureKind).toBe("skipped_capability_mismatch");
-    expect(resolveAttempt).not.toHaveBeenCalled();
-    expect(resolveAcpProfile).not.toHaveBeenCalled();
-  });
-});
-
-describe("runtime adapter OpenCode routing", () => {
-  it("routes an omitted execution mode to OpenCode CLI through createMonoRuntime", async () => {
-    const runtime = createMonoRuntime();
-    const result = await runtime.run("SYSTEM", {
-      model: parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1"),
-      messages: [{ role: "user", content: "hi" }],
-      abortSignal: new AbortController().signal,
-      // The direct OpenCode bridge deliberately rejects this policy before it
-      // starts a server, making the assertion deterministic while still proving
-      // the adapter selected and invoked the real registered bridge.
-      allowedTools: [],
-      disallowedTools: [],
-    });
-
-    expect(result).toMatchObject({
-      sdk: "opencode",
-      model: "opencode:github-copilot:gpt-4.1",
-      failureKind: "skipped_capability_mismatch",
-      diagnostics: { opencode_error_code: "opencode_tool_policy_unsupported" },
-    });
-  });
-});
-
 describe("runtime adapter fallback chain", () => {
-  it("builds a router-backed runtime that still exposes session lifecycle", async () => {
+  it("builds a Pi router that still exposes session lifecycle", async () => {
     const runtime = createMonoRuntime({
       fallbackChain: [
-        { model: parseMonoRuntimeModelReference("claude:claude-sonnet-4-6") },
         { model: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5") },
+        { model: parseMonoRuntimeModelReference("pi:anthropic:claude-sonnet-4-6") },
       ],
     });
     expect(typeof runtime.run).toBe("function");
@@ -300,36 +118,11 @@ describe("runtime adapter fallback chain", () => {
     expect(() => createMonoRuntime({ fallbackChain: [] })).toThrow(RuntimeAdapterError);
   });
 
-  it("rejects chain entries with incompatible execution modes at construction", () => {
-    expect(() =>
-      createMonoRuntime({
-        fallbackChain: [
-          {
-            model: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"),
-            executionMode: "cli",
-          },
-        ],
-      }),
-    ).toThrow(RuntimeAdapterError);
-  });
-
-  it.each([
-    ["direct Codex primary", ["codex:gpt-5.6-terra", "pi:openai-codex:gpt-5.5"]],
-    ["direct Codex fallback", ["claude:claude-sonnet-4-6", "codex:gpt-5.6-terra"]],
-  ])("accepts a mixed runtime family with a %s under an explicit route contract", async (_label, references) => {
-    const runtime = createMonoRuntime({
-      fallbackChain: references.map((reference) => ({
-        model: parseMonoRuntimeModelReference(reference),
-      })),
-      routeSafety: "per-route-native",
-    });
-    expect(typeof runtime.run).toBe("function");
-    await expect(runtime.disposeAllSessions?.()).resolves.toBeUndefined();
-  });
-
-  it("forwards route safety, the actual attempted model, and exact effort tri-state", async () => {
+  it("forwards the actual attempted model and exact effort tri-state", async () => {
     const attempts: Array<{ model: string; effort: unknown }> = [];
+    const configureTools = vi.fn();
     const fakeRuntime = {
+      configureTools,
       async run(_systemPrompt: string, options: { model: { model: string }; effort?: string }) {
         attempts.push({
           model: options.model.model,
@@ -338,26 +131,27 @@ describe("runtime adapter fallback chain", () => {
         return { text: "ok", events: [], cancelled: false, usage: {} };
       },
     };
+    const model = parseMonoRuntimeModelReference("pi:anthropic:claude-sonnet-4-6");
     const runtime = createMonoRuntime({
-      fallbackChain: [
-        { model: parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), effort: null },
-      ],
-      routeSafety: "per-route-native",
+      fallbackChain: [{ model, effort: null }],
       resolveAttempt: (context) => {
-        expect(context).toMatchObject({
+        expect(context).toEqual({
           attemptIndex: 0,
-          routeSafety: "per-route-native",
-          model: { model: "claude-sonnet-4-6" },
+          retryIndex: 0,
+          model,
         });
         return { runtime: fakeRuntime as never, options: { privateSentinel: "not-telemetry" } };
       },
     });
+
     const result = await runtime.run("SYSTEM", {
-      model: parseMonoRuntimeModelReference("claude:ignored-by-chain"),
+      model: parseMonoRuntimeModelReference("pi:openai-codex:ignored-by-chain"),
       effort: "high",
       messages: [{ role: "user", content: "hi" }],
       abortSignal: new AbortController().signal,
     });
+
+    expect(configureTools).toHaveBeenCalledOnce();
     expect(attempts).toEqual([{
       model: "claude-sonnet-4-6",
       effort: "provider-default",
@@ -365,26 +159,13 @@ describe("runtime adapter fallback chain", () => {
     expect(JSON.stringify(result)).not.toContain("privateSentinel");
   });
 
-  it("rejects invalid route safety and malformed effort values", () => {
-    expect(() => createMonoRuntime({ routeSafety: "unsafe" as never })).toThrow(RuntimeAdapterError);
+  it("rejects malformed effort values", () => {
     expect(() => createMonoRuntime({
       fallbackChain: [{
-        model: parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"),
+        model: parseMonoRuntimeModelReference("pi:anthropic:claude-sonnet-4-6"),
         effort: " high",
       }],
     })).toThrow(RuntimeAdapterError);
-  });
-
-  it("accepts an all-direct-Codex fallback chain", async () => {
-    const runtime = createMonoRuntime({
-      fallbackChain: [
-        { model: parseMonoRuntimeModelReference("codex:gpt-5.6-terra") },
-        { model: parseMonoRuntimeModelReference("codex:gpt-5.5") },
-      ],
-    });
-
-    expect(typeof runtime.run).toBe("function");
-    await expect(runtime.disposeAllSessions?.()).resolves.toBeUndefined();
   });
 
   it("rejects chain entries with unparsed model references", () => {
@@ -396,7 +177,7 @@ describe("runtime adapter fallback chain", () => {
   });
 
   it("rejects non-object chain entries with a typed error", () => {
-    for (const entry of [null, undefined, "claude:claude-sonnet-4-6", ["claude"]]) {
+    for (const entry of [null, undefined, "pi:anthropic:claude-sonnet-4-6", ["pi"]]) {
       expect(() =>
         createMonoRuntime({
           fallbackChain: [entry as never],
@@ -541,9 +322,10 @@ describe("runtime adapter local providers", () => {
     });
     expect(gateway.isPrivateProvider).toBe(false);
   });
+});
 
 describe("createMonoRuntime same-model retry options", () => {
-  const model = { sdk: "claude", model: "claude-sonnet-4-6", reference: "claude:claude-sonnet-4-6" } as const;
+  const model = { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6", reference: "pi:anthropic:claude-sonnet-4-6" } as const;
 
   it.each([0, 11, 1.5, "2" as unknown as number])("rejects a fallback attempts value of %s", (attempts) => {
     expect(() => createMonoRuntime({ fallbackChain: [{ model, attempts }] }))
@@ -564,5 +346,4 @@ describe("createMonoRuntime same-model retry options", () => {
       retry: { [key]: value } as Record<string, number>,
     })).toThrow(/must be a non-negative finite number/u);
   });
-});
 });

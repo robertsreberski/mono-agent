@@ -77,24 +77,23 @@ describe("createRuntime", () => {
     await expect(runtime.run("sys", {})).rejects.toThrow(/requires options.model/);
   });
 
-  it("run() resolves the bridge with the supplied model and executionMode", async () => {
+  it("run() resolves the bridge with the supplied model", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime();
-    const model = { sdk: "claude", model: "claude-sonnet-4-6" };
-    await runtime.run("sys", { model, executionMode: "cli", liveInput: false });
+    const model = { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" };
+    await runtime.run("sys", { model, liveInput: false });
     expect(resolveRuntimeBridgeMock).toHaveBeenCalledWith(model, {
-      executionMode: "cli",
       liveInput: false,
     });
   });
 
-  it("run() defaults executionMode to 'sdk' and liveInput to false when omitted", async () => {
+  it("run() defaults liveInput to false when omitted", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime();
-    await runtime.run("sys", { model: { sdk: "claude", model: "x" } });
+    await runtime.run("sys", { model: { sdk: "pi", provider: "anthropic", model: "x" } });
     expect(resolveRuntimeBridgeMock).toHaveBeenCalledWith(
-      { sdk: "claude", model: "x" },
-      { executionMode: "sdk", liveInput: false },
+      { sdk: "pi", provider: "anthropic", model: "x" },
+      { liveInput: false },
     );
   });
 
@@ -120,7 +119,7 @@ describe("createRuntime", () => {
     };
 
     await runtime.run("sys", {
-      model: { sdk: "claude", model: "x" },
+      model: { sdk: "pi", provider: "anthropic", model: "x" },
       liveInput,
       onEvent: (event) => events.push(event),
     });
@@ -148,7 +147,7 @@ describe("createRuntime", () => {
       resolvePiApiKey,
     });
     await runtime.run("sys", {
-      model: { sdk: "claude", model: "x" },
+      model: { sdk: "pi", provider: "anthropic", model: "x" },
       cwd: "/work",
     });
     expect(executeMock).toHaveBeenCalledTimes(1);
@@ -156,7 +155,6 @@ describe("createRuntime", () => {
     expect(systemPrompt).toBe("sys");
     expect(options).toMatchObject({
       cwd: "/work",
-      executionMode: "sdk",
       resolveCustomPricing,
       persistArtifact,
       onCompactionRecorded,
@@ -170,7 +168,7 @@ describe("createRuntime", () => {
     const callResolver = () => "call";
     const runtime = createRuntime({ resolveCustomPricing: hostResolver });
     await runtime.run("sys", {
-      model: { sdk: "claude", model: "x" },
+      model: { sdk: "pi", provider: "anthropic", model: "x" },
       resolveCustomPricing: callResolver,
     });
     expect(executeMock.mock.calls[0][1].resolveCustomPricing).toBe(callResolver);
