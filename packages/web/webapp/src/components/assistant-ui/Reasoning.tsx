@@ -2,7 +2,9 @@
 
 import { Collapsible } from "@base-ui/react/collapsible";
 import {
+  type GroupByContext,
   groupPartByType,
+  type PartState,
   type ReasoningMessagePartComponent,
   useScrollLock,
 } from "@assistant-ui/react";
@@ -23,6 +25,7 @@ import {
 import { ActivityRow } from "../ActivityRow";
 import { formatToolDuration } from "../duration";
 import { Icon } from "../Icon";
+import { isReplyImage } from "../reply-image";
 
 const ANIMATION_DURATION_MS = 200;
 
@@ -50,10 +53,32 @@ export const ACTIVITY_DATA_PARTS: ReadonlySet<string> = new Set(
   ["context-compaction", "subagent", "note", "tool-cluster"],
 );
 
-export const ACTIVITY_GROUP_BY: typeof ACTIVITY_GROUP_BY_TYPE = (part, context) =>
-  part.type === "data" && ACTIVITY_DATA_PARTS.has(part.name)
+/**
+ * Adjacent images the agent published belong in one row rather than stacked down
+ * the message, so a set of generated pictures reads as a set.
+ *
+ * Keyed on the declared media type alone. Whether an image's bytes actually
+ * resolve is asynchronous client state that grouping cannot see, so a part whose
+ * source never arrives is grouped and then renders its file card; the row gives
+ * such a child its own line instead of letting it distort the strip.
+ */
+const isGroupableReplyImage = (part: { readonly name: string; readonly data: unknown }): boolean =>
+  part.name === "reply-attachment"
+  && isReplyImage((part.data as { readonly mediaType?: unknown } | undefined)?.mediaType);
+
+/** Both bands a turn can coalesce into, and the key union `GroupedParts` infers from. */
+export type ActivityGroupKey = "group-activity" | "group-reply-images";
+
+export const ACTIVITY_GROUP_BY = (
+  part: PartState,
+  context?: GroupByContext,
+): readonly ActivityGroupKey[] | null => {
+  if (part.type !== "data") return ACTIVITY_GROUP_BY_TYPE(part, context);
+  if (isGroupableReplyImage(part)) return ["group-reply-images"] as const;
+  return ACTIVITY_DATA_PARTS.has(part.name)
     ? ["group-activity"] as const
     : ACTIVITY_GROUP_BY_TYPE(part, context);
+};
 
 export interface ReasoningRootProps extends Omit<
   Collapsible.Root.Props,
