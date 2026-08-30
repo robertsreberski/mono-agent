@@ -203,7 +203,7 @@ function positiveInt(value, fallback) {
  * Build the `Agent` tool, or null when subagents are unavailable for this run.
  *
  * @param {RuntimeSubagentsOptions|null|undefined} subagents
- * @param {{model?: *, executionMode?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, onEvent?: (event: *) => void}} [context]
+ * @param {{model?: *, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, onEvent?: (event: *) => void}} [context]
  * @returns {*|null}
  */
 export function createAgentTool(subagents, context = {}) {
@@ -398,7 +398,6 @@ export function createAgentTool(subagents, context = {}) {
           prompt: params.prompt,
           definition: profile,
           ...(context.model === undefined ? {} : { model: context.model }),
-          ...(context.executionMode === undefined ? {} : { executionMode: context.executionMode }),
           ...(context.cwd === undefined ? {} : { cwd: context.cwd }),
           ...(context.parentRunId === undefined ? {} : { parentRunId: context.parentRunId }),
           // Inherited, never widened: a profile cannot loosen confinement.

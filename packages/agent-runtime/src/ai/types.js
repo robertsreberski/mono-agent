@@ -29,7 +29,7 @@
  * @property {string} [reference]         Original canonical model reference; always set by
  *                                         parseRuntimeModelReference, but router.js's chain
  *                                         shorthand accepts bare {sdk, model} refs without one.
- * @property {string} [provider]          Pi/OpenCode provider id when sdk === "pi" | "opencode".
+ * @property {string} [provider]          Pi provider id when sdk === "pi".
  */
 
 /**
@@ -132,32 +132,6 @@
  * @returns {Promise<RuntimeToolLifecyclePersistence|undefined>}
  */
 
-/** @typedef {"uniform"|"per-route-native"} RuntimeRouteSafetyMode */
-
-/**
- * @typedef {"mono-agent-monotonic"|"disabled"|"mono-agent-srt"|"mono-agent-srt-unsafe-host-fallback"|"provider-native"|"codex-native"|"unsupported"} RuntimeRouteSandboxContract
- * Fixed telemetry vocabulary for a route's sandbox posture. The
- * `mono-agent-srt-unsafe-host-fallback` describes a policy that prefers SRT but
- * explicitly permits host execution if unavailable; it does not claim which
- * branch ran for a particular command.
- */
-
-/**
- * @typedef {"mono-agent-monotonic"|"mono-agent-policy"|"provider-representable"|"exact-allow-all"|"unsupported"} RuntimeRouteToolsContract
- * `exact-allow-all` is a stable telemetry token. It describes an effective
- * unrestricted contract, including mixed allowlists that contain `"*"`;
- * it does not require the literal one-element array `["*"]`.
- */
-
-/**
- * @typedef {Object} RuntimeRouteSafetyContract
- * Bounded, credential-free description of the sandbox/tool contract applied
- * to one fallback route.
- * @property {RuntimeRouteSafetyMode} mode
- * @property {RuntimeRouteSandboxContract} sandbox
- * @property {RuntimeRouteToolsContract} tools
- */
-
 /**
  * @typedef {Object} RuntimeObserver
  * Per-call or host-level observer merged by createObserverHub (ai/observer.js).
@@ -220,7 +194,6 @@
  * @typedef {Object} RuntimeRunOptions
  * The options object a host passes to `createRuntime(host).run(systemPrompt, options)`.
  * @property {RuntimeModelRef} model                     Resolved model reference; see parseRuntimeModelReference.
- * @property {"sdk"|"cli"|"acp"} [executionMode]       "sdk" (default), "cli", or "acp"; selects which bridge variant handles the model.
  * @property {string} [sessionId]                         Host conversation/session key for resumable bridges.
  * @property {string} [providerSessionId]                 Provider-owned resume id for resumable bridges.
  * @property {boolean} [sessionKeepAlive]                 Keep resumable provider state alive after the turn.
@@ -241,9 +214,8 @@
  * @property {string} [permissionMode]
  * @property {number} [maxTurns]
  * @property {Object} [outputSchema]
- * @property {{teammates?: ReadonlyArray<unknown>}} [nativeSubagents] Legacy router-only input.
- *   No surviving bridge consumes native teammate definitions; the router still reads their
- *   presence while its capability-selection surface awaits the routing migration.
+ * @property {{teammates?: ReadonlyArray<unknown>}} [nativeSubagents] Legacy compatibility input.
+ *   No surviving bridge consumes native teammate definitions.
  * @property {string} [runArtifactDir]
  * @property {AbortSignal} [abortSignal]
  * @property {{schema: 1, values: Readonly<Record<string, string>>, pathPrepend?: readonly string[]}} [toolEnvironment] Host-only environment for Bash, Exec, and nested subagents in this run.
@@ -369,8 +341,7 @@
  * @property {Array<Object>} [runtimeWarnings]
  * @property {Object} [diagnostics]
  * @property {Object} [capabilitiesUsed]
- * @property {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null), retryableSubkind?: (string|null), retryIndex?: number, requirements?: Object, routeSafety?: RuntimeRouteSafetyMode, safetyContract?: RuntimeRouteSafetyContract}>} [failoverHistory] Set by createRouterRuntime (ai/runtime/router.js) on every failed/skipped attempt.
- * @property {Array<{attemptIndex: number, model: RuntimeModelRef, routeSafety: RuntimeRouteSafetyMode, safetyContract: RuntimeRouteSafetyContract, status: string}>} [routeSafetyHistory] Bounded route-safety audit emitted by createRouterRuntime.
+ * @property {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null), retryableSubkind?: (string|null), retryIndex?: number, requirements?: Object}>} [failoverHistory] Set by createRouterRuntime (ai/runtime/router.js) on every failed/skipped attempt.
  */
 
 /**

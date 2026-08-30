@@ -17,13 +17,6 @@ const { passthroughSandbox } = await import("../../agent/sandbox-seam.js");
 const { resetToolRuntime } = await import("../../agent/tools/shared/runtime-context.js");
 const { createFakeSandbox } = await import("../helpers/fake-sandbox.js");
 
-const NON_PI_PROVIDER_ROUTES = [
-  ["Claude", { sdk: "claude", model: "claude-sonnet-4-6" }],
-  ["Codex", { sdk: "codex", model: "gpt-5.6-sol" }],
-  ["OpenCode", { sdk: "opencode", provider: "github-copilot", model: "gpt-4.1" }],
-  ["ACP", { sdk: "acp", model: "worklab" }],
-];
-
 beforeEach(() => {
   executeMock.mockReset();
   resolveRuntimeBridgeMock.mockReset();
@@ -44,8 +37,8 @@ describe("createRouterRuntime — basic", () => {
     executeMock.mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "claude", model: "claude-opus-4-7" },
-        { sdk: "claude", model: "claude-sonnet-4-6" },
+        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
+        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -77,8 +70,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
     const events = [];
     const router = createRouterRuntime({
       chain: [
-        { sdk: "claude", model: "claude-opus-4-7" },
-        { sdk: "claude", model: "claude-sonnet-4-6" },
+        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
+        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
       ],
     });
     const result = await router.run("sys", { messages: [], onEvent: (e) => events.push(e) });
@@ -92,16 +85,56 @@ describe("createRouterRuntime — fallback on retryable", () => {
     expect(failoverEvents).toEqual([
       {
         type: "provider_failover_started",
-        from: "claude:claude-opus-4-7",
-        to: "claude:claude-sonnet-4-6",
+        from: "pi:anthropic:claude-opus-4-7",
+        to: "pi:anthropic:claude-sonnet-4-6",
         attemptIndex: 1,
         reason: "overloaded",
       },
       {
         type: "provider_failover_completed",
         attemptIndex: 1,
-        model: "claude:claude-sonnet-4-6",
+        model: "pi:anthropic:claude-sonnet-4-6",
       },
+    ]);
+  });
+
+  it("advances across a mixed-provider Pi chain", async () => {
+    executeMock
+      .mockResolvedValueOnce({
+        text: null,
+        error: "Connection error.",
+        failureKind: "provider_unavailable",
+        events: [],
+        cancelled: false,
+      })
+      .mockResolvedValueOnce({
+        text: null,
+        error: "Anthropic API overloaded",
+        failureKind: "provider_unavailable",
+        events: [],
+        cancelled: false,
+      })
+      .mockResolvedValueOnce({ text: "local recovery", events: [], failureKind: null });
+
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
+        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
+        { sdk: "pi", provider: "ollama", model: "qwen3:8b" },
+      ],
+    });
+
+    const result = await router.run("sys", { messages: [] });
+
+    expect(result.text).toBe("local recovery");
+    expect(executeMock.mock.calls.map((call) => call[1].model.provider)).toEqual([
+      "openai-codex",
+      "anthropic",
+      "ollama",
+    ]);
+    expect(result.failoverHistory.map((attempt) => attempt.model.provider)).toEqual([
+      "openai-codex",
+      "anthropic",
     ]);
   });
 
@@ -147,8 +180,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
     };
     const router = createRouterRuntime({
       chain: [
-        { sdk: "claude", model: "claude-opus-4-7" },
-        { sdk: "claude", model: "claude-sonnet-4-6" },
+        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
+        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
       ],
     });
 
@@ -188,8 +221,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
 
     const router = createRouterRuntime({
       chain: [
-        { sdk: "claude", model: "claude-opus-4-7" },
-        { sdk: "claude", model: "claude-sonnet-4-6" },
+        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
+        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -224,8 +257,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
 
     const router = createRouterRuntime({
       chain: [
-        { sdk: "claude", model: "claude-opus-4-7" },
-        { sdk: "claude", model: "claude-sonnet-4-6" },
+        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
+        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
       ],
     });
     const result = await router.run("Original system prompt", { messages: [] });
@@ -286,8 +319,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
     });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "claude", model: "claude-opus-4-7" },
-        { sdk: "claude", model: "claude-sonnet-4-6" },
+        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
+        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -306,8 +339,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
     });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "claude", model: "claude-opus-4-7" },
-        { sdk: "claude", model: "claude-sonnet-4-6" },
+        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
+        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -345,7 +378,7 @@ describe("createRouterRuntime — fallback on retryable", () => {
     expect(executeMock).toHaveBeenCalledTimes(2);
   });
 
-  it("fails over from a direct OpenCode provider-auth result to the next route", async () => {
+  it("fails over between Pi providers after a provider-auth result", async () => {
     executeMock
       .mockResolvedValueOnce({
         text: null,
@@ -361,7 +394,7 @@ describe("createRouterRuntime — fallback on retryable", () => {
       });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "opencode", provider: "github-copilot", model: "gpt-5.1" },
+        { sdk: "pi", provider: "github-copilot", model: "gpt-5.1" },
         { sdk: "pi", provider: "opencode-go", model: "kimi-k2.6" },
       ],
     });
@@ -371,14 +404,14 @@ describe("createRouterRuntime — fallback on retryable", () => {
     expect(result.text).toBe("recovered through Pi");
     expect(result.failoverHistory).toEqual([
       expect.objectContaining({
-        model: expect.objectContaining({ sdk: "opencode", provider: "github-copilot" }),
+        model: expect.objectContaining({ sdk: "pi", provider: "github-copilot" }),
         failureKind: "provider_auth",
       }),
     ]);
     expect(executeMock).toHaveBeenCalledTimes(2);
   });
 
-  it("strips foreign session state before a non-resumable OpenCode fallback", async () => {
+  it("strips session state from every entry in a multi-provider Pi chain", async () => {
     executeMock
       .mockResolvedValueOnce({
         text: null,
@@ -391,7 +424,7 @@ describe("createRouterRuntime — fallback on retryable", () => {
     const router = createRouterRuntime({
       chain: [
         { sdk: "pi", provider: "openai-codex", model: "gpt-5.5" },
-        { sdk: "opencode", provider: "github-copilot", model: "gpt-5.1" },
+        { sdk: "pi", provider: "github-copilot", model: "gpt-5.1" },
       ],
     });
 
@@ -475,8 +508,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
     });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "claude", model: "claude-opus-4-7" },
-        { sdk: "claude", model: "claude-sonnet-4-6" },
+        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
+        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -506,8 +539,8 @@ describe("createRouterRuntime — transcript replay on fallback", () => {
     });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "claude", model: "claude-opus-4-7" },
-        { sdk: "claude", model: "claude-sonnet-4-6" },
+        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
+        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
       ],
     });
     await router.run("Original system prompt", { messages: [] });
@@ -518,7 +551,7 @@ describe("createRouterRuntime — transcript replay on fallback", () => {
     expect(callPrompts[1]).toContain("Original system prompt");
   });
 
-  it("does not duplicate a pending snapshot across a bridge mismatch", async () => {
+  it("does not duplicate a pending snapshot across a capability mismatch", async () => {
     const prompts = [];
     executeMock.mockImplementationOnce(async (prompt) => {
       prompts.push(prompt);
@@ -544,8 +577,8 @@ describe("createRouterRuntime — transcript replay on fallback", () => {
     });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "claude", model: "first" },
-        { sdk: "claude", model: "mismatch" },
+        { sdk: "pi", provider: "openai-codex", model: "first" },
+        { sdk: "pi", provider: "anthropic", model: "mismatch" },
         { sdk: "pi", provider: "openai", model: "success" },
       ],
     });
@@ -565,8 +598,8 @@ describe("createRouterRuntime — capability filtering", () => {
     executeMock.mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { model: { sdk: "claude", model: "x" }, requires: { kind: "does-not-exist" } },
-        { sdk: "pi", model: "openai-gpt-4" },
+        { model: { sdk: "pi", provider: "anthropic", model: "x" }, requires: { kind: "does-not-exist" } },
+        { sdk: "pi", provider: "openai", model: "openai-gpt-4" },
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -578,8 +611,8 @@ describe("createRouterRuntime — capability filtering", () => {
   it("does not report provider availability exhaustion when no provider entry executed", async () => {
     const router = createRouterRuntime({
       chain: [
-        { model: { sdk: "claude", model: "x" }, requires: { kind: "does-not-exist" } },
-        { model: { sdk: "pi", model: "openai-gpt-4" }, requires: { kind: "also-missing" } },
+        { model: { sdk: "pi", provider: "anthropic", model: "x" }, requires: { kind: "does-not-exist" } },
+        { model: { sdk: "pi", provider: "openai", model: "openai-gpt-4" }, requires: { kind: "also-missing" } },
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -601,7 +634,7 @@ describe("createRouterRuntime — capability filtering", () => {
       .mockResolvedValueOnce({ text: "recovered", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "claude", model: "first" },
+        { sdk: "pi", provider: "anthropic", model: "first" },
         { sdk: "pi", provider: "openai", model: "second" },
       ],
     });
@@ -614,9 +647,7 @@ describe("createRouterRuntime — capability filtering", () => {
     expect(executeMock.mock.calls[1][1].diagnosticsSeed).toBeUndefined();
   });
 
-  it("still attempts a pi fallback when no native subagents are requested (F1 negative)", async () => {
-    // Guards against over-restricting normal fallback: with no teammates, the pi
-    // entry is NOT capability-filtered and the fallback succeeds.
+  it("still attempts a Pi fallback when request options add no missing capability", async () => {
     executeMock
       .mockResolvedValueOnce({
         text: null,
@@ -628,8 +659,8 @@ describe("createRouterRuntime — capability filtering", () => {
       .mockResolvedValueOnce({ text: "recovered", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "claude", model: "claude-opus-4-7" },
-        { sdk: "pi", model: "openai-gpt-4" },
+        { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" },
+        { sdk: "pi", provider: "openai", model: "openai-gpt-4" },
       ],
     });
     const result = await router.run("sys", { messages: [] });
@@ -645,12 +676,12 @@ describe("createRouterRuntime — chain entry shorthand", () => {
   it("accepts bare ModelRef entries", async () => {
     executeMock.mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
     const router = createRouterRuntime({
-      chain: [{ sdk: "claude", model: "x" }],
+      chain: [{ sdk: "pi", provider: "anthropic", model: "x" }],
     });
     const result = await router.run("sys", { messages: [] });
     expect(result.text).toBe("ok");
     const call = executeMock.mock.calls[0][1];
-    expect(call.model).toEqual({ sdk: "claude", model: "x" });
+    expect(call.model).toEqual({ sdk: "pi", provider: "anthropic", model: "x" });
   });
 });
 
@@ -662,8 +693,8 @@ describe("createRouterRuntime — production fallback contracts", () => {
       .mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { model: { sdk: "claude", model: "inherit" } },
-        { model: { sdk: "codex", model: "provider-default" }, effort: null },
+        { model: { sdk: "pi", provider: "anthropic", model: "inherit" } },
+        { model: { sdk: "pi", provider: "ollama", model: "provider-default" }, effort: null },
         { model: { sdk: "pi", provider: "openai", model: "fixed" }, effort: "ultra" },
       ],
     });
@@ -681,8 +712,8 @@ describe("createRouterRuntime — production fallback contracts", () => {
       .mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "claude", model: "primary" },
-        { sdk: "claude", model: "fallback" },
+        { sdk: "pi", provider: "openai-codex", model: "primary" },
+        { sdk: "pi", provider: "anthropic", model: "fallback" },
       ],
     });
 
@@ -738,11 +769,11 @@ describe("createRouterRuntime — production fallback contracts", () => {
       .mockResolvedValueOnce({ text: "fallback ok", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "codex", model: "gpt-5.5" },
-        { sdk: "claude", model: "claude-sonnet-4-6" },
+        { sdk: "pi", provider: "openai-codex", model: "gpt-5.5" },
+        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
       ],
       resolveAttempt: ({ model }) => ({
-        policyOptions: model.sdk === "codex"
+        policyOptions: model.provider === "openai-codex"
           ? { allowedTools: ["*"], disallowedTools: [], permissionMode: "plan" }
           : { allowedTools: ["Read", "Agent"], disallowedTools: ["Write"], permissionMode: undefined },
       }),
@@ -767,27 +798,6 @@ describe("createRouterRuntime — production fallback contracts", () => {
     expect(executeMock.mock.calls[1][1]).not.toHaveProperty("permissionMode");
   });
 
-  it("rejects resolver replacement of logical Codex sandbox network access", async () => {
-    const router = createRouterRuntime({
-      chain: [{ sdk: "codex", model: "gpt-5.6-sol" }],
-      resolveAttempt: () => ({
-        options: { codexSandboxNetworkAccess: false },
-      }),
-    });
-
-    const result = await router.run("sys", {
-      messages: [],
-      codexSandboxNetworkAccess: true,
-    });
-
-    expect(result.failureKind).toBe("safety_unavailable");
-    expect(result.error).toContain("cannot override codexSandboxNetworkAccess");
-    expect(result.routeSafetyHistory).toEqual([
-      expect.objectContaining({ status: "safety_unavailable" }),
-    ]);
-    expect(executeMock).not.toHaveBeenCalled();
-  });
-
   it("keeps primary run-level custom metadata for compatibility but scrubs every fallback without a resolver", async () => {
     executeMock
       .mockResolvedValueOnce({ text: null, error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false })
@@ -795,7 +805,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
     const router = createRouterRuntime({
       chain: [
         { sdk: "pi", provider: "local", model: "custom-primary" },
-        { sdk: "claude", model: "claude-sonnet-4-6" },
+        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
       ],
     });
     const primaryMetadata = {
@@ -814,671 +824,47 @@ describe("createRouterRuntime — production fallback contracts", () => {
     }
   });
 
-  it.each(NON_PI_PROVIDER_ROUTES)(
-    "rejects a protected-root %s route before resolver or provider invocation",
-    async (_label, model) => {
-      const resolveAttempt = vi.fn(() => ({
-        runtime: { run: vi.fn(async () => ({ text: "private state", events: [], failureKind: null })) },
-      }));
-      const protectedRoot = "/repo/.mono-agent/process-jobs/private-route-secret";
-      const router = createRouterRuntime({
-        routeSafety: "per-route-native",
-        chain: [model],
-        resolveAttempt,
-      });
-
-      const result = await router.run("sys", {
-        messages: [],
-        sandboxPolicy: { mode: "native", protectedRoots: [protectedRoot] },
-      });
-
-      expect(result).toMatchObject({
-        failureKind: "safety_unavailable",
-        error: "The route safety contract could not be established before execution.",
-        routeSafetyHistory: [expect.objectContaining({ status: "safety_unavailable" })],
-      });
-      expect(resolveAttempt).not.toHaveBeenCalled();
-      expect(executeMock).not.toHaveBeenCalled();
-      expect(JSON.stringify(result)).not.toContain(protectedRoot);
-    },
-  );
-
-  it.each(NON_PI_PROVIDER_ROUTES)(
-    "rejects a protected-root %s route under uniform safety before provider invocation",
-    async (_label, model) => {
-      const resolveAttempt = vi.fn(() => ({
-        runtime: { run: vi.fn(async () => ({ text: "private state", events: [], failureKind: null })) },
-      }));
-      const router = createRouterRuntime({
-        routeSafety: "uniform",
-        chain: [model],
-        resolveAttempt,
-      });
-
-      const result = await router.run("sys", {
-        messages: [],
-        sandboxPolicy: { mode: "native", protectedRoots: ["/repo/.mono-agent/process-jobs"] },
-      });
-
-      expect(result.failureKind).toBe("safety_unavailable");
-      expect(resolveAttempt).not.toHaveBeenCalled();
-      expect(executeMock).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each(NON_PI_PROVIDER_ROUTES)(
-    "preserves an ordinary %s provider-native route when protected roots are empty",
-    async (_label, model) => {
-      executeMock.mockResolvedValueOnce({ text: "ordinary route", events: [], failureKind: null });
-      const router = createRouterRuntime({
-        routeSafety: "per-route-native",
-        chain: [model],
-      });
-
-      const result = await router.run("sys", {
-        messages: [],
-        sandboxPolicy: { mode: "native", protectedRoots: [] },
-      });
-
-      expect(result.text).toBe("ordinary route");
-      expect(executeMock).toHaveBeenCalledOnce();
-      expect(executeMock.mock.calls[0][1].model).toEqual(model);
-    },
-  );
-
-  it.each(["host", "configureTools"])(
-    "detects protected roots supplied through the router %s context",
-    async (source) => {
-      const sandboxPolicy = { mode: "native", protectedRoots: ["/repo/.mono-agent/process-jobs"] };
-      const router = createRouterRuntime({
-        ...(source === "host" ? { host: { sandboxPolicy } } : {}),
-        routeSafety: "per-route-native",
-        chain: [{ sdk: "claude", model: "claude-sonnet-4-6" }],
-      });
-      if (source === "configureTools") router.configureTools({ sandboxPolicy });
-
-      const result = await router.run("sys", { messages: [] });
-
-      expect(result.failureKind).toBe("safety_unavailable");
-      expect(executeMock).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each(NON_PI_PROVIDER_ROUTES)(
-    "skips a protected-root %s primary and permits its Pi fallback",
-    async (_label, model) => {
-      executeMock.mockResolvedValueOnce({ text: "pi fallback", events: [], failureKind: null });
-      const router = createRouterRuntime({
-        routeSafety: "per-route-native",
-        chain: [
-          model,
-          { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
-        ],
-      });
-
-      const result = await router.run("sys", {
-        messages: [],
-        sandboxPolicy: { mode: "native", protectedRoots: ["/repo/.mono-agent/process-jobs"] },
-      });
-
-      expect(result.text).toBe("pi fallback");
-      expect(result.failoverHistory[0]).toMatchObject({
-        model,
-        failureKind: "safety_unavailable",
-      });
-      expect(executeMock).toHaveBeenCalledOnce();
-      expect(executeMock.mock.calls[0][1].model.sdk).toBe("pi");
-    },
-  );
-
-  it.each(NON_PI_PROVIDER_ROUTES)(
-    "never invokes a protected-root %s fallback after Pi fails",
-    async (_label, model) => {
-      executeMock.mockResolvedValueOnce({
-        text: null,
-        error: "Connection error.",
-        failureKind: "provider_unavailable",
-        events: [],
-        cancelled: false,
-      });
-      const router = createRouterRuntime({
-        routeSafety: "per-route-native",
-        chain: [
-          { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
-          model,
-        ],
-      });
-
-      const result = await router.run("sys", {
-        messages: [],
-        sandboxPolicy: { mode: "native", protectedRoots: ["/repo/.mono-agent/process-jobs"] },
-      });
-
-      expect(result.failureKind).toBe("provider_unavailable_exhausted");
-      expect(result.failoverHistory.map((attempt) => attempt.failureKind)).toEqual([
-        "provider_unavailable",
-        "safety_unavailable",
-      ]);
-      expect(executeMock).toHaveBeenCalledOnce();
-      expect(executeMock.mock.calls[0][1].model.sdk).toBe("pi");
-    },
-  );
-
-  it("preserves an all-Pi protected-root fallback chain", async () => {
-    executeMock
-      .mockResolvedValueOnce({
-        text: null,
-        error: "Connection error.",
-        failureKind: "provider_unavailable",
-        events: [],
-        cancelled: false,
-      })
-      .mockResolvedValueOnce({ text: "second Pi route", events: [], failureKind: null });
-    const router = createRouterRuntime({
-      routeSafety: "per-route-native",
-      chain: [
-        { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
-        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
-      ],
-    });
-    const sandboxPolicy = {
-      mode: "native",
-      protectedRoots: ["/repo/.mono-agent/process-jobs"],
-    };
-
-    const result = await router.run("sys", { messages: [], sandboxPolicy });
-
-    expect(result.text).toBe("second Pi route");
-    expect(executeMock).toHaveBeenCalledTimes(2);
-    expect(executeMock.mock.calls.map((call) => call[1].model.sdk)).toEqual(["pi", "pi"]);
-    expect(executeMock.mock.calls[0][1].sandboxPolicy).toBe(sandboxPolicy);
-    expect(executeMock.mock.calls[1][1].sandboxPolicy).toBe(sandboxPolicy);
-  });
-
-  it("keeps uniform safety monotonic and explicitly projects per-route-native contracts", async () => {
-    const sandboxPolicy = { mode: "native", engine: "srt", root: "/repo" };
-    executeMock.mockResolvedValueOnce({ text: "uniform", events: [], failureKind: null });
-    const uniform = createRouterRuntime({ chain: [{ sdk: "codex", model: "uniform" }] });
-    await uniform.run("sys", {
-      messages: [],
-      sandboxPolicy,
-      allowedTools: ["Read"],
-      disallowedTools: ["Write"],
-    });
-    expect(executeMock.mock.calls[0][1]).toMatchObject({
-      sandboxPolicy,
-      allowedTools: ["Read"],
-      disallowedTools: ["Write"],
-    });
-
-    executeMock.mockReset();
-    executeMock
-      .mockResolvedValueOnce({ text: null, error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false })
-      .mockResolvedValueOnce({ text: "native", events: [], failureKind: null });
-    const events = [];
-    const native = createRouterRuntime({
-      host: { sandboxPolicy },
-      routeSafety: "per-route-native",
-      chain: [
-        { sdk: "pi", provider: "openai", model: "pi-route" },
-        { sdk: "codex", model: "codex-route" },
-      ],
-    });
-    const result = await native.run("sys", {
-      messages: [],
-      sandboxPolicy,
-      allowedTools: ["Read"],
-      disallowedTools: ["Write"],
-      onEvent: (event) => events.push(event),
-    });
-
-    expect(executeMock.mock.calls[0][1]).toMatchObject({ sandboxPolicy, allowedTools: ["Read"] });
-    expect(executeMock.mock.calls[0][1].toolContext.sandboxPolicy).toEqual(sandboxPolicy);
-    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("sandboxPolicy");
-    expect(executeMock.mock.calls[1][1].toolContext.sandboxPolicy).toBeUndefined();
-    expect(executeMock.mock.calls[1][1]).toMatchObject({ allowedTools: ["*"], disallowedTools: [] });
-    expect(events.filter((event) => event.type === "provider_route_safety")).toHaveLength(2);
-    expect(result.routeSafetyHistory).toHaveLength(2);
-    expect(result.routeSafetyHistory[0].safetyContract).toEqual({
-      mode: "per-route-native",
-      sandbox: "mono-agent-srt",
-      tools: "mono-agent-policy",
-    });
-    expect(result.failoverHistory[0].safetyContract).toEqual(result.routeSafetyHistory[0].safetyContract);
-    expect(result.routeSafetyHistory[1].safetyContract).toEqual({
-      mode: "per-route-native",
-      sandbox: "codex-native",
-      tools: "exact-allow-all",
-    });
-  });
-
-  it("projects ACP per-route-native safety as provider-owned with an exact allow-all tool contract", async () => {
-    const sandboxPolicy = { mode: "native", engine: "srt", root: "/repo" };
-    const events = [];
-    executeMock.mockResolvedValueOnce({ text: "acp", events: [], failureKind: null });
-    const router = createRouterRuntime({
-      host: { sandboxPolicy, sandboxEngine: { name: "srt" } },
-      routeSafety: "per-route-native",
-      chain: [{ sdk: "acp", model: "worklab" }],
-    });
-
-    const result = await router.run("sys", {
-      messages: [],
-      sandboxPolicy,
-      sandboxEngine: { name: "request-srt" },
-      allowedTools: ["Read"],
-      disallowedTools: ["Write"],
-      onEvent: (event) => events.push(event),
-    });
-
-    expect(result.text).toBe("acp");
-    expect(executeMock).toHaveBeenCalledOnce();
-    expect(executeMock.mock.calls[0][1]).toMatchObject({
-      model: { sdk: "acp", model: "worklab" },
-      allowedTools: ["*"],
-      disallowedTools: [],
-    });
-    expect(executeMock.mock.calls[0][1]).not.toHaveProperty("sandboxPolicy");
-    expect(executeMock.mock.calls[0][1]).not.toHaveProperty("sandboxEngine");
-    expect(executeMock.mock.calls[0][1].toolContext.sandboxPolicy).toBeUndefined();
-    expect(executeMock.mock.calls[0][1].toolContext.sandboxEngine).toBeUndefined();
-    const expectedContract = {
-      mode: "per-route-native",
-      sandbox: "provider-native",
-      tools: "exact-allow-all",
-    };
-    expect(result.routeSafetyHistory).toEqual([expect.objectContaining({
-      status: "attempted",
-      safetyContract: expectedContract,
-    })]);
-    expect(events.find((event) => event.type === "provider_route_safety")?.safetyContract)
-      .toEqual(expectedContract);
-  });
-
-  it.each([
-    ["absent", undefined],
-    ["explicitly off", { mode: "off" }],
-  ])("reports per-route-native Pi as unsandboxed when its SRT policy is %s", async (_label, sandboxPolicy) => {
-    executeMock.mockImplementation(async (_prompt, options) => options.model.sdk === "pi"
-      ? { text: null, error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false }
-      : { text: "fallback", events: [], failureKind: null });
-    const events = [];
-    const router = createRouterRuntime({
-      routeSafety: "per-route-native",
-      chain: [
-        { sdk: "pi", provider: "openai", model: "pi-route" },
-        { sdk: "claude", model: "claude-sonnet-4-6" },
-      ],
-    });
-    const result = await router.run("sys", {
-      messages: [],
-      ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
-      onEvent: (event) => events.push(event),
-    });
-
-    const piContract = {
-      mode: "per-route-native",
-      sandbox: "disabled",
-      tools: "mono-agent-policy",
-    };
-    expect(result.routeSafetyHistory[0].safetyContract).toEqual(piContract);
-    expect(result.failoverHistory[0].safetyContract).toEqual(piContract);
-    expect(events.find((event) => event.type === "provider_route_safety")?.safetyContract).toEqual(piContract);
-  });
-
-  it("reports an explicitly permitted Pi host-process fallback consistently without attesting SRT", async () => {
-    const unsafePolicy = {
-      mode: "native",
-      engine: "srt",
-      fallback: "unsafe-host-process",
-      unsafeAllowHostProcess: true,
-    };
-    executeMock
-      .mockResolvedValueOnce({ text: null, error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false })
-      .mockResolvedValueOnce({ text: "fallback", events: [], failureKind: null });
-    const events = [];
-    const router = createRouterRuntime({
-      host: { sandboxPolicy: unsafePolicy, sandbox: createFakeSandbox() },
-      routeSafety: "per-route-native",
-      chain: [
-        { sdk: "pi", provider: "openai", model: "pi-route" },
-        { sdk: "claude", model: "claude-sonnet-4-6" },
-      ],
-    });
-
-    const result = await router.run("sys", {
-      messages: [],
-      onEvent: (event) => events.push(event),
-    });
-
-    const expectedContract = {
-      mode: "per-route-native",
-      sandbox: "mono-agent-srt-unsafe-host-fallback",
-      tools: "mono-agent-policy",
-    };
-    const routeEvent = events.find((event) => event.type === "provider_route_safety");
-    expect(routeEvent?.safetyContract).toEqual(expectedContract);
-    expect(result.routeSafetyHistory[0].safetyContract).toEqual(expectedContract);
-    expect(result.failoverHistory[0].safetyContract).toEqual(expectedContract);
-    expect(JSON.stringify({ routeEvent, result })).not.toContain('"sandbox":"mono-agent-srt"');
-  });
-
-  it("derives Pi safety telemetry from the same monotonic host, configured, and request precedence as execution", async () => {
-    const unsafePolicy = {
-      mode: "native",
-      engine: "srt",
-      fallback: "unsafe-host-process",
-      unsafeAllowHostProcess: true,
-    };
-    const failClosedPolicy = {
-      mode: "native",
-      engine: "srt",
-      fallback: "fail-closed",
-      unsafeAllowHostProcess: false,
-    };
-    const cases = [
-      {
-        label: "request-only explicit unsafe posture is reported",
-        hostPolicy: undefined,
-        requestPolicy: unsafePolicy,
-        expected: "mono-agent-srt-unsafe-host-fallback",
-      },
-      {
-        label: "request fail-closed tightens an unsafe host policy",
-        hostPolicy: unsafePolicy,
-        requestPolicy: failClosedPolicy,
-        expected: "mono-agent-srt",
-      },
-      {
-        label: "fail-closed host policy rejects an unsafe request weakening",
-        hostPolicy: failClosedPolicy,
-        requestPolicy: unsafePolicy,
-        expected: "mono-agent-srt",
-      },
-      {
-        label: "trusted configureTools replacement permits the unsafe posture",
-        hostPolicy: failClosedPolicy,
-        configuredPolicy: unsafePolicy,
-        expected: "mono-agent-srt-unsafe-host-fallback",
-      },
-      {
-        label: "unsafe fallback without its explicit opt-in remains fail-closed",
-        hostPolicy: { ...unsafePolicy, unsafeAllowHostProcess: false },
-        expected: "mono-agent-srt",
-      },
-    ];
-
-    for (const testCase of cases) {
-      executeMock.mockReset();
-      executeMock.mockResolvedValue({ text: "ok", events: [], failureKind: null });
-      const events = [];
-      const router = createRouterRuntime({
-        host: { sandboxPolicy: testCase.hostPolicy, sandbox: createFakeSandbox() },
-        routeSafety: "per-route-native",
-        chain: [{ sdk: "pi", provider: "openai", model: `pi-${testCase.label}` }],
-      });
-      if (testCase.configuredPolicy !== undefined) {
-        router.configureTools({ sandboxPolicy: testCase.configuredPolicy });
-      }
-
-      const result = await router.run("sys", {
-        messages: [],
-        ...(testCase.requestPolicy === undefined ? {} : { sandboxPolicy: testCase.requestPolicy }),
-        onEvent: (event) => events.push(event),
-      });
-
-      expect(
-        events.find((event) => event.type === "provider_route_safety")?.safetyContract.sandbox,
-        testCase.label,
-      ).toBe(testCase.expected);
-      expect(result.routeSafetyHistory[0].safetyContract.sandbox, testCase.label).toBe(testCase.expected);
-    }
-  });
-
-  it("reports the effective monotonic Pi policy after host and configureTools precedence", async () => {
-    const nativePolicy = { mode: "native", engine: "srt", fallback: "fail-closed" };
-    executeMock.mockResolvedValue({ text: "ok", events: [], failureKind: null });
-    const router = createRouterRuntime({
-      host: { sandboxPolicy: nativePolicy },
-      routeSafety: "per-route-native",
-      chain: [{ sdk: "pi", provider: "openai", model: "pi-route" }],
-    });
-
-    const protectedResult = await router.run("sys", {
-      messages: [],
-      sandboxPolicy: { mode: "off" },
-    });
-    expect(protectedResult.routeSafetyHistory[0].safetyContract.sandbox).toBe("mono-agent-srt");
-
-    router.configureTools({ sandboxPolicy: undefined });
-    const clearedResult = await router.run("sys", {
-      messages: [],
-      sandboxPolicy: { mode: "off" },
-    });
-    expect(clearedResult.routeSafetyHistory[0].safetyContract.sandbox).toBe("disabled");
-  });
-
-  it("projects outer host, configured, and run safety into a blank resolver-supplied Pi runtime", async () => {
-    const outerPolicy = {
-      mode: "native",
-      engine: "srt",
-      readableRoots: ["/outer"],
-      writableRoots: ["/outer"],
-      denyWrite: [".env"],
-      network: { mode: "none", allowlist: [] },
-      fallback: "fail-closed",
-      unsafeAllowHostProcess: false,
-    };
-    const requestPolicy = {
-      ...outerPolicy,
-      fallback: "unsafe-host-process",
-      unsafeAllowHostProcess: true,
-    };
-    const outerEngine = { name: "outer-srt-engine" };
-    const outerSandbox = createFakeSandbox();
-    const suppliedRuntime = createRuntime();
-    const events = [];
-    executeMock.mockResolvedValue({ text: "ok", events: [], failureKind: null });
-    const router = createRouterRuntime({
-      host: {
-        workspace: "/outer/workspace",
-        sandboxPolicy: outerPolicy,
-        sandboxEngine: outerEngine,
-        sandbox: outerSandbox,
-      },
-      routeSafety: "per-route-native",
-      chain: [{ sdk: "pi", provider: "openai", model: "supplied-blank" }],
-      resolveAttempt: () => ({ runtime: suppliedRuntime }),
-    });
-    router.configureTools({ qaOutputDir: "/outer/qa" });
-
-    const result = await router.run("sys", {
-      messages: [],
-      sandboxPolicy: requestPolicy,
-      onEvent: (event) => events.push(event),
-    });
-
-    const actualOptions = executeMock.mock.calls[0][1];
-    expect(actualOptions.toolContext).toMatchObject({
-      workspace: "/outer/workspace",
-      qaOutputDir: "/outer/qa",
-      sandboxPolicy: outerPolicy,
-      sandboxEngine: outerEngine,
-      sandbox: outerSandbox,
-    });
-    expect(actualOptions.sandboxPolicy).toBe(requestPolicy);
-    const actualPolicy = actualOptions.toolContext.sandbox.mergePolicies(
-      actualOptions.toolContext.sandboxPolicy,
-      actualOptions.sandboxPolicy,
-    );
-    expect(actualPolicy).toMatchObject({
-      fallback: "fail-closed",
-      unsafeAllowHostProcess: false,
-    });
-    const expectedContract = {
-      mode: "per-route-native",
-      sandbox: "mono-agent-srt",
-      tools: "mono-agent-policy",
-    };
-    expect(result.routeSafetyHistory[0].safetyContract).toEqual(expectedContract);
-    expect(events.find((event) => event.type === "provider_route_safety")?.safetyContract).toEqual(expectedContract);
-  });
-
-  it("clears a conflicting hidden policy from a resolver-supplied Pi runtime", async () => {
-    const hiddenPolicy = {
-      mode: "native",
-      engine: "srt",
-      fallback: "unsafe-host-process",
-      unsafeAllowHostProcess: true,
-    };
-    const hiddenEngine = { name: "hidden-engine" };
-    const hiddenSandbox = createFakeSandbox();
-    const suppliedRuntime = createRuntime({
-      workspace: "/hidden/workspace",
-      sandboxPolicy: hiddenPolicy,
-      sandboxEngine: hiddenEngine,
-      sandbox: hiddenSandbox,
-    });
-    executeMock.mockResolvedValue({ text: "ok", events: [], failureKind: null });
-    const router = createRouterRuntime({
-      host: { workspace: "/outer/workspace" },
-      routeSafety: "per-route-native",
-      chain: [{ sdk: "pi", provider: "openai", model: "supplied-conflicting" }],
-      resolveAttempt: () => ({ runtime: suppliedRuntime }),
-    });
-
-    const result = await router.run("sys", { messages: [] });
-
-    const actualContext = executeMock.mock.calls[0][1].toolContext;
-    expect(actualContext.workspace).toBe("/outer/workspace");
-    expect(actualContext.sandboxPolicy).toBeUndefined();
-    expect(actualContext.sandboxEngine).toBeUndefined();
-    expect(actualContext.sandbox).toBe(passthroughSandbox);
-    expect(result.routeSafetyHistory[0].safetyContract).toEqual({
-      mode: "per-route-native",
-      sandbox: "disabled",
-      tools: "mono-agent-policy",
-    });
-  });
-
-  it("fails closed before executing a supplied Pi runtime that cannot accept tool-context projection", async () => {
-    const unsafeRun = vi.fn().mockResolvedValue({ text: "must not run", events: [], failureKind: null });
-    const router = createRouterRuntime({
-      host: { sandboxPolicy: { mode: "native", engine: "srt", fallback: "fail-closed" } },
-      routeSafety: "per-route-native",
-      chain: [{ sdk: "pi", provider: "openai", model: "unconfigurable" }],
-      resolveAttempt: () => ({ runtime: { run: unsafeRun } }),
-    });
-
-    const result = await router.run("sys", { messages: [] });
-
-    expect(unsafeRun).not.toHaveBeenCalled();
-    expect(result.failureKind).toBe("safety_unavailable");
-    expect(result.routeSafetyHistory[0]).toMatchObject({
-      status: "safety_unavailable",
-      safetyContract: { sandbox: "mono-agent-srt", tools: "mono-agent-policy" },
-    });
-  });
-
-  it("projects configureTools before route creation while retaining the sandbox implementation seam", async () => {
-    const sandboxPolicy = { mode: "native", marker: "configured" };
-    const sandboxEngine = { name: "srt-engine" };
-    const sandbox = {
-      mergePolicies: (configured, request) => configured ?? request,
-      prepareCommand: async ({ command }) => command,
-      networkAllowsUrl: () => true,
-    };
-    executeMock
-      .mockResolvedValueOnce({ text: null, error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false })
-      .mockResolvedValueOnce({ text: "native", events: [], failureKind: null });
-    const router = createRouterRuntime({
-      routeSafety: "per-route-native",
-      chain: [
-        { sdk: "pi", provider: "openai", model: "pi-route" },
-        { sdk: "claude", model: "claude-sonnet-4-6" },
-      ],
-    });
-
-    router.configureTools({
-      workspace: "/tmp/configured-before-run",
-      sandboxPolicy,
-      sandboxEngine,
-      sandbox,
-    });
-    await router.run("sys", { messages: [] });
-
-    const piContext = executeMock.mock.calls[0][1].toolContext;
-    const claudeContext = executeMock.mock.calls[1][1].toolContext;
-    expect(piContext).toMatchObject({
-      workspace: "/tmp/configured-before-run",
-      sandboxPolicy,
-      sandboxEngine,
-      sandbox,
-    });
-    expect(claudeContext.workspace).toBe("/tmp/configured-before-run");
-    expect(claudeContext.sandboxPolicy).toBeUndefined();
-    expect(claudeContext.sandboxEngine).toBeUndefined();
-    expect(claudeContext.sandbox).toBe(sandbox);
-  });
-
-  it("clears stale policy state from a resolver runtime and on reconfiguration after a run", async () => {
+  it("projects router tool context into a resolver-supplied Pi runtime", async () => {
     const stalePolicy = { mode: "native", marker: "stale" };
-    const staleEngine = { name: "stale-engine" };
-    const sandbox = {
-      mergePolicies: (configured, request) => configured ?? request,
-      prepareCommand: async ({ command }) => command,
-      networkAllowsUrl: () => true,
-    };
-    const resolvedRuntime = createRuntime({ sandboxPolicy: stalePolicy, sandboxEngine: staleEngine, sandbox });
-    const seenContexts = [];
-    executeMock.mockImplementation(async (_prompt, options) => {
-      seenContexts.push({ ...options.toolContext });
-      return { text: "ok", events: [], failureKind: null };
+    const resolvedRuntime = createRuntime({
+      workspace: "/tmp/stale",
+      sandboxPolicy: stalePolicy,
+      sandbox: createFakeSandbox(),
     });
     const router = createRouterRuntime({
-      routeSafety: "per-route-native",
-      chain: [{ sdk: "claude", model: "claude-sonnet-4-6" }],
+      chain: [{ sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" }],
       resolveAttempt: () => ({ runtime: resolvedRuntime }),
     });
+    router.configureTools({ workspace: "/tmp/configured" });
+    executeMock.mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
 
-    await router.run("sys", { messages: [] });
-    resolvedRuntime.configureTools({ sandboxPolicy: stalePolicy, sandboxEngine: staleEngine });
-    router.configureTools({ workspace: "/tmp/reconfigured-after-run" });
-    await router.run("sys", { messages: [] });
+    const result = await router.run("sys", { messages: [] });
 
-    expect(seenContexts).toHaveLength(2);
-    expect(seenContexts[0].sandboxPolicy).toBeUndefined();
-    expect(seenContexts[0].sandboxEngine).toBeUndefined();
-    expect(seenContexts[0].sandbox).toBe(sandbox);
-    expect(seenContexts[1]).toMatchObject({ workspace: "/tmp/reconfigured-after-run", sandbox });
-    expect(seenContexts[1].sandboxPolicy).toBeUndefined();
-    expect(seenContexts[1].sandboxEngine).toBeUndefined();
+    expect(result.text).toBe("ok");
+    expect(executeMock.mock.calls[0][1].toolContext).toMatchObject({
+      workspace: "/tmp/configured",
+      sandbox: passthroughSandbox,
+    });
+    expect(executeMock.mock.calls[0][1].toolContext.sandboxPolicy).toBeUndefined();
   });
 
-  it("skips an unsupported native safety route and never lets the resolver override policy", async () => {
-    executeMock.mockResolvedValueOnce({ text: "fallback", events: [], failureKind: null });
+  it("fails before execution when a resolver-supplied Pi runtime cannot accept tool context", async () => {
+    const suppliedRun = vi.fn();
     const router = createRouterRuntime({
-      routeSafety: "per-route-native",
-      chain: [
-        { sdk: "future-sdk", model: "unknown" },
-        { sdk: "pi", provider: "openai", model: "safe" },
-      ],
-      resolveAttempt: ({ model }) => model.sdk === "future-sdk"
-        ? { options: { sandboxPolicy: undefined } }
-        : { options: {} },
+      chain: [{ sdk: "pi", provider: "openai", model: "gpt-5.5" }],
+      resolveAttempt: () => ({ runtime: { run: suppliedRun } }),
     });
 
     const result = await router.run("sys", { messages: [] });
 
-    expect(result.text).toBe("fallback");
-    expect(result.failoverHistory[0].failureKind).toBe("safety_unavailable");
-    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(result.failureKind).toBe("provider_unavailable_exhausted");
+    expect(result.error).toBe("The route attempt could not be resolved before execution.");
+    expect(suppliedRun).not.toHaveBeenCalled();
   });
 
-  it("does not expose route credentials from resolver failures", async () => {
+  it("does not expose credentials from resolver failures", async () => {
     const router = createRouterRuntime({
-      routeSafety: "per-route-native",
-      chain: [{ sdk: "pi", provider: "local", model: "private" }],
+      chain: [{ sdk: "pi", provider: "ollama", model: "private" }],
       resolveAttempt: () => {
         throw new Error("failed with api_key=route-secret-value");
       },
@@ -1486,8 +872,8 @@ describe("createRouterRuntime — production fallback contracts", () => {
 
     const result = await router.run("sys", { messages: [] });
 
-    expect(result.failureKind).toBe("safety_unavailable");
-    expect(result.error).toBe("The route safety contract could not be established before execution.");
+    expect(result.failureKind).toBe("provider_unavailable_exhausted");
+    expect(result.error).toBe("The route attempt could not be resolved before execution.");
     expect(JSON.stringify(result)).not.toContain("route-secret-value");
   });
 
@@ -1510,9 +896,9 @@ describe("createRouterRuntime — production fallback contracts", () => {
       .mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        { sdk: "claude", model: "one" },
-        { sdk: "claude", model: "two" },
-        { sdk: "claude", model: "three" },
+        { sdk: "pi", provider: "openai-codex", model: "one" },
+        { sdk: "pi", provider: "anthropic", model: "two" },
+        { sdk: "pi", provider: "ollama", model: "three" },
       ],
     });
 
@@ -1527,19 +913,19 @@ describe("createRouterRuntime — production fallback contracts", () => {
   it("rejects duplicate chains before creating a run", () => {
     expect(() => createRouterRuntime({
       chain: [
-        { sdk: "claude", model: "same" },
-        { model: { sdk: "claude", model: "same" }, effort: "high" },
+        { sdk: "pi", provider: "anthropic", model: "same" },
+        { model: { sdk: "pi", provider: "anthropic", model: "same" }, effort: "high" },
       ],
     })).toThrow(/duplicate model/u);
     expect(() => createRouterRuntime({
-      chain: [{ model: { sdk: "claude", model: "bad-effort" }, effort: " " }],
+      chain: [{ model: { sdk: "pi", provider: "anthropic", model: "bad-effort" }, effort: " " }],
     })).toThrow(/non-empty trimmed string/u);
   });
 });
 
 describe("createRouterRuntime — same-model retry", () => {
-  const OPUS = { sdk: "claude", model: "claude-opus-4-7" };
-  const SONNET = { sdk: "claude", model: "claude-sonnet-4-6" };
+  const OPUS = { sdk: "pi", provider: "anthropic", model: "claude-opus-4-7" };
+  const SONNET = { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" };
   const overloaded = () => ({
     text: null,
     error: "Anthropic API overloaded — try again later",
@@ -1710,20 +1096,6 @@ describe("createRouterRuntime — same-model retry", () => {
       reason: "overloaded",
     });
     expect(events.filter((e) => e.type?.startsWith("provider_failover"))).toEqual([]);
-  });
-
-  it("records exactly one attempted route-safety record per entry regardless of retries", async () => {
-    executeMock.mockResolvedValue(overloaded());
-    const events = [];
-    const router = createRouterRuntime({
-      chain: [{ model: OPUS, attempts: 3 }],
-      retry: { backoffMs: 0, maxBackoffMs: 0 },
-    });
-    const result = await router.run("sys", { messages: [], onEvent: (e) => events.push(e) });
-
-    expect(executeMock).toHaveBeenCalledTimes(3);
-    expect(result.routeSafetyHistory.filter((r) => r.status === "attempted")).toHaveLength(1);
-    expect(events.filter((e) => e.type === "provider_route_safety")).toHaveLength(1);
   });
 
   it("aborting during the backoff returns cancelled without touching the next entry", async () => {

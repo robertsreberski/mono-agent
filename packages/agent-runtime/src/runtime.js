@@ -5,14 +5,11 @@
 // per-instance `ToolContext` (agent/tools/shared/tool-context.js) that this
 // runtime instance threads to every bridge call via `options.toolContext`
 // instead of a process-global, and returns a `.run(systemPrompt, options)`
-// method that resolves the right provider bridge based on `options.model` +
-// `options.executionMode`.
+// method that resolves the Pi provider bridge based on `options.model`.
 //
-// The runtime registry contains a static table for the six built-in bridges
-// (ACP, Claude SDK/CLI, Pi-native, Codex app-server, OpenCode app-server) and lazily imports
-// the matching implementation only when a run selects it. Hosts that need finer
-// control can keep using the named exports (resolveRuntimeBridge,
-// generateClaudeResponse, etc.) directly.
+// The runtime registry lazily imports the Pi implementation only when a run
+// selects it. Hosts that need finer control can keep using the named exports
+// directly.
 //
 // Return shape from `.run()`:
 //   { text, structuredResult, structuredResultSource, events, usage,
@@ -177,7 +174,6 @@ export function createRuntime(host = {}) {
     ...(request.skills === undefined ? {} : { skills: request.skills }),
     ...(request.skillsRoot === undefined ? {} : { skillsRoot: request.skillsRoot }),
     ...(request.toolEnvironment === undefined ? {} : { toolEnvironment: request.toolEnvironment }),
-    ...(request.executionMode === undefined ? {} : { executionMode: request.executionMode }),
     ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
     // A profile that pins effort — declared or authored at call time — means it
     // on this path too; dropping it would silently run the child at the
@@ -203,10 +199,8 @@ export function createRuntime(host = {}) {
      */
     async run(systemPrompt, options = {}) {
       if (!options.model) throw new Error("createRuntime.run requires options.model");
-      const executionMode = typeof options.executionMode === "string" ? options.executionMode : "sdk";
       const bridge = await resolveRuntimeBridge(options.model, {
         liveInput: !!options.liveInput,
-        executionMode,
       });
       const callObservers = Array.isArray(options.observers) ? options.observers : [];
       const hub = createObserverHub({
@@ -243,7 +237,6 @@ export function createRuntime(host = {}) {
           // (spread reads the parameter's declared — Partial — type); re-assert
           // the already-validated model so the request satisfies RuntimeRequest.
           model: options.model,
-          executionMode,
           runtimeBrand,
           toolContext: runToolContext,
           observerHub: hub,

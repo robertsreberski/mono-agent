@@ -5,7 +5,6 @@ import {
   isValidMcpServerName,
   listMonoRuntimeBackends,
   parseMcpServers,
-  selectMonoRuntimeBackendId,
 } from "../index.js";
 
 describe("isPlainObject", () => {
@@ -53,22 +52,14 @@ describe("parseMcpServers", () => {
   });
 });
 
-describe("(sdk, executionMode) selection table", () => {
-  it("includes a row per backend and resolves backend ids alias-aware", () => {
-    expect(selectMonoRuntimeBackendId("acp", "acp")).toBe("acp-stdio");
-    expect(selectMonoRuntimeBackendId("claude", "sdk")).toBe("claude-sdk");
-    expect(selectMonoRuntimeBackendId("anthropic", "sdk")).toBeUndefined();
-    expect(selectMonoRuntimeBackendId("claude", "cli")).toBe("claude-code-cli");
-    expect(selectMonoRuntimeBackendId("codex", "cli")).toBe("codex-app-cli");
-    expect(selectMonoRuntimeBackendId("pi", "sdk")).toBe("pi-sdk");
-    expect(selectMonoRuntimeBackendId("openai", "cli")).toBeUndefined();
-    expect(selectMonoRuntimeBackendId("openai", "sdk")).toBeUndefined();
-  });
-
-  it("exposes only agent-runtime-backed runtime descriptors", () => {
-    for (const backend of listMonoRuntimeBackends()) {
-      if (backend.id !== "acp-stdio") expect(backend.runtimeBridgeId).not.toBe(backend.id);
-      expect(backend.providerBoundary).toContain("@mono-agent/agent-runtime");
-    }
+describe("runtime backend descriptor", () => {
+  it("exposes only the agent-runtime-backed Pi descriptor", () => {
+    expect(listMonoRuntimeBackends()).toEqual([
+      expect.objectContaining({
+        id: "pi-sdk",
+        runtimeBridgeId: "pi",
+        providerBoundary: expect.stringContaining("@mono-agent/agent-runtime"),
+      }),
+    ]);
   });
 });

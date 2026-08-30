@@ -25,10 +25,6 @@ describe("AI runtime bridge registry", () => {
 
     expect(bridge).toMatchObject({ id: "pi", execute: expect.any(Function) });
     expect(bridge.execute).toBe(piNativeRuntimeBridge.execute);
-    // The registry has no execution-mode variants: stale callers cannot
-    // divert a Pi reference onto a second backend.
-    await expect(resolveRuntimeBridge(model, { executionMode: "cli" }))
-      .resolves.toMatchObject({ id: "pi" });
   });
 
   it.each(["acp", "claude", "codex", "opencode"])(
