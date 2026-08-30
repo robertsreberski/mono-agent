@@ -6,6 +6,7 @@ import {
   useAuiEvent,
   useAuiState,
 } from "@assistant-ui/react";
+import { type GalleryImage, ImageGrid } from "./ImageGallery";
 import { Icon } from "./Icon";
 
 const announce = (message: string) => {
@@ -38,6 +39,9 @@ function AttachmentChip({ removable }: { readonly removable: boolean }) {
   const image = content?.find((part) => part.type === "image");
   const file = content?.find((part) => part.type === "file");
   const href = image?.type === "image" ? image.image : file?.type === "file" ? file.data : undefined;
+  // A sent image is shown full-size by `UserMessageAttachments` instead. The
+  // composer keeps its chip, where the thumbnail sits beside upload progress.
+  if (isMessageAttachment && type === "image") return null;
   const chipContent = (
     <>
       <span className="attachment-icon">
@@ -99,12 +103,26 @@ export function ComposerAttachments() {
   );
 }
 
+function useMessageImages(): readonly GalleryImage[] {
+  const attachments = useAuiState((state) => state.message.attachments);
+  return (attachments ?? []).flatMap((attachment): readonly GalleryImage[] => {
+    if (attachment.type !== "image") return [];
+    const source = attachment.content?.find((part) => part.type === "image");
+    if (source?.type !== "image") return [];
+    return [{ key: attachment.id, src: source.image, name: attachment.name }];
+  });
+}
+
 export function UserMessageAttachments() {
+  const images = useMessageImages();
   return (
-    <div className="message-attachments">
-      <MessagePrimitive.Attachments>
-        {() => <AttachmentChip removable={false} />}
-      </MessagePrimitive.Attachments>
-    </div>
+    <>
+      <ImageGrid images={images} />
+      <div className="message-attachments">
+        <MessagePrimitive.Attachments>
+          {() => <AttachmentChip removable={false} />}
+        </MessagePrimitive.Attachments>
+      </div>
+    </>
   );
 }

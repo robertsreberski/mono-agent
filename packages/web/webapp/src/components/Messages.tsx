@@ -40,6 +40,7 @@ import {
 } from "./ActivityRow";
 import { finiteDuration, formatToolDuration } from "./duration";
 import { Icon } from "./Icon";
+import { MessageGallery } from "./ImageGallery";
 import { toolHistoryFailure } from "./tool-history";
 import { SubagentPart, toolArgumentPreview } from "./Subagent";
 import { QuoteBlock } from "./assistant-ui/Quote";
@@ -1228,10 +1229,12 @@ function AssistantParts() {
 export function UserMessage() {
   return (
     <MessagePrimitive.Root className="message message-user">
-      <div className="message-user-content">
-        <UserMessageAttachments />
-        <MessagePrimitive.Parts components={parts} />
-      </div>
+      <MessageGallery>
+        <div className="message-user-content">
+          <UserMessageAttachments />
+          <MessagePrimitive.Parts components={parts} />
+        </div>
+      </MessageGallery>
       <LiveInputStatus />
       <MessageActions label="Copy message" />
     </MessagePrimitive.Root>
@@ -1241,13 +1244,15 @@ export function UserMessage() {
 export function AssistantMessage() {
   return (
     <MessagePrimitive.Root className="message message-assistant">
-      <div className="assistant-content">
-        <AssistantParts />
-        <MessagePrimitive.Error>
-          <div className="message-error" role="alert">The response ended with an error.</div>
-        </MessagePrimitive.Error>
-        <MessageActions label="Copy response" persistentWhenLast />
-      </div>
+      <MessageGallery>
+        <div className="assistant-content">
+          <AssistantParts />
+          <MessagePrimitive.Error>
+            <div className="message-error" role="alert">The response ended with an error.</div>
+          </MessagePrimitive.Error>
+          <MessageActions label="Copy response" persistentWhenLast />
+        </div>
+      </MessageGallery>
     </MessagePrimitive.Root>
   );
 }

@@ -311,7 +311,7 @@ Assistant reasoning, routine tool calls, subagent delegations, and context compa
 
 An `Agent` call is one foldable row inside Activity — profile name, the model's short task label, and a `4 tools · 12.4s · $0.0042` summary — that **owns** the tool calls its subagent made rather than listing them as siblings. The price appears when the runtime priced that subagent's model, and is the one place a single expensive delegation is identifiable; the run total it folds into cannot say which one spent it. Opening the row reveals each child call indented, individually foldable for its input and output, followed by the report the subagent sent back. Nesting is what keeps concurrent delegations readable: subagents run in parallel and their events interleave, so a flat transcript would shuffle several agents' work together. A child that failed is marked without marking the delegation that contains it, and a delegation whose parent call was never observed (a truncated or replayed stream) still renders from its children alone.
 
-Below 560px the tree adapts rather than clipping: each row keeps its tool name and status on the first line and wraps the argument preview onto a second, the nesting rails narrow, and the settled Activity list scrolls with the page instead of inside its own box. Individual tool payloads stay height-capped and selectable so their output can still be copied on a phone.
+Every Activity row is one line at every width: the tool name and status hold their place and a long argument is truncated with an ellipsis, so a list of rows stays scannable rather than reflowing into a ragged block on a phone. Expanding a row reveals the full value. The nesting rails narrow below 560px and the settled Activity list scrolls with the page instead of inside its own box. Individual tool payloads stay height-capped and selectable so their output can still be copied on a phone, and they wrap within the panel rather than extending past it.
 
 Type `/` in an empty composer to open the keyboard-friendly command popover for available actions such as run settings, starting a new conversation, or stopping an active response. Type `$` to find an available skill, or use **Browse skills** without entering a trigger.
 
@@ -322,6 +322,19 @@ running agent advertises those additive operator capabilities. Reply files show
 a message-bound download action; the service reauthorizes the exact
 thread/message/part and the agent rechecks size and SHA-256 integrity before any
 bytes stream. No host path or agent capability URL enters the browser DTO.
+
+Generated images are kept. A reply artifact is otherwise proxied from the agent
+and never stored, so a `png`, `jpeg`, `gif`, or `webp` reply would stop resolving
+at the agent's retention deadline and show as broken whenever that agent is
+stopped. The service instead fetches each one once — at the end of the turn that
+produced it, and on read for anything that attempt missed — verifies its declared
+size and SHA-256 before writing anything, and keeps the bytes beside uploaded
+files under `~/.mono-agent/web/uploads`. The image is then served from the same
+stable, token-free path an upload uses, so it survives the access window, the
+retention deadline, and the agent being stopped. Every step is best-effort: a
+failed fetch, a hash mismatch, or an offline agent leaves the part on its
+ordinary capability path and never affects the turn. `svg` is deliberately not
+kept, and other file types are not either — they keep the capability path.
 
 Each browser capability is projected for an exact thread/message/part with a
 ten-minute access window that never extends the reply part's retention deadline.
@@ -367,22 +380,34 @@ Web uploads use the same transport-neutral `AgentAttachment` contract and harnes
 
 A web turn additionally permits at most 10 files and 64 MiB in aggregate. Attachment-only turns are valid. The browser streams bytes to a staged upload with progress; it does not retain base64 copies in React state. Removing an unattached upload removes its stage, and abandoned stages are purged after 24 hours. Committed attachments remain with their conversation, including after archival.
 
+Images are shown rather than filed. A `png`, `jpeg`, `gif`, or `webp` attachment renders in the message as a thumbnail grid — a single image is shown uncropped — and selecting one opens it full size with paging, a counter, and a download action. Other file types keep the compact chip with its name and size. `svg` is never rendered inline: it is active content, so it stays a download.
+
 Telegram's optional audio transcription is adapter-specific and is not reused here. Browser-selected audio and video retain their ordinary attachment MIME and document classification unless a future transport-neutral capability changes that contract.
 
 Older running agents that do not advertise attachment support remain usable for text chat, but the upload control is disabled for them rather than sending a request they cannot interpret.
 
 ## Storage schema
 
-The web state database is at schema 9. Schema 9 adds the `message_search` FTS5
-index and the triggers that maintain it; the migration is additive and
-transactional, and it backfills the index from existing messages on first open.
-An older `@mono-agent/web` binary refuses to open a schema-9 database rather
-than reading it incorrectly, so downgrading means restoring a pre-upgrade copy
-of `~/.mono-agent/web/state.sqlite`.
+The web state database is at schema 10. Schema 9 added the `message_search` FTS5
+index and the triggers that maintain it, backfilled from existing messages on
+first open. Schema 10 adds an `origin` column to `attachments`, distinguishing a
+file the operator uploaded from the console's own durable copy of an image the
+agent generated. Both migrations are additive and transactional. An older
+`@mono-agent/web` binary refuses to open a newer database rather than reading it
+incorrectly, so downgrading means restoring a pre-upgrade copy of
+`~/.mono-agent/web/state.sqlite`.
 
 ## Local state and reset
 
-The service keeps its owner-private SQLite store, settings, notification idempotency ledger, VAPID private key, push subscriptions/outbox, upload stages, logs, and live notification-ingress record under `~/.mono-agent/web/`. Stored messages, quote metadata, attachment metadata, revisions, run state, and pinned agents are local to this computer; they are independent from browser storage and from the agents' provider-side sessions. The desktop agent-rail expansion state, notification opt-in, opaque subscription id, and one-way endpoint digest are intentionally browser-origin-local preferences and are removed when that origin's site data is cleared. Raw push endpoints and key material are never stored in browser preferences.
+The service keeps its owner-private SQLite store, settings, notification idempotency ledger, VAPID private key, push subscriptions/outbox, upload stages, durable copies of generated images, logs, and live notification-ingress record under `~/.mono-agent/web/`. Stored messages, quote metadata, attachment metadata, revisions, run state, and pinned agents are local to this computer; they are independent from browser storage and from the agents' provider-side sessions. The desktop agent-rail expansion state, notification opt-in, opaque subscription id, and one-way endpoint digest are intentionally browser-origin-local preferences and are removed when that origin's site data is cleared. Raw push endpoints and key material are never stored in browser preferences.
+
+Durable copies of generated images are retained for as long as their conversation
+is, with no size ceiling and no expiry — that is what makes an image you generated
+last month still open today. They are bound to the message that produced them, so
+**deleting the conversation reclaims them**, both the rows and the bytes on disk,
+through the same path that reclaims uploaded files. A console that generates many
+images will grow `~/.mono-agent/web/uploads` accordingly; deleting conversations
+is the way to reclaim that space.
 
 Managed stdout/stderr live at `logs/web.out.log` and `logs/web.err.log`.
 Each active file and retained `.1`, `.2`, and `.3` generation is capped at
