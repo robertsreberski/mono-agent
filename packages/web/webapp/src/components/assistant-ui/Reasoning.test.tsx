@@ -149,6 +149,29 @@ describe("ActivityGroup", () => {
     expect(settledStyle.overflowY).toBe("visible");
   });
 
+  /**
+   * The rows sit in a one-column grid. Left implicit, that column is `auto`, so
+   * it is sized by the widest row's *min-content* width — measured at 601px
+   * inside a 342px panel on a phone, which `overflow: hidden` then clipped with
+   * no way to scroll to the rest. jsdom performs no layout, so this pins the
+   * declarations that prevent it rather than re-measuring; the resolved track
+   * was verified in a browser at 390px and 1440px.
+   */
+  it("sizes its rows to the panel instead of to their widest content", () => {
+    const { container } = render(
+      <ActivityGroup streaming>
+        <details className="activity-row"><summary>Row</summary></details>
+      </ActivityGroup>,
+    );
+
+    const content = container.querySelector<HTMLElement>(".reasoning-text-content");
+    expect(content).not.toBeNull();
+    expect(getComputedStyle(content!).gridTemplateColumns).toBe("minmax(0, 1fr)");
+    // A grid item only shrinks below min-content once its automatic minimum is
+    // overridden, so the track alone is not enough.
+    expect(getComputedStyle(container.querySelector<HTMLElement>(".activity-row")!).minWidth).toBe("0");
+  });
+
   it("stays open while running, force-collapses on settle, and can be reopened afterward", () => {
     const { container, rerender } = render(
       <ActivityGroup streaming>

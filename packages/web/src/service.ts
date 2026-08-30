@@ -1,5 +1,5 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 
 import {
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
@@ -94,6 +94,12 @@ const DEFAULT_PURGE_INTERVAL_MS = 60 * 60 * 1_000;
 const INFO_TIMEOUT_MS = 2_500;
 const ASK_DISCOVERY_TIMEOUT_MS = 120_000;
 const REPLY_ACCESS_TTL_MS = 10 * 60 * 1_000;
+/**
+ * Raster types the console keeps its own copy of. `image/svg+xml` is absent on
+ * purpose: it is active content, and both the inline gate in the browser and
+ * `setReplyDownloadHeaders` already refuse to treat it as an image.
+ */
+const REPLY_IMAGE_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 function formatQuotedTurn(quote: string, text: string): string {
   const blockquote = quote
@@ -223,6 +229,8 @@ export class WebService {
   private readonly replyAccessKey: Buffer;
   private readonly askWatches = new Map<string, AskWatch>();
   private connections = new Map<string, AgentConnection>();
+  /** Parts whose durable copy is being fetched, so concurrent reads fetch once. */
+  private persistingReplyImages = new Set<string>();
   private discoveryTimer: ReturnType<typeof setInterval> | undefined;
   private purgeTimer: ReturnType<typeof setInterval> | undefined;
   private purgePromise: Promise<void> | undefined;
@@ -1102,6 +1110,10 @@ export class WebService {
       this.emit("thread.changed", started.thread.id, { revision: detail.thread.revision });
       this.emit("threads.changed", started.thread.id);
       this.announcePushEvent(`turn:${started.turnId}:terminal`);
+      // Detached: the turn is already finished and reported, and keeping a copy
+      // must neither delay nor fail it. The agent is still connected here, which
+      // is when a fetch is most likely to succeed.
+      void this.persistReplyImages(started.thread.id, detail.messages);
     } catch (error) {
       let failure = error;
       try {
@@ -1766,6 +1778,10 @@ export class WebService {
   }
 
   private decorateThreadDetail(detail: WebThreadDetail): WebThreadDetail {
+    // Backfill: messages that predate this feature, and any turn whose own
+    // attempt failed or was interrupted. Idempotent and guarded, so repeated
+    // reads of the same thread fetch each image at most once.
+    void this.persistReplyImages(detail.thread.id, detail.messages);
     return { ...detail, messages: detail.messages.map((message) => this.decorateMessage(message)) };
   }
 
@@ -1777,13 +1793,121 @@ export class WebService {
     return { ...message, parts };
   }
 
+  /**
+   * Keeps the console's own copy of an image the agent published.
+   *
+   * Reply artifacts are proxied from the agent and never stored, so without this
+   * a generated image dies at the agent's retention deadline and shows broken
+   * whenever that agent is stopped. Raster types only: `image/svg+xml` is active
+   * content, is refused inline by both the client and `setReplyDownloadHeaders`,
+   * and is deliberately never persisted either.
+   *
+   * Entirely best-effort. Every failure leaves the part on its existing
+   * capability path, because a stored copy is an optimisation and a turn must
+   * never fail over one.
+   */
+  private async persistReplyImages(threadId: string, messages: readonly WebMessage[]): Promise<void> {
+    for (const message of messages) {
+      for (const part of message.parts) {
+        if (part.type !== "attachment") continue;
+        if (!REPLY_IMAGE_MEDIA_TYPES.has(part.mediaType.toLowerCase())) continue;
+        if (part.sizeBytes > DEFAULT_AGENT_ATTACHMENT_MAX_BYTES) continue;
+        if (this.store.storedReplyAttachment(message.id, part.id) !== undefined) continue;
+        const key = WebStore.replyAttachmentId(message.id, part.id);
+        if (this.persistingReplyImages.has(key)) continue;
+        this.persistingReplyImages.add(key);
+        try {
+          await this.persistReplyImage(threadId, message, part);
+        } catch (error) {
+          this.options.logger?.debug?.("Web reply image was not persisted.", {
+            threadId,
+            messageId: message.id,
+            partId: part.id,
+            error: errorMessage(error),
+          });
+        } finally {
+          this.persistingReplyImages.delete(key);
+        }
+      }
+    }
+  }
+
+  private async persistReplyImage(
+    threadId: string,
+    message: WebMessage,
+    part: Extract<WebMessagePart, { type: "attachment" }>,
+  ): Promise<void> {
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) return;
+    const connection = this.connections.get(thread.sourceId);
+    if (connection === undefined || connection.info.replyAttachments?.version !== 1) return;
+
+    const response = await connection.client.replyArtifact(
+      this.conversationIdForThread(thread.id),
+      {
+        type: "attachment",
+        id: part.id,
+        reference: { scheme: "mono-agent-artifact", id: part.artifactId },
+        name: part.name,
+        mediaType: part.mediaType,
+        sizeBytes: part.sizeBytes,
+        integrityId: part.integrityId,
+        ...(part.expiresAt === undefined ? {} : { expiresAt: part.expiresAt }),
+      },
+    );
+    if (!response.ok || response.body === null) return;
+    const bytes = Buffer.from(await response.arrayBuffer());
+
+    // The same pair the browser checks before handing a download to the user. A
+    // copy that fails either is not written at all, so a corrupt artifact can
+    // never be served from a stable URL that outlives its source.
+    if (bytes.byteLength !== part.sizeBytes) return;
+    const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    if (digest !== part.integrityId.toLowerCase()) return;
+
+    const storageName = `${randomUUID()}.bin`;
+    const destination = this.store.attachmentPath({ storageName });
+    const staging = `${destination}.partial-${randomUUID()}`;
+    await writeFile(staging, bytes, { mode: 0o600 });
+    try {
+      await rename(staging, destination);
+    } catch (error) {
+      await unlink(staging).catch(() => undefined);
+      throw error;
+    }
+    try {
+      this.store.recordReplyAttachment({
+        threadId: thread.id,
+        messageId: message.id,
+        partId: part.id,
+        name: part.name,
+        contentType: part.mediaType,
+        sizeBytes: bytes.byteLength,
+        storageName,
+      });
+    } catch (error) {
+      await unlink(destination).catch(() => undefined);
+      throw error;
+    }
+  }
+
   private decorateReplyPart(message: WebMessage, part: WebRichReplyPart): WebRichReplyPart {
+    // A durable copy is resolved before the retention gate below, because
+    // outliving that deadline is the entire reason it was kept.
+    const stored = part.type === "attachment"
+      ? this.store.storedReplyAttachment(message.id, part.id)
+      : undefined;
+    const storedUrl = stored === undefined
+      ? {}
+      : { storedUrl: `/api/v1/uploads/${encodeURIComponent(stored.id)}/content` } as const;
     const now = this.currentDate().getTime();
     const retentionDeadline = part.expiresAt === undefined
       ? Number.POSITIVE_INFINITY
       : Date.parse(part.expiresAt);
     const expiresAt = Math.min(now + REPLY_ACCESS_TTL_MS, retentionDeadline);
-    if (!Number.isFinite(expiresAt) || expiresAt <= now) return part;
+    if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+      return part.type === "attachment" ? { ...part, ...storedUrl } : part;
+    }
     const expires = String(Math.floor(expiresAt / 1_000));
     const token = this.replyAccessToken(message.threadId, message.id, part.type, part.id, expires);
     const base = `/api/v1/threads/${encodeURIComponent(message.threadId)}`
@@ -1792,6 +1916,7 @@ export class WebService {
     return part.type === "attachment"
       ? {
           ...part,
+          ...storedUrl,
           contentUrl: `${base}/reply-attachments/${encodeURIComponent(part.id)}/content?${query}`,
         }
       : {

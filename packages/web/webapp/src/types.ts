@@ -299,6 +299,13 @@ export type MessagePart =
       readonly sizeBytes: number;
       readonly integrityId: string;
       readonly expiresAt?: string;
+      /**
+       * Stable path to the console's own durable copy, present once an image has
+       * been persisted. Unlike `contentUrl` it carries no capability token and
+       * never expires, so it keeps working past the agent's retention deadline
+       * and while that agent is stopped.
+       */
+      readonly storedUrl?: string;
       /** Short-lived, exact-message URL minted by the web service. */
       readonly contentUrl?: string;
     }

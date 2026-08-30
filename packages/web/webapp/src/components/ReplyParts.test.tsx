@@ -210,6 +210,100 @@ describe("assistant reply files", () => {
     expect(revokeObjectUrl).toHaveBeenCalledExactlyOnceWith("blob:reply-file");
   });
 
+  it("shows a generated image inline from its durable copy, without spending a capability", () => {
+    const value = {
+      type: "attachment",
+      id: "cover-part",
+      artifactId: "artifact-cover",
+      name: "cover.png",
+      mediaType: "image/png",
+      sizeBytes: 2_048,
+      integrityId: "sha256:abc",
+      storedUrl: "/api/v1/uploads/reply%3Amsg%3Acover-part/content",
+      contentUrl: "/api/v1/threads/t/messages/m/reply-attachments/cover-part/content?expires=1234567890&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    } as const;
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent");
+    render(attachment(value));
+
+    const image = screen.getByRole("img", { name: "cover.png" });
+    expect(image).toHaveAttribute("src", value.storedUrl);
+    // The durable copy is the whole point: no token is spent, so the image keeps
+    // rendering once the capability window and the retention deadline are gone.
+    expect(fetchContent).not.toHaveBeenCalled();
+    // The card keeps its single live region and its download action.
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Download cover.png" })).toBeVisible();
+  });
+
+  it("never inlines an SVG reply, which is active content rather than a raster image", () => {
+    const value = {
+      type: "attachment",
+      id: "cover-part",
+      artifactId: "artifact-cover",
+      name: "diagram.svg",
+      mediaType: "image/svg+xml",
+      sizeBytes: 2_048,
+      integrityId: "sha256:abc",
+      storedUrl: "/api/v1/uploads/reply%3Amsg%3Acover-part/content",
+      contentUrl: "/api/v1/threads/t/messages/m/reply-attachments/cover-part/content?expires=1234567890&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    } as const;
+    render(attachment(value));
+
+    expect(screen.getByRole("region", { name: "File attachment: diagram.svg" })).toBeVisible();
+    expect(document.querySelector("img, object, embed, iframe")).toBeNull();
+  });
+
+  it("refuses an off-origin durable copy and falls back to the capability path", async () => {
+    const value = {
+      type: "attachment",
+      id: "cover-part",
+      artifactId: "artifact-cover",
+      name: "cover.png",
+      mediaType: "image/png",
+      sizeBytes: 4,
+      integrityId: "sha256:abc",
+      storedUrl: "https://attacker.example/cover.png",
+      contentUrl: "/api/v1/threads/t/messages/m/reply-attachments/cover-part/content?expires=1234567890&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    } as const;
+    vi.spyOn(api, "replyAttachmentContent").mockResolvedValue(new Response("abcd", {
+      headers: { "content-length": "4", "content-type": "image/png", "x-mono-agent-integrity-id": "sha256:abc" },
+    }));
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:reply-image") });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    const view = render(attachment(value));
+
+    // Nothing outside our own upload route may ever become an image source.
+    await waitFor(() => expect(screen.getByRole("img", { name: "cover.png" })).toHaveAttribute("src", "blob:reply-image"));
+    expect(document.querySelector('img[src^="https://attacker.example"]')).toBeNull();
+    // Unmount here, while the object-URL stub is still installed: the shared
+    // teardown restores jsdom's own (absent) implementation.
+    view.unmount();
+  });
+
+  it("does not inline an image whose bytes contradict the declared integrity", async () => {
+    const value = {
+      type: "attachment",
+      id: "cover-part",
+      artifactId: "artifact-cover",
+      name: "cover.png",
+      mediaType: "image/png",
+      sizeBytes: 4,
+      integrityId: "sha256:abc",
+      contentUrl: "/api/v1/threads/t/messages/m/reply-attachments/cover-part/content?expires=1234567890&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    } as const;
+    vi.spyOn(api, "replyAttachmentContent").mockResolvedValue(new Response("abcd", {
+      headers: { "content-length": "4", "x-mono-agent-integrity-id": "sha256:wrong" },
+    }));
+    const createObjectUrl = vi.fn(() => "blob:reply-image");
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectUrl });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    render(attachment(value));
+
+    await waitFor(() => expect(api.replyAttachmentContent).toHaveBeenCalled());
+    expect(createObjectUrl).not.toHaveBeenCalled();
+    expect(document.querySelector("img")).toBeNull();
+  });
+
   it("renders an accessible download-only reference without inlining active content", () => {
     const value = {
       type: "attachment",

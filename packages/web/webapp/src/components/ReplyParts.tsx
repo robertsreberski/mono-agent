@@ -17,6 +17,7 @@ import { ApiError, api, isReplyAccessExpired, sameOriginReplyUrl } from "../api"
 import { isMcpAppProtocolVersion } from "../mcp-app-protocol";
 import type { McpAppPart, McpAppResource, MessagePart } from "../types";
 import { Icon } from "./Icon";
+import { ImageTile } from "./ImageGallery";
 import {
   mcpAppContentSecurityPolicy,
   secureMcpAppHtml,
@@ -357,6 +358,73 @@ export const startReplyAttachmentDownload = (blob: Blob, name: string): void => 
   }
 };
 
+/**
+ * Raster types only. `image/svg+xml` is active content — the service refuses to
+ * store it and `setReplyDownloadHeaders` downgrades it to an octet stream — so
+ * it stays a download card here too.
+ */
+const REPLY_IMAGE_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const STORED_REPLY_IMAGE_PATH = /^\/api\/v1\/uploads\/[^/?#]+\/content$/u;
+
+const isReplyImage = (mediaType: string | undefined): boolean =>
+  mediaType !== undefined && REPLY_IMAGE_MEDIA_TYPES.has(mediaType.toLowerCase());
+
+/**
+ * The console's own durable copy. Shape-checked rather than trusted: this value
+ * reaches the browser in the same DTO as agent-supplied fields, and only our own
+ * upload route may ever be rendered as an image.
+ */
+const storedReplyImageUrl = (part: { readonly mediaType: string; readonly storedUrl?: string } | undefined) =>
+  part !== undefined && isReplyImage(part.mediaType)
+    && part.storedUrl !== undefined && STORED_REPLY_IMAGE_PATH.test(part.storedUrl)
+    ? part.storedUrl
+    : undefined;
+
+/**
+ * Fallback for an image with no durable copy yet. Goes through `fetch` rather
+ * than pointing an `<img>` at the capability URL, because only this path can
+ * check the integrity headers and reach the one-shot access refresh — an
+ * `<img>` `onerror` reports no status at all.
+ */
+function useReplyImageBlob(
+  enabled: boolean,
+  contentUrl: string | undefined,
+  sizeBytes: number | undefined,
+  integrityId: string | undefined,
+): string | undefined {
+  const [objectUrl, setObjectUrl] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    if (!enabled || contentUrl === undefined || sizeBytes === undefined || integrityId === undefined) {
+      return undefined;
+    }
+    const controller = new AbortController();
+    let created: string | undefined;
+    void (async () => {
+      try {
+        const response = await api.replyAttachmentContent(contentUrl, controller.signal);
+        if (controller.signal.aborted) return;
+        const declaredLength = response.headers.get("content-length");
+        if (
+          (declaredLength !== null && Number(declaredLength) !== sizeBytes)
+          || response.headers.get("x-mono-agent-integrity-id") !== integrityId
+        ) return;
+        const blob = await response.blob();
+        if (controller.signal.aborted || blob.size !== sizeBytes) return;
+        created = URL.createObjectURL(blob);
+        setObjectUrl(created);
+      } catch {
+        // Showing the image is best-effort; the download action still reports.
+      }
+    })();
+    return () => {
+      controller.abort();
+      if (created !== undefined) URL.revokeObjectURL(created);
+      setObjectUrl(undefined);
+    };
+  }, [enabled, contentUrl, sizeBytes, integrityId]);
+  return objectUrl;
+}
+
 export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
   const part = parseAttachment(data);
   const identity = attachmentIdentity(part);
@@ -404,6 +472,15 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
     };
   }
 
+  const storedImage = storedReplyImageUrl(part);
+  const blobImage = useReplyImageBlob(
+    storedImage === undefined && isReplyImage(part?.mediaType),
+    declaredContentUrl,
+    part?.sizeBytes,
+    part?.integrityId,
+  );
+  const imageSource = storedImage ?? blobImage;
+
   if (part === undefined) {
     return <div className="reply-part-error" role="alert">An attachment reference was invalid.</div>;
   }
@@ -418,8 +495,13 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
     : downloadFeedback?.identity === identity ? downloadFeedback.status : "";
 
   return (
-    <section className="reply-attachment" aria-label={`File attachment: ${part.name}`}>
-      <span className="reply-part-icon"><Icon name="file" size={16} /></span>
+    <section
+      className={`reply-attachment${imageSource === undefined ? "" : " is-image"}`}
+      aria-label={`File attachment: ${part.name}`}
+    >
+      {imageSource === undefined
+        ? <span className="reply-part-icon"><Icon name="file" size={16} /></span>
+        : <ImageTile image={{ key: part.id, src: imageSource, name: part.name }} />}
       <span className="reply-part-copy">
         <strong>{part.name}</strong>
         <span>{part.mediaType} · {formatBytes(part.sizeBytes)}</span>

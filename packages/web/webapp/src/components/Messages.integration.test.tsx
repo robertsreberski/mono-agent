@@ -102,6 +102,76 @@ const userMessage: WebMessage = {
 };
 
 describe("AssistantMessage grouped parts", () => {
+
+  const upload = (id: string, name: string, kind: "image" | "document", contentType: string) => ({
+    id,
+    name,
+    contentType,
+    sizeBytes: 2_048,
+    kind,
+    status: "committed" as const,
+    uploaded: true,
+    createdAt: "2026-07-17T10:00:00.000Z",
+    contentUrl: `/api/v1/uploads/${id}/content`,
+  });
+
+  it("shows sent images as a gallery while documents keep their file chip", () => {
+    render(<MessageHarness message={{
+      ...userMessage,
+      attachments: [
+        upload("one", "first.png", "image", "image/png"),
+        upload("two", "brief.pdf", "document", "application/pdf"),
+      ],
+    }} />);
+
+    const image = screen.getByRole("img", { name: "first.png" });
+    expect(image).toHaveAttribute("src", "/api/v1/uploads/one/content");
+    // An image is the content, so it must not also appear as a filed chip.
+    expect(document.querySelectorAll(".attachment-chip")).toHaveLength(1);
+    expect(screen.getByText("brief.pdf")).toBeVisible();
+    expect(document.querySelector(".attachment-chip img")).toBeNull();
+  });
+
+  it("opens a sent image full size and pages across the others", () => {
+    render(<MessageHarness message={{
+      ...userMessage,
+      attachments: [
+        upload("one", "first.png", "image", "image/png"),
+        upload("two", "second.png", "image", "image/png"),
+        upload("three", "third.png", "image", "image/png"),
+      ],
+    }} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "View second.png" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("2 / 3")).toBeVisible();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Next image" }));
+    expect(within(screen.getByRole("dialog")).getByText("3 / 3")).toBeVisible();
+    // Paging wraps, so the set can be walked without hunting for the end.
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Next image" }));
+    expect(within(screen.getByRole("dialog")).getByText("1 / 3")).toBeVisible();
+
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(within(screen.getByRole("dialog")).getByText("3 / 3")).toBeVisible();
+
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close image" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("offers no paging for a single image", () => {
+    render(<MessageHarness message={{
+      ...userMessage,
+      attachments: [upload("one", "only.png", "image", "image/png")],
+    }} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "View only.png" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).queryByRole("button", { name: "Next image" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Previous image" })).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Close image" })).toBeVisible();
+  });
+
   it("shows the delivery state for live follow-up user messages", () => {
     render(<MessageHarness message={{ ...userMessage, liveInputStatus: "applied" }} />);
 

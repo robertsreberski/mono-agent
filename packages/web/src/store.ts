@@ -186,6 +186,12 @@ export interface StoredAttachment {
   readonly kind: "image" | "document";
   readonly status: "staged" | "committed";
   readonly uploaded: boolean;
+  /**
+   * `upload` is a file the operator sent. `reply` is the console's own durable
+   * copy of an image the agent published, kept so it outlives the agent's
+   * retention deadline and stays viewable while that agent is stopped.
+   */
+  readonly origin: "upload" | "reply";
   readonly storageName: string;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -201,6 +207,7 @@ interface AttachmentRow {
   kind: string;
   status: string;
   uploaded: number;
+  origin: string;
   storage_name: string;
   created_at: string;
   updated_at: string;
@@ -424,7 +431,7 @@ export function escapeLikeTerm(raw: string): string {
   return raw.replaceAll(/[\\%_]/gu, (character) => `\\${character}`);
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 9;
+const WEB_STORAGE_SCHEMA_VERSION = 10;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
 export const WEB_MESSAGE_PAGE_MAX = 100;
@@ -2052,6 +2059,55 @@ export class WebStore {
     return row === undefined ? undefined : mapStoredAttachment(row);
   }
 
+  /**
+   * Durable copies are keyed by the part that produced them, so re-observing a
+   * message — a reconnect, a replay, a second read of the same thread — cannot
+   * store the same image twice.
+   */
+  static replyAttachmentId(messageId: string, partId: string): string {
+    return `reply:${encodeURIComponent(messageId)}:${encodeURIComponent(partId)}`;
+  }
+
+  storedReplyAttachment(messageId: string, partId: string): StoredAttachment | undefined {
+    const attachment = this.getStoredAttachment(WebStore.replyAttachmentId(messageId, partId));
+    return attachment?.origin === "reply" ? attachment : undefined;
+  }
+
+  /**
+   * Records an already-written durable copy. Committed on arrival and bound to
+   * its thread, so the staged-upload purge and the staged-only delete route both
+   * pass it over, while the thread's own delete cascade still reclaims it.
+   */
+  recordReplyAttachment(input: {
+    readonly threadId: string;
+    readonly messageId: string;
+    readonly partId: string;
+    readonly name: string;
+    readonly contentType: string;
+    readonly sizeBytes: number;
+    readonly storageName: string;
+  }): StoredAttachment {
+    const id = WebStore.replyAttachmentId(input.messageId, input.partId);
+    const now = this.now();
+    this.database.prepare(`
+      INSERT INTO attachments (
+        id, thread_id, message_id, name, content_type, size_bytes, kind,
+        status, uploaded, origin, storage_name, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'image', 'committed', 1, 'reply', ?, ?, ?)
+    `).run(
+      id,
+      input.threadId,
+      input.messageId,
+      input.name,
+      input.contentType,
+      input.sizeBytes,
+      input.storageName,
+      now,
+      now,
+    );
+    return this.requireStoredAttachment(id);
+  }
+
   stagedUploadUsage(): { readonly count: number; readonly bytes: number } {
     const row = this.database.prepare(`
       SELECT COUNT(*) AS count, COALESCE(SUM(size_bytes), 0) AS bytes
@@ -3067,6 +3123,7 @@ export class WebStore {
         kind TEXT NOT NULL,
         status TEXT NOT NULL,
         uploaded INTEGER NOT NULL DEFAULT 0,
+        origin TEXT NOT NULL DEFAULT 'upload' CHECK (origin IN ('upload', 'reply')),
         storage_name TEXT NOT NULL UNIQUE,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -3261,6 +3318,18 @@ export class WebStore {
         // cannot have fired yet; the clear-then-insert is a no-op on a fresh
         // database and idempotent if the sweep is ever re-run.
         if (versionRow.user_version < 9) this.database.exec(MESSAGE_SEARCH_BACKFILL_SQL);
+        // Durable copies of agent-published images share the upload table so that
+        // thread deletion, archival file cleanup, and every existing purge surface
+        // reach them without a second store to keep in sync.
+        if (versionRow.user_version < 10) {
+          const columns = new Set((this.database.prepare("PRAGMA table_info(attachments)").all() as Array<{ name: string }>)
+            .map((column) => column.name));
+          if (!columns.has("origin")) {
+            this.database.exec(
+              "ALTER TABLE attachments ADD COLUMN origin TEXT NOT NULL DEFAULT 'upload' CHECK (origin IN ('upload', 'reply'))",
+            );
+          }
+        }
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
       } catch (error) {
         if (this.database.isTransaction) this.database.exec("ROLLBACK");
@@ -3684,7 +3753,8 @@ export class WebStore {
   }
 
   private mapMessage(row: MessageRow): WebMessage {
-    const attachments = this.database.prepare("SELECT * FROM attachments WHERE message_id = ? ORDER BY created_at, id")
+    const attachments = this.database
+      .prepare("SELECT * FROM attachments WHERE message_id = ? AND origin = 'upload' ORDER BY created_at, id")
       .all(row.id) as unknown as AttachmentRow[];
     const storedParts = parseParts(row.parts_json);
     const quote = quoteFromParts(storedParts);
@@ -4399,6 +4469,7 @@ function mapStoredAttachment(row: AttachmentRow): StoredAttachment {
     kind: row.kind === "image" ? "image" : "document",
     status: row.status === "committed" ? "committed" : "staged",
     uploaded: row.uploaded === 1,
+    origin: row.origin === "reply" ? "reply" : "upload",
     storageName: row.storage_name,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

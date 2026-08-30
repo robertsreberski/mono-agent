@@ -1,4 +1,5 @@
-import { writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -1324,6 +1325,172 @@ describe("WebService", () => {
     ]);
     unsubscribe();
     await service.stop();
+  });
+
+  /**
+   * A durable copy of a generated image. `imageBytes` is a real PNG header plus
+   * filler so the digest is honest rather than hand-written.
+   */
+  const replyImage = (): { readonly bytes: Buffer; readonly integrityId: string } => {
+    const bytes = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.alloc(24, 7),
+    ]);
+    return { bytes, integrityId: `sha256:${createHash("sha256").update(bytes).digest("hex")}` };
+  };
+
+  const imageTurn = (
+    image: { readonly bytes: Buffer; readonly integrityId: string },
+    overrides: Record<string, unknown> = {},
+  ) => ({
+    supportsReplyAttachments: true,
+    turns: () => `${JSON.stringify({
+      kind: "finish",
+      finalText: "Here it is",
+      parts: [{
+        type: "attachment",
+        id: "cover-part",
+        reference: { scheme: "mono-agent-artifact", id: "artifact-cover" },
+        name: "cover.png",
+        mediaType: "image/png",
+        sizeBytes: image.bytes.byteLength,
+        integrityId: image.integrityId,
+        expiresAt: "2026-09-29T12:00:00.000Z",
+        ...overrides,
+      }],
+    })}\n`,
+    onReplyArtifact: () => artifactResponse(image, image.bytes),
+  });
+
+  /**
+   * `body` is deliberately separate from the declared metadata: the operator
+   * client only compares headers, so sending honest headers with dishonest bytes
+   * is the one way to exercise the service's own digest check.
+   */
+  const artifactResponse = (
+    declared: { readonly bytes: Buffer; readonly integrityId: string },
+    body: Buffer,
+  ): Response => new Response(new Uint8Array(body), {
+    status: 200,
+    headers: {
+      "content-length": String(declared.bytes.byteLength),
+      "x-mono-agent-integrity-id": declared.integrityId,
+    },
+  });
+
+  it("keeps its own copy of a generated image so it outlives the agent's retention deadline", async () => {
+    const image = replyImage();
+    let clockMs = Date.parse("2026-08-30T12:00:00.000Z");
+    const service = await createService({
+      clock: () => new Date(clockMs),
+      fetchImpl: operatorFetch(imageTurn(image)),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "make a cover" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    const messageId = service.thread(thread.id).messages.at(-1)!.id;
+    await waitFor(() => service.store.storedReplyAttachment(messageId, "cover-part") !== undefined);
+
+    const stored = service.store.storedReplyAttachment(messageId, "cover-part")!;
+    expect(stored).toMatchObject({ origin: "reply", kind: "image", contentType: "image/png", status: "committed" });
+    expect(stored.sizeBytes).toBe(image.bytes.byteLength);
+    expect(await readFile(service.store.attachmentPath(stored))).toEqual(image.bytes);
+
+    const part = service.thread(thread.id).messages.at(-1)!.parts
+      .find((candidate) => candidate.type === "attachment")!;
+    expect(part.storedUrl).toBe(`/api/v1/uploads/${encodeURIComponent(stored.id)}/content`);
+
+    // Re-reading the thread must not fetch or store the same image twice.
+    service.thread(thread.id);
+    service.thread(thread.id);
+    await new Promise((settle) => setTimeout(settle, 20));
+    expect(await readdir(service.store.paths.uploads)).toHaveLength(1);
+    expect(service.store.storedReplyAttachment(messageId, "cover-part")?.id).toBe(stored.id);
+
+    // Past the retention deadline the capability is gone, which is exactly when
+    // the stored copy has to carry the image on its own.
+    clockMs = Date.parse("2026-10-01T12:00:00.000Z");
+    const expired = service.thread(thread.id).messages.at(-1)!.parts
+      .find((candidate) => candidate.type === "attachment")!;
+    expect(expired.contentUrl).toBeUndefined();
+    expect(expired.storedUrl).toBe(`/api/v1/uploads/${encodeURIComponent(stored.id)}/content`);
+  });
+
+  it("refuses to store an image whose bytes do not match the digest the agent declared", async () => {
+    const image = replyImage();
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        ...imageTurn(image),
+        onReplyArtifact: () => artifactResponse(image, Buffer.alloc(image.bytes.byteLength, 9)),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "make a cover" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    const messageId = service.thread(thread.id).messages.at(-1)!.id;
+    await new Promise((settle) => setTimeout(settle, 30));
+
+    // Neither a row nor a file: a corrupt artifact must never reach a stable URL
+    // that outlives the source able to contradict it.
+    expect(service.store.storedReplyAttachment(messageId, "cover-part")).toBeUndefined();
+    expect(await readdir(service.store.paths.uploads)).toEqual([]);
+    const part = service.thread(thread.id).messages.at(-1)!.parts
+      .find((candidate) => candidate.type === "attachment")!;
+    expect(part.storedUrl).toBeUndefined();
+    expect(part.contentUrl).toBeDefined();
+  });
+
+  it("never stores an SVG reply, which is active content rather than a raster image", async () => {
+    const image = replyImage();
+    const service = await createService({
+      fetchImpl: operatorFetch(imageTurn(image, { mediaType: "image/svg+xml", name: "cover.svg" })),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "make a cover" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    const messageId = service.thread(thread.id).messages.at(-1)!.id;
+    await new Promise((settle) => setTimeout(settle, 30));
+
+    expect(service.store.storedReplyAttachment(messageId, "cover-part")).toBeUndefined();
+    expect(await readdir(service.store.paths.uploads)).toEqual([]);
+  });
+
+  it("leaves the turn and the capability path intact when the image cannot be fetched", async () => {
+    const image = replyImage();
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        ...imageTurn(image),
+        onReplyArtifact: () => new Response("gone", { status: 503 }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "make a cover" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    await new Promise((settle) => setTimeout(settle, 30));
+
+    // The turn still succeeded, and the part still has its ordinary capability.
+    expect(service.store.getThread(thread.id)?.runState.status).toBe("complete");
+    const part = service.thread(thread.id).messages.at(-1)!.parts
+      .find((candidate) => candidate.type === "attachment")!;
+    expect(part.storedUrl).toBeUndefined();
+    expect(part.contentUrl).toBeDefined();
+  });
+
+  it("reclaims a stored image and its bytes when the conversation is deleted", async () => {
+    const image = replyImage();
+    const service = await createService({ fetchImpl: operatorFetch(imageTurn(image)) });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "make a cover" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    const messageId = service.thread(thread.id).messages.at(-1)!.id;
+    await waitFor(() => service.store.storedReplyAttachment(messageId, "cover-part") !== undefined);
+    expect(await readdir(service.store.paths.uploads)).toHaveLength(1);
+
+    service.patchThread(thread.id, { archived: true });
+    await service.deleteThread(thread.id);
+    expect(service.store.storedReplyAttachment(messageId, "cover-part")).toBeUndefined();
+    // Unbounded retention is only defensible while deletion actually reclaims it.
+    expect(await readdir(service.store.paths.uploads)).toEqual([]);
   });
 
   it("persists rich reply references and authorizes attachment/app access by exact message token", async () => {
