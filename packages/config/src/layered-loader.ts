@@ -1,4 +1,4 @@
-import { readMonoAgentConfigJson } from "./json-source.js";
+import { assertNoRetiredMonoAgentConfigJson, readMonoAgentConfigJson } from "./json-source.js";
 import type {
   MonoAgentConfigJson,
   MonoAgentMemoryConsolidationJson,
@@ -25,7 +25,7 @@ export interface LoadMonoAgentConfigWithSourcesInput {
  * Precedence (highest first):
  *   1. process env
  *   2. mono-agent.config.json
- *   3. built-in defaults from loadMonoAgentConfig (executionMode, sessions, etc.)
+ *   3. built-in defaults from loadMonoAgentConfig (sessions, retry policy, etc.)
  *
  * Returns the same `MonoAgentConfig` shape as `loadMonoAgentConfig` so
  * existing call sites only need to swap the loader.
@@ -193,11 +193,6 @@ const MEMORY_JSON_SOURCES = {
   MONO_AGENT_MEMORY_LLM_MODEL: jsonMemorySource(
     "memory.llm.model",
     (memory) => memory.llm?.model,
-    "bujo",
-  ),
-  MONO_AGENT_MEMORY_LLM_EXECUTION_MODE: jsonMemorySource(
-    "memory.llm.executionMode",
-    (memory) => memory.llm?.executionMode,
     "bujo",
   ),
   MONO_AGENT_MEMORY_LLM_ENDPOINT: jsonMemorySource(
@@ -481,7 +476,6 @@ function validateJsonMemoryLlmFields(
   const stringFields = [
     ["provider", "MONO_AGENT_MEMORY_LLM_PROVIDER"],
     ["model", "MONO_AGENT_MEMORY_LLM_MODEL"],
-    ["executionMode", "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE"],
     ["endpoint", "MONO_AGENT_MEMORY_LLM_ENDPOINT"],
   ] as const;
   for (const [field, envName] of stringFields) {
@@ -600,7 +594,6 @@ function jsonLlmActive(value: MonoAgentMemoryLlmJson | undefined): boolean {
   return value !== undefined && (
     hasJsonString(value.provider)
     || hasJsonString(value.model)
-    || hasJsonString(value.executionMode)
     || hasJsonString(value.endpoint)
     || value.trace !== undefined
     || value.timeoutMs !== undefined
@@ -634,6 +627,7 @@ export function layerJsonOntoEnv(
   json: MonoAgentConfigJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
+  assertNoRetiredMonoAgentConfigJson(json);
   validateJsonRuntimeCompaction(json);
   const fromJson: Record<string, string | undefined> = {};
   if (json.agent?.name !== undefined) {
@@ -642,17 +636,8 @@ export function layerJsonOntoEnv(
   if (json.runtime?.model !== undefined) {
     fromJson.MONO_AGENT_MODEL = json.runtime.model;
   }
-  // Legacy CSV intentionally uses an empty string to clear JSON fallbacks.
-  // Canonical JSON clears with `[]`; an empty JSON string remains unset.
-  const fallbackEnvPresent = hasValue(env.MONO_AGENT_FALLBACKS_JSON)
-    || env.MONO_AGENT_FALLBACK_MODELS !== undefined;
-  if (!fallbackEnvPresent) {
-    if (json.runtime?.fallbackModels !== undefined) {
-      fromJson.MONO_AGENT_FALLBACK_MODELS = csv(json.runtime.fallbackModels);
-    }
-    if (json.runtime?.fallbacks !== undefined) {
-      fromJson.MONO_AGENT_FALLBACKS_JSON = JSON.stringify(json.runtime.fallbacks);
-    }
+  if (!hasValue(env.MONO_AGENT_FALLBACKS_JSON) && json.runtime?.fallbacks !== undefined) {
+    fromJson.MONO_AGENT_FALLBACKS_JSON = JSON.stringify(json.runtime.fallbacks);
   }
   if (json.runtime?.retry?.primaryAttempts !== undefined) {
     fromJson.MONO_AGENT_RETRY_PRIMARY_ATTEMPTS = String(json.runtime.retry.primaryAttempts);
@@ -665,12 +650,6 @@ export function layerJsonOntoEnv(
   }
   if (json.subagents !== undefined && !hasValue(env.MONO_AGENT_SUBAGENTS_JSON)) {
     fromJson.MONO_AGENT_SUBAGENTS_JSON = JSON.stringify(json.subagents);
-  }
-  if (json.runtime?.routeSafety !== undefined) {
-    fromJson.MONO_AGENT_ROUTE_SAFETY = json.runtime.routeSafety;
-  }
-  if (json.runtime?.executionMode !== undefined) {
-    fromJson.MONO_AGENT_EXECUTION_MODE = json.runtime.executionMode;
   }
   if (json.runtime?.effort !== undefined) {
     fromJson.MONO_AGENT_EFFORT = json.runtime.effort;
@@ -832,9 +811,6 @@ export function layerJsonOntoEnv(
   if (json.memory?.llm?.model !== undefined) {
     fromJson.MONO_AGENT_MEMORY_LLM_MODEL = json.memory.llm.model;
   }
-  if (json.memory?.llm?.executionMode !== undefined) {
-    fromJson.MONO_AGENT_MEMORY_LLM_EXECUTION_MODE = json.memory.llm.executionMode;
-  }
   if (json.memory?.llm?.trace !== undefined) {
     fromJson.MONO_AGENT_MEMORY_LLM_TRACE = String(json.memory.llm.trace);
   }
@@ -980,10 +956,7 @@ export function layerJsonOntoEnv(
   // env wins: spread env last
   const layered: Record<string, string | undefined> = { ...fromJson };
   for (const [key, value] of Object.entries(env)) {
-    if (
-      value !== undefined
-      && (value.trim().length > 0 || key === "MONO_AGENT_FALLBACK_MODELS")
-    ) {
+    if (value !== undefined && value.trim().length > 0) {
       layered[key] = value;
     }
   }

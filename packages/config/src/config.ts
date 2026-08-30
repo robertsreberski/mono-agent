@@ -2,16 +2,13 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 import {
-  assertExecutionModeCompatible,
-  defaultExecutionModeForModel,
-  isRuntimeExecutionMode,
   modelReferenceKey,
   parseMonoRuntimeModelReference,
   PI_TRANSPORTS,
   RuntimeAdapterError,
   validateLocalProviderDefinition,
 } from "@mono-agent/runtime-adapter";
-import type { LocalProviderDefinition, LocalProviderModelDefinition, PiTransport, RuntimeExecutionMode } from "@mono-agent/runtime-adapter";
+import type { LocalProviderDefinition, LocalProviderModelDefinition, PiTransport } from "@mono-agent/runtime-adapter";
 import {
   SANDBOX_FALLBACKS,
   SANDBOX_MODES,
@@ -39,16 +36,14 @@ import {
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
   PERMISSION_MODES,
-  ROUTE_SAFETY_MODES,
 } from "./enums.js";
-import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, RouteSafetyMode, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
+import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
   | "invalid_env"
   | "invalid_json"
-  | "invalid_model_reference"
-  | "incompatible_execution_mode";
+  | "invalid_model_reference";
 
 export interface MonoAgentConfigErrorDetails {
   readonly code?: MonoAgentConfigErrorCode;
@@ -82,6 +77,34 @@ export interface LoadMonoAgentConfigInput {
   readonly cwd: string;
 }
 
+/**
+ * Retired settings stay explicit here so every loader entry point gives the
+ * same repair instead of silently dropping a fallback chain or surfacing an
+ * unactionable unknown-key error from a host-owned schema.
+ */
+export const RETIRED_CONFIG_FIELDS = [
+  {
+    path: "runtime.executionMode",
+    env: "MONO_AGENT_EXECUTION_MODE",
+    message: "`runtime.executionMode` was removed; mono-agent runs only the Pi runtime (SDK). Delete the key.",
+  },
+  {
+    path: "runtime.routeSafety",
+    env: "MONO_AGENT_ROUTE_SAFETY",
+    message: "`runtime.routeSafety` was removed; every route is Pi-native, so `per-route-native` has no meaning. Delete the key.",
+  },
+  {
+    path: "runtime.fallbackModels",
+    env: "MONO_AGENT_FALLBACK_MODELS",
+    message: "`runtime.fallbackModels` was replaced by `runtime.fallbacks: [{ \"model\": \"...\" }]`. Replace the key with that shape.",
+  },
+  {
+    path: "memory.llm.executionMode",
+    env: "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
+    message: "`memory.llm.executionMode` was removed for the same reason as `runtime.executionMode`: mono-agent runs only the Pi runtime (SDK). Delete the key.",
+  },
+] as const;
+
 const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MEMORY_MAX_BYTES = 64_000;
 const DEFAULT_EMBEDDINGS_MODELS: Record<MemoryEmbeddingsProvider, string> = {
@@ -96,7 +119,6 @@ const DEFAULT_EMBEDDINGS_MODELS: Record<MemoryEmbeddingsProvider, string> = {
 export const MEMORY_LLM_ENV_KEYS = [
   "MONO_AGENT_MEMORY_LLM_MODEL",
   "MONO_AGENT_MEMORY_LLM_PROVIDER",
-  "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
   "MONO_AGENT_MEMORY_LLM_ENDPOINT",
   "MONO_AGENT_MEMORY_LLM_TRACE",
   "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
@@ -114,14 +136,13 @@ const DEFAULT_PI_AUTH_PATH = resolve(homedir(), ".pi", "agent", "auth.json");
 export const MAX_AGENT_NAME_LENGTH = 80;
 
 export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentConfig {
+  assertNoRetiredConfigEnv(input.env);
   const cwd = normalizeCwd(input.cwd);
   const agentName = readAgentName(input.env.MONO_AGENT_NAME);
   const model = parseModel(readRequired(input.env, "MONO_AGENT_MODEL"));
-  const fallbackModels = readFallbackModels(input.env);
   const fallbacks = readFallbacks(input.env);
   const retry = readRetryConfig(input.env);
-  assertUniqueFallbackRoutes(model, fallbackModels, fallbacks);
-  const executionMode = parseExecutionMode(input.env.MONO_AGENT_EXECUTION_MODE, model);
+  assertUniqueFallbackRoutes(model, fallbacks);
   const maxTurns = readMaxTurns(input.env.MONO_AGENT_MAX_TURNS);
   const compaction = readRuntimeCompactionConfig(input.env);
   const workspace = readPath(input.env.MONO_AGENT_WORKSPACE, cwd, cwd);
@@ -154,27 +175,14 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const localProviders = readLocalProviders(input.env);
   const piNative = readPiNativeProviderConfig(input.env, cwd);
 
-  assertModeCompatibility(model, executionMode);
-
   const effort = readEffort(input.env.MONO_AGENT_EFFORT);
-  const routeSafety = readChoice<RouteSafetyMode>(
-    input.env.MONO_AGENT_ROUTE_SAFETY,
-    "MONO_AGENT_ROUTE_SAFETY",
-    ROUTE_SAFETY_MODES,
-    "uniform",
-    invalidEnv,
-  );
   const permissionMode = readPermissionMode(input.env.MONO_AGENT_PERMISSION_MODE);
   const concurrency = readConcurrencyConfig(input.env);
   const subagents = readSubagentsConfig(input.env, cwd);
-  assertNoStaticAcpRoutes(model, fallbackModels, fallbacks, subagents);
   const runtime: MonoAgentConfig["runtime"] = {
     model,
-    ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
     ...(fallbacks.length === 0 ? {} : { fallbacks }),
     retry,
-    routeSafety,
-    executionMode,
     ...(maxTurns === undefined ? {} : { maxTurns }),
     compaction,
     workspace,
@@ -275,6 +283,15 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   return config;
 }
 
+function assertNoRetiredConfigEnv(env: Record<string, string | undefined>): void {
+  const retired = RETIRED_CONFIG_FIELDS.find((field) => env[field.env] !== undefined);
+  if (retired === undefined) return;
+  throw new MonoAgentConfigError("invalid_env", retired.message, {
+    env: retired.env,
+    path: retired.path,
+  });
+}
+
 export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgentConfig {
   const redacted: RedactedMonoAgentConfig = {
     ...(config.agent === undefined ? {} : { agent: { ...config.agent } }),
@@ -354,33 +371,10 @@ function parseModel(raw: string): MonoAgentConfig["runtime"]["model"] {
   }
 }
 
-function readFallbackModels(env: Record<string, string | undefined>): readonly MonoAgentConfig["runtime"]["model"][] {
-  const models = readCsv(env.MONO_AGENT_FALLBACK_MODELS).map((raw) => {
-    try {
-      return parseMonoRuntimeModelReference(raw);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new MonoAgentConfigError(
-        "invalid_model_reference",
-        `MONO_AGENT_FALLBACK_MODELS entry \`${raw}\` is not a valid runtime model reference.`,
-        { env: "MONO_AGENT_FALLBACK_MODELS", reason },
-      );
-    }
-  });
-  return models;
-}
-
 function readFallbacks(env: Record<string, string | undefined>): readonly RuntimeFallbackConfig[] {
   const raw = normalizeOptionalString(env.MONO_AGENT_FALLBACKS_JSON);
   if (raw === undefined) {
     return [];
-  }
-  if (normalizeOptionalString(env.MONO_AGENT_FALLBACK_MODELS) !== undefined) {
-    throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_FALLBACKS_JSON and legacy MONO_AGENT_FALLBACK_MODELS cannot both be set.",
-      { env: "MONO_AGENT_FALLBACKS_JSON", conflictsWith: "MONO_AGENT_FALLBACK_MODELS" },
-    );
   }
   let parsed: unknown;
   try {
@@ -678,14 +672,10 @@ function parseFallbackModel(raw: string, env: string, index: number): MonoAgentC
 
 function assertUniqueFallbackRoutes(
   primary: MonoAgentConfig["runtime"]["model"],
-  legacy: readonly MonoAgentConfig["runtime"]["model"][],
   canonical: readonly RuntimeFallbackConfig[],
 ): void {
   const seen = new Map<string, string>([[modelReferenceKey(primary), "runtime.model"]]);
-  const routes = [
-    ...legacy.map((model, index) => ({ model, path: `runtime.fallbackModels[${index}]` })),
-    ...canonical.map((entry, index) => ({ model: entry.model, path: `runtime.fallbacks[${index}]` })),
-  ];
+  const routes = canonical.map((entry, index) => ({ model: entry.model, path: `runtime.fallbacks[${index}]` }));
   for (const route of routes) {
     const key = modelReferenceKey(route.model);
     const first = seen.get(key);
@@ -698,52 +688,6 @@ function assertUniqueFallbackRoutes(
     }
     seen.set(key, route.path);
   }
-}
-
-function assertNoStaticAcpRoutes(
-  primary: MonoAgentConfig["runtime"]["model"],
-  legacy: readonly MonoAgentConfig["runtime"]["model"][],
-  canonical: readonly RuntimeFallbackConfig[],
-  subagents: MonoAgentConfig["subagents"],
-): void {
-  const routes: Array<{
-    model: MonoAgentConfig["runtime"]["model"];
-    path: string;
-    env: string;
-  }> = [
-    { model: primary, path: "runtime.model", env: "MONO_AGENT_MODEL" },
-    ...legacy.map((model, index) => ({
-      model,
-      path: `runtime.fallbackModels[${index}]`,
-      env: "MONO_AGENT_FALLBACK_MODELS",
-    })),
-    ...canonical.map((entry, index) => ({
-      model: entry.model,
-      path: `runtime.fallbacks[${index}]`,
-      env: "MONO_AGENT_FALLBACKS_JSON",
-    })),
-  ];
-  if (subagents?.enabled === true) {
-    for (const [index, definition] of (subagents.definitions || []).entries()) {
-      if (definition.model === undefined) continue;
-      routes.push({
-        model: definition.model,
-        path: `subagents.definitions[${index}].model`,
-        env: "MONO_AGENT_SUBAGENTS_JSON",
-      });
-    }
-  }
-  const route = routes.find((candidate) => candidate.model.sdk === "acp");
-  if (route === undefined) return;
-  throw new MonoAgentConfigError(
-    "incompatible_execution_mode",
-    "Static mono-agent configuration cannot consume an ACP profile because the app has no host profile resolver. Use the programmatic runtime adapter from a host that supplies resolveAcpProfile.",
-    {
-      env: route.env,
-      path: route.path,
-      model: modelReferenceKey(route.model),
-    },
-  );
 }
 
 function readAgentName(raw: string | undefined): string | undefined {
@@ -926,33 +870,6 @@ function readMemoryArtifactRetentionConfig(
       invalidEnv,
     ),
   };
-}
-
-function parseExecutionMode(raw: string | undefined, model: MonoAgentConfig["runtime"]["model"]): RuntimeExecutionMode {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return defaultExecutionModeForModel(model);
-  }
-  if (!isRuntimeExecutionMode(normalized)) {
-    throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_EXECUTION_MODE must be sdk or cli.", {
-      env: "MONO_AGENT_EXECUTION_MODE",
-    });
-  }
-  return normalized;
-}
-
-function assertModeCompatibility(model: MonoAgentConfig["runtime"]["model"], executionMode: RuntimeExecutionMode): void {
-  try {
-    assertExecutionModeCompatible(model, executionMode);
-  } catch (error) {
-    if (error instanceof RuntimeAdapterError && error.code === "incompatible_execution_mode") {
-      throw new MonoAgentConfigError("incompatible_execution_mode", "Runtime model and execution mode are incompatible.", {
-        env: "MONO_AGENT_EXECUTION_MODE",
-        reason: error.message,
-      });
-    }
-    throw error;
-  }
 }
 
 function readSandboxConfig(env: Record<string, string | undefined>, workspace: string): MonoAgentConfig["sandbox"] | undefined {
@@ -1141,7 +1058,6 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
       "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
       "MONO_AGENT_MEMORY_LLM_PROVIDER",
       "MONO_AGENT_MEMORY_LLM_MODEL",
-      "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
       "MONO_AGENT_MEMORY_LLM_ENDPOINT",
       "MONO_AGENT_MEMORY_LLM_TRACE",
       "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
@@ -1459,9 +1375,8 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
         { env: "MONO_AGENT_MEMORY_LLM_ENDPOINT" },
       );
     }
-    let model: MonoAgentConfig["runtime"]["model"];
     try {
-      model = parseMonoRuntimeModelReference(rawModel);
+      parseMonoRuntimeModelReference(rawModel);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       throw new MonoAgentConfigError(
@@ -1470,7 +1385,6 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
         { env: "MONO_AGENT_MEMORY_LLM_MODEL", reason },
       );
     }
-    const executionMode = readMemoryLlmExecutionMode(env.MONO_AGENT_MEMORY_LLM_EXECUTION_MODE, model);
     const trace =
       normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_TRACE) === undefined
         ? undefined
@@ -1482,17 +1396,9 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
     return {
       provider,
       model: rawModel,
-      executionMode,
       ...(trace === undefined ? {} : { trace }),
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
     };
-  }
-  if (normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_EXECUTION_MODE) !== undefined) {
-    throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE is only valid when MONO_AGENT_MEMORY_LLM_PROVIDER is agent-host.",
-      { env: "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE" },
-    );
   }
   if (normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_TRACE) !== undefined) {
     throw new MonoAgentConfigError(
@@ -1517,49 +1423,6 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
 
 function hasMemoryLlmConfig(env: Record<string, string | undefined>): boolean {
   return MEMORY_LLM_ENV_KEYS.some((name) => normalizeOptionalString(env[name]) !== undefined);
-}
-
-function readMemoryLlmExecutionMode(
-  raw: string | undefined,
-  model: MonoAgentConfig["runtime"]["model"],
-): RuntimeExecutionMode {
-  const normalized = normalizeOptionalString(raw);
-  let executionMode: RuntimeExecutionMode;
-  if (normalized === undefined) {
-    executionMode = defaultExecutionModeForModel(model);
-  } else {
-    if (!isRuntimeExecutionMode(normalized)) {
-      throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE must be sdk or cli.", {
-        env: "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
-      });
-    }
-    executionMode = normalized;
-  }
-  try {
-    assertExecutionModeCompatible(model, executionMode);
-  } catch (error) {
-    if (error instanceof RuntimeAdapterError && error.code === "incompatible_execution_mode") {
-      throw new MonoAgentConfigError(
-        "incompatible_execution_mode",
-        "memory.llm agent-host model and execution mode are incompatible.",
-        {
-          env: normalized === undefined ? "MONO_AGENT_MEMORY_LLM_MODEL" : "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
-          reason: error.message,
-        },
-      );
-    }
-    throw error;
-  }
-  if (executionMode !== "sdk") {
-    throw new MonoAgentConfigError(
-      "incompatible_execution_mode",
-      "memory.llm provider agent-host currently supports SDK execution mode only; CLI-backed memory LLMs are rejected because they cannot yet enforce no external actions.",
-      {
-        env: normalized === undefined ? "MONO_AGENT_MEMORY_LLM_MODEL" : "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
-      },
-    );
-  }
-  return executionMode;
 }
 
 /**

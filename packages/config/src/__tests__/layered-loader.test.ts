@@ -36,11 +36,11 @@ describe("layerJsonOntoEnv", () => {
 
   it("round-trips per-route attempts through the canonical fallbacks JSON", () => {
     const layered = layerJsonOntoEnv(
-      { runtime: { fallbacks: [{ model: "codex:gpt-5.6-sol", attempts: 3 }] } },
+      { runtime: { fallbacks: [{ model: "openai-codex:gpt-5.6-sol", attempts: 3 }] } },
       {},
     );
     expect(JSON.parse(layered.MONO_AGENT_FALLBACKS_JSON as string))
-      .toEqual([{ model: "codex:gpt-5.6-sol", attempts: 3 }]);
+      .toEqual([{ model: "openai-codex:gpt-5.6-sol", attempts: 3 }]);
   });
 
   it("translates JSON sections to env keys", () => {
@@ -50,10 +50,9 @@ describe("layerJsonOntoEnv", () => {
         runtime: {
           model: "pi:openai-codex:gpt-5.5",
           fallbacks: [
-            { model: "claude:claude-sonnet-4-6", effort: "low" },
+            { model: "anthropic:claude-sonnet-4-6", effort: "low" },
             { model: "pi:ollama:gemma4:31b" },
           ],
-          routeSafety: "per-route-native",
           maxTurns: 12,
         },
         context: { identityPath: "IDENTITY.md", selectedSkills: ["a", "b"] },
@@ -100,10 +99,9 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_NAME).toBe("Research Partner");
     expect(layered.MONO_AGENT_MODEL).toBe("pi:openai-codex:gpt-5.5");
     expect(JSON.parse(layered.MONO_AGENT_FALLBACKS_JSON ?? "[]")).toEqual([
-      { model: "claude:claude-sonnet-4-6", effort: "low" },
+      { model: "anthropic:claude-sonnet-4-6", effort: "low" },
       { model: "pi:ollama:gemma4:31b" },
     ]);
-    expect(layered.MONO_AGENT_ROUTE_SAFETY).toBe("per-route-native");
     expect(layered.MONO_AGENT_MAX_TURNS).toBe("12");
     expect(layered.MONO_AGENT_IDENTITY_PATH).toBe("IDENTITY.md");
     expect(layered.MONO_AGENT_SELECTED_SKILLS).toBe("a,b");
@@ -141,43 +139,15 @@ describe("layerJsonOntoEnv", () => {
     ]);
   });
 
-  it("lets either fallback env form override JSON without cross-form ambiguity", () => {
+  it("lets the canonical fallback env override JSON", () => {
     const json = {
-      runtime: { fallbacks: [{ model: "claude:claude-sonnet-4-6" }] },
+      runtime: { fallbacks: [{ model: "anthropic:claude-sonnet-4-6" }] },
     } as const;
-    const legacy = layerJsonOntoEnv(json, { MONO_AGENT_FALLBACK_MODELS: "codex:gpt-5.6-sol" });
-    expect(legacy.MONO_AGENT_FALLBACK_MODELS).toBe("codex:gpt-5.6-sol");
-    expect(legacy.MONO_AGENT_FALLBACKS_JSON).toBeUndefined();
-
     const canonical = layerJsonOntoEnv(
-      { runtime: { fallbackModels: ["claude:claude-sonnet-4-6"] } },
-      { MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "codex:gpt-5.6-sol" }]) },
+      json,
+      { MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "openai-codex:gpt-5.6-sol" }]) },
     );
     expect(canonical.MONO_AGENT_FALLBACKS_JSON).toContain("gpt-5.6-sol");
-    expect(canonical.MONO_AGENT_FALLBACK_MODELS).toBeUndefined();
-  });
-
-  it("treats an explicitly empty legacy fallback env as a JSON-clearing override", async () => {
-    const json = {
-      runtime: {
-        model: "codex:gpt-5.6-terra",
-        fallbackModels: ["claude:claude-sonnet-4-6"],
-      },
-      context: { identityPath: "IDENTITY.md" },
-    } as const;
-    const layered = layerJsonOntoEnv(json, { MONO_AGENT_FALLBACK_MODELS: "" });
-    expect(layered.MONO_AGENT_FALLBACK_MODELS).toBe("");
-    expect(layered.MONO_AGENT_FALLBACKS_JSON).toBeUndefined();
-
-    const configPath = join(dir, "mono-agent.config.json");
-    await writeFile(configPath, JSON.stringify(json));
-    const loaded = await loadMonoAgentConfigWithSources({
-      cwd: "/repo",
-      env: { MONO_AGENT_FALLBACK_MODELS: "" },
-      jsonPath: configPath,
-    });
-    expect(loaded.runtime.fallbackModels).toBeUndefined();
-    expect(loaded.runtime.fallbacks).toBeUndefined();
   });
 
   it("translates JSON providers.piNative knobs to env keys", () => {
@@ -536,14 +506,13 @@ describe("layerJsonOntoEnv", () => {
         memory: {
           mode: "bujo",
           path: ".mono-agent/memory",
-          llm: { provider: "agent-host", model: "pi:openai-codex:gpt-5.5", executionMode: "sdk" },
+          llm: { provider: "agent-host", model: "pi:openai-codex:gpt-5.5" },
         },
       },
       {},
     );
     expect(layered.MONO_AGENT_MEMORY_LLM_PROVIDER).toBe("agent-host");
     expect(layered.MONO_AGENT_MEMORY_LLM_MODEL).toBe("pi:openai-codex:gpt-5.5");
-    expect(layered.MONO_AGENT_MEMORY_LLM_EXECUTION_MODE).toBe("sdk");
     expect(layered.MONO_AGENT_MEMORY_LLM_ENDPOINT).toBeUndefined();
   });
 
@@ -559,7 +528,6 @@ describe("layerJsonOntoEnv", () => {
         llm: {
           provider: "agent-host",
           model: "pi:openai-codex:gpt-5.5",
-          executionMode: "sdk",
           endpoint: "http://127.0.0.1:11434",
         },
       },
@@ -825,7 +793,6 @@ describe("loadMonoAgentConfigWithSources", () => {
   it.each([
     ["provider", { provider: "ollama" }],
     ["endpoint", { endpoint: "http://localhost:11434" }],
-    ["executionMode", { executionMode: "sdk" }],
     ["trace", { trace: false }],
     ["timeoutMs", { timeoutMs: 120_000 }],
     ["provider and endpoint", { provider: "ollama", endpoint: "http://localhost:11434" }],
@@ -1065,7 +1032,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       jsonPath: path,
     });
     expect(config.runtime.maxTurns).toBe(12);
-    expect(config.runtime.model).toMatchObject({ sdk: "pi" });
+    expect(config.runtime.model).toMatchObject({ provider: "openai-codex" });
     expect(config.providers?.piAuthPath).toBe(join(dir, ".worklab", "auth.json"));
     expect(config.providers?.local?.[0]?.models?.[0]?.capabilities).toMatchObject({ context_window: 32768 });
   });
@@ -1450,7 +1417,6 @@ describe("loadMonoAgentConfigWithSources", () => {
   it.each([
     ["provider", 123, "a string"],
     ["model", null, "a string"],
-    ["executionMode", 123, "a string"],
     ["endpoint", 123, "a string"],
     ["trace", [false], "a boolean"],
     ["timeoutMs", [60_000], "a number"],
@@ -1886,7 +1852,6 @@ describe("loadMonoAgentConfigWithSources", () => {
     expect(config.memory?.llm).toEqual({
       provider: "agent-host",
       model: "pi:openai-codex:gpt-5.5",
-      executionMode: "sdk",
     });
   });
 
@@ -2064,12 +2029,6 @@ describe("loadMonoAgentConfigWithSources", () => {
 
   it.each([
     ["unsupported provider", { provider: "bad-provider", model: "qwen3:4b" }, "provider"],
-    ["invalid execution mode", {
-      provider: "agent-host", model: "pi:openai-codex:gpt-5.5", executionMode: "native",
-    }, "executionMode"],
-    ["provider-incompatible execution mode", {
-      provider: "ollama", model: "qwen3:4b", executionMode: "sdk",
-    }, "executionMode"],
     ["invalid agent-host model", { provider: "agent-host", model: "not-a-runtime-model" }, "model"],
     ["fractional timeout", {
       provider: "agent-host", model: "pi:openai-codex:gpt-5.5", timeoutMs: 1_500.5,
@@ -2082,10 +2041,6 @@ describe("loadMonoAgentConfigWithSources", () => {
     }, "timeoutMs"],
     ["provider-incompatible timeout", { provider: "ollama", model: "qwen3:4b", timeoutMs: 60_000 }, "timeoutMs"],
     ["provider-incompatible trace", { provider: "ollama", model: "qwen3:4b", trace: false }, "trace"],
-    ["CLI-backed model", { provider: "agent-host", model: "codex:gpt-5.5" }, "model"],
-    ["explicit CLI mode", {
-      provider: "agent-host", model: "claude:claude-sonnet-4-6", executionMode: "cli",
-    }, "executionMode"],
   ] as const)("attributes semantically invalid JSON memory.llm case %s to its exact leaf", async (_name, llm, field) => {
     const path = join(dir, "config.json");
     await writeFile(path, JSON.stringify({
@@ -2122,9 +2077,7 @@ describe("loadMonoAgentConfigWithSources", () => {
   it.each([
     ["provider", "MONO_AGENT_MEMORY_LLM_PROVIDER", "bad-provider", "invalid_env"],
     ["model", "MONO_AGENT_MEMORY_LLM_MODEL", "not-a-runtime-model", "invalid_model_reference"],
-    ["model", "MONO_AGENT_MEMORY_LLM_MODEL", "codex:gpt-5.5", "incompatible_execution_mode"],
-    ["executionMode", "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE", "native", "invalid_env"],
-    ["executionMode", "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE", "cli", "incompatible_execution_mode"],
+    ["model", "MONO_AGENT_MEMORY_LLM_MODEL", "codex:gpt-5.5", "invalid_model_reference"],
     ["endpoint", "MONO_AGENT_MEMORY_LLM_ENDPOINT", "http://127.0.0.1:11434", "invalid_env"],
     ["trace", "MONO_AGENT_MEMORY_LLM_TRACE", "not-a-boolean", "invalid_env"],
     ["timeoutMs", "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS", "1500.5", "invalid_env"],
@@ -2198,7 +2151,6 @@ describe("loadMonoAgentConfigWithSources", () => {
     expect(config.memory?.llm).toEqual({
       provider: "agent-host",
       model: "pi:openai-codex:gpt-5.5",
-      executionMode: "sdk",
     });
   });
 
@@ -2415,7 +2367,6 @@ describe("loadMonoAgentConfigWithSources", () => {
         llm: {
           provider: "agent-host",
           model: "pi:openai-codex:gpt-5.5",
-          executionMode: "sdk",
           endpoint: "http://127.0.0.1:11434",
         },
       },
@@ -2457,7 +2408,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       },
       cwd: dir,
     });
-    expect(config.runtime.model).toMatchObject({ sdk: "pi" });
+    expect(config.runtime.model).toMatchObject({ provider: "openai-codex" });
   });
 
   it("treats a missing JSON file as an empty layer", async () => {
@@ -2469,7 +2420,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       cwd: dir,
       jsonPath: join(dir, "absent.json"),
     });
-    expect(config.runtime.model).toMatchObject({ sdk: "pi" });
+    expect(config.runtime.model).toMatchObject({ provider: "openai-codex" });
   });
 
   it("loads lite mode from a JSON config file (no embeddings, no llm)", async () => {
