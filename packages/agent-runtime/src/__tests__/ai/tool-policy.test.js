@@ -1,14 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   isAllowAllToolPolicy,
-  TOOL_POLICY_ALLOW_ALL_ONLY,
   TOOL_POLICY_PROJECTED,
 } from "../../ai/runtime/tool-policy.js";
 
 describe("tool policy capabilities", () => {
   it("uses stable, discoverable capability values", () => {
     expect(TOOL_POLICY_PROJECTED).toBe("projected");
-    expect(TOOL_POLICY_ALLOW_ALL_ONLY).toBe("allow_all_only");
   });
 });
 

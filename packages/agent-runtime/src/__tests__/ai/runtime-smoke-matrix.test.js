@@ -1,10 +1,6 @@
-// Smoke matrix for the built-in provider bridges.
-//
-// The plan's Phase 7 verification calls for confirming that the runtime path
-// goes through the package for each built-in bridge, including ACP v1.
-// We don't spin up the real providers (no API keys, no subprocess); we just
-// resolve each bridge through the public API and assert it loads and exposes
-// the expected execute() entry point.
+// Smoke every bridge the registry actually exposes. The expectation is
+// derived from the descriptors so deleting a bridge cannot leave a stale
+// hard-coded matrix that still claims the removed module loads.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -14,49 +10,31 @@ import {
 } from "../../ai/runtime/registry.js";
 
 describe("runtime smoke matrix", () => {
-  it("registers all built-in bridges", () => {
-    const ids = listRuntimeBridges().map((bridge) => bridge.id).sort();
-    expect(ids).toEqual(["acp-stdio", "claude", "claude-code", "codex-app", "opencode-app", "pi"]);
+  it("loads every registered bridge through the public resolver", async () => {
+    const descriptors = listRuntimeBridges();
+    const resolved = await Promise.all(descriptors.map((descriptor) => resolveRuntimeBridge({
+      sdk: descriptor.id,
+      provider: "openai",
+      model: "gpt-5.5",
+    })));
+
+    expect(resolved.map((bridge) => bridge.id))
+      .toEqual(descriptors.map((descriptor) => descriptor.id));
+    expect(resolved.every((bridge) => typeof bridge.execute === "function")).toBe(true);
+    expect(resolved.every((bridge) => bridge.capabilities !== undefined)).toBe(true);
   });
 
-  it("exposes capabilities for each kernel-level sdk family", () => {
-    expect(runtimeCapabilities("claude").runtime).toBe("sdk");
-    expect(runtimeCapabilities("pi").runtime).toBe("pi-agent");
-    expect(runtimeCapabilities("codex").runtime).toBe("cli");
-    expect(runtimeCapabilities("opencode")).toMatchObject({
-      runtime: "cli",
-      supports_session_resume: false,
-      supports_mcp: false,
-    });
-    expect(runtimeCapabilities("acp")).toMatchObject({
-      runtime: "acp-stdio",
-      supports_session_resume: true,
-      supports_mcp: false,
-      supports_builtin_tools: false,
-    });
+  it("keeps descriptor and kernel capabilities aligned", () => {
+    for (const descriptor of listRuntimeBridges()) {
+      expect(descriptor.capabilities()).toEqual(runtimeCapabilities());
+    }
   });
 
-  it.each([
-    { case: "ACP v1", model: { sdk: "acp", model: "personal-agent" }, options: { executionMode: "acp" }, expectedId: "acp-stdio" },
-    { case: "claude SDK", model: { sdk: "claude", model: "claude-sonnet-4-6" }, options: { executionMode: "sdk" }, expectedId: "claude" },
-    { case: "claude CLI", model: { sdk: "claude", model: "claude-sonnet-4-6" }, options: { executionMode: "cli" }, expectedId: "claude-code" },
-    { case: "pi SDK", model: { sdk: "pi", provider: "openai", model: "gpt-5.5" }, options: { executionMode: "sdk" }, expectedId: "pi" },
-    { case: "codex CLI", model: { sdk: "codex", model: "gpt-5.5" }, options: { executionMode: "cli" }, expectedId: "codex-app" },
-    { case: "opencode CLI", model: { sdk: "opencode", provider: "github-copilot", model: "gpt-5.1" }, options: { executionMode: "cli" }, expectedId: "opencode-app" },
-  ])("resolves the $case bridge through the public API", async ({ model, options, expectedId }) => {
-    const bridge = await resolveRuntimeBridge(model, options);
-    expect(bridge.id).toBe(expectedId);
-    expect(typeof bridge.execute).toBe("function");
-    expect(bridge.capabilities).toBeDefined();
-  });
-
-  it("rejects unknown sdk families with a descriptive error", async () => {
-    await expect(resolveRuntimeBridge({ sdk: "imaginary", model: "x" }, {}))
-      .rejects.toThrow(/unsupported sdk: imaginary/);
-  });
-
-  it("falls through to the SDK bridge when executionMode is omitted", async () => {
-    const bridge = await resolveRuntimeBridge({ sdk: "claude", model: "claude-sonnet-4-6" }, {});
-    expect(bridge.id).toBe("claude");
-  });
+  it.each(["acp", "claude", "codex", "opencode", "imaginary"])(
+    "cannot load the removed or unknown %s SDK",
+    async (sdk) => {
+      await expect(resolveRuntimeBridge({ sdk, model: "x" }))
+        .rejects.toThrow(`unsupported sdk: ${sdk}`);
+    },
+  );
 });

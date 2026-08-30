@@ -1,8 +1,8 @@
 // @ts-check
 // Synchronous session-liveness primitives over a createSessionRegistry.
 //
-// A provider bridge owns session DURABILITY (pi keeps a Session transcript,
-// codex keeps an app-server thread); this kernel layer owns session LIVENESS —
+// The Pi bridge owns session DURABILITY by keeping a Session transcript; this
+// kernel layer owns session LIVENESS —
 // the concurrency claim that keeps two turns from driving one session at once.
 // The primitives here are deliberately SYNCHRONOUS: each does its registry
 // get -> check -> set in a single await-free span, so the "busy claim must be
@@ -11,8 +11,7 @@
 //
 // The registry stays the storage + idle-TTL + dispose fan-out layer (its
 // exports are unchanged, worklab-compatible); liveness only adds the claim /
-// reserve / release / adoptIfPresent seam that pi-native's session-lifecycle and
-// codex-app both consume.
+// reserve / release / adoptIfPresent seam that Pi's session lifecycle consumes.
 
 /**
  * @typedef {object} SessionRegistryLike

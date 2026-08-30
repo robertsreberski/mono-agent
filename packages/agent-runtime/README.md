@@ -10,7 +10,7 @@ six built-in model runtime bridges, including product-neutral ACP v1 agents.
 
 Category: `runtime`
 Tier: `core`
-Catalog responsibility: Provides six runtime bridges (ACP v1, Claude SDK, Claude Code CLI, Codex app-server, OpenCode app-server, Pi SDK); direct OpenCode requires stable CLI >=1.15.0 on PATH.
+Catalog responsibility: Provides the Pi SDK runtime bridge with native tools, MCP, sessions, compaction, and provider-catalog integration.
 
 <!-- package-metadata:end -->
 
@@ -178,21 +178,12 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/agent-runtime`**
 
 ```text
-ACP_PROTOCOL_VERSION
 ACTIVE_RUNTIME_KINDS
 ALLOWLIST_MODE_ALL
 ALLOWLIST_MODE_CUSTOM
 APPROVAL_DECISIONS
-AcpCallbackContext
-AcpClientError
-AcpClientHostOptions
-AcpInteractionRequest
-AcpListedSession
-AcpProfileDescriptor
-AcpSessionListResult
 BINARY_BLOAT_TOOLS
 BridgeSpec
-CLAUDE_SDK_CATALOG_VERSION
 DEFAULT_RUNTIME_BRAND
 DEFAULT_TOOL_BLOAT_CONFIG
 MAX_TOOL_RESULT_BYTES
@@ -204,47 +195,35 @@ RuntimeBridgeDescriptor
 RuntimeBridgeId
 RuntimeModelRef
 UNKNOWN_CAPABILITY
-acpRuntimeBridge
-authenticateAcpProfile
 buildCapabilitiesUsed
 buildTranscriptTailSnapshot
 canonicalizeLegacyModelReference
 configureToolRuntime
 createApprovalManager
-createClaudeSdkDiscoveryIsolation
 createMetricsObserver
 createObserverHub
 createPiOAuthApiKeyResolver
 createRouterRuntime
 createRuntime
 createSessionRegistry
-curatedClaudeSdkModels
-deleteAcpSession
-discoverClaudeSdkModels
 disposeAllProviderSessions
 disposeProviderSession
 executionModeIncompatibilityReason
-generateAcpResponse
 generatePiNativeResponse
 getPiBuiltinModel
 inferAllowlistMode
 invalidateProviderSession
 isLikelyContextTermination
 isModelCompatibleWithExecutionMode
-listAcpSessions
 listPiBuiltinModels
 listRuntimeBridges
 loginPiOAuth
-logoutAcpProfile
 normalizeAllowlistMode
-normalizeClaudeSdkCatalog
-normalizeClaudeSdkModelId
 normalizeList
 normalizeRuntimeModelReference
 parseRuntimeModelReference
 parseStoredAllowlist
 piNativeRuntimeBridge
-probeAcpProfile
 readRuntimeBrand
 readToolRuntime
 reasoningLevelsForPiModel
@@ -262,8 +241,6 @@ sdkFromModelReference
 storedAllowlistMode
 syncProviderSession
 toolCompactionAppliedFromWarnings
-validateAcpProfileId
-validateAcpProviderSessionId
 wrapToolsWithApprovalGate
 ```
 
@@ -393,17 +370,8 @@ renderResumeSnapshot
 **`@mono-agent/agent-runtime/ai`**
 
 ```text
-ACP_PROTOCOL_VERSION
 ACTIVE_RUNTIME_KINDS
-AcpCallbackContext
-AcpClientError
-AcpClientHostOptions
-AcpInteractionRequest
-AcpListedSession
-AcpProfileDescriptor
-AcpSessionListResult
 BridgeSpec
-CLAUDE_SDK_CATALOG_VERSION
 RESERVED_RUNTIME_KINDS
 RUNTIME_CAPABILITIES
 RuntimeBridge
@@ -411,36 +379,24 @@ RuntimeBridgeDescriptor
 RuntimeBridgeId
 RuntimeModelRef
 UNKNOWN_CAPABILITY
-acpRuntimeBridge
-authenticateAcpProfile
 buildCapabilitiesUsed
 canonicalizeLegacyModelReference
-createClaudeSdkDiscoveryIsolation
 createMetricsObserver
 createObserverHub
 createSessionRegistry
-curatedClaudeSdkModels
-deleteAcpSession
-discoverClaudeSdkModels
 disposeAllProviderSessions
 disposeProviderSession
 executionModeIncompatibilityReason
-generateAcpResponse
 generatePiNativeResponse
 getPiBuiltinModel
 invalidateProviderSession
 isModelCompatibleWithExecutionMode
-listAcpSessions
 listPiBuiltinModels
 listRuntimeBridges
 loginPiOAuth
-logoutAcpProfile
-normalizeClaudeSdkCatalog
-normalizeClaudeSdkModelId
 normalizeRuntimeModelReference
 parseRuntimeModelReference
 piNativeRuntimeBridge
-probeAcpProfile
 reasoningLevelsForPiModel
 refreshProviderSession
 resolvePiOAuthApiKey
@@ -449,8 +405,6 @@ runtimeCapabilities
 sdkFromModelReference
 syncProviderSession
 toolCompactionAppliedFromWarnings
-validateAcpProfileId
-validateAcpProviderSessionId
 ```
 
 **`@mono-agent/agent-runtime/ai/cost.js`**
@@ -498,79 +452,24 @@ statsForCompletedChange
 formatLiveInputGuidance
 ```
 
-**`@mono-agent/agent-runtime/ai/providers/acp.js`**
+**`@mono-agent/agent-runtime/ai/providers/codex/app-server-client.js`**
 
 ```text
-acpRuntimeBridge
-generateAcpResponse
-```
-
-**`@mono-agent/agent-runtime/ai/providers/claude-cli.js`**
-
-```text
-buildCliCommand
-claudeCodeRuntimeBridge
-createThinkingBuffer
-generateCliResponse
-normalizeCliEvent
-```
-
-**`@mono-agent/agent-runtime/ai/providers/claude-sdk-discovery.js`**
-
-```text
-CLAUDE_SDK_CATALOG_VERSION
-ClaudeSdkCatalogModel
-ClaudeSdkEffort
-createClaudeSdkDiscoveryIsolation
-curatedClaudeSdkModels
-discoverClaudeSdkModels
-normalizeClaudeSdkCatalog
-normalizeClaudeSdkModelId
-```
-
-**`@mono-agent/agent-runtime/ai/providers/claude-sdk.js`**
-
-```text
-claudeEffortOptions
-claudeRuntimeBridge
-claudeSdkModelForQuery
-generateClaudeResponse
-toolPayloadLimit
-```
-
-**`@mono-agent/agent-runtime/ai/providers/codex-app.js`**
-
-```text
-codexAppRuntimeBridge
+CODEX_APP_SERVER_ARGS
+CODEX_APP_SERVER_ISOLATED_ARGS
+addOpaqueSensitiveValue
+codexErrorMessage
 createCodexAppServerClient
-generateCodexAppResponse
-```
-
-**`@mono-agent/agent-runtime/ai/providers/opencode-discovery.js`**
-
-```text
-discoverOpencodeProviders
-```
-
-**`@mono-agent/agent-runtime/ai/runtime/context-windows.js`**
-
-```text
-CLAUDE_ONE_MILLION_CONTEXT_MODELS
-DEFAULT_CONTEXT_WINDOW
-ONE_MILLION_CONTEXT_WINDOW
-claudeModelSupportsContextWindow
-claudeModelSupportsOneMillionContext
-hasExplicitOneMillionContextWindow
-modelWithContextWindow
-normalizeContextWindow
-stripContextWindowSuffix
-```
-
-**`@mono-agent/agent-runtime/ai/runtime/fast-mode.js`**
-
-```text
-codexModelSupportsFastMode
-normalizeFastMode
+isCodexRequestTimeout
+isSensitivePayloadField
+normalizedSensitiveName
+redactCodexDiagnostic
+redactCodexPayload
+sanitizeCodexDiagnostic
+sanitizeCodexNotification
+sanitizeCodexResponseError
+sensitiveEnvironmentValues
+utf8Head
 ```
 
 **`@mono-agent/agent-runtime/ai/runtime/model-refs.js`**
@@ -598,13 +497,6 @@ RuntimeBridgeId
 listRuntimeBridges
 resolveRuntimeBridge
 runtimeCapabilities
-```
-
-**`@mono-agent/agent-runtime/ai/streaming/codex-events.js`**
-
-```text
-normalizeCodexItemEvent
-normalizeCodexItemType
 ```
 
 <!-- public-api-inventory:end -->

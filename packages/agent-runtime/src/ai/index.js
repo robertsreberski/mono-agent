@@ -12,8 +12,6 @@ export {
 } from "./runtime/sessions.js";
 export { createMetricsObserver, createObserverHub } from "./observer.js";
 export { generatePiNativeResponse, piNativeRuntimeBridge } from "./providers/pi-native.js";
-export { generateAcpResponse, acpRuntimeBridge } from "./providers/acp.js";
-export * from "./providers/acp-public.js";
 export {
   getPiBuiltinModel,
   listPiBuiltinModels,
@@ -21,14 +19,6 @@ export {
   reasoningLevelsForPiModel,
   resolvePiOAuthApiKey,
 } from "./pi-interop.js";
-export {
-  CLAUDE_SDK_CATALOG_VERSION,
-  createClaudeSdkDiscoveryIsolation,
-  curatedClaudeSdkModels,
-  discoverClaudeSdkModels,
-  normalizeClaudeSdkCatalog,
-  normalizeClaudeSdkModelId,
-} from "./providers/claude-sdk-discovery.js";
 export {
   buildCapabilitiesUsed,
   toolCompactionAppliedFromWarnings,
