@@ -18,6 +18,7 @@ import { isMcpAppProtocolVersion } from "../mcp-app-protocol";
 import type { McpAppPart, McpAppResource, MessagePart } from "../types";
 import { Icon } from "./Icon";
 import { ImageTile } from "./ImageGallery";
+import { isReplyImage } from "./reply-image";
 import {
   mcpAppContentSecurityPolicy,
   secureMcpAppHtml,
@@ -358,16 +359,7 @@ export const startReplyAttachmentDownload = (blob: Blob, name: string): void => 
   }
 };
 
-/**
- * Raster types only. `image/svg+xml` is active content — the service refuses to
- * store it and `setReplyDownloadHeaders` downgrades it to an octet stream — so
- * it stays a download card here too.
- */
-const REPLY_IMAGE_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const STORED_REPLY_IMAGE_PATH = /^\/api\/v1\/uploads\/[^/?#]+\/content$/u;
-
-const isReplyImage = (mediaType: string | undefined): boolean =>
-  mediaType !== undefined && REPLY_IMAGE_MEDIA_TYPES.has(mediaType.toLowerCase());
 
 /**
  * The console's own durable copy. Shape-checked rather than trusted: this value
@@ -485,6 +477,19 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
     return <div className="reply-part-error" role="alert">An attachment reference was invalid.</div>;
   }
 
+  // A picture is the content, not a file record about a picture: no name, no
+  // media type, no size, no download button. The full image and its download
+  // live one tap away in the lightbox.
+  //
+  // Everything that is not a displayable raster image falls through to the card
+  // below, and does so without a second condition: `imageSource` is undefined
+  // for a document, for `image/svg+xml`, and for an image whose bytes failed
+  // their integrity check or whose access could not be refreshed. If we cannot
+  // show it, the operator still needs the file.
+  if (imageSource !== undefined) {
+    return <ImageTile image={{ key: part.id, src: imageSource, name: part.name }} />;
+  }
+
   const contentUrl = accessRef.current?.identity === identity ? accessRef.current.currentUrl : undefined;
   const downloadState = downloadFeedback?.identity === identity ? downloadFeedback.state : "idle";
   const unavailable = contentUrl === undefined || downloadState === "unavailable";
@@ -495,13 +500,8 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
     : downloadFeedback?.identity === identity ? downloadFeedback.status : "";
 
   return (
-    <section
-      className={`reply-attachment${imageSource === undefined ? "" : " is-image"}`}
-      aria-label={`File attachment: ${part.name}`}
-    >
-      {imageSource === undefined
-        ? <span className="reply-part-icon"><Icon name="file" size={16} /></span>
-        : <ImageTile image={{ key: part.id, src: imageSource, name: part.name }} />}
+    <section className="reply-attachment" aria-label={`File attachment: ${part.name}`}>
+      <span className="reply-part-icon"><Icon name="file" size={16} /></span>
       <span className="reply-part-copy">
         <strong>{part.name}</strong>
         <span>{part.mediaType} · {formatBytes(part.sizeBytes)}</span>

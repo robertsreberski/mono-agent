@@ -323,6 +323,8 @@ a message-bound download action; the service reauthorizes the exact
 thread/message/part and the agent rechecks size and SHA-256 integrity before any
 bytes stream. No host path or agent capability URL enters the browser DTO.
 
+In an assistant reply, generated images are gathered below the answer, so a set of them reads as a set regardless of how the agent interleaved them with its prose.
+
 Generated images are kept. A reply artifact is otherwise proxied from the agent
 and never stored, so a `png`, `jpeg`, `gif`, or `webp` reply would stop resolving
 at the agent's retention deadline and show as broken whenever that agent is
@@ -380,7 +382,9 @@ Web uploads use the same transport-neutral `AgentAttachment` contract and harnes
 
 A web turn additionally permits at most 10 files and 64 MiB in aggregate. Attachment-only turns are valid. The browser streams bytes to a staged upload with progress; it does not retain base64 copies in React state. Removing an unattached upload removes its stage, and abandoned stages are purged after 24 hours. Committed attachments remain with their conversation, including after archival.
 
-Images are shown rather than filed. A `png`, `jpeg`, `gif`, or `webp` attachment renders in the message as a thumbnail grid — a single image is shown uncropped — and selecting one opens it full size with paging, a counter, and a download action. Other file types keep the compact chip with its name and size. `svg` is never rendered inline: it is active content, so it stays a download.
+Images are shown rather than filed, and carry no chrome at all: a `png`, `jpeg`, `gif`, or `webp` attachment renders as the picture itself, with no filename, media type, size, or download button beside it. Several in one message share a single row that scrolls sideways rather than reflowing, each cropped to a common height. Selecting one opens it full size, uncropped, with paging, a counter, and a download action — that is where the whole image and its file live. Other file types keep the compact chip or card with their name and size. `svg` is never rendered inline: it is active content, so it stays a download.
+
+An image whose bytes cannot be shown — no durable copy and a failed or unverifiable fetch — falls back to its ordinary file card, keeping the download and **Refresh access** actions. If the console cannot show you the picture, it still hands you the file.
 
 Telegram's optional audio transcription is adapter-specific and is not reused here. Browser-selected audio and video retain their ordinary attachment MIME and document classification unless a future transport-neutral capability changes that contract.
 

@@ -601,6 +601,81 @@ describe("AssistantMessage grouped parts", () => {
 });
 
 describe("message actions", () => {
+  const replyImage = (id: string, name: string, extra: Record<string, unknown> = {}) => ({
+    type: "attachment" as const,
+    id,
+    artifactId: `${id}-artifact`,
+    name,
+    mediaType: "image/png",
+    sizeBytes: 2_048,
+    integrityId: `sha256:${"a".repeat(64)}`,
+    storedUrl: `/api/v1/uploads/${id}/content`,
+    ...extra,
+  });
+
+  it("gathers a settled turn's generated images into one row below the answer", () => {
+    render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      parts: [
+        { type: "text", text: "Here are the covers." },
+        replyImage("one", "first.png"),
+        replyImage("two", "second.png"),
+        { type: "text", text: "And a later one." },
+        replyImage("three", "third.png"),
+      ],
+    }} />);
+
+    // A settled turn is reordered before it is grouped: its last prose is the
+    // answer and reply parts follow it, so images are contiguous however the
+    // agent interleaved them, and there is exactly one row.
+    const rows = document.querySelectorAll(".image-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.querySelectorAll(".image-tile")).toHaveLength(3);
+    // Tiles are direct children, which is what the row's own styling relies on.
+    expect(Array.from(rows[0]!.children).every((child) => child.classList.contains("image-tile"))).toBe(true);
+
+    // None of them wears a file card.
+    expect(screen.queryByRole("region", { name: "File attachment: first.png" })).toBeNull();
+    expect(document.querySelectorAll(".reply-attachment")).toHaveLength(0);
+  });
+
+  it("splits a running turn's images where prose still separates them", () => {
+    render(<MessageHarness message={{
+      ...assistantMessage("running"),
+      parts: [
+        replyImage("one", "first.png"),
+        replyImage("two", "second.png"),
+        { type: "text", text: "And a later one." },
+        replyImage("three", "third.png"),
+      ],
+    }} />);
+
+    // A turn in flight keeps arrival order, so adjacency decides the layout the
+    // same way it decides Activity bands: prose between two runs is a break.
+    const rows = document.querySelectorAll(".image-row");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.querySelectorAll(".image-tile")).toHaveLength(2);
+    expect(rows[1]!.querySelectorAll(".image-tile")).toHaveLength(1);
+  });
+
+  it("keeps the file card for an image in the row whose bytes never resolve", () => {
+    vi.spyOn(api, "replyAttachmentContent").mockRejectedValue(new Error("offline"));
+    render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      parts: [
+        replyImage("one", "first.png"),
+        // No durable copy and no capability: nothing can be displayed, so the
+        // operator must still be offered the file.
+        replyImage("two", "second.png", { storedUrl: undefined }),
+      ],
+    }} />);
+
+    const row = document.querySelector(".image-row")!;
+    expect(row.querySelectorAll(".image-tile")).toHaveLength(1);
+    expect(screen.getByRole("region", { name: "File attachment: second.png" })).toBeVisible();
+    expect(screen.getByText("image/png · 2 KiB")).toBeVisible();
+  });
+
   it("renders one durable process-job card with its rich reply siblings", () => {
     render(<MessageHarness message={{
       ...assistantMessage("complete"),

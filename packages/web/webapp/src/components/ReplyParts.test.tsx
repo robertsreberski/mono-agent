@@ -210,7 +210,7 @@ describe("assistant reply files", () => {
     expect(revokeObjectUrl).toHaveBeenCalledExactlyOnceWith("blob:reply-file");
   });
 
-  it("shows a generated image inline from its durable copy, without spending a capability", () => {
+  it("shows a generated image as a bare picture, without a card or a capability", () => {
     const value = {
       type: "attachment",
       id: "cover-part",
@@ -230,9 +230,16 @@ describe("assistant reply files", () => {
     // The durable copy is the whole point: no token is spent, so the image keeps
     // rendering once the capability window and the retention deadline are gone.
     expect(fetchContent).not.toHaveBeenCalled();
-    // The card keeps its single live region and its download action.
-    expect(screen.getAllByRole("status")).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Download cover.png" })).toBeVisible();
+
+    // The picture is the content. None of the file record survives around it —
+    // no name, no media type, no size, no download button, and no live region to
+    // announce a download that is no longer offered here.
+    expect(screen.queryByRole("region", { name: "File attachment: cover.png" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Download cover.png" })).toBeNull();
+    expect(screen.queryAllByRole("status")).toHaveLength(0);
+    expect(screen.queryByText(/image\/png/u)).toBeNull();
+    // The lightbox is where the full image and its download live.
+    expect(screen.getByRole("button", { name: "View cover.png" })).toBeVisible();
   });
 
   it("never inlines an SVG reply, which is active content rather than a raster image", () => {

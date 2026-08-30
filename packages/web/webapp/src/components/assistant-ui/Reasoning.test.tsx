@@ -115,6 +115,24 @@ describe("Reasoning", () => {
       .toEqual(["group-activity"]);
     expect(ACTIVITY_GROUP_BY({ type: "data", name: "telemetry", data: {} } as never)).toEqual([]);
   });
+
+  it("collects adjacent generated images into their own band, raster only", () => {
+    const image = (mediaType: string) =>
+      ACTIVITY_GROUP_BY({ type: "data", name: "reply-attachment", data: { mediaType } } as never);
+
+    for (const mediaType of ["image/png", "image/JPEG", "image/gif", "image/webp"]) {
+      expect(image(mediaType)).toEqual(["group-reply-images"]);
+    }
+
+    // Pictures are their own band, never folded into the work log beside them.
+    expect(image("image/png")).not.toEqual(["group-activity"]);
+
+    // SVG is active content and stays a download card, so it must not be laid
+    // out as a member of an image row either.
+    expect(image("image/svg+xml")).toEqual([]);
+    expect(image("application/pdf")).toEqual([]);
+    expect(ACTIVITY_GROUP_BY({ type: "data", name: "reply-attachment", data: {} } as never)).toEqual([]);
+  });
 });
 
 describe("ActivityGroup", () => {
