@@ -1,4 +1,4 @@
-import type { LocalProviderDefinition, PiTransport, RuntimeCompactionPolicy, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type { LocalProviderDefinition, PiTransport, ProviderDefinition, RuntimeCompactionPolicy, RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { SandboxPolicy } from "@mono-agent/runtime-adapter";
 import type { RedactedSecretValue } from "@mono-agent/agent-contracts";
 
@@ -434,9 +434,23 @@ export interface MonoAgentConfig {
   };
   readonly providers?: {
     readonly piAuthPath?: string;
+    /** Canonical provider definitions, sorted by id after config load. */
+    readonly entries?: readonly ProviderDefinition[];
+    /**
+     * Compatibility projection for existing endpoint consumers. New callers
+     * should use {@link resolveConfiguredProviders} and filter by `type`.
+     */
     readonly local?: readonly LocalProviderDefinition[];
     readonly piNative?: PiNativeProviderConfig;
   };
+}
+
+/** One deterministic answer shared by catalog, doctor, and runtime consumers. */
+export interface ResolvedProviders {
+  readonly entries: readonly ProviderDefinition[];
+  readonly byId: ReadonlyMap<string, ProviderDefinition>;
+  readonly piAuthPath: string;
+  readonly piNative?: PiNativeProviderConfig;
 }
 
 /** Tuning knobs for the pi-native provider bridge. */
@@ -455,6 +469,10 @@ export interface PiNativeProviderConfig {
 }
 
 export type RedactedLocalProviderDefinition = Omit<LocalProviderDefinition, "apiKey"> & {
+  readonly apiKey?: RedactedSecretValue;
+};
+
+export type RedactedProviderDefinition = Omit<ProviderDefinition, "apiKey"> & {
   readonly apiKey?: RedactedSecretValue;
 };
 
@@ -498,6 +516,7 @@ export interface RedactedMonoAgentConfig {
   readonly observability?: RedactedObservabilityConfig;
   readonly providers?: {
     readonly piAuthPath?: string;
+    readonly entries?: readonly RedactedProviderDefinition[];
     readonly local?: readonly RedactedLocalProviderDefinition[];
     readonly piNative?: PiNativeProviderConfig;
   };

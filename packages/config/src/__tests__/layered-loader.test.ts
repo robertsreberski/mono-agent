@@ -129,14 +129,14 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_TRACE_SOURCE_ID).toBe("json-source");
     expect(layered.MONO_AGENT_TRACE_STALE_AFTER_MS).toBe("60000");
     expect(layered.MONO_AGENT_PI_AUTH_PATH).toBe(".pi/auth.json");
-    expect(JSON.parse(layered.MONO_AGENT_LOCAL_PROVIDERS_JSON ?? "[]")).toEqual([
-      {
+    expect(JSON.parse(layered.MONO_AGENT_PROVIDERS_JSON ?? "{}")).toMatchObject({
+      local: [{
         id: "ollama",
         type: "ollama",
         baseUrl: "http://localhost:11434",
         enabled: true,
-      },
-    ]);
+      }],
+    });
   });
 
   it("lets the canonical fallback env override JSON", () => {

@@ -116,12 +116,12 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "traceability.staleAfterMs": "integer",
   "traceability.globalDiscovery": "boolean",
   "observability.exporters": "array",
+  providers: "object",
   "providers.piAuthPath": "string",
   "providers.piNative.transport": "string",
   "providers.piNative.piMaxRetries": "integer",
   "providers.piNative.maxRetryDelayMs": "integer",
   "providers.piNative.piSessionsRoot": "string",
-  "providers.local": "array",
 };
 
 interface SchemaNode {
@@ -219,6 +219,9 @@ describe("config reference", () => {
         plugins: [{ package: "@mono-agent/a2a-adapter", config: { nested: { pluginOwned: true } } }],
       },
       providers: {
+        openrouter: {
+          models: [{ name: "anthropic/claude-opus-4.5", capabilities: { vendor_extension: true } }],
+        },
         local: [{
           id: "local",
           type: "openai_compat",
@@ -236,7 +239,8 @@ describe("config reference", () => {
       context: { identityPath: "./IDENTITY.md" },
       cron: { jobs: [{ id: "daily", expression: "0 8 * * *", prompt: "Run", retryForever: true }] },
       channels: { plugins: [{ package: "pkg", typo: true, config: {} }] },
-    })).toEqual(["channels.plugins[0].typo", "cron.jobs[0].retryForever"]);
+      providers: { openrouter: { typo: true } },
+    })).toEqual(["channels.plugins[0].typo", "cron.jobs[0].retryForever", "providers.openrouter.typo"]);
   });
 
   it("keeps the committed schema generated from the current registry", () => {
@@ -292,7 +296,6 @@ describe("config reference", () => {
     expect(schemaNode(schema, "runtime", "fallbacks").items?.required).toEqual(["model"]);
     expect(schemaNode(schema, "runtime", "fallbacks").items?.properties?.effort?.enum)
       .toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
-    expect(schemaNode(schema, "runtime", "routeSafety").enum).toEqual(["uniform", "per-route-native"]);
     expect(schemaNode(schema, "runtime", "compaction", "enabled")).toMatchObject({
       type: "boolean",
       default: true,

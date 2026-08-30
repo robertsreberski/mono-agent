@@ -1,7 +1,7 @@
 import { ALLOW_ALL_TOOLS } from "./enums.js";
 import type { MonoAgentConfigJson } from "./json-source.js";
 import type {
-  RedactedLocalProviderDefinition,
+  RedactedProviderDefinition,
   RedactedMemoryConfig,
   RedactedMonoAgentConfig,
   RedactedObservabilityExporterConfig,
@@ -59,9 +59,9 @@ export interface BuildMonoAgentConfigViewInput {
  * field id used in {@link ConfigViewField}. This is the authoritative map the
  * view resolves `source` against, and the surface the parity test checks
  * against the loader so the view can never silently drift from what the loader
- * actually reads. Complex sections (local providers) expose only their
- * registry env var here; their single-provider `MONO_AGENT_LOCAL_PROVIDER_*`
- * input form is an alternate encoding the parity test allowlists.
+ * actually reads. The provider map exposes one whole-object env projection;
+ * its legacy registry and single-provider encodings remain loader-only aliases
+ * that the parity test allowlists.
  */
 export const CONFIG_ENV_KEYS = {
   "agent.name": "MONO_AGENT_NAME",
@@ -159,12 +159,12 @@ export const CONFIG_ENV_KEYS = {
   "traceability.staleAfterMs": "MONO_AGENT_TRACE_STALE_AFTER_MS",
   "traceability.globalDiscovery": "MONO_AGENT_TRACE_GLOBAL_DISCOVERY",
   "observability.exporters": "MONO_AGENT_OBSERVABILITY_EXPORTERS",
+  "providers": "MONO_AGENT_PROVIDERS_JSON",
   "providers.piAuthPath": "MONO_AGENT_PI_AUTH_PATH",
   "providers.piNative.transport": "MONO_AGENT_PI_TRANSPORT",
   "providers.piNative.piMaxRetries": "MONO_AGENT_PI_MAX_RETRIES",
   "providers.piNative.maxRetryDelayMs": "MONO_AGENT_MAX_RETRY_DELAY_MS",
   "providers.piNative.piSessionsRoot": "MONO_AGENT_PI_SESSIONS_ROOT",
-  "providers.local": "MONO_AGENT_LOCAL_PROVIDERS_JSON",
 } as const satisfies Record<string, string>;
 
 export type ConfigViewFieldId = keyof typeof CONFIG_ENV_KEYS;
@@ -1050,20 +1050,26 @@ function buildObservabilitySection(input: BuildMonoAgentConfigViewInput): Config
   };
 }
 
-function formatLocalProviders(
-  providers: readonly RedactedLocalProviderDefinition[],
+function formatProviders(
+  providers: readonly RedactedProviderDefinition[],
 ): string {
   if (providers.length === 0) {
     return "none";
   }
-  return providers.map((provider) => `${provider.id} (${provider.type})`).join(", ");
+  return providers.map((provider) => provider.type === undefined
+    ? provider.id
+    : `${provider.id} (${provider.type})`).join(", ");
 }
 
 function buildProvidersSection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
   const { redacted, json, env } = input;
   const providers = redacted.providers;
   const present = providers !== undefined;
-  const localPresent = json.providers?.local !== undefined;
+  const entries = providers?.entries ?? providers?.local ?? [];
+  const configuredProviderIds = Object.keys(json.providers ?? {}).filter((key) =>
+    key !== "local" && key !== "piAuthPath" && key !== "piNative",
+  );
+  const providerMapPresent = json.providers?.local !== undefined || configuredProviderIds.length > 0;
   return {
     id: "providers",
     label: "Providers",
@@ -1100,10 +1106,10 @@ function buildProvidersSection(input: BuildMonoAgentConfigViewInput): ConfigView
         jsonPresent: json.providers?.piNative?.piSessionsRoot !== undefined,
       }),
       toField(env, {
-        id: "providers.local",
-        label: "Local providers",
-        value: providers?.local === undefined ? "none" : formatLocalProviders(providers.local),
-        jsonPresent: localPresent,
+        id: "providers",
+        label: "Configured providers",
+        value: formatProviders(entries),
+        jsonPresent: providerMapPresent,
       }),
     ],
   };
@@ -1112,7 +1118,7 @@ function buildProvidersSection(input: BuildMonoAgentConfigViewInput): ConfigView
 /**
  * Build the single, complete, source-annotated view of a resolved
  * `MonoAgentConfig`. Every core section and field is represented exactly once,
- * including the `observability.exporters` and `providers.local` blocks that the
+ * including the `observability.exporters` and `providers` blocks that the
  * retired field-group registry omitted. Drives both the read-only TUI config
  * pane and the `mono-agent config` CLI command, so the two surfaces can never
  * disagree about what the loader produced.
@@ -1179,11 +1185,14 @@ const REMOVED_MEMORY_ENV_KEYS = [
 ] as const;
 
 /**
- * Find advisory warnings for removed config keys that are tolerated but ignored.
- * Warnings mention only stable JSON paths and env var names, never values.
+ * Find advisory migration warnings for removed or one-release deprecated
+ * config surfaces. Warnings mention only stable paths/names, never values.
  */
 export function findRemovedConfigWarnings(input: RemovedConfigWarningsInput): readonly string[] {
   const warnings: string[] = [];
+  if (envHas(input.env, "MONO_AGENT_LOCAL_PROVIDERS_JSON")) {
+    warnings.push("[WARN] MONO_AGENT_LOCAL_PROVIDERS_JSON is deprecated; use MONO_AGENT_PROVIDERS_JSON with the provider-map shape instead.");
+  }
   if (input.json.memory?.reflection !== undefined) {
     warnings.push("[WARN] memory.reflection is removed and ignored; use memory.consolidation instead.");
   }

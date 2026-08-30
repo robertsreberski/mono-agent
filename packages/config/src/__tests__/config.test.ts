@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { ALLOW_ALL_TOOLS, loadMonoAgentConfig, MonoAgentConfigError, redactMonoAgentConfig } from "../index.js";
+import { ALLOW_ALL_TOOLS, loadMonoAgentConfig, MonoAgentConfigError, redactMonoAgentConfig, resolveConfiguredProviders } from "../index.js";
 
 const baseEnv = {
   MONO_AGENT_MODEL: "pi:openai-codex:gpt-5.5",
@@ -909,6 +909,105 @@ describe("loadMonoAgentConfig", () => {
       name: "qwen3:8b",
       capabilities: { context_window: 32768 },
     });
+  });
+
+  it("resolves a provider-map entry into the deterministic shared view", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MODEL: "private-provider:model-one",
+        MONO_AGENT_PROVIDERS_JSON: JSON.stringify({
+          "private-provider": {},
+          openrouter: { models: [{ name: "anthropic/claude-opus-4.5" }] },
+        }),
+      },
+    });
+
+    const resolved = resolveConfiguredProviders(config);
+    expect(resolved.entries.map((provider) => provider.id)).toEqual(["openrouter", "private-provider"]);
+    expect(resolved.byId.get("private-provider")).toMatchObject({
+      id: "private-provider",
+      enabled: true,
+      maxAdvertisedModels: 100,
+    });
+    expect(resolved.byId.get("openrouter")?.models).toEqual([
+      expect.objectContaining({ name: "anthropic/claude-opus-4.5" }),
+    ]);
+  });
+
+  it("reads reserved Pi settings from the whole providers env projection", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_PROVIDERS_JSON: JSON.stringify({
+          piAuthPath: "~/.worklab/auth.json",
+          piNative: {
+            transport: "websocket",
+            piMaxRetries: 4,
+            maxRetryDelayMs: 30_000,
+            piSessionsRoot: ".mono-agent/pi-sessions",
+          },
+        }),
+      },
+    });
+
+    expect(config.providers).toMatchObject({
+      piAuthPath: join(homedir(), ".worklab", "auth.json"),
+      piNative: {
+        transport: "websocket",
+        piMaxRetries: 4,
+        maxRetryDelayMs: 30_000,
+        piSessionsRoot: "/repo/.mono-agent/pi-sessions",
+      },
+    });
+  });
+
+  it("migrates providers.local[] to the same effective provider set as the map shape", () => {
+    const common = {
+      type: "ollama",
+      baseUrl: "http://localhost:11434",
+      models: [{ name: "qwen3:8b" }],
+    } as const;
+    const fromMap = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MODEL: "ollama:qwen3:8b",
+        MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ ollama: common }),
+      },
+    });
+    const fromLegacy = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MODEL: "ollama:qwen3:8b",
+        MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ local: [{ id: "ollama", ...common }] }),
+      },
+    });
+
+    expect(resolveConfiguredProviders(fromLegacy).entries).toEqual(resolveConfiguredProviders(fromMap).entries);
+  });
+
+  it("rejects a duplicate id across the provider map and providers.local[] with both paths", () => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_PROVIDERS_JSON: JSON.stringify({
+          ollama: {},
+          local: [{ id: "ollama", type: "ollama" }],
+        }),
+      },
+    })).toThrow(/providers\.ollama.*providers\.local\[0\]|providers\.local\[0\].*providers\.ollama/u);
+  });
+
+  it("rejects an unlisted non-builtin route with the provider id and exact repair", () => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_MODEL: "private-provider:model-one" },
+    })).toThrow('Provider "private-provider" used by runtime.model is not available; add "providers": { "private-provider": {} }');
   });
 
   it("rejects invalid local-provider JSON and URLs", () => {

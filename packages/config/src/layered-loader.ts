@@ -934,11 +934,14 @@ export function layerJsonOntoEnv(
   if (json.observability?.exporters !== undefined && !hasObservabilityEnv(env)) {
     fromJson.MONO_AGENT_OBSERVABILITY_EXPORTERS = JSON.stringify(json.observability.exporters);
   }
+  // Provider ids are operator-defined map keys, so the hand-written scalar
+  // projector cannot enumerate them. Preserve the whole providers object in
+  // one JSON env value; discrete legacy/reserved env values still layer later.
+  if (json.providers !== undefined && !hasValue(env.MONO_AGENT_PROVIDERS_JSON)) {
+    fromJson.MONO_AGENT_PROVIDERS_JSON = JSON.stringify(json.providers);
+  }
   if (json.providers?.piAuthPath !== undefined) {
     fromJson.MONO_AGENT_PI_AUTH_PATH = json.providers.piAuthPath;
-  }
-  if (json.providers?.local !== undefined && !hasLocalProviderEnv(env)) {
-    fromJson.MONO_AGENT_LOCAL_PROVIDERS_JSON = JSON.stringify(json.providers.local);
   }
   if (json.providers?.piNative?.piMaxRetries !== undefined) {
     fromJson.MONO_AGENT_PI_MAX_RETRIES = String(json.providers.piNative.piMaxRetries);
@@ -1016,19 +1019,4 @@ function hasValue(value: string | undefined): boolean {
 function hasObservabilityEnv(env: Record<string, string | undefined>): boolean {
   const value = env.MONO_AGENT_OBSERVABILITY_EXPORTERS;
   return value !== undefined && value.trim().length > 0;
-}
-
-function hasLocalProviderEnv(env: Record<string, string | undefined>): boolean {
-  return [
-    "MONO_AGENT_LOCAL_PROVIDERS_JSON",
-    "MONO_AGENT_LOCAL_PROVIDER_ID",
-    "MONO_AGENT_LOCAL_PROVIDER_TYPE",
-    "MONO_AGENT_LOCAL_PROVIDER_BASE_URL",
-    "MONO_AGENT_LOCAL_PROVIDER_ENABLED",
-    "MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL",
-    "MONO_AGENT_LOCAL_PROVIDER_API_KEY",
-  ].some((name) => {
-    const value = env[name];
-    return value !== undefined && value.trim().length > 0;
-  });
 }

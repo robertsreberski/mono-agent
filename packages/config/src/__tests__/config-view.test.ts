@@ -184,7 +184,7 @@ describe("buildMonoAgentConfigView", () => {
   it("surfaces the observability and local-provider sections the old registry omitted", () => {
     const sections = buildView(baseEnv);
     expect(section(sections, "observability").status).toBe("disabled");
-    expect(field(sections, "providers.local")).toBeDefined();
+    expect(field(sections, "providers")).toBeDefined();
     expect(field(sections, "observability.exporters")).toBeDefined();
   });
 
@@ -202,6 +202,15 @@ describe("buildMonoAgentConfigView", () => {
       ),
       "providers.piNative.transport",
     )).toMatchObject({ value: "websocket", source: "env" });
+  });
+
+  it("warns that the legacy local-provider registry env name is deprecated", () => {
+    expect(findRemovedConfigWarnings({
+      json: {},
+      env: { MONO_AGENT_LOCAL_PROVIDERS_JSON: "[]" },
+    })).toContain(
+      "[WARN] MONO_AGENT_LOCAL_PROVIDERS_JSON is deprecated; use MONO_AGENT_PROVIDERS_JSON with the provider-map shape instead.",
+    );
   });
 
   it("redacts the embeddings api key and never leaks the value", () => {
