@@ -20,6 +20,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { ActivityRow } from "../ActivityRow";
 import { formatToolDuration } from "../duration";
 import { Icon } from "../Icon";
 
@@ -265,32 +266,46 @@ const renderParagraph = (paragraph: string, paragraphIndex: number) => (
   </p>
 );
 
-const THINKING_PREVIEW_LIMIT = 52;
+const THINKING_PREVIEW_CHARACTERS = 52;
 
-const thinkingPreview = (text: string): string => {
-  const collapsed = text.replace(/\s+/gu, " ").trim();
-  return collapsed.length > THINKING_PREVIEW_LIMIT
-    ? `${collapsed.slice(0, THINKING_PREVIEW_LIMIT - 1)}\u2026`
-    : collapsed;
-};
+/**
+ * A thought's preview is the row's only content, so it has to read as prose. The
+ * expanded body still renders the raw text; this only strips the emphasis and
+ * heading markers that would otherwise be the first thing the eye lands on.
+ */
+const thinkingPreview = (text: string): string =>
+  text
+    .replace(/```[\s\S]*?```/gu, " ")
+    .replace(/[*_`>#]+/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
 
 /**
  * Thinking is working-out, not an answer: it collapses to one row so a long
  * chain of thought cannot bury the tool calls it sits between, and expands in
  * place for anyone who wants to read it.
  */
-const ReasoningImpl: ReasoningMessagePartComponent = ({ text }) => {
+const ReasoningImpl: ReasoningMessagePartComponent = ({ text, status }) => {
   if (text.length === 0) return null;
+  const preview = thinkingPreview(text);
+  // A thought still arriving stays open — watching the model work is the whole
+  // reason Activity auto-opens — and folds itself away once it has settled.
+  // `undefined` rather than `false`, so settling removes the attribute instead
+  // of forcing the row shut under anyone who opened it by hand.
+  const streaming = status?.type === "running";
   return (
-    <details data-slot="reasoning-part" className="reasoning-part thinking-row">
-      <summary>
-        <Icon name="spark" size={13} />
-        <span>Thinking</span>
-        <small>{thinkingPreview(text)}</small>
-        <Icon name="chevron" size={13} />
-      </summary>
-      <div>{text.split(/\n{2,}/u).map(renderParagraph)}</div>
-    </details>
+    <ActivityRow
+      variant="thinking"
+      status={streaming ? "running" : "complete"}
+      summary={preview.length > THINKING_PREVIEW_CHARACTERS
+        ? `${preview.slice(0, THINKING_PREVIEW_CHARACTERS - 1)}\u2026`
+        : preview}
+      open={streaming || undefined}
+    >
+      <div data-slot="reasoning-part" className="reasoning-part activity-thought">
+        {text.split(/\n{2,}/u).map(renderParagraph)}
+      </div>
+    </ActivityRow>
   );
 };
 
@@ -373,7 +388,7 @@ const ActivityGroupImpl = ({
       streaming={isStreaming}
     >
       <ReasoningTrigger active={isStreaming} className="activity-trigger">
-        <span className={`activity-pulse${isStreaming ? " is-running" : ""}`} aria-hidden="true" />
+        <Icon className={`activity-glyph${isStreaming ? " is-running" : ""}`} name="activity" size={13} />
         <span className="reasoning-trigger-label">
           Activity{isStreaming && <span className="sr-only"> in progress</span>}
         </span>
@@ -383,7 +398,7 @@ const ActivityGroupImpl = ({
         {meta.length > 0 && (
           <span className="activity-meta" aria-hidden="true">{meta}</span>
         )}
-        <Icon className="reasoning-trigger-chevron" name="chevron" size={14} />
+        <Icon className="activity-chevron" name="chevron-down" size={14} />
       </ReasoningTrigger>
       <ReasoningContent className="activity-content" aria-busy={isStreaming}>
         <ReasoningText>{children}</ReasoningText>

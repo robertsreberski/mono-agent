@@ -44,6 +44,12 @@ interface ConsoleStoreValue {
   readonly hiddenOfflineAgentCount: number;
   readonly model: string;
   readonly effort: string;
+  /** What the next turn will actually run on, override or agent default. */
+  readonly effectiveModel: string;
+  readonly effectiveEffort: string;
+  /** True while this conversation overrides what the agent would start with. */
+  readonly hasRunOverride: boolean;
+  readonly resetRunOverride: () => void;
   readonly modelOptions: readonly string[];
   readonly effortOptions: readonly string[];
   readonly skillRegistry: SkillRegistryState;
@@ -1044,6 +1050,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     : "";
   const effortOptions = effortLevelsForAgentModel(selectedAgent, effectiveModel);
   const effort = validatedPreference.effort;
+  const effectiveEffort = effort || selectedAgent?.defaultEffort || "";
+  // An override is what the operator chose for THIS conversation, as opposed to
+  // whatever the agent would otherwise start with.
+  const hasRunOverride = model.length > 0 || effort.length > 0;
 
   useEffect(() => {
     if (!preferenceKey) return;
@@ -1083,6 +1093,20 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     },
     [preferenceKey, selectedAgent, selectedAgentId],
   );
+
+  const resetRunOverride = useCallback(() => {
+    if (!preferenceKey) return;
+    setModelByContext((current) => {
+      const next = { ...current };
+      delete next[preferenceKey];
+      return next;
+    });
+    setEffortByContext((current) => {
+      const next = { ...current };
+      delete next[preferenceKey];
+      return next;
+    });
+  }, [preferenceKey]);
 
   const setEffort = useCallback(
     (next: string) => {
@@ -1185,6 +1209,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       hiddenOfflineAgentCount,
       model,
       effort,
+      effectiveModel,
+      effectiveEffort,
+      hasRunOverride,
+      resetRunOverride,
       modelOptions,
       effortOptions,
       skillRegistry,
@@ -1234,6 +1262,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       detailLoading,
       deleteThread,
       effort,
+      effectiveEffort,
+      effectiveModel,
       effortOptions,
       error,
       hiddenOfflineAgentCount,
@@ -1244,8 +1274,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loadOlderMessages,
       loadCronRunActivity,
       loading,
+      hasRunOverride,
       model,
       modelOptions,
+      resetRunOverride,
       skillRegistry,
       renameThread,
       refreshCron,

@@ -29,9 +29,17 @@ import {
   ActivityGroup,
   Reasoning,
 } from "./assistant-ui/Reasoning";
+import {
+  ActivityPayload,
+  ActivityRow,
+  ActivityStep,
+  type ActivityStatus,
+  clusterSummary,
+  failedLabel,
+  toolVerb,
+} from "./ActivityRow";
 import { finiteDuration, formatToolDuration } from "./duration";
 import { Icon } from "./Icon";
-import { safeJson } from "./json";
 import { toolHistoryFailure } from "./tool-history";
 import { SubagentPart, toolArgumentPreview } from "./Subagent";
 import { QuoteBlock } from "./assistant-ui/Quote";
@@ -692,40 +700,31 @@ export function ToolFallback({
   const isRunning = status.type === "running";
   const history = sessionToolHistory(envelope?.history);
   const historyFailure = toolHistoryFailure(history);
+  // Durable tool history knows *how* a call failed — "timeout" beats "failed" —
+  // so its canonical terminal state names the tag when there is one. A settled
+  // call says nothing at all: the row's absence of a tag is the success signal.
+  const failure = isError
+    ? typeof history?.terminalState === "string" ? history.terminalState : "failed"
+    : undefined;
   const elapsed = finiteDuration(envelope?.executionMs);
-  const displayedState = typeof history?.terminalState === "string"
-    ? history.terminalState
-    : isRunning ? "running" : isError ? "failed" : result === undefined ? "called" : "done";
+  // A lone call is the same row a cluster is, only without the count: the
+  // Activity log stays one column of identical rows however the work grouped.
   return (
-    <details className={`tool-call${isError ? " is-error" : ""}`}>
-      <summary>
-        <span className={`tool-status${isRunning ? " is-running" : ""}`} />
-        <span className="tool-name">{toolName}</span>
-        <span className="tool-state">
-          {displayedState}
-        </span>
-        {elapsed !== undefined && (
-          <time className="tool-duration">{formatToolDuration(elapsed)}</time>
-        )}
-        <Icon name="chevron" size={14} />
-      </summary>
-      <div className="tool-payload">
-        <span>Input</span>
-        <pre>{safeJson(args)}</pre>
-        {result !== undefined && (
-          <>
-            <span>Output</span>
-            <pre>{safeJson(result)}</pre>
-          </>
-        )}
-        {historyFailure !== undefined && (
-          <>
-            <span>History</span>
-            <pre>{historyFailure}</pre>
-          </>
-        )}
-      </div>
-    </details>
+    <ActivityRow
+      status={isRunning ? "running" : isError ? "failed" : "complete"}
+      label={toolVerb(toolName)}
+      summary={toolArgumentPreview(args)}
+      failed={failure}
+      duration={elapsed === undefined ? undefined : formatToolDuration(elapsed)}
+    >
+      <ActivityPayload
+        args={args}
+        result={result}
+        resultIsError={isError}
+        error={historyFailure}
+        indented
+      />
+    </ActivityRow>
   );
 }
 
@@ -912,22 +911,6 @@ function NotePart({ data }: DataMessagePartProps) {
   return <p className="activity-note">{text.trim()}</p>;
 }
 
-/**
- * Tool names are machine identifiers (`read_file`, `Bash`); a cluster header is
- * read at a glance, so the common ones get their plain verb and everything else
- * degrades to a de-underscored version of its own name.
- */
-const humanToolName = (name: string): string => {
-  const normalized = name.toLocaleLowerCase();
-  if (normalized === "read" || normalized.startsWith("read_")) return "Read";
-  if (normalized === "write" || normalized.startsWith("write_")) return "Write";
-  if (normalized.includes("search") || normalized === "grep") return "Search";
-  if (normalized === "bash" || normalized === "exec" || normalized.includes("command")) return "Run";
-  return name.replaceAll(/[_-]+/gu, " ").replace(/^./u, (character) => character.toLocaleUpperCase());
-};
-
-const CLUSTER_PREVIEW_LIMIT = 2;
-
 const asRecord = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -943,34 +926,22 @@ function ToolClusterPart({ data }: DataMessagePartProps) {
   const calls = Array.isArray(payload.calls) ? payload.calls : [];
   const failed = typeof payload.failedCount === "number" ? payload.failedCount : 0;
   const totalMs = finiteDuration(payload.totalMs);
-  const status = typeof payload.status === "string" ? payload.status : "complete";
-  const previews = [...new Set(calls.flatMap((raw) => {
+  const status: ActivityStatus = payload.status === "running"
+    ? "running"
+    : payload.status === "failed" ? "failed" : "complete";
+  const previews = calls.flatMap((raw) => {
     const preview = toolArgumentPreview(asRecord(raw).args);
     return preview === undefined ? [] : [preview];
-  }))];
-  const previewSummary = previews.length === 0
-    ? undefined
-    : `${previews.slice(0, CLUSTER_PREVIEW_LIMIT).join(", ")}${
-      previews.length > CLUSTER_PREVIEW_LIMIT
-        ? ` +${String(previews.length - CLUSTER_PREVIEW_LIMIT)}`
-        : ""
-    }`;
+  });
   return (
-    <details className={`tool-cluster is-${status}`}>
-      <summary>
-        <span className={`tool-status${status === "running" ? " is-running" : ""}`} />
-        <strong>
-          {humanToolName(typeof payload.toolName === "string" ? payload.toolName : "Tool")}
-          {` \u00d7${String(calls.length)}`}
-        </strong>
-        {previewSummary !== undefined && (
-          <span className="tool-cluster-preview">{previewSummary}</span>
-        )}
-        {failed > 0 && <span className="failed-tag">{`${String(failed)} failed`}</span>}
-        {totalMs !== undefined && <time>{formatToolDuration(totalMs)}</time>}
-        <Icon name="chevron" size={14} />
-      </summary>
-      <div className="tool-cluster-calls">
+    <ActivityRow
+      status={status}
+      label={`${toolVerb(typeof payload.toolName === "string" ? payload.toolName : "Tool")} \u00d7${String(calls.length)}`}
+      summary={clusterSummary(previews)}
+      failed={failedLabel(failed, true)}
+      duration={totalMs === undefined ? undefined : formatToolDuration(totalMs)}
+    >
+      <div className="activity-steps">
         {calls.map((raw, index) => {
           const call = asRecord(raw);
           const artifact = toolCallArtifact(call.artifact);
@@ -978,42 +949,24 @@ function ToolClusterPart({ data }: DataMessagePartProps) {
           const duration = finiteDuration(artifact?.executionMs);
           const isError = call.isError === true;
           return (
-            <details
+            <ActivityStep
               key={typeof call.toolCallId === "string" ? call.toolCallId : index}
-              className={`tool-call${isError ? " is-error" : ""}`}
+              toolName={String(call.toolName ?? payload.toolName ?? "Tool")}
+              summary={toolArgumentPreview(call.args)}
+              failed={failedLabel(isError ? 1 : 0, false)}
+              duration={duration === undefined ? undefined : formatToolDuration(duration)}
             >
-              <summary>
-                <span className="tool-status" />
-                <span className="tool-name">
-                  {String(call.toolName ?? payload.toolName ?? "Tool")}
-                </span>
-                <span className="tool-state">{isError ? "failed" : "done"}</span>
-                {duration !== undefined && (
-                  <time className="tool-duration">{formatToolDuration(duration)}</time>
-                )}
-                <Icon name="chevron" size={13} />
-              </summary>
-              <div className="tool-payload">
-                <span>Input</span>
-                <pre>{safeJson(call.args)}</pre>
-                {call.result !== undefined && (
-                  <>
-                    <span>{isError ? "Error" : "Output"}</span>
-                    <pre>{safeJson(call.result)}</pre>
-                  </>
-                )}
-                {historyFailure !== undefined && (
-                  <>
-                    <span>History</span>
-                    <pre>{historyFailure}</pre>
-                  </>
-                )}
-              </div>
-            </details>
+              <ActivityPayload
+                args={call.args}
+                result={call.result}
+                resultIsError={isError}
+                error={historyFailure}
+              />
+            </ActivityStep>
           );
         })}
       </div>
-    </details>
+    </ActivityRow>
   );
 }
 
@@ -1288,9 +1241,6 @@ export function UserMessage() {
 export function AssistantMessage() {
   return (
     <MessagePrimitive.Root className="message message-assistant">
-      <div className="assistant-mark" aria-hidden="true">
-        <Icon name="spark" size={15} />
-      </div>
       <div className="assistant-content">
         <AssistantParts />
         <MessagePrimitive.Error>
