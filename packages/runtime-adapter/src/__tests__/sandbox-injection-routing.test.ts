@@ -31,10 +31,9 @@ describe("createMonoRuntime routed sandbox authority", () => {
     const root = mkdtempSync(join(tmpdir(), "mono-runtime-sandbox-authority-"));
     tempDirs.push(root);
     const model = {
-      sdk: "pi",
       provider: "faux",
       model: "sandbox-test",
-      reference: "pi:faux:sandbox-test",
+      reference: "faux:sandbox-test",
     };
     const fakeSandbox = {
       mergePolicies: vi.fn((_configured, request) => request),

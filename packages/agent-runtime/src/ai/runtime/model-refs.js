@@ -2,53 +2,74 @@
 
 /** @typedef {import('../types.js').RuntimeModelRef} RuntimeModelRef */
 
-const RESERVED_RUNTIME_IDS = new Set(["openai", "vercel", "claude-code", "codex-cli"]);
-const ACTIVE_RUNTIME_IDS = new Set(["claude", "pi", "codex", "opencode", "acp"]);
-const ACP_PROFILE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const PROVIDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-function requirePart(value, message) {
-  if (!value || typeof value !== "string" || value.trim() !== value) {
-    throw new Error(message);
+/**
+ * @param {string} provider
+ * @param {string} model
+ */
+function rejectRemovedRuntimeReference(provider, model) {
+  if (provider === "codex") {
+    throw new Error(`codex is no longer a runtime backend; use openai-codex:${model}`);
   }
-  return value;
+  if (provider === "claude" || provider === "claude-code") {
+    throw new Error(`${provider} is no longer a runtime backend; use anthropic:${model}`);
+  }
+  if (provider === "codex-cli") {
+    throw new Error(`codex-cli is no longer a runtime backend; use openai-codex:${model}`);
+  }
+  if (provider === "acp") {
+    throw new Error(
+      "ACP is no longer a runtime backend; use <provider>:<model> for Pi models, or mono-agent bridge acp to serve mono-agent over ACP",
+    );
+  }
+  if (provider === "vercel") {
+    const replacement = model.includes(":") ? model : "<provider>:<model>";
+    throw new Error(`vercel:<provider>:<model> is no longer supported; use ${replacement} directly`);
+  }
+  if (provider === "opencode" && model.includes(":")) {
+    throw new Error(`the opencode:<provider>:<model> runtime form is no longer supported; use ${model}`);
+  }
 }
 
-function rejectTierAlias(model) {
+/** @param {string} provider */
+function requireProvider(provider) {
+  if (!PROVIDER_ID_RE.test(provider)) {
+    throw new Error("invalid provider id; expected [A-Za-z0-9][A-Za-z0-9._-]*");
+  }
+}
+
+/** @param {string} model */
+function requireModel(model) {
+  if (!model || model.trim() !== model) {
+    throw new Error("model id must be a non-empty trimmed string");
+  }
   if (["haiku", "sonnet", "opus"].includes(model)) {
-    throw new Error("tier aliases are not valid model references; use an exact model id");
+    throw new Error("tier aliases are not valid model ids; use an exact model id");
   }
 }
 
 /**
+ * Parse the provider/model pair after the optional legacy `pi:` wrapper has
+ * been removed. Pi model ids are opaque and commonly contain further colons,
+ * so only the first colon is structural.
+ *
  * @param {string} value
- * @returns {string}
+ * @returns {RuntimeModelRef}
  */
-export function canonicalizeLegacyModelReference(value) {
-  if (!value || typeof value !== "string") throw new Error("model reference required");
+function parseCanonicalReference(value) {
+  const separator = value.indexOf(":");
+  if (separator <= 0 || separator === value.length - 1) {
+    throw new Error("invalid model reference; expected <provider>:<model>");
+  }
 
-  if (value.startsWith("openai:")) {
-    const model = requirePart(value.slice("openai:".length), "model id required");
-    return `pi:openai:${model}`;
-  }
-  if (value.startsWith("codex:")) {
-    const model = requirePart(value.slice("codex:".length), "model id required");
-    return `codex:${model}`;
-  }
-  if (value.startsWith("vercel:")) {
-    const rest = value.slice("vercel:".length);
-    const i = rest.indexOf(":");
-    if (i <= 0 || i === rest.length - 1) {
-      throw new Error("invalid vercel model reference; expected vercel:<providerId>:<modelName>");
-    }
-    const provider = requirePart(rest.slice(0, i), "provider id required");
-    const model = requirePart(rest.slice(i + 1), "model name required");
-    return `pi:${provider}:${model}`;
-  }
-  if (value.startsWith("claude-code:")) {
-    const model = requirePart(value.slice("claude-code:".length), "model id required");
-    return `claude:${model}`;
-  }
-  return value;
+  const provider = value.slice(0, separator);
+  const model = value.slice(separator + 1);
+  requireProvider(provider);
+  requireModel(model);
+  rejectRemovedRuntimeReference(provider, model);
+
+  return { provider, model, reference: `${provider}:${model}` };
 }
 
 /**
@@ -56,16 +77,7 @@ export function canonicalizeLegacyModelReference(value) {
  * @returns {RuntimeModelRef}
  */
 export function normalizeRuntimeModelReference(value) {
-  return parseRuntimeModelReference(canonicalizeLegacyModelReference(value));
-}
-
-/**
- * @param {string} value
- * @returns {RuntimeModelRef["sdk"]}
- */
-export function sdkFromModelReference(value) {
-  const parsed = parseRuntimeModelReference(value);
-  return parsed.sdk;
+  return parseRuntimeModelReference(value);
 }
 
 /**
@@ -73,57 +85,17 @@ export function sdkFromModelReference(value) {
  * @returns {RuntimeModelRef}
  */
 export function parseRuntimeModelReference(value) {
-  if (!value || typeof value !== "string") throw new Error("model reference required");
-
-  if (value.startsWith("acp:")) {
-    const profileId = requirePart(value.slice("acp:".length), "ACP profile id required");
-    if (!ACP_PROFILE_ID_RE.test(profileId)) {
-      throw new Error("invalid acp model reference; expected acp:<profile-id>");
-    }
-    return { sdk: "acp", model: profileId, reference: value };
+  if (typeof value !== "string" || value.length === 0 || value.trim() !== value) {
+    throw new Error("model reference must be a non-empty trimmed string");
   }
 
   if (value.startsWith("pi:")) {
-    const rest = value.slice("pi:".length);
-    const i = rest.indexOf(":");
-    if (i <= 0 || i === rest.length - 1) {
-      throw new Error("invalid pi model reference; expected pi:<providerId>:<modelName>");
+    const wrapped = value.slice("pi:".length);
+    if (wrapped.indexOf(":") <= 0 || wrapped.endsWith(":")) {
+      throw new Error("invalid pi model reference; use pi:<provider>:<model>");
     }
-    const provider = requirePart(rest.slice(0, i), "provider id required");
-    const model = requirePart(rest.slice(i + 1), "model id required");
-    return { sdk: "pi", provider, model, reference: value };
+    return parseCanonicalReference(wrapped);
   }
 
-  if (value.startsWith("opencode:")) {
-    // opencode:<providerID>:<modelID> — providerID/modelID come from OpenCode's own
-    // provider registry (auth.json). Only the first colon separates them; modelID may
-    // contain slashes (e.g. openrouter's `anthropic/claude-3.5-sonnet`).
-    const rest = value.slice("opencode:".length);
-    const i = rest.indexOf(":");
-    if (i <= 0 || i === rest.length - 1) {
-      throw new Error("invalid opencode model reference; expected opencode:<providerId>:<modelId>");
-    }
-    const provider = requirePart(rest.slice(0, i), "provider id required");
-    const model = requirePart(rest.slice(i + 1), "model id required");
-    return { sdk: "opencode", provider, model, reference: value };
-  }
-
-  const i = value.indexOf(":");
-  if (i <= 0 || i === value.length - 1) {
-    throw new Error("invalid model reference; expected <sdk>:<modelId>");
-  }
-  const sdk = value.slice(0, i);
-  const model = requirePart(value.slice(i + 1), "model id required");
-
-  if (RESERVED_RUNTIME_IDS.has(sdk)) {
-    throw new Error(`reserved runtime id: ${sdk}; use a canonical pi:*, claude:*, or codex:* model reference`);
-  }
-  if (!ACTIVE_RUNTIME_IDS.has(sdk)) {
-    throw new Error(`unknown sdk: ${sdk}`);
-  }
-  rejectTierAlias(model);
-  return { sdk, model, reference: value };
+  return parseCanonicalReference(value);
 }
-
-export const ACTIVE_RUNTIME_KINDS = [...ACTIVE_RUNTIME_IDS];
-export const RESERVED_RUNTIME_KINDS = [...RESERVED_RUNTIME_IDS];

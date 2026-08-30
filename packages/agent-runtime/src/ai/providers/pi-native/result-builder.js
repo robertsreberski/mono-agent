@@ -118,14 +118,14 @@ export function emitUsageCostEvents({
   externalAbort,
 }) {
   if (usage.cacheRead > 0) {
-    onEvent({ type: "cache_hit", sdk: resolved.sdk, model: reference, tokens: usage.cacheRead, source: "prompt_cache" });
+    onEvent({ type: "cache_hit", sdk: "pi", model: reference, tokens: usage.cacheRead, source: "prompt_cache" });
   }
   if (usage.cacheWrite > 0) {
-    onEvent({ type: "cache_miss", sdk: resolved.sdk, model: reference, tokens: usage.cacheWrite, source: "prompt_cache" });
+    onEvent({ type: "cache_miss", sdk: "pi", model: reference, tokens: usage.cacheWrite, source: "prompt_cache" });
   }
   onEvent({
     type: "cost_accumulated",
-    sdk: resolved.sdk,
+    sdk: "pi",
     model: reference,
     cumulativeUsd: Number(usage.cost) || Number(estimatedCost) || 0,
     tokens: {
@@ -137,7 +137,7 @@ export function emitUsageCostEvents({
   });
   onEvent({
     type: "provider_request_completed",
-    sdk: resolved.sdk,
+    sdk: "pi",
     model: reference,
     runtime: "pi",
     timestamp: Date.now(),
@@ -167,9 +167,9 @@ export function abortedResult({ resolved, options, events, runtimeWarnings, star
     usage: {},
     durationMs: Date.now() - start,
     numTurns: 0,
-    model: resolved?.reference || resolved?.model || null,
+    model: resolved?.reference || (resolved?.provider && resolved?.model ? `${resolved.provider}:${resolved.model}` : null),
     effort: options.effort || null,
-    sdk: resolved?.sdk || "pi",
+    sdk: "pi",
     cancelled: true,
     error: null,
     failureKind: null,
@@ -226,9 +226,9 @@ export function buildSuccessResult(params) {
     },
     durationMs: Date.now() - start,
     numTurns: turnCount || runAssistantCount,
-    model: resolved.reference || `pi:${resolved.provider}:${resolved.model}`,
+    model: resolved.reference || `${resolved.provider}:${resolved.model}`,
     effort: options.effort || null,
-    sdk: resolved.sdk,
+    sdk: "pi",
     cancelled: externalAbort,
     error: errorMessage,
     errorDetails,
@@ -273,9 +273,9 @@ export function buildErrorResult(params) {
     usage: {},
     durationMs: Date.now() - start,
     numTurns: turnCount,
-    model: resolved?.reference || resolved?.model || null,
+    model: resolved?.reference || (resolved?.provider && resolved?.model ? `${resolved.provider}:${resolved.model}` : null),
     effort: options.effort || null,
-    sdk: resolved?.sdk || "pi",
+    sdk: "pi",
     cancelled: externalAbort,
     error: externalAbort ? null : errorMessage,
     errorDetails: externalAbort ? null : {

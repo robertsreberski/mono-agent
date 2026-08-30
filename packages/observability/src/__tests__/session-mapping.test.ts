@@ -69,10 +69,9 @@ describe("mapRunToSession", () => {
     expect(session.totals.steps).toBe(events.length);
     expect(session.toolCounts).toEqual({ command_execution: 1 });
 
-    // No model on this older summary -> provider/api omitted.
+    // No model on this older summary -> provider omitted.
     expect(session.model).toBeUndefined();
     expect(session.provider).toBeUndefined();
-    expect(session.api).toBeUndefined();
 
     // The tool-call assistant step carries a digest + full raw args, with the
     // call resolved ok:true once its (non-error) tool_result folds in.
@@ -244,11 +243,10 @@ describe("mapRunToSession", () => {
     expect(session.finalText).toBe("NOTHING_TO_REPORT");
     expect(session.outcome).toBe("silent");
 
-    // Trigger/source + model-ref parse (sdk:provider:model).
+    // Trigger/source + canonical model-ref parse (provider:model).
     expect(session.source).toBe("cron");
     expect(session.trigger).toBe("nightly-report");
-    expect(session.model).toBe("pi:ollama:gemma4:31b");
-    expect(session.api).toBe("pi");
+    expect(session.model).toBe("ollama:gemma4:31b");
     expect(session.provider).toBe("ollama");
     expect(session.effort).toBe("high");
 
@@ -346,7 +344,7 @@ describe("mapRunToSession", () => {
       error: "All fallback models failed.",
       failoverHistory: [
         {
-          model: "pi:openai-codex:gpt-5.5",
+          model: "openai-codex:gpt-5.5",
           failureKind: "provider_unavailable",
           subkind: "server_error",
           requestId: "req-a",
@@ -643,6 +641,25 @@ describe("mapRunToSession", () => {
     expect(src("tui-local")).toBe("tui");
     // A UUID (chat/webhook without a stamped source) stays "other".
     expect(src("b7e4c1a0-9f2d-4c6b-8a51-0d3e2f1a6c7b")).toBe("other");
+  });
+
+  it("records the first canonical model-reference segment as the provider", () => {
+    const session = mapRunToSession(
+      {
+        runId: "provider-mapping",
+        conversationId: "chat:provider-mapping",
+        status: "succeeded",
+        durationMs: 0,
+        eventCount: 0,
+        artifactPaths: [],
+        model: "anthropic:claude-opus-5",
+      },
+      [],
+      OPTS,
+    );
+
+    expect(session.provider).toBe("anthropic");
+    expect(Object.hasOwn(session, "api")).toBe(false);
   });
 });
 

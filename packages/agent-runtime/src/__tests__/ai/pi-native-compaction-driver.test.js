@@ -202,7 +202,7 @@ describe("tryCompact", () => {
       runtimeWarnings: [],
       onCompactionRecorded: (row) => recorded.push(row),
       runId: "r1",
-      model: "pi:faux:m",
+      model: "faux:m",
       session: fixture.session,
       policy: { keepRecentTokens: 4_000, summaryMaxTokens: 2_000, compactionMinSavingsTokens: 0 },
     });
@@ -214,7 +214,7 @@ describe("tryCompact", () => {
       status: "running",
       sdk: "pi",
       trigger: "proactive",
-      model: "pi:faux:m",
+      model: "faux:m",
     });
     expect(events[1]).toMatchObject({
       type: "context_compaction",
@@ -222,7 +222,7 @@ describe("tryCompact", () => {
       status: "succeeded",
       sdk: "pi",
       trigger: "proactive",
-      model: "pi:faux:m",
+      model: "faux:m",
       tokenCountsExact: false,
     });
     expect(recorded[0]).toMatchObject({ trigger: "proactive", provider_kind: "pi", status: "succeeded" });
@@ -402,7 +402,7 @@ describe("resolveLiveCompactionPolicy — window recognition", () => {
     const policy = resolveLiveCompactionPolicy({
       harness,
       runtime: { model: { id: "m" } },
-      resolved: { reference: "pi:faux:m" },
+      resolved: { reference: "faux:m" },
       settings: {},
     });
     expect(policy.contextWindow).toBe(100_000);
@@ -424,7 +424,7 @@ describe("resolveLiveCompactionPolicy — window recognition", () => {
     const policy = resolveLiveCompactionPolicy({
       harness: { getModel: () => ({ id: "override-only", contextWindow: 128_000 }) },
       runtime: { model: { id: "override-only", contextWindow: 128_000 } },
-      resolved: { reference: "pi:faux:override-only" },
+      resolved: { reference: "faux:override-only" },
       settings: {},
       contextWindowOverride: 272_000,
     });
@@ -455,7 +455,7 @@ describe("runProactiveCompaction — trigger math", () => {
     const harness = { waitForIdle: vi.fn(), compact: vi.fn() };
     await runProactiveCompaction(runState, {
       harness, systemPrompt: "s", options: { settings: {} }, tools: [],
-      promptText: "hi", promptImages: [], reference: "pi:faux:m", onEvent: () => {}, runtimeWarnings: [],
+      promptText: "hi", promptImages: [], reference: "faux:m", onEvent: () => {}, runtimeWarnings: [],
     });
     expect(harness.compact).not.toHaveBeenCalled();
     expect(runState.compaction.applied).toBe(false);
@@ -470,7 +470,7 @@ describe("runProactiveCompaction — trigger math", () => {
     await runProactiveCompaction(runState, {
       harness, systemPrompt: "s",
       options: { settings: { agent_compaction_fixed_overhead_enabled: false } },
-      tools: [], promptText: "hi", promptImages: [], reference: "pi:faux:m", onEvent: () => {}, runtimeWarnings: [],
+      tools: [], promptText: "hi", promptImages: [], reference: "faux:m", onEvent: () => {}, runtimeWarnings: [],
     });
     expect(harness.compact).not.toHaveBeenCalled();
     expect(runState.compaction.diagnostics).toMatchObject({
@@ -488,7 +488,7 @@ describe("runProactiveCompaction — trigger math", () => {
       harness: fixture.harness, systemPrompt: "s",
       options: { settings: {} }, // fixed overhead ON
       tools: [{ name: "Bash", description: "x".repeat(4000), parameters: {} }],
-      promptText: "hi", promptImages: [], reference: "pi:faux:m", onEvent: () => {}, runtimeWarnings: [],
+      promptText: "hi", promptImages: [], reference: "faux:m", onEvent: () => {}, runtimeWarnings: [],
     });
     expect(fixture.harness.compact).toHaveBeenCalledTimes(1);
     expect(runState.compaction.applied).toBe(true);
@@ -510,7 +510,7 @@ describe("runReactiveCompaction — overflow recovery", () => {
     const harness = { compact: vi.fn(), waitForIdle: vi.fn(), prompt: vi.fn(), getModel: () => null };
     const out = await runReactiveCompaction(runState, {
       harness, runtime: {}, resolved: {}, options: {}, promptText: "hi", promptImages: [],
-      reference: "pi:faux:m", onEvent: () => {}, runtimeWarnings: [],
+      reference: "faux:m", onEvent: () => {}, runtimeWarnings: [],
       state: overflowState, runError: null, captureState: async () => overflowState,
     });
     // reactiveAttempted flips, but no second compaction fires.
@@ -529,8 +529,8 @@ describe("runReactiveCompaction — overflow recovery", () => {
     const rerunState = { stopReason: "endTurn", lastAssistant: { content: [{ type: "text", text: "recovered" }] } };
     let capturedCalls = 0;
     const out = await runReactiveCompaction(runState, {
-      harness: fixture.harness, runtime: { model: { id: "m" } }, resolved: { reference: "pi:faux:reactive-success" }, options: {},
-      promptText: "hi", promptImages: [], reference: "pi:faux:m", onEvent: () => {}, runtimeWarnings: [],
+      harness: fixture.harness, runtime: { model: { id: "m" } }, resolved: { reference: "faux:reactive-success" }, options: {},
+      promptText: "hi", promptImages: [], reference: "faux:m", onEvent: () => {}, runtimeWarnings: [],
       state: overflowState, runError: null,
       captureState: async () => { capturedCalls += 1; return rerunState; },
     });
@@ -551,8 +551,8 @@ describe("runReactiveCompaction — overflow recovery", () => {
     });
     const warnings = [];
     const out = await runReactiveCompaction(runState, {
-      harness: fixture.harness, runtime: { model: { id: "m" } }, resolved: { reference: "pi:faux:reactive-no-reduction" }, options: {},
-      promptText: "hi", promptImages: [], reference: "pi:faux:m", onEvent: () => {}, runtimeWarnings: warnings,
+      harness: fixture.harness, runtime: { model: { id: "m" } }, resolved: { reference: "faux:reactive-no-reduction" }, options: {},
+      promptText: "hi", promptImages: [], reference: "faux:m", onEvent: () => {}, runtimeWarnings: warnings,
       state: overflowState, runError: null, captureState: vi.fn(),
     });
     expect(fixture.harness.compact).toHaveBeenCalledTimes(1);
@@ -570,7 +570,7 @@ describe("runReactiveCompaction — overflow recovery", () => {
         userMessage("c".repeat(100_000)),
       ],
     });
-    const reference = "pi:faux:generic-ceiling";
+    const reference = "faux:generic-ceiling";
     const runState = freshRunState(fixture.session, {
       policy: { enabled: true, keepRecentTokens: 4_000, summaryMaxTokens: 2_000, compactionMinSavingsTokens: 0 },
     });
@@ -607,7 +607,7 @@ describe("runReactiveCompaction — overflow recovery", () => {
     const benign = { stopReason: "error", lastAssistant: { errorMessage: "401 unauthorized" } };
     const out = await runReactiveCompaction(runState, {
       harness, runtime: {}, resolved: {}, options: {}, promptText: "hi", promptImages: [],
-      reference: "pi:faux:m", onEvent: () => {}, runtimeWarnings: [],
+      reference: "faux:m", onEvent: () => {}, runtimeWarnings: [],
       state: benign, runError: null, captureState: async () => benign,
     });
     expect(harness.compact).not.toHaveBeenCalled();
@@ -621,7 +621,7 @@ describe("runReactiveCompaction — overflow recovery", () => {
     const harness = { compact: vi.fn(), waitForIdle: vi.fn(), prompt: vi.fn() };
     await runReactiveCompaction(runState, {
       harness, runtime: {}, resolved: {}, options: {}, promptText: "hi", promptImages: [],
-      reference: "pi:faux:m", onEvent: () => {}, runtimeWarnings: [],
+      reference: "faux:m", onEvent: () => {}, runtimeWarnings: [],
       state: overflowState, runError: null, captureState: async () => overflowState,
     });
     expect(runState.compaction.reactiveAttempted).toBe(false);

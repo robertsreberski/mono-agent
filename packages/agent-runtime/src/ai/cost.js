@@ -9,8 +9,7 @@ import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/a
 
 /**
  * @typedef {Object} ParsedModelReference
- * @property {string|null} sdk
- * @property {string} [provider]
+ * @property {string} provider
  * @property {string} model
  */
 
@@ -39,25 +38,6 @@ import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/a
  * @property {number|string} [output]
  * @property {number|string} [output_per_million]
  */
-
-// STATIC FALLBACK, consulted only AFTER pi's live catalog (piCatalogPricing via
-// getBuiltinModel("anthropic", ...)). pi's anthropic catalog already carries the
-// same per-million rates for the currently-shipping models, so this table only
-// wins for Claude ids pi's catalog does not (yet) know — newer/renamed models
-// added here before they land in a pinned pi-ai release. STALENESS: these are
-// hand-maintained USD/1M-token rates and can drift from Anthropic's published
-// pricing; treat them as a best-effort backstop for cost DIAGNOSTICS only (never
-// control flow), and refresh when bumping pi-ai or when Anthropic reprices.
-const CLAUDE_PRICING = {
-  "claude-haiku-4-5-20251001": { input: 1.0, cacheRead: 0.1, cacheWrite: 1.25, output: 5.0 },
-  "claude-haiku-4-5": { input: 1.0, cacheRead: 0.1, cacheWrite: 1.25, output: 5.0 },
-  "claude-sonnet-4-6": { input: 3.0, cacheRead: 0.3, cacheWrite: 3.75, output: 15.0 },
-  "claude-sonnet-4-5": { input: 3.0, cacheRead: 0.3, cacheWrite: 3.75, output: 15.0 },
-  "claude-sonnet-4": { input: 3.0, cacheRead: 0.3, cacheWrite: 3.75, output: 15.0 },
-  "claude-opus-4-7": { input: 5.0, cacheRead: 0.5, cacheWrite: 6.25, output: 25.0 },
-  "claude-opus-4-6": { input: 5.0, cacheRead: 0.5, cacheWrite: 6.25, output: 25.0 },
-  "claude-opus-4-5": { input: 5.0, cacheRead: 0.5, cacheWrite: 6.25, output: 25.0 },
-};
 
 /**
  * @param {*} value
@@ -126,26 +106,13 @@ function unknownPricing() {
  * @returns {ParsedModelReference|null}
  */
 function parseReference(reference) {
-  if (typeof reference !== "string" || !reference.trim()) return null;
-  if (reference.startsWith("vercel:")) {
-    const rest = reference.slice("vercel:".length);
-    const i = rest.indexOf(":");
-    return i > 0 ? { sdk: "pi", provider: rest.slice(0, i), model: rest.slice(i + 1) } : null;
-  }
-  if (reference.startsWith("codex:")) {
-    return { sdk: "pi", provider: "openai-codex", model: reference.slice("codex:".length) };
-  }
-  if (reference.startsWith("openai:")) {
-    return { sdk: "pi", provider: "openai", model: reference.slice("openai:".length) };
-  }
-  if (reference.startsWith("pi:")) {
-    const rest = reference.slice("pi:".length);
-    const i = rest.indexOf(":");
-    return i > 0 ? { sdk: "pi", provider: rest.slice(0, i), model: rest.slice(i + 1) } : null;
-  }
-  const i = reference.indexOf(":");
-  if (i <= 0) return { sdk: null, model: reference };
-  return { sdk: reference.slice(0, i), model: reference.slice(i + 1) };
+  if (typeof reference !== "string" || reference.length === 0 || reference.trim() !== reference) return null;
+  const separator = reference.indexOf(":");
+  if (separator <= 0 || separator === reference.length - 1) return null;
+  const provider = reference.slice(0, separator);
+  const model = reference.slice(separator + 1);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(provider) || model.trim() !== model) return null;
+  return { provider, model };
 }
 
 /**
@@ -182,30 +149,19 @@ function pricingHasRates(pricing = {}) {
 }
 
 /**
- * Live pricing from pi-ai's builtin catalog (getBuiltinModel). Handles two
- * shapes:
- *   - sdk "pi": `parsed.provider` is the pi provider id (openai, openai-codex,
- *     github-copilot, custom, ...). Codex/openai references route here via
- *     parseReference (codex:* -> openai-codex, openai:* -> openai), so they get
- *     the SAME catalog treatment — priced when pi's catalog has that model
- *     (openai gpt-* do), unpriced (-> falls through to unknown) when it does not
- *     (e.g. openai-codex `gpt-5-codex` is not in the pinned catalog).
- *   - sdk "claude": looked up under pi's "anthropic" provider (its models carry
- *     `cost`), so pi's live rates win over the static CLAUDE_PRICING fallback.
+ * Live pricing from pi-ai's builtin catalog (getBuiltinModel). The parsed
+ * provider is already the Pi catalog provider id; the model remains opaque and
+ * may contain additional colons or slashes.
  * @param {ParsedModelReference|null|undefined} parsed
  * @returns {import("@earendil-works/pi-ai").Model<any>|null}
  */
 function piCatalogModel(parsed) {
-  if (!parsed?.model) return null;
-  let provider;
-  if (parsed.sdk === "pi" && parsed.provider) provider = parsed.provider;
-  else if (parsed.sdk === "claude") provider = "anthropic";
-  else return null;
+  if (!parsed?.provider || !parsed.model) return null;
   try {
     // `provider` may be a caller-supplied id (custom providers included), wider
     // than pi-ai's built-in KnownProvider catalog union; the catalog lookup
     // itself is the runtime check, guarded by the catch below.
-    return getPiModel(/** @type {*} */ (provider), parsed.model) || null;
+    return getPiModel(/** @type {*} */ (parsed.provider), parsed.model) || null;
   } catch {
     return null;
   }
@@ -218,15 +174,6 @@ function piCatalogModel(parsed) {
 function piCatalogPricing(parsed) {
   const model = piCatalogModel(parsed);
   return model?.cost ? normalizePricing(model.cost, { source: "pi-catalog" }) : null;
-}
-
-/**
- * @param {ParsedModelReference|null|undefined} parsed
- * @returns {NormalizedPricing|null}
- */
-function claudePricing(parsed) {
-  if (parsed?.sdk !== "claude") return null;
-  return normalizePricing(CLAUDE_PRICING[parsed.model], { source: "claude-table" });
 }
 
 // `resolveCustomPricing(parsed) -> NormalizedPricing | null` lets a host plug
@@ -249,7 +196,6 @@ export function resolvePricing({ resolveCustomPricing, model } = {}) {
     : null;
   return custom
     || piCatalogPricing(parsed)
-    || claudePricing(parsed)
     || unknownPricing();
 }
 
@@ -301,7 +247,6 @@ export function estimateCost({
     return estimatePiCatalogCost(piModel, { input, output, cacheRead, cacheWrite });
   }
   const pricing = customPricing
-    || claudePricing(parsed)
     || unknownPricing();
   if (!pricing?.priced) return null;
   const parts = [

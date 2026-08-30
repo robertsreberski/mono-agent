@@ -10,6 +10,10 @@ vi.mock("../ai/runtime/registry.js", () => ({
 const { createRuntime } = await import("../runtime.js");
 const { readToolRuntime, resetToolRuntime } = await import("../agent/tools/shared/runtime-context.js");
 
+function modelRef(provider, model) {
+  return { provider, model, reference: `${provider}:${model}` };
+}
+
 beforeEach(() => {
   executeMock.mockReset();
   resolveRuntimeBridgeMock.mockReset();
@@ -32,7 +36,7 @@ describe("createRuntime", () => {
     });
     expect(typeof runtime.run).toBe("function");
     expect(typeof runtime.configureTools).toBe("function");
-    await runtime.run("sys", { model: { sdk: "claude", model: "x" } });
+    await runtime.run("sys", { model: modelRef("anthropic", "x") });
     // The host tool config lives on the per-instance context threaded to the
     // bridge — NOT published to the process-global default context.
     expect(executeMock.mock.calls[0][1].toolContext).toMatchObject({
@@ -47,7 +51,7 @@ describe("createRuntime", () => {
   it("ignores host keys it does not recognize when building the tool context", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime({ workspace: "/tmp/work", unrelated: "ignored" });
-    await runtime.run("sys", { model: { sdk: "claude", model: "x" } });
+    await runtime.run("sys", { model: modelRef("anthropic", "x") });
     const { toolContext } = executeMock.mock.calls[0][1];
     expect(toolContext.workspace).toBe("/tmp/work");
     expect(toolContext.unrelated).toBeUndefined();
@@ -58,8 +62,8 @@ describe("createRuntime", () => {
     const runtime = createRuntime({ workspace: "/tmp/work" });
     const toolEnvironment = { schema: 1, values: { MULTICA_TASK_ID: "task-1" } };
 
-    await runtime.run("first", { model: { sdk: "pi", model: "x" }, toolEnvironment });
-    await runtime.run("second", { model: { sdk: "pi", model: "x" } });
+    await runtime.run("first", { model: modelRef("faux", "x"), toolEnvironment });
+    await runtime.run("second", { model: modelRef("faux", "x") });
 
     expect(executeMock.mock.calls[0][1].toolContext).toMatchObject({ toolEnvironment });
     expect(executeMock.mock.calls[1][1].toolContext).not.toHaveProperty("toolEnvironment");
@@ -80,7 +84,7 @@ describe("createRuntime", () => {
   it("run() resolves the bridge with the supplied model", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime();
-    const model = { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" };
+    const model = modelRef("anthropic", "claude-sonnet-4-6");
     await runtime.run("sys", { model, liveInput: false });
     expect(resolveRuntimeBridgeMock).toHaveBeenCalledWith(model, {
       liveInput: false,
@@ -90,9 +94,9 @@ describe("createRuntime", () => {
   it("run() defaults liveInput to false when omitted", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime();
-    await runtime.run("sys", { model: { sdk: "pi", provider: "anthropic", model: "x" } });
+    await runtime.run("sys", { model: modelRef("anthropic", "x") });
     expect(resolveRuntimeBridgeMock).toHaveBeenCalledWith(
-      { sdk: "pi", provider: "anthropic", model: "x" },
+      modelRef("anthropic", "x"),
       { liveInput: false },
     );
   });
@@ -119,7 +123,7 @@ describe("createRuntime", () => {
     };
 
     await runtime.run("sys", {
-      model: { sdk: "pi", provider: "anthropic", model: "x" },
+      model: modelRef("anthropic", "x"),
       liveInput,
       onEvent: (event) => events.push(event),
     });
@@ -147,7 +151,7 @@ describe("createRuntime", () => {
       resolvePiApiKey,
     });
     await runtime.run("sys", {
-      model: { sdk: "pi", provider: "anthropic", model: "x" },
+      model: modelRef("anthropic", "x"),
       cwd: "/work",
     });
     expect(executeMock).toHaveBeenCalledTimes(1);
@@ -168,7 +172,7 @@ describe("createRuntime", () => {
     const callResolver = () => "call";
     const runtime = createRuntime({ resolveCustomPricing: hostResolver });
     await runtime.run("sys", {
-      model: { sdk: "pi", provider: "anthropic", model: "x" },
+      model: modelRef("anthropic", "x"),
       resolveCustomPricing: callResolver,
     });
     expect(executeMock.mock.calls[0][1].resolveCustomPricing).toBe(callResolver);
@@ -178,7 +182,7 @@ describe("createRuntime", () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime({ workspace: "/tmp/initial" });
     runtime.configureTools({ workspace: "/tmp/updated", ripgrepPath: "/opt/rg" });
-    await runtime.run("sys", { model: { sdk: "claude", model: "x" } });
+    await runtime.run("sys", { model: modelRef("anthropic", "x") });
     expect(executeMock.mock.calls[0][1].toolContext).toMatchObject({
       workspace: "/tmp/updated",
       ripgrepPath: "/opt/rg",
@@ -192,7 +196,7 @@ describe("createRuntime", () => {
     const runtime = createRuntime({ sandboxPolicy, sandboxEngine });
     runtime.configureTools({ sandboxPolicy: undefined, sandboxEngine: undefined });
 
-    await runtime.run("sys", { model: { sdk: "claude", model: "x" }, messages: [] });
+    await runtime.run("sys", { model: modelRef("anthropic", "x"), messages: [] });
 
     const options = executeMock.mock.calls.at(-1)[1];
     expect(options.toolContext.sandboxPolicy).toBeUndefined();
@@ -203,7 +207,7 @@ describe("createRuntime", () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime();
     runtime.configureTools({ workspace: "/w", bogus: "nope" });
-    await runtime.run("sys", { model: { sdk: "claude", model: "x" } });
+    await runtime.run("sys", { model: modelRef("anthropic", "x") });
     const { toolContext } = executeMock.mock.calls[0][1];
     expect(toolContext.workspace).toBe("/w");
     expect(toolContext.bogus).toBeUndefined();
@@ -218,7 +222,7 @@ describe("createRuntime", () => {
       prompts: { structuredOutputInstruction: hostInstruction, structuredOutputFinalization: hostFinalization },
     });
     await runtime.run("sys", {
-      model: { sdk: "pi", model: "x" },
+      model: modelRef("faux", "x"),
       // Run overrides ONE field; the host's other prompt default must survive.
       prompts: { structuredOutputInstruction: runInstruction },
     });
@@ -231,14 +235,14 @@ describe("createRuntime", () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const hostGuidance = () => "g";
     const runtime = createRuntime({ prompts: { liveInputGuidance: hostGuidance } });
-    await runtime.run("sys", { model: { sdk: "pi", model: "x" } });
+    await runtime.run("sys", { model: modelRef("faux", "x") });
     expect(executeMock.mock.calls[0][1].prompts).toEqual({ liveInputGuidance: hostGuidance });
   });
 
   it("omits prompts entirely when neither host nor run supply any", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime();
-    await runtime.run("sys", { model: { sdk: "pi", model: "x" } });
+    await runtime.run("sys", { model: modelRef("faux", "x") });
     expect(executeMock.mock.calls[0][1].prompts).toBeUndefined();
   });
 
@@ -249,8 +253,8 @@ describe("createRuntime", () => {
     // Mutate a AFTER b exists — the old global singleton would have leaked this
     // across both instances.
     a.configureTools({ workspace: "/tmp/a-updated" });
-    await a.run("sys", { model: { sdk: "claude", model: "x" } });
-    await b.run("sys", { model: { sdk: "claude", model: "x" } });
+    await a.run("sys", { model: modelRef("anthropic", "x") });
+    await b.run("sys", { model: modelRef("anthropic", "x") });
     const ctxA = executeMock.mock.calls[0][1].toolContext;
     const ctxB = executeMock.mock.calls[1][1].toolContext;
     expect(ctxA).not.toBe(ctxB);
@@ -264,7 +268,7 @@ describe("createRuntime", () => {
   });
 
 describe("createRuntime subagent seam", () => {
-  const model = { sdk: "pi", provider: "faux", model: "m" };
+  const model = modelRef("faux", "m");
   const subagents = {
     definitions: [{ name: "researcher", description: "d", systemPrompt: "child system prompt" }],
   };

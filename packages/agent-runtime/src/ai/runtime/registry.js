@@ -53,15 +53,21 @@ export function listRuntimeBridges() {
  * @returns {Promise<RuntimeBridge>}
  */
 export async function resolveRuntimeBridge(modelRef, options = {}) {
-  // Registry callers may still be programmatic and bypass config validation,
-  // so a removed SDK must fail here instead of falling into the sole bridge.
-  if (modelRef?.sdk !== "pi") {
-    throw new Error(`unsupported sdk: ${modelRef?.sdk || "unknown"}`);
+  // Direct kernel callers may bypass the parser, so malformed references must
+  // still fail before the sole bridge receives them.
+  if (
+    typeof modelRef?.provider !== "string"
+    || modelRef.provider.length === 0
+    || typeof modelRef.model !== "string"
+    || modelRef.model.length === 0
+    || modelRef.reference !== `${modelRef.provider}:${modelRef.model}`
+  ) {
+    throw new Error("unsupported model reference: expected <provider>:<model>");
   }
   for (const spec of Object.values(builtinBridgeSpecs)) {
     if (spec.supports(modelRef, options)) return spec.load(options);
   }
-  throw new Error(`unsupported sdk: ${modelRef?.sdk || "unknown"}`);
+  throw new Error(`unsupported model reference: ${modelRef.reference}`);
 }
 
 export { RUNTIME_CAPABILITIES, runtimeCapabilities } from "./capabilities.js";

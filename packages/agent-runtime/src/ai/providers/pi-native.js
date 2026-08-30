@@ -258,6 +258,14 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   // an intermediate layer flattens the Error to its message.
   installTransportErrorProbe();
   const resolved = options.model;
+  if (
+    typeof resolved?.provider !== "string"
+    || resolved.provider.length === 0
+    || typeof resolved.model !== "string"
+    || resolved.model.length === 0
+  ) {
+    throw new Error("invalid pi model reference: provider and model are required");
+  }
   const start = Date.now();
   const events = [];
   const runtimeWarnings = [];
@@ -422,8 +430,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       : resolvePiRuntimeModel(resolved, options);
     const capabilities = runtime.capabilities || {};
     const effectiveThinkingLevel = thinkingLevelForEffort(options.effort || "medium", capabilities);
-    const reference = resolved.reference
-      || (resolved.sdk === "pi" ? `pi:${resolved.provider}:${resolved.model}` : `${resolved.sdk}:${resolved.model}`);
+    const reference = resolved.reference || `${resolved.provider}:${resolved.model}`;
 
     // Resolve the typed `toolLimits` / `compaction` policy objects against the
     // deprecated `settings` fallback (per-group precedence: a present typed
@@ -509,7 +516,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       onEvent,
       options,
       toolLimits,
-      sdk: resolved.sdk,
+      sdk: "pi",
       reference,
     });
 
@@ -584,7 +591,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
 
     onEvent({
       type: "provider_request_started",
-      sdk: resolved.sdk,
+      sdk: "pi",
       model: reference,
       runtime: "pi",
       timestamp: Date.now(),
@@ -765,7 +772,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       // runtime.compaction.enabled. See docs/reference/feature-registry.md runtime.context-compaction.
       contextCompactionApplied: runState.compaction.policy?.enabled ? runState.compaction.applied : null,
     });
-    emitCapabilitiesResolved(onEvent, { sdk: resolved.sdk, model: reference, capabilitiesUsed });
+    emitCapabilitiesResolved(onEvent, { sdk: "pi", model: reference, capabilitiesUsed });
 
     // Re-check the abort signal: a cancel can land during the post-run work above
     // (live-input teardown, structured-output finalization retry) after the line
@@ -875,6 +882,6 @@ export const piNativeRuntimeBridge = {
   id: "pi",
   kind: "pi",
   capabilities: runtimeCapabilities("pi"),
-  supports: (ref) => ref?.sdk === "pi",
+  supports: (ref) => Boolean(ref?.provider && ref?.model),
   execute: generatePiNativeResponse,
 };

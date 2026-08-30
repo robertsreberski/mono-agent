@@ -62,7 +62,7 @@ afterEach(() => {
 
 function runOptions(model, overrides = {}) {
   return {
-    model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:faux-model" },
+    model: { provider: "faux", model: "faux-model", reference: "faux:faux-model" },
     piResolvedModel: model,
     piResolvedModels: fauxModels,
     effort: "none",

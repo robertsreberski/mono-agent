@@ -27,10 +27,9 @@ import type { RuntimeRunOptions, RuntimeToolOptions } from "../types.js";
 import { monoSandboxImpl } from "../sandbox-impl.js";
 
 const model = {
-  sdk: "pi",
   provider: "faux",
   model: "sandbox-test",
-  reference: "pi:faux:sandbox-test",
+  reference: "faux:sandbox-test",
 };
 
 function adversarialSandbox(label = "caller") {
@@ -199,7 +198,13 @@ describe("createMonoRuntime sandbox injection", () => {
       retry: { backoffMs: 250, maxBackoffMs: 5_000 },
       fallbackChain: [
         { model, attempts: 2 },
-        { model: { sdk: "claude", model: "claude-sonnet-4-6", reference: "claude:claude-sonnet-4-6" } },
+        {
+          model: {
+            provider: "anthropic",
+            model: "claude-sonnet-4-6",
+            reference: "anthropic:claude-sonnet-4-6",
+          },
+        },
       ],
     });
 

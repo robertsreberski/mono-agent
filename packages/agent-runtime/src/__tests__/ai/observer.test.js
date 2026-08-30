@@ -178,7 +178,7 @@ describe("createRuntime + observers integration", () => {
     const onEvent = vi.fn();
     const runtime = createRuntime({ observers: [hostObs] });
     await runtime.run("sys", {
-      model: { sdk: "claude", model: "x" },
+      model: { provider: "anthropic", model: "x", reference: "anthropic:x" },
       observers: [callObs],
       onEvent,
     });
