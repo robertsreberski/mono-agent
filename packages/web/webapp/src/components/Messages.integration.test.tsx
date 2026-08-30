@@ -126,7 +126,9 @@ describe("AssistantMessage grouped parts", () => {
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
     const toolName = screen.getByText("↪️ Steered: “Use the API instead”");
     expect(toolName).toBeVisible();
-    expect(screen.getByText("done")).toBeVisible();
+    // A settled call says nothing about being settled; a row stays quiet until
+    // it fails.
+    expect(screen.queryByText("done")).toBeNull();
     fireEvent.click(toolName.closest("summary")!);
     expect(screen.getByText('"Applied to current run"')).toBeVisible();
   });
@@ -159,6 +161,8 @@ describe("AssistantMessage grouped parts", () => {
     }} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    // The canonical terminal state names the failure tag, in place of a generic
+    // "failed" the durable record can improve on.
     expect(screen.getByText("timeout")).toBeVisible();
     fireEvent.click(screen.getByText("Bash").closest("summary")!);
     expect(screen.queryByText("History")).toBeNull();
@@ -205,16 +209,12 @@ describe("AssistantMessage grouped parts", () => {
       "false",
     );
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    // Thinking collapses to a one-line row inside Activity: the summary shows a
-    // preview, and the thought itself renders only once that row is opened.
-    const thought = () => screen.getByText(
-      "Inspect the real state.",
-      { selector: '[data-slot="reasoning-paragraph"]' },
-    );
-    expect(thought()).not.toBeVisible();
-    fireEvent.click(screen.getByText("Thinking").closest("summary")!);
-    expect(thought()).toBeVisible();
-    expect(screen.getByText("inspect_workspace")).toBeVisible();
+    // A thought is a row like any other: its own preview, with no label
+    // competing with the text that says what the model was working out.
+    expect(screen.getByText("Inspect the real state.", {
+      selector: ".activity-row-summary",
+    })).toBeVisible();
+    expect(screen.getByText("Inspect workspace")).toBeVisible();
     expect(screen.getByRole("status", {
       name: "Context compacted, proactive, ~80k → ~20k tokens",
     })).toBeVisible();
@@ -284,6 +284,37 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.queryByText(/3 steps/u)).toBeNull();
   });
 
+  it("colours a cluster's dot by its own outcome, not by a member's", () => {
+    const clusterOf = (failing: boolean): WebMessage["parts"] =>
+      ["one.md", "two.md"].map((path, index) => ({
+        type: "tool-call" as const,
+        toolCallId: `${failing ? "bad" : "ok"}-${String(index)}`,
+        toolName: "read_file",
+        args: { path },
+        result: failing && index === 1 ? { error: "unreadable" } : { text: path },
+        status: failing && index === 1 ? "failed" as const : "complete" as const,
+      }));
+    const show = (failing: boolean) => render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      parts: [...clusterOf(failing), { type: "text", text: "Done." }],
+    }} />);
+
+    const settled = show(false);
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(settled.container.querySelector(".activity-row.is-complete")).toBeInTheDocument();
+    expect(settled.container.querySelector(".activity-row.is-failed")).toBeNull();
+    settled.unmount();
+
+    // The failure class the cluster sets has to be the one the red rule matches;
+    // when they disagreed a failed cluster kept a green dot.
+    const broken = show(true);
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    const failed = broken.container.querySelector(".activity-row.is-failed");
+    expect(failed).toBeInTheDocument();
+    expect(failed?.querySelector(".activity-dot")).toBeInTheDocument();
+    expect(within(failed as HTMLElement).getByText("1 failed")).toBeVisible();
+  });
+
   it("shows no duration at all when the runtime reported none", () => {
     render(<MessageHarness message={{
       ...assistantMessage("complete"),
@@ -342,8 +373,8 @@ describe("AssistantMessage grouped parts", () => {
     const activity = container.querySelector(".activity-root")!;
     expect(within(activity as HTMLElement).getByText("Let me look at the inbox.")).toBeVisible();
     expect(within(activity as HTMLElement).getByText("Now the calendar.")).toBeVisible();
-    expect(within(activity as HTMLElement).getByText("read_inbox")).toBeVisible();
-    expect(within(activity as HTMLElement).getByText("read_calendar")).toBeVisible();
+    expect(within(activity as HTMLElement).getByText("Read inbox")).toBeVisible();
+    expect(within(activity as HTMLElement).getByText("Read calendar")).toBeVisible();
   });
 
   it("copies the answer alone, not the narration folded into the activity log", async () => {
@@ -454,7 +485,7 @@ describe("AssistantMessage grouped parts", () => {
       "aria-expanded",
       "true",
     );
-    expect(await screen.findByText("second_completed_tool")).toBeVisible();
+    expect(await screen.findByText("Second completed tool")).toBeVisible();
   });
 
   it.each(["complete", "failed", "cancelled", "interrupted"] as const)(

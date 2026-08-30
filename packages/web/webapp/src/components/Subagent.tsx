@@ -2,8 +2,14 @@ import type { DataMessagePartProps } from "@assistant-ui/react";
 import type { ReactNode } from "react";
 
 import { formatUsd } from "../usage";
+import {
+  ActivityPayload,
+  ActivityRow,
+  ActivityStep,
+  clusterSummary,
+  failedLabel,
+} from "./ActivityRow";
 import { finiteDuration, formatToolDuration } from "./duration";
-import { Icon } from "./Icon";
 import { safeJson } from "./json";
 import { toolHistoryFailure } from "./tool-history";
 
@@ -19,7 +25,6 @@ interface SubagentCallView {
   readonly status: ToolCallStatus;
 }
 
-/** A run of adjacent same-tool calls the subagent made, folded into one row. */
 interface SubagentCallCluster {
   readonly kind: "cluster";
   readonly toolName: string;
@@ -108,9 +113,9 @@ const subagentView = (data: unknown): SubagentView | undefined => {
     ...(typeof record.label === "string" && record.label.length > 0 ? { label: record.label } : {}),
     ...(prompt === undefined ? {} : { prompt }),
     ...(record.result === undefined || record.result === null ? {} : { result: record.result }),
-    ...(typeof record.executionMs === "number" && Number.isFinite(record.executionMs)
-      ? { executionMs: record.executionMs }
-      : {}),
+    ...(finiteDuration(record.executionMs) === undefined
+      ? {}
+      : { executionMs: record.executionMs as number }),
     ...(typeof record.costUsd === "number" && Number.isFinite(record.costUsd) && record.costUsd > 0
       ? { costUsd: record.costUsd }
       : {}),
@@ -139,68 +144,10 @@ const subagentView = (data: unknown): SubagentView | undefined => {
   };
 };
 
-const toolStateLabel = (status: ToolCallStatus, result: unknown): string =>
-  status === "running" ? "running" : status === "failed" ? "failed" : result === undefined ? "called" : "done";
-
-/** The delegation's own prose — its task and its report — folded like every other row. */
-function SubagentNote({ title, children }: { readonly title: string; readonly children: ReactNode }) {
-  return (
-    <details className="tool-call subagent-note">
-      <summary>
-        <Icon name="chevron" size={14} />
-        <span className="tool-name">{title}</span>
-      </summary>
-      <div className="tool-payload">
-        <pre>{children}</pre>
-      </div>
-    </details>
-  );
-}
-
-function SubagentCall({ call }: { readonly call: SubagentCallView }) {
-  const preview = toolArgumentPreview(call.args);
-  const historyFailure = toolHistoryFailure(call.history);
-  // A settled call whose preview already says what it did needs no status word;
-  // anything else still has to say where it stands.
-  const state = call.status === "complete" && preview !== undefined
-    ? undefined
-    : toolStateLabel(call.status, call.result);
-
-  return (
-    <details className={`tool-call is-nested${call.status === "failed" ? " is-error" : ""}`}>
-      <summary>
-        <Icon name="chevron" size={14} />
-        <span className={`tool-status${call.status === "running" ? " is-running" : ""}`} />
-        <span className="tool-name">{call.toolName}</span>
-        {preview !== undefined && <span className="subagent-call-preview">{preview}</span>}
-        {state !== undefined && <span className="tool-state">{state}</span>}
-        {call.executionMs !== undefined && (
-          <time className="tool-duration">{formatToolDuration(call.executionMs)}</time>
-        )}
-      </summary>
-      <div className="tool-payload">
-        <span>Input</span>
-        <pre>{safeJson(call.args)}</pre>
-        {call.result !== undefined && (
-          <>
-            <span>{call.status === "failed" ? "Error" : "Output"}</span>
-            <pre>{safeJson(call.result)}</pre>
-          </>
-        )}
-        {historyFailure !== undefined && (
-          <>
-            <span>History</span>
-            <pre>{historyFailure}</pre>
-          </>
-        )}
-      </div>
-    </details>
-  );
-}
-
 /**
- * The same run-folding the agent's own activity log uses, applied to a
- * subagent's calls. A delegation that reads forty files is one row here too.
+ * A delegation's own calls fold the same way the agent's do, but one level
+ * flatter: a repeated tool becomes a single step whose payload holds every
+ * member, so a subagent never grows a third tier of disclosure.
  */
 const clusterSubagentCalls = (
   calls: readonly SubagentCallView[],
@@ -221,16 +168,13 @@ const clusterSubagentCalls = (
     }
     if (run.length === 1) clustered.push(call);
     else {
-      const durations = run.flatMap((member) =>
-        member.executionMs === undefined ? [] : [member.executionMs]);
+      const durations = run.flatMap((member) => member.executionMs === undefined ? [] : [member.executionMs]);
       clustered.push({
         kind: "cluster",
         toolName: call.toolName,
         calls: run,
         failedCount: run.filter((member) => member.status === "failed").length,
-        ...(durations.length === 0
-          ? {}
-          : { executionMs: durations.reduce((sum, duration) => sum + duration, 0) }),
+        ...(durations.length === 0 ? {} : { executionMs: durations.reduce((sum, duration) => sum + duration, 0) }),
       });
     }
     index = cursor;
@@ -238,69 +182,113 @@ const clusterSubagentCalls = (
   return clustered;
 };
 
-function SubagentCluster({ cluster }: { readonly cluster: SubagentCallCluster }) {
+const joinPayloads = (values: readonly unknown[]): unknown =>
+  values.length === 1 ? values[0] : values.map((value) => safeJson(value)).join("\n\n");
+
+function SubagentStep({ call }: { readonly call: SubagentCallView }) {
+  const historyFailure = toolHistoryFailure(call.history);
   return (
-    <details className={`tool-call subagent-cluster${cluster.failedCount > 0 ? " is-error" : ""}`}>
-      <summary>
-        <Icon name="chevron" size={14} />
-        <span className="tool-status" />
-        <span className="tool-name">{`${cluster.toolName} \u00d7${String(cluster.calls.length)}`}</span>
-        {cluster.failedCount > 0 && (
-          <span className="failed-tag">{`${String(cluster.failedCount)} failed`}</span>
-        )}
-        {cluster.executionMs !== undefined && (
-          <time className="tool-duration">{formatToolDuration(cluster.executionMs)}</time>
-        )}
-      </summary>
-      <div className="subagent-cluster-calls">
-        {cluster.calls.map((call) => <SubagentCall key={call.toolCallId} call={call} />)}
+    <ActivityStep
+      toolName={call.toolName}
+      summary={toolArgumentPreview(call.args)}
+      failed={failedLabel(call.status === "failed" ? 1 : 0, false)}
+      duration={call.executionMs === undefined
+        ? call.status === "running" ? "running" : undefined
+        : formatToolDuration(call.executionMs)}
+    >
+      <ActivityPayload
+        args={call.args}
+        result={call.result}
+        resultIsError={call.status === "failed"}
+        error={historyFailure}
+      />
+    </ActivityStep>
+  );
+}
+
+function SubagentClusterStep({ cluster }: { readonly cluster: SubagentCallCluster }) {
+  const results = cluster.calls.flatMap((call) => call.result === undefined ? [] : [call.result]);
+  const failures = cluster.calls.flatMap((call) => {
+    const failure = toolHistoryFailure(call.history);
+    return failure === undefined ? [] : [failure];
+  });
+  return (
+    <ActivityStep
+      toolName={`${cluster.toolName} ×${String(cluster.calls.length)}`}
+      summary={clusterSummary(
+        cluster.calls.flatMap((call) => {
+          const preview = toolArgumentPreview(call.args);
+          return preview === undefined ? [] : [preview];
+        }),
+      )}
+      failed={failedLabel(cluster.failedCount, true)}
+      duration={cluster.executionMs === undefined ? undefined : formatToolDuration(cluster.executionMs)}
+    >
+      <ActivityPayload
+        args={joinPayloads(cluster.calls.map((call) => call.args))}
+        result={results.length === 0 ? undefined : joinPayloads(results)}
+        resultIsError={cluster.failedCount > 0}
+        error={failures.length === 0 ? undefined : [...new Set(failures)].join("\n")}
+      />
+    </ActivityStep>
+  );
+}
+
+/** The delegation's own prose — its task and its report — folded like every other step. */
+function SubagentNote({ title, children }: { readonly title: string; readonly children: ReactNode }) {
+  return (
+    <ActivityStep toolName={title}>
+      <div className="activity-payload">
+        <pre>{children}</pre>
       </div>
-    </details>
+    </ActivityStep>
   );
 }
 
 /**
- * One `Agent` delegation: a folded header that summarizes the run, over a
- * rail-mounted list of the subagent's own calls. The rail is what separates a
- * subagent's work from the agent's own in a busy activity log.
+ * One `Agent` delegation, rendered as an ordinary Activity row that **owns**
+ * the calls its subagent made rather than listing them as siblings. Nesting is
+ * what keeps concurrent delegations readable: subagents run in parallel and
+ * their events interleave, so a flat transcript would shuffle several agents'
+ * work together.
  */
 export function SubagentPart({ data }: DataMessagePartProps) {
   const view = subagentView(data);
   if (view === undefined) return null;
   const historyFailure = toolHistoryFailure(view.history);
-  // The block stays folded, so the header carries the whole outcome.
-  const summary = [
-    `${view.calls.length} tool${view.calls.length === 1 ? "" : "s"}`,
-    ...(view.status === "complete" ? [] : [view.status]),
+  const clusteredCalls = clusterSubagentCalls(view.calls);
+  // The summary names *which* delegation this is; the meta slot carries what it
+  // cost. A delegation is the one part of a turn that can quietly cost more than
+  // the turn itself, and the run total it folds into cannot say which one did.
+  const task = view.label ?? view.prompt?.replace(/\s+/gu, " ").trim();
+  const meta = [
+    `${String(view.calls.length)} tool${view.calls.length === 1 ? "" : "s"}`,
     ...(view.executionMs === undefined ? [] : [formatToolDuration(view.executionMs)]),
-    // A delegation is the one part of a turn that can quietly cost more than
-    // the turn itself, and the run total it folds into cannot say which one did.
     ...(view.costUsd === undefined ? [] : [formatUsd(view.costUsd)]),
-    // The folded header only flags that something is wrong; the note inside
-    // carries the wording and the error code, so the two must not disagree.
+    // The folded row only flags that something is wrong; the note inside carries
+    // the wording and the error code, so the two must not disagree.
     ...(historyFailure === undefined ? [] : ["history not saved"]),
   ].join(" · ");
 
   return (
-    <details className={`tool-call subagent${view.status === "failed" ? " is-error" : ""}`}>
-      <summary>
-        <Icon name="chevron" size={14} />
-        <span className={`tool-status${view.status === "running" ? " is-running" : ""}`} />
-        <span className="subagent-mark" aria-hidden="true"><Icon name="agent" size={12} /></span>
-        <span className="tool-name">{view.name}</span>
-        {view.label !== undefined && <span className="subagent-label">{view.label}</span>}
-        <span className="tool-state">{summary}</span>
-      </summary>
-      <div className="subagent-payload">
+    <ActivityRow
+      variant="subagent"
+      status={view.status}
+      label="Subagent"
+      summary={task === undefined ? view.name : `${view.name} — ${task}`}
+      failed={failedLabel(view.status === "failed" ? 1 : 0, false)}
+      duration={meta}
+    >
+      <div className="activity-steps">
         {view.prompt !== undefined && <SubagentNote title="Task">{view.prompt}</SubagentNote>}
         {view.calls.length === 0
           ? <p className="subagent-empty">No tool calls recorded.</p>
-          : clusterSubagentCalls(view.calls).map((entry) => "kind" in entry
-            ? <SubagentCluster key={entry.calls[0]!.toolCallId} cluster={entry} />
-            : <SubagentCall key={entry.toolCallId} call={entry} />)}
+          : clusteredCalls.map((call) => "kind" in call
+            ? <SubagentClusterStep key={call.calls[0]!.toolCallId} cluster={call} />
+            : <SubagentStep key={call.toolCallId} call={call} />)}
         {view.result !== undefined && <SubagentNote title="Report">{safeJson(view.result)}</SubagentNote>}
         {historyFailure !== undefined && <SubagentNote title="History">{historyFailure}</SubagentNote>}
       </div>
-    </details>
+    </ActivityRow>
   );
 }
