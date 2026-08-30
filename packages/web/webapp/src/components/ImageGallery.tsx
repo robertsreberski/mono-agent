@@ -100,7 +100,7 @@ export function ImageTile({ image }: { readonly image: GalleryImage }) {
 export function ImageGrid({ images }: { readonly images: readonly GalleryImage[] }) {
   if (images.length === 0) return null;
   return (
-    <div className="image-gallery">
+    <div className="image-row">
       {images.map((image) => <ImageTile key={image.key} image={image} />)}
     </div>
   );

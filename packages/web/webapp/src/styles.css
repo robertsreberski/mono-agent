@@ -959,25 +959,21 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 }
 
 /* Image attachments. An image the operator sent or the agent generated is the
-   content, not a file to be filed: it renders at size inside the message and
-   opens full-screen, while documents keep the compact chip. */
-.image-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px; margin-bottom: 8px; }
-.image-gallery:empty { display: none; }
-.image-tile { min-width: 0; aspect-ratio: 1; padding: 0; overflow: hidden; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+   content, not a file to be filed, so it carries no card, no name, and no
+   download button — those live in the lightbox one tap away. A set scrolls
+   sideways rather than reflowing, keeping the message's own rhythm intact. */
+.image-row { display: flex; gap: 6px; margin: 10px 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; }
+.image-row:empty { display: none; }
+.image-tile { height: 190px; aspect-ratio: 4 / 3; flex: none; min-width: 0; padding: 0; overflow: hidden; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
 .image-tile img { width: 100%; height: 100%; display: block; object-fit: cover; }
-/* A lone image is the subject rather than a thumbnail, so it is never cropped. */
-.image-gallery:has(> .image-tile:only-child) .image-tile { aspect-ratio: auto; max-height: 320px; }
-.image-gallery:has(> .image-tile:only-child) .image-tile img { height: auto; max-height: 320px; object-fit: contain; }
+/* Grouping keys off the declared media type, which cannot know whether the bytes
+   will resolve. One that never does renders its file card instead: give it a
+   line of its own rather than letting it stand in the strip. */
+.image-row > .reply-attachment { flex: 1 1 100%; margin: 0; }
 @media (hover: hover) {
   .image-tile:hover { border-color: var(--accent); }
 }
 .image-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-/* A generated image keeps its card — the name, size, and download action stay
-   where an operator already looks for them — and gains the picture above them. */
-.reply-attachment.is-image { flex-wrap: wrap; }
-.reply-attachment.is-image > .image-tile { width: 100%; flex-basis: 100%; aspect-ratio: auto; max-height: 320px; }
-.reply-attachment.is-image > .image-tile img { height: auto; max-height: 320px; object-fit: contain; }
-
 .lightbox-backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(7, 10, 8, 0.82); backdrop-filter: blur(6px); }
 .lightbox-popup { position: fixed; inset: 0; z-index: 101; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px 32px 32px; }
 .lightbox-image { max-width: calc(100vw - 64px); max-height: calc(100dvh - 96px); object-fit: contain; border-radius: 10px; }
@@ -987,6 +983,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 @media (max-width: 560px) {
   .lightbox-popup { padding: 12px; }
   .lightbox-image { max-width: calc(100vw - 24px); }
+  .image-tile { height: 150px; }
 }
 
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.38; } }

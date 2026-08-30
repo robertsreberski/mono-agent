@@ -1193,6 +1193,10 @@ function AssistantParts() {
               </ActivityGroup>
             );
           }
+          case "group-reply-images":
+            // Leaf parts render through a Fragment with no wrapper of their own,
+            // so the tiles land as direct children of this row.
+            return <div className="image-row">{children}</div>;
           case "text":
             return part.text.length > 0
               ? <MarkdownText />
