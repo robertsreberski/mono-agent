@@ -6,7 +6,7 @@ import {
 import type { SettingsJson, SettingsJsonValue } from "@mono-agent/agent-contracts";
 import type { PiTransport } from "@mono-agent/runtime-adapter";
 
-import { MonoAgentConfigError } from "./config.js";
+import { MonoAgentConfigError, RETIRED_CONFIG_FIELDS } from "./config.js";
 import type { MemoryBackend, MemoryEmbeddingsProvider, MemoryLlmProvider, MemoryMode, MemoryWriteMode } from "./types.js";
 
 /** JSON form of one canonical runtime fallback route. */
@@ -92,7 +92,6 @@ export type MonoAgentProvidersJson = {
 export type MonoAgentMemoryLlmJson = {
   readonly provider?: MemoryLlmProvider;
   readonly model?: string;
-  readonly executionMode?: string;
   readonly endpoint?: string;
   readonly trace?: boolean;
   readonly timeoutMs?: number;
@@ -123,15 +122,12 @@ export interface MonoAgentConfigJson extends SettingsJson {
   };
   readonly runtime?: {
     readonly model?: string;
-    readonly fallbackModels?: readonly string[];
     readonly fallbacks?: readonly MonoAgentRuntimeFallbackJson[];
     readonly retry?: {
       readonly primaryAttempts?: number;
       readonly backoffMs?: number;
       readonly maxBackoffMs?: number;
     };
-    readonly routeSafety?: string;
-    readonly executionMode?: string;
     readonly effort?: string;
     readonly permissionMode?: string;
     readonly maxTurns?: number;
@@ -281,15 +277,34 @@ export interface ReadMonoAgentConfigJsonResult {
  * throwing; that lets hosts ship a blank config and fall back to env defaults.
  */
 export async function readMonoAgentConfigJson(path: string): Promise<ReadMonoAgentConfigJsonResult> {
+  let result: Awaited<ReturnType<typeof readSettingsJson>>;
   try {
-    const result = await readSettingsJson(path);
-    return {
-      ...result,
-      json: result.json as MonoAgentConfigJson,
-    };
+    result = await readSettingsJson(path);
   } catch (error) {
     throw toConfigError(error, path);
   }
+  assertNoRetiredMonoAgentConfigJson(result.json);
+  return {
+    ...result,
+    json: result.json as MonoAgentConfigJson,
+  };
+}
+
+/** Reject removed JSON fields before a host's generic unknown-key validation. */
+export function assertNoRetiredMonoAgentConfigJson(json: object): void {
+  const retired = RETIRED_CONFIG_FIELDS.find((field) => hasOwnJsonPath(json, field.path));
+  if (retired === undefined) return;
+  throw new MonoAgentConfigError("invalid_json", retired.message, { path: retired.path });
+}
+
+function hasOwnJsonPath(json: object, path: string): boolean {
+  let current: unknown = json;
+  for (const segment of path.split(".")) {
+    if (typeof current !== "object" || current === null || Array.isArray(current)) return false;
+    if (!Object.prototype.hasOwnProperty.call(current, segment)) return false;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return true;
 }
 
 /**

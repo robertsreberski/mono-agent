@@ -29,7 +29,6 @@ export type {
   ObservabilityExporterConfig,
   PiNativeProviderConfig,
   PermissionMode,
-  RouteSafetyMode,
   RuntimeFallbackConfig,
   PhoenixExporterConfig,
   RedactedMemoryConfig,
@@ -80,7 +79,6 @@ export {
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
   PERMISSION_MODES,
-  ROUTE_SAFETY_MODES,
 } from "./enums.js";
 export { buildMonoAgentConfigView, CONFIG_ENV_KEYS, findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "./config-view.js";
 export type {

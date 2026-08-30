@@ -54,6 +54,39 @@ describe("readMonoAgentConfigJson", () => {
     expect(result.json).toEqual({});
     expect(result.missing).toBe(false);
   });
+
+  it.each([
+    [
+      "runtime.executionMode",
+      { runtime: { executionMode: "sdk" } },
+      "`runtime.executionMode` was removed; mono-agent runs only the Pi runtime (SDK). Delete the key.",
+    ],
+    [
+      "runtime.routeSafety",
+      { runtime: { routeSafety: "per-route-native" } },
+      "`runtime.routeSafety` was removed; every route is Pi-native, so `per-route-native` has no meaning. Delete the key.",
+    ],
+    [
+      "runtime.fallbackModels",
+      { runtime: { fallbackModels: ["openai-codex:gpt-5.6-sol"] } },
+      "`runtime.fallbackModels` was replaced by `runtime.fallbacks: [{ \"model\": \"...\" }]`. Replace the key with that shape.",
+    ],
+    [
+      "memory.llm.executionMode",
+      { memory: { llm: { executionMode: "sdk" } } },
+      "`memory.llm.executionMode` was removed for the same reason as `runtime.executionMode`: mono-agent runs only the Pi runtime (SDK). Delete the key.",
+    ],
+  ] as const)("rejects retired JSON key %s with migration guidance", async (retiredPath, json, message) => {
+    const path = join(dir, "retired.json");
+    await writeFile(path, JSON.stringify(json), "utf8");
+
+    await expect(readMonoAgentConfigJson(path)).rejects.toMatchObject({
+      name: "MonoAgentConfigError",
+      code: "invalid_json",
+      message,
+      details: { path: retiredPath, code: "invalid_json" },
+    });
+  });
 });
 
 describe("writeMonoAgentConfigJson", () => {

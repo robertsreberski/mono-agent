@@ -1,4 +1,4 @@
-import type { LocalProviderDefinition, PiTransport, RuntimeCompactionPolicy, RuntimeExecutionMode, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type { LocalProviderDefinition, PiTransport, RuntimeCompactionPolicy, RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { SandboxPolicy } from "@mono-agent/runtime-adapter";
 import type { RedactedSecretValue } from "@mono-agent/agent-contracts";
 
@@ -10,7 +10,6 @@ import type {
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
   PERMISSION_MODES,
-  ROUTE_SAFETY_MODES,
 } from "./enums.js";
 
 export type MemoryWriteMode = (typeof MEMORY_WRITE_MODES)[number];
@@ -89,7 +88,6 @@ export interface MemoryAgentHostLlmConfig {
   readonly provider: "agent-host";
   /** Runtime model reference string, parsed by the host when constructing the LLM. */
   readonly model: string;
-  readonly executionMode?: RuntimeExecutionMode;
   /**
    * Record each memory LLM `complete()` as a run through the same JSONL + Phoenix
    * pipeline as channel runs (per-ritual labelled, `mem-*` run ids). Defaults to
@@ -156,7 +154,6 @@ export type SessionRollover = "none" | "daily";
 export type SkillDisclosureMode = "index" | "full";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
-export type RouteSafetyMode = (typeof ROUTE_SAFETY_MODES)[number];
 
 /** One canonical fallback route. Omitted effort means provider default. */
 export interface RuntimeFallbackConfig {
@@ -265,17 +262,7 @@ export interface MonoAgentConfig {
   };
   readonly runtime: {
     readonly model: RuntimeModelReference;
-    /**
-     * Ordered backup models tried after `model` when a run fails with a
-     * retryable provider error. Each entry runs under its default execution
-     * mode.
-     */
-    readonly fallbackModels?: readonly RuntimeModelReference[];
-    /**
-     * Canonical fallback routes. Unlike legacy `fallbackModels`, an omitted
-     * per-route effort selects that provider's default rather than inheriting
-     * `runtime.effort`.
-     */
+    /** Canonical fallback routes. Omitted per-route effort uses the provider default. */
     readonly fallbacks?: readonly RuntimeFallbackConfig[];
     /**
      * Same-model retry policy. `loadMonoAgentConfig` always materializes it, so
@@ -285,9 +272,6 @@ export interface MonoAgentConfig {
      * than failing to compile.
      */
     readonly retry?: RuntimeRetryConfig;
-    /** Uniform is the compatibility-preserving default. */
-    readonly routeSafety?: RouteSafetyMode;
-    readonly executionMode: RuntimeExecutionMode;
     readonly effort?: EffortLevel;
     /** Tool-permission posture forwarded to the runtime (CLI execution modes). */
     readonly permissionMode?: PermissionMode;

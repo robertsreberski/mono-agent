@@ -9,7 +9,6 @@ import {
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
   MonoAgentConfigError,
-  ROUTE_SAFETY_MODES,
 } from "@mono-agent/config";
 import type { ConfigViewFieldId, MonoAgentConfigJson } from "@mono-agent/config";
 import {
@@ -1113,8 +1112,6 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.pattern = "^[^\\u0000-\\u001f\\u007f]+$";
   } else if (field.jsonPath === "runtime.effort") {
     schema.enum = EFFORT_LEVELS;
-  } else if (field.jsonPath === "runtime.routeSafety") {
-    schema.enum = ROUTE_SAFETY_MODES;
   } else if (field.jsonPath === "memory.backend") {
     schema.enum = MEMORY_BACKENDS;
   } else if (field.jsonPath === "memory.mode") {
@@ -1302,9 +1299,7 @@ function defaultLabelFor(id: string): string {
 
 function defaultValueFor(id: string): SettingsJsonValue | undefined {
   const defaults: Record<string, SettingsJsonValue> = {
-    "runtime.fallbackModels": [],
     "runtime.fallbacks": [],
-    "runtime.routeSafety": "uniform",
     subagents: { enabled: false },
     "slack.resolveUserNames": true,
     "slack.resolveChannelNames": true,
@@ -1319,7 +1314,6 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "runtime.compaction.enabled": true,
     "runtime.compaction.triggerRatio": 0.70,
     "runtime.compaction.fixedOverheadEnabled": true,
-    "runtime.executionMode": "inferred",
     "runtime.workspace": ".",
     "runtime.session.mode": "continuous",
     "runtime.session.idleTimeoutMs": 1_800_000,
@@ -1411,12 +1405,10 @@ function exampleFor(id: string): SettingsJsonValue {
   const examples: Record<string, SettingsJsonValue> = {
     "agent.name": "Research Partner",
     "runtime.model": "codex:gpt-5.6-terra",
-    "runtime.fallbackModels": ["pi:ollama:gemma4:31b"],
     "runtime.fallbacks": [
       { model: "codex:gpt-5.6-sol" },
       { model: "pi:openai-codex:gpt-5.6-terra", effort: "high" },
     ],
-    "runtime.routeSafety": "per-route-native",
     subagents: {
       enabled: true,
       maxConcurrent: 5,
@@ -1566,9 +1558,6 @@ function descriptionFor(id: string): string {
   if (id === "runtime.fallbacks") {
     return "Canonical ordered fallback routes. Omitted per-route effort means that provider's default.";
   }
-  if (id === "runtime.fallbackModels") {
-    return "Legacy fallback list whose routes inherit runtime.effort. Prefer runtime.fallbacks for new configs.";
-  }
   if (id === "subagents") {
     return "Subagent profiles the Agent tool can deploy, plus its caps. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the \"*\" wildcard is rejected. The agent may also author a specialized subagent at call time unless inline.enabled is false; inline.allowedTools caps what an authored subagent may request, defaulting to the parent agent's own built-ins.";
   }
@@ -1580,9 +1569,6 @@ function descriptionFor(id: string): string {
   }
   if (id === "runtime.retry.maxBackoffMs") {
     return "Ceiling for the doubling same-model retry delay.";
-  }
-  if (id === "runtime.routeSafety") {
-    return "Uniform preserves one shared safety contract; per-route-native uses and reports each provider's explicit contract.";
   }
   if (id === "runtime.effort") {
     return "Route-specific effort. Reasoning-capable pi:* maps ultra to LOW; Pi without reasoning uses OFF. Direct codex:* forwards ultra unchanged. Mono-agent rejects ultra on its Claude SDK route because the pinned SDK public contract ends at max (the SDK JavaScript itself forwards the value). The Claude CLI route passes --effort ultra, but both tested Claude Code binaries (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort. Direct OpenCode rejects explicit effort. Ranking above max only prevents keyword downgrade.";

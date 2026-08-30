@@ -74,7 +74,6 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `memory.embeddings.provider` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | unset | `ollama` | Embedding service used by Journal/BuJo memory: ollama, lmstudio, or openai. |
 | `memory.embeddings.timeoutMs` | `integer` | `MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS` | 10000 | `10000` | Configures embeddings.timeoutMs for the memory section. |
 | `memory.llm.endpoint` | `string` | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | unset | `example` | Configures llm.endpoint for the memory section. |
-| `memory.llm.executionMode` | `string` | `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` | unset | `example` | Configures llm.executionMode for the memory section. |
 | `memory.llm.model` | `string` | `MONO_AGENT_MEMORY_LLM_MODEL` | unset | `pi:openai-codex:gpt-5.6-terra` | Configures llm.model for the memory section. |
 | `memory.llm.provider` | `string` | `MONO_AGENT_MEMORY_LLM_PROVIDER` | unset | `agent-host` | Configures llm.provider for the memory section. |
 | `memory.llm.timeoutMs` | `integer` | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | 60000 | `60000` | Configures llm.timeoutMs for the memory section. |
@@ -127,8 +126,6 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `runtime.compaction.summaryMaxTokens` | `integer` | `MONO_AGENT_COMPACTION_SUMMARY_MAX_TOKENS` | adaptive by model | `5120` | Explicit combined summary-output budget override; omitted derives 4% of the effective context window, clamped to 2,000-12,000 tokens. |
 | `runtime.compaction.triggerRatio` | `number` | `MONO_AGENT_COMPACTION_TRIGGER_RATIO` | 0.7 | `0.7` | Fraction of the effective model context window used for the proactive trigger, additionally capped by adaptive safety headroom. |
 | `runtime.effort` | `string` | `MONO_AGENT_EFFORT` | unset | `medium` | Route-specific effort. Reasoning-capable pi:* maps ultra to LOW; Pi without reasoning uses OFF. Direct codex:* forwards ultra unchanged. Mono-agent rejects ultra on its Claude SDK route because the pinned SDK public contract ends at max (the SDK JavaScript itself forwards the value). The Claude CLI route passes --effort ultra, but both tested Claude Code binaries (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort. Direct OpenCode rejects explicit effort. Ranking above max only prevents keyword downgrade. |
-| `runtime.executionMode` | `string` | `MONO_AGENT_EXECUTION_MODE` | inferred | `inferred` | Configures executionMode for the runtime section. |
-| `runtime.fallbackModels` | `string[]` | `MONO_AGENT_FALLBACK_MODELS` | [] | `["pi:ollama:gemma4:31b"]` | Legacy fallback list whose routes inherit runtime.effort. Prefer runtime.fallbacks for new configs. |
 | `runtime.fallbacks` | `array` | `MONO_AGENT_FALLBACKS_JSON` | [] | `[{"model":"codex:gpt-5.6-sol"},{"model":"pi:openai-codex:gpt-5.6-terra","effort":"high"}]` | Canonical ordered fallback routes. Omitted per-route effort means that provider's default. |
 | `runtime.maxTurns` | `integer` | `MONO_AGENT_MAX_TURNS` | unset | `1` | Configures maxTurns for the runtime section. |
 | `runtime.model` | `string` | `MONO_AGENT_MODEL` | required | `codex:gpt-5.6-terra` | Configures model for the runtime section. |
@@ -136,7 +133,6 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `runtime.retry.backoffMs` | `integer` | `MONO_AGENT_RETRY_BACKOFF_MS` | 1000 | `2000` | Delay before the first same-model retry. Doubles on each further retry, capped by runtime.retry.maxBackoffMs. |
 | `runtime.retry.maxBackoffMs` | `integer` | `MONO_AGENT_RETRY_MAX_BACKOFF_MS` | 15000 | `30000` | Ceiling for the doubling same-model retry delay. |
 | `runtime.retry.primaryAttempts` | `integer` | `MONO_AGENT_RETRY_PRIMARY_ATTEMPTS` | 2 | `3` | Total attempts on runtime.model including the first, before the chain advances. Retries fire only for transient provider failures (overloaded, rate-limited, timeout, network, 5xx); context overflow and bad credentials advance immediately. Set 1 to disable. |
-| `runtime.routeSafety` | `string` | `MONO_AGENT_ROUTE_SAFETY` | uniform | `per-route-native` | Uniform preserves one shared safety contract; per-route-native uses and reports each provider's explicit contract. |
 | `runtime.session.idleTimeoutMs` | `integer` | `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS` | 1800000 | `1800000` | Configures session.idleTimeoutMs for the runtime section. |
 | `runtime.session.isolateProactive` | `boolean` | `MONO_AGENT_SESSION_ISOLATE_PROACTIVE` | false | `true` | Configures session.isolateProactive for the runtime section. |
 | `runtime.session.mode` | `string` | `MONO_AGENT_SESSION_MODE` | continuous | `continuous` | Configures session.mode for the runtime section. |
