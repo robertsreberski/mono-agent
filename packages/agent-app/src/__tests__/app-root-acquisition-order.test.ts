@@ -64,7 +64,7 @@ describe("full app agent-root acquisition order", () => {
     await mkdir(join(dir, "artifacts"), { mode: 0o700 });
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     await writeFile(join(dir, "mono-agent.config.json"), JSON.stringify({
-      runtime: { model: "pi:openai-codex:gpt-5.6-sol", workspace: "." },
+      runtime: { model: "openai-codex:gpt-5.6-sol", workspace: "." },
       context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
       artifacts: { dir: "./artifacts" },

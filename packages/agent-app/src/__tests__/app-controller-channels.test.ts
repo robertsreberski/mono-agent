@@ -24,7 +24,7 @@ describe("app channel capability composition", () => {
       fixtures.push(cwd);
       const configReadPath = join(cwd, "mono-agent.config.json");
       await writeFile(configReadPath, JSON.stringify({
-        runtime: { model: "pi:openai-codex:gpt-5.5", workspace: "." },
+        runtime: { model: "openai-codex:gpt-5.5", workspace: "." },
         context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
         tools: { allowedTools: [], disallowedTools: [] },
         artifacts: { dir: "./artifacts" },

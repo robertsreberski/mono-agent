@@ -6,10 +6,7 @@ import {
 } from "@mono-agent/runtime-adapter";
 import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
 
-import {
-  configuredRuntimeFallbackModels,
-  configuredRuntimeModels,
-} from "./runtime-routes.js";
+import { configuredRuntimeModels } from "./runtime-routes.js";
 
 export interface ChannelRuntimeEffortOption {
   readonly value: string;
@@ -45,8 +42,6 @@ export function buildChannelRuntimeControls(coreConfig: MonoAgentConfig): Channe
     seen.add(value);
     refs.push(ref);
   }
-  const directOpenCodeInFallbacks = configuredRuntimeFallbackModels(coreConfig.runtime)
-    .some((ref) => ref.sdk === "opencode");
   return {
     defaultModel: modelReferenceKey(coreConfig.runtime.model),
     ...(coreConfig.runtime.effort === undefined ? {} : { defaultEffort: coreConfig.runtime.effort }),
@@ -58,7 +53,6 @@ export function buildChannelRuntimeControls(coreConfig: MonoAgentConfig): Channe
         efforts: channelEffortOptions(
           ref,
           coreConfig.providers?.local,
-          ref.sdk === "opencode" || directOpenCodeInFallbacks,
         ),
       };
     }),
@@ -68,11 +62,7 @@ export function buildChannelRuntimeControls(coreConfig: MonoAgentConfig): Channe
 function channelEffortOptions(
   ref: RuntimeModelReference,
   localProviders: Parameters<typeof resolveModelEffortLevels>[1],
-  directOpenCodeInResultingChain: boolean,
 ): readonly ChannelRuntimeEffortOption[] {
-  if (directOpenCodeInResultingChain) {
-    return [];
-  }
   const resolved = resolveModelEffortLevels(ref, localProviders);
   if (!resolved.reasoning || resolved.reasoningMode === "none") {
     return [];

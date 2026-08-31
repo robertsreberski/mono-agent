@@ -5,7 +5,7 @@ import {
   DEFAULT_MEMORY_EMBEDDING_ENDPOINTS,
   memoryEmbeddingEndpointProblem,
 } from "../memory-embedding-service.js";
-import { DEFAULT_PI_MEMORY_MODEL, memoryBlock } from "./base.js";
+import { DEFAULT_MODEL, memoryBlock } from "./base.js";
 import type { CapabilityModule, ModuleKind } from "./types.js";
 
 /** Split a comma-separated input value into trimmed, non-empty entries. */
@@ -387,12 +387,9 @@ const memoryBujo: CapabilityModule = {
     memory: {
       ...memoryBlock("bujo"),
       embeddings: managedMemoryEmbeddings(values),
-      // Direct Codex is CLI-only, while the memory LLM has an SDK-only safety
-      // contract. Route every direct Codex primary through the equivalent Pi
-      // Terra model for this internal call, not only the default candidate.
       llm: {
         provider: "agent-host",
-        model: values.model?.startsWith("codex:") ? DEFAULT_PI_MEMORY_MODEL : values.model ?? DEFAULT_PI_MEMORY_MODEL,
+        model: values.model ?? DEFAULT_MODEL,
       },
       recallTool: { enabled: true },
       rememberTool: { enabled: true },
@@ -509,7 +506,7 @@ const providerOllama: CapabilityModule = {
   id: "provider:ollama",
   kind: "provider",
   title: "Ollama local provider",
-  summary: "Local Ollama provider block (auto-added for pi:ollama models).",
+  summary: "Local Ollama provider block (auto-added for ollama models).",
   riskLevel: "low",
   inputs: [],
   configFragment: () => ({
@@ -524,7 +521,7 @@ const providerLmStudio: CapabilityModule = {
   id: "provider:lmstudio",
   kind: "provider",
   title: "LM Studio local provider",
-  summary: "Local LM Studio provider block (auto-added for pi:lmstudio models).",
+  summary: "Local LM Studio provider block (auto-added for lmstudio models).",
   riskLevel: "low",
   inputs: [],
   configFragment: () => ({

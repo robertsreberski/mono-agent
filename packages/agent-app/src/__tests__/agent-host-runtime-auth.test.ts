@@ -39,8 +39,7 @@ describe("configured agent runtime Pi auth", () => {
 function monoConfig(piAuthPath: string): MonoAgentConfig {
   return {
     runtime: {
-      model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" },
-      executionMode: "sdk",
+      model: { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" },
       maxTurns: 4,
       workspace: "/repo",
       session: { mode: "continuous", idleTimeoutMs: 1_800_000 },

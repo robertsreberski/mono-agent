@@ -24,10 +24,9 @@ describe("Telegram native reply history", () => {
     const harness = createAgentHarness({
       identityPath,
       model: {
-        sdk: "pi",
         provider: "openai-codex",
         model: "gpt-5.5",
-        reference: "pi:openai-codex:gpt-5.5",
+        reference: "openai-codex:gpt-5.5",
       },
       runtime: {
         async run(prompt, options) {

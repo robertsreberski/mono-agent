@@ -227,7 +227,7 @@ describe("RunHistory MCP tool", () => {
       startedAt: "2026-07-12T08:00:00.000Z",
       userInput: "first trigger\n\n[Recalled long-term memory — do not expose] private recalled list context",
       result: {
-        model: "pi:openai-codex:gpt-5.5",
+        model: "openai-codex:gpt-5.5",
         effort: "high",
         providerSessionId: "provider-session-secret",
         systemPrompt: "private system prompt",
@@ -431,7 +431,7 @@ describe("RunHistory MCP tool", () => {
         message: { content: [{ type: "text", text: "Hidden event-only Zaragoza detail." }] },
       }],
       result: {
-        model: "pi:openai-codex:gpt-5.5",
+        model: "openai-codex:gpt-5.5",
         effort: "high",
         systemPrompt: "private-system-search-marker",
       },
@@ -536,7 +536,7 @@ describe("RunHistory MCP tool", () => {
       conversationId,
       startedAt: "2026-07-30T18:00:00.000Z",
       userInput: "Tidy the reading list",
-      result: { model: "pi:openai-codex:gpt-5.5" },
+      result: { model: "openai-codex:gpt-5.5" },
     });
 
     const history = await openHistoryClient(artifactDir, conversationId);
@@ -882,7 +882,7 @@ describe("RunHistory MCP tool", () => {
         },
       ],
       result: {
-        model: "pi:openai-codex:gpt-5.5",
+        model: "openai-codex:gpt-5.5",
         providerSessionId: "summary-provider-session",
         systemPrompt: "summary system prompt",
         runtimeWarnings: [{ kind: "fallback_used", message: "Backup provider completed the run." }],

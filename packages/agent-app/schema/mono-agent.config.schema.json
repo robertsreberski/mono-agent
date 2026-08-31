@@ -35,7 +35,7 @@
         "model": {
           "description": "Configures model for the runtime section.",
           "examples": [
-            "codex:gpt-5.6-terra"
+            "openai-codex:gpt-5.6-terra"
           ],
           "type": "string"
         },
@@ -44,10 +44,10 @@
           "examples": [
             [
               {
-                "model": "codex:gpt-5.6-sol"
+                "model": "openai-codex:gpt-5.6-sol"
               },
               {
-                "model": "pi:openai-codex:gpt-5.6-terra",
+                "model": "anthropic:claude-sonnet-4-6",
                 "effort": "high"
               }
             ]
@@ -123,7 +123,7 @@
           }
         },
         "effort": {
-          "description": "Route-specific effort. Reasoning-capable pi:* maps ultra to LOW; Pi without reasoning uses OFF. Direct codex:* forwards ultra unchanged. Mono-agent rejects ultra on its Claude SDK route because the pinned SDK public contract ends at max (the SDK JavaScript itself forwards the value). The Claude CLI route passes --effort ultra, but both tested Claude Code binaries (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort. Direct OpenCode rejects explicit effort. Ranking above max only prevents keyword downgrade.",
+          "description": "Route-specific effort forwarded through Pi to the selected provider. Doctor warns when a configured value falls outside the model's advertised ladder but keeps turn-time handling permissive. Ranking above max only prevents keyword downgrade.",
           "examples": [
             "medium"
           ],
@@ -718,7 +718,7 @@
             "model": {
               "description": "Configures llm.model for the memory section.",
               "examples": [
-                "pi:openai-codex:gpt-5.6-terra"
+                "openai-codex:gpt-5.6-terra"
               ],
               "type": "string"
             },

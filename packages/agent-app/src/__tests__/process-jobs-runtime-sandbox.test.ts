@@ -10,8 +10,8 @@ import {
 } from "../process-jobs-runtime.js";
 import { PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR } from "../process-jobs-root-registry.js";
 
-const PI_MODEL = { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" } as const;
-const CLAUDE_MODEL = { sdk: "claude", provider: "anthropic", model: "claude-opus-4-8" } as const;
+const PI_MODEL = { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" } as const;
+const CLAUDE_MODEL = { provider: "anthropic", model: "claude-opus-4-8", reference: "anthropic:claude-opus-4-8" } as const;
 const ROOTS = [
   "/agent/.mono-agent/.process-jobs-roots-v1.lock",
   "/agent/.mono-agent/process-jobs-roots-v1",
@@ -33,7 +33,6 @@ function eligibleCoreConfig(
     runtime: {
       workspace,
       model: PI_MODEL,
-      executionMode: "sdk",
     },
     tools: { allowedTools: ["Exec", "Bash"], disallowedTools: [] },
     ...(sandbox === undefined ? {} : { sandbox }),
@@ -108,7 +107,7 @@ function boundary(options: {
 }
 
 describe("process-job registry runtime protection", () => {
-  it("preserves legitimate non-Pi routing while the durable registry is empty", async () => {
+  it("preserves provider routing while the durable registry is empty", async () => {
     const providerExtension = vi.fn(async () => ({ runtimeOptions: { model: CLAUDE_MODEL } }));
     const { extension, releaseAfterSettlement } = boundary({
       protectedRoots: [],
@@ -124,7 +123,7 @@ describe("process-job registry runtime protection", () => {
     expect(releaseAfterSettlement).toHaveBeenCalledOnce();
   });
 
-  it("rejects a reachable non-Pi primary, fallback, override, or child route before provider invocation", async () => {
+  it("rejects an unresolvable primary, fallback, override, or child route before provider invocation", async () => {
     const providerExtension = vi.fn(async () => ({ runtimeOptions: { model: CLAUDE_MODEL } }));
     const { extension, acquireRequestLease, releaseAfterSettlement } = boundary({
       next: providerExtension,

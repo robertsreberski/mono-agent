@@ -1801,7 +1801,7 @@ async function agentDir(input: { readonly memory: unknown; readonly traceability
   const dir = await tempDir();
   await writeFile(join(dir, "IDENTITY.md"), "# Test Agent\n", "utf8");
   const config: Record<string, unknown> = {
-    runtime: { model: "pi:ollama:test-model" },
+    runtime: { model: "ollama:test-model" },
     context: { identityPath: "./IDENTITY.md" },
   };
   if (input.memory !== undefined) {

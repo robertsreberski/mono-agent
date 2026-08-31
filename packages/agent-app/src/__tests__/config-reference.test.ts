@@ -162,7 +162,7 @@ describe("config reference", () => {
     const json = {
       $schema: MONO_AGENT_CONFIG_SCHEMA_URL,
       runtime: {
-        model: "codex:gpt-5.5",
+        model: "openai-codex:gpt-5.5",
         session: {
           idleMs: 5_000,
         },
@@ -213,7 +213,7 @@ describe("config reference", () => {
 
   it("keeps only explicitly plugin-owned and extensible maps open", () => {
     expect(findUnknownAppConfigPaths({
-      runtime: { model: "codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },
       channels: {
         plugins: [{ package: "@mono-agent/a2a-adapter", config: { nested: { pluginOwned: true } } }],
@@ -235,7 +235,7 @@ describe("config reference", () => {
     })).toEqual([]);
 
     expect(findUnknownAppConfigPaths({
-      runtime: { model: "codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },
       cron: { jobs: [{ id: "daily", expression: "0 8 * * *", prompt: "Run", retryForever: true }] },
       channels: { plugins: [{ package: "pkg", typo: true, config: {} }] },

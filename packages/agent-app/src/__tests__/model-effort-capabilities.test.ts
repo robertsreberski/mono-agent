@@ -34,7 +34,7 @@ const LOCAL_LMSTUDIO: readonly LocalProviderDefinition[] = [
 
 describe("resolveAdvertisedModelEffort", () => {
   it("uses Pi builtin thinking levels for cloud Pi routes", () => {
-    const ref = parseMonoRuntimeModelReference("pi:anthropic:claude-sonnet-4-6");
+    const ref = parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6");
     const builtin = getPiBuiltinModel("anthropic", "claude-sonnet-4-6");
     expect(builtin).toBeDefined();
     expect(resolveAdvertisedModelEffort(ref)).toEqual({
@@ -45,30 +45,23 @@ describe("resolveAdvertisedModelEffort", () => {
   });
 
   it("keeps configured local Pi toggle, graded, and non-reasoning metadata", () => {
-    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("pi:lmstudio:qwen/qwen3-8b"), {
+    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("lmstudio:qwen/qwen3-8b"), {
       localProviders: LOCAL_LMSTUDIO,
     })).toEqual({
       reasoning: true,
       reasoningMode: "effort",
       effortLevels: ["low", "medium", "high"],
     });
-    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("pi:ollama:qwen3.6:latest"), {
+    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("ollama:qwen3.6:latest"), {
       localProviders: LOCAL_OLLAMA,
     })).toMatchObject({ reasoning: true, reasoningMode: "toggle" });
-    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("pi:ollama:llama3.1:latest"), {
+    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("ollama:llama3.1:latest"), {
       localProviders: LOCAL_OLLAMA,
     })).toMatchObject({ reasoning: false, reasoningMode: "none" });
   });
 
-  it("exposes no explicit effort choices for OpenCode, ACP, unknown metadata, and OpenCode-in-fallback chains", () => {
-    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("opencode:opencode-go:kimi-k2.6")))
+  it("exposes no explicit effort choices for unknown provider metadata", () => {
+    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("unknown-provider:unknown-model")))
       .toEqual({ reasoning: true });
-    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("acp:gemini")))
-      .toEqual({ reasoning: true });
-    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("pi:unknown-provider:unknown-model")))
-      .toEqual({ reasoning: true });
-    expect(resolveAdvertisedModelEffort(parseMonoRuntimeModelReference("pi:anthropic:claude-sonnet-4-6"), {
-      suppressExplicitEffort: true,
-    })).toEqual({ reasoning: true });
   });
 });

@@ -292,10 +292,9 @@ function memoryConfig(
   return {
     runtime: {
       model: {
-        sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol",
-        reference: "pi:openai-codex:gpt-5.6-sol",
+        provider: "openai-codex", model: "gpt-5.6-sol",
+        reference: "openai-codex:gpt-5.6-sol",
       },
-      executionMode: "sdk",
       workspace: fixture.workspace,
       session: { mode: "continuous", idleTimeoutMs: 1_800_000 },
     },

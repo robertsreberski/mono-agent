@@ -44,7 +44,7 @@ describe("isChannelConfigured", () => {
   });
 
   it("ignores unrelated env vars", async () => {
-    const env = { MONO_AGENT_MODEL: "claude:claude-sonnet-4-6" };
+    const env = { MONO_AGENT_MODEL: "anthropic:claude-sonnet-4-6" };
     expect(await isChannelConfigured({ env, cwd: dir, configPath }, spec)).toBe(false);
   });
 

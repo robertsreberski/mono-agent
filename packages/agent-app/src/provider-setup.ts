@@ -41,13 +41,6 @@ export interface ProviderSetupPiLoginAction extends ProviderSetupCommandAction {
   readonly piAuthPath: string;
 }
 
-export type CodexLoginMode = "browser" | "device";
-
-export interface ProviderSetupCodexLoginAction extends ProviderSetupCommandAction {
-  readonly id: "codex-login";
-  readonly authMode: CodexLoginMode;
-}
-
 export interface ProviderSetupHttpAction {
   readonly id: string;
   readonly kind: ProviderSetupKind;
@@ -73,7 +66,6 @@ export interface ProviderSetupPiApiKeyAction {
 
 export type ProviderSetupAction =
   | ProviderSetupPiLoginAction
-  | ProviderSetupCodexLoginAction
   | ProviderSetupCommandAction
   | ProviderSetupHttpAction
   | ProviderSetupPiApiKeyAction;
@@ -122,12 +114,10 @@ export interface PlanProviderSetupOptions {
   readonly piAuthPath?: string;
   /** Internal test seam for verifying bundled Pi CLI resolution in packed layouts. */
   readonly piCliPath?: string;
-  /** Credential/status observations keyed by `claude`, `codex`, `pi:<provider>`, or provider id. */
+  /** Credential/status observations keyed by provider id or exact model reference. */
   readonly credentialStates?: Readonly<Record<string, ProviderCredentialState | undefined>>;
   /** Explicit repair path: rerun authentication even when a credential was detected. */
   readonly forceAuthentication?: boolean;
-  /** Direct Codex never guesses headless mode; callers select this explicitly. */
-  readonly codexAuthMode?: CodexLoginMode;
   /** Select OAuth or API-key setup for Pi providers that support both. */
   readonly piAuthMethods?: Readonly<Record<string, "oauth" | "api-key" | undefined>>;
   /** API keys can be used from env without being copied into Pi's secure store. */
@@ -186,13 +176,7 @@ const DEFAULT_PI_AUTH_PATH = join(homedir(), ".pi", "agent", "auth.json");
 const PI_API_KEY_PROVIDERS: Readonly<Record<string, string>> = {
   "opencode-go": "OPENCODE_API_KEY",
 };
-const DIRECT_PROVIDER_CREDENTIAL_ENV_KEYS = {
-  codex: ["OPENAI_API_KEY"],
-  claude: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
-} as const;
 const PROVIDER_STATUS_SECRET_ENV_KEYS = [
-  ...DIRECT_PROVIDER_CREDENTIAL_ENV_KEYS.codex,
-  ...DIRECT_PROVIDER_CREDENTIAL_ENV_KEYS.claude,
   ...Object.values(PI_API_KEY_PROVIDERS),
 ] as const;
 const PROVIDER_STATUS_ENV_ALLOWLIST = new Set([
@@ -287,47 +271,9 @@ export async function detectProviderCredentialStates(
       return [];
     }
   });
-  const timeout = typeof options.timeoutMs === "number" && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
-    ? Math.trunc(options.timeoutMs)
-    : 2_000;
-  const run = options.execFile ?? runProviderStatusCommand;
   const persistedEnv = options.persistedEnv ?? {};
-  const statusEnv = credentialNeutralProviderStatusEnvironment(process.env, persistedEnv);
-  const checks: Promise<void>[] = [];
-  if (refs.some((ref) => ref.sdk === "codex")) {
-    if (hasAnyNonEmptyPersistedValue(persistedEnv, DIRECT_PROVIDER_CREDENTIAL_ENV_KEYS.codex)) {
-      states.codex = "credential_detected";
-    } else {
-      checks.push(run("codex", ["login", "status"], {
-        cwd: options.cwd,
-        timeout,
-        env: statusEnv,
-        ...(options.abortSignal === undefined ? {} : { abortSignal: options.abortSignal }),
-      }).then(
-        () => { states.codex = "credential_detected"; },
-        () => { states.codex = "auth_required"; },
-      ));
-    }
-  }
-  if (refs.some((ref) => ref.sdk === "claude")) {
-    if (hasAnyNonEmptyPersistedValue(persistedEnv, DIRECT_PROVIDER_CREDENTIAL_ENV_KEYS.claude)) {
-      states.claude = "credential_detected";
-    } else {
-      checks.push(run("claude", ["auth", "status", "--json"], {
-        cwd: options.cwd,
-        timeout,
-        env: statusEnv,
-        ...(options.abortSignal === undefined ? {} : { abortSignal: options.abortSignal }),
-      }).then(
-        () => { states.claude = "credential_detected"; },
-        () => { states.claude = "auth_required"; },
-      ));
-    }
-  }
-
   const piProviders = new Set(
-    refs.filter((ref) => ref.sdk === "pi" && typeof ref.provider === "string")
-      .map((ref) => ref.provider as string),
+    refs.map((ref) => ref.provider),
   );
   if (piProviders.size > 0) {
     const detected = await safelyDetectedPiCredentialProviders(
@@ -335,43 +281,13 @@ export async function detectProviderCredentialStates(
     );
     for (const provider of piProviders) {
       const apiKeyEnv = PI_API_KEY_PROVIDERS[provider];
-      states[`pi:${provider}`] = detected.has(provider)
+      states[provider] = detected.has(provider)
         || (apiKeyEnv !== undefined && hasNonEmptyPersistedValue(persistedEnv[apiKeyEnv]))
         ? "credential_detected"
         : "auth_required";
     }
   }
-  await Promise.all(checks);
   return states;
-}
-
-/** Whether a selected route has a credential in the destination agent's durable environment. */
-export function hasDurableProviderEnvironmentCredential(
-  rawModelRef: string,
-  persistedEnv: Readonly<Record<string, string | undefined>>,
-): boolean {
-  let ref;
-  try {
-    ref = parseMonoRuntimeModelReference(rawModelRef);
-  } catch {
-    return false;
-  }
-  if (ref.sdk === "codex") {
-    return hasAnyNonEmptyPersistedValue(persistedEnv, DIRECT_PROVIDER_CREDENTIAL_ENV_KEYS.codex);
-  }
-  if (ref.sdk === "claude") {
-    return hasAnyNonEmptyPersistedValue(persistedEnv, DIRECT_PROVIDER_CREDENTIAL_ENV_KEYS.claude);
-  }
-  if (ref.sdk !== "pi" || typeof ref.provider !== "string") return false;
-  const apiKeyEnv = PI_API_KEY_PROVIDERS[ref.provider];
-  return apiKeyEnv !== undefined && hasNonEmptyPersistedValue(persistedEnv[apiKeyEnv]);
-}
-
-function hasAnyNonEmptyPersistedValue(
-  persistedEnv: Readonly<Record<string, string | undefined>>,
-  names: readonly string[],
-): boolean {
-  return names.some((name) => hasNonEmptyPersistedValue(persistedEnv[name]));
 }
 
 function hasNonEmptyPersistedValue(value: string | undefined): boolean {
@@ -381,11 +297,11 @@ function hasNonEmptyPersistedValue(value: string | undefined): boolean {
 /**
  * Build the minimal operational environment needed to inspect durable CLI login
  * state. A positive allowlist prevents unrelated shell credentials from being
- * inherited by Codex or Claude while retaining their standard config roots.
+ * inherited by provider discovery commands.
  */
 export function credentialNeutralProviderStatusEnvironment(
   source: Readonly<Record<string, string | undefined>> = process.env,
-  durableEnvironment: Readonly<Record<string, string | undefined>> = {},
+  _durableEnvironment: Readonly<Record<string, string | undefined>> = {},
 ): Record<string, string | undefined> {
   const sanitized: Record<string, string | undefined> = {};
   for (const [name, value] of Object.entries(source)) {
@@ -397,25 +313,8 @@ export function credentialNeutralProviderStatusEnvironment(
       sanitized[name] = value;
     }
   }
-  for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME"] as const) {
-    const value = durableEnvironment[name];
-    if (hasNonEmptyPersistedValue(value)) sanitized[name] = value;
-  }
   for (const name of PROVIDER_STATUS_SECRET_ENV_KEYS) delete sanitized[name];
   return sanitized;
-}
-
-function runProviderStatusCommand(
-  file: string,
-  args: readonly string[],
-  options: {
-    readonly cwd: string;
-    readonly timeout: number;
-    readonly env?: Readonly<Record<string, string | undefined>>;
-    readonly abortSignal?: AbortSignal;
-  },
-): Promise<void> {
-  return runBoundedProviderCommand(file, args, options).then(() => undefined);
 }
 
 export interface BoundedProviderCommandResult {
@@ -580,49 +479,7 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
       } as ProviderSetupAction);
     };
 
-    if (ref.sdk === "claude") {
-      if (authAlreadyDetected(["claude", refKey])) {
-        detectedModelRefs.add(refKey);
-        continue;
-      }
-      add({
-        id: "claude-login",
-        kind: "auth",
-        label: "Claude login",
-        modelRefs: [refKey],
-        command: ["claude", "/login"],
-        cwd: options.cwd,
-        detail: "Runs the Claude Code login flow for Claude model references.",
-      });
-      continue;
-    }
-
-    if (ref.sdk === "codex") {
-      if (authAlreadyDetected(["codex", refKey])) {
-        detectedModelRefs.add(refKey);
-        continue;
-      }
-      const authMode = options.codexAuthMode ?? "browser";
-      add({
-        id: "codex-login",
-        kind: "auth",
-        label: "Codex login",
-        modelRefs: [refKey],
-        command: authMode === "device" ? ["codex", "login", "--device-auth"] : ["codex", "login"],
-        authMode,
-        cwd: options.cwd,
-        detail: authMode === "device"
-          ? "Runs Codex device-code login for a remote or headless machine."
-          : "Runs Codex browser login with a localhost callback server.",
-      });
-      continue;
-    }
-
-    if (ref.sdk !== "pi" || typeof ref.provider !== "string") {
-      continue;
-    }
-
-    if (authAlreadyDetected([`pi:${ref.provider}`, ref.provider, refKey])) {
+    if (authAlreadyDetected([ref.provider, refKey])) {
       detectedModelRefs.add(refKey);
       continue;
     }

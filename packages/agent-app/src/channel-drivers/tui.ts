@@ -31,10 +31,7 @@ import { buildChannelConfigView } from "../channel-config-view.js";
 import type { ChannelDriver, ChannelStartInput, RunningChannel } from "../channels.js";
 import { resolveAdvertisedModelEffort } from "../model-effort-capabilities.js";
 import { agentAppPackageVersion } from "../package-version.js";
-import {
-  configuredRuntimeFallbackModels,
-  configuredRuntimeModels,
-} from "../runtime-routes.js";
+import { configuredRuntimeModels } from "../runtime-routes.js";
 import { createSkillRegistryMonitor } from "../skill-registry.js";
 import type { CronOperatorRegistry } from "../cron-operator-service.js";
 
@@ -56,13 +53,6 @@ function resolveContextWindow(
   ref: RuntimeModelReference,
   providers: readonly LocalProviderDefinition[] | undefined,
 ): number | undefined {
-  if (ref.sdk === "codex") {
-    return positiveContextWindow(
-      builtinModelCatalog.getModel("openai-codex", ref.model)?.contextWindow,
-    );
-  }
-  if (ref.sdk !== "pi" || ref.provider === undefined) return undefined;
-
   const configuredProvider = providers?.find((provider) => provider.id === ref.provider);
   if (configuredProvider !== undefined) {
     const configuredModel = configuredProvider.models
@@ -173,8 +163,6 @@ export function createTuiChannelDriver(
           configModelKeys.push(key);
         }
       }
-      const directOpenCodeInFallbacks = configuredRuntimeFallbackModels(input.coreConfig.runtime)
-        .some((ref) => ref.sdk === "opencode");
       let discoveredModels: readonly DiscoveredLocalModel[] = [];
       try {
         discoveredModels = await discoverModels(localProviders);
@@ -208,7 +196,6 @@ export function createTuiChannelDriver(
           }
           const resolved = resolveAdvertisedModelEffort(parsedRef, {
             ...(localProviders === undefined ? {} : { localProviders }),
-            suppressExplicitEffort: parsedRef.sdk === "opencode" || directOpenCodeInFallbacks,
           });
           const contextWindow = resolveContextWindow(parsedRef, localProviders);
           const label = labelByRef.get(ref);

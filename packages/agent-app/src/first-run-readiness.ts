@@ -704,10 +704,6 @@ function selectedPersistentRuntimeModelRefs(plan: WizardPlan): readonly string[]
       const model = (raw as Record<string, unknown>).model;
       if (typeof model === "string" && model.length > 0) refs.push(model);
     }
-  } else if (Array.isArray(runtime.fallbackModels)) {
-    for (const model of runtime.fallbackModels) {
-      if (typeof model === "string" && model.length > 0) refs.push(model);
-    }
   }
   return [...new Set(refs)];
 }

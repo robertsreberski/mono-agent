@@ -49,7 +49,7 @@ afterEach(async () => {
 
 describe("clear-sessions fallback sandbox boundary", () => {
   it(
-    "skips a non-Pi primary before resolving real Pi tools that keep the registry private",
+    "keeps the registry private across a Pi provider fallback",
     { timeout: 240_000 },
     async () => {
       const workspace = await realpath(await mkdtemp(join(tmpdir(), "mono-agent-clear-fallback-")));
@@ -86,9 +86,8 @@ describe("clear-sessions fallback sandbox boundary", () => {
       ]);
       await writeFile(configPath, `${JSON.stringify({
         runtime: {
-          model: "claude:claude-opus-4-8",
-          fallbacks: [{ model: "pi:openai-codex:gpt-5.6-sol" }],
-          routeSafety: "per-route-native",
+          model: "anthropic:claude-opus-4-8",
+          fallbacks: [{ model: "openai-codex:gpt-5.6-sol" }],
           retry: { primaryAttempts: 1, backoffMs: 0, maxBackoffMs: 0 },
           workspace: ".",
         },
@@ -98,7 +97,7 @@ describe("clear-sessions fallback sandbox boundary", () => {
       }, null, 2)}\n`);
       const config = await loadAppCoreConfig({ cwd: workspace, configPath, env: {} });
       const routes = [config.runtime.model, ...configuredRuntimeFallbackModels(config.runtime)];
-      expect(routes.map((route) => route.sdk)).toEqual(["claude", "pi"]);
+      expect(routes.map((route) => route.provider)).toEqual(["anthropic", "openai-codex"]);
 
       let primaryTools: RuntimeToolOptions | undefined;
       let primaryRun: RuntimeRunOptions | undefined;
@@ -106,7 +105,12 @@ describe("clear-sessions fallback sandbox boundary", () => {
         configureTools(next) { primaryTools = next; },
         async run(_systemPrompt, options) {
           primaryRun = options;
-          throw new Error("The protected non-Pi route must be skipped before provider execution.");
+          return {
+            text: "",
+            events: [],
+            failureKind: "provider_unavailable",
+            error: "Connection error.",
+          };
         },
       };
 
@@ -137,9 +141,8 @@ describe("clear-sessions fallback sandbox boundary", () => {
       };
       const runtime = createMonoRuntime({
         fallbackChain: routes.map((model) => ({ model })),
-        routeSafety: "per-route-native",
         retry: { backoffMs: 0, maxBackoffMs: 0 },
-        resolveAttempt: ({ model }) => ({ runtime: model.sdk === "claude" ? primary : pi }),
+        resolveAttempt: ({ model }) => ({ runtime: model.provider === "anthropic" ? primary : pi }),
       });
       const responder = await createConfiguredAgentResponder({
         config,
@@ -160,10 +163,10 @@ describe("clear-sessions fallback sandbox boundary", () => {
         await (responder as { dispose?: () => Promise<void> }).dispose?.();
       }
 
-      // The protected-root gate skips the non-Pi route before resolver/provider
-      // construction. The later Pi attempt receives the complete contract.
-      expect(primaryTools).toBeUndefined();
-      expect(primaryRun).toBeUndefined();
+      // Every provider route runs through Pi and receives the same protected-root
+      // contract before a later attempt resolves the fallback.
+      expect(primaryTools?.sandboxPolicy?.protectedRoots).toContain(registryRoot);
+      expect(primaryRun?.sandboxPolicy?.protectedRoots).toContain(registryRoot);
       expect(piTools?.sandboxEngine).toBe(sandboxEngine);
       expect(piTools?.sandboxPolicy?.protectedRoots).toContain(registryRoot);
       expect(piRun?.sandboxEngine).toBeDefined();

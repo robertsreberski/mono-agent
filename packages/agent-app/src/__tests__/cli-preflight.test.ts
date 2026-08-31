@@ -59,7 +59,7 @@ describe("ensureStartable (start/restart preflight gate)", () => {
   it("refuses with code 1 when the config loads but a section errors", async () => {
     // Valid model, but the referenced identity file does not exist → context error.
     await writeConfig({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },
     });
 
@@ -84,7 +84,7 @@ describe("ensureStartable (start/restart preflight gate)", () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     await seedManagedMemory(join(dir, "mem"), "bujo", "ollama:nomic-embed-text:v1.5");
     await writeConfig({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },
       memory: {
         mode: "bujo",

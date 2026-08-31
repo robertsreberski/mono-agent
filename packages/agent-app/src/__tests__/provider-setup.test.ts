@@ -69,172 +69,6 @@ describe("Pi provider setup safety", () => {
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
-  it("uses a minimal operational environment for provider login-status probes", () => {
-    const statusEnv = credentialNeutralProviderStatusEnvironment({
-      PATH: "/usr/local/bin:/usr/bin",
-      HOME: "/Users/example",
-      LC_CTYPE: "UTF-8",
-      CODEX_HOME: "/tmp/shell-only-codex",
-      CLAUDE_CONFIG_DIR: "/tmp/shell-only-claude",
-      OPENAI_API_KEY: "shell-only-openai",
-      CLAUDE_CODE_OAUTH_TOKEN: "shell-only-claude",
-      OPENCODE_API_KEY: "shell-only-opencode",
-      TODOIST_API_TOKEN: "unrelated-shell-secret",
-      NODE_OPTIONS: "--require=/tmp/untrusted-hook.cjs",
-    }, {
-      CODEX_HOME: "/Users/example/.codex",
-      CLAUDE_CONFIG_DIR: "/Users/example/.claude",
-    });
-
-    expect(statusEnv).toEqual({
-      PATH: "/usr/local/bin:/usr/bin",
-      HOME: "/Users/example",
-      LC_CTYPE: "UTF-8",
-      CODEX_HOME: "/Users/example/.codex",
-      CLAUDE_CONFIG_DIR: "/Users/example/.claude",
-    });
-  });
-
-  it("represents browser and device-code Codex login explicitly", async () => {
-    const dir = await tempDir();
-    expect(planProviderSetup({ cwd: dir, modelRefs: ["codex:gpt-5.6-sol"] }).actions[0]).toMatchObject({
-      id: "codex-login",
-      authMode: "browser",
-      command: ["codex", "login"],
-    });
-    expect(planProviderSetup({
-      cwd: dir,
-      modelRefs: ["codex:gpt-5.6-sol"],
-      codexAuthMode: "device",
-    }).actions[0]).toMatchObject({
-      id: "codex-login",
-      authMode: "device",
-      command: ["codex", "login", "--device-auth"],
-    });
-  });
-
-  it("skips detected credentials by default and reruns them for explicit repair", async () => {
-    const dir = await tempDir();
-    const detected = planProviderSetup({
-      cwd: dir,
-      modelRefs: ["codex:gpt-5.6-sol", "pi:openai-codex:gpt-5.6-sol"],
-      credentialStates: { codex: "credential_detected", "pi:openai-codex": "verified" },
-    });
-    expect(detected.actions).toEqual([]);
-    expect(detected.detectedModelRefs).toEqual(["codex:gpt-5.6-sol", "pi:openai-codex:gpt-5.6-sol"]);
-
-    const repair = planProviderSetup({
-      cwd: dir,
-      modelRefs: ["codex:gpt-5.6-sol", "pi:openai-codex:gpt-5.6-sol"],
-      credentialStates: { codex: "credential_detected", "pi:openai-codex": "verified" },
-      forceAuthentication: true,
-    });
-    expect(repair.actions.map((action) => action.id)).toEqual(["codex-login", "pi-login:openai-codex"]);
-  });
-
-  it("detects Codex, Claude, and Pi credential postconditions without claiming verification", async () => {
-    const dir = await tempDir();
-    const authPath = join(dir, "auth.json");
-    await writeFile(authPath, `${JSON.stringify({
-      "openai-codex": { type: "oauth", access: "stored" },
-    })}\n`, { mode: 0o600 });
-    const states = await detectProviderCredentialStates({
-      cwd: dir,
-      piAuthPath: authPath,
-      modelRefs: [
-        "codex:gpt-5.6-sol",
-        "claude:claude-sonnet-5",
-        "pi:openai-codex:gpt-5.6-sol",
-        "pi:openai:gpt-5.5",
-      ],
-      execFile: async (file) => {
-        if (file === "codex") return {};
-        throw new Error("Claude not signed in");
-      },
-    });
-    expect(states).toEqual({
-      codex: "credential_detected",
-      claude: "auth_required",
-      "pi:openai-codex": "credential_detected",
-      "pi:openai": "auth_required",
-    });
-    expect(Object.values(states)).not.toContain("verified");
-  });
-
-  it.each([
-    {
-      label: "Codex OPENAI_API_KEY",
-      modelRef: "codex:gpt-5.6-sol",
-      persistedEnv: { OPENAI_API_KEY: "durable-openai-key" },
-      expected: { codex: "credential_detected" },
-    },
-    {
-      label: "Claude ANTHROPIC_API_KEY",
-      modelRef: "claude:claude-sonnet-5",
-      persistedEnv: { ANTHROPIC_API_KEY: "durable-anthropic-key" },
-      expected: { claude: "credential_detected" },
-    },
-    {
-      label: "Claude ANTHROPIC_AUTH_TOKEN",
-      modelRef: "claude:claude-sonnet-5",
-      persistedEnv: { ANTHROPIC_AUTH_TOKEN: "durable-anthropic-token" },
-      expected: { claude: "credential_detected" },
-    },
-    {
-      label: "Claude CLAUDE_CODE_OAUTH_TOKEN",
-      modelRef: "claude:claude-sonnet-5",
-      persistedEnv: { CLAUDE_CODE_OAUTH_TOKEN: "durable-claude-token" },
-      expected: { claude: "credential_detected" },
-    },
-  ])("recognizes a durable $label without claiming live verification", async ({
-    modelRef,
-    persistedEnv,
-    expected,
-  }) => {
-    const run = vi.fn(async () => {
-      throw new Error("external login unavailable");
-    });
-    const states = await detectProviderCredentialStates({
-      cwd: "/agent",
-      modelRefs: [modelRef],
-      persistedEnv,
-      execFile: run,
-    });
-
-    expect(states).toEqual(expected);
-    expect(Object.values(states)).not.toContain("verified");
-    expect(run).not.toHaveBeenCalled();
-  });
-
-  it("ignores direct-provider credentials that exist only in the ambient shell", async () => {
-    const names = [
-      "OPENAI_API_KEY",
-      "ANTHROPIC_API_KEY",
-      "ANTHROPIC_AUTH_TOKEN",
-      "CLAUDE_CODE_OAUTH_TOKEN",
-    ] as const;
-    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
-    for (const name of names) process.env[name] = `shell-only-${name}`;
-    try {
-      const states = await detectProviderCredentialStates({
-        cwd: "/agent",
-        modelRefs: ["codex:gpt-5.6-sol", "claude:claude-sonnet-5"],
-        persistedEnv: {},
-        execFile: async (_file, _args, options) => {
-          for (const name of names) expect(options.env?.[name]).toBeUndefined();
-          throw new Error("not signed in");
-        },
-      });
-      expect(states).toEqual({ codex: "auth_required", claude: "auth_required" });
-    } finally {
-      for (const name of names) {
-        const value = previous[name];
-        if (value === undefined) delete process.env[name];
-        else process.env[name] = value;
-      }
-    }
-  });
-
   it("does not report empty or malformed Pi credential records as authenticated", async () => {
     const dir = await tempDir();
     const authPath = join(dir, "auth.json");
@@ -248,16 +82,16 @@ describe("Pi provider setup safety", () => {
       cwd: dir,
       piAuthPath: authPath,
       modelRefs: [
-        "pi:opencode-go:kimi-k2.6",
-        "pi:openai-codex:gpt-5.6-terra",
-        "pi:openai:gpt-5.5",
+        "opencode-go:kimi-k2.6",
+        "openai-codex:gpt-5.6-terra",
+        "openai:gpt-5.5",
       ],
     });
 
     expect(states).toEqual({
-      "pi:opencode-go": "auth_required",
-      "pi:openai-codex": "auth_required",
-      "pi:openai": "credential_detected",
+      "opencode-go": "auth_required",
+      "openai-codex": "auth_required",
+      "openai": "credential_detected",
     });
   });
 
@@ -272,15 +106,15 @@ describe("Pi provider setup safety", () => {
     const states = await detectProviderCredentialStates({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:openai-codex:gpt-5.6-sol"],
+      modelRefs: ["openai-codex:gpt-5.6-sol"],
     });
 
-    expect(states).toEqual({ "pi:openai-codex": "auth_required" });
+    expect(states).toEqual({ "openai-codex": "auth_required" });
   });
 
   it("offers OpenCode-Go API keys through secure-store or environment setup", async () => {
     const dir = await tempDir();
-    const secure = planProviderSetup({ cwd: dir, modelRefs: ["pi:opencode-go:kimi-k2.6"] });
+    const secure = planProviderSetup({ cwd: dir, modelRefs: ["opencode-go:kimi-k2.6"] });
     expect(secure.actions[0]).toMatchObject({
       id: "pi-api-key:opencode-go",
       envVar: "OPENCODE_API_KEY",
@@ -288,7 +122,7 @@ describe("Pi provider setup safety", () => {
     });
     const environment = planProviderSetup({
       cwd: dir,
-      modelRefs: ["pi:opencode-go:kimi-k2.6"],
+      modelRefs: ["opencode-go:kimi-k2.6"],
       piApiKeyPersistence: "environment",
     });
     expect(environment.actions[0]).toMatchObject({ persistence: "environment" });
@@ -305,7 +139,7 @@ describe("Pi provider setup safety", () => {
     const previous = process.env.OPENCODE_API_KEY;
     process.env.OPENCODE_API_KEY = "ambient-must-not-persist";
     try {
-      const plan = planProviderSetup({ cwd: dir, piAuthPath: authPath, modelRefs: ["pi:opencode-go:kimi-k2.6"] });
+      const plan = planProviderSetup({ cwd: dir, piAuthPath: authPath, modelRefs: ["opencode-go:kimi-k2.6"] });
       const [result] = await executeProviderSetupPlan(plan, { apiKeys: {} });
       expect(result).toMatchObject({ status: "skipped" });
       await expect(readFile(authPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
@@ -336,7 +170,7 @@ describe("Pi provider setup safety", () => {
       ownerUid: process.getuid(),
       token: "abandoned-lock-token",
     })}\n`, { mode: 0o600 });
-    const plan = planProviderSetup({ cwd: dir, piAuthPath: authPath, modelRefs: ["pi:opencode-go:kimi-k2.6"] });
+    const plan = planProviderSetup({ cwd: dir, piAuthPath: authPath, modelRefs: ["opencode-go:kimi-k2.6"] });
     const [result] = await executeProviderSetupPlan(plan, {
       apiKeys: { "pi-api-key:opencode-go": "replacement-key" },
     });
@@ -362,7 +196,7 @@ describe("Pi provider setup safety", () => {
     const results = await executeProviderSetupPlan(planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6", "claude:claude-sonnet-5"],
+      modelRefs: ["opencode-go:kimi-k2.6", "anthropic:claude-sonnet-5"],
     }), {
       apiKeys: { "pi-api-key:opencode-go": "entered-key" },
       spawn: spawn as never,
@@ -389,7 +223,7 @@ describe("Pi provider setup safety", () => {
     const results = await executeProviderSetupPlan(planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6", "claude:claude-sonnet-5"],
+      modelRefs: ["opencode-go:kimi-k2.6", "anthropic:claude-sonnet-5"],
     }), {
       apiKeys: { "pi-api-key:opencode-go": "entered-key" },
       spawn: spawn as never,
@@ -416,7 +250,7 @@ describe("Pi provider setup safety", () => {
     const results = await executeProviderSetupPlan(planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6", "claude:claude-sonnet-5"],
+      modelRefs: ["opencode-go:kimi-k2.6", "anthropic:claude-sonnet-5"],
     }), {
       apiKeys: { "pi-api-key:opencode-go": "entered-key" },
       spawn: spawn as never,
@@ -446,7 +280,7 @@ describe("Pi provider setup safety", () => {
     const results = await executeProviderSetupPlan(planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6", "claude:claude-sonnet-5"],
+      modelRefs: ["opencode-go:kimi-k2.6", "anthropic:claude-sonnet-5"],
     }), {
       apiKeys: { "pi-api-key:opencode-go": "entered-key" },
       spawn: spawn as never,
@@ -471,7 +305,7 @@ describe("Pi provider setup safety", () => {
     const results = await executeProviderSetupPlan(planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6", "claude:claude-sonnet-5"],
+      modelRefs: ["opencode-go:kimi-k2.6", "anthropic:claude-sonnet-5"],
     }), {
       apiKeys: { "pi-api-key:opencode-go": "entered-key" },
       spawn: spawn as never,
@@ -498,7 +332,7 @@ describe("Pi provider setup safety", () => {
     const results = await executeProviderSetupPlan(planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6", "claude:claude-sonnet-5"],
+      modelRefs: ["opencode-go:kimi-k2.6", "anthropic:claude-sonnet-5"],
     }), {
       apiKeys: { "pi-api-key:opencode-go": "entered-key" },
       spawn: spawn as never,
@@ -526,7 +360,7 @@ describe("Pi provider setup safety", () => {
     const results = await executeProviderSetupPlan(planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6", "claude:claude-sonnet-5"],
+      modelRefs: ["opencode-go:kimi-k2.6", "anthropic:claude-sonnet-5"],
     }), {
       apiKeys: { "pi-api-key:opencode-go": "entered-key" },
       spawn: spawn as never,
@@ -557,7 +391,7 @@ describe("Pi provider setup safety", () => {
     const results = await executeProviderSetupPlan(planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6", "claude:claude-sonnet-5"],
+      modelRefs: ["opencode-go:kimi-k2.6", "anthropic:claude-sonnet-5"],
     }), {
       apiKeys: { "pi-api-key:opencode-go": "entered-key" },
       spawn: spawn as never,
@@ -621,7 +455,7 @@ describe("Pi provider setup safety", () => {
     }));
     const plan = planProviderSetup({
       cwd: dir,
-      modelRefs: ["pi:ollama:qwen3.6:latest", "claude:claude-sonnet-5"],
+      modelRefs: ["ollama:qwen3.6:latest", "anthropic:claude-sonnet-5"],
     });
 
     const [result] = await executeProviderSetupPlan(plan, {
@@ -654,10 +488,17 @@ describe("Pi provider setup safety", () => {
         },
       };
     });
-    const results = await executeProviderSetupPlan(planProviderSetup({
+    const basePlan = planProviderSetup({
       cwd: dir,
-      modelRefs: ["pi:ollama:qwen3.6:latest", "claude:claude-sonnet-5"],
-    }), {
+      modelRefs: ["ollama:qwen3.6:latest"],
+    });
+    const results = await executeProviderSetupPlan({
+      ...basePlan,
+      actions: [
+        ...basePlan.actions,
+        { ...basePlan.actions[0]!, id: "ollama-list:second" },
+      ],
+    }, {
       spawn: spawn as never,
       preflightTimeoutMs: 10,
     });
@@ -675,7 +516,7 @@ describe("Pi provider setup safety", () => {
       observedSignal = init?.signal ?? undefined;
       return new Promise<Response>(() => {});
     });
-    const plan = planProviderSetup({ cwd: dir, modelRefs: ["pi:lmstudio:qwen3-8b"] });
+    const plan = planProviderSetup({ cwd: dir, modelRefs: ["lmstudio:qwen3-8b"] });
 
     const [result] = await executeProviderSetupPlan(plan, {
       fetch: fetch as never,
@@ -685,115 +526,6 @@ describe("Pi provider setup safety", () => {
     expect(result?.status).toBe("failed");
     expect(result?.detail).toContain("GET http://localhost:1234/v1/models timed out after 10ms");
     expect(observedSignal?.aborted).toBe(true);
-  });
-
-  it("does not apply the preflight deadline to interactive auth commands", async () => {
-    const dir = await tempDir();
-    const listeners = new Map<string, (...args: unknown[]) => void>();
-    const kill = vi.fn(() => true);
-    const spawn = vi.fn(() => ({
-      once(event: string, listener: (...args: unknown[]) => void) {
-        listeners.set(event, listener);
-      },
-      kill,
-    }));
-    const plan = planProviderSetup({ cwd: dir, modelRefs: ["codex:gpt-5.6-terra"] });
-    const pending = executeProviderSetupPlan(plan, {
-      spawn: spawn as never,
-      preflightTimeoutMs: 10,
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    expect(kill).not.toHaveBeenCalled();
-    listeners.get("close")?.(0, null);
-    const [result] = await pending;
-    expect(result?.status).toBe("ok");
-  });
-
-  it("interrupts an active auth child with bounded TERM-to-KILL escalation and starts no later action", async () => {
-    vi.useFakeTimers();
-    try {
-      const dir = await tempDir();
-      const listeners = new Map<string, (...args: unknown[]) => void>();
-      const kill = vi.fn((signal: NodeJS.Signals) => {
-        if (signal === "SIGTERM") {
-          queueMicrotask(() => listeners.get("error")?.(Object.assign(new Error("kill EPERM"), { code: "EPERM" })));
-        }
-        return true;
-      });
-      const spawn = vi.fn(() => ({
-        pid: 12_345,
-        exitCode: null,
-        signalCode: null,
-        once(event: string, listener: (...args: unknown[]) => void) {
-          listeners.set(event, listener);
-        },
-        kill,
-      }));
-      const controller = new AbortController();
-      const pending = executeProviderSetupPlan(planProviderSetup({
-        cwd: dir,
-        modelRefs: ["codex:gpt-5.6-sol", "claude:claude-sonnet-5"],
-      }), {
-        spawn: spawn as never,
-        abortSignal: controller.signal,
-      });
-
-      controller.abort();
-      expect(kill).toHaveBeenCalledWith("SIGTERM");
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(kill).toHaveBeenCalledWith("SIGKILL");
-      listeners.get("close")?.(null, "SIGKILL");
-
-      const results = await pending;
-      expect(results).toHaveLength(1);
-      expect(results[0]).toMatchObject({ status: "failed" });
-      expect(results[0]?.detail).toContain("was interrupted");
-      expect(spawn).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("settles an interrupted auth action when the child never closes after SIGKILL", async () => {
-    vi.useFakeTimers();
-    try {
-      const dir = await tempDir();
-      const kill = vi.fn(() => false);
-      const unref = vi.fn();
-      const spawn = vi.fn(() => ({
-        pid: 12_345,
-        exitCode: null,
-        signalCode: null,
-        once: vi.fn(),
-        kill,
-        unref,
-      }));
-      const controller = new AbortController();
-      const pending = executeProviderSetupPlan(planProviderSetup({
-        cwd: dir,
-        modelRefs: ["codex:gpt-5.6-sol", "claude:claude-sonnet-5"],
-      }), {
-        spawn: spawn as never,
-        abortSignal: controller.signal,
-      });
-
-      controller.abort();
-      await vi.advanceTimersByTimeAsync(2_000);
-
-      await expect(pending).resolves.toEqual([
-        expect.objectContaining({
-          status: "failed",
-          failureKind: "child_exit_unconfirmed",
-          detail: expect.stringContaining("child exit could not be confirmed after SIGKILL"),
-        }),
-      ]);
-      expect(kill.mock.calls).toEqual([["SIGTERM"], ["SIGKILL"]]);
-      expect(unref).toHaveBeenCalledOnce();
-      expect(spawn).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("removes Pi OAuth staging credentials and the lock after interruption", async () => {
@@ -950,28 +682,6 @@ describe("Pi provider setup safety", () => {
     expect((await readdir(dir)).some((name) => name.startsWith(".mono-agent-pi-auth-"))).toBe(false);
   });
 
-  it("continues independent provider actions after an ordinary failure", async () => {
-    const dir = await tempDir();
-    const calls: string[] = [];
-    const spawn = vi.fn((file: string, args: readonly string[]) => {
-      calls.push([file, ...args].join(" "));
-      const listeners = new Map<string, (...values: unknown[]) => void>();
-      queueMicrotask(() => listeners.get("close")?.(calls.length === 1 ? 1 : 0, null));
-      return {
-        once(event: string, listener: (...values: unknown[]) => void) {
-          listeners.set(event, listener);
-        },
-      };
-    });
-    const results = await executeProviderSetupPlan(planProviderSetup({
-      cwd: dir,
-      modelRefs: ["codex:gpt-5.6-sol", "claude:claude-sonnet-5"],
-    }), { spawn: spawn as never });
-
-    expect(calls).toEqual(["codex login", "claude /login"]);
-    expect(results.map((result) => result.status)).toEqual(["failed", "ok"]);
-  });
-
   it("starts no later provider action after a typed fatal cleanup failure", async () => {
     const dir = await tempDir();
     const spawn = vi.fn(() => {
@@ -987,7 +697,7 @@ describe("Pi provider setup safety", () => {
     const results = await executeProviderSetupPlan(planProviderSetup({
       cwd: dir,
       piAuthPath: join(dir, "auth.json"),
-      modelRefs: ["pi:openai-codex:gpt-5.6-sol", "claude:claude-sonnet-5"],
+      modelRefs: ["openai-codex:gpt-5.6-sol", "anthropic:claude-sonnet-5"],
     }), {
       spawn: spawn as never,
       beforePiAuthCleanup: async () => { throw new Error("simulated cleanup denial"); },
@@ -1094,8 +804,8 @@ describe("Pi provider setup safety", () => {
     expect(await detectProviderCredentialStates({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:openai-codex:gpt-5.6-sol"],
-    })).toEqual({ "pi:openai-codex": "auth_required" });
+      modelRefs: ["openai-codex:gpt-5.6-sol"],
+    })).toEqual({ "openai-codex": "auth_required" });
     const spawn = spawned(async (cwd) => {
       const current = JSON.parse(await readFile(join(cwd, "auth.json"), "utf8"));
       await writeFile(join(cwd, "auth.json"), JSON.stringify({
@@ -1116,8 +826,8 @@ describe("Pi provider setup safety", () => {
     expect(await detectProviderCredentialStates({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:openai-codex:gpt-5.6-sol"],
-    })).toEqual({ "pi:openai-codex": "credential_detected" });
+      modelRefs: ["openai-codex:gpt-5.6-sol"],
+    })).toEqual({ "openai-codex": "credential_detected" });
   });
 
   it("refuses an auth store that another user can write", async () => {
@@ -1144,7 +854,7 @@ describe("Pi provider setup safety", () => {
     const plan = planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6"],
+      modelRefs: ["opencode-go:kimi-k2.6"],
     });
 
     const [result] = await executeProviderSetupPlan(plan, {
@@ -1206,7 +916,7 @@ describe("Pi provider setup safety", () => {
     const plan = planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6"],
+      modelRefs: ["opencode-go:kimi-k2.6"],
     });
 
     const [result] = await executeProviderSetupPlan(plan, {
@@ -1236,7 +946,7 @@ describe("Pi provider setup safety", () => {
     const plan = planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6"],
+      modelRefs: ["opencode-go:kimi-k2.6"],
     });
     let markLocked!: () => void;
     const locked = new Promise<void>((resolve) => {
@@ -1297,7 +1007,7 @@ describe("Pi provider setup safety", () => {
       platform: "win32",
       spawn: oauthSpawn as never,
     });
-    const apiPlan = planProviderSetup({ cwd: dir, piAuthPath: join(dir, "api.json"), modelRefs: ["pi:opencode-go:kimi-k2.6"] });
+    const apiPlan = planProviderSetup({ cwd: dir, piAuthPath: join(dir, "api.json"), modelRefs: ["opencode-go:kimi-k2.6"] });
     const [apiResult] = await executeProviderSetupPlan(apiPlan, {
       platform: "win32",
       apiKeys: { "pi-api-key:opencode-go": "secret-value" },
@@ -1321,7 +1031,7 @@ describe("Pi provider setup safety", () => {
     const apiPlan = planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6"],
+      modelRefs: ["opencode-go:kimi-k2.6"],
     });
     const [apiResult] = await executeProviderSetupPlan(apiPlan, {
       apiKeys: { "pi-api-key:opencode-go": "PI_SECRET_SENTINEL_185" },
@@ -1343,7 +1053,7 @@ describe("Pi provider setup safety", () => {
     const apiPlan = planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6"],
+      modelRefs: ["opencode-go:kimi-k2.6"],
     });
 
     const result = await Promise.race([
@@ -1367,7 +1077,7 @@ describe("Pi provider setup safety", () => {
     const apiPlan = planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6"],
+      modelRefs: ["opencode-go:kimi-k2.6"],
     });
 
     const [result] = await executeProviderSetupPlan(apiPlan, {
@@ -1388,7 +1098,7 @@ describe("Pi provider setup safety", () => {
     const apiPlan = planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6"],
+      modelRefs: ["opencode-go:kimi-k2.6"],
     });
 
     const [result] = await executeProviderSetupPlan(apiPlan, {
@@ -1411,7 +1121,7 @@ describe("Pi provider setup safety", () => {
     const apiPlan = planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6"],
+      modelRefs: ["opencode-go:kimi-k2.6"],
     });
 
     const [result] = await executeProviderSetupPlan(apiPlan, {
@@ -1433,7 +1143,7 @@ describe("Pi provider setup safety", () => {
     const apiPlan = planProviderSetup({
       cwd: dir,
       piAuthPath: authPath,
-      modelRefs: ["pi:opencode-go:kimi-k2.6"],
+      modelRefs: ["opencode-go:kimi-k2.6"],
     });
 
     let result;
@@ -1466,7 +1176,7 @@ function oauthPlan(cwd: string, authPath: string) {
   return planProviderSetup({
     cwd,
     piAuthPath: authPath,
-    modelRefs: ["pi:openai-codex:gpt-5.6-terra"],
+    modelRefs: ["openai-codex:gpt-5.6-terra"],
   });
 }
 

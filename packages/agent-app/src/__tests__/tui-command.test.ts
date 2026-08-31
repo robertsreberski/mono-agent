@@ -157,7 +157,7 @@ describe("runTui", () => {
       const configPath = join(dir, "mono-agent.config.json");
       await writeFile(join(dir, "IDENTITY.md"), "# Identity\n\nAttach test.\n");
       await writeFile(configPath, `${JSON.stringify({
-        runtime: { model: "pi:openai-codex:gpt-5.5", workspace: "." },
+        runtime: { model: "openai-codex:gpt-5.5", workspace: "." },
         context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
         tools: { allowedTools: [], disallowedTools: [] },
         artifacts: { dir: "./artifacts" },

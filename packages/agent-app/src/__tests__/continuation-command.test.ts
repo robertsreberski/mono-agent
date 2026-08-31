@@ -22,7 +22,7 @@ async function commandFixture(config: Record<string, unknown> = { continuations:
   await chmod(secretPath, 0o600);
   const configPath = join(cwd, "mono-agent.config.json");
   await writeFile(configPath, JSON.stringify({
-    runtime: { model: "pi:openai-codex:gpt-5.5" },
+    runtime: { model: "openai-codex:gpt-5.5" },
     context: { identityPath: "./IDENTITY.md" },
     ...config,
   }));

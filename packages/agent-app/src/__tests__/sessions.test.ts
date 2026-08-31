@@ -56,7 +56,7 @@ function inputFor(configPath: string, env: Record<string, string | undefined> = 
 
 describe("resolveAppSessionsRoot", () => {
   it("returns undefined when no pi sessions root is configured (in-memory)", async () => {
-    const configPath = await writeConfig({ runtime: { model: "pi:x:y" } });
+    const configPath = await writeConfig({ runtime: { model: "x:y" } });
     expect(await resolveAppSessionsRoot(inputFor(configPath))).toBeUndefined();
   });
 
@@ -80,7 +80,7 @@ describe("resolveAppSessionsRoot", () => {
 
 describe("purgeSessions", () => {
   it("is a no-op when sessions are in-memory (no root configured)", async () => {
-    const configPath = await writeConfig({ runtime: { model: "pi:x:y" } });
+    const configPath = await writeConfig({ runtime: { model: "x:y" } });
     const result = await purgeSessions(inputFor(configPath));
     expect(result.removed).toBe(false);
     expect(result.files).toBe(0);

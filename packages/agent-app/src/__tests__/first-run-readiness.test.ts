@@ -118,7 +118,7 @@ describe("first-run environment", () => {
         CODEX_HOME: "/tmp/shell-only-codex",
         CLAUDE_CONFIG_DIR: "/tmp/shell-only-claude",
         MONO_AGENT_ALLOWED_TOOLS: "shell,tools",
-        MONO_AGENT_MODEL: "pi:shell:model",
+        MONO_AGENT_MODEL: "shell:model",
         MONO_AGENT_OPENAI_API_KEY: "shell-mono-openai",
       },
       dotenvEnv: {
@@ -384,7 +384,7 @@ describe("complete readiness gate", () => {
       plan,
       report: waitingCredentials,
       secretPersistence: { status: "planned", changed: true },
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
     });
     expect(completeGate.ready).toBe(false);
     expect(completeGate.reasons).toHaveLength(1);
@@ -521,7 +521,7 @@ describe("complete readiness gate", () => {
     });
     expect(completeGate.ready).toBe(false);
     expect(completeGate.reasons).toEqual([
-      "Runtime route codex:gpt-5.6-terra has not completed its exact live readiness check.",
+      "Runtime route openai-codex:gpt-5.6-terra has not completed its exact live readiness check.",
     ]);
   });
 
@@ -602,14 +602,14 @@ describe("complete readiness gate", () => {
       plan,
       report: readyReport,
       secretPersistence: { status: "persisted", changed: true },
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
     })).toEqual({ ready: true, reasons: [] });
 
     const waiting = evaluateFirstRunReadiness({
       plan,
       report: report({ runtime: "ok", credentials: "ok", "channel:telegram": "waiting" }),
       secretPersistence: { status: "persisted", changed: true },
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
     });
     expect(waiting.ready).toBe(false);
     expect(waiting.reasons.join(" ")).toContain("channel:telegram must be ok, but is waiting");
@@ -623,7 +623,7 @@ describe("complete readiness gate", () => {
         reason: "owner-only-permissions-unsupported",
         detail: "Use the owner-only manual setup path /safe/recovery before retrying.",
       },
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
     });
     expect(refused.ready).toBe(false);
     expect(refused.reasons.join(" ")).toContain("owner-only-permissions-unsupported");
@@ -636,8 +636,8 @@ describe("complete readiness gate", () => {
     configJson.runtime = {
       ...(configJson.runtime as Record<string, unknown>),
       fallbacks: [
-        { model: "claude:claude-sonnet-5", effort: "low" },
-        { model: "pi:openai:gpt-5.5" },
+        { model: "anthropic:claude-sonnet-5", effort: "low" },
+        { model: "openai:gpt-5.5" },
       ],
     };
     const plan = { ...base, configJson: configJson as never };
@@ -646,19 +646,19 @@ describe("complete readiness gate", () => {
       plan,
       report: reportReady,
       secretPersistence: { status: "persisted", changed: true },
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra", "claude:claude-sonnet-5"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra", "anthropic:claude-sonnet-5"],
     });
     expect(incomplete.ready).toBe(false);
-    expect(incomplete.reasons).toContain("Runtime route pi:openai:gpt-5.5 has not completed its exact live readiness check.");
+    expect(incomplete.reasons).toContain("Runtime route openai:gpt-5.5 has not completed its exact live readiness check.");
 
     expect(evaluateFirstRunReadiness({
       plan,
       report: reportReady,
       secretPersistence: { status: "persisted", changed: true },
       verifiedCredentialModelRefs: [
-        "codex:gpt-5.6-terra",
-        "claude:claude-sonnet-5",
-        "pi:openai:gpt-5.5",
+        "openai-codex:gpt-5.6-terra",
+        "anthropic:claude-sonnet-5",
+        "openai:gpt-5.5",
       ],
     })).toEqual({ ready: true, reasons: [] });
   });
@@ -746,7 +746,7 @@ describe("complete readiness gate", () => {
     const result = await validateWizardPlanInStaging({
       plan,
       env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "secret" },
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
       validate: async (options) => {
         stagedCwd = options.cwd;
         await access(options.configPath);
@@ -757,7 +757,7 @@ describe("complete readiness gate", () => {
           .toContain("# Configure memory");
         expect(options.allowFilesystemWrites).toBe(true);
         expect(options.liveness).toBe(true);
-        expect(options.verifiedCredentialModelRefs).toEqual(["codex:gpt-5.6-terra"]);
+        expect(options.verifiedCredentialModelRefs).toEqual(["openai-codex:gpt-5.6-terra"]);
         return report({ runtime: "ok", "channel:telegram": "ok" });
       },
     });
@@ -775,7 +775,7 @@ describe("complete readiness gate", () => {
       plan: telegramPlan(),
       sourceCwd,
       env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "secret" },
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
       validate: async (options) => {
         expect(await readFile(join(options.cwd, "IDENTITY.md"), "utf8")).toBe(identity);
         return report({ runtime: "ok", "channel:telegram": "ok" });
@@ -802,7 +802,7 @@ describe("complete readiness gate", () => {
       plan: telegramPlan(),
       sourceCwd,
       env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "secret" },
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
       validate: async () => {
         validateCalled = true;
         return report({ runtime: "ok", "channel:telegram": "ok" });
@@ -818,7 +818,7 @@ describe("complete readiness gate", () => {
       plan: cronPlan("15 9 * * MON-FRI"),
       sourceCwd,
       env: {},
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
     });
 
     expect(result.sections.find((section) => section.id === "channel:cron")).toMatchObject({
@@ -843,7 +843,7 @@ describe("complete readiness gate", () => {
       plan: cronPlan("0 8 * * *"),
       sourceCwd,
       env: {},
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
       validate: async (options) => {
         expect(await readFile(join(options.cwd, "cron", "digest.md"), "utf8")).toBe(existing);
         return await validateMonoAgentFolder(options);
@@ -866,7 +866,7 @@ describe("complete readiness gate", () => {
       plan: cronPlan(),
       sourceCwd,
       env: {},
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
       validate: async (options) => {
         expect(await readFile(join(options.cwd, "cron", "digest.md"), "utf8")).toBe(existing);
         return await validateMonoAgentFolder(options);
@@ -892,7 +892,7 @@ describe("complete readiness gate", () => {
       plan: cronPlan(),
       sourceCwd,
       env: {},
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
     });
 
     expect(result.sections.find((section) => section.id === "channel:cron")).toMatchObject({
@@ -921,7 +921,7 @@ describe("complete readiness gate", () => {
       plan: cronPlan(),
       sourceCwd,
       env: {},
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
       validate: async () => {
         validateCalled = true;
         return report({ runtime: "ok", "channel:cron": "ok" });
@@ -943,7 +943,7 @@ describe("complete readiness gate", () => {
       plan,
       sourceCwd,
       env: {},
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
     })).rejects.toThrow(/cron directory .* outside its source root/u);
   });
 
@@ -960,7 +960,7 @@ describe("complete readiness gate", () => {
       plan,
       sourceCwd,
       env: {},
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
     })).rejects.toThrow(/absolute cron directory/u);
   });
 
@@ -975,7 +975,7 @@ describe("complete readiness gate", () => {
       plan: telegramPlan(),
       sourceCwd,
       env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "secret" },
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
       validate: async () => report({ runtime: "ok", "channel:telegram": "ok" }),
     })).resolves.toMatchObject({ ok: true });
   });
@@ -993,7 +993,7 @@ describe("complete readiness gate", () => {
       plan: cronPlan(),
       sourceCwd,
       env: {},
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
     })).rejects.toThrow(/exceeds 1048576 bytes/u);
   });
 
@@ -1003,7 +1003,7 @@ describe("complete readiness gate", () => {
     await expect(validateWizardPlanInStaging({
       plan: telegramPlan(),
       env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "secret" },
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
       abortSignal: controller.signal,
       validate: async (options) => {
         stagedCwd = options.cwd;
@@ -1029,7 +1029,7 @@ describe("complete readiness gate", () => {
       plan,
       sourceCwd,
       env: {},
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
       validate: async (options) => {
         stagedCwd = options.cwd;
         await access(join(options.cwd, "skills"));
@@ -1053,7 +1053,7 @@ describe("complete readiness gate", () => {
       plan: selectedPlan,
       sourceCwd,
       env: {},
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
       validate: async (options) => {
         await access(join(options.cwd, "skills", "research", "SKILL.md"));
         return report({ runtime: "ok", context: "ok" });
@@ -1089,7 +1089,7 @@ describe("complete readiness gate", () => {
       plan,
       sourceCwd,
       env: {},
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
       validate: async () => {
         validateCalled = true;
         return report({ runtime: "ok", context: "ok" });
@@ -1123,7 +1123,7 @@ describe("complete readiness gate", () => {
       plan,
       sourceCwd,
       env: {},
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
       validate: async () => report({ runtime: "ok", context: "ok" }),
     })).rejects.toThrow(/outside its configured root/u);
   });
@@ -1138,7 +1138,7 @@ describe("complete readiness gate", () => {
     await expect(validateWizardPlanInStaging({
       plan,
       env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "secret" },
-      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      verifiedCredentialModelRefs: ["openai-codex:gpt-5.6-terra"],
       validate: async () => report({ runtime: "ok" }),
     })).rejects.toThrow(/outside the disposable agent folder/u);
   });

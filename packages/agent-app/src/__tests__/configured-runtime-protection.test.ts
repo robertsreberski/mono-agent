@@ -40,18 +40,17 @@ const {
   agentRootLeasePath,
   acquireAgentRootOwnership,
 } = await import("../agent-root-coordinator.js");
-const { PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR } = await import("../process-jobs-runtime.js");
 const {
   loadProcessJobsRootRegistryProtection,
   registerProcessJobsRoot,
 } = await import("../process-jobs-root-registry.js");
 
 const PI_MODEL = {
-  sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol",
-  reference: "pi:openai-codex:gpt-5.6-sol",
+  provider: "openai-codex", model: "gpt-5.6-sol",
+  reference: "openai-codex:gpt-5.6-sol",
 } as const;
 const CLAUDE_MODEL = {
-  sdk: "claude", model: "claude-opus-4-8", reference: "claude:claude-opus-4-8",
+  provider: "anthropic", model: "claude-opus-4-8", reference: "anthropic:claude-opus-4-8",
 } as const;
 const sandboxEngine = {
   id: "configured-runtime-protection-test",
@@ -92,36 +91,19 @@ describe("public configured raw runtime protection", () => {
     expect(runtimeState.run).not.toHaveBeenCalled();
   });
 
-  it("preserves a legitimate non-Pi raw runtime while the durable registry is empty", async () => {
+  it("preserves an alternate provider runtime while the durable registry is empty", async () => {
     const fixture = await runtimeFixture("empty-registry");
     const owner = await seededOwnership(fixture);
-    runtimeState.run.mockResolvedValue({ text: "legitimate non-pi result" });
+    runtimeState.run.mockResolvedValue({ text: "alternate-provider result" });
     const runtime = createConfiguredAgentRuntime({
       config: configFor(fixture.root, fixture.workspace),
       cwd: fixture.root,
     });
 
     await expect(runtime.run("system", runOptions(CLAUDE_MODEL, fixture.workspace))).resolves.toMatchObject({
-      text: "legitimate non-pi result",
+      text: "alternate-provider result",
     });
     expect(runtimeState.run).toHaveBeenCalledOnce();
-    await runtime.disposeAllSessions?.();
-    owner.release();
-  });
-
-  it("rejects a non-Pi raw runtime against retained private roots before provider invocation", async () => {
-    const fixture = await runtimeFixture("non-pi-sealed");
-    const owner = await seededOwnership(fixture, join(fixture.root, ".state", "jobs"));
-    const runtime = createConfiguredAgentRuntime({
-      config: configFor(fixture.root, fixture.workspace),
-      cwd: fixture.root,
-      sandboxEngine,
-    });
-
-    await expect(runtime.run("system", runOptions(CLAUDE_MODEL, fixture.workspace))).rejects.toThrow(
-      PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR,
-    );
-    expect(runtimeState.run).not.toHaveBeenCalled();
     await runtime.disposeAllSessions?.();
     owner.release();
   });
@@ -146,10 +128,10 @@ describe("public configured raw runtime protection", () => {
       coordinator: owner.coordinator,
     });
 
-    await expect(runtime.run("system", runOptions(CLAUDE_MODEL, fixture.workspace))).rejects.toThrow(
-      PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR,
-    );
-    expect(runtimeState.run).toHaveBeenCalledOnce();
+    await expect(runtime.run("system", runOptions(CLAUDE_MODEL, fixture.workspace))).resolves.toMatchObject({
+      text: "empty-registry result",
+    });
+    expect(runtimeState.run).toHaveBeenCalledTimes(2);
     await runtime.disposeAllSessions?.();
     owner.release();
   });
@@ -228,7 +210,6 @@ function configFor(root: string, workspace: string): MonoAgentConfig {
   return {
     runtime: {
       model: PI_MODEL,
-      executionMode: "sdk",
       workspace,
       session: { mode: "continuous", idleTimeoutMs: 1_800_000 },
     },
@@ -242,7 +223,6 @@ function configFor(root: string, workspace: string): MonoAgentConfig {
 function runOptions(model: typeof PI_MODEL | typeof CLAUDE_MODEL, workspace: string): never {
   return {
     model,
-    executionMode: "sdk",
     cwd: workspace,
     messages: [{ role: "user", content: "hello" }],
     allowedTools: [],

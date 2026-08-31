@@ -1419,10 +1419,10 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
 function exampleFor(id: string): SettingsJsonValue {
   const examples: Record<string, SettingsJsonValue> = {
     "agent.name": "Research Partner",
-    "runtime.model": "codex:gpt-5.6-terra",
+    "runtime.model": "openai-codex:gpt-5.6-terra",
     "runtime.fallbacks": [
-      { model: "codex:gpt-5.6-sol" },
-      { model: "pi:openai-codex:gpt-5.6-terra", effort: "high" },
+      { model: "openai-codex:gpt-5.6-sol" },
+      { model: "anthropic:claude-sonnet-4-6", effort: "high" },
     ],
     subagents: {
       enabled: true,
@@ -1450,7 +1450,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "memory.embeddings.provider": "ollama",
     "memory.embeddings.model": "nomic-embed-text:v1.5",
     "memory.llm.provider": "agent-host",
-    "memory.llm.model": "pi:openai-codex:gpt-5.6-terra",
+    "memory.llm.model": "openai-codex:gpt-5.6-terra",
     "sandbox.mode": "native",
     "traceability.sourceId": "my-agent",
     "traceability.sourceLabel": "My Agent",
@@ -1593,7 +1593,7 @@ function descriptionFor(id: string): string {
     return "Ceiling for the doubling same-model retry delay.";
   }
   if (id === "runtime.effort") {
-    return "Route-specific effort. Reasoning-capable pi:* maps ultra to LOW; Pi without reasoning uses OFF. Direct codex:* forwards ultra unchanged. Mono-agent rejects ultra on its Claude SDK route because the pinned SDK public contract ends at max (the SDK JavaScript itself forwards the value). The Claude CLI route passes --effort ultra, but both tested Claude Code binaries (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort. Direct OpenCode rejects explicit effort. Ranking above max only prevents keyword downgrade.";
+    return "Route-specific effort forwarded through Pi to the selected provider. Doctor warns when a configured value falls outside the model's advertised ladder but keeps turn-time handling permissive. Ranking above max only prevents keyword downgrade.";
   }
   if (id === "tools.mcpRequestContextServers") {
     return "Configured stdio MCP server names that receive trusted per-request conversation, run, output-directory, and scoped progress context.";

@@ -246,37 +246,19 @@ export function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function runtimeRouteContainsDirectOpenCode(config: MonoAgentConfig): boolean {
-  return configuredRuntimeModels(config.runtime)
-    .some((model) => model.sdk === "opencode");
-}
-
-/** Direct OpenCode has no host-tool seam; direct ACP rejects request-scoped MCP. */
-export function runtimeRouteContainsUnsupportedHistoryTool(config: MonoAgentConfig): boolean {
-  return configuredRuntimeModels(config.runtime)
-    .some((model) => model.sdk === "opencode" || model.sdk === "acp");
-}
-
-/** Preserve RunHistory's shipped ACP route while gating the new SessionHistory seam. */
-export function historyToolRouteSupport(config: MonoAgentConfig): {
+export function historyToolRouteSupport(_config: MonoAgentConfig): {
   readonly runHistory: boolean;
   readonly sessionHistory: boolean;
 } {
   return {
-    runHistory: !runtimeRouteContainsDirectOpenCode(config),
-    sessionHistory: !runtimeRouteContainsUnsupportedHistoryTool(config),
+    runHistory: true,
+    sessionHistory: true,
   };
 }
 
 export function runtimeRouteSupportsMcpApps(config: MonoAgentConfig): boolean {
   const route = configuredRuntimeModels(config.runtime);
-  return route.length > 0 && route.every((model) => {
-    try {
-      return monoRuntimeSupportsMcpApps(model);
-    } catch {
-      return false;
-    }
-  });
+  return route.length > 0 && monoRuntimeSupportsMcpApps();
 }
 
 export function isInteractionToolName(name: string): boolean {

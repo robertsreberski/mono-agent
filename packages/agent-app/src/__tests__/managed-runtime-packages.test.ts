@@ -24,7 +24,7 @@ async function scaffold(config: Record<string, unknown>): Promise<{ cwd: string;
 describe("configured managed-runtime packages", () => {
   it("resolves channel and supermemory extras from the current app installation", async () => {
     const { cwd, configPath } = await scaffold({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
       channels: { plugins: [{ package: "@mono-agent/a2a-adapter" }] },
@@ -49,7 +49,7 @@ describe("configured managed-runtime packages", () => {
 
   it("returns no additions for a core-only config", async () => {
     const { cwd, configPath } = await scaffold({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
     });
@@ -60,7 +60,7 @@ describe("configured managed-runtime packages", () => {
 
   it("copies an explicit agent-folder Supermemory plugin into the managed closure", async () => {
     const { cwd, configPath } = await scaffold({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
       memory: {

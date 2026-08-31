@@ -37,9 +37,9 @@ const availableSandboxEngine = {
 } as never;
 
 const CLAUDE_MODEL = {
-  sdk: "claude",
   provider: "anthropic",
   model: "claude-opus-4-8",
+  reference: "anthropic:claude-opus-4-8",
 } as const;
 
 function processJobsBoundary(
@@ -233,7 +233,7 @@ describe("process-job request availability", () => {
       ["tui", { conversationId: "web:new", metadata: { source: "web" } }],
       ["cron", { conversationId: "cron:job" }],
       ["webhook", { conversationId: "webhook:event" }],
-      ["openai-api", { conversationId: "openai-api:request" }],
+      ["openai-api", { conversationId: "openai-arequest" }],
       ["a2a", { conversationId: "a2a:request" }],
       ["slack", { conversationId: "slack:C1:1.1", replyTo: { conversationId: "telegram:42" } }],
       ["slack", { conversationId: "slack:C1:1.1", replyTo: { conversationId: "slack:C2:2.2" } }],
@@ -247,10 +247,10 @@ describe("process-job request availability", () => {
     }
   });
 
-  it("injects only for allowed Pi-native turns", async () => {
+  it("injects for canonical provider turns", async () => {
     const controller = vi.fn((_request: unknown, _depth: number | (() => number)) => ({ start: vi.fn() }));
     const coreConfig = {
-      runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+      runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, workspace: "/agent" },
       tools: { allowedTools: ["Exec", "Bash"], disallowedTools: [] },
     } as never;
     const extension = createProcessJobsRuntimeExtension({
@@ -275,15 +275,15 @@ describe("process-job request availability", () => {
     await expect(extension(input())).resolves.toMatchObject({ runtimeOptions: { processJobs: expect.any(Object) } });
     expect(controller).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "slack:C1:1.1" }), expect.any(Function));
     expect((controller.mock.calls[0]![1] as () => number)()).toBe(0);
-    await expect(extension(input({ route: "claude" }))).rejects.toThrow(
-      "Process-job private state requires a Pi-native runtime.",
-    );
+    await expect(extension(input({ route: "claude" }))).resolves.toMatchObject({
+      runtimeOptions: { model: CLAUDE_MODEL, processJobs: expect.any(Object) },
+    });
 
   });
 
   it("answers the prompt-guidance predicate with the same gate that injects the schema", () => {
     const coreConfig = {
-      runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+      runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, workspace: "/agent" },
       tools: { allowedTools: ["Exec", "Bash"], disallowedTools: [] },
     } as never;
     const service = { settings: { maxChainDepth: 4, stateDir: PROCESS_JOBS_STATE_DIR } } as never;
@@ -311,7 +311,7 @@ describe("process-job request availability", () => {
   it("preserves parent-plus-one depth through a busy live-session queue and removes capability at max depth", async () => {
     const controller = vi.fn((_request: unknown, _depth: number | (() => number)) => ({ start: vi.fn() }));
     const coreConfig = {
-      runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+      runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
       tools: { allowedTools: ["Exec"], disallowedTools: [] },
     } as never;
     const extension = createProcessJobsRuntimeExtension({
@@ -423,7 +423,7 @@ describe("process-job request availability", () => {
       const conversationId = channel === "slack" ? "slack:C1:1.1" : "telegram:42";
       const controller = vi.fn((_request: unknown, _chainDepth: number | (() => number)) => ({ start: vi.fn() }));
       const coreConfig = {
-        runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+        runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
         tools: { allowedTools: ["Exec"], disallowedTools: [] },
       } as never;
       const extension = createProcessJobsRuntimeExtension({
@@ -513,7 +513,7 @@ describe("process-job request availability", () => {
       await writeFile(identityPath, "You are Mono.", "utf8");
       const controller = vi.fn((_request: unknown, _chainDepth: number | (() => number)) => ({ start: vi.fn() }));
       const coreConfig = {
-        runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+        runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
         tools: { allowedTools: ["Exec"], disallowedTools: [] },
       } as never;
       const extension = createProcessJobsRuntimeExtension({
@@ -532,12 +532,10 @@ describe("process-job request availability", () => {
       const harness = createAgentHarness({
         identityPath,
         model: {
-          sdk: "pi",
           provider: "openai-codex",
           model: "gpt-5.6-sol",
-          reference: "pi:openai-codex:gpt-5.6-sol",
+          reference: "openai-codex:gpt-5.6-sol",
         },
-        executionMode: "sdk",
         session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
         historyStore: createInMemoryHistoryStore({ maxMessages: 10 }),
         runtimeOptionsForRequest: extension,
@@ -693,7 +691,7 @@ describe("process-job request availability", () => {
   it("fails closed when overlapping wake flights reuse one exact delivery discriminator", async () => {
     const controller = vi.fn(() => ({ start: vi.fn() }));
     const coreConfig = {
-      runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+      runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
       tools: { allowedTools: ["Exec"], disallowedTools: [] },
     } as never;
     const extension = createProcessJobsRuntimeExtension({

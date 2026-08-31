@@ -151,7 +151,7 @@ describe("backfill mapping integration", () => {
     await mkdir(cwd, { recursive: true });
     await writeFile(join(cwd, "IDENTITY.md"), "# Identity\n", "utf8");
     await writeFile(configPath, JSON.stringify({
-      runtime: { model: "claude:claude-sonnet-4-6" },
+      runtime: { model: "anthropic:claude-sonnet-4-6" },
       context: { identityPath: "./IDENTITY.md" },
       artifacts: { dir: "./artifacts" },
       observability: {
@@ -196,7 +196,7 @@ describe("backfill mapping integration", () => {
     await mkdir(cwd, { recursive: true });
     await writeFile(join(cwd, "IDENTITY.md"), "# Identity\n", "utf8");
     await writeFile(configPath, JSON.stringify({
-      runtime: { model: "claude:claude-sonnet-4-6" },
+      runtime: { model: "anthropic:claude-sonnet-4-6" },
       context: { identityPath: "./IDENTITY.md" },
       artifacts: { dir: "./artifacts" },
       observability: {
@@ -248,7 +248,7 @@ describe("backfill mapping integration", () => {
     const configPath = join(cwd, "mono-agent.config.json");
     await writeFile(join(cwd, "IDENTITY.md"), "# Identity\n", "utf8");
     await writeFile(configPath, JSON.stringify({
-      runtime: { model: "claude:claude-sonnet-4-6" },
+      runtime: { model: "anthropic:claude-sonnet-4-6" },
       context: { identityPath: "./IDENTITY.md" },
       artifacts: { dir: "./artifacts" },
       observability: { exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:9/v1/traces" }] },
@@ -292,7 +292,7 @@ describe("backfill mapping integration", () => {
 
     const writeConfig = async (contentPatternRedaction: boolean): Promise<void> => {
       await writeFile(configPath, JSON.stringify({
-        runtime: { model: "claude:claude-sonnet-4-6" },
+        runtime: { model: "anthropic:claude-sonnet-4-6" },
         context: { identityPath: "./IDENTITY.md" },
         artifacts: { dir: "./artifacts" },
         observability: {
