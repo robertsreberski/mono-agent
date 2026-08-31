@@ -2,6 +2,7 @@ import { EFFORT_LEVELS } from "@mono-agent/config";
 import {
   getPiBuiltinModel,
   reasoningLevelsForPiModel,
+  type PiBuiltinModelSnapshot,
 } from "@mono-agent/agent-runtime";
 import type {
   LocalProviderDefinition,
@@ -35,6 +36,19 @@ function gradedEffort(levels: readonly string[]): ModelEffortLevels {
 }
 
 /**
+ * Resolve the effort snapshot for one already-cloned Pi built-in model. Kept
+ * separate from {@link resolveAdvertisedModelEffort} so the provider catalog can
+ * compute effort from a cached snapshot without paying a fresh
+ * `getPiBuiltinModel` clone per model.
+ */
+export function resolveAdvertisedModelEffortForBuiltin(
+  builtin: PiBuiltinModelSnapshot,
+): ModelEffortLevels {
+  if (builtin.reasoning !== true) return noExplicitEffort(false);
+  return gradedEffort(reasoningLevelsForPiModel(builtin));
+}
+
+/**
  * Resolve the effort snapshot advertised for one configured or discovered
  * runtime model. Unknown metadata never expands to the global ladder.
  */
@@ -48,6 +62,5 @@ export function resolveAdvertisedModelEffort(
   }
   const builtin = getPiBuiltinModel(ref.provider, ref.model);
   if (builtin === undefined) return noExplicitEffort(true);
-  if (builtin.reasoning !== true) return noExplicitEffort(false);
-  return gradedEffort(reasoningLevelsForPiModel(builtin));
+  return resolveAdvertisedModelEffortForBuiltin(builtin);
 }

@@ -3,22 +3,20 @@ import { resolve } from "node:path";
 
 import type { AgentMessageStream, ProcessJobOperator } from "@mono-agent/agent-contracts";
 
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
   TuiAdapterConfig,
   TuiAdapterInfo,
   TuiAdapterOptions,
   TuiAdapterStartResult,
+  TuiModelCatalogProvider,
 } from "@mono-agent/operator-adapter";
 import {
   discoverLocalProviderModels,
   modelReferenceKey,
-  parseMonoRuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
 import type {
   DiscoveredLocalModel,
   LocalProviderDefinition,
-  RuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
 import {
   ACP_BRIDGE_SOURCE_SCHEMA,
@@ -29,8 +27,8 @@ import {
 
 import { buildChannelConfigView } from "../channel-config-view.js";
 import type { ChannelDriver, ChannelStartInput, RunningChannel } from "../channels.js";
-import { resolveAdvertisedModelEffort } from "../model-effort-capabilities.js";
 import { agentAppPackageVersion } from "../package-version.js";
+import { buildProviderModelCatalog } from "../provider-model-catalog.js";
 import { configuredRuntimeModels } from "../runtime-routes.js";
 import { createSkillRegistryMonitor } from "../skill-registry.js";
 import type { CronOperatorRegistry } from "../cron-operator-service.js";
@@ -40,31 +38,6 @@ type TuiAdapterModule = typeof import("@mono-agent/operator-adapter");
 let tuiModule: TuiAdapterModule | undefined;
 const loadTuiModule = async (): Promise<TuiAdapterModule> =>
   (tuiModule ??= await import("@mono-agent/operator-adapter"));
-
-const builtinModelCatalog = builtinModels();
-
-function positiveContextWindow(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
-    ? value
-    : undefined;
-}
-
-function resolveContextWindow(
-  ref: RuntimeModelReference,
-  providers: readonly LocalProviderDefinition[] | undefined,
-): number | undefined {
-  const configuredProvider = providers?.find((provider) => provider.id === ref.provider);
-  if (configuredProvider !== undefined) {
-    const configuredModel = configuredProvider.models
-      ?.find((model) => model.name === ref.model || model.alias === ref.model);
-    return positiveContextWindow(configuredModel?.capabilities?.context_window)
-      ?? positiveContextWindow(configuredModel?.capabilities?.num_ctx);
-  }
-
-  return positiveContextWindow(
-    builtinModelCatalog.getModel(ref.provider, ref.model)?.contextWindow,
-  );
-}
 
 export interface TuiChannelOverrides {
   readonly adapterFactory?: (options: TuiAdapterOptions) => Promise<TuiAdapterStartResult>;
@@ -171,51 +144,39 @@ export function createTuiChannelDriver(
         // make /v1/info block or expand unknown capabilities later.
       }
 
-      const buildInfo = async (): Promise<TuiAdapterInfo> => {
-        const labelByRef = new Map(discoveredModels.map((model) => [model.ref, model.label]));
-        const models = [...configModelKeys];
-        for (const model of discoveredModels) {
-          if (!models.includes(model.ref)) {
-            models.push(model.ref);
-          }
-        }
+      // The provider-widened catalog is precomputed once here. `/v1/info` reads
+      // the frozen provider list and the configured-route shortlist from memory
+      // only; the lazy `/v1/models` endpoint slices already-frozen pages.
+      const catalog = buildProviderModelCatalog({
+        providers: input.coreConfig.providers?.entries ?? input.coreConfig.providers?.local ?? [],
+        ...(localProviders === undefined ? {} : { localProviders }),
+        configuredRoutes: configuredRefs,
+        discoveredModels,
+      });
 
-        const modelOptions: Record<string, {
-          effortLevels?: readonly string[];
-          reasoning?: boolean;
-          reasoningMode?: string;
-          label?: string;
-          contextWindow?: number;
-        }> = {};
-        for (const ref of models) {
-          let parsedRef;
-          try {
-            parsedRef = parseMonoRuntimeModelReference(ref);
-          } catch {
-            continue;
-          }
-          const resolved = resolveAdvertisedModelEffort(parsedRef, {
-            ...(localProviders === undefined ? {} : { localProviders }),
+      const modelCatalog: TuiModelCatalogProvider = (request) => {
+        if (request.provider !== undefined) {
+          return catalog.listModels(request.provider, {
+            ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+            limit: request.limit,
           });
-          const contextWindow = resolveContextWindow(parsedRef, localProviders);
-          const label = labelByRef.get(ref);
-          const entry = {
-            ...(resolved.effortLevels === undefined ? {} : { effortLevels: resolved.effortLevels }),
-            reasoning: resolved.reasoning,
-            ...(resolved.reasoningMode === undefined ? {} : { reasoningMode: resolved.reasoningMode }),
-            ...(label === undefined ? {} : { label }),
-            ...(contextWindow === undefined ? {} : { contextWindow }),
-          };
-          if (Object.keys(entry).length > 0) {
-            modelOptions[ref] = entry;
-          }
         }
+        if (request.query !== undefined) {
+          return {
+            models: catalog.searchModels(request.query, request.limit),
+            truncated: false,
+          };
+        }
+        return { models: [], truncated: false };
+      };
 
+      const buildInfo = async (): Promise<TuiAdapterInfo> => {
         return {
           model: modelReferenceKey(input.coreConfig.runtime.model),
           ...(input.coreConfig.runtime.effort === undefined ? {} : { effort: input.coreConfig.runtime.effort }),
-          models,
-          ...(Object.keys(modelOptions).length === 0 ? {} : { modelOptions }),
+          models: configModelKeys,
+          modelOptions: catalog.describe(configuredRefs),
+          providers: catalog.listProviders(),
           skills: skillRegistry.snapshot(),
         };
       };
@@ -243,6 +204,7 @@ export function createTuiChannelDriver(
         ...(input.interaction === undefined ? {} : { interaction: input.interaction }),
         ...(cronOperator?.configured === true ? { cron: cronOperator } : {}),
         info: buildInfo,
+        modelCatalog,
         onServerError: (reason) => input.onFailure(reason),
         ...(input.logger === undefined ? {} : { logger: input.logger }),
       });

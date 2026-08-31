@@ -1957,16 +1957,15 @@ describe("startMonoAgentApp", () => {
       expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
       expect(captured?.pendingAsks).toBeUndefined();
       expect(captured?.allowedUpdates).toEqual(["message", "callback_query"]);
-      expect(captured?.runtimeControls).toMatchObject({
-        defaultModel: "openai-codex:gpt-5.5",
-        models: [{ value: "openai-codex:gpt-5.5" }],
-      });
+      expect(captured?.runtimeControls?.defaultModel).toBe("openai-codex:gpt-5.5");
+      // The configured route always leads; the provider-widened tail follows it.
+      expect(captured?.runtimeControls?.models[0]?.value).toBe("openai-codex:gpt-5.5");
     } finally {
       await app.stop();
     }
   });
 
-  it("advertises only configured Telegram primary and fallback models with effort options", async () => {
+  it("leads the Telegram catalog with configured routes, then widens by provider", async () => {
     let captured: TelegramAdapterStartOptions | undefined;
     const driver = createTelegramChannelDriver({
       startAdapter: async (options) => {
@@ -2002,12 +2001,24 @@ describe("startMonoAgentApp", () => {
 
     expect(captured?.runtimeControls?.defaultModel).toBe("openai-codex:gpt-5.6-terra");
     expect(captured?.runtimeControls?.defaultEffort).toBe("high");
-    expect(captured?.runtimeControls?.models.map((model) => model.value)).toEqual([
+    const telegramModels = captured?.runtimeControls?.models.map((model) => model.value) ?? [];
+    // The configured routes lead, deduped and in declaration order. `fallbacks`
+    // repeats the primary, which must not produce a second entry.
+    expect(telegramModels.slice(0, 2)).toEqual([
       "openai-codex:gpt-5.6-terra",
       "openai-codex:gpt-5.6-sol",
     ]);
+    // Everything after them is provider-widened from the routes' own provider,
+    // deduped, and bounded so an inline Telegram menu stays renderable.
+    expect(telegramModels.length).toBeGreaterThan(2);
+    expect(telegramModels.length).toBeLessThanOrEqual(2 + 25);
+    expect(new Set(telegramModels).size).toBe(telegramModels.length);
+    expect(telegramModels.every((model) => model.startsWith("openai-codex:"))).toBe(true);
+    // Narrowed to what Pi actually advertises for this model. gpt-5.6-terra's
+    // `thinkingLevelMap` has no `ultra`, so the global ladder's last rung is
+    // dropped for display; turn time stays permissive.
     expect(captured?.runtimeControls?.models[0]?.efforts.map((effort) => effort.value)).toEqual([
-      "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+      "none", "minimal", "low", "medium", "high", "xhigh", "max",
     ]);
     await running.stop();
   });
@@ -2073,7 +2084,7 @@ describe("startMonoAgentApp", () => {
     });
 
     expect(slackCaptured?.runtimeControls).toEqual(telegramCaptured?.runtimeControls);
-    expect(slackCaptured?.runtimeControls?.models.map((model) => model.value)).toEqual([
+    expect(slackCaptured?.runtimeControls?.models.slice(0, 2).map((model) => model.value)).toEqual([
       "openai-codex:gpt-5.6-terra",
       "openai-codex:gpt-5.6-sol",
     ]);

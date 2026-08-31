@@ -756,6 +756,92 @@ describe("startTuiAdapter", () => {
     expect("modelOptions" in info).toBe(false);
   });
 
+  it("passes the provider catalog through /v1/info and gates modelCatalog on the supplied service", async () => {
+    const providers = [{
+      id: "anthropic",
+      label: "Anthropic",
+      modelCount: 13,
+      source: "builtin",
+      configured: true,
+    }] as const;
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: { model: "claude-fable-5", providers },
+    });
+
+    const info = await (await fetch(running.infoUrl)).json() as {
+      providers: unknown;
+      capabilities: Record<string, unknown>;
+    };
+    expect(info.providers).toEqual(providers);
+    expect(info.capabilities).not.toHaveProperty("modelCatalog");
+
+    await running.stop();
+    running = undefined;
+
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: { model: "claude-fable-5" },
+      modelCatalog: () => ({ models: [], truncated: false }),
+    });
+    const withCatalog = await (await fetch(running.infoUrl)).json() as {
+      capabilities: Record<string, unknown>;
+    };
+    expect(withCatalog.capabilities).toMatchObject({ modelCatalog: { version: 1, maxPageSize: 200 } });
+  });
+
+  it("validates, authorizes, and serves the /v1/models catalog through the injected provider", async () => {
+    const requests: unknown[] = [];
+    running = await startTuiAdapter({
+      apiKey: "fixture-secret",
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      modelCatalog: (request) => {
+        requests.push(request);
+        return {
+          models: [{
+            id: "claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6",
+            provider: "anthropic",
+            providerLabel: "Anthropic",
+          }],
+          nextCursor: "claude-sonnet-4-6",
+          truncated: true,
+        };
+      },
+    });
+    const headers = { authorization: "Bearer fixture-secret" };
+
+    expect((await fetch(`${running.baseUrl}/v1/models?provider=anthropic`)).status).toBe(401);
+
+    const ok = await fetch(`${running.baseUrl}/v1/models?provider=anthropic&limit=10`, { headers });
+    expect(ok.status).toBe(200);
+    await expect(ok.json()).resolves.toEqual({
+      models: [{
+        id: "claude-sonnet-4-6",
+        name: "Claude Sonnet 4.6",
+        provider: "anthropic",
+        providerLabel: "Anthropic",
+      }],
+      nextCursor: "claude-sonnet-4-6",
+      truncated: true,
+    });
+    expect(requests).toEqual([{ provider: "anthropic", limit: 10 }]);
+
+    // Missing provider/q, and out-of-range limit, are client errors.
+    expect((await fetch(`${running.baseUrl}/v1/models`, { headers })).status).toBe(400);
+    expect((await fetch(`${running.baseUrl}/v1/models?provider=anthropic&limit=999`, { headers })).status).toBe(400);
+
+    const search = await fetch(`${running.baseUrl}/v1/models?q=claude&limit=5`, { headers });
+    expect(search.status).toBe(200);
+    expect(requests).toContainEqual({ query: "claude", limit: 5 });
+  });
+
+  it("404s /v1/models when no catalog service is supplied", async () => {
+    running = await startTuiAdapter({ responder: scriptedResponder(async () => ({ text: "ok" })) });
+
+    expect((await fetch(`${running.baseUrl}/v1/models?provider=anthropic`)).status).toBe(404);
+  });
+
   it("accepts an info PROVIDER function and resolves it fresh on every /v1/info request", async () => {
     let calls = 0;
     running = await startTuiAdapter({

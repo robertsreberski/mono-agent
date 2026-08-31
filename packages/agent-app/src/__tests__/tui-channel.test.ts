@@ -71,6 +71,8 @@ const FABLE_MODEL_OPTIONS = {
   reasoningMode: "effort" as const,
   effortLevels: ["minimal", "low", "medium", "high", "xhigh", "max"],
   contextWindow: 1_000_000,
+  provider: "anthropic",
+  providerLabel: "Anthropic",
 };
 
 async function startCapturingTui(options: StartOptions = {}): Promise<TuiAdapterOptions> {
@@ -142,25 +144,28 @@ describe("tui channel driver — info composition", () => {
     const captured = await startCapturingTui({ effort: "high" });
     const info = await resolveInfo(captured);
 
-    expect(info).toEqual({
+    expect(info).toMatchObject({
       model: "anthropic:claude-fable-5",
       effort: "high",
       models: ["anthropic:claude-fable-5"],
       modelOptions: { "anthropic:claude-fable-5": FABLE_MODEL_OPTIONS },
       skills: { status: "ready", items: [], total: 0 },
     });
+    expect(info.providers?.find((provider) => provider.id === "anthropic"))
+      .toMatchObject({ id: "anthropic", label: "Anthropic", source: "builtin", configured: true });
   });
 
   it("omits effort from info when the runtime has none configured", async () => {
     const captured = await startCapturingTui();
     const info = await resolveInfo(captured);
 
-    expect(info).toEqual({
+    expect(info).toMatchObject({
       model: "anthropic:claude-fable-5",
       models: ["anthropic:claude-fable-5"],
       modelOptions: { "anthropic:claude-fable-5": FABLE_MODEL_OPTIONS },
       skills: { status: "ready", items: [], total: 0 },
     });
+    expect(info.effort).toBeUndefined();
   });
 
   it("lists the primary then fallback models as candidate models, de-duplicated", async () => {
@@ -228,25 +233,9 @@ describe("tui channel driver — info composition", () => {
     expect(info.modelOptions).toEqual({ "anthropic:claude-fable-5": FABLE_MODEL_OPTIONS });
   });
 
-  it("includes locally discovered models in info.models and their resolved effort levels in info.modelOptions", async () => {
+  it("keeps info.models to configured routes and serves live-discovered models via the catalog", async () => {
     const localProviders: readonly LocalProviderDefinition[] = [
-      {
-        id: "lmstudio",
-        type: "lmstudio",
-        baseUrl: "http://localhost:1234",
-        enabled: true,
-        models: [
-          {
-            name: "qwen/qwen3-8b",
-            capabilities: {
-              reasoning: true,
-              reasoning_mode: "effort",
-              reasoning_levels: ["low", "medium", "high"],
-              context_window: 65_536,
-            },
-          },
-        ],
-      },
+      { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
     ];
     const discoverModels = vi.fn().mockResolvedValue([
       { ref: "lmstudio:qwen/qwen3-8b", label: "qwen/qwen3-8b", providerId: "lmstudio" },
@@ -256,65 +245,57 @@ describe("tui channel driver — info composition", () => {
     const captured = await startCapturingTui({ localProviders, discoverModels });
     const info = await resolveInfo(captured);
 
-    expect(info.models).toEqual([
-      "anthropic:claude-fable-5",
-      "lmstudio:qwen/qwen3-8b",
-      "lmstudio:llama-3.1",
-    ]);
-    expect(info.modelOptions).toEqual({
-      "anthropic:claude-fable-5": FABLE_MODEL_OPTIONS,
-      "lmstudio:qwen/qwen3-8b": {
-        effortLevels: ["low", "medium", "high"],
-        reasoning: true,
-        reasoningMode: "effort",
-        label: "qwen/qwen3-8b",
-        contextWindow: 65_536,
-      },
-      "lmstudio:llama-3.1": { reasoning: false, reasoningMode: "none", label: "llama-3.1" },
+    // The /v1/info shortlist stays configured routes only; discovered models
+    // move into the bounded provider catalog + the lazy /v1/models endpoint.
+    expect(info.models).toEqual(["anthropic:claude-fable-5"]);
+    expect(info.modelOptions).toEqual({ "anthropic:claude-fable-5": FABLE_MODEL_OPTIONS });
+    expect(info.providers?.find((provider) => provider.id === "lmstudio")).toMatchObject({
+      id: "lmstudio",
+      source: "custom",
+      modelCount: 2,
     });
+    const page = captured.modelCatalog?.({ provider: "lmstudio", limit: 100 });
+    expect(page?.models.map((model) => model.id)).toEqual(["llama-3.1", "qwen/qwen3-8b"]);
+    expect(page?.truncated).toBe(false);
     expect(discoverModels).toHaveBeenCalledWith(localProviders);
   });
 
-  it("surfaces reasoningMode:'toggle' (no effortLevels) for a discovered Ollama toggle-reasoning model (e.g. qwen)", async () => {
+  it("resolves toggle reasoning for a configured Ollama route through describe", async () => {
     const localProviders: readonly LocalProviderDefinition[] = [
       { id: "ollama", type: "ollama", baseUrl: "http://localhost:11434", enabled: true },
     ];
-    const discoverModels = vi.fn().mockResolvedValue([
-      { ref: "ollama:qwen3.6:latest", label: "qwen3.6:latest", providerId: "ollama" },
-      { ref: "ollama:gpt-oss:20b", label: "gpt-oss:20b", providerId: "ollama" },
-    ] satisfies DiscoveredLocalModel[]);
 
-    const captured = await startCapturingTui({ localProviders, discoverModels });
+    const captured = await startCapturingTui({
+      fallbackModels: [{ provider: "ollama", model: "qwen3.6:latest" }],
+      localProviders,
+      discoverModels: async () => [],
+    });
     const info = await resolveInfo(captured);
 
-    // Toggle model carries the mode but NO graded effortLevels; the effort model
-    // carries mode + levels. The TUI renders on/off vs graded from this.
+    // Toggle model carries the mode but NO graded effortLevels.
     expect(info.modelOptions?.["ollama:qwen3.6:latest"]).toEqual({
       reasoning: true,
       reasoningMode: "toggle",
-      label: "qwen3.6:latest",
-    });
-    expect(info.modelOptions?.["ollama:gpt-oss:20b"]).toEqual({
-      effortLevels: ["low", "medium", "high"],
-      reasoning: true,
-      reasoningMode: "effort",
-      label: "gpt-oss:20b",
+      provider: "ollama",
+      providerLabel: "ollama",
     });
   });
 
-  it("dedups a discovered model that collides with a config-listed model, keeping the config model first", async () => {
+  it("dedups discovered models within a provider's catalog page", async () => {
     const localProviders: readonly LocalProviderDefinition[] = [
       { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
     ];
     const discoverModels = vi.fn().mockResolvedValue([
-      { ref: "anthropic:claude-fable-5", label: "claude-fable-5", providerId: "lmstudio" },
       { ref: "lmstudio:qwen3-8b", label: "qwen3-8b", providerId: "lmstudio" },
+      { ref: "lmstudio:qwen3-8b", label: "qwen3-8b (duplicate)", providerId: "lmstudio" },
     ] satisfies DiscoveredLocalModel[]);
 
     const captured = await startCapturingTui({ localProviders, discoverModels });
     const info = await resolveInfo(captured);
 
-    expect(info.models).toEqual(["anthropic:claude-fable-5", "lmstudio:qwen3-8b"]);
+    expect(info.providers?.find((provider) => provider.id === "lmstudio")?.modelCount).toBe(1);
+    expect(captured.modelCatalog?.({ provider: "lmstudio", limit: 100 }).models.map((m) => m.id))
+      .toEqual(["qwen3-8b"]);
   });
 
   it("captures local model discovery once at startup and serves /v1/info from memory", async () => {
@@ -350,6 +331,18 @@ describe("tui channel driver — info composition", () => {
     }
   });
 
+  it("keeps the serialized /v1/info payload under the byte budget with openrouter configured", async () => {
+    const captured = await startCapturingTui({
+      fallbackModels: [{ provider: "openrouter", model: "gpt-5.6-sol" }],
+    });
+    const info = await resolveInfo(captured);
+
+    // Regression fence: the full provider catalog must stay a bounded summary
+    // on /v1/info; the model lists themselves ride the lazy /v1/models endpoint.
+    expect(JSON.stringify(info).length).toBeLessThan(8_192);
+    expect(info.providers?.length).toBe(39);
+  });
+
   it("advertises exact Pi effort levels while unknown provider refs fail closed", async () => {
     const captured = await startCapturingTui({
       fallbackModels: [
@@ -366,7 +359,11 @@ describe("tui channel driver — info composition", () => {
       contextWindow: 272_000,
     });
     expect(info.modelOptions?.["anthropic:claude-sonnet-4-6"]?.effortLevels?.length).toBeGreaterThan(0);
-    expect(info.modelOptions?.["unknown-provider:gemini"]).toEqual({ reasoning: true });
+    expect(info.modelOptions?.["unknown-provider:gemini"]).toEqual({
+      reasoning: true,
+      provider: "unknown-provider",
+      providerLabel: "unknown-provider",
+    });
   });
 
   it("fail-closes local capability discovery without blocking later /v1/info reads", async () => {
