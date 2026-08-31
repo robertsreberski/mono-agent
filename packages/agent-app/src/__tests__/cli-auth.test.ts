@@ -159,44 +159,6 @@ describe("standalone Pi API-key login", () => {
     await expect(readApiKeyFromStdin(Readable.from(["x".repeat(65_539)]))).rejects.toThrow("too large");
   });
 
-  it("rejects redirected API-key input for OAuth and direct Codex login", async () => {
-    Object.defineProperty(process, "stdin", {
-      configurable: true,
-      value: Readable.from(["must-not-be-consumed"]),
-    });
-
-    await expect(runCli(["auth", "login", "codex", "--api-key-stdin"])).resolves.toBe(2);
-
-    expect(mocks.executeProviderSetupPlan).not.toHaveBeenCalled();
-    expect(capturedOutput(vi.mocked(process.stderr.write))).toContain(
-      "--api-key-stdin is only supported when the selected provider has one bundled API-key login action.",
-    );
-  });
-
-  it("interrupts standalone OAuth safely and restores scoped listeners", async () => {
-    const listenersBefore = process.listenerCount("SIGINT");
-    const keypressListenersBefore = process.stdin.listenerCount("keypress");
-    let observedSignal: AbortSignal | undefined;
-    mocks.executeProviderSetupPlan.mockImplementation(async (plan, options) => {
-      observedSignal = options.abortSignal;
-      return await new Promise((resolveResult) => {
-        options.abortSignal.addEventListener("abort", () => resolveResult(
-          plan.actions.map((action: object) => ({ action, status: "failed", detail: "interrupted" })),
-        ), { once: true });
-      });
-    });
-
-    const pending = runCli(["auth", "login", "codex"]);
-    await vi.waitFor(() => expect(observedSignal).toBeDefined());
-    process.emit("SIGINT");
-
-    await expect(pending).resolves.toBe(130);
-    expect(observedSignal?.aborted).toBe(true);
-    expect(process.listenerCount("SIGINT")).toBe(listenersBefore);
-    expect(process.stdin.listenerCount("keypress")).toBe(keypressListenersBefore);
-    expect(capturedOutput(vi.mocked(process.stderr.write))).toContain("Authentication was interrupted");
-  });
-
   it("interrupts flagged init authentication without writing agent files", async () => {
     let observedSignal: AbortSignal | undefined;
     mocks.executeProviderSetupPlan.mockImplementation(async (plan, options) => {
@@ -208,7 +170,7 @@ describe("standalone Pi API-key login", () => {
       });
     });
 
-    const pending = runCli(["init", "--model", "pi:ollama:qwen3.6:latest", "--auth"]);
+    const pending = runCli(["init", "--model", "ollama:qwen3.6:latest", "--auth"]);
     await vi.waitFor(() => expect(observedSignal).toBeDefined());
     process.emit("SIGINT");
 
@@ -217,20 +179,5 @@ describe("standalone Pi API-key login", () => {
     expect(await readdir(process.cwd())).not.toContain("mono-agent.config.json");
   });
 
-  it("never offers recovery when an interrupted child exit is unconfirmed", async () => {
-    mocks.executeProviderSetupPlan.mockImplementation(async (plan) => {
-      return plan.actions.map((action: object) => ({
-        action,
-        status: "failed",
-        failureKind: "child_exit_unconfirmed",
-        detail: "child exit could not be confirmed after SIGKILL",
-      }));
-    });
 
-    await expect(runCli(["auth", "login", "codex"])).resolves.toBe(130);
-
-    const output = capturedOutput(vi.mocked(process.stdout.write)) + capturedOutput(vi.mocked(process.stderr.write));
-    expect(output).toContain("automatic recovery is disabled");
-    expect(output).not.toContain("How would you like to recover");
-  });
 });

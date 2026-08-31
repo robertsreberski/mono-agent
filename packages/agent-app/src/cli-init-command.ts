@@ -61,7 +61,6 @@ import {
   providerSetupActionCommandLine,
 } from "./provider-setup.js";
 import type {
-  CodexLoginMode,
   ProviderCredentialState,
   ProviderSetupPlan,
   ProviderSetupResult,
@@ -123,7 +122,6 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
     let piApiKeyPersistenceByProvider = { ...initial.piApiKeyPersistenceByProvider };
     let credentialStates = { ...initial.credentialStates };
     let pendingProviderSetup = initial.runProviderSetup;
-    let selectedCodexAuthMode: CodexLoginMode = "browser";
     let readinessProgress: ReadinessProgress | undefined;
     let sandboxMutationCompleted = false;
     let deferredFailure: ReadinessProbeFailure | undefined;
@@ -242,11 +240,6 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
           credentialStates,
           piApiKeyPersistenceByProvider,
         });
-        if (plannedSetup.actions.some((action) => action.id === "codex-login")) {
-          const selected = await selectCodexAuthMode(selectedCodexAuthMode);
-          if (selected === undefined) return 1;
-          selectedCodexAuthMode = selected;
-        }
         const environmentApiKeys = environmentProviderApiKeys(plannedSetup, effectiveEnv);
         const missingEnvironmentKeys = plannedSetup.actions
           .filter(isProviderSetupPiApiKeyAction)
@@ -274,7 +267,6 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
               dryRun: false,
               piAuthPath: resolvedPiAuthPath,
               apiKeys: { ...providerSetupSecrets, ...environmentApiKeys },
-              codexAuthMode: selectedCodexAuthMode,
               credentialStates,
               persistedEnv: dotenvSnapshot.env,
               piApiKeyPersistenceByProvider,
@@ -799,16 +791,10 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
           // Authentication can replace credential bytes without changing the
           // route/config fingerprint. Every route must be proven again.
           readinessProgress = undefined;
-          if (referencedSetupModelRefs(plan).some((ref) => ref.startsWith("codex:"))) {
-            const selected = await selectCodexAuthMode(selectedCodexAuthMode);
-            if (selected === undefined) return 1;
-            selectedCodexAuthMode = selected;
-          }
           const setupPlan = planProviderSetup({
             modelRefs: referencedSetupModelRefs(plan),
             cwd,
             piAuthPath: resolvedPiAuthPath,
-            codexAuthMode: selectedCodexAuthMode,
             forceAuthentication: true,
           });
           const prompted = await promptProviderSetupSecrets(
@@ -826,7 +812,6 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
             modelRefs: referencedSetupModelRefs(plan),
             cwd,
             piAuthPath: resolvedPiAuthPath,
-            codexAuthMode: selectedCodexAuthMode,
             forceAuthentication: true,
             piApiKeyPersistenceByProvider,
           });
@@ -855,7 +840,6 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
                 dryRun: false,
                 piAuthPath: resolvedPiAuthPath,
                 apiKeys: { ...providerSetupSecrets, ...environmentApiKeys },
-                codexAuthMode: selectedCodexAuthMode,
                 forceAuthentication: true,
                 piApiKeyPersistenceByProvider,
                 abortSignal,
@@ -903,7 +887,6 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
     ...(args.model === undefined ? {} : { model: args.model }),
     ...(args.name === undefined ? {} : { name: args.name }),
     ...(args.fallbacks === undefined ? {} : { fallbacks: args.fallbacks }),
-    ...(args.routeSafety === undefined ? {} : { routeSafety: args.routeSafety }),
     ...(args.effort === undefined ? {} : { effort: args.effort }),
     ...(args.memory === undefined ? {} : { memory: args.memory }),
     ...(withChannels === undefined ? {} : { withChannels }),
@@ -939,7 +922,6 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
         dryRun: args.dryRun,
         persistedEnv: environment.dotenvEnv,
         piAuthPath: nonInteractivePiAuthPath,
-        ...(args.codexAuthMode === undefined ? {} : { codexAuthMode: args.codexAuthMode }),
         abortSignal,
       })), { keypress: false });
   if (setup === "interrupted" || setup === "fatal") {
@@ -1475,12 +1457,6 @@ function readinessRoutesForDisplay(plan: WizardPlan): readonly { model: string; 
         ...(typeof entry.effort === "string" ? { effort: entry.effort } : {}),
       });
     }
-  } else if (Array.isArray(runtime.fallbackModels)) {
-    for (const model of runtime.fallbackModels) {
-      if (typeof model === "string") {
-        routes.push({ model, ...(primaryEffort === undefined ? {} : { effort: primaryEffort }) });
-      }
-    }
   }
   return routes;
 }
@@ -1724,20 +1700,6 @@ function environmentProviderApiKeys(
   return values;
 }
 
-async function selectCodexAuthMode(
-  initialValue: CodexLoginMode,
-): Promise<CodexLoginMode | undefined> {
-  const selected = await p.select<CodexLoginMode>({
-    message: "How should Codex authenticate on this machine?",
-    initialValue,
-    options: [
-      { value: "browser", label: "Browser login", hint: "opens a localhost callback server" },
-      { value: "device", label: "Device-code login", hint: "recommended for remote or headless machines" },
-    ],
-  });
-  return p.isCancel(selected) ? undefined : selected;
-}
-
 function configuredSecretNames(
   result: InitMonoAgentFolderResult,
   effectiveEnv: CliEnvironment,
@@ -1787,7 +1749,6 @@ export interface RunProviderSetupBeforeInitOptions {
   readonly dryRun: boolean;
   readonly piAuthPath?: string;
   readonly apiKeys?: Readonly<Record<string, string | undefined>>;
-  readonly codexAuthMode?: CodexLoginMode;
   readonly forceAuthentication?: boolean;
   readonly credentialStates?: Readonly<Record<string, ProviderCredentialState | undefined>>;
   /** Values parsed from the destination `.env`; ambient shell credentials are intentionally excluded. */
@@ -1814,7 +1775,6 @@ export async function runProviderSetupBeforeInit(
   const plan = planProviderSetup({
     ...options,
     ...(credentialStates === undefined ? {} : { credentialStates }),
-    ...(options.codexAuthMode === undefined ? {} : { codexAuthMode: options.codexAuthMode }),
     ...(options.forceAuthentication === undefined ? {} : { forceAuthentication: options.forceAuthentication }),
   });
   if (plan.actions.length === 0) {
@@ -1871,21 +1831,16 @@ export async function runAuth(args: ParsedCliArgs): Promise<number> {
   const [subcommand, provider, ...extra] = args.positionals;
   if (subcommand !== "login" || provider === undefined || extra.length > 0) {
     process.stderr.write(ui.errorLine(
-      "Usage: mono-agent auth login <provider|codex> [--pi-auth-path <path>] [--api-key-stdin] [--codex-auth browser|device] [--config <path>].",
+      "Usage: mono-agent auth login <provider> [--pi-auth-path <path>] [--api-key-stdin] [--config <path>].",
     ));
     return 2;
   }
 
   const cwd = process.cwd();
   const configPath = await canonicalBackgroundConfigPath(cwd, args.configPath);
-  const directCodex = provider === "codex";
-  if (directCodex && args.piAuthPath !== undefined) {
-    process.stderr.write(ui.errorLine("--pi-auth-path does not apply to direct Codex login."));
-    return 2;
-  }
   let configuredPiAuthPath: string;
   try {
-    configuredPiAuthPath = directCodex ? resolve(cwd, ".pi", "auth.json") : await resolvePiAuthPathForLogin({
+    configuredPiAuthPath = await resolvePiAuthPathForLogin({
       configPath,
       cwd,
       ...(process.env.MONO_AGENT_PI_AUTH_PATH === undefined
@@ -1900,15 +1855,14 @@ export async function runAuth(args: ParsedCliArgs): Promise<number> {
     return 1;
   }
   const plan = planProviderSetup({
-    modelRefs: [directCodex ? "codex:gpt-5.6-terra" : `pi:${provider}:credential-setup`],
+    modelRefs: [`${provider}:credential-setup`],
     cwd,
     piAuthPath: configuredPiAuthPath,
     forceAuthentication: true,
-    ...(args.codexAuthMode === undefined ? {} : { codexAuthMode: args.codexAuthMode }),
   });
   if (plan.actions.length === 0) {
     process.stderr.write(ui.errorLine(
-      `Provider \`${provider}\` has no interactive auth method in the bundled ${directCodex ? "Codex" : "Pi"} provider catalog.`,
+      `Provider \`${provider}\` has no interactive auth method in the bundled Pi provider catalog.`,
     ));
     return 2;
   }
@@ -1921,7 +1875,7 @@ export async function runAuth(args: ParsedCliArgs): Promise<number> {
     return 2;
   }
 
-  process.stdout.write("\n" + ui.heading(directCodex ? "Codex authentication" : "Pi authentication"));
+  process.stdout.write("\n" + ui.heading("Pi authentication"));
   printProviderSetupPlan(plan);
 
   let apiKeys: Readonly<Record<string, string>> | undefined;

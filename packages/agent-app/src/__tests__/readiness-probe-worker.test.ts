@@ -27,12 +27,10 @@ function validWorkerData(): Record<string, unknown> {
     cwd: "/tmp/readiness-cwd",
     runtime: {
       model: {
-        sdk: "pi",
         provider: "test-provider",
         model: "test-model",
-        reference: "pi:test-provider:test-model",
+        reference: "test-provider:test-model",
       },
-      executionMode: "sdk",
       effort: "high",
       workspace: "/tmp/readiness-workspace",
       artifactDir: "/tmp/readiness-artifacts",
@@ -95,12 +93,10 @@ describe("readWorkerData", () => {
       cwd: "/tmp/readiness-cwd",
       runtime: {
         model: {
-          sdk: "pi",
           provider: "test-provider",
           model: "test-model",
-          reference: "pi:test-provider:test-model",
+          reference: "test-provider:test-model",
         },
-        executionMode: "sdk",
         effort: "high",
         workspace: "/tmp/readiness-workspace",
         artifactDir: "/tmp/readiness-artifacts",
@@ -114,14 +110,14 @@ describe("readWorkerData", () => {
     expect(readWorkerData({
       cwd: "/tmp/readiness-cwd",
       runtime: {
-        model: { sdk: "codex", model: "test-model" },
+        model: { provider: "test-provider", model: "test-model", reference: "test-provider:test-model" },
         workspace: "/tmp/readiness-workspace",
         artifactDir: "/tmp/readiness-artifacts",
       },
     })).toEqual({
       cwd: "/tmp/readiness-cwd",
       runtime: {
-        model: { sdk: "codex", model: "test-model" },
+        model: { provider: "test-provider", model: "test-model", reference: "test-provider:test-model" },
         workspace: "/tmp/readiness-workspace",
         artifactDir: "/tmp/readiness-artifacts",
       },
@@ -137,15 +133,13 @@ describe("readWorkerData", () => {
     ["array runtime", { ...validWorkerData(), runtime: [] }],
     ["missing model", { ...validWorkerData(), runtime: { workspace: "/tmp/w", artifactDir: "/tmp/a" } }],
     ["array model", { ...validWorkerData(), runtime: { ...validWorkerData().runtime as object, model: [] } }],
-    ["non-string model sdk", { ...validWorkerData(), runtime: { ...validWorkerData().runtime as object, model: { sdk: 1, model: "m" } } }],
-    ["non-string model name", { ...validWorkerData(), runtime: { ...validWorkerData().runtime as object, model: { sdk: "pi", model: 1 } } }],
-    ["non-string provider", { ...validWorkerData(), runtime: { ...validWorkerData().runtime as object, model: { sdk: "pi", model: "m", provider: 1 } } }],
-    ["non-string reference", { ...validWorkerData(), runtime: { ...validWorkerData().runtime as object, model: { sdk: "pi", model: "m", reference: 1 } } }],
-    ["non-string executionMode", { ...validWorkerData(), runtime: { ...validWorkerData().runtime as object, executionMode: 1 } }],
+    ["non-string model name", { ...validWorkerData(), runtime: { ...validWorkerData().runtime as object, model: { model: 1 } } }],
+    ["non-string provider", { ...validWorkerData(), runtime: { ...validWorkerData().runtime as object, model: { model: "m", provider: 1 } } }],
+    ["non-string reference", { ...validWorkerData(), runtime: { ...validWorkerData().runtime as object, model: { model: "m", reference: 1 } } }],
     ["non-string effort", { ...validWorkerData(), runtime: { ...validWorkerData().runtime as object, effort: 1 } }],
-    ["missing workspace", { ...validWorkerData(), runtime: { model: { sdk: "pi", model: "m" }, artifactDir: "/tmp/a" } }],
+    ["missing workspace", { ...validWorkerData(), runtime: { model: { provider: "p", model: "m", reference: "p:m" }, artifactDir: "/tmp/a" } }],
     ["non-string workspace", { ...validWorkerData(), runtime: { ...validWorkerData().runtime as object, workspace: 1 } }],
-    ["missing artifactDir", { ...validWorkerData(), runtime: { model: { sdk: "pi", model: "m" }, workspace: "/tmp/w" } }],
+    ["missing artifactDir", { ...validWorkerData(), runtime: { model: { provider: "p", model: "m", reference: "p:m" }, workspace: "/tmp/w" } }],
     ["non-string artifactDir", { ...validWorkerData(), runtime: { ...validWorkerData().runtime as object, artifactDir: 1 } }],
     ["non-string piAuthPath", { ...validWorkerData(), runtime: { ...validWorkerData().runtime as object, piAuthPath: 1 } }],
     ["non-string piTransport", { ...validWorkerData(), runtime: { ...validWorkerData().runtime as object, piTransport: 1 } }],
@@ -257,12 +251,10 @@ describe("runReadinessProbeWorker", () => {
     });
     expect(runOptions).toMatchObject({
       model: {
-        sdk: "pi",
         provider: "test-provider",
         model: "test-model",
-        reference: "pi:test-provider:test-model",
+        reference: "test-provider:test-model",
       },
-      executionMode: "sdk",
       effort: "high",
       messages: [{ role: "user", content: "Reply with a short readiness acknowledgement." }],
       cwd: "/tmp/readiness-cwd",
@@ -271,7 +263,6 @@ describe("runReadinessProbeWorker", () => {
       allowedTools: [],
       disallowedTools: [],
       mcpServers: {},
-      codexNoToolsProbe: true,
       sessionKeepAlive: false,
       providerEnv: { PATH: "/usr/bin:/bin" },
     });

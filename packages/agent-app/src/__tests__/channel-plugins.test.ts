@@ -33,7 +33,7 @@ async function writeConfig(json: Record<string, unknown>): Promise<string> {
 
 function baseConfig(): Record<string, unknown> {
   return {
-    runtime: { model: "pi:openai-codex:gpt-5.5" },
+    runtime: { model: "openai-codex:gpt-5.5" },
     context: { identityPath: "./IDENTITY.md" },
     tools: { allowedTools: [], disallowedTools: [] },
     traceability: { registryDir: "./trace-sources", sourceId: "plugin-test" },

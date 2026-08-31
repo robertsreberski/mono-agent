@@ -40,11 +40,9 @@ import type {
 } from "@mono-agent/observability";
 import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
 import {
-  assertExecutionModeCompatible,
   createMonoRuntime,
   createPiOAuthApiKeyResolver,
   createSrtSandboxEngine,
-  defaultExecutionModeForModel,
   describeMonoRuntimeSupport,
   modelReferenceKey,
   monoRuntimeSupportsSessionResume,
@@ -55,7 +53,6 @@ import {
 import type {
   MonoRuntimeFallbackChainEntry,
   MonoRuntimeLike,
-  RuntimeExecutionMode,
   RuntimeModelReference,
   RuntimeResult,
   RuntimeRunOptions,
@@ -122,7 +119,6 @@ export interface ConfiguredAgentRuntimeOptions {
   /** Canonical agent-root authority. A raw public runtime fails before run() when omitted. */
   readonly cwd?: string;
   readonly model?: RuntimeModelReference;
-  readonly executionMode?: RuntimeExecutionMode;
   readonly sandboxEngine?: SandboxEngine;
 }
 
@@ -161,7 +157,6 @@ export interface ConfiguredAgentHarnessOptions {
   readonly cwd?: string;
   readonly runtime?: MonoRuntimeLike;
   readonly model?: RuntimeModelReference;
-  readonly executionMode?: RuntimeExecutionMode;
   readonly memory?: MemoryStore;
   /**
    * Authoritative process environment, as resolved by the host. Credential
@@ -469,11 +464,7 @@ function createConfiguredAgentRuntimeBase(
   const fallback = fallbackChainForConfig(config, options);
   const sandboxEngine = suppressSandboxEngine
     ? undefined
-    : configuredSandboxEngine(
-        config,
-        options?.model ?? config.runtime.model,
-        options?.sandboxEngine,
-      );
+    : configuredSandboxEngine(options?.sandboxEngine);
   const runtimeOptions: Parameters<typeof createMonoRuntime>[0] = {
     ...runtimeHostOptionsForConfig(config),
     ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
@@ -481,7 +472,6 @@ function createConfiguredAgentRuntimeBase(
     ...(fallback.fallbackChain === undefined
       ? {}
       : {
-          routeSafety: config.runtime.routeSafety ?? "uniform",
           ...(config.runtime.retry === undefined
             ? {}
             : {
@@ -502,15 +492,9 @@ function createConfiguredAgentRuntimeBase(
 }
 
 function configuredSandboxEngine(
-  config: MonoAgentConfig,
-  primaryModel: RuntimeModelReference,
   explicit: SandboxEngine | undefined,
-): SandboxEngine | undefined {
-  if (explicit !== undefined) return explicit;
-  return [primaryModel, ...configuredRuntimeFallbackModels(config.runtime)]
-    .some((model) => model.sdk === "pi")
-    ? createSrtSandboxEngine()
-    : undefined;
+): SandboxEngine {
+  return explicit ?? createSrtSandboxEngine();
 }
 
 function wrapOwnedConfiguredRuntime(
@@ -562,12 +546,6 @@ function wrapOwnedConfiguredRuntime(
           if (!verdict.ok) {
             throw new Error(
               `${PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR} Rejected the configured runtime chain: ${verdict.reason}.`,
-            );
-          }
-          if (runOptions.model.sdk !== "pi") {
-            throw new Error(
-              `${PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR} The configured runtime route ${
-                modelReferenceKey(runOptions.model)} is not Pi-native.`,
             );
           }
           const sandboxEngine = runOptions.sandboxEngine
@@ -720,10 +698,9 @@ interface SubagentRunRequest {
  */
 function childRuntimeSupportsSkills(
   model: RuntimeModelReference,
-  executionMode: RuntimeExecutionMode,
 ): boolean {
   try {
-    const support = describeMonoRuntimeSupport(model, executionMode);
+    const support = describeMonoRuntimeSupport(model);
     return support.backend?.capabilities.supports_skills !== false;
   } catch {
     return false;
@@ -752,9 +729,7 @@ function subagentsRuntimeOptions(
   deps: {
     readonly runtime: MonoRuntimeLike;
     readonly baseModel: RuntimeModelReference;
-    readonly baseExecutionMode: RuntimeExecutionMode;
     readonly runtimeForModel?: AgentHarnessOptions["runtimeForModel"];
-    readonly processJobsProtectionPosture: ProcessJobsProtectionPosture;
   },
 ): StaticRuntimeOptions | undefined {
   const subagents = config.subagents;
@@ -793,11 +768,8 @@ function subagentsRuntimeOptions(
     const childModel = overrides
       ? (request.definition.model as RuntimeModelReference)
       : deps.baseModel;
-    const childExecutionMode = overrides
-      ? defaultExecutionModeForModel(childModel)
-      : deps.baseExecutionMode;
     const runtime = overrides && deps.runtimeForModel !== undefined
-      ? deps.runtimeForModel(childModel, childExecutionMode)
+      ? deps.runtimeForModel(childModel)
       : deps.runtime;
 
     // Whether this child may inherit the parent's skill index. Decided here
@@ -810,7 +782,7 @@ function subagentsRuntimeOptions(
       && (request.skills?.length ?? 0) > 0
       && !skillsDeniedGlobally
       && !profileDeniesSkills
-      && childRuntimeSupportsSkills(childModel, childExecutionMode)
+      && childRuntimeSupportsSkills(childModel)
       ? request.skills
       : undefined;
 
@@ -822,18 +794,8 @@ function subagentsRuntimeOptions(
       ? request.systemPrompt
       : `${request.systemPrompt}\n\n${renderSkillIndexSection(childSkills)}`;
 
-    if (childModel.sdk !== "pi"
-      && (deps.processJobsProtectionPosture.requiresPiNative
-        || sandboxPolicyCarriesProtectedRoots(request.sandboxPolicy))) {
-      throw new Error(
-        `${PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR} The Agent child route ${
-          modelReferenceKey(childModel)} is not Pi-native.`,
-      );
-    }
-
     return await runtime.run(childSystemPrompt, {
       model: childModel,
-      executionMode: childExecutionMode,
       messages: [{ role: "user", content: request.prompt }],
       maxTurns: request.maxTurns,
       ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
@@ -892,20 +854,18 @@ function subagentsRuntimeOptions(
 
 /**
  * When backup models are configured, runs go through the agent-runtime fallback
- * router with the effective primary model first. Fallback entries use their
- * default execution mode.
+ * router with the effective primary model first.
  */
 function fallbackChainForConfig(
   config: MonoAgentConfig,
   options: ConfiguredAgentRuntimeOptions | undefined,
 ): { fallbackChain?: readonly MonoRuntimeFallbackChainEntry[] } {
   const canonicalFallbacks = config.runtime.fallbacks;
-  const legacyFallbackModels = config.runtime.fallbackModels;
   // The loader always materializes `retry`, but this package is published and
   // `createConfiguredAgentRuntime` accepts a caller-built MonoAgentConfig — an
   // older hand-built object must degrade to single-shot, not crash.
   const primaryAttempts = config.runtime.retry?.primaryAttempts ?? 1;
-  if ((canonicalFallbacks?.length ?? 0) === 0 && (legacyFallbackModels?.length ?? 0) === 0) {
+  if ((canonicalFallbacks?.length ?? 0) === 0) {
     // Without a chain `createMonoRuntime` takes the plain `createRuntime` path
     // and the router never runs — so same-model retries would silently do
     // nothing for every agent with no configured backups. Build a retry-only
@@ -919,37 +879,28 @@ function fallbackChainForConfig(
     return {
       fallbackChain: [{
         model: options?.model ?? config.runtime.model,
-        executionMode: (options?.executionMode ?? config.runtime.executionMode) as RuntimeExecutionMode,
         attempts: primaryAttempts,
       }],
     };
   }
   const primaryModel = options?.model ?? config.runtime.model;
-  const primaryExecutionMode = options?.executionMode ?? config.runtime.executionMode;
   // Drop any fallback equal to the primary so a per-trigger override that happens
   // to match a configured backup is not retried against itself before advancing.
   const primaryKey = modelReferenceKey(primaryModel);
-  const canonicalFallbackEntries = canonicalFallbacks ?? [];
-  const fallbackEntries: readonly MonoRuntimeFallbackChainEntry[] = canonicalFallbackEntries.length > 0
-    ? canonicalFallbackEntries
-        .filter((entry) => modelReferenceKey(entry.model) !== primaryKey)
-        .map((entry) => ({
-          model: entry.model,
-          // Canonical omission means provider default. Legacy fallbackModels
-          // omit this field and therefore continue inheriting runtime.effort.
-          effort: entry.effort ?? null,
-          // Omitted per-route attempts stay single-shot: only the primary
-          // retries unless a backup opts in explicitly.
-          ...(entry.attempts === undefined ? {} : { attempts: entry.attempts }),
-        }))
-    : (legacyFallbackModels ?? [])
-        .filter((model) => modelReferenceKey(model) !== primaryKey)
-        .map((model) => ({ model }));
+  const fallbackEntries: readonly MonoRuntimeFallbackChainEntry[] = (canonicalFallbacks ?? [])
+    .filter((entry) => modelReferenceKey(entry.model) !== primaryKey)
+    .map((entry) => ({
+      model: entry.model,
+      // Canonical omission means provider default.
+      effort: entry.effort ?? null,
+      // Omitted per-route attempts stay single-shot: only the primary
+      // retries unless a backup opts in explicitly.
+      ...(entry.attempts === undefined ? {} : { attempts: entry.attempts }),
+    }));
   return {
     fallbackChain: [
       {
         model: primaryModel,
-        executionMode: primaryExecutionMode as RuntimeExecutionMode,
         ...(primaryAttempts > 1 ? { attempts: primaryAttempts } : {}),
       },
       ...fallbackEntries,
@@ -988,20 +939,7 @@ function configuredRoutesOnlyPiNative(
   if (routes.length === 0) {
     return { ok: false, reason: "the configured route chain is empty" };
   }
-  const nonPi = routes.filter((model) => model.sdk !== "pi");
-  return nonPi.length === 0
-    ? { ok: true }
-    : { ok: false, reason: `non-Pi routes are reachable: ${nonPi.map(modelReferenceKey).join(", ")}` };
-}
-
-function sandboxPolicyCarriesProtectedRoots(policy: unknown): boolean {
-  if (policy === undefined || policy === null || typeof policy !== "object") return false;
-  try {
-    const roots = (policy as { readonly protectedRoots?: unknown }).protectedRoots;
-    return roots !== undefined && (!Array.isArray(roots) || roots.length > 0);
-  } catch {
-    return true;
-  }
+  return { ok: true };
 }
 
 /**
@@ -1070,11 +1008,10 @@ async function createConfiguredAgentHarnessInternal(
   // supervisor started it in — and tool previews expose the full machine layout.
   setToolActivityPathRoots({ workspaceRoot: config.runtime.workspace, homeDir: homedir() });
   const model = options.model ?? config.runtime.model;
-  const executionMode = options.executionMode ?? config.runtime.executionMode;
   const fallbackModels = configuredRuntimeFallbackModels(config.runtime);
   const sandboxEngine = processJobsProtectionPosture.suppressSyntheticSandbox
     ? undefined
-    : configuredSandboxEngine(config, model, options.sandboxEngine);
+    : configuredSandboxEngine(options.sandboxEngine);
   const harnessSandboxPolicy: SandboxPolicy | undefined = processJobsProtectionPosture.suppressSyntheticSandbox
     ? config.sandbox
     : processJobsProtectedRoots.length === 0
@@ -1084,7 +1021,6 @@ async function createConfiguredAgentHarnessInternal(
     config,
     cwd: agentRoot,
     model,
-    executionMode,
     ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
   }, {
     suppressSandboxEngine: processJobsProtectionPosture.suppressSyntheticSandbox,
@@ -1177,8 +1113,6 @@ async function createConfiguredAgentHarnessInternal(
   const subagents = subagentsRuntimeOptions(config, {
     runtime,
     baseModel: model,
-    baseExecutionMode: executionMode as RuntimeExecutionMode,
-    processJobsProtectionPosture,
     ...(options.runtimeForModel === undefined ? {} : { runtimeForModel: options.runtimeForModel }),
   });
   const runtimeOptions = mergeStaticRuntimeOptions(
@@ -1196,7 +1130,7 @@ async function createConfiguredAgentHarnessInternal(
     // expose resume support. History replay remains available to every attempt.
     supportsResume: hasConfiguredFallback(config)
       ? false
-      : supportsSessionResume(model, executionMode),
+      : supportsSessionResume(),
     ...(config.runtime.session.isolateProactive === undefined
       ? {}
       : { isolateProactive: config.runtime.session.isolateProactive }),
@@ -1242,7 +1176,6 @@ async function createConfiguredAgentHarnessInternal(
     selectedSkills: config.context.selectedSkills,
     runtime,
     model,
-    executionMode,
     cwd: config.runtime.workspace,
     ...(config.runtime.effort === undefined ? {} : { effort: config.runtime.effort }),
     ...(config.runtime.maxTurns === undefined ? {} : { maxTurns: config.runtime.maxTurns }),
@@ -1734,13 +1667,12 @@ async function createConfiguredAgentResponderInternal(
 export const DEFAULT_HISTORY_MAX_MESSAGES = 64;
 
 function hasConfiguredFallback(config: MonoAgentConfig): boolean {
-  return (config.runtime.fallbacks?.length ?? 0) > 0
-    || (config.runtime.fallbackModels?.length ?? 0) > 0;
+  return (config.runtime.fallbacks?.length ?? 0) > 0;
 }
 
-function supportsSessionResume(model: RuntimeModelReference, executionMode: RuntimeExecutionMode): boolean {
+function supportsSessionResume(): boolean {
   try {
-    return monoRuntimeSupportsSessionResume(model, executionMode);
+    return monoRuntimeSupportsSessionResume();
   } catch {
     return false;
   }
@@ -1952,11 +1884,6 @@ function configuredMemoryLlm(
     }), config, agentRoot);
   }
   const model = parseMonoRuntimeModelReference(llmConfig.model);
-  const executionMode = llmConfig.executionMode ?? defaultExecutionModeForModel(model);
-  assertExecutionModeCompatible(model, executionMode);
-  if (executionMode !== "sdk") {
-    throw new Error("memory.llm provider agent-host supports SDK execution mode only.");
-  }
   // NOTE: createMonoRuntime is called WITHOUT a fallbackChain here on purpose, so
   // the per-call `model: config.memory.llm.model` is the sole/primary model. The
   // channel runtime (which carries the fallback chain whose primary is
@@ -1971,7 +1898,6 @@ function configuredMemoryLlm(
   return createAgentHostMemoryLlm({
     runtime,
     model,
-    executionMode,
     cwd: config.runtime.workspace,
     runtimeOptions: mergeStaticRuntimeOptions(
       runtimeOptionsForLocalProvider(model, config.providers?.local),
@@ -2018,12 +1944,6 @@ function wrapPerRunOwnedConfiguredRuntime(
         const protectedRoots = processJobsProtectionPolicyRoots(attested);
         let effectiveOptions = runOptions;
         if (protectedRoots.length > 0) {
-          if (runOptions.model.sdk !== "pi") {
-            throw new Error(
-              `${PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR} The agent-host memory LLM route ${
-                modelReferenceKey(runOptions.model)} is not Pi-native.`,
-            );
-          }
           if (protectionPosture?.suppressSyntheticSandbox !== true) {
             const sandboxEngine = runOptions.sandboxEngine ?? createSrtSandboxEngine();
             if (!await sandboxEngine.isAvailable().catch(() => false)) {
@@ -2148,7 +2068,6 @@ const MEMORY_CONVERSATION_ID = "memory:bujo";
 function createAgentHostMemoryLlm(options: {
   readonly runtime: MonoRuntimeLike;
   readonly model: RuntimeModelReference;
-  readonly executionMode: RuntimeExecutionMode;
   readonly cwd: string;
   readonly runtimeOptions?: StaticRuntimeOptions;
   readonly timeoutMs?: number;
@@ -2203,7 +2122,6 @@ function createAgentHostMemoryLlm(options: {
             model: options.model,
             messages: [{ role: "user", content: prompt }],
             abortSignal: ctrl.signal,
-            executionMode: options.executionMode,
             cwd: options.cwd,
             maxTurns: 1,
             allowedTools: [],

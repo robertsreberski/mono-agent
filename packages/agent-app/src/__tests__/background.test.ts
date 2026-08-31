@@ -435,7 +435,7 @@ describe("background config identity", () => {
       const configPath = join(cwd, "mono-agent.config.json");
       await writeFile(join(cwd, "IDENTITY.md"), "# Identity\n\nEnvironment plugin test.\n");
       await writeFile(configPath, `${JSON.stringify({
-        runtime: { model: "pi:openai-codex:gpt-5.5", workspace: "." },
+        runtime: { model: "openai-codex:gpt-5.5", workspace: "." },
         context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
         tools: { allowedTools: [], disallowedTools: [] },
       }, null, 2)}\n`);

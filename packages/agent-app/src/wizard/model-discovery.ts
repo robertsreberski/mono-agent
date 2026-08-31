@@ -1,33 +1,16 @@
-import { chmod, mkdir, mkdtemp, open, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import type { EffortLevel } from "@mono-agent/config";
-
-import {
-  codexModelDiscoveryEnvironment,
-  normalizeEfforts,
-  requestCodexModelList,
-  type CodexCatalogModel,
-} from "../codex-model-catalog.js";
+import { EFFORT_LEVELS, type EffortLevel } from "@mono-agent/config";
 import {
   inspectPiAuthStore as inspectDefaultPiAuthStore,
   type PiAuthStoreInspection,
 } from "../pi-auth-store-inspection.js";
-import {
-  credentialNeutralProviderStatusEnvironment,
-  hasDurableProviderEnvironmentCredential,
-  runBoundedProviderCommand,
-} from "../provider-setup.js";
+import { runBoundedProviderCommand } from "../provider-setup.js";
 
-export {
-  codexModelDiscoveryEnvironment,
-  type CodexCatalogModel,
-};
-
-export type WizardModelSource = "claude" | "pi" | "codex" | "opencode" | "ollama" | "lmstudio" | "custom";
+export type WizardModelSource = "pi" | "ollama" | "lmstudio" | "custom";
 export type WizardModelAvailability = "catalog_available";
 export type WizardModelAuthState = "auth_required" | "credential_detected" | "verified" | "not_required";
 
@@ -41,6 +24,21 @@ export const GUIDED_PI_PROVIDER_IDS = [
 
 const GUIDED_PI_PROVIDERS = new Set<string>(GUIDED_PI_PROVIDER_IDS);
 const GUIDED_LOCAL_PI_PROVIDERS = new Set(["ollama", "lmstudio"]);
+const PI_API_KEY_ENV_BY_PROVIDER: Readonly<Record<string, string>> = {
+  "opencode-go": "OPENCODE_API_KEY",
+};
+
+/** Whether a selected Pi route has an API key in the destination agent environment. */
+export function hasDurablePiEnvironmentCredential(
+  rawModelRef: string,
+  persistedEnv: Readonly<Record<string, string | undefined>>,
+): boolean {
+  const separator = rawModelRef.indexOf(":");
+  if (separator <= 0) return false;
+  const provider = rawModelRef.slice(0, separator);
+  const apiKeyEnv = PI_API_KEY_ENV_BY_PROVIDER[provider];
+  return apiKeyEnv !== undefined && (persistedEnv[apiKeyEnv]?.trim().length ?? 0) > 0;
+}
 
 /** Reject known unsupported remote Pi integrations while leaving custom local ids available. */
 export function guidedPiProviderProblem(provider: string): string | undefined {
@@ -68,7 +66,7 @@ export interface WizardModelCandidate {
 }
 
 export interface ModelDiscoveryStatus {
-  readonly provider: "Codex" | "Pi" | "OpenCode-Go" | "Ollama" | "LM Studio";
+  readonly provider: "Pi" | "Ollama" | "LM Studio";
   readonly status: "detected" | "setup_available" | "unavailable";
   readonly detail: string;
 }
@@ -99,7 +97,6 @@ export interface DiscoverWizardModelsOptions {
   readonly abortSignal?: AbortSignal;
   readonly timeoutMs?: number;
   readonly verifiedModelRefs?: readonly string[];
-  readonly codexModelList?: () => Promise<readonly CodexCatalogModel[]>;
 }
 
 function providerDiscoveryCommand(opts: DiscoverWizardModelsOptions): DiscoveryCommandRunner {
@@ -124,49 +121,55 @@ interface DiscoveredModelEntry {
 }
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 1200;
-const DEFAULT_OPENCODE_DISCOVERY_TIMEOUT_MS = 5000;
-const PI_OPENAI_CODEX_PROVIDER = "openai-codex";
+const KNOWN_EFFORTS = new Set<string>(EFFORT_LEVELS);
 
-interface CuratedOpenAiCodexModel {
-  readonly id: string;
-  readonly name: string;
-  readonly minimumCodexCliVersion?: readonly [major: number, minor: number, patch: number];
+function normalizeEfforts(values: readonly unknown[]): EffortLevel[] {
+  return [...new Set(values
+    .map((value) => value === "off" ? "none" : value)
+    .filter((value): value is EffortLevel => typeof value === "string" && KNOWN_EFFORTS.has(value)))];
 }
 
-
-const OPENAI_CODEX_MODELS: readonly CuratedOpenAiCodexModel[] = [
-  { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", minimumCodexCliVersion: [0, 144, 0] },
-  { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", minimumCodexCliVersion: [0, 144, 0] },
-];
-
 export const STATIC_MODEL_CANDIDATES: readonly WizardModelCandidate[] = [
-  ...OPENAI_CODEX_MODELS.map(staticDirectCodexCandidate),
+  {
+    value: "openai-codex:gpt-5.6-terra",
+    label: "Pi OpenAI Codex · GPT-5.6 Terra",
+    hint: "OAuth setup available",
+    source: "pi",
+    availability: "catalog_available",
+    authState: "auth_required",
+    setupRequired: true,
+    supportedEfforts: [],
+    providerDefault: true,
+  },
+  {
+    value: "openai-codex:gpt-5.6-sol",
+    label: "Pi OpenAI Codex · GPT-5.6 Sol",
+    hint: "OAuth setup available",
+    source: "pi",
+    availability: "catalog_available",
+    authState: "auth_required",
+    setupRequired: true,
+    supportedEfforts: [],
+  },
 ];
 
 export async function discoverWizardModelCandidates(
   opts: DiscoverWizardModelsOptions = {},
 ): Promise<ModelDiscoveryResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS;
-  const [codex, pi, opencode, ollama, lmstudio] = await Promise.all([
-    discoverDirectCodex({ ...opts, timeoutMs }),
+  const [pi, ollama, lmstudio] = await Promise.all([
     discoverPiModels({ ...opts, timeoutMs }),
-    discoverOpenCodeModels({
-      ...opts,
-      timeoutMs: opts.timeoutMs ?? DEFAULT_OPENCODE_DISCOVERY_TIMEOUT_MS,
-    }),
     discoverOllamaModels({ ...opts, timeoutMs }),
     discoverLmStudioModels({ ...opts, timeoutMs }),
   ]);
 
   return {
     candidates: rankWizardModelCandidates([
-      ...codex.candidates,
       ...pi.candidates,
-      ...opencode.candidates,
       ...ollama.candidates,
       ...lmstudio.candidates,
     ]),
-    statuses: [codex.status, pi.status, opencode.status, ollama.status, lmstudio.status],
+    statuses: [pi.status, ollama.status, lmstudio.status],
   };
 }
 
@@ -193,103 +196,15 @@ export function defaultEffortForModelRef(modelRef: string, reasoning?: boolean):
     return "none";
   }
 
-  if (!modelRef.startsWith("pi:")) {
-    return undefined;
-  }
-
-  const [, provider, ...modelParts] = modelRef.split(":");
-  const model = modelParts.join(":");
+  const separator = modelRef.indexOf(":");
+  if (separator <= 0 || separator === modelRef.length - 1) return undefined;
+  const provider = modelRef.slice(0, separator);
+  const model = modelRef.slice(separator + 1);
   if (provider === "opencode-go" || provider === "ollama" || provider === "lmstudio") {
     return localModelDefaultEffort(model);
   }
 
   return undefined;
-}
-
-/** Detect the direct Codex CLI and its account catalog without claiming readiness. */
-async function discoverDirectCodex(
-  opts: Required<Pick<DiscoverWizardModelsOptions, "timeoutMs">> & DiscoverWizardModelsOptions,
-): Promise<{ candidates: WizardModelCandidate[]; status: ModelDiscoveryStatus }> {
-  const run = providerDiscoveryCommand(opts);
-  const verified = new Set(opts.verifiedModelRefs ?? []);
-  let version = "";
-  try {
-    const result = await run("codex", ["--version"], { timeout: opts.timeoutMs });
-    version = firstOutputLine(result.stdout);
-  } catch {
-    return {
-      candidates: directCodexCandidates(curatedCodexCatalog(), "install-required", "", verified),
-      status: {
-        provider: "Codex",
-        status: "setup_available",
-        detail: "CLI not found; install Codex and sign in before the readiness check",
-      },
-    };
-  }
-
-  let catalog = curatedCodexCatalog();
-  try {
-    // Injected command runners are normally deterministic unit-test seams; do
-    // not escape them by starting a real app-server unless a model-list seam
-    // was also supplied.
-    const discoveredCatalog = opts.codexModelList !== undefined
-      ? [...await opts.codexModelList()]
-      : opts.execFile === undefined
-        ? await requestCodexModelList(
-            opts.timeoutMs,
-            codexModelDiscoveryEnvironment(opts.persistedEnv),
-            opts.abortSignal,
-          )
-        : catalog;
-    if (discoveredCatalog.length > 0) catalog = discoveredCatalog;
-  } catch {
-    // The exact curated Sol/Terra fallback remains selectable offline.
-  }
-
-  const durableCredential = hasDurableProviderEnvironmentCredential(
-    "codex:gpt-5.6-terra",
-    opts.persistedEnv ?? {},
-  );
-  const shellOnlyCredential = !durableCredential
-    && hasDurableProviderEnvironmentCredential("codex:gpt-5.6-terra", process.env);
-  try {
-    if (!durableCredential) {
-      await run("codex", ["login", "status"], {
-        timeout: opts.timeoutMs,
-        env: credentialNeutralProviderStatusEnvironment(process.env, opts.persistedEnv),
-      });
-    }
-    const candidates = directCodexCandidates(catalog, "credential-detected", version, verified);
-    const setupModels = candidates.filter((candidate) => candidate.setupRequired === true);
-    const setupDetails = [...new Set(setupModels.map((candidate) => candidate.hint ?? `${candidate.label} setup required`))];
-    return {
-      candidates,
-      status: {
-        provider: "Codex",
-        status: setupModels.length === 0 ? "detected" : "setup_available",
-        detail: `${version.length > 0 ? `${version}; ` : ""}${
-          durableCredential ? "durable OPENAI_API_KEY detected" : "sign-in detected"
-        } (live readiness not yet verified)${
-          setupModels.length === 0
-            ? ""
-            : `; ${setupDetails.join("; ")}`
-        }`,
-      },
-    };
-  } catch {
-    return {
-      candidates: directCodexCandidates(catalog, "login-required", version, verified),
-      status: {
-        provider: "Codex",
-        status: "setup_available",
-        detail: `${version.length > 0 ? `${version}; ` : "CLI installed; "}${
-          shellOnlyCredential
-            ? "durable sign-in required; shell-only OPENAI_API_KEY ignored"
-            : "sign-in required"
-        }`,
-      },
-    };
-  }
 }
 
 async function discoverPiModels(
@@ -328,7 +243,7 @@ async function discoverPiModels(
 
   const preEnvironmentStatus = status;
   for (const provider of GUIDED_PI_PROVIDER_IDS) {
-    if (hasDurableProviderEnvironmentCredential(`pi:${provider}:credential-check`, opts.persistedEnv ?? {})) {
+    if (hasDurablePiEnvironmentCredential(`${provider}:credential-check`, opts.persistedEnv ?? {})) {
       credentialProviders.add(provider);
     }
   }
@@ -340,7 +255,7 @@ async function discoverPiModels(
     };
   } else if (
     credentialProviders.size === 0
-    && hasDurableProviderEnvironmentCredential("pi:opencode-go:credential-check", process.env)
+    && hasDurablePiEnvironmentCredential("opencode-go:credential-check", process.env)
   ) {
     status = {
       provider: "Pi",
@@ -360,7 +275,7 @@ async function discoverPiModels(
   const candidates = models.getModels()
     .filter((model) => GUIDED_PI_PROVIDERS.has(model.provider))
     .map((model): WizardModelCandidate => {
-      const value = `pi:${model.provider}:${model.id}`;
+      const value = `${model.provider}:${model.id}`;
       const supportedEfforts = normalizeEfforts(getSupportedThinkingLevels(model));
       const authState: WizardModelAuthState = verified.has(value)
         ? "verified"
@@ -369,7 +284,7 @@ async function discoverPiModels(
           : "auth_required";
       const defaultEffort = exactDefaultEffortWhenUnambiguous(supportedEfforts);
       const shellOnlyCredential = authState === "auth_required"
-        && hasDurableProviderEnvironmentCredential(value, process.env);
+        && hasDurablePiEnvironmentCredential(value, process.env);
       const providerLabel = model.provider === "opencode-go"
         ? "OpenCode-Go"
         : providerNames.get(model.provider) ?? model.provider;
@@ -418,114 +333,6 @@ function isCredentialString(value: unknown): value is string {
     && !value.includes("\0");
 }
 
-async function discoverOpenCodeModels(
-  opts: Required<Pick<DiscoverWizardModelsOptions, "timeoutMs">> & DiscoverWizardModelsOptions,
-): Promise<{ candidates: WizardModelCandidate[]; status: ModelDiscoveryStatus }> {
-  const run = providerDiscoveryCommand(opts);
-  let isolation: Awaited<ReturnType<typeof createOpenCodeDiscoveryIsolation>> | undefined;
-  try {
-    isolation = await createOpenCodeDiscoveryIsolation();
-    const { stdout } = await run("opencode", ["models", "opencode-go", "--pure"], {
-      timeout: opts.timeoutMs,
-      env: isolation.env,
-    });
-    const bundledModelIds = new Set(
-      builtinModels().getModels()
-        .filter((model) => model.provider === "opencode-go")
-        .map((model) => model.id),
-    );
-    const parsedModels = parseOpenCodeGoModels(stdout);
-    const models = parsedModels.filter((model) => bundledModelIds.has(model));
-    const unsupportedCount = parsedModels.length - models.length;
-    return {
-      candidates: models.map((model) => {
-        const value = `pi:opencode-go:${model}`;
-        return {
-          value,
-          label: `OpenCode-Go ${displayModelName(model)}`,
-          hint: "discovered from opencode; OpenCode-Go API key required",
-          source: "opencode",
-          discovered: true,
-          availability: "catalog_available",
-          authState: "auth_required",
-          setupRequired: true,
-          supportedEfforts: [],
-        };
-      }),
-      status: models.length > 0
-        ? {
-            provider: "OpenCode-Go",
-            status: "detected",
-            detail: `${models.length} runtime-supported model${models.length === 1 ? "" : "s"} found${
-              unsupportedCount === 0
-                ? ""
-                : `; ${unsupportedCount} unsupported CLI row${unsupportedCount === 1 ? "" : "s"} ignored`
-            }`,
-          }
-        : parsedModels.length > 0
-          ? {
-              provider: "OpenCode-Go",
-              status: "unavailable",
-              detail: `no runtime-supported models; ${parsedModels.length} unsupported CLI row${parsedModels.length === 1 ? "" : "s"} ignored`,
-            }
-          : { provider: "OpenCode-Go", status: "unavailable", detail: "no models returned" },
-    };
-  } catch {
-    return { candidates: [], status: { provider: "OpenCode-Go", status: "unavailable", detail: "`opencode models opencode-go --pure` unavailable" } };
-  } finally {
-    await isolation?.cleanup();
-  }
-}
-
-async function createOpenCodeDiscoveryIsolation(): Promise<{
-  readonly env: Record<string, string | undefined>;
-  readonly cleanup: () => Promise<void>;
-}> {
-  const root = await mkdtemp(join(tmpdir(), "mono-agent-opencode-discovery-"));
-  try {
-    await chmod(root, 0o700);
-    const home = await createPrivateDirectory(root, "home");
-    const config = await createPrivateDirectory(root, "config");
-    const opencodeConfig = await createPrivateDirectory(config, "opencode");
-    if (process.platform !== "win32") await chmod(opencodeConfig, 0o500);
-    const data = await createPrivateDirectory(root, "data");
-    const state = await createPrivateDirectory(root, "state");
-    const cache = await createPrivateDirectory(root, "cache");
-    const opencodeData = await createPrivateDirectory(data, "opencode");
-    const database = join(opencodeData, "opencode.db");
-    const handle = await open(database, "wx", 0o600);
-    await handle.close();
-    await chmod(database, 0o600);
-    const env = safeDiscoveryProcessEnv();
-    Object.assign(env, {
-      OPENCODE_TEST_HOME: home,
-      XDG_CONFIG_HOME: config,
-      XDG_CONFIG_DIRS: config,
-      XDG_DATA_HOME: data,
-      XDG_DATA_DIRS: data,
-      XDG_STATE_HOME: state,
-      XDG_CACHE_HOME: cache,
-      OPENCODE_DB: database,
-      OPENCODE_CONFIG_CONTENT: JSON.stringify({ share: "disabled", autoshare: false }),
-      OPENCODE_DISABLE_PROJECT_CONFIG: "true",
-      OPENCODE_DISABLE_AUTOUPDATE: "true",
-      OPENCODE_DISABLE_SHARE: "true",
-      OPENCODE_AUTO_SHARE: "false",
-      OPENCODE_DISABLE_EXTERNAL_SKILLS: "true",
-      OPENCODE_DISABLE_LSP_DOWNLOAD: "true",
-    });
-    return {
-      env,
-      cleanup: async () => {
-        await rm(root, { recursive: true, force: true }).catch(() => undefined);
-      },
-    };
-  } catch (error) {
-    await rm(root, { recursive: true, force: true }).catch(() => undefined);
-    throw error;
-  }
-}
-
 function safeDiscoveryProcessEnv(
   source: Readonly<Record<string, string | undefined>> = process.env,
 ): Record<string, string | undefined> {
@@ -550,14 +357,6 @@ function safeDiscoveryProcessEnv(
   return env;
 }
 
-
-async function createPrivateDirectory(parent: string, name: string): Promise<string> {
-  const path = join(parent, name);
-  await mkdir(path, { mode: 0o700 });
-  await chmod(path, 0o700);
-  return path;
-}
-
 async function discoverOllamaModels(
   opts: Required<Pick<DiscoverWizardModelsOptions, "timeoutMs">> & DiscoverWizardModelsOptions,
 ): Promise<{ candidates: WizardModelCandidate[]; status: ModelDiscoveryStatus }> {
@@ -567,7 +366,7 @@ async function discoverOllamaModels(
     const models = parseOllamaList(stdout);
     return {
       candidates: models.map((model) => {
-        const value = `pi:ollama:${model}`;
+        const value = `ollama:${model}`;
         return {
           value,
           label: `Ollama ${model}`,
@@ -605,7 +404,7 @@ async function discoverLmStudioModels(
     const models = parseOpenAiModelEntriesBody(body);
     return {
       candidates: models.map((model) => {
-        const value = `pi:lmstudio:${model.id}`;
+        const value = `lmstudio:${model.id}`;
         return {
           value,
           label: `LM Studio ${model.id}`,
@@ -648,7 +447,7 @@ function mergeCandidate(left: WizardModelCandidate, right: WizardModelCandidate)
     || right.availability !== undefined
     || right.authState !== undefined;
   const preserveBuiltinPiMetadata = left.source === "pi"
-    && (right.source === "opencode" || right.source === "ollama" || right.source === "lmstudio");
+    && (right.source === "ollama" || right.source === "lmstudio");
   const hint = preserveBuiltinPiMetadata
     ? left.hint
     : rightHasDiscoveryState ? right.hint ?? left.hint : left.hint ?? right.hint;
@@ -693,16 +492,9 @@ function rank(candidate: WizardModelCandidate): number {
 
 function modelRank(candidate: WizardModelCandidate): number {
   if (candidate.providerDefault === true) return -100;
-  const directCodexRank = OPENAI_CODEX_MODELS.findIndex((model) => candidate.value === directCodexRef(model));
-  if (directCodexRank >= 0) return directCodexRank;
-  const piOpenAiCodexRank = OPENAI_CODEX_MODELS.findIndex((model) => candidate.value === piOpenAiCodexRef(model));
-  if (piOpenAiCodexRank >= 0) return 10 + piOpenAiCodexRank;
-  if (candidate.source === "claude") {
-    return 20;
-  }
-  if (candidate.source === "opencode") {
-    return 30;
-  }
+  if (candidate.value === "openai-codex:gpt-5.6-terra") return 0;
+  if (candidate.value === "openai-codex:gpt-5.6-sol") return 1;
+  if (candidate.source === "pi") return 20;
   if (candidate.source === "ollama") {
     return candidate.discovered === true ? 40 : 45;
   }
@@ -710,123 +502,6 @@ function modelRank(candidate: WizardModelCandidate): number {
     return 50;
   }
   return 90;
-}
-
-function directCodexRef(model: CuratedOpenAiCodexModel): string {
-  return `codex:${model.id}`;
-}
-
-function piOpenAiCodexRef(model: CuratedOpenAiCodexModel): string {
-  return `pi:${PI_OPENAI_CODEX_PROVIDER}:${model.id}`;
-}
-
-function staticDirectCodexCandidate(model: CuratedOpenAiCodexModel): WizardModelCandidate {
-  return {
-    value: directCodexRef(model),
-    label: `Codex ${model.name}`,
-    ...(model.minimumCodexCliVersion === undefined
-      ? {}
-      : { hint: `requires Codex CLI ${formatVersion(model.minimumCodexCliVersion)}+` }),
-    source: "codex",
-    availability: "catalog_available",
-    authState: "auth_required",
-    // Exact effort support/defaults come from Codex app-server model/list.
-    // Do not fabricate provider metadata when the live catalog is unavailable.
-    supportedEfforts: [],
-    providerDefault: model.id === "gpt-5.6-terra",
-  };
-}
-
-function directCodexCandidates(
-  catalog: readonly CodexCatalogModel[],
-  state: "credential-detected" | "install-required" | "login-required",
-  version = "",
-  verified: ReadonlySet<string> = new Set(),
-): WizardModelCandidate[] {
-  return catalog.map((model) => directCodexCandidate(model, state, version, verified));
-}
-
-function directCodexCandidate(
-  model: CodexCatalogModel,
-  state: "credential-detected" | "install-required" | "login-required",
-  version = "",
-  verified: ReadonlySet<string> = new Set(),
-): WizardModelCandidate {
-  const reference = `codex:${model.id}`;
-  const curated = OPENAI_CODEX_MODELS.find((entry) => entry.id === model.id);
-  const authState: WizardModelAuthState = verified.has(reference)
-    ? "verified"
-    : state === "credential-detected"
-      ? "credential_detected"
-      : "auth_required";
-  if (state === "install-required") {
-    const minimum = curated?.minimumCodexCliVersion;
-    return {
-      value: reference,
-      label: `Codex ${model.displayName}`,
-      hint: minimum === undefined
-        ? "install Codex CLI and sign in"
-        : `install Codex CLI ${formatVersion(minimum)}+ and sign in`,
-      source: "codex",
-      setupRequired: true,
-      availability: "catalog_available",
-      authState,
-      supportedEfforts: model.supportedEfforts,
-      ...(model.isDefault === undefined ? {} : { providerDefault: model.isDefault }),
-      ...(model.defaultEffort === undefined ? {} : { defaultEffort: model.defaultEffort }),
-    };
-  }
-
-  const prerequisites: string[] = [];
-  const minimum = curated?.minimumCodexCliVersion;
-  if (minimum !== undefined && !codexVersionMeetsMinimum(version, minimum)) {
-    prerequisites.push(
-      parseCodexVersion(version) === undefined
-        ? `Codex CLI ${formatVersion(minimum)}+ required; installed version could not be verified`
-        : `update Codex CLI to ${formatVersion(minimum)}+ (found ${version})`,
-    );
-  }
-  if (state === "login-required") prerequisites.push("Codex sign-in required");
-
-  if (prerequisites.length === 0) {
-    return {
-      value: reference,
-      label: `Codex ${model.displayName}`,
-      hint: authState === "verified"
-        ? `${version.length > 0 ? `${version}; ` : ""}verified by live readiness`
-        : `${version.length > 0 ? `${version}; ` : ""}sign-in detected; live readiness pending`,
-      source: "codex",
-      discovered: true,
-      availability: "catalog_available",
-      authState,
-      supportedEfforts: model.supportedEfforts,
-      ...(model.isDefault === undefined ? {} : { providerDefault: model.isDefault }),
-      ...(model.defaultEffort === undefined ? {} : { defaultEffort: model.defaultEffort }),
-    };
-  }
-
-  return {
-    value: reference,
-    label: `Codex ${model.displayName}`,
-    hint: prerequisites.join("; "),
-    source: "codex",
-    setupRequired: true,
-    availability: "catalog_available",
-    authState,
-    supportedEfforts: model.supportedEfforts,
-    ...(model.isDefault === undefined ? {} : { providerDefault: model.isDefault }),
-    ...(model.defaultEffort === undefined ? {} : { defaultEffort: model.defaultEffort }),
-  };
-}
-
-function curatedCodexCatalog(): CodexCatalogModel[] {
-  return OPENAI_CODEX_MODELS.map((model) => ({
-    id: model.id,
-    displayName: model.name,
-    supportedEfforts: [],
-    // Offline product fallback only; live model/list replaces this flag.
-    isDefault: model.id === "gpt-5.6-terra",
-  }));
 }
 
 function strongerAuthState(
@@ -851,32 +526,6 @@ function exactDefaultEffortWhenUnambiguous(
   return supportedEfforts.length === 1 ? supportedEfforts[0] : undefined;
 }
 
-function parseCodexVersion(version: string): readonly [major: number, minor: number, patch: number] | undefined {
-  const match = /(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?:[-+\s]|$)/u.exec(version);
-  if (match === null) return undefined;
-  const parts = match.slice(1, 4).map(Number);
-  if (parts.some((part) => !Number.isSafeInteger(part) || part < 0)) return undefined;
-  return [parts[0] as number, parts[1] as number, parts[2] as number];
-}
-
-function codexVersionMeetsMinimum(
-  version: string,
-  minimum: readonly [major: number, minor: number, patch: number],
-): boolean {
-  const parsed = parseCodexVersion(version);
-  if (parsed === undefined) return false;
-  for (let index = 0; index < minimum.length; index += 1) {
-    const installedPart = parsed[index] ?? 0;
-    const minimumPart = minimum[index] ?? 0;
-    if (installedPart !== minimumPart) return installedPart > minimumPart;
-  }
-  return true;
-}
-
-function formatVersion(version: readonly [major: number, minor: number, patch: number]): string {
-  return version.join(".");
-}
-
 function parseOllamaList(stdout: string): string[] {
   const lines = stdout.trim().split(/\r?\n/u).filter(Boolean);
   if (lines.length === 0) {
@@ -888,7 +537,7 @@ function parseOllamaList(stdout: string): string[] {
     .filter((name): name is string => name !== undefined && name.length > 0);
 }
 
-function parseOpenCodeGoModels(stdout: string): string[] {
+export function parseOpenCodeGoModels(stdout: string): string[] {
   const prefix = "opencode-go/";
   return stdout
     .split(/\r?\n/u)
@@ -922,20 +571,12 @@ function modelEntryFromUnknown(value: unknown): DiscoveredModelEntry | undefined
   };
 }
 
-function displayModelName(model: string): string {
-  return model.startsWith("pi:") ? model.split(":").slice(2).join(":") : model;
-}
-
 function parseJsonObject(value: unknown): Record<string, unknown> {
   const parsed = typeof value === "string" ? JSON.parse(value) as unknown : value;
   if (!isRecord(parsed)) {
     throw new Error("Expected a JSON object.");
   }
   return parsed;
-}
-
-function firstOutputLine(value: string): string {
-  return value.split(/\r?\n/u).map((line) => line.trim()).find((line) => line.length > 0)?.slice(0, 120) ?? "";
 }
 
 function readReasoningCapability(value: Record<string, unknown>): boolean | undefined {

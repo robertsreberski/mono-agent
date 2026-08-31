@@ -95,7 +95,7 @@ describe("init provider setup gate", () => {
   it("does not execute provider setup during dry-run even with --auth", async () => {
     const execute = vi.fn(async () => []);
     const status = await runProviderSetupBeforeInit({
-      modelRefs: ["codex:gpt-5.6-terra"],
+      modelRefs: ["openai-codex:gpt-5.6-terra"],
       cwd: "/agent",
       auth: true,
       dryRun: true,
@@ -107,10 +107,11 @@ describe("init provider setup gate", () => {
 
   it("reports provider setup failures as failed", async () => {
     const status = await runProviderSetupBeforeInit({
-      modelRefs: ["codex:gpt-5.6-terra"],
+      modelRefs: ["openai-codex:gpt-5.6-terra"],
       cwd: "/agent",
       auth: true,
       dryRun: false,
+      forceAuthentication: true,
       execute: async (plan) => [
         {
           action: plan.actions[0]!,
@@ -125,7 +126,7 @@ describe("init provider setup gate", () => {
   it("skips direct provider login when durable dotenv credentials are detected", async () => {
     const execute = vi.fn(async () => []);
     const status = await runProviderSetupBeforeInit({
-      modelRefs: ["codex:gpt-5.6-sol", "claude:claude-sonnet-5"],
+      modelRefs: ["openai-codex:gpt-5.6-sol", "anthropic:claude-sonnet-5"],
       cwd: "/agent",
       auth: true,
       dryRun: false,
@@ -142,11 +143,11 @@ describe("init provider setup gate", () => {
 
   it("does not fail non-interactive setup when an API-key action is skipped", async () => {
     const status = await runProviderSetupBeforeInit({
-      modelRefs: ["pi:opencode-go:kimi-k2.6"],
+      modelRefs: ["opencode-go:kimi-k2.6"],
       cwd: "/agent",
       auth: true,
       dryRun: false,
-      credentialStates: { "pi:opencode-go": "auth_required" },
+      credentialStates: { "opencode-go": "auth_required" },
       execute: async (plan) => [
         {
           action: plan.actions[0]!,
@@ -164,7 +165,7 @@ describe("init provider setup gate", () => {
     const execute = vi.fn(async () => []);
 
     const status = await runProviderSetupBeforeInit({
-      modelRefs: ["codex:gpt-5.6-terra"],
+      modelRefs: ["openai-codex:gpt-5.6-terra"],
       cwd: "/agent",
       auth: true,
       dryRun: false,
@@ -189,22 +190,22 @@ describe("answersFromCli", () => {
   });
 
   it("maps --memory to a module id and lets --model/--effort override the preset runtime", () => {
-    const answers = answersFromCli({ presetId: "local-private", model: "codex:gpt-5.6-terra", effort: "high", memory: "lite" });
-    expect(answers.model).toBe("codex:gpt-5.6-terra");
+    const answers = answersFromCli({ presetId: "local-private", model: "openai-codex:gpt-5.6-terra", effort: "high", memory: "lite" });
+    expect(answers.model).toBe("openai-codex:gpt-5.6-terra");
     expect(answers.effort).toBe("high");
     expect(answers.memory).toBe("memory:lite");
   });
 
   it("preserves exact --model and canonical --fallback refs from non-interactive flags", () => {
     const answers = answersFromCli({
-      model: "pi:ollama:gemma4:31b",
-      fallbacks: [{ model: "codex:gpt-5.6-terra" }, { model: "pi:lmstudio:qwen/qwen3-8b" }],
+      model: "ollama:gemma4:31b",
+      fallbacks: [{ model: "openai-codex:gpt-5.6-terra" }, { model: "lmstudio:qwen/qwen3-8b" }],
     });
 
-    expect(answers.model).toBe("pi:ollama:gemma4:31b");
+    expect(answers.model).toBe("ollama:gemma4:31b");
     expect(answers.fallbacks).toEqual([
-      { model: "codex:gpt-5.6-terra" },
-      { model: "pi:lmstudio:qwen/qwen3-8b" },
+      { model: "openai-codex:gpt-5.6-terra" },
+      { model: "lmstudio:qwen/qwen3-8b" },
     ]);
   });
 
@@ -212,33 +213,31 @@ describe("answersFromCli", () => {
     expect(answersFromCli({ name: "  Research Companion  " }).name).toBe("Research Companion");
   });
 
-  it("forwards canonical per-route fallbacks and route safety", () => {
+  it("forwards canonical per-route fallbacks", () => {
     const answers = answersFromCli({
-      model: "pi:ollama:qwen3:8b",
+      model: "ollama:qwen3:8b",
       fallbacks: [
-        { model: "codex:gpt-5.6-sol", effort: "minimal" },
-        { model: "claude:claude-sonnet-5", effort: "max" },
+        { model: "openai-codex:gpt-5.6-sol", effort: "minimal" },
+        { model: "anthropic:claude-sonnet-5", effort: "max" },
       ],
-      routeSafety: "per-route-native",
     });
     expect(answers.fallbacks).toEqual([
-      { model: "codex:gpt-5.6-sol", effort: "minimal" },
-      { model: "claude:claude-sonnet-5", effort: "max" },
+      { model: "openai-codex:gpt-5.6-sol", effort: "minimal" },
+      { model: "anthropic:claude-sonnet-5", effort: "max" },
     ]);
-    expect(answers.routeSafety).toBe("per-route-native");
   });
 
   it("rejects duplicate canonical routes and invalid public names", () => {
     expect(() => answersFromCli({
-      model: "codex:gpt-5.6-sol",
-      fallbacks: [{ model: "codex:gpt-5.6-sol" }],
+      model: "openai-codex:gpt-5.6-sol",
+      fallbacks: [{ model: "openai-codex:gpt-5.6-sol" }],
     })).toThrow("Duplicate model route");
     expect(() => answersFromCli({ name: "line one\nline two" })).toThrow("single-line");
   });
 
   it("rejects wizard sentinel values from non-interactive model flags", () => {
     expect(() => answersFromCli({ model: "__other__" })).toThrow("Wizard model sentinel");
-    expect(() => answersFromCli({ fallbacks: [{ model: "__done__" }, { model: "pi:ollama:gemma4:31b" }] }))
+    expect(() => answersFromCli({ fallbacks: [{ model: "__done__" }, { model: "ollama:gemma4:31b" }] }))
       .toThrow("Wizard model sentinel");
   });
 

@@ -42,7 +42,7 @@ beforeEach(async () => {
   await writeFile(join(dir, "IDENTITY.md"), "# Identity\n\n## Role\n\nBe precise.\n", "utf8");
   await writeFile(join(dir, ".env"), "MODEL_API_KEY=top-secret\n", { encoding: "utf8", mode: 0o600 });
   await writeFile(join(dir, "mono-agent.config.json"), JSON.stringify({
-    runtime: { model: "pi:ollama:qwen3:8b", workspace: "." },
+    runtime: { model: "ollama:qwen3:8b", workspace: "." },
     context: { identityPath: "IDENTITY.md", selectedSkills: [] },
     tools: { allowedTools: [], disallowedTools: [] },
   }), "utf8");
@@ -149,7 +149,7 @@ describe("background worker snapshots", () => {
   it("includes optional Soul proof and rejects incomplete Soul metadata", async () => {
     await writeFile(join(dir, "SOUL.md"), "# Soul\n\nStay kind.\n", "utf8");
     await writeFile(join(dir, "mono-agent.config.json"), JSON.stringify({
-      runtime: { model: "pi:ollama:qwen3:8b", workspace: "." },
+      runtime: { model: "ollama:qwen3:8b", workspace: "." },
       context: { identityPath: "IDENTITY.md", soulPath: "SOUL.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
     }), "utf8");
@@ -256,7 +256,7 @@ describe("background worker snapshots", () => {
     const soulPath = join(dir, "SOUL.md");
     await writeFile(soulPath, "# Soul\n\nOriginal soul.\n", "utf8");
     const originalConfig = JSON.stringify({
-      runtime: { model: "pi:ollama:qwen3:8b", workspace: "." },
+      runtime: { model: "ollama:qwen3:8b", workspace: "." },
       context: { identityPath: "IDENTITY.md", soulPath: "SOUL.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
     });
@@ -300,7 +300,7 @@ describe("background worker snapshots", () => {
     });
     await writeFile(mcpConfigPath, approvedMcp, { encoding: "utf8", mode: 0o600 });
     await writeFile(join(dir, "mono-agent.config.json"), JSON.stringify({
-      runtime: { model: "pi:ollama:qwen3:8b", workspace: "." },
+      runtime: { model: "ollama:qwen3:8b", workspace: "." },
       context: { identityPath: "IDENTITY.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [], mcpConfigPath: "./mcp.json" },
     }), "utf8");
@@ -347,7 +347,7 @@ describe("background worker snapshots", () => {
     const mcpConfigPath = join(dir, "mcp.json");
     await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: {} }), "utf8");
     await writeFile(join(dir, "mono-agent.config.json"), JSON.stringify({
-      runtime: { model: "pi:ollama:qwen3:8b", workspace: "." },
+      runtime: { model: "ollama:qwen3:8b", workspace: "." },
       context: { identityPath: "IDENTITY.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [], mcpConfigPath: "./mcp.json" },
     }), "utf8");
@@ -381,7 +381,7 @@ describe("background worker snapshots", () => {
       env: environment,
     });
     await writeFile(join(dir, "mono-agent.config.json"), JSON.stringify({
-      runtime: { model: "pi:ollama:changed", workspace: "." },
+      runtime: { model: "ollama:changed", workspace: "." },
       context: { identityPath: "IDENTITY.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
     }), "utf8");

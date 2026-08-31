@@ -1,12 +1,14 @@
 {
   "$schema": "https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packages/agent-app/schema/mono-agent.config.schema.json",
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5",
-    "fallbackModels": [
-      "pi:opencode-go:kimi-k2.6"
+    "model": "openai-codex:gpt-5.5",
+    "fallbacks": [
+      {
+        "model": "opencode-go:kimi-k2.6",
+        "effort": "high"
+      }
     ],
     "maxTurns": 0,
-    "executionMode": "sdk",
     "effort": "high",
     "permissionMode": "bypassPermissions",
     "workspace": ".",
@@ -44,8 +46,7 @@
     },
     "llm": {
       "provider": "agent-host",
-      "model": "pi:opencode-go:kimi-k2.6",
-      "executionMode": "sdk",
+      "model": "opencode-go:kimi-k2.6",
       "timeoutMs": 360000
     },
     "recallTool": {

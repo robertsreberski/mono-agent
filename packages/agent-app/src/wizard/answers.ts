@@ -1,7 +1,6 @@
 import {
   MAX_AGENT_NAME_LENGTH,
   type MonoAgentConfigJson,
-  type RouteSafetyMode,
 } from "@mono-agent/config";
 
 import { monoAgentConfigWithSchema } from "../config-reference.js";
@@ -40,14 +39,8 @@ export interface WizardAnswers {
   readonly model: string;
   /** Optional primary-route effort; omitted means provider default. */
   readonly effort?: string;
-  /** Canonical ordered fallback routes; omitted effort means provider default. */
+  /** Ordered fallback routes; omitted effort means provider default. */
   readonly fallbacks: readonly WizardFallback[];
-  /**
-   * Deprecated compatibility input. {@link defaultAnswers} converts these to
-   * canonical routes, inheriting the legacy global effort when it is present.
-   */
-  readonly fallbackModels?: readonly string[];
-  readonly routeSafety: RouteSafetyMode;
   /** Channel module ids, e.g. `["channel:webhook","channel:telegram"]`. */
   readonly channels: readonly string[];
   /** Memory module id, or `undefined` for no memory section. */
@@ -114,12 +107,6 @@ export function referencedSetupModelRefs(plan: WizardPlan): readonly string[] {
   for (const fallback of plan.configJson.runtime?.fallbacks ?? []) {
     add(fallback.model);
   }
-  // A hand-authored legacy plan can still enter this helper; generated plans
-  // always use the canonical structured form.
-  for (const fallback of plan.configJson.runtime?.fallbackModels ?? []) {
-    add(fallback);
-  }
-
   const memory = plan.configJson.memory;
   if (memory?.llm?.provider === "agent-host") {
     add(memory.llm.model);
@@ -131,14 +118,12 @@ export function referencedSetupModelRefs(plan: WizardPlan): readonly string[] {
 
 /** Convert a local memory service into the model-ref shape understood by setup. */
 function localServiceModelRef(provider: "ollama" | "lmstudio", model: unknown): string | undefined {
-  return typeof model === "string" && model.length > 0 ? `pi:${provider}:${model}` : undefined;
+  return typeof model === "string" && model.length > 0 ? `${provider}:${model}` : undefined;
 }
 
 /** True when a referenced backend requires credentials rather than a local service. */
 function modelRefNeedsCredentials(modelRef: string): boolean {
-  return modelRef.startsWith("codex:")
-    || modelRef.startsWith("claude:")
-    || (modelRef.startsWith("pi:") && !/^pi:(?:ollama|lmstudio):/u.test(modelRef));
+  return !/^(?:ollama|lmstudio):/u.test(modelRef);
 }
 
 /** Tools ordered canonically: runtime built-ins, app-owned tools, then adapter send tools. */
@@ -153,16 +138,16 @@ const ZERO_TOOLS_WARNING =
 
 /**
  * The module ids selected by these answers, in composer order: auto-derived
- * providers first (from a `pi:ollama:*`/`pi:lmstudio:*` model), then channels (in
+ * providers first (from an `ollama:*`/`lmstudio:*` model), then channels (in
  * answer order), then the memory tier, then sandbox, then observability.
  */
 function selectedModuleIds(answers: WizardAnswers): readonly string[] {
   const ids: string[] = [];
   const modelRefs = [answers.model, ...effectiveFallbacks(answers).map((fallback) => fallback.model)];
-  if (modelRefs.some((model) => /^pi:ollama:/u.test(model))) {
+  if (modelRefs.some((model) => /^ollama:/u.test(model))) {
     ids.push("provider:ollama");
   }
-  if (modelRefs.some((model) => /^pi:lmstudio:/u.test(model))) {
+  if (modelRefs.some((model) => /^lmstudio:/u.test(model))) {
     ids.push("provider:lmstudio");
   }
   for (const channel of answers.channels) {
@@ -249,7 +234,6 @@ export function alwaysOnTools(answers: WizardAnswers): readonly string[] {
 const BASE_ANSWERS: WizardAnswers = {
   model: DEFAULT_MODEL,
   fallbacks: [],
-  routeSafety: "uniform",
   channels: ["channel:webhook"],
   // `memory` is intentionally omitted (no memory section) — with
   // exactOptionalPropertyTypes an optional key must be absent, not `undefined`.
@@ -267,41 +251,20 @@ const BASE_ANSWERS: WizardAnswers = {
  * verbatim: `["*"]`, a specific list, or `[]` (the chat-only case).
  */
 export function defaultAnswers(overrides?: Partial<WizardAnswers>): WizardAnswers {
-  const {
-    fallbacks: canonicalFallbacks,
-    fallbackModels: legacyFallbackModels,
-    ...otherOverrides
-  } = overrides ?? {};
-  const merged = { ...BASE_ANSWERS, ...otherOverrides };
-  const fallbacks = canonicalFallbacks !== undefined
-    ? canonicalFallbacks.map((fallback) => ({ ...fallback }))
-    : (legacyFallbackModels ?? []).map((model) => ({
-        model,
-        ...(merged.effort === undefined ? {} : { effort: merged.effort }),
-      }));
+  const merged = { ...BASE_ANSWERS, ...overrides };
+  const fallbacks = (overrides?.fallbacks ?? BASE_ANSWERS.fallbacks)
+    .map((fallback) => ({ ...fallback }));
   const allowedTools = overrides?.allowedTools ?? [ALLOW_ALL_TOOLS];
   return {
     ...merged,
     fallbacks,
-    // Keep a legacy input visible only when that compatibility surface was
-    // actually used. New wizard/canonical callers carry structured routes only.
-    ...(legacyFallbackModels === undefined
-      ? {}
-      : { fallbackModels: [...legacyFallbackModels] }),
     allowedTools,
   };
 }
 
-/** Canonicalize old answer objects at the single composition boundary. */
+/** Return the ordered fallback routes selected by the wizard. */
 export function effectiveFallbacks(answers: WizardAnswers): readonly WizardFallback[] {
-  const canonical = answers.fallbacks ?? [];
-  if (canonical.length > 0 || (answers.fallbackModels?.length ?? 0) === 0) {
-    return canonical;
-  }
-  return (answers.fallbackModels ?? []).map((model) => ({
-    model,
-    ...(answers.effort === undefined ? {} : { effort: answers.effort }),
-  }));
+  return answers.fallbacks ?? [];
 }
 
 /** Folder basenames become readable public identities without affecting paths. */
@@ -381,7 +344,7 @@ export function composeWizardPlan(answers: WizardAnswers, ctx: ComposeContext): 
   const agentName = answers.name?.trim() || humanizeAgentName(ctx.dirBasename);
   const fallbacks = effectiveFallbacks(answers);
   const config: Record<string, unknown> = {
-    ...baseConfig(ctx, agentName, answers.model, fallbacks, answers.routeSafety, answers.effort),
+    ...baseConfig(ctx, agentName, answers.model, fallbacks, answers.effort),
   };
 
   const files: GeneratedFile[] = [...managedProjectSkillFiles()];

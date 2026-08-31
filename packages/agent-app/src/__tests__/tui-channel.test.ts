@@ -28,7 +28,7 @@ const baseConfig: TuiAdapterConfig = {
 
 interface BuildInputOptions {
   readonly effort?: string;
-  readonly fallbackModels?: readonly { sdk: string; model: string; provider?: string; reference?: string }[];
+  readonly fallbackModels?: readonly { provider: string; model: string }[];
   readonly localProviders?: readonly LocalProviderDefinition[];
 }
 
@@ -36,10 +36,14 @@ function baseInput(options: BuildInputOptions = {}): ChannelStartInput<TuiAdapte
   return {
     coreConfig: {
       runtime: {
-        model: { sdk: "claude", model: "claude-fable-5" },
+        model: { provider: "anthropic", model: "claude-fable-5", reference: "anthropic:claude-fable-5" },
         workspace: "/tmp",
         ...(options.effort === undefined ? {} : { effort: options.effort }),
-        ...(options.fallbackModels === undefined ? {} : { fallbackModels: options.fallbackModels }),
+        ...(options.fallbackModels === undefined ? {} : {
+          fallbacks: options.fallbackModels.map((model) => ({
+            model: { ...model, reference: `${model.provider}:${model.model}` },
+          })),
+        }),
       },
       context: { identityPath: "/tmp/IDENTITY.md", selectedSkills: [] },
       tools: { disallowedTools: [] },
@@ -60,6 +64,13 @@ interface StartOptions extends BuildInputOptions {
 
 const NOOP_MODEL_DISCOVERY = {
   discoverModels: async () => [],
+};
+
+const FABLE_MODEL_OPTIONS = {
+  reasoning: true,
+  reasoningMode: "effort" as const,
+  effortLevels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+  contextWindow: 1_000_000,
 };
 
 async function startCapturingTui(options: StartOptions = {}): Promise<TuiAdapterOptions> {
@@ -132,10 +143,10 @@ describe("tui channel driver — info composition", () => {
     const info = await resolveInfo(captured);
 
     expect(info).toEqual({
-      model: "claude:claude-fable-5",
+      model: "anthropic:claude-fable-5",
       effort: "high",
-      models: ["claude:claude-fable-5"],
-      modelOptions: { "claude:claude-fable-5": { reasoning: true } },
+      models: ["anthropic:claude-fable-5"],
+      modelOptions: { "anthropic:claude-fable-5": FABLE_MODEL_OPTIONS },
       skills: { status: "ready", items: [], total: 0 },
     });
   });
@@ -145,9 +156,9 @@ describe("tui channel driver — info composition", () => {
     const info = await resolveInfo(captured);
 
     expect(info).toEqual({
-      model: "claude:claude-fable-5",
-      models: ["claude:claude-fable-5"],
-      modelOptions: { "claude:claude-fable-5": { reasoning: true } },
+      model: "anthropic:claude-fable-5",
+      models: ["anthropic:claude-fable-5"],
+      modelOptions: { "anthropic:claude-fable-5": FABLE_MODEL_OPTIONS },
       skills: { status: "ready", items: [], total: 0 },
     });
   });
@@ -155,24 +166,24 @@ describe("tui channel driver — info composition", () => {
   it("lists the primary then fallback models as candidate models, de-duplicated", async () => {
     const captured = await startCapturingTui({
       fallbackModels: [
-        { sdk: "codex", model: "gpt-5.5" },
-        { sdk: "claude", model: "claude-fable-5" },
+        { provider: "openai-codex", model: "gpt-5.5" },
+        { provider: "anthropic", model: "claude-fable-5" },
       ],
     });
     const info = await resolveInfo(captured);
 
-    expect(info.models).toEqual(["claude:claude-fable-5", "codex:gpt-5.5"]);
+    expect(info.models).toEqual(["anthropic:claude-fable-5", "openai-codex:gpt-5.5"]);
   });
 
-  it("publishes known direct and Pi context windows, preferring configured Pi capabilities", async () => {
+  it("publishes known provider context windows, preferring configured local capabilities", async () => {
     const captured = await startCapturingTui({
       fallbackModels: [
-        { sdk: "codex", model: "gpt-5.6-sol" },
-        { sdk: "pi", provider: "openai-codex", model: "gpt-5.5" },
-        { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-terra" },
-        { sdk: "pi", provider: "openai-codex", model: "gpt-5.4" },
-        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
-        { sdk: "pi", provider: "unknown-provider", model: "unknown-model" },
+        { provider: "openai-codex", model: "gpt-5.6-sol" },
+        { provider: "openai-codex", model: "gpt-5.5" },
+        { provider: "openai-codex", model: "gpt-5.6-terra" },
+        { provider: "openai-codex", model: "gpt-5.4" },
+        { provider: "anthropic", model: "claude-sonnet-4-6" },
+        { provider: "unknown-provider", model: "unknown-model" },
       ],
       localProviders: [{
         id: "openai-codex",
@@ -199,13 +210,13 @@ describe("tui channel driver — info composition", () => {
     const info = await resolveInfo(captured);
 
     // Sourced from pi's generated catalog, corrected to 272_000 in pi-ai 0.83.0.
-    expect(info.modelOptions?.["codex:gpt-5.6-sol"]?.contextWindow).toBe(272_000);
-    expect(info.modelOptions?.["pi:openai-codex:gpt-5.5"]?.contextWindow).toBe(16_384);
-    expect(info.modelOptions?.["pi:openai-codex:gpt-5.6-terra"]?.contextWindow).toBe(32_768);
-    expect(info.modelOptions?.["pi:openai-codex:gpt-5.4"]).not.toHaveProperty("contextWindow");
-    expect(info.modelOptions?.["pi:anthropic:claude-sonnet-4-6"]?.contextWindow).toBe(1_000_000);
-    expect(info.modelOptions?.["pi:unknown-provider:unknown-model"]).not.toHaveProperty("contextWindow");
-    expect(info.modelOptions?.["claude:claude-fable-5"]).not.toHaveProperty("contextWindow");
+    expect(info.modelOptions?.["openai-codex:gpt-5.6-sol"]?.contextWindow).toBeUndefined();
+    expect(info.modelOptions?.["openai-codex:gpt-5.5"]?.contextWindow).toBe(16_384);
+    expect(info.modelOptions?.["openai-codex:gpt-5.6-terra"]?.contextWindow).toBe(32_768);
+    expect(info.modelOptions?.["openai-codex:gpt-5.4"]).not.toHaveProperty("contextWindow");
+    expect(info.modelOptions?.["anthropic:claude-sonnet-4-6"]?.contextWindow).toBe(1_000_000);
+    expect(info.modelOptions?.["unknown-provider:unknown-model"]).not.toHaveProperty("contextWindow");
+    expect(info.modelOptions?.["anthropic:claude-fable-5"]?.contextWindow).toBe(1_000_000);
   });
 
   it("degrades to no discovered models/no local modelOptions detail when no local providers are configured", async () => {
@@ -213,10 +224,8 @@ describe("tui channel driver — info composition", () => {
     const captured = await startCapturingTui({ discoverModels });
     const info = await resolveInfo(captured);
 
-    expect(info.models).toEqual(["claude:claude-fable-5"]);
-    // The configured cloud model still gets a `reasoning: true` degrade entry
-    // (so the TUI knows it's reasoning-capable) but no precise effortLevels.
-    expect(info.modelOptions).toEqual({ "claude:claude-fable-5": { reasoning: true } });
+    expect(info.models).toEqual(["anthropic:claude-fable-5"]);
+    expect(info.modelOptions).toEqual({ "anthropic:claude-fable-5": FABLE_MODEL_OPTIONS });
   });
 
   it("includes locally discovered models in info.models and their resolved effort levels in info.modelOptions", async () => {
@@ -240,28 +249,28 @@ describe("tui channel driver — info composition", () => {
       },
     ];
     const discoverModels = vi.fn().mockResolvedValue([
-      { ref: "pi:lmstudio:qwen/qwen3-8b", label: "qwen/qwen3-8b", providerId: "lmstudio" },
-      { ref: "pi:lmstudio:llama-3.1", label: "llama-3.1", providerId: "lmstudio" },
+      { ref: "lmstudio:qwen/qwen3-8b", label: "qwen/qwen3-8b", providerId: "lmstudio" },
+      { ref: "lmstudio:llama-3.1", label: "llama-3.1", providerId: "lmstudio" },
     ] satisfies DiscoveredLocalModel[]);
 
     const captured = await startCapturingTui({ localProviders, discoverModels });
     const info = await resolveInfo(captured);
 
     expect(info.models).toEqual([
-      "claude:claude-fable-5",
-      "pi:lmstudio:qwen/qwen3-8b",
-      "pi:lmstudio:llama-3.1",
+      "anthropic:claude-fable-5",
+      "lmstudio:qwen/qwen3-8b",
+      "lmstudio:llama-3.1",
     ]);
     expect(info.modelOptions).toEqual({
-      "claude:claude-fable-5": { reasoning: true },
-      "pi:lmstudio:qwen/qwen3-8b": {
+      "anthropic:claude-fable-5": FABLE_MODEL_OPTIONS,
+      "lmstudio:qwen/qwen3-8b": {
         effortLevels: ["low", "medium", "high"],
         reasoning: true,
         reasoningMode: "effort",
         label: "qwen/qwen3-8b",
         contextWindow: 65_536,
       },
-      "pi:lmstudio:llama-3.1": { reasoning: false, reasoningMode: "none", label: "llama-3.1" },
+      "lmstudio:llama-3.1": { reasoning: false, reasoningMode: "none", label: "llama-3.1" },
     });
     expect(discoverModels).toHaveBeenCalledWith(localProviders);
   });
@@ -271,8 +280,8 @@ describe("tui channel driver — info composition", () => {
       { id: "ollama", type: "ollama", baseUrl: "http://localhost:11434", enabled: true },
     ];
     const discoverModels = vi.fn().mockResolvedValue([
-      { ref: "pi:ollama:qwen3.6:latest", label: "qwen3.6:latest", providerId: "ollama" },
-      { ref: "pi:ollama:gpt-oss:20b", label: "gpt-oss:20b", providerId: "ollama" },
+      { ref: "ollama:qwen3.6:latest", label: "qwen3.6:latest", providerId: "ollama" },
+      { ref: "ollama:gpt-oss:20b", label: "gpt-oss:20b", providerId: "ollama" },
     ] satisfies DiscoveredLocalModel[]);
 
     const captured = await startCapturingTui({ localProviders, discoverModels });
@@ -280,12 +289,12 @@ describe("tui channel driver — info composition", () => {
 
     // Toggle model carries the mode but NO graded effortLevels; the effort model
     // carries mode + levels. The TUI renders on/off vs graded from this.
-    expect(info.modelOptions?.["pi:ollama:qwen3.6:latest"]).toEqual({
+    expect(info.modelOptions?.["ollama:qwen3.6:latest"]).toEqual({
       reasoning: true,
       reasoningMode: "toggle",
       label: "qwen3.6:latest",
     });
-    expect(info.modelOptions?.["pi:ollama:gpt-oss:20b"]).toEqual({
+    expect(info.modelOptions?.["ollama:gpt-oss:20b"]).toEqual({
       effortLevels: ["low", "medium", "high"],
       reasoning: true,
       reasoningMode: "effort",
@@ -298,14 +307,14 @@ describe("tui channel driver — info composition", () => {
       { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
     ];
     const discoverModels = vi.fn().mockResolvedValue([
-      { ref: "claude:claude-fable-5", label: "claude-fable-5", providerId: "lmstudio" },
-      { ref: "pi:lmstudio:qwen3-8b", label: "qwen3-8b", providerId: "lmstudio" },
+      { ref: "anthropic:claude-fable-5", label: "claude-fable-5", providerId: "lmstudio" },
+      { ref: "lmstudio:qwen3-8b", label: "qwen3-8b", providerId: "lmstudio" },
     ] satisfies DiscoveredLocalModel[]);
 
     const captured = await startCapturingTui({ localProviders, discoverModels });
     const info = await resolveInfo(captured);
 
-    expect(info.models).toEqual(["claude:claude-fable-5", "pi:lmstudio:qwen3-8b"]);
+    expect(info.models).toEqual(["anthropic:claude-fable-5", "lmstudio:qwen3-8b"]);
   });
 
   it("captures local model discovery once at startup and serves /v1/info from memory", async () => {
@@ -341,37 +350,23 @@ describe("tui channel driver — info composition", () => {
     }
   });
 
-  it("advertises exact Pi effort levels while other retained refs fail closed", async () => {
+  it("advertises exact Pi effort levels while unknown provider refs fail closed", async () => {
     const captured = await startCapturingTui({
       fallbackModels: [
-        { sdk: "codex", model: "gpt-5.6-terra" },
-        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
-        { sdk: "acp", model: "gemini" },
+        { provider: "openai-codex", model: "gpt-5.6-terra" },
+        { provider: "anthropic", model: "claude-sonnet-4-6" },
+        { provider: "unknown-provider", model: "gemini" },
       ],
     });
     const info = await resolveInfo(captured);
 
-    expect(info.modelOptions?.["claude:claude-fable-5"]).toEqual({ reasoning: true });
-    expect(info.modelOptions?.["codex:gpt-5.6-terra"]).toEqual({
+    expect(info.modelOptions?.["anthropic:claude-fable-5"]).toEqual(FABLE_MODEL_OPTIONS);
+    expect(info.modelOptions?.["openai-codex:gpt-5.6-terra"]).toMatchObject({
       reasoning: true,
       contextWindow: 272_000,
     });
-    expect(info.modelOptions?.["pi:anthropic:claude-sonnet-4-6"]?.effortLevels?.length).toBeGreaterThan(0);
-    expect(info.modelOptions?.["acp:gemini"]).toEqual({ reasoning: true });
-  });
-
-  it("suppresses explicit effort for every advertised model when a retained fallback is direct OpenCode", async () => {
-    const captured = await startCapturingTui({
-      fallbackModels: [
-        { sdk: "claude", model: "claude-sonnet-5" },
-        { sdk: "opencode", provider: "opencode-go", model: "kimi-k2.6" },
-      ],
-    });
-    const info = await resolveInfo(captured);
-
-    expect(info.modelOptions?.["claude:claude-fable-5"]).toEqual({ reasoning: true });
-    expect(info.modelOptions?.["claude:claude-sonnet-5"]).toEqual({ reasoning: true });
-    expect(info.modelOptions?.["opencode:opencode-go:kimi-k2.6"]).toEqual({ reasoning: true });
+    expect(info.modelOptions?.["anthropic:claude-sonnet-4-6"]?.effortLevels?.length).toBeGreaterThan(0);
+    expect(info.modelOptions?.["unknown-provider:gemini"]).toEqual({ reasoning: true });
   });
 
   it("fail-closes local capability discovery without blocking later /v1/info reads", async () => {
@@ -379,15 +374,15 @@ describe("tui channel driver — info composition", () => {
       throw new Error("local catalog unavailable");
     });
     const captured = await startCapturingTui({
-      fallbackModels: [{ sdk: "codex", model: "gpt-5.6-terra" }],
+      fallbackModels: [{ provider: "openai-codex", model: "gpt-5.6-terra" }],
       discoverModels,
     });
 
     const first = await resolveInfo(captured);
     const second = await resolveInfo(captured);
 
-    expect(first.modelOptions?.["claude:claude-fable-5"]).toEqual({ reasoning: true });
-    expect(first.modelOptions?.["codex:gpt-5.6-terra"]).toEqual({
+    expect(first.modelOptions?.["anthropic:claude-fable-5"]).toEqual(FABLE_MODEL_OPTIONS);
+    expect(first.modelOptions?.["openai-codex:gpt-5.6-terra"]).toMatchObject({
       reasoning: true,
       contextWindow: 272_000,
     });

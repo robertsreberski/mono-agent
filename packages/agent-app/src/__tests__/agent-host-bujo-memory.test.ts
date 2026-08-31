@@ -123,8 +123,7 @@ describe("createConfiguredMemory — bujo mode", () => {
         memoryRoot: join(dir, "agent-host-memory"),
         llm: {
           provider: "agent-host",
-          model: "pi:openai-codex:gpt-5.5",
-          executionMode: "sdk",
+          model: "openai-codex:gpt-5.5",
         },
       }),
       { memoryRuntime: runtime },
@@ -145,8 +144,7 @@ describe("createConfiguredMemory — bujo mode", () => {
         memoryRoot: join(dir, "agent-host-memory"),
         llm: {
           provider: "agent-host",
-          model: "pi:openai-codex:gpt-5.5",
-          executionMode: "sdk",
+          model: "openai-codex:gpt-5.5",
         },
       }),
       { memoryRuntime: runtime },
@@ -159,8 +157,7 @@ describe("createConfiguredMemory — bujo mode", () => {
     expect(runtime.calls).toHaveLength(1);
     for (const call of runtime.calls) {
       expect(call.systemPrompt).toMatch(/private memory maintenance LLM/u);
-      expect(call.options.model).toMatchObject({ sdk: "pi", provider: "openai-codex", model: "gpt-5.5" });
-      expect(call.options.executionMode).toBe("sdk");
+      expect(call.options.model).toMatchObject({ provider: "openai-codex", model: "gpt-5.5" });
       expect(call.options.cwd).toBe(dir);
       expect(call.options.maxTurns).toBe(1);
       expect(call.options.allowedTools).toEqual([]);
@@ -168,24 +165,6 @@ describe("createConfiguredMemory — bujo mode", () => {
       expect(call.options.mcpServers).toEqual({});
     }
     await (store as unknown as { close(): Promise<void> }).close();
-  });
-
-  it("rejects CLI-backed agent-host memory LLM configs", async () => {
-    const dir = await tempDir();
-    await expect(
-      createConfiguredMemory(
-        bujoConfig({
-          dir,
-          identityPath: join(dir, "IDENTITY.md"),
-          memoryRoot: join(dir, "agent-host-memory"),
-          llm: {
-            provider: "agent-host",
-            model: "codex:gpt-5.5",
-          },
-        }),
-        { memoryRuntime: createRecordingRuntime() },
-      ),
-    ).rejects.toThrow(/SDK execution mode only/u);
   });
 
   it("uses LM Studio embeddings at runtime without involving the BuJo chat LLM provider", async () => {
@@ -211,8 +190,7 @@ describe("createConfiguredMemory — bujo mode", () => {
         },
         llm: {
           provider: "agent-host",
-          model: "pi:openai-codex:gpt-5.5",
-          executionMode: "sdk",
+          model: "openai-codex:gpt-5.5",
         },
       }),
       { memoryRuntime: runtime },
@@ -246,8 +224,7 @@ describe("createConfiguredMemory — bujo mode", () => {
         },
         llm: {
           provider: "agent-host",
-          model: "pi:openai-codex:gpt-5.5",
-          executionMode: "sdk",
+          model: "openai-codex:gpt-5.5",
         },
       }),
       { memoryRuntime: createRecordingRuntime() },
@@ -258,8 +235,7 @@ describe("createConfiguredMemory — bujo mode", () => {
 describe("createConfiguredMemory — memory LLM tracing", () => {
   const agentHostLlm: NonNullable<MonoAgentConfig["memory"]>["llm"] = {
     provider: "agent-host",
-    model: "pi:openai-codex:gpt-5.5",
-    executionMode: "sdk",
+    model: "openai-codex:gpt-5.5",
   };
 
   it("records each memory LLM call as a mem-* run with a per-ritual conversation id", async () => {
@@ -457,8 +433,7 @@ function bujoConfig(input: {
 }): MonoAgentConfig {
   return {
     runtime: {
-      model: { sdk: "pi", provider: "ollama", model: "qwen3:8b", reference: "pi:ollama:qwen3:8b" },
-      executionMode: "sdk",
+      model: { provider: "ollama", model: "qwen3:8b", reference: "ollama:qwen3:8b" },
       maxTurns: 4,
       workspace: input.dir,
       session: { mode: "per-message", idleTimeoutMs: 1_800_000 },

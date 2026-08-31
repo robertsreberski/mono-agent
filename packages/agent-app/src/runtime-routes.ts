@@ -1,22 +1,22 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
+  assertParsedRuntimeModelReference,
+  modelReferenceKey,
   parseMonoRuntimeModelReference,
   type RuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
 
 type RuntimeConfig = MonoAgentConfig["runtime"];
 
-/** Return the one effective fallback list while keeping legacy configs loadable. */
+/** Return the configured fallback models in their declared order. */
 export function configuredRuntimeFallbackModels(
-  runtime: Pick<RuntimeConfig, "fallbacks" | "fallbackModels">,
+  runtime: Pick<RuntimeConfig, "fallbacks">,
 ): readonly RuntimeModelReference[] {
-  return (runtime.fallbacks?.length ?? 0) > 0
-    ? runtime.fallbacks?.map((entry) => entry.model) ?? []
-    : runtime.fallbackModels ?? [];
+  return runtime.fallbacks?.map((entry) => entry.model) ?? [];
 }
 
 export function configuredRuntimeModels(
-  runtime: Pick<RuntimeConfig, "model" | "fallbacks" | "fallbackModels">,
+  runtime: Pick<RuntimeConfig, "model" | "fallbacks">,
 ): readonly RuntimeModelReference[] {
   return [runtime.model, ...configuredRuntimeFallbackModels(runtime)];
 }
@@ -27,25 +27,38 @@ export function configuredRuntimeModels(
  * checked separately against their resolved route before provider work.
  */
 export function configuredProcessJobsRoutesOnlyPiNative(config: MonoAgentConfig): boolean {
-  const routes: RuntimeModelReference[] = [...configuredRuntimeModels(config.runtime)];
-  if (config.subagents?.enabled === true) {
-    for (const definition of config.subagents.definitions ?? []) {
-      if (definition.model !== undefined) routes.push(definition.model);
+  try {
+    const [primary, ...fallbacks] = configuredRuntimeModels(config.runtime);
+    assertParsedRuntimeModelReference(primary);
+    const primaryKey = modelReferenceKey(primary);
+    const fallbackKeys = new Set<string>();
+    for (const fallback of fallbacks) {
+      assertParsedRuntimeModelReference(fallback);
+      const key = modelReferenceKey(fallback);
+      if (key === primaryKey) continue;
+      if (fallbackKeys.has(key)) return false;
+      fallbackKeys.add(key);
     }
-  }
-  const memoryLlm = config.memory?.llm;
-  if (memoryLlm?.provider === "agent-host") {
-    try {
-      routes.push(parseMonoRuntimeModelReference(memoryLlm.model));
-    } catch {
-      return false;
+
+    if (config.subagents?.enabled === true) {
+      for (const definition of config.subagents.definitions ?? []) {
+        if (definition.model !== undefined) {
+          assertParsedRuntimeModelReference(definition.model);
+        }
+      }
     }
+    const memoryLlm = config.memory?.llm;
+    if (memoryLlm?.provider === "agent-host") {
+      assertParsedRuntimeModelReference(parseMonoRuntimeModelReference(memoryLlm.model));
+    }
+    return true;
+  } catch {
+    return false;
   }
-  return routes.length > 0 && routes.every((model) => model.sdk === "pi");
 }
 
 export function hasConfiguredRuntimeFallbacks(
-  runtime: Pick<RuntimeConfig, "fallbacks" | "fallbackModels">,
+  runtime: Pick<RuntimeConfig, "fallbacks">,
 ): boolean {
   return configuredRuntimeFallbackModels(runtime).length > 0;
 }
@@ -60,7 +73,7 @@ export function hasConfiguredRuntimeFallbacks(
  * overwrite with the chain primary — has to key off this, not off the backups.
  */
 export function runtimeUsesFallbackRouter(
-  runtime: Pick<RuntimeConfig, "fallbacks" | "fallbackModels" | "retry">,
+  runtime: Pick<RuntimeConfig, "fallbacks" | "retry">,
 ): boolean {
   return hasConfiguredRuntimeFallbacks(runtime) || (runtime.retry?.primaryAttempts ?? 1) > 1;
 }

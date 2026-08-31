@@ -15,10 +15,9 @@ function startInput<T>(config: T): ChannelStartInput<T> {
     coreConfig: {
       runtime: {
         model: {
-          sdk: "pi",
           provider: "openai-codex",
           model: "gpt-5.5",
-          reference: "pi:openai-codex:gpt-5.5",
+          reference: "openai-codex:gpt-5.5",
         },
       },
       tools: { allowedTools: [], disallowedTools: [] },

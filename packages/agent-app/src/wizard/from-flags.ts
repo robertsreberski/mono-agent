@@ -1,4 +1,4 @@
-import type { EffortLevel, RouteSafetyMode } from "@mono-agent/config";
+import type { EffortLevel } from "@mono-agent/config";
 
 import { defaultAnswers, type WizardAnswers, type WizardFallback } from "./answers.js";
 import { findPreset } from "./presets.js";
@@ -27,7 +27,6 @@ export interface AnswersFromCliArgs {
   readonly name?: string;
   readonly model?: string;
   readonly fallbacks?: readonly { readonly model: string; readonly effort?: EffortLevel }[];
-  readonly routeSafety?: RouteSafetyMode;
   readonly effort?: string;
   readonly memory?: "lite" | "journal" | "bujo";
   /** Validated `--with` channel flag names (see {@link WithChannel}). */
@@ -84,7 +83,6 @@ export function answersFromCli(args: AnswersFromCliArgs): WizardAnswers {
     ...(model === undefined ? {} : { model }),
     ...(fallbacks === undefined ? {} : { fallbacks }),
     ...(args.effort === undefined ? {} : { effort: args.effort }),
-    ...(args.routeSafety === undefined ? {} : { routeSafety: args.routeSafety }),
     channels: [...channels],
     ...(memory === undefined ? {} : { memory }),
   });
