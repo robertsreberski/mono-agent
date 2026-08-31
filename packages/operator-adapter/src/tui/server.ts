@@ -91,6 +91,75 @@ export type TuiSkillRegistry =
     };
 
 /** Static facts surfaced by GET /v1/info so the TUI can label the session. */
+export interface TuiModelOption {
+  readonly effortLevels?: readonly string[];
+  readonly reasoning?: boolean;
+  readonly reasoningMode?: string;
+  readonly label?: string;
+  /** Known model context capacity, in tokens. Omitted when unknown. */
+  readonly contextWindow?: number;
+  /** Canonical provider id the model belongs to. */
+  readonly provider?: string;
+  /** Provider display label. */
+  readonly providerLabel?: string;
+}
+
+/** One provider advertised in the bounded `/v1/info` provider catalog. */
+export interface TuiProviderInfo {
+  /** Canonical provider id, e.g. "anthropic". */
+  readonly id: string;
+  /** Human display label, e.g. "Anthropic". */
+  readonly label: string;
+  /** Number of models this provider advertises (post-narrowing, post-cap). */
+  readonly modelCount: number;
+  /** Present only when the advertised list was capped, so a UI can say "100 of 351". */
+  readonly totalModelCount?: number;
+  readonly source: "builtin" | "custom" | "discovered";
+  /** The agent explicitly supports this provider: it is listed in `providers`,
+   *  or a configured runtime route uses it. */
+  readonly configured?: true;
+}
+
+/** One model served by the lazy `/v1/models` catalog endpoint. */
+export interface TuiCatalogModel {
+  readonly id: string;
+  readonly name: string;
+  readonly provider: string;
+  readonly providerLabel: string;
+  readonly contextWindow?: number;
+  readonly reasoning?: boolean;
+  readonly effortLevels?: readonly string[];
+  readonly reasoningMode?: string;
+}
+
+/** A bounded, serializable model-catalog page produced by the injected provider. */
+export interface TuiModelCatalogRequest {
+  /** Provider-scoped listing. Mutually exclusive with `query`. */
+  readonly provider?: string;
+  /** Cross-provider text search. Mutually exclusive with `provider`. */
+  readonly query?: string;
+  /** Opaque pagination cursor returned by a previous page. */
+  readonly cursor?: string;
+  /** Page size, already bounded by the adapter to 1..maxPageSize. */
+  readonly limit: number;
+}
+
+export interface TuiModelCatalogPage {
+  readonly models: readonly TuiCatalogModel[];
+  readonly nextCursor?: string;
+  readonly truncated: boolean;
+}
+
+/**
+ * Injected model-catalog data source for GET /v1/models. The adapter validates,
+ * bounds, and serializes; the channel composition layer supplies the data
+ * (mirroring the `info` seam). Absent when the host does not serve a catalog,
+ * in which case `/v1/models` 404s and `/v1/info` omits the `modelCatalog`
+ * capability.
+ */
+export type TuiModelCatalogProvider = (request: TuiModelCatalogRequest) => TuiModelCatalogPage;
+
+/** Static facts surfaced by GET /v1/info so the TUI can label the session. */
 export interface TuiAdapterInfo {
   readonly label?: string;
   readonly model?: string;
@@ -114,14 +183,9 @@ export interface TuiAdapterInfo {
    * with no mode/levels so the TUI falls back to the global effort enum. Absent
    * on older agents; the TUI tolerates that and offers no model-aware picker.
    */
-  readonly modelOptions?: Record<string, {
-    readonly effortLevels?: readonly string[];
-    readonly reasoning?: boolean;
-    readonly reasoningMode?: string;
-    readonly label?: string;
-    /** Known model context capacity, in tokens. Omitted when unknown. */
-    readonly contextWindow?: number;
-  }>;
+  readonly modelOptions?: Record<string, TuiModelOption>;
+  /** Bounded provider catalog so the TUI can browse beyond the configured shortlist. */
+  readonly providers?: readonly TuiProviderInfo[];
   /** Bounded active-agent skill registry. Absent only on older producers. */
   readonly skills?: TuiSkillRegistry;
 }
@@ -145,6 +209,13 @@ export interface TuiAdapterOptions {
    * just calls it (and awaits it) on every request.
    */
   readonly info?: TuiAdapterInfo | (() => TuiAdapterInfo | Promise<TuiAdapterInfo>);
+  /**
+   * Optional lazy model-catalog data source served through GET /v1/models.
+   * Absent when the host does not expose a browsable catalog. The adapter
+   * validates/bounds/serializes every request and response; the supplier
+   * returns already-bounded, deterministic pages.
+   */
+  readonly modelCatalog?: TuiModelCatalogProvider;
   /**
    * Invoked when the already-listening HTTP server dies (e.g. EADDRINUSE
    * appearing later, socket-level failure). The hosting channel driver maps
@@ -173,6 +244,12 @@ export interface TuiAdapterStartResult {
 }
 
 const MAX_TURN_BODY_BYTES = 96 * 1024 * 1024;
+const MAX_MODEL_CATALOG_PAGE_SIZE = 200;
+const DEFAULT_MODEL_CATALOG_PAGE_SIZE = 100;
+const MAX_MODEL_CATALOG_RESPONSE_BYTES = 1024 * 1024;
+const MAX_MODEL_CATALOG_PROVIDER_BYTES = 256;
+const MAX_MODEL_CATALOG_QUERY_BYTES = 512;
+const MAX_MODEL_CATALOG_CURSOR_BYTES = 4 * 1024;
 const MAX_VERBATIM_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_VERBATIM_TEXT_CHARACTERS = 200_000;
 const MAX_VERBATIM_TEXT_BYTES = 1024 * 1024;
@@ -229,6 +306,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   let stopping = false;
   let stopPromise: Promise<void> | undefined;
   const infoPath = `${basePath}/v1/info`;
+  const modelsPath = `${basePath}/v1/models`;
   const turnsPath = `${basePath}/v1/turns`;
   const cancelPath = `${basePath}/v1/conversations/:conversationId/cancel`;
   const verbatimPath = `${basePath}/v1/conversations/:conversationId/verbatim`;
@@ -305,6 +383,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                   }),
             ...(options.processJobs === undefined || processJobsBearer === undefined ? {} : { jobs: true }),
             ...(options.requestToolEnvironment === undefined ? {} : { toolEnvironment: true }),
+            ...(options.modelCatalog === undefined
+              ? {}
+              : { modelCatalog: { version: 1, maxPageSize: MAX_MODEL_CATALOG_PAGE_SIZE } }),
           },
           ...(info?.label === undefined ? {} : { label: info.label }),
           ...(info?.model === undefined ? {} : { model: info.model }),
@@ -314,12 +395,44 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
             ? {}
             : { modelOptions: info.modelOptions }),
           ...(info?.skills === undefined ? {} : { skills: info.skills }),
+          ...(info?.providers === undefined || info.providers.length === 0 ? {} : { providers: info.providers }),
         });
       })
       .catch((error: unknown) => {
         options.logger?.error?.("TUI info provider failed.", { error: errorToMessage(error) });
         sendJsonError(res, 500, error);
       });
+  });
+
+  app.get(modelsPath, (req, res, next) => {
+    if (!authorize(req, res, apiKey)) return;
+    if (options.modelCatalog === undefined) {
+      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "The model catalog is unavailable."));
+      return;
+    }
+    let request: TuiModelCatalogRequest;
+    try {
+      request = normalizeModelCatalogRequest(req);
+    } catch (error) {
+      next(error);
+      return;
+    }
+    let page: TuiModelCatalogPage;
+    try {
+      // The catalog is a trust boundary only in the sense that the provider is
+      // host-owned; a throwing supplier must still fail as a server error
+      // rather than silently serving an empty catalog (see the "totality"
+      // contract in the composition layer — that layer never throws).
+      page = options.modelCatalog(request);
+    } catch (error) {
+      next(error);
+      return;
+    }
+    try {
+      sendBoundedModelCatalog(res, page);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get(jobsPath, (req, res, next) => {
@@ -1722,6 +1835,55 @@ async function resolveInfo(info: TuiAdapterOptions["info"]): Promise<TuiAdapterI
     return await info();
   }
   return info;
+}
+
+function normalizeModelCatalogRequest(req: Request): TuiModelCatalogRequest {
+  const rawProvider = typeof req.query.provider === "string" ? req.query.provider : undefined;
+  const provider = normalizeOptionalString(rawProvider);
+  if (provider !== undefined && Buffer.byteLength(provider, "utf8") > MAX_MODEL_CATALOG_PROVIDER_BYTES) {
+    throw new TuiAdapterError("invalid_request", "provider is too large.");
+  }
+  const rawQuery = typeof req.query.q === "string" ? req.query.q : undefined;
+  const query = normalizeOptionalString(rawQuery);
+  if (query !== undefined && Buffer.byteLength(query, "utf8") > MAX_MODEL_CATALOG_QUERY_BYTES) {
+    throw new TuiAdapterError("invalid_request", "q is too large.");
+  }
+  const rawCursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+  const cursor = normalizeOptionalString(rawCursor);
+  if (cursor !== undefined && Buffer.byteLength(cursor, "utf8") > MAX_MODEL_CATALOG_CURSOR_BYTES) {
+    throw new TuiAdapterError("invalid_request", "cursor is too large.");
+  }
+  if (provider === undefined && query === undefined) {
+    throw new TuiAdapterError("invalid_request", "provider or q is required.");
+  }
+  const rawLimit = typeof req.query.limit === "string"
+    ? Number(req.query.limit)
+    : DEFAULT_MODEL_CATALOG_PAGE_SIZE;
+  if (!Number.isSafeInteger(rawLimit) || rawLimit < 1 || rawLimit > MAX_MODEL_CATALOG_PAGE_SIZE) {
+    throw new TuiAdapterError(
+      "invalid_request",
+      `limit must be 1-${String(MAX_MODEL_CATALOG_PAGE_SIZE)}.`,
+    );
+  }
+  return {
+    ...(provider === undefined ? {} : { provider }),
+    ...(query === undefined ? {} : { query }),
+    ...(cursor === undefined ? {} : { cursor }),
+    limit: rawLimit,
+  };
+}
+
+function sendBoundedModelCatalog(res: Response, page: TuiModelCatalogPage): void {
+  const body = JSON.stringify(page);
+  if (Buffer.byteLength(body, "utf8") > MAX_MODEL_CATALOG_RESPONSE_BYTES) {
+    // The supplier is expected to pre-bound pages; hitting this fence is a
+    // producer bug, not a client mistake, so it reads as a 500.
+    throw new TuiAdapterError(
+      "model_catalog_too_large",
+      "Model catalog page exceeded its bounded wire contract.",
+    );
+  }
+  res.status(200).type("application/json").send(body);
 }
 
 function cronJobId(value: string | readonly string[] | undefined): string {

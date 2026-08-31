@@ -23,6 +23,10 @@ export type {
   RuntimeAdapterErrorDetails,
 } from "./runtime-adapter.js";
 export { inspectCodexSubscriptionSearch } from "@mono-agent/agent-runtime/agent/tools/index.js";
+export {
+  describePiBuiltinProvider,
+  listPiBuiltinProviders,
+} from "@mono-agent/agent-runtime";
 export { CodedError, isCodedError } from "@mono-agent/agent-contracts";
 export {
   isPlainObject,
