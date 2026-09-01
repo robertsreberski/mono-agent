@@ -15,6 +15,11 @@ const codex = "pi:openai-codex:gpt-5.5";
 const sonnet = "anthropic:claude-sonnet-4.5";
 const shortlist: readonly string[] = [codex, sonnet];
 
+/**
+ * `/v1/models` emits provider-local ids — `{provider:"anthropic", id:"opus-5"}` —
+ * NOT canonical `<provider>:<model>` references. Fixtures must use that shape:
+ * feeding an already-canonical id here hides the canonicalization entirely.
+ */
 const catalogModel = (
   id: string,
   provider: string,
@@ -76,13 +81,13 @@ describe("effort helpers", () => {
 
   it("uses a catalog model's grades for rows the agent shortlist does not name", () => {
     expect(effortLevelsForAgentModel(source, "anthropic:opus-5", catalogModel(
-      "anthropic:opus-5",
+      "opus-5",
       "anthropic",
       "Anthropic",
       { reasoning: true, effortLevels: ["low", "max"] },
     ))).toEqual(["low", "max"]);
     expect(effortLevelsForAgentModel(source, "anthropic:opus-5", catalogModel(
-      "anthropic:opus-5",
+      "opus-5",
       "anthropic",
       "Anthropic",
       { reasoningMode: "toggle" },
@@ -94,8 +99,8 @@ describe("buildSelectorModels", () => {
   it("keeps the automatic row first, shortlist order, then catalog-only rows", () => {
     const catalogByProvider = {
       anthropic: [
-        catalogModel(sonnet, "anthropic", "Anthropic"),
-        catalogModel("anthropic:opus-5", "anthropic", "Anthropic"),
+        catalogModel("claude-sonnet-4.5", "anthropic", "Anthropic"),
+        catalogModel("opus-5", "anthropic", "Anthropic"),
       ],
     };
     const rows = buildSelectorModels({ agent: source, modelOptions: shortlist, defaultEffort: "high", catalogByProvider });
@@ -113,11 +118,15 @@ describe("buildSelectorModels", () => {
       providerLabel: "Anthropic",
     });
     // Catalog-only rows carry their provider and don't duplicate shortlist ids.
+    // The row id is the canonical reference built from the wire's bare `id`,
+    // because that is what the thread override and turn API are validated against.
     expect(rows[3]).toMatchObject({
       id: "anthropic:opus-5",
       provider: "anthropic",
       providerLabel: "Anthropic",
     });
+    expect(rows.map((row) => row.id).every((id) => id === AUTOMATIC_MODEL_ID || id.includes(":")))
+      .toBe(true);
     expect(rows.filter((row) => row.id === sonnet)).toHaveLength(1);
   });
 
@@ -144,7 +153,7 @@ describe("groupSelectorModels", () => {
       modelOptions: shortlist,
       defaultEffort: "high",
       catalogByProvider: {
-        anthropic: [catalogModel(sonnet, "anthropic", "Anthropic")],
+        anthropic: [catalogModel("claude-sonnet-4.5", "anthropic", "Anthropic")],
       },
     });
     const groups = groupSelectorModels(rows);

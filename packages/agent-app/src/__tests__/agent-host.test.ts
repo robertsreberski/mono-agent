@@ -888,7 +888,7 @@ describe("agent host composition helpers", () => {
     }
   });
 
-  it("lets host runtimeOptions override config flags and carry code-only provider controls", async () => {
+  it("lets host runtimeOptions override config flags and carry code-only runtime controls", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
@@ -900,7 +900,7 @@ describe("agent host composition helpers", () => {
       runtime: fake.runtime,
       runtimeOptions: {
         permissionMode: "bypassPermissions",
-        codexSandboxNetworkAccess: true,
+        piMaxRetries: 5,
       },
     });
     await responder.respond(
@@ -909,7 +909,7 @@ describe("agent host composition helpers", () => {
     );
 
     expect(fake.calls[0]?.options.permissionMode).toBe("bypassPermissions");
-    expect(fake.calls[0]?.options.codexSandboxNetworkAccess).toBe(true);
+    expect(fake.calls[0]?.options.piMaxRetries).toBe(5);
   });
 
   it("keeps the configured Pi transport authoritative over request extensions", async () => {

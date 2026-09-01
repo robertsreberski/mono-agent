@@ -337,10 +337,14 @@ describe("tui channel driver — info composition", () => {
     });
     const info = await resolveInfo(captured);
 
-    // Regression fence: the full provider catalog must stay a bounded summary
-    // on /v1/info; the model lists themselves ride the lazy /v1/models endpoint.
+    // Regression fence: the provider summary must stay bounded on /v1/info; the
+    // model lists themselves ride the lazy /v1/models endpoint. Exceeding the
+    // 1 MiB body cap takes the agent offline rather than degrading it.
     expect(JSON.stringify(info).length).toBeLessThan(8_192);
-    expect(info.providers?.length).toBe(39);
+    // `providers` is a support gate: the agent advertises the provider its
+    // route uses plus the one the fallback declares, not all 39 Pi built-ins.
+    expect(info.providers?.map((provider) => provider.id).sort())
+      .toEqual(["anthropic", "openrouter"]);
   });
 
   it("advertises exact Pi effort levels while unknown provider refs fail closed", async () => {

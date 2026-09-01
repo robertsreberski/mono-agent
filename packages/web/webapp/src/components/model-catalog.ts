@@ -104,6 +104,17 @@ export const providerOfModel = (model: string): string => {
   return model;
 };
 
+/**
+ * The canonical `<provider>:<model>` reference for a catalog row. `/v1/models`
+ * emits provider-local ids (`{provider:"anthropic", id:"claude-opus-5"}`), but
+ * every selection surface — the thread override, the turn API, the agent's own
+ * validator — speaks canonical references. Building a row id from the bare
+ * `id` records a model the agent cannot resolve, and it fails silently by
+ * falling back to the default model.
+ */
+export const catalogModelReference = (model: CatalogModel): string =>
+  model.provider ? `${model.provider}:${model.id}` : model.id;
+
 const findCatalogModel = (
   catalogByProvider: Readonly<Record<string, readonly CatalogModel[]>> | undefined,
   modelId: string,
@@ -111,7 +122,7 @@ const findCatalogModel = (
   if (catalogByProvider === undefined) return undefined;
   for (const entry of Object.values(catalogByProvider)) {
     for (const model of entry) {
-      if (model.id === modelId) return model;
+      if (catalogModelReference(model) === modelId || model.id === modelId) return model;
     }
   }
   return undefined;
@@ -207,17 +218,18 @@ export const buildSelectorModels = ({
 
   for (const entry of Object.values(catalogByProvider ?? {})) {
     for (const catalogModel of entry) {
-      if (catalogModel.id === AUTOMATIC_MODEL_ID || shortlistIds.has(catalogModel.id)) continue;
-      const provider = catalogModel.provider || providerOfModel(catalogModel.id);
+      const reference = catalogModelReference(catalogModel);
+      if (reference === AUTOMATIC_MODEL_ID || shortlistIds.has(reference)) continue;
+      const provider = catalogModel.provider || providerOfModel(reference);
       rows.push({
-        id: catalogModel.id,
+        id: reference,
         name: catalogModel.name,
-        description: catalogModel.id,
+        description: reference,
         efforts: buildEffortOptions(
           agent,
           defaultEffort,
           modelOptions,
-          catalogModel.id,
+          reference,
           catalogModel,
         ),
         provider,

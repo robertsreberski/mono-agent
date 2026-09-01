@@ -395,6 +395,16 @@ export interface RuntimeRunOptions {
   readonly sandboxEngine?: MonoRuntimeSandboxEngine;
   /** The sandbox implementation is owned by createMonoRuntime; callers supply policy/engine data only. */
   readonly sandbox?: never;
+  /**
+   * Withdrawn in 0.21.0 with the runtime bridges that honored them. Left as
+   * `never` rather than simply deleted: the Pi runtime ignores these, so a
+   * caller that kept passing one would otherwise get silently different
+   * behavior from the contract it was written against. Failing to compile says
+   * so out loud.
+   */
+  readonly settingSources?: never;
+  readonly codexLoadProjectDocs?: never;
+  readonly codexSandboxNetworkAccess?: never;
   /** Typed tool-output limits (supported replacement for the `settings` tool keys). */
   readonly toolLimits?: RuntimeToolLimits;
   /** Typed compaction policy (supported replacement for the `settings` compaction keys). */
@@ -403,29 +413,6 @@ export interface RuntimeRunOptions {
   readonly prompts?: RuntimePromptOverrides;
   /** In-flight user guidance consumed by a provider's native steering API. */
   readonly liveInput?: AsyncIterable<RuntimeLiveInputMessage>;
-  /**
-   * Claude Agent SDK filesystem setting sources. Omitted/empty disables user,
-   * project, and local sources; Anthropic managed settings still apply. These
-   * sources may execute configured hooks and plugins, so enable only trusted
-   * settings and avoid opting in while running in an untrusted checkout.
-   */
-  readonly settingSources?: readonly ("user" | "project" | "local")[];
-  /**
-   * Restore Codex app-server's native project-document loading defaults.
-   * Omitted/false disables automatic discovery; explicit app-server args win.
-   */
-  readonly codexLoadProjectDocs?: boolean;
-  /**
-   * Code-only Codex app-server network control. Only strict `true` enables
-   * network access for plan/read-only and default/acceptEdits/workspace-write
-   * turns. No-tool probes and danger-full-access retain their fixed behavior.
-   * This is unrelated to RuntimeRunOptions.sandboxPolicy, which controls
-   * mono-agent's own sandbox and is not consumed by Codex's provider-owned tool
-   * loop. Default/acceptEdits workspace-write plus network true grants
-   * repository read and network egress in the same turn; prefer plan when only
-   * read-only browsing is needed.
-   */
-  readonly codexSandboxNetworkAccess?: boolean;
   // Pi-native provider knobs (optional; ignored by other bridges).
   readonly piTransport?: PiTransport;
   readonly piMaxRetries?: number;

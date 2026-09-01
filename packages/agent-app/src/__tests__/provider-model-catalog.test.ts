@@ -9,22 +9,28 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import { buildProviderModelCatalog } from "../provider-model-catalog.js";
 
 describe("provider-model-catalog", () => {
-  it("listProviders() never throws across all builtins and returns ≤45 entries", () => {
-    const catalog = buildProviderModelCatalog();
+  it("advertises nothing when the agent declared no providers and has no routes", () => {
+    // `providers` is a support gate. An agent that declared nothing and routes
+    // nowhere advertises nothing, rather than every Pi built-in it holds no
+    // credential for.
+    expect(buildProviderModelCatalog().listProviders()).toEqual([]);
+  });
+
+  it("declaring every built-in never throws and stays within the ≤45 advertised bound", () => {
+    const builtins = listPiBuiltinProviders();
+    const catalog = buildProviderModelCatalog({
+      providers: builtins.map((builtin) => ({ id: builtin.id })),
+    });
     const providers = catalog.listProviders();
 
     expect(providers.length).toBeLessThanOrEqual(45);
-    // Every static built-in is present; no call above threw.
-    for (const builtin of listPiBuiltinProviders()) {
+    for (const builtin of builtins) {
       expect(providers.some((provider) => provider.id === builtin.id)).toBe(true);
     }
-    // Deterministic: sorted by id (localeCompare) when nothing is configured.
-    const ids = providers.map((provider) => provider.id);
-    expect([...ids].sort((a, b) => a.localeCompare(b))).toEqual(ids);
   });
 
   it("caps openrouter at 100 and reports totalModelCount when not narrowed", () => {
-    const catalog = buildProviderModelCatalog();
+    const catalog = buildProviderModelCatalog({ providers: [{ id: "openrouter" }] });
     const openrouter = catalog.listProviders().find((provider) => provider.id === "openrouter");
     const full = listPiBuiltinModels("openrouter").length;
 
@@ -58,7 +64,7 @@ describe("provider-model-catalog", () => {
   });
 
   it("terminates pagination with strictly increasing cursors and no duplicate models", () => {
-    const catalog = buildProviderModelCatalog();
+    const catalog = buildProviderModelCatalog({ providers: [{ id: "anthropic" }] });
     const total = listPiBuiltinModels("anthropic").length;
     const seen: string[] = [];
     let cursor: string | undefined;
@@ -89,7 +95,10 @@ describe("provider-model-catalog", () => {
 
   it("resolve() reads memory only and never re-reads the builtin catalog", () => {
     const listBuiltinModels = vi.fn(listPiBuiltinModels);
-    const catalog = buildProviderModelCatalog({ listBuiltinModels });
+    const catalog = buildProviderModelCatalog({
+      providers: [{ id: "anthropic" }],
+      listBuiltinModels,
+    });
     const readsAfterBuild = listBuiltinModels.mock.calls.length;
     expect(readsAfterBuild).toBeGreaterThan(0);
 
@@ -105,7 +114,9 @@ describe("provider-model-catalog", () => {
   });
 
   it("searchModels bounds to MAX_SEARCH_RESULTS and matches across providers", () => {
-    const catalog = buildProviderModelCatalog();
+    const catalog = buildProviderModelCatalog({
+      providers: [{ id: "anthropic" }, { id: "openrouter" }, { id: "github-copilot" }],
+    });
     const results = catalog.searchModels("claude", 1_000);
     expect(results.length).toBeLessThanOrEqual(100);
     expect(results.length).toBeGreaterThan(0);
@@ -126,9 +137,11 @@ describe("provider-model-catalog", () => {
     expect(byId.get("anthropic")?.modelCount).toBeGreaterThan(0);
     // Supported by construction: you cannot route through an unsupported provider.
     expect(byId.get("openai-codex")?.configured).toBe(true);
-    // Everything else stays unflagged, so a selector can default to what the
-    // agent actually declared instead of all 39 builtins.
-    expect(byId.get("google")?.configured).toBeUndefined();
+    // An undeclared, unrouted built-in is not advertised at all — the gate, not
+    // merely an unset flag. Selecting one was how an operator could reach a
+    // provider the agent holds no credential for.
+    expect(byId.has("google")).toBe(false);
+    expect(catalog.listModels("google").models).toEqual([]);
   });
 
   it("degrades an unknown provider to an empty page and never throws", () => {
