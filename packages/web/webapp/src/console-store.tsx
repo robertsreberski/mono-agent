@@ -13,6 +13,7 @@ import { DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
   AgentSummary,
   Bootstrap,
+  CatalogModel,
   CronOverview,
   SkillRegistryState,
   StartTurnInput,
@@ -20,6 +21,7 @@ import type {
   ThreadSummary,
   WebEvent,
 } from "./types";
+import { effortLevelsForAgentModel, providerOfModel } from "./components/model-catalog";
 
 export type ConnectionState = "connecting" | "live" | "reconnecting" | "offline";
 
@@ -52,6 +54,8 @@ interface ConsoleStoreValue {
   readonly resetRunOverride: () => void;
   readonly modelOptions: readonly string[];
   readonly effortOptions: readonly string[];
+  readonly catalogByProvider: Readonly<Record<string, ProviderCatalogState>>;
+  readonly ensureProviderCatalog: (provider: string) => Promise<void>;
   readonly skillRegistry: SkillRegistryState;
   readonly cronOverview: CronOverview | null;
   readonly cronLoading: boolean;
@@ -134,6 +138,13 @@ export const preferenceKeyForThread = (sourceId: string, threadId: string | null
 export interface StoredRunPreference {
   readonly model: string;
   readonly effort: string;
+}
+
+/** One provider's lazily fetched `/v1/models` slice, cached per agent. */
+export interface ProviderCatalogState {
+  readonly models: readonly CatalogModel[];
+  readonly status: "loading" | "loaded" | "error";
+  readonly nextCursor?: string;
 }
 
 const asciiNoCase = (value: string): string =>
@@ -247,45 +258,30 @@ export const resolveBootstrapSelection = (
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : "The web console request failed.";
 
-export const GLOBAL_EFFORT_LEVELS = [
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-  "ultra",
-] as const;
-
-export const effortLevelsForAgentModel = (
-  agent: AgentSummary | null,
-  model: string,
-): readonly string[] => {
-  if (!agent) return [];
-  if (agent.modelOptions === undefined) return agent.efforts ?? GLOBAL_EFFORT_LEVELS;
-  const option = agent.modelOptions[model];
-  if (!option) return [];
-  if (
-    option.reasoning === false ||
-    option.reasoningMode === "none" ||
-    option.effortLevels?.length === 0
-  ) {
-    return [];
-  }
-  if (option.reasoningMode === "toggle") return ["high", "none"];
-  return option.effortLevels ?? [];
-};
-
 export const validateRunPreference = (
   agent: AgentSummary | null,
   preference: StoredRunPreference,
+  advertisedProviders: readonly string[] = [],
 ): StoredRunPreference => {
-  if (!agent) return { model: "", effort: "" };
-  const model = preference.model && agent.models?.includes(preference.model)
+  // With no agent context there is nothing to judge the preference against.
+  if (!agent) return preference;
+  const advertisedModels = agent.models ?? [];
+  // Discovery may briefly report an empty shortlist while the agent boots. The
+  // operator's overrides are server-admitted by then (or harmless drafts), so
+  // keep them: invalidating a real run selection against a boot blip would
+  // silently erase what the conversation actually runs on.
+  if (advertisedModels.length === 0) return preference;
+  const advertisedProviderSet = new Set<string>([
+    ...advertisedModels.map((reference) => providerOfModel(reference)),
+    ...advertisedProviders,
+  ]);
+  const model = preference.model && (
+    advertisedModels.includes(preference.model) ||
+    advertisedProviderSet.has(providerOfModel(preference.model))
+  )
     ? preference.model
     : "";
-  const effectiveModel = model || agent.defaultModel || agent.models?.[0] || "";
+  const effectiveModel = model || agent.defaultModel || advertisedModels[0] || "";
   const efforts = effortLevelsForAgentModel(agent, effectiveModel);
   return {
     model,
@@ -331,6 +327,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       Object.entries(readStoredRunPreferences()).map(([key, value]) => [key, value.effort]),
     ),
   );
+  const [catalogByProvider, setCatalogByProvider] = useState<Record<string, ProviderCatalogState>>({});
+  const catalogInFlightRef = useRef<Set<string>>(new Set());
+  const migratedKeysRef = useRef<Set<string>>(new Set());
   const selectedThreadRef = useRef<string | null>(null);
   const selectedAgentRef = useRef<string | null>(selectedAgentId);
   const skillRequestGenerationRef = useRef(0);
@@ -360,6 +359,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   useEffect(() => {
     selectedAgentRef.current = selectedAgentId;
+  }, [selectedAgentId]);
+
+  // The catalog cache is per agent; a different agent must not inherit pages.
+  useEffect(() => {
+    setCatalogByProvider({});
+    catalogInFlightRef.current.clear();
   }, [selectedAgentId]);
 
   useEffect(() => {
@@ -1035,15 +1040,77 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [fetchThreadSummary, visibleThreads]);
 
+  const applyThreadUpdate = useCallback((nextThread: ThreadSummary) => {
+    setBootstrap((current) =>
+      current ? { ...current, threads: mergeThreads(current.threads, [nextThread]) } : current,
+    );
+    setDetail((current) =>
+      current?.thread.id === nextThread.id ? { ...current, thread: nextThread } : current,
+    );
+  }, []);
+
+  const ensureProviderCatalog = useCallback(async (provider: string) => {
+    const sourceId = selectedAgentId;
+    if (!sourceId || !provider) return;
+    if (catalogInFlightRef.current.has(provider)) return;
+    const existing = catalogByProvider[provider];
+    if (existing !== undefined && existing.status !== "error") return;
+    catalogInFlightRef.current.add(provider);
+    setCatalogByProvider((current) => ({
+      ...current,
+      [provider]: { models: [...(current[provider]?.models ?? [])], status: "loading" },
+    }));
+    try {
+      const page = await api.agentModels(sourceId, provider);
+      if (selectedAgentRef.current !== sourceId) return;
+      setCatalogByProvider((current) => {
+        const merged = new Map(
+          (current[provider]?.models ?? []).map((catalog) => [catalog.id, catalog]),
+        );
+        for (const catalog of page.models) merged.set(catalog.id, catalog);
+        return {
+          ...current,
+          [provider]: {
+            models: [...merged.values()],
+            status: "loaded",
+            nextCursor: page.nextCursor,
+          },
+        };
+      });
+    } catch {
+      if (selectedAgentRef.current !== sourceId) return;
+      setCatalogByProvider((current) => ({
+        ...current,
+        [provider]: { models: [...(current[provider]?.models ?? [])], status: "error" },
+      }));
+    } finally {
+      catalogInFlightRef.current.delete(provider);
+    }
+  }, [catalogByProvider, selectedAgentId]);
+
   const modelOptions = selectedAgent?.models ?? [];
   const preferenceKey = selectedAgentId
     ? preferenceKeyForThread(selectedAgentId, selectedThreadId)
     : "";
-  const storedPreference = {
-    model: modelByContext[preferenceKey] ?? "",
-    effort: effortByContext[preferenceKey] ?? "",
-  };
-  const validatedPreference = validateRunPreference(selectedAgent, storedPreference);
+  // Overrides live on the thread (persisted by the server). Browser-local
+  // prefs survive only for threads that have not been migrated yet, which keeps
+  // the one-time PATCH that adopts them from ever overriding a real server
+  // value.
+  const serverOverrideActive =
+    selectedThread !== null &&
+    ((selectedThread.runModel ?? null) !== null || (selectedThread.runEffort ?? null) !== null);
+  const storedPreference = serverOverrideActive
+    ? { model: selectedThread?.runModel ?? "", effort: selectedThread?.runEffort ?? "" }
+    : {
+        model: modelByContext[preferenceKey] ?? "",
+        effort: effortByContext[preferenceKey] ?? "",
+      };
+  const advertisedProviders = Object.keys(catalogByProvider);
+  const validatedPreference = validateRunPreference(
+    selectedAgent,
+    storedPreference,
+    advertisedProviders,
+  );
   const model = validatedPreference.model;
   const effectiveModel = selectedAgent
     ? model || selectedAgent.defaultModel || modelOptions[0] || ""
@@ -1056,7 +1123,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const hasRunOverride = model.length > 0 || effort.length > 0;
 
   useEffect(() => {
-    if (!preferenceKey) return;
+    if (!preferenceKey || serverOverrideActive) return;
     if (storedPreference.model !== validatedPreference.model) {
       setModelByContext((current) => ({
         ...current,
@@ -1071,15 +1138,91 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [
     preferenceKey,
+    serverOverrideActive,
     storedPreference.effort,
     storedPreference.model,
     validatedPreference.effort,
     validatedPreference.model,
   ]);
 
+  // One-time adoption of a browser-local override into the thread's server
+  // fields. A server value always wins, and a reset can never resurrect a
+  // migrated key because the local copy is dropped once patched.
+  useEffect(() => {
+    if (!selectedThread || !preferenceKey) return;
+    if (migratedKeysRef.current.has(preferenceKey)) return;
+    if (
+      (selectedThread.runModel ?? null) !== null ||
+      (selectedThread.runEffort ?? null) !== null
+    ) return;
+    const local = {
+      model: modelByContext[preferenceKey] ?? "",
+      effort: effortByContext[preferenceKey] ?? "",
+    };
+    if (local.model === "" && local.effort === "") return;
+    migratedKeysRef.current.add(preferenceKey);
+    void (async () => {
+      try {
+        const next = await api.patchThread(selectedThread.id, {
+          model: local.model || null,
+          effort: local.effort || null,
+        });
+        applyThreadUpdate(next);
+        setModelByContext((current) => {
+          const nextMap = { ...current };
+          delete nextMap[preferenceKey];
+          return nextMap;
+        });
+        setEffortByContext((current) => {
+          const nextMap = { ...current };
+          delete nextMap[preferenceKey];
+          return nextMap;
+        });
+        setActionError(null);
+      } catch (migrationError) {
+        migratedKeysRef.current.delete(preferenceKey);
+        setActionError(errorMessage(migrationError));
+      }
+    })();
+  }, [applyThreadUpdate, effortByContext, modelByContext, preferenceKey, selectedThread]);
+
+  const patchThreadOverride = useCallback(async (
+    patch: { model?: string | null; effort?: string | null },
+  ) => {
+    const thread = selectedThread;
+    if (!thread) return;
+    const previous = { model: thread.runModel ?? null, effort: thread.runEffort ?? null };
+    try {
+      applyThreadUpdate({
+        ...thread,
+        runModel: "model" in patch ? patch.model ?? null : previous.model,
+        runEffort: "effort" in patch ? patch.effort ?? null : previous.effort,
+      });
+      const next = await api.patchThread(thread.id, patch);
+      applyThreadUpdate(next);
+      setActionError(null);
+    } catch (patchError) {
+      applyThreadUpdate(thread);
+      setActionError(errorMessage(patchError));
+    }
+  }, [applyThreadUpdate, selectedThread]);
+
   const setModel = useCallback(
     (next: string) => {
       if (!selectedAgentId || !preferenceKey) return;
+      if (selectedThread) {
+        const nextEffectiveModel =
+          next || selectedAgent?.defaultModel || selectedAgent?.models?.[0] || "";
+        const nextEfforts = effortLevelsForAgentModel(selectedAgent, nextEffectiveModel);
+        const currentEffort = selectedThread.runEffort ?? "";
+        void patchThreadOverride({
+          model: next === "" ? null : next,
+          ...(currentEffort !== "" && !nextEfforts.includes(currentEffort)
+            ? { effort: null }
+            : {}),
+        });
+        return;
+      }
       setModelByContext((current) => ({ ...current, [preferenceKey]: next }));
       const nextEffectiveModel =
         next || selectedAgent?.defaultModel || selectedAgent?.models?.[0] || "";
@@ -1091,7 +1234,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           : "",
       }));
     },
-    [preferenceKey, selectedAgent, selectedAgentId],
+    [patchThreadOverride, preferenceKey, selectedAgent, selectedAgentId, selectedThread],
   );
 
   const resetRunOverride = useCallback(() => {
@@ -1106,14 +1249,21 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       delete next[preferenceKey];
       return next;
     });
-  }, [preferenceKey]);
+    if (selectedThread) {
+      void patchThreadOverride({ model: null, effort: null });
+    }
+  }, [patchThreadOverride, preferenceKey, selectedThread]);
 
   const setEffort = useCallback(
     (next: string) => {
       if (!selectedAgentId || !preferenceKey) return;
+      if (selectedThread) {
+        void patchThreadOverride({ effort: next === "" ? null : next });
+        return;
+      }
       setEffortByContext((current) => ({ ...current, [preferenceKey]: next }));
     },
-    [preferenceKey, selectedAgentId],
+    [patchThreadOverride, preferenceKey, selectedAgentId, selectedThread],
   );
 
   const sendTurn = useCallback(
@@ -1215,6 +1365,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       resetRunOverride,
       modelOptions,
       effortOptions,
+      catalogByProvider,
+      ensureProviderCatalog,
       skillRegistry,
       cronOverview,
       cronLoading,
@@ -1258,6 +1410,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       cronLoading,
       cronError,
       cronOverview,
+      catalogByProvider,
+      ensureProviderCatalog,
       detail,
       detailLoading,
       deleteThread,

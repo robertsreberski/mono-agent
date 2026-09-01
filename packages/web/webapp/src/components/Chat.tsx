@@ -133,6 +133,7 @@ export function ModelControls() {
   const {
     usage, selectorModels, model, effort, setModel, setEffort,
     agentDefaultModel, hasRunOverride, resetRunOverride, disabled, hasSettings,
+    catalogStatusByProvider, openCatalog, requestProvider,
   } = useRunControls();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -160,10 +161,17 @@ export function ModelControls() {
           onValueChange={setModel}
           onEffortChange={setEffort}
           open={settingsOpen}
-          onOpenChange={setSettingsOpen}
+          onOpenChange={(next) => {
+            setSettingsOpen(next);
+            // Fetch the shortlist providers' first catalog pages so the groups
+            // and chips are useful the moment the picker opens.
+            if (next) openCatalog();
+          }}
           disabled={disabled}
           badge={hasRunOverride ? "custom" : "default"}
           agentDefaultId={agentDefaultModel}
+          providerStatus={catalogStatusByProvider}
+          onProviderRequest={requestProvider}
           {...(hasRunOverride ? { onReset: resetRunOverride } : {})}
         />
       )}
