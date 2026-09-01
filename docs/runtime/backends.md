@@ -95,7 +95,7 @@ If no match is found, the runtime rejects the route with a repair message sugges
 }
 ```
 
-Env: `MONO_AGENT_FALLBACKS_JSON`. CLI: repeat `--fallback <ref>` and optionally follow each with `--fallback-effort <provider-default|level>`. Legacy `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain supported with no removal deadline; the legacy CLI `--fallback-models` flag was removed. See [Fallback & failover](/runtime/fallback/) for router behavior and the failover report.
+Env: `MONO_AGENT_FALLBACKS_JSON`. CLI: repeat `--fallback <ref>` and optionally follow each with `--fallback-effort <provider-default|level>`. `runtime.fallbackModels`, `MONO_AGENT_FALLBACK_MODELS` and the CLI `--fallback-models` flag were all retired. See [Fallback & failover](/runtime/fallback/) for router behavior and the failover report.
 
 ## Related
 

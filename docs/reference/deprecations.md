@@ -48,9 +48,11 @@ reachability checks found no supported caller. Unknown `live` config now fails
 strict validation instead of being ignored. `MONO_AGENT_WEB_AUTH_TOKEN` is no
 longer read by any code; its only reader was the removed `sessions` command.
 
-The `--fallback-models` removal covers only the CLI CSV flag. Existing JSON
-`runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain supported
-compatibility inputs; those config forms are unaffected. The retired
+`runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were **retired** in
+0.21.0 and are now rejected at load with the replacement named; the CLI CSV flag
+`--fallback-models` was already removed. Convert with
+`mono-agent migrate-config --write`, which rewrites the key as
+`runtime.fallbacks: [{ "model": "..." }]`. The retired
 recipe → preset mapping is recorded as static documentation in
 [Presets & capability modules](/reference/presets/#deprecations). The
 `memory-bujo` bin entry and its error-deflector were removed; use

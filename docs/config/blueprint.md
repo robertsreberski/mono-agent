@@ -183,7 +183,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
       "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. openai-codex:gpt-5.6-terra
       "endpoint": "http://localhost:11434", // ollama only; invalid for agent-host
       "timeoutMs": 60000                   // in-app per-call timeout; 1000-600000, default 60000. Raise for slow local models.
-      // For agent-host, use: "model": "openai-codex:gpt-5.6-terra"; omit endpoint and executionMode.
+      // For agent-host, use: "model": "openai-codex:gpt-5.6-terra"; omit endpoint.
     },
     "recallTool": { "enabled": true },      // read-only MemoryRecall tool; default on when memory is configured
     "rememberTool": { "enabled": true },    // agent-callable Remember write tool; bujo backend only, also allowlist-gated
@@ -266,9 +266,9 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "progress": { "enabled": true }
   },
 
-  // Sandbox for Pi-owned runtime commands. Under uniform route safety, a route
-  // that cannot enforce these scopes fails closed. Under per-route-native,
-  // non-Pi routes use the explicit provider-native contract instead.
+  // Sandbox for Pi-owned runtime commands. Every route is Pi-native, so one
+  // contract covers the whole chain; a route that cannot enforce these scopes
+  // fails closed.
   "sandbox": {
     "mode": "native",                      // native (srt-wrapped) | off
     "network": { "mode": "none", "allowlist": [] }, // none|localhost|allowlist|all; *.suffix wildcards; all = open egress, filesystem still enforced

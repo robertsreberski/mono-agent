@@ -398,7 +398,7 @@ Env overrides: `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, 
 The `agent-host` provider runs memory LLM passes (one batched memory/graph extraction and, only when close existing candidates need classification, one batched reconcile) on their **own dedicated SDK runtime built from `memory.llm.model`** — independent of the channel runtime — so there is no separate local chat model to pull. The `model` is a runtime reference. Do not set `endpoint` — it is Ollama-only and rejected here.
 
 :::note
-The memory LLM always executes on `memory.llm.model`, and that model is its **sole primary** — the memory turn does **not** inherit canonical `runtime.fallbacks` or legacy `runtime.fallbackModels`, so there is no failover chain on memory passes. This is deliberate: reusing the channel fallback router would silently run capture on `runtime.model`.
+The memory LLM always executes on `memory.llm.model`, and that model is its **sole primary** — the memory turn does **not** inherit `runtime.fallbacks`, so there is no failover chain on memory passes. This is deliberate: reusing the channel fallback router would silently run capture on `runtime.model`.
 :::
 
 ```json
