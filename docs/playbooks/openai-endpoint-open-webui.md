@@ -28,7 +28,7 @@ All three are `config` coverage — no code required.
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6",
+    "model": "anthropic:claude-sonnet-4-6",
     "session": {
       "mode": "continuous",
       "idleTimeoutMs": 1800000
@@ -59,7 +59,7 @@ The same settings can be supplied via environment variables (`MONO_AGENT_*`); se
 
 ## Steps
 
-1. `mono-agent init --model claude:claude-sonnet-4-6`
+1. `mono-agent init --model anthropic:claude-sonnet-4-6`
 2. Add the `openaiApi` section; set `allowNonLoopback: true` for a non-loopback bind, put `MONO_AGENT_OPENAI_API_KEY` in the owner-only `.env`, set `modelId`, and enable continuous session mode under `runtime.session`.
 3. `mono-agent validate`, then `mono-agent start` and confirm the status line reports `openaiApi` `running` with its endpoint.
 4. In Open WebUI, add an OpenAI connection pointing at `http://host:4040/v1` with the bearer key.

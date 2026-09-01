@@ -16,7 +16,7 @@ A model reference is a `:`-delimited string. The first colon separates the provi
 | Shape | Example |
 | --- | --- |
 | `<provider>:<model>` | `github-copilot:gpt-4.1` |
-| `<provider>:<model>` with nested id | `openai-codex:gpt-5.6-terra` |
+| `<provider>:<model>` with nested id | `openai-openai-codex:gpt-5.6-terra` |
 | Local provider | `ollama:gemma4:31b` |
 
 Only the **first** colon is significant — model ids may contain slashes and colons (e.g. `openrouter:anthropic/claude-3.5-sonnet`).
@@ -34,7 +34,7 @@ These prefixes were removed in 0.21.0 and are hard-rejected with a named replace
 | `acp:<model>` | The ACP client runtime backend was removed; use Pi directly |
 | `vercel:<provider>:<model>` | `<provider>:<model>` |
 
-A leading `pi:` prefix (e.g. `pi:openai-codex:gpt-5.6-terra`) is silently canonicalized away — the `pi:` is not part of the provider id. Tier aliases (`haiku`, `sonnet`, `opus`) are rejected; use an exact model id.
+A leading `pi:` prefix (e.g. `openai-openai-codex:gpt-5.6-terra`) is silently canonicalized away — the `pi:` is not part of the provider id. Tier aliases (`haiku`, `sonnet`, `opus`) are rejected; use an exact model id.
 
 Note that `openai-codex` and `opencode-go` are **Pi provider ids**, not survivals of the removed bridges. Routes naming them are ordinary Pi routes and keep working.
 
@@ -85,10 +85,10 @@ If no match is found, the runtime rejects the route with a repair message sugges
 ```json
 {
   "runtime": {
-    "model": "openai-codex:gpt-5.6-terra",
+    "model": "openai-openai-codex:gpt-5.6-terra",
     "effort": "high",
     "fallbacks": [
-      { "model": "openai-codex:gpt-5.6-sol", "effort": "xhigh" },
+      { "model": "openai-openai-codex:gpt-5.6-sol", "effort": "xhigh" },
       { "model": "ollama:gemma4:31b" }
     ]
   }

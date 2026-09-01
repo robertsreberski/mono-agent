@@ -123,9 +123,9 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     "llm": {                               // enables bujo capture and the effective bujo tier; omit for lite/journal
       // Env: MONO_AGENT_MEMORY_LLM_PROVIDER / _MODEL / _EXECUTION_MODE / _ENDPOINT.
       "provider": "ollama",                // ollama | agent-host
-      "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. openai-codex:gpt-5.6-sol
+      "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. openai-openai-codex:gpt-5.6-sol
       "endpoint": "http://localhost:11434" // ollama only; invalid for agent-host
-      // For agent-host, use: "model": "openai-codex:gpt-5.6-sol"; omit endpoint.
+      // For agent-host, use: "model": "openai-openai-codex:gpt-5.6-sol"; omit endpoint.
     },
     // Bujo auto-scheduler — override the default or disable it.
     // Consolidation runs in-app; no external cron or launchd needed.
@@ -199,7 +199,7 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
 
   // Sandbox for Pi-owned runtime commands. Direct Codex uses its own sandbox;
   // Claude/direct OpenCode cannot enforce these exact srt scopes. All reject
-  // this block (pi:opencode-go:* remains a Pi route).
+  // this block (opencode-go:* remains a Pi route).
   "sandbox": {
     "mode": "native",                      // native (srt-wrapped) | off
     "network": { "mode": "none", "allowlist": [] }, // none|localhost|allowlist|all; *.suffix wildcards; all = open egress with filesystem still enforced (managed/explicit node+cli SRT launch only)
@@ -440,7 +440,7 @@ mono-agent restart --clear-sessions  # restart AND purge persisted pi sessions (
 
 A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` / `--env-file` paths there. `start` prints the traceability source (Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts) and one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason. Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it) and run `mono-agent restart` to apply — there is no live browser re-apply.
 
-For BuJo capture and the effective `bujo` tier that runs scheduled consolidation, configure `memory.llm`. Use `provider: "ollama"` with a local Ollama chat model string and optional `endpoint`, or `provider: "agent-host"` with `model` as a normal SDK runtime model reference such as `pi:openai-codex:gpt-5.5` and `executionMode: "sdk"`. `endpoint` is Ollama-only, and CLI-backed refs such as `codex:gpt-5.5` are rejected for memory LLMs until runtimes can enforce no external actions. The same values can be supplied via `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`, and `MONO_AGENT_MEMORY_LLM_ENDPOINT`. Routine BuJo consolidation runs via the in-app scheduler; the standalone `memory-bujo` maintenance CLI was removed (use `mono-agent memory <subcommand>` from the agent folder). `agent-host` LLM capture is an in-app composition path that injects the `LlmComplete` implementation into the BuJo store.
+For BuJo capture and the effective `bujo` tier that runs scheduled consolidation, configure `memory.llm`. Use `provider: "ollama"` with a local Ollama chat model string and optional `endpoint`, or `provider: "agent-host"` with `model` as a normal SDK runtime model reference such as `openai-openai-codex:gpt-5.6-sol` and `executionMode: "sdk"`. `endpoint` is Ollama-only, and CLI-backed refs such as `openai-codex:gpt-5.6-sol` are rejected for memory LLMs until runtimes can enforce no external actions. The same values can be supplied via `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`, and `MONO_AGENT_MEMORY_LLM_ENDPOINT`. Routine BuJo consolidation runs via the in-app scheduler; the standalone `memory-bujo` maintenance CLI was removed (use `mono-agent memory <subcommand>` from the agent folder). `agent-host` LLM capture is an in-app composition path that injects the `LlmComplete` implementation into the BuJo store.
 
 For operator views, run `mono-agent tui` or `mono-agent web` from any directory once the agent is started. Both discover running agents via the trace-source registry. The TUI and assistant-ui web console chat over the default-on `tui` stream endpoint (`"tui": {"enabled": false}` opts out); on macOS, `mono-agent tui --configure` opens a persistent, visibly marked proposal-only SELF-CONFIG conversation against the managed background agent and must not be combined with `--local`. Approval, rejection, and no-change turns continue that session; only quitting exits it. `mono-agent web` is an always-on service namespace, binds `0.0.0.0:5050` by default, and has no app login; use `--loopback` to narrow it. Capable agents expose stable read-only cron channels there. Run-now and runtime enable controls remain hidden unless `tui.apiKey` is configured and `cron.operatorActions.enabled` is explicitly true; every mutation still requires confirmation, is agent-audited, and does not rewrite job config. The former read-only recorder command, package, and relay were removed; use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). The low-level `mono-agent-tui` bin also supports `--responder <file>` (embedded, an ESM module default-exporting an `AgentResponderLike` or exporting `createResponder(env, cwd, configJson)`) and `--url <baseUrl>` (direct connect).
 
