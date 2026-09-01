@@ -2,6 +2,7 @@ import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import type { AgentMessageStream, ProcessJobOperator } from "@mono-agent/agent-contracts";
+import { resolveConfiguredProviders } from "@mono-agent/config";
 
 import type {
   TuiAdapterConfig,
@@ -148,11 +149,18 @@ export function createTuiChannelDriver(
       // the frozen provider list and the configured-route shortlist from memory
       // only; the lazy `/v1/models` endpoint slices already-frozen pages.
       const catalog = buildProviderModelCatalog({
-        providers: input.coreConfig.providers?.entries ?? input.coreConfig.providers?.local ?? [],
+        providers: resolveConfiguredProviders(input.coreConfig).entries,
         ...(localProviders === undefined ? {} : { localProviders }),
         configuredRoutes: configuredRefs,
         discoveredModels,
       });
+
+      // Resolve both /v1/info projections once, here. `/v1/info` is polled every
+      // 5s per connected console, and a throwing or slow info provider returns
+      // 500 for the WHOLE response — showing the agent offline rather than
+      // degraded. Neither projection may run per request.
+      const infoModelOptions = catalog.describe(configuredRefs);
+      const infoProviders = catalog.listProviders();
 
       const modelCatalog: TuiModelCatalogProvider = (request) => {
         if (request.provider !== undefined) {
@@ -175,8 +183,8 @@ export function createTuiChannelDriver(
           model: modelReferenceKey(input.coreConfig.runtime.model),
           ...(input.coreConfig.runtime.effort === undefined ? {} : { effort: input.coreConfig.runtime.effort }),
           models: configModelKeys,
-          modelOptions: catalog.describe(configuredRefs),
-          providers: catalog.listProviders(),
+          modelOptions: infoModelOptions,
+          providers: infoProviders,
           skills: skillRegistry.snapshot(),
         };
       };
