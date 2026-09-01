@@ -198,7 +198,6 @@
  * @property {RuntimeToolLifecycleSink} [toolLifecycleSink] Awaited host-owned incremental lifecycle persistence boundary.
  * @property {ReadonlyArray<Object>} [messages]
  * @property {string} [effort]
- * @property {boolean} [fastMode]
  * @property {string} [cwd]
  * @property {Object<string, Object>} [mcpServers]
  * @property {ReadonlyArray<{name: string, description?: string}>} [skills] Skills disclosed to this run, as `{name, description}`. Non-empty makes `supports_skills` a routing requirement (see router.js), so a chain entry that lacks it is skipped.
@@ -208,8 +207,6 @@
  * @property {string} [permissionMode]
  * @property {number} [maxTurns]
  * @property {Object} [outputSchema]
- * @property {{teammates?: ReadonlyArray<unknown>}} [nativeSubagents] Legacy compatibility input.
- *   No surviving bridge consumes native teammate definitions.
  * @property {string} [runArtifactDir]
  * @property {AbortSignal} [abortSignal]
  * @property {{schema: 1, values: Readonly<Record<string, string>>, pathPrepend?: readonly string[]}} [toolEnvironment] Host-only environment for Bash, Exec, and nested subagents in this run.
@@ -338,8 +335,7 @@
  * @property {boolean} [supports_builtin_tools]
  * @property {boolean} [supports_live_input]
  * @property {boolean} [supports_native_subagents] Whether the bridge exposes provider-native subagent surfaces and
- *   normalized activity. This does not imply it accepts caller-defined `nativeSubagents`: Codex owns its collaboration
- *   agents, while only the Claude bridges project caller-defined profiles.
+ *   normalized activity. In-process delegation is the `Agent` tool, configured by the host.
  * @property {boolean} [supports_request_tool_environment]
  * @property {boolean} [supports_fast_mode]
  * @property {"projected"|"allow_all_only"} [tool_policy] Whether the bridge can

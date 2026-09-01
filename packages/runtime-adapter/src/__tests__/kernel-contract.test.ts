@@ -170,6 +170,11 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
     expectTypeOf<RuntimeRunOptions["settingSources"]>().toEqualTypeOf<undefined>();
     expectTypeOf<RuntimeRunOptions["codexLoadProjectDocs"]>().toEqualTypeOf<undefined>();
     expectTypeOf<RuntimeRunOptions["codexSandboxNetworkAccess"]>().toEqualTypeOf<undefined>();
+    // `fastMode` was a Claude concept and native teammate definitions were
+    // projected only by the deleted Claude bridges; the Pi bridge hardcodes an
+    // empty `nativeSubagentsUsed`, so both were accepted and ignored.
+    expectTypeOf<RuntimeRunOptions["fastMode"]>().toEqualTypeOf<undefined>();
+    expectTypeOf<RuntimeRunOptions["nativeSubagents"]>().toEqualTypeOf<undefined>();
   });
 
   it("types per-attempt tool-policy projection without opening other request fields", () => {

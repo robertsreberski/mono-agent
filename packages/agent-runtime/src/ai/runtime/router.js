@@ -96,7 +96,7 @@ const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
   "allowedTools", "disallowedTools", "permissionMode", "mcpServers", "mcpApps", "skills",
-  "outputSchema", "nativeSubagents", "liveInput", "fastMode", "toolEnvironment",
+  "outputSchema", "liveInput", "toolEnvironment",
 ]);
 
 class ResolverProtectedOptionError extends Error {

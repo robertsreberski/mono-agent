@@ -405,6 +405,14 @@ export interface RuntimeRunOptions {
   readonly settingSources?: never;
   readonly codexLoadProjectDocs?: never;
   readonly codexSandboxNetworkAccess?: never;
+  /**
+   * Also withdrawn: no surviving bridge reads either. `fastMode` was a Claude
+   * concept, and native teammate definitions were projected only by the deleted
+   * Claude bridges -- the Pi bridge hardcodes an empty `nativeSubagentsUsed`.
+   * In-process delegation is the `Agent` tool, configured by the host.
+   */
+  readonly fastMode?: never;
+  readonly nativeSubagents?: never;
   /** Typed tool-output limits (supported replacement for the `settings` tool keys). */
   readonly toolLimits?: RuntimeToolLimits;
   /** Typed compaction policy (supported replacement for the `settings` compaction keys). */

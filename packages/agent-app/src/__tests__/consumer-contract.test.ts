@@ -44,7 +44,7 @@ describe("golden consumer config contracts", () => {
         },
         {
           "id": "runtime",
-          "status": "waiting",
+          "status": "ok",
         },
         {
           "id": "credentials",
@@ -140,7 +140,7 @@ describe("golden consumer config contracts", () => {
         },
         {
           "id": "runtime",
-          "status": "ok",
+          "status": "waiting",
         },
         {
           "id": "credentials",
