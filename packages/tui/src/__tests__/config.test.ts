@@ -119,7 +119,7 @@ describe("ConfigView", () => {
     const rendered = renderText(view);
     expect(rendered).toContain(configPath);
     expect(rendered).toContain("read-only · r reload · env overrides shown are from this shell, not the agent process");
-    expect(rendered).toContain("Model pi:ollama:qwen3:8b [env]");
+    expect(rendered).toContain("Model ollama:qwen3:8b [env]");
     expect(rendered).toContain("Max turns 9 [env]");
     expect(rendered).toContain("Effort — [default]");
     expect(rendered).toContain("Embeddings API key (redacted) [env]");

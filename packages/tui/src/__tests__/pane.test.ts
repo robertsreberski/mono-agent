@@ -57,7 +57,7 @@ describe("buildTuiConfigSummary", () => {
       "providers",
     ]);
     expect(findField(sections, "Model")).toMatchObject({
-      value: "pi:ollama:qwen3:8b",
+      value: "ollama:qwen3:8b",
       source: "env",
     });
     expect(findField(sections, "Max turns")).toMatchObject({

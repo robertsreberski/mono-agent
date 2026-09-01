@@ -147,17 +147,102 @@ describe("RemoteAgentResponder", () => {
     );
   });
 
+  it("surfaces the providers catalog from /v1/info when configured", async () => {
+    const adapter = await startTuiAdapter({
+      responder: { respond: async () => ({ text: "ok" }) },
+      info: {
+        model: "ollama:qwen3:8b",
+        providers: [
+          { id: "anthropic", label: "Anthropic", modelCount: 2, source: "builtin", configured: true },
+          { id: "openai-codex", label: "OpenAI Codex", modelCount: 1, totalModelCount: 12, source: "builtin" },
+          { id: "ollama", label: "Ollama", modelCount: 1, source: "discovered" },
+        ],
+      },
+    });
+    try {
+      const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
+      const info = await client.info();
+      expect(info.providers).toEqual([
+        { id: "anthropic", label: "Anthropic", modelCount: 2, source: "builtin", configured: true },
+        { id: "openai-codex", label: "OpenAI Codex", modelCount: 1, totalModelCount: 12, source: "builtin" },
+        { id: "ollama", label: "Ollama", modelCount: 1, source: "discovered" },
+      ]);
+    } finally {
+      await adapter.stop();
+    }
+  });
+
+  it("tolerates the absence of providers from an older agent's /v1/info", async () => {
+    await withAdapter(
+      { respond: async () => ({ text: "ok" }) },
+      async (adapter) => {
+        const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
+        const info = await client.info();
+        expect(info.providers).toBeUndefined();
+      },
+    );
+  });
+
+  it("drops malformed providers entries while keeping the well-formed ones", async () => {
+    const { createServer } = await import("node:http");
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          schema: 1,
+          model: "x",
+          providers: [
+            { id: "good", label: "Good", modelCount: 3, source: "builtin" },
+            { id: "bad-source", label: "Bad", modelCount: 1, source: "mystery" },
+            { label: "no id", modelCount: 1, source: "builtin" },
+            { id: "no-count", label: "No count" },
+            "not-an-object",
+            { id: "", label: "Empty id", modelCount: 1, source: "builtin" },
+          ],
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    try {
+      const client = new RemoteAgentResponder({ baseUrl: `http://127.0.0.1:${port}` });
+      const info = await client.info();
+      expect(info.providers).toEqual([{ id: "good", label: "Good", modelCount: 3, source: "builtin" }]);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("omits providers entirely when the payload's providers is not an array", async () => {
+    const { createServer } = await import("node:http");
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ schema: 1, model: "x", providers: "garbage" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    try {
+      const client = new RemoteAgentResponder({ baseUrl: `http://127.0.0.1:${port}` });
+      const info = await client.info();
+      expect(info.providers).toBeUndefined();
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
   it("surfaces modelOptions from /v1/info when configured", async () => {
     const adapter = await startTuiAdapter({
       responder: { respond: async () => ({ text: "ok" }) },
       info: {
-        model: "pi:ollama:qwen3.6",
-        models: ["pi:ollama:qwen3.6", "pi:lmstudio:qwen3-8b"],
+        model: "ollama:qwen3.6",
+        models: ["ollama:qwen3.6", "lmstudio:qwen3-8b"],
         modelOptions: {
           // reasoningMode passes through end to end: a toggle model (no levels)
           // and an effort model (mode + levels).
-          "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" },
-          "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, reasoningMode: "effort", label: "qwen3-8b" },
+          "ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" },
+          "lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, reasoningMode: "effort", label: "qwen3-8b" },
         },
       },
     });
@@ -165,8 +250,8 @@ describe("RemoteAgentResponder", () => {
       const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
       const info = await client.info();
       expect(info.modelOptions).toEqual({
-        "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" },
-        "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, reasoningMode: "effort", label: "qwen3-8b" },
+        "ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" },
+        "lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, reasoningMode: "effort", label: "qwen3-8b" },
       });
     } finally {
       await adapter.stop();
