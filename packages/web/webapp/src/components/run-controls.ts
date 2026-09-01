@@ -76,10 +76,15 @@ export function useRunControls() {
   // The selector calls these when it opens (preload the shortlist routes) and
   // when a provider chip is requested directly; the store fetches once per
   // (agent, provider) with an in-flight guard.
+  const agentProviders = selectedAgent?.providers ?? [];
   const openCatalog = useCallback(() => {
+    // Shortlist routes first so the default groups render immediately, then the
+    // agent's declared providers -- a provider listed purely to widen selection
+    // appears in neither `modelOptions` nor any group until it is fetched.
     const providers = new Set(modelOptions.map((reference) => providerOfModel(reference)));
+    for (const provider of agentProviders) providers.add(provider.id);
     for (const provider of providers) void ensureProviderCatalog(provider);
-  }, [ensureProviderCatalog, modelOptions]);
+  }, [agentProviders, ensureProviderCatalog, modelOptions]);
 
   const requestProvider = useCallback(
     (provider: string) => {
@@ -103,6 +108,7 @@ export function useRunControls() {
     catalogStatusByProvider,
     openCatalog,
     requestProvider,
+    agentProviders,
     // A running turn owns its model; changing it mid-flight would describe a
     // request the agent never received.
     disabled: selectedThread?.runState.status === "running",

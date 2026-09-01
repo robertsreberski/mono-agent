@@ -21,6 +21,7 @@ import {
   WEB_MAX_LIVE_INPUTS_PER_THREAD,
   WEB_MAX_TURN_ATTACHMENT_BYTES,
   WEB_MAX_TURN_TEXT_CHARACTERS,
+  type WebAgentProvider,
   type WebAgentSummary,
   type WebAttachment,
   type WebMessage,
@@ -60,6 +61,7 @@ interface AgentRow {
   default_effort: string | null;
   efforts_json: string | null;
   model_options_json: string | null;
+  providers_json: string | null;
   cron_read: number;
   cron_actions: number;
   ask_by_id: number;
@@ -433,7 +435,7 @@ export function escapeLikeTerm(raw: string): string {
   return raw.replaceAll(/[\\%_]/gu, (character) => `\\${character}`);
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 11;
+const WEB_STORAGE_SCHEMA_VERSION = 12;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
 export const WEB_MESSAGE_PAGE_MAX = 100;
@@ -612,8 +614,8 @@ export class WebStore {
         INSERT INTO agents (
           source_id, label, status, health, supports_attachments, models_json,
           default_model, default_effort, efforts_json, model_options_json,
-          cron_read, cron_actions, ask_by_id, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          providers_json, cron_read, cron_actions, ask_by_id, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_id) DO UPDATE SET
           label = excluded.label,
           status = excluded.status,
@@ -624,6 +626,7 @@ export class WebStore {
           default_effort = excluded.default_effort,
           efforts_json = excluded.efforts_json,
           model_options_json = excluded.model_options_json,
+          providers_json = excluded.providers_json,
           cron_read = excluded.cron_read,
           cron_actions = excluded.cron_actions,
           ask_by_id = excluded.ask_by_id,
@@ -641,6 +644,7 @@ export class WebStore {
           agent.defaultEffort ?? null,
           stringifyOptional(agent.efforts),
           stringifyOptional(agent.modelOptions),
+          stringifyOptional(agent.providers),
           agent.cron?.read === true ? 1 : 0,
           agent.cron?.actions === true ? 1 : 0,
           agent.supportsAskById === true ? 1 : 0,
@@ -3090,6 +3094,7 @@ export class WebStore {
         default_effort TEXT,
         efforts_json TEXT,
         model_options_json TEXT,
+        providers_json TEXT,
         cron_read INTEGER NOT NULL DEFAULT 0,
         cron_actions INTEGER NOT NULL DEFAULT 0,
         ask_by_id INTEGER NOT NULL DEFAULT 0,
@@ -3377,6 +3382,16 @@ export class WebStore {
           }
           if (!columns.has("run_effort")) {
             this.database.exec("ALTER TABLE threads ADD COLUMN run_effort TEXT");
+          }
+        }
+        // The provider summary an agent advertises. Guarded on PRAGMA
+        // table_info so the ALTER is skipped when the column already exists,
+        // keeping the migration re-runnable after an interrupted upgrade.
+        if (versionRow.user_version < 12) {
+          const columns = new Set((this.database.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
+            .map((column) => column.name));
+          if (!columns.has("providers_json")) {
+            this.database.exec("ALTER TABLE agents ADD COLUMN providers_json TEXT");
           }
         }
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
@@ -4490,6 +4505,7 @@ function mapAgent(row: AgentRow): WebAgentSummary {
   const models = parseStringArray(row.models_json);
   const efforts = parseStringArray(row.efforts_json);
   const modelOptions = parseRecord(row.model_options_json);
+  const providers = parseProviderSummary(row.providers_json);
   return {
     sourceId: row.source_id,
     label: row.label,
@@ -4502,6 +4518,7 @@ function mapAgent(row: AgentRow): WebAgentSummary {
     ...(row.default_effort === null ? {} : { defaultEffort: row.default_effort }),
     ...(efforts === undefined ? {} : { efforts }),
     ...(modelOptions === undefined ? {} : { modelOptions }),
+    ...(providers === undefined ? {} : { providers }),
     ...(row.cron_read === 1
       ? { cron: { read: true, actions: row.cron_actions === 1 } }
       : {}),
@@ -5730,6 +5747,34 @@ function parseStringArray(value: string | null): readonly string[] | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Malformed stored JSON must degrade to "this agent advertises no providers",
+ * never throw: `mapAgent` runs on every bootstrap and discovery read, so a
+ * throw here would take the whole console down over one bad row.
+ */
+function parseProviderSummary(value: string | null): WebAgentSummary["providers"] | undefined {
+  if (value === null) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed)) return undefined;
+  const result: WebAgentProvider[] = [];
+  for (const raw of parsed) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.id !== "string" || entry.id.length === 0) continue;
+    result.push({
+      id: entry.id,
+      label: typeof entry.label === "string" && entry.label.length > 0 ? entry.label : entry.id,
+      ...(entry.configured === true ? { configured: true } : {}),
+    });
+  }
+  return result.length === 0 ? undefined : result;
 }
 
 function parseRecord(value: string | null): WebAgentSummary["modelOptions"] | undefined {

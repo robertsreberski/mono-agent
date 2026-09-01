@@ -3,7 +3,7 @@ import { realpath } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentMessageStream, AgentReplyPart, AgentRequestBase, AgentResponder, ProcessJobOperator, ProcessJobProjection, RunningChannel } from "@mono-agent/agent-contracts";
-import type { DiscoveredLocalModel, LocalProviderDefinition } from "@mono-agent/runtime-adapter";
+import type { DiscoveredLocalModel, DiscoveredProvider, LocalProviderDefinition } from "@mono-agent/runtime-adapter";
 import type { TuiAdapterConfig, TuiAdapterInfo, TuiAdapterOptions, TuiAdapterStartResult } from "@mono-agent/operator-adapter";
 import type { DeliverWebNotificationInput } from "@mono-agent/web";
 import { WebConsoleError } from "@mono-agent/web";
@@ -60,10 +60,17 @@ interface StartOptions extends BuildInputOptions {
   readonly discoverModels?: (
     providers: readonly LocalProviderDefinition[] | undefined,
   ) => Promise<readonly DiscoveredLocalModel[]>;
+  readonly discoverProviders?: () => Promise<readonly DiscoveredProvider[]>;
 }
 
+/**
+ * Both discovery paths are stubbed off by default. The zero-config probe
+ * reaches localhost:11434/1234 for real, so leaving it live would make these
+ * assertions depend on whether the developer happens to be running Ollama.
+ */
 const NOOP_MODEL_DISCOVERY = {
   discoverModels: async () => [],
+  discoverProviders: async () => [],
 };
 
 const FABLE_MODEL_OPTIONS = {
@@ -92,6 +99,7 @@ async function startCapturingTui(options: StartOptions = {}): Promise<TuiAdapter
     },
     ...NOOP_MODEL_DISCOVERY,
     ...(options.discoverModels === undefined ? {} : { discoverModels: options.discoverModels }),
+    ...(options.discoverProviders === undefined ? {} : { discoverProviders: options.discoverProviders }),
   });
 
   await driver.start(baseInput(options));
@@ -348,6 +356,27 @@ describe("tui channel driver — info composition", () => {
     expect(third.providers).toBe(first.providers);
     expect(second.modelOptions).toBe(first.modelOptions);
     expect(third.modelOptions).toBe(first.modelOptions);
+  });
+
+  it("advertises zero-config local providers that no `providers` entry declares", async () => {
+    // The gap this covers: `discoverLocalProviderModels` returns [] when
+    // `providers.local` is absent, so before the zero-config probe was wired a
+    // config whose only route was `ollama:*` validated, advertised nothing, and
+    // died at turn time with `pi model not found`.
+    const captured = await startCapturingTui({
+      discoverProviders: async () => [{
+        id: "ollama",
+        type: "ollama",
+        baseUrl: "http://localhost:11434",
+        enabled: true,
+        models: [{ name: "gemma4:31b" }],
+      }] as unknown as readonly DiscoveredProvider[],
+    });
+    const info = await resolveInfo(captured);
+
+    expect(info.providers?.map((provider) => provider.id)).toContain("ollama");
+    const page = captured.modelCatalog?.({ provider: "ollama", limit: 10 });
+    expect(page?.models.map((model) => model.id)).toContain("gemma4:31b");
   });
 
   it("keeps the serialized /v1/info payload under the byte budget with openrouter configured", async () => {

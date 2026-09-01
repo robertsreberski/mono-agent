@@ -13,6 +13,7 @@ import type {
 } from "@mono-agent/operator-adapter";
 import {
   discoverLocalProviderModels,
+  discoverLocalProviders,
   modelReferenceKey,
 } from "@mono-agent/runtime-adapter";
 import type {
@@ -46,6 +47,13 @@ export interface TuiChannelOverrides {
   readonly discoverModels?: (
     providers: readonly LocalProviderDefinition[] | undefined,
   ) => Promise<readonly DiscoveredLocalModel[]>;
+  /**
+   * Test seam: replaces the zero-config local-provider probe. This one MUST be
+   * injectable — the real implementation reaches localhost:11434 and
+   * localhost:1234, so a developer with Ollama running would otherwise get
+   * different test results from one who does not.
+   */
+  readonly discoverProviders?: typeof discoverLocalProviders;
   /** Test/embedding seam for the owner-private local web ingress. */
   readonly deliverNotification?: typeof deliverWebNotification;
 }
@@ -113,6 +121,7 @@ export function createTuiChannelDriver(
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
       const deliverNotification = overrides.deliverNotification ?? deliverWebNotification;
       const discoverModels = overrides.discoverModels ?? discoverLocalProviderModels;
+      const discoverProviders = overrides.discoverProviders ?? discoverLocalProviders;
       const localProviders = input.coreConfig.providers?.local;
       const skillRegistry = createSkillRegistryMonitor({
         ...(input.coreConfig.context.skillsRoot === undefined
@@ -138,8 +147,35 @@ export function createTuiChannelDriver(
         }
       }
       let discoveredModels: readonly DiscoveredLocalModel[] = [];
+      let discoveredLocalProviders: readonly LocalProviderDefinition[] = [];
       try {
-        discoveredModels = await discoverModels(localProviders);
+        // Two discovery paths, both advisory. `discoverModels` covers every
+        // explicitly configured local provider, including custom
+        // openai_compat endpoints. `discoverLocalProviders` is the zero-config
+        // half: it probes localhost:11434 and localhost:1234 even when nothing
+        // is declared, which is the only way `runtime.model: "ollama:..."`
+        // works without a `providers` entry. Without it that route validates,
+        // advertises nothing, and dies at turn time with `pi model not found`.
+        const [configuredModels, probed] = await Promise.all([
+          discoverModels(localProviders).catch(() => []),
+          discoverProviders({ configured: resolveConfiguredProviders(input.coreConfig).entries })
+            .catch(() => []),
+        ]);
+        discoveredLocalProviders = probed.map(({ models: _models, ...definition }) => definition);
+        const byRef = new Map<string, DiscoveredLocalModel>();
+        for (const model of configuredModels) byRef.set(model.ref, model);
+        for (const provider of probed) {
+          for (const model of provider.models) {
+            const ref = `${provider.id}:${model.name}`;
+            if (byRef.has(ref)) continue;
+            byRef.set(ref, {
+              ref,
+              label: model.displayName ?? model.alias ?? model.name,
+              providerId: provider.id,
+            });
+          }
+        }
+        discoveredModels = [...byRef.values()];
       } catch {
         // Provider discovery is advisory. A failed startup snapshot must not
         // make /v1/info block or expand unknown capabilities later.
@@ -150,7 +186,9 @@ export function createTuiChannelDriver(
       // only; the lazy `/v1/models` endpoint slices already-frozen pages.
       const catalog = buildProviderModelCatalog({
         providers: resolveConfiguredProviders(input.coreConfig).entries,
-        ...(localProviders === undefined ? {} : { localProviders }),
+        ...(localProviders === undefined && discoveredLocalProviders.length === 0
+          ? {}
+          : { localProviders: [...(localProviders ?? []), ...discoveredLocalProviders] }),
         configuredRoutes: configuredRefs,
         discoveredModels,
       });

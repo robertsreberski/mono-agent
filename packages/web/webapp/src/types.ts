@@ -150,7 +150,13 @@ export interface AgentSummary {
   readonly defaultEffort?: string;
   readonly efforts?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, ModelOption>>;
-  readonly providers?: readonly string[];
+  /**
+   * Providers this agent supports, mirrored from `WebAgentSummary`. This is the
+   * set the selector groups and filters by; `modelOptions` stays the configured
+   * shortlist. A provider declared purely to widen selection appears here and
+   * nowhere else, so deriving the chip list from the shortlist hides it.
+   */
+  readonly providers?: readonly AgentProvider[];
   readonly cron?: { readonly read: boolean; readonly actions: boolean };
   readonly supportsAskById?: boolean;
   readonly updatedAt: string;
@@ -543,6 +549,12 @@ export interface ModelCatalogPage {
 }
 
 /** One model served by an agent's lazy `/v1/models` catalog endpoint. */
+export interface AgentProvider {
+  readonly id: string;
+  readonly label: string;
+  readonly configured?: true;
+}
+
 export interface CatalogModel {
   readonly id: string;
   readonly name: string;

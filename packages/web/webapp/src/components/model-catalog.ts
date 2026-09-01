@@ -1,4 +1,4 @@
-import type { AgentSummary, CatalogModel } from "../types";
+import type { AgentProvider, AgentSummary, CatalogModel } from "../types";
 
 /**
  * Pure model-catalog derivation. No React, no singletons: everything in this
@@ -260,7 +260,23 @@ export const groupSelectorModels = (
 };
 
 /** The provider chips in first-seen order, deduped. */
+/**
+ * The provider chip row. Groups alone are not enough: a group only exists once
+ * a catalog page has been fetched, and a page is only fetched when its chip is
+ * clicked — so a provider declared purely to widen selection would never get a
+ * chip and could never be reached. Union the agent's advertised providers in so
+ * the first click is possible.
+ */
 export const selectorProvides = (
   groups: readonly CatalogProviderGroup[],
-): readonly { readonly provider: string; readonly label: string }[] =>
-  groups.map((group) => ({ provider: group.provider, label: group.label }));
+  agentProviders: readonly AgentProvider[] = [],
+): readonly { readonly provider: string; readonly label: string }[] => {
+  const provides = groups.map((group) => ({ provider: group.provider, label: group.label }));
+  const seen = new Set(provides.map((entry) => entry.provider));
+  for (const provider of agentProviders) {
+    if (seen.has(provider.id)) continue;
+    seen.add(provider.id);
+    provides.push({ provider: provider.id, label: provider.label });
+  }
+  return provides;
+};
