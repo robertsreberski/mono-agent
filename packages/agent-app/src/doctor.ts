@@ -644,18 +644,16 @@ function runtimeRouteEffortWarning(
   route: ConfiguredRuntimeRouteCheck,
 ): string | undefined {
   if (route.effort === undefined) return undefined;
-  const localProvider = config.providers?.local?.some((provider) => provider.id === route.model.provider) === true;
-  const builtin = localProvider
-    ? undefined
-    : getPiBuiltinModels(route.model.provider as PiBuiltinProvider)
-        .find((candidate) => candidate.id === route.model.model);
-  const advertised = builtin?.thinkingLevelMap === undefined
-    ? resolveAdvertisedModelEffort(route.model, {
-        ...(config.providers?.local === undefined ? {} : { localProviders: config.providers.local }),
-      }).effortLevels?.filter((level) => (EFFORT_LEVELS as readonly string[]).includes(level))
-    : Object.keys(builtin.thinkingLevelMap)
-        .map((level) => level === "off" ? "none" : level)
-        .filter((level) => (EFFORT_LEVELS as readonly string[]).includes(level));
+  // Always go through the shared resolver. Deriving the ladder from
+  // `thinkingLevelMap`'s KEYS treated an override table as the complete
+  // supported set: claude-fable-5 maps only {off, xhigh, max}, which yielded
+  // [none, xhigh, max] and made a perfectly valid `effort: medium` warn and
+  // recommend xhigh. The resolver reports [minimal, low, medium, high, xhigh,
+  // max] for that model, and it is the same one the catalog and pickers use --
+  // doctor disagreeing with what the selector offers is its own bug.
+  const advertised = resolveAdvertisedModelEffort(route.model, {
+    ...(config.providers?.local === undefined ? {} : { localProviders: config.providers.local }),
+  }).effortLevels?.filter((level) => (EFFORT_LEVELS as readonly string[]).includes(level));
   if (advertised === undefined || advertised.length === 0 || advertised.includes(route.effort)) return undefined;
   const configuredIndex = EFFORT_LEVELS.indexOf(route.effort as (typeof EFFORT_LEVELS)[number]);
   const nearest = advertised.reduce((best, candidate) => {

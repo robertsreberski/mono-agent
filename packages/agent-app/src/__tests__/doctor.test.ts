@@ -2095,7 +2095,11 @@ describe("validateMonoAgentFolder", () => {
     expect(text).toContain("commands run sandboxed");
   });
 
-  it("warns when configured effort is outside the Pi catalog ladder without rejecting the route", async () => {
+  it("does not warn for an effort the model actually advertises", async () => {
+    // `thinkingLevelMap` is an OVERRIDE table, not the supported set:
+    // claude-fable-5 maps only {off, xhigh, max} while Pi supports the full
+    // ladder. Deriving from its keys made this valid `medium` warn and
+    // recommend `xhigh`, disagreeing with what the selector offers.
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
       runtime: { model: "anthropic:claude-fable-5", effort: "medium" },
@@ -2105,10 +2109,25 @@ describe("validateMonoAgentFolder", () => {
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
 
     expect(report.ok).toBe(true);
+    expect(sectionById(report, "runtime").details.join("\n")).not.toContain("advertised effort levels");
+  });
+
+  it("warns when configured effort is outside the Pi catalog ladder without rejecting the route", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "anthropic:claude-fable-5", effort: "ultra" },
+      context: { identityPath: "./IDENTITY.md" },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(true);
     const runtime = sectionById(report, "runtime");
     expect(runtime.status).toBe("waiting");
-    expect(runtime.details).toContain(
-      "[WARN] runtime.effort=medium is outside anthropic:claude-fable-5's advertised effort levels (none, xhigh, max); nearest advertised level: xhigh. The runtime remains permissive and will forward the configured value.",
+    expect(runtime.details.join("\n")).toContain(
+      "[WARN] runtime.effort=ultra is outside anthropic:claude-fable-5's advertised effort levels "
+      + "(minimal, low, medium, high, xhigh, max); nearest advertised level: max. "
+      + "The runtime remains permissive and will forward the configured value.",
     );
   });
 
