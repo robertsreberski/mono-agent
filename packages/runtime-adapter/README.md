@@ -254,6 +254,7 @@ createPiOAuthApiKeyResolver
 createSandboxPolicy
 createSrtSandboxEngine
 describeMonoRuntimeSupport
+describePiBuiltinProvider
 describeSandboxEffectiveState
 discoverLocalProviderModels
 discoverLocalProviders
@@ -267,6 +268,7 @@ isPrivateBaseUrl
 isRuntimeSubagentActivityEvent
 isValidMcpServerName
 listMonoRuntimeBackends
+listPiBuiltinProviders
 localProviderDefinitionFor
 managedSrtInstallRoot
 mergeSandboxPolicies

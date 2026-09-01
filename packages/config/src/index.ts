@@ -6,6 +6,7 @@ export {
   redactMonoAgentConfig,
   resolveConfiguredProviders,
   resolveSupermemoryContainer,
+  RETIRED_CONFIG_FIELDS,
 } from "./config.js";
 export type {
   LoadMonoAgentConfigInput,
