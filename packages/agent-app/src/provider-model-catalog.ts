@@ -148,13 +148,19 @@ export function buildProviderModelCatalog(
   // local providers (alphabetical).
   const orderedIds: string[] = [];
   const seen = new Set<string>();
+  // `enabled: false` disables the provider everywhere, not just at its endpoint:
+  // advertising a disabled provider's models offers a route config validation
+  // now rejects.
+  const disabled = new Set(
+    providers.filter((provider) => provider.enabled === false).map((provider) => provider.id),
+  );
   for (const provider of providers) {
-    if (seen.has(provider.id)) continue;
+    if (seen.has(provider.id) || disabled.has(provider.id)) continue;
     seen.add(provider.id);
     orderedIds.push(provider.id);
   }
   for (const ref of configuredRoutes) {
-    if (seen.has(ref.provider)) continue;
+    if (seen.has(ref.provider) || disabled.has(ref.provider)) continue;
     seen.add(ref.provider);
     orderedIds.push(ref.provider);
   }

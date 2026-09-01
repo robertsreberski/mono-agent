@@ -144,6 +144,16 @@ describe("provider-model-catalog", () => {
     expect(catalog.listModels("google").models).toEqual([]);
   });
 
+  it("does not advertise a provider disabled with `enabled: false`", () => {
+    const catalog = buildProviderModelCatalog({
+      providers: [{ id: "anthropic", enabled: false }, { id: "openai" }],
+    });
+    const ids = catalog.listProviders().map((provider) => provider.id);
+    expect(ids).toContain("openai");
+    expect(ids).not.toContain("anthropic");
+    expect(catalog.listModels("anthropic").models).toEqual([]);
+  });
+
   it("degrades an unknown provider to an empty page and never throws", () => {
     const catalog = buildProviderModelCatalog();
     expect(catalog.listModels("does-not-exist")).toEqual({ models: [], truncated: false });

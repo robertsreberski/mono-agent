@@ -430,4 +430,39 @@ describe("runCli migrate-config", () => {
     expect(await readFile(configPath, "utf8")).toBe(expected);
     expect(await readFile(`${configPath}.bak`, "utf8")).toBe(input);
   });
+
+  it("refuses a document that declares the same key twice", () => {
+    // JSON.parse keeps the LAST occurrence while the scanner addresses the
+    // FIRST, so an edit would rewrite dead text and leave the effective value
+    // alone: --write would claim success and --check would never converge.
+    const result = migrateConfigSource(
+      '{"runtime":{"model":"openai:gpt-5.4"},"runtime":{"model":"pi:openai:gpt-5.4","executionMode":"sdk"}}',
+    );
+    expect(result.conflict).toContain('"runtime" more than once');
+    expect(result.changed).toBe(false);
+    expect(result.changes).toEqual([]);
+  });
+
+  it("exempts only the literal configVersion 1 prototype", () => {
+    const v1 = migrateConfigSource('{"configVersion":1,"runtimes":{"pi":{}}}');
+    expect(v1.skipped).toBe(true);
+
+    // A v2 file carrying retired keys must be migrated, not waved through.
+    const v2 = migrateConfigSource(
+      '{"configVersion":2,"runtime":{"model":"pi:openai-codex:gpt-5.6-sol","executionMode":"sdk"}}',
+    );
+    expect(v2.skipped).toBe(false);
+    expect(v2.changed).toBe(true);
+  });
+
+  it("separates the removed nested OpenCode backend ref from the Pi provider id", () => {
+    // `opencode:<provider>:<model>` was the deleted direct backend and needs a
+    // human; `opencode-go:<model>` and plain `opencode:<model>` are Pi routes.
+    const nested = migrateConfigSource('{"runtime":{"model":"opencode:github-copilot:gpt-4.1"}}');
+    expect(nested.manualMigrations).toHaveLength(1);
+
+    const piRoute = migrateConfigSource('{"runtime":{"model":"opencode-go:deepseek-v4-pro"}}');
+    expect(piRoute.manualMigrations).toEqual([]);
+    expect(piRoute.changed).toBe(false);
+  });
 });

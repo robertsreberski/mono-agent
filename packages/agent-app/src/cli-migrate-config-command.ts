@@ -23,6 +23,10 @@ const FALLBACK_MODELS_PATH = "runtime.fallbackModels";
  * operator meant, so each is reported for a human to resolve.
  */
 const NON_PI_REF_PREFIXES = [
+  // `opencode:<provider>:<model>` was the direct-OpenCode backend form. Plain
+  // `opencode:<model>` is a real Pi provider ref and must stay accepted, so
+  // this prefix is matched on the nested shape only (see needsManualMigration).
+  "opencode:",
   "codex:",
   "claude:",
   "claude-code:",
@@ -67,6 +71,8 @@ interface JsonNode {
   readonly start: number;
   readonly end: number;
   readonly members?: readonly JsonMember[];
+  /** Set when this object declares the same key twice, making edits ambiguous. */
+  readonly duplicateKey?: string;
   readonly items?: readonly JsonNode[];
 }
 
@@ -101,6 +107,13 @@ function canonicalizeModelRef(raw: string): CanonicalizeDecision {
   const stripped = raw.startsWith("pi:") ? raw.slice("pi:".length) : raw;
   const nonPi = NON_PI_REF_PREFIXES.find((prefix) => stripped.startsWith(prefix));
   if (nonPi !== undefined) {
+    // `opencode` is BOTH a removed backend prefix and a live Pi provider id.
+    // The backend form carried a nested provider (`opencode:<provider>:<model>`);
+    // the Pi form does not. Only the nested shape needs a human.
+    if (nonPi === "opencode:") {
+      const rest = stripped.slice(nonPi.length);
+      if (!rest.includes(":")) return raw.startsWith("pi:") ? { kind: "rewrite", after: stripped } : { kind: "unchanged" };
+    }
     return { kind: "manual" };
   }
   if (raw.startsWith("pi:")) {
@@ -200,6 +213,16 @@ function scanJson(source: string): JsonNode {
     } else {
       index += 1;
     }
+    // Duplicate keys make the document ambiguous: `JSON.parse` keeps the LAST
+    // occurrence while this scanner addresses the FIRST, so an edit would
+    // rewrite text that carries no meaning and leave the effective value
+    // untouched -- `--write` would report success and `--check` would never
+    // converge. Record it so the caller can refuse the file instead.
+    const seen = new Set<string>();
+    for (const member of members) {
+      if (seen.has(member.key)) return { kind: "object", start, end: index, members, duplicateKey: member.key };
+      seen.add(member.key);
+    }
     return { kind: "object", start, end: index, members };
   }
 
@@ -286,6 +309,16 @@ function mergeRanges(ranges: readonly { readonly start: number; readonly end: nu
     }
   }
   return merged;
+}
+
+/** The first duplicated key anywhere in the document, depth-first. */
+function firstDuplicateKey(node: JsonNode): string | undefined {
+  if (node.duplicateKey !== undefined) return node.duplicateKey;
+  for (const member of node.members ?? []) {
+    const nested = firstDuplicateKey(member.value);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
 }
 
 /**
@@ -517,7 +550,10 @@ export function migrateConfigSource(source: string): MigrateConfigResult {
     parsed !== null
     && typeof parsed === "object"
     && !Array.isArray(parsed)
-    && hasOwn(parsed, "configVersion")
+    // Only the literal v1 prototype is exempt. Treating ANY configVersion as
+    // the prototype would silently pass a v2 file carrying retired keys, and
+    // `--check` would report it clean while the agent refuses to start.
+    && (parsed as Record<string, unknown>).configVersion === 1
   ) {
     return {
       skipped: true,
@@ -556,6 +592,21 @@ export function migrateConfigSource(source: string): MigrateConfigResult {
   const scan = scanJson(source);
   if (scan.kind !== "object") {
     return emptyResult(source);
+  }
+  const duplicate = firstDuplicateKey(scan);
+  if (duplicate !== undefined) {
+    return {
+      skipped: false,
+      skippedReason: undefined,
+      conflict:
+        `The config declares "${duplicate}" more than once in the same object. JSON keeps the last `
+        + "occurrence, so an automatic edit would rewrite the wrong one and leave the effective value "
+        + "in place. Remove the duplicate, then re-run.",
+      changed: false,
+      output: source,
+      changes: [],
+      manualMigrations: [],
+    };
   }
 
   const edits: TextEdit[] = [];

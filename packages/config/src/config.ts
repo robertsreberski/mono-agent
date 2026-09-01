@@ -343,14 +343,30 @@ export function assertConfiguredProviderCoverage(
   ];
   for (const route of routes) {
     const providerId = route.model.provider;
-    if (
-      providers.byId.has(providerId)
-      || isPiBuiltinProvider(providerId)
-      || isAutodiscoverableProviderId(providerId)
-    ) {
+    const configured = providers.byId.get(providerId);
+    // An explicit `enabled: false` must actually disable the provider. Treating
+    // mere map membership as availability let a disabled entry keep routing.
+    if (configured?.enabled === false) {
+      const repair = `remove \"enabled\": false from providers.${providerId}, or route elsewhere`;
+      throw new MonoAgentConfigError(
+        "invalid_model_reference",
+        `Provider "${providerId}" used by ${route.path} is disabled; ${repair}.`,
+        { providerId, path: route.path, reason: repair },
+      );
+    }
+    if (isPiBuiltinProvider(providerId) || isAutodiscoverableProviderId(providerId)) {
       continue;
     }
-    const repair = `add \"providers\": { \"${providerId}\": {} } to mono-agent.config.json`;
+    // A provider Pi does not know needs an endpoint to be reachable. Accepting a
+    // bare `{}` here produced a config that validated, advertised an empty
+    // catalog, and only failed at turn time with `pi model not found` -- and the
+    // old repair text recommended exactly that bare entry.
+    if (configured?.baseUrl !== undefined && configured.baseUrl.length > 0) {
+      continue;
+    }
+    const repair = configured === undefined
+      ? `add \"providers\": { \"${providerId}\": { \"type\": \"openai_compat\", \"baseUrl\": \"https://...\" } } to mono-agent.config.json`
+      : `give providers.${providerId} a \"baseUrl\" (and \"type\"), because Pi has no built-in catalog for it`;
     throw new MonoAgentConfigError(
       "invalid_model_reference",
       `Provider "${providerId}" used by ${route.path} is not available; ${repair}.`,

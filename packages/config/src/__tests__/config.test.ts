@@ -911,6 +911,32 @@ describe("loadMonoAgentConfig", () => {
     });
   });
 
+  it("rejects a route through a provider disabled with `enabled: false`", () => {
+    // Map membership alone used to mean "available", so an explicit disable was
+    // silently ignored and the route kept working.
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MODEL: "openai:gpt-5.4",
+        MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ openai: { enabled: false } }),
+      },
+    })).toThrow('Provider "openai" used by runtime.model is disabled');
+  });
+
+  it("rejects a bare non-builtin provider entry that Pi cannot reach", () => {
+    // A bare `{}` for an id Pi has no catalog for validated, advertised nothing,
+    // and only failed at turn time with `pi model not found`.
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MODEL: "private-provider:model-one",
+        MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ "private-provider": {} }),
+      },
+    })).toThrow('give providers.private-provider a "baseUrl"');
+  });
+
   it("resolves a provider-map entry into the deterministic shared view", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
@@ -918,7 +944,7 @@ describe("loadMonoAgentConfig", () => {
         ...baseEnv,
         MONO_AGENT_MODEL: "private-provider:model-one",
         MONO_AGENT_PROVIDERS_JSON: JSON.stringify({
-          "private-provider": {},
+          "private-provider": { type: "openai_compat", baseUrl: "http://localhost:9000" },
           openrouter: { models: [{ name: "anthropic/claude-opus-4.5" }] },
         }),
       },
@@ -1007,7 +1033,7 @@ describe("loadMonoAgentConfig", () => {
     expect(() => loadMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_MODEL: "private-provider:model-one" },
-    })).toThrow('Provider "private-provider" used by runtime.model is not available; add "providers": { "private-provider": {} }');
+    })).toThrow('Provider "private-provider" used by runtime.model is not available; add "providers": { "private-provider": { "type": "openai_compat", "baseUrl": "https://..." } }');
   });
 
   it("rejects invalid local-provider JSON and URLs", () => {
