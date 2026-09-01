@@ -37,7 +37,7 @@ Recalled long-term memory used to be section 3 of this prompt. It is no longer a
 
 ```json
 {
-  "runtime": { "model": "claude:claude-sonnet-4-6", "maxTurns": 0 },
+  "runtime": { "model": "anthropic:claude-sonnet-4-6", "maxTurns": 0 },
   "context": {
     "identityPath": "./IDENTITY.md",
     "soulPath": "./SOUL.md",
@@ -181,7 +181,7 @@ History records publish by atomic replacement. If a stable record is truncated i
 
 ```json
 {
-  "runtime": { "model": "claude:claude-sonnet-4-6", "maxTurns": 24 }
+  "runtime": { "model": "anthropic:claude-sonnet-4-6", "maxTurns": 24 }
 }
 ```
 

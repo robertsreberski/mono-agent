@@ -32,7 +32,7 @@ The first three are **config** coverage (the `webhook` section plus `MONO_AGENT_
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6"
+    "model": "anthropic:claude-sonnet-4-6"
   },
   "webhook": {
     "enabled": true,
@@ -93,7 +93,7 @@ This generic webhook feature does **not** prove that a later result belongs to t
 
 ## Steps
 
-1. `mono-agent init --model claude:claude-sonnet-4-6` — the webhook channel is enabled by `init` already.
+1. `mono-agent init --model anthropic:claude-sonnet-4-6` — the webhook channel is enabled by `init` already.
 2. Add multiple endpoints in `webhook.endpoints[]` and/or `webhook/*.md` files, giving each a unique `name` AND a unique `path`.
 3. Run `mono-agent validate`, then `mono-agent start`.
 4. `curl` the sync endpoint for an immediate response body; `curl` the async endpoint for a `202` plus a status URL.

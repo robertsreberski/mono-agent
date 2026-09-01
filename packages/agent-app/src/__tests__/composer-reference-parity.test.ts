@@ -301,7 +301,10 @@ describe("mono-agent-composer reference parity", () => {
 
   it("keeps the annotated config blueprint complete for audited config keys", () => {
     const anchors = [
-      '"routeSafety": "uniform"',
+      // `routeSafety` was retired in 0.21.0; `providers` is the key that now
+      // decides what an agent can select, so the blueprint must document it.
+      '"providers"',
+      '"fallbacks"',
       "none|minimal|low|medium|high|xhigh|max|ultra",
       '"maxConcurrentRuns"',
       '"maxPendingRuns"',

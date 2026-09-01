@@ -20,7 +20,7 @@ Put `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`; the source config omits the c
 
 ```json
 {
-  "runtime": { "model": "openai-codex:gpt-5.6-terra" },
+  "runtime": { "model": "openai-openai-codex:gpt-5.6-terra" },
   "telegram": { "enabled": true, "allowedChatIds": ["123456789"] },
   "memory": {
     "mode": "bujo", "path": "./.mono-agent/memory", "writeMode": "capture",
@@ -42,7 +42,7 @@ Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the
 
 ```json
 {
-  "runtime": { "model": "openai-codex:gpt-5.6-terra" },
+  "runtime": { "model": "openai-openai-codex:gpt-5.6-terra" },
   "slack": { "enabled": true, "allowedChannelIds": ["C012345"], "stripMentionText": true },
   "tools": { "allowedTools": ["Read", "Grep", "SlackSendMessage", "deployTool"], "mcpConfigPath": "./mcp.json" },
   "concurrency": { "maxConcurrentRuns": 4, "maxPendingRuns": 8 }
@@ -64,7 +64,7 @@ Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the
   "sandbox": { "mode": "native", "network": { "mode": "localhost" } }
 }
 ```
-**Steps:** pull both models → `mono-agent init --model pi:ollama:gemma4:31b --memory journal` → add `providers.local` + embeddings + `sandbox.network.mode: localhost` → `validate` (Ollama reachable, models pulled) → `start`.
+**Steps:** pull both models → `mono-agent init --model ollama:gemma4:31b --memory journal` → add `providers.local` + embeddings + `sandbox.network.mode: localhost` → `validate` (Ollama reachable, models pulled) → `start`.
 **Smoke:** `curl -X POST` the webhook path; confirm a local-model response and no outbound non-localhost network in the artifact.
 
 ## 4. OpenAI-compatible endpoint for Open WebUI
@@ -180,7 +180,7 @@ const orchestrator = await createConfiguredAgentResponder({
 
 ```json
 {
-  "runtime": { "model": "openai-codex:gpt-5.6-terra" },
+  "runtime": { "model": "openai-openai-codex:gpt-5.6-terra" },
   "tools": { "allowedTools": ["*"] },
   "sandbox": { "mode": "native", "network": { "mode": "localhost" }, "readableRoots": ["."], "writableRoots": ["."], "denyWrite": [".env", ".env.*", ".git/config", ".git/hooks/**"], "fallback": "fail-closed" }
 }
@@ -223,7 +223,7 @@ const orchestrator = await createConfiguredAgentResponder({
 
 ```json
 {
-  "runtime": { "model": "anthropic:claude-sonnet-4-6", "fallbacks": [{ "model": "openai-codex:gpt-5.6-sol" }, { "model": "ollama:gemma4:31b" }], "session": { "mode": "continuous" } },
+  "runtime": { "model": "anthropic:claude-sonnet-4-6", "fallbacks": [{ "model": "openai-openai-codex:gpt-5.6-sol" }, { "model": "ollama:gemma4:31b" }], "session": { "mode": "continuous" } },
   "providers": { "local": [{ "id": "ollama", "type": "ollama", "baseUrl": "http://localhost:11434", "enabled": true }], "piNative": { "transport": "auto", "piMaxRetries": 2, "maxRetryDelayMs": 60000, "piSessionsRoot": ".mono-agent/sessions" } }
 }
 ```
@@ -263,7 +263,7 @@ and are rejected at load; emit `runtime.fallbacks[]` only.
   "webhook": { "enabled": true }
 }
 ```
-**Steps:** start LM Studio's local server with the chosen model loaded → `mono-agent init --model pi:lmstudio:qwen3.6-32b --memory lite` (the `pi:lmstudio:*` model auto-adds the LM Studio provider block; there is no LM Studio preset — `local-private` is Ollama-based) → adjust `runtime.model` if the displayed model id differs → `validate` → `start`.
+**Steps:** start LM Studio's local server with the chosen model loaded → `mono-agent init --model lmstudio:qwen3.6-32b --memory lite` (the `lmstudio:*` model auto-adds the LM Studio provider block; there is no LM Studio preset — `local-private` is Ollama-based) → adjust `runtime.model` if the displayed model id differs → `validate` → `start`.
 **Smoke:** `curl` the webhook invoke URL and confirm the response comes from the local LM Studio model.
 
 ## 15. Interactive agent with long jobs and large media
@@ -275,7 +275,7 @@ and are rejected at load; emit `runtime.fallbacks[]` only.
 
 ```json
 {
-  "runtime": { "model": "openai-codex:gpt-5.6-sol" },
+  "runtime": { "model": "openai-openai-codex:gpt-5.6-sol" },
   "tools": { "allowedTools": ["Read", "AskUser", "TelegramSendFile", "PublishReplyFile"], "mcpConfigPath": "./.mcp.json", "mcpCallMaxTotalTimeoutMs": 2700000 },
   "interaction": { "bridge": { "host": "127.0.0.1", "port": 4471 }, "askUser": { "timeoutMs": 600000 }, "progress": { "enabled": true } },
   "telegram": { "enabled": true, "allowedChatIds": ["123456789"], "apiRoot": "http://127.0.0.1:8081", "attachments": { "maxBytes": 268435456, "maxUploadBytes": 268435456 } }
@@ -291,7 +291,7 @@ and are rejected at load; emit `runtime.fallbacks[]` only.
 
 ```json
 {
-  "runtime": { "model": "openai-codex:gpt-5.6-sol" },
+  "runtime": { "model": "openai-openai-codex:gpt-5.6-sol" },
   "tools": {
     "allowedTools": ["Read", "Glob", "Grep", "WebSearch", "WebFetch"],
     "web": {

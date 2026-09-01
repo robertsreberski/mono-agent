@@ -34,7 +34,7 @@ Enable the destination adapter and add the cron job. `conversationId` is the cro
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6"
+    "model": "anthropic:claude-sonnet-4-6"
   },
   "slack": {
     "enabled": true,
@@ -62,7 +62,7 @@ Enable the destination adapter and add the cron job. `conversationId` is the cro
 Equivalent environment variables for the secrets and model:
 
 ```bash
-export MONO_AGENT_RUNTIME_MODEL="claude:claude-sonnet-4-6"
+export MONO_AGENT_RUNTIME_MODEL="anthropic:claude-sonnet-4-6"
 export MONO_AGENT_SLACK_BOT_TOKEN="xoxb-..."
 export MONO_AGENT_SLACK_APP_TOKEN="xapp-..."
 ```
@@ -95,7 +95,7 @@ Slack's current default for that preview type.
 
 ## Steps
 
-1. `mono-agent init --model claude:claude-sonnet-4-6`
+1. `mono-agent init --model anthropic:claude-sonnet-4-6`
 2. Add the Telegram or Slack destination config and allowlist, or start `mono-agent web` for `web:new`.
 3. Add the cron job with `expression`, `conversationId`, `notify: true`, and optionally `notifyConversationId`.
 4. `mono-agent validate`, then `mono-agent start`.
