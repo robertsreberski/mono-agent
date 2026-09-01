@@ -361,6 +361,7 @@ PermissionMode
 PhoenixExporterConfig
 PiNativeProviderConfig
 ProviderDefinition
+RETIRED_CONFIG_FIELDS
 ReadMonoAgentConfigJsonResult
 RedactedLocalProviderDefinition
 RedactedMemoryConfig

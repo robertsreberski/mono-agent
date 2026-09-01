@@ -29,7 +29,7 @@ interface HelpEntry {
   readonly lines: readonly string[];
 }
 
-const HELP_COMMANDS: readonly HelpEntry[] = [
+export const HELP_COMMANDS: readonly HelpEntry[] = [
   {
     command: "init",
     group: "Setup",
@@ -330,6 +330,26 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "The command refuses remote endpoints and never reads job records or artifacts directly.",
     ],
   },
+  {
+    command: "migrate-config",
+    group: "Maintain",
+    short: "migrate-config",
+    summary: "Migrate a config to the current runtime/model-reference shape.",
+    json: true,
+    signature: "mono-agent migrate-config [--check | --write] [--config <path>] [--env-file <path>] [--json]",
+    lines: [
+      "Migrate retired config fields (runtime.executionMode, runtime.routeSafety,",
+      "runtime.fallbackModels, memory.llm.executionMode) and canonicalize model",
+      "references (strips a leading `pi:`). Default is a dry run that prints the",
+      "diff and exits 0.",
+      "--check reports only and exits 1 when any change is needed, 0 when clean —",
+      "the pre-restart gate. --write applies after writing <config>.bak beside the",
+      "file and is idempotent; --check and --write together is a usage error.",
+      "Model references starting codex:, claude:, claude-code:, codex-cli:, acp:,",
+      "or vercel: are never rewritten (a human must pick the replacement), and",
+      "configVersion 1 prototypes are skipped untouched.",
+    ],
+  },
 ];
 
 const HELP_COMMANDS_BY_KEY = new Map(HELP_COMMANDS.map((entry) => [entry.command, entry]));
@@ -345,7 +365,7 @@ const HELP_GROUPS: readonly { readonly id: HelpGroupId; readonly note?: string }
 ];
 
 /** `help <alias>` resolves to the canonical command's detail view, noting the alias. */
-const HELP_ALIASES = new Map<string, string>([
+export const HELP_ALIASES = new Map<string, string>([
   ["doctor", "validate"],
   ["setup", "init"],
 ]);

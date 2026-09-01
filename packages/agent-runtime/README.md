@@ -186,6 +186,11 @@ BridgeSpec
 DEFAULT_RUNTIME_BRAND
 DEFAULT_TOOL_BLOAT_CONFIG
 MAX_TOOL_RESULT_BYTES
+PiBuiltinModelSnapshot
+PiBuiltinProviderSnapshot
+PiOAuthCredentialsSnapshot
+PiOAuthLoginCallbacks
+PiReasoningLevel
 RISK_TIERS
 RUNTIME_CAPABILITIES
 RuntimeBridge
@@ -203,6 +208,7 @@ createPiOAuthApiKeyResolver
 createRouterRuntime
 createRuntime
 createSessionRegistry
+describePiBuiltinProvider
 disposeAllProviderSessions
 disposeProviderSession
 generatePiNativeResponse
@@ -211,6 +217,7 @@ inferAllowlistMode
 invalidateProviderSession
 isLikelyContextTermination
 listPiBuiltinModels
+listPiBuiltinProviders
 listRuntimeBridges
 loginPiOAuth
 normalizeAllowlistMode
@@ -365,6 +372,11 @@ renderResumeSnapshot
 
 ```text
 BridgeSpec
+PiBuiltinModelSnapshot
+PiBuiltinProviderSnapshot
+PiOAuthCredentialsSnapshot
+PiOAuthLoginCallbacks
+PiReasoningLevel
 RUNTIME_CAPABILITIES
 RuntimeBridge
 RuntimeBridgeDescriptor
@@ -375,12 +387,14 @@ buildCapabilitiesUsed
 createMetricsObserver
 createObserverHub
 createSessionRegistry
+describePiBuiltinProvider
 disposeAllProviderSessions
 disposeProviderSession
 generatePiNativeResponse
 getPiBuiltinModel
 invalidateProviderSession
 listPiBuiltinModels
+listPiBuiltinProviders
 listRuntimeBridges
 loginPiOAuth
 normalizeRuntimeModelReference

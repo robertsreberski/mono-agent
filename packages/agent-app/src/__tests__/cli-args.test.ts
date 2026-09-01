@@ -418,6 +418,25 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["install-skill", "--project", "--check", "--update"])).toThrow(/either/u);
   });
 
+  it("parses migrate-config flags and rejects conflicting or misplaced ones", () => {
+    expect(parseCliArgs(["migrate-config"])).toMatchObject({ command: "migrate-config" });
+    expect(parseCliArgs(["migrate-config", "--check"])).toMatchObject({ command: "migrate-config", check: true });
+    expect(parseCliArgs(["migrate-config", "--write"])).toMatchObject({ command: "migrate-config", write: true });
+    expect(parseCliArgs(["migrate-config", "--config", "agent.json", "--json"])).toMatchObject({
+      command: "migrate-config",
+      configPath: "agent.json",
+      json: true,
+    });
+    expect(parseCliArgs(["migrate-config", "--env-file", ".env"])).toMatchObject({
+      command: "migrate-config",
+      envFile: ".env",
+    });
+    expect(() => parseCliArgs(["migrate-config", "--check", "--write"])).toThrow(/either.*--check.*--write/iu);
+    expect(() => parseCliArgs(["validate", "--write"])).toThrow(/--write.*migrate-config/iu);
+    expect(() => parseCliArgs(["install-skill", "--project", "--write"])).toThrow(/--write.*migrate-config/iu);
+    expect(() => parseCliArgs(["start", "--check"])).toThrow(/--check/iu);
+  });
+
   it("accepts --json on the read/status surfaces", () => {
     for (const argv of [
       ["validate", "--json"],
@@ -670,8 +689,8 @@ describe("parseCliArgs", () => {
     expect(help).not.toContain("--artifact-dir");
     expect(help).not.toContain("web reset --all --yes");
 
-    // Exactly the ten JSON surfaces carry a [--json] marker.
-    expect(help.split("[--json]").length - 1).toBe(10);
+    // Exactly the eleven JSON surfaces carry a [--json] marker.
+    expect(help.split("[--json]").length - 1).toBe(11);
     const lineFor = (short: string): string => lines.find((line) => line.includes(short)) ?? "";
     expect(lineFor("runs [report|audit]")).toContain("[--json]");
     expect(lineFor("memory <subcommand>")).toContain("[--json]");
