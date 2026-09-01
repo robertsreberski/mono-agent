@@ -911,19 +911,6 @@ describe("loadMonoAgentConfig", () => {
     });
   });
 
-  it("rejects a route through a provider disabled with `enabled: false`", () => {
-    // Map membership alone used to mean "available", so an explicit disable was
-    // silently ignored and the route kept working.
-    expect(() => loadMonoAgentConfig({
-      cwd: "/repo",
-      env: {
-        ...baseEnv,
-        MONO_AGENT_MODEL: "openai:gpt-5.4",
-        MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ openai: { enabled: false } }),
-      },
-    })).toThrow('Provider "openai" used by runtime.model is disabled');
-  });
-
   it("rejects a bare non-builtin provider entry that Pi cannot reach", () => {
     // A bare `{}` for an id Pi has no catalog for validated, advertised nothing,
     // and only failed at turn time with `pi model not found`.

@@ -344,16 +344,10 @@ export function assertConfiguredProviderCoverage(
   for (const route of routes) {
     const providerId = route.model.provider;
     const configured = providers.byId.get(providerId);
-    // An explicit `enabled: false` must actually disable the provider. Treating
-    // mere map membership as availability let a disabled entry keep routing.
-    if (configured?.enabled === false) {
-      const repair = `remove \"enabled\": false from providers.${providerId}, or route elsewhere`;
-      throw new MonoAgentConfigError(
-        "invalid_model_reference",
-        `Provider "${providerId}" used by ${route.path} is disabled; ${repair}.`,
-        { providerId, path: route.path, reason: repair },
-      );
-    }
+    // `enabled: false` is deliberately NOT a load error: for a local provider it
+    // is a diagnosable state that `doctor` reports as waiting, and turning that
+    // into a crash would break a working contract. What it must do is stop the
+    // provider being advertised as selectable, which the catalog now enforces.
     if (isPiBuiltinProvider(providerId) || isAutodiscoverableProviderId(providerId)) {
       continue;
     }

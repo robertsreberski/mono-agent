@@ -7,6 +7,7 @@ import {
 import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 import { buildProviderModelCatalog } from "../provider-model-catalog.js";
+import { resolveAdvertisedModelEffortForBuiltin } from "../model-effort-capabilities.js";
 
 describe("provider-model-catalog", () => {
   it("advertises nothing when the agent declared no providers and has no routes", () => {
@@ -45,6 +46,26 @@ describe("provider-model-catalog", () => {
     expect(page.nextCursor).toBeUndefined();
   });
 
+  it("narrows a built-in with an allowlist without inventing or flattening models", () => {
+    const real = listPiBuiltinModels("anthropic")[0]!;
+    const catalog = buildProviderModelCatalog({
+      providers: [{
+        id: "anthropic",
+        models: [{ name: real.id }, { name: "not-a-real-model" }],
+      }],
+    });
+    const models = catalog.listModels("anthropic").models;
+
+    // A name the provider does not have is dropped, not advertised as
+    // selectable and then failed at turn time with `pi model not found`.
+    expect(models.map((model) => model.id)).toEqual([real.id]);
+    // An allowlist NARROWS the real catalog, so the surviving row keeps the
+    // reasoning/effort metadata the picker needs.
+    const resolved = resolveAdvertisedModelEffortForBuiltin(real);
+    expect(models[0]?.reasoning).toBe(resolved.reasoning);
+    expect(models[0]?.effortLevels).toEqual(resolved.effortLevels);
+  });
+
   it("an explicit models allowlist bypasses the cap and preserves order", () => {
     const catalog = buildProviderModelCatalog({
       providers: [
@@ -61,6 +82,30 @@ describe("provider-model-catalog", () => {
     expect(anthropic?.source).toBe("builtin");
     expect(catalog.listModels("anthropic").models.map((model) => model.id))
       .toEqual(["claude-opus-4-7", "claude-sonnet-4-6"]);
+  });
+
+  it("advances the cursor even when an allowlist declares the same name twice", () => {
+    const real = listPiBuiltinModels("anthropic").slice(0, 2).map((model) => model.id);
+    const catalog = buildProviderModelCatalog({
+      providers: [{
+        id: "anthropic",
+        models: [{ name: real[0]! }, { name: real[0]! }, { name: real[1]! }],
+      }],
+    });
+
+    // The cursor is the last row's id and resolves with findIndex, so a
+    // duplicate id would resolve to the first occurrence and serve the same
+    // page forever.
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page += 1) {
+      const result = catalog.listModels("anthropic", { ...(cursor === undefined ? {} : { cursor }), limit: 1 });
+      seen.push(...result.models.map((model) => model.id));
+      if (result.nextCursor === undefined) break;
+      expect(result.nextCursor).not.toBe(cursor);
+      cursor = result.nextCursor;
+    }
+    expect(seen).toEqual(real);
   });
 
   it("terminates pagination with strictly increasing cursors and no duplicate models", () => {

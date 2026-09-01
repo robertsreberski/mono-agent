@@ -1,7 +1,7 @@
 # @mono-agent/agent-runtime
 
 Use this package when you need direct, capability-aware access to mono-agent's
-six built-in model runtime bridges, including product-neutral ACP v1 agents.
+Pi runtime and the ~39 providers it reaches.
 
 ## Category
 
@@ -39,7 +39,7 @@ import {
 
 const runtime = createRuntime({ workspace: process.cwd() });
 const result = await runtime.run("You are a concise repository assistant.", {
-  model: parseRuntimeModelReference("claude:claude-sonnet-4-6"),
+  model: parseRuntimeModelReference("anthropic:claude-sonnet-4-6"),
   messages: [{ role: "user", content: "Summarize README.md." }],
   cwd: process.cwd(),
   allowedTools: ["Read"],
@@ -72,7 +72,7 @@ only after a run selects a matching model reference and execution mode:
 ### Data flow
 
 1. `createRuntime()` binds host callbacks and creates an isolated tool context.
-2. `resolveRuntimeBridge()` checks the six static bridge descriptors in order.
+2. `resolveRuntimeBridge()` resolves the single static bridge descriptor.
 3. The selected descriptor lazily imports its provider implementation.
 4. The bridge prepares the runtime inputs it supports, including managed or MCP
    tools only where that bridge can represent them, and streams normalized
@@ -151,10 +151,9 @@ provider-supplied known kind when available and otherwise `runtime_error`.
 | API | Use it for |
 | --- | --- |
 | `createRuntime()` | Run one model bridge with host-owned credentials, observers, tools, and lifecycle callbacks |
-| `probeAcpProfile()` / ACP management helpers | Probe, authenticate, log out, list sessions, validate opaque handles, or delete an ACP provider session |
 | `createRouterRuntime()` | Retry an ordered model chain while preserving explicit route-safety contracts |
-| `parseRuntimeModelReference()` | Convert a canonical `acp:`, `claude:`, `codex:`, `opencode:`, or `pi:` string into the object required by `run()` |
-| `listRuntimeBridges()` / `runtimeCapabilities()` | Inspect the six built-in bridge descriptors without loading provider implementations |
+| `parseRuntimeModelReference()` | Convert a canonical `<provider>:<model>` string into the object required by `run()` |
+| `listRuntimeBridges()` / `runtimeCapabilities()` | Inspect the built-in bridge descriptor without loading provider implementations |
 | `createPiOAuthApiKeyResolver()` | Bind a host-owned Pi auth file with refresh-safe writes |
 | `listPiBuiltinModels()` / `getPiBuiltinModel()` | Read cloned snapshots from the runtime-owned, exact-pinned Pi model catalog without importing Pi directly |
 | `resolvePiOAuthApiKey()` / `loginPiOAuth()` | Use the runtime-owned Pi OAuth implementation without importing Pi's mutable provider registry |
@@ -496,19 +495,14 @@ runtimeCapabilities
 `@mono-agent/agent-runtime` is purpose-built for **autonomous, long-running agent work** with provider portability and operational resilience as first-class concerns. It is *not* a streaming-chat UI kit. Where each peer fits:
 
 - **Vercel AI SDK** — best when you're building a chat / generative-UI experience inside a React or Next.js app. `useChat`, `useCompletion`, streaming server components, and edge-runtime compatibility are their strengths. Their provider list is curated (Anthropic, OpenAI, Google, etc., via `@ai-sdk/*` packages); there's no Pi gateway and no per-call provider fallback. If you're rendering a streaming chat into a browser, use them. If you're orchestrating multi-turn autonomous work that must survive a rate-limited primary provider, use us.
-- **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) — first-party Anthropic SDK. Tight integration with Claude features (canUseTool, sub-agents, hooks, MCP). We *wrap* it as one of our six bridges and add transcript-resume across provider drops, a structured failure taxonomy, a tool-bloat guard with artifact persistence, and a provider fallback router. Context/window handling remains bridge-specific; the pi-native bridge drives its own compaction recovery. Reach for the bare Anthropic SDK when you only ever talk to Claude and don't need cross-provider portability or resume.
+- **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) — first-party Anthropic SDK. Tight integration with Claude features (canUseTool, sub-agents, hooks, MCP). We reach Anthropic models through the Pi gateway instead, and add transcript-resume across provider drops, a structured failure taxonomy, a tool-bloat guard with artifact persistence, and a provider fallback router. Reach for the bare Anthropic SDK when you only ever talk to Claude and don't need cross-provider portability or resume.
 - **Mastra** — a workflow engine + memory + RAG stack. Different category: it's the layer *above* a runtime. You can layer Mastra workflows on top of `@mono-agent/agent-runtime` if you want both.
 - **OpenAI Agents SDK** — first-party OpenAI SDK. Same trade-off as the Claude Agent SDK: tight integration with OpenAI, no other providers. Pi providers in our runtime cover OpenAI plus a dozen others through a single API.
 - **LangChain.js** — kitchen sink with deep abstraction stacks. We're deliberately lean; if you want chains, agents, vector stores, and parsers under one umbrella, LangChain is built for that. If you want a focused runtime kernel, use us.
 
 **What we natively bridge (no extra packages):**
 
-- Anthropic Claude via the Claude Agent SDK (`claude` SDK).
-- Anthropic Claude via the `claude` Code CLI binary.
-- OpenAI's Codex via the `codex` app-server CLI.
-- OpenCode providers via an isolated, password-authenticated `opencode` app-server.
-- Any ACP v1 stdio agent resolved by the host from an `acp:<profile-id>` reference.
-- OpenAI, Google Gemini, AWS Bedrock, OpenRouter, xAI, Groq, Mistral, Perplexity, DeepSeek, Ollama, LlamaCPP, GLM, Vercel AI Gateway, GitHub Copilot, Gemini CLI — all through the Pi (`@earendil-works/pi-ai`) provider gateway, which our SDK adapter speaks directly.
+- Anthropic, OpenAI-Codex, OpenAI, Google Gemini, AWS Bedrock, OpenRouter, xAI, Groq, Mistral, Perplexity, DeepSeek, Ollama, LlamaCPP, GLM, Vercel AI Gateway, GitHub Copilot, Gemini CLI — all through the Pi (`@earendil-works/pi-ai`) provider gateway, which our SDK adapter speaks directly.
 
 **At-a-glance:**
 
