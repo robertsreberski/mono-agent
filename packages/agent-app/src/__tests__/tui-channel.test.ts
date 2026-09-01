@@ -331,6 +331,25 @@ describe("tui channel driver — info composition", () => {
     }
   });
 
+  it("resolves /v1/info from memory: repeated polls do not re-read the Pi catalog", async () => {
+    const captured = await startCapturingTui({
+      fallbackModels: [{ provider: "openrouter", model: "gpt-5.6-sol" }],
+    });
+
+    const first = await resolveInfo(captured);
+    const second = await resolveInfo(captured);
+    const third = await resolveInfo(captured);
+
+    // The console polls /v1/info every 5s per connection, and a throwing or
+    // slow info provider returns 500 for the WHOLE response — the agent shows
+    // offline, not degraded. Both projections are precomputed at channel start,
+    // so repeated polls hand back the very same frozen objects.
+    expect(second.providers).toBe(first.providers);
+    expect(third.providers).toBe(first.providers);
+    expect(second.modelOptions).toBe(first.modelOptions);
+    expect(third.modelOptions).toBe(first.modelOptions);
+  });
+
   it("keeps the serialized /v1/info payload under the byte budget with openrouter configured", async () => {
     const captured = await startCapturingTui({
       fallbackModels: [{ provider: "openrouter", model: "gpt-5.6-sol" }],
