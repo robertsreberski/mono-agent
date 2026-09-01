@@ -1,6 +1,6 @@
 import type {
-  AgentSummary,
   AgentSkillRegistry,
+  AgentSummary,
   AskAnswer,
   AskSnapshot,
   AskSubmissionResult,
@@ -14,12 +14,13 @@ import type {
   LiveInputReceipt,
   McpAppPart,
   McpAppResource,
+  MessagePage,
   MessagePart,
-  PushSubscriptionStatus,
+  ModelCatalogPage,
   ProcessJobProjection,
+  PushSubscriptionStatus,
   StartTurnInput,
   ThreadDetail,
-  MessagePage,
   ThreadPage,
   ThreadSearchPage,
   ThreadSummary,
@@ -300,9 +301,23 @@ export const api = {
       { signal },
     ),
 
+  agentModels: (
+    sourceId: string,
+    provider: string,
+    cursor?: string,
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams({ provider, limit: "100" });
+    if (cursor !== undefined) query.set("cursor", cursor);
+    return request<ModelCatalogPage>(
+      `/api/v1/agents/${encodeURIComponent(sourceId)}/models?${query.toString()}`,
+      { signal },
+    );
+  },
+
   patchThread: async (
     threadId: string,
-    patch: { title?: string; archived?: boolean },
+    patch: { title?: string; archived?: boolean; model?: string | null; effort?: string | null },
   ) => {
     const result = await request<{ thread: ThreadSummary }>(
       `/api/v1/threads/${encodeURIComponent(threadId)}`,

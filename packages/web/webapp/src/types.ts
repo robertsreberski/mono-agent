@@ -98,6 +98,7 @@ export interface ModelOption {
   readonly reasoningMode?: string;
   readonly label?: string;
   readonly contextWindow?: number;
+  readonly provider?: string;
 }
 
 export interface AskOption {
@@ -149,6 +150,7 @@ export interface AgentSummary {
   readonly defaultEffort?: string;
   readonly efforts?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, ModelOption>>;
+  readonly providers?: readonly string[];
   readonly cron?: { readonly read: boolean; readonly actions: boolean };
   readonly supportsAskById?: boolean;
   readonly updatedAt: string;
@@ -214,6 +216,10 @@ export interface ThreadSummary {
   readonly runState: RunState;
   readonly canSend: boolean;
   readonly canUpload: boolean;
+  /** Per-conversation model override, or null when the agent default applies. */
+  readonly runModel?: string | null;
+  /** Per-conversation effort override, or null when the agent default applies. */
+  readonly runEffort?: string | null;
 }
 
 export type ToolCallStatus = "running" | "complete" | "failed";
@@ -528,6 +534,24 @@ export interface WebEvent {
   readonly at: string;
   readonly threadId?: string;
   readonly payload?: unknown;
+}
+
+export interface ModelCatalogPage {
+  readonly models: readonly CatalogModel[];
+  readonly nextCursor?: string;
+  readonly truncated: boolean;
+}
+
+/** One model served by an agent's lazy `/v1/models` catalog endpoint. */
+export interface CatalogModel {
+  readonly id: string;
+  readonly name: string;
+  readonly provider: string;
+  readonly providerLabel: string;
+  readonly contextWindow?: number;
+  readonly reasoning?: boolean;
+  readonly effortLevels?: readonly string[];
+  readonly reasoningMode?: string;
 }
 
 export interface StartTurnInput {

@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   agentVisibility,
-  effortLevelsForAgentModel,
-  GLOBAL_EFFORT_LEVELS,
   preferenceKeyForThread,
   readStoredRunPreferences,
   resolveBootstrapSelection,
@@ -10,6 +8,7 @@ import {
   sortAgentsPinnedFirst,
   validateRunPreference,
 } from "./console-store";
+import { effortLevelsForAgentModel, GLOBAL_EFFORT_LEVELS } from "./components/model-catalog";
 import { agent, bootstrap, thread } from "./test/fixtures";
 
 describe("resolveBootstrapSelection", () => {
@@ -206,5 +205,30 @@ describe("run setting isolation", () => {
         { model: "cloud", effort: "medium" },
       ),
     ).toEqual({ model: "cloud", effort: "" });
+  });
+
+  it("keeps an override whose row left the shortlist while its provider stays advertised", () => {
+    expect(
+      validateRunPreference(
+        agent("agent", { models: ["current"] }),
+        { model: "anthropic:claude-sonnet-4.5", effort: "" },
+        ["agent", "anthropic"],
+      ),
+    ).toEqual({ model: "anthropic:claude-sonnet-4.5", effort: "" });
+  });
+
+  it("keeps the stored selection through a discovery blip with an empty shortlist", () => {
+    expect(
+      validateRunPreference(
+        agent("agent", { models: [], defaultModel: "" }),
+        { model: "graded", effort: "xhigh" },
+      ),
+    ).toEqual({ model: "graded", effort: "xhigh" });
+  });
+
+  it("leaves a stored selection untouched while no agent is selected", () => {
+    expect(
+      validateRunPreference(null, { model: "graded", effort: "xhigh" }),
+    ).toEqual({ model: "graded", effort: "xhigh" });
   });
 });

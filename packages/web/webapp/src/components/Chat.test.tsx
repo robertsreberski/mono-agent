@@ -66,6 +66,8 @@ describe("ModelControls", () => {
       hasRunOverride: false,
       resetRunOverride: vi.fn(),
       selectedThread: null,
+      catalogByProvider: {},
+      ensureProviderCatalog: vi.fn(),
       selectedAgent: agent("agent", {
         models: [MODEL],
         defaultModel: MODEL,
