@@ -1796,9 +1796,14 @@ export class WebService {
     }
     const effectiveModel = model ?? agent.defaultModel;
     const option = effectiveModel === undefined ? undefined : agent.modelOptions?.[effectiveModel];
+    // `modelOptions` only ever covers the configured shortlist. A model reached
+    // through the provider catalog has no entry, so deriving [] from its absence
+    // rejected every effort the selector had just offered for it. Advertised
+    // options stay authoritative; an unadvertised model falls back to the global
+    // ladder and lets the agent -- which is permissive at turn time -- decide.
     const allowedEfforts = agent.modelOptions === undefined
       ? agent.efforts
-      : effortLevelsForOption(option);
+      : option === undefined ? EFFORT_LEVELS : effortLevelsForOption(option);
     if (effort !== undefined && (allowedEfforts === undefined || !allowedEfforts.includes(effort))) {
       throw new WebConsoleError("invalid_effort", "This agent did not advertise the selected effort for this model.", 400);
     }
@@ -2262,9 +2267,20 @@ function collectEfforts(info: OperatorInfo): readonly string[] {
   return [...new Set(models.flatMap((model) => effortLevelsForOption(info.modelOptions?.[model])))];
 }
 
+/**
+ * Tier 3: the syntactic floor. `@mono-agent/web` may not import pi-ai, so this
+ * cannot be authoritative -- the agent is. It exists to reject obvious garbage,
+ * and it must not be looser than the runtime parser, or a reference the console
+ * accepts is silently ignored and the turn runs on the default model instead.
+ */
 function modelPassesSyntacticFloor(model: string): boolean {
   const separator = model.indexOf(":");
-  return separator > 0 && separator < model.length - 1;
+  if (separator <= 0 || separator >= model.length - 1) return false;
+  const provider = model.slice(0, separator);
+  const rest = model.slice(separator + 1);
+  // Provider ids are lowercase kebab/alphanumeric; the model half may carry
+  // further colons and slashes but must not be blank or padded.
+  return /^[a-z0-9][a-z0-9-]*$/u.test(provider) && rest.trim() === rest && rest.trim().length > 0;
 }
 
 function effortLevelsForOption(option: WebModelOption | undefined): readonly string[] {

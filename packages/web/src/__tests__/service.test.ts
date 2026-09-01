@@ -2049,6 +2049,53 @@ describe("WebService", () => {
     expect(summary?.providers?.find((provider) => provider.id === "bad")?.label).toBe("bad");
   });
 
+  it("accepts efforts for a catalog-widened model the shortlist never described", async () => {
+    // `modelOptions` covers only the configured shortlist, so a model reached
+    // through the catalog had no entry and every effort the selector offered
+    // for it came back 400 invalid_effort.
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "provider/default",
+        models: ["provider/default"],
+        modelOptions: { "provider/default": { effortLevels: ["low"], reasoning: true } },
+        capabilities: { attachments: true },
+      });
+      if (/\/v1\/models(?:\?|$)/u.test(url)) {
+        return Response.json({
+          models: [{ id: "widened", name: "Widened", provider: "anthropic", providerLabel: "Anthropic" }],
+          truncated: false,
+        });
+      }
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    await service.agentModels("agent-one", { provider: "anthropic" });
+
+    // The shortlist model keeps its narrow advertised ladder.
+    const narrow = service.createThread("agent-one");
+    await expect(service.startTurn(narrow.id, { text: "narrow", model: "provider/default", effort: "max" }))
+      .rejects.toMatchObject({ code: "invalid_effort" });
+
+    // A catalog model the shortlist never described accepts the global ladder.
+    const widened = service.createThread("agent-one");
+    await expect(service.startTurn(widened.id, { text: "widened", model: "anthropic:widened", effort: "high" }))
+      .resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+
+  it("keeps the syntactic floor no looser than the runtime parser", async () => {
+    const service = await createService({});
+    for (const model of ["bad provider:model", "UPPER:model", "provider: model", "provider:  "]) {
+      const thread = service.createThread("agent-one");
+      await expect(service.startTurn(thread.id, { text: "floor", model }))
+        .rejects.toMatchObject({ code: "invalid_model" });
+    }
+    await service.stop();
+  });
+
   it("validates model selection across shortlist, catalog cache, and provider-prefix tiers", async () => {
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;

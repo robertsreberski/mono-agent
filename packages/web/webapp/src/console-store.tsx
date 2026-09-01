@@ -1148,6 +1148,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // One-time adoption of a browser-local override into the thread's server
   // fields. A server value always wins, and a reset can never resurrect a
   // migrated key because the local copy is dropped once patched.
+  //
+  // The `selectedThread` projection can be stale -- another tab or device may
+  // have set an override that this tab has not observed yet -- so the decision
+  // is re-checked against a fresh read immediately before patching. That
+  // narrows the window to the round-trip rather than the lifetime of a stale
+  // projection. Closing it completely needs a revision-conditional PATCH, which
+  // the thread API does not expose today.
   useEffect(() => {
     if (!selectedThread || !preferenceKey) return;
     if (migratedKeysRef.current.has(preferenceKey)) return;
@@ -1163,6 +1170,26 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     migratedKeysRef.current.add(preferenceKey);
     void (async () => {
       try {
+        const fresh = await api.thread(selectedThread.id);
+        if (
+          (fresh.thread.runModel ?? null) !== null
+          || (fresh.thread.runEffort ?? null) !== null
+        ) {
+          // Someone set an override while this tab held a stale projection.
+          // Adopt theirs and drop the local copy rather than overwriting it.
+          applyThreadUpdate(fresh.thread);
+          setModelByContext((current) => {
+            const nextMap = { ...current };
+            delete nextMap[preferenceKey];
+            return nextMap;
+          });
+          setEffortByContext((current) => {
+            const nextMap = { ...current };
+            delete nextMap[preferenceKey];
+            return nextMap;
+          });
+          return;
+        }
         const next = await api.patchThread(selectedThread.id, {
           model: local.model || null,
           effort: local.effort || null,
