@@ -137,9 +137,15 @@ export function buildProviderModelCatalog(
     if (!providerLabelById.has(id)) providerLabelById.set(id, id);
   }
 
-  // Deterministic order: configured providers (config order, already id-sorted
-  // by config load), then unconfigured built-ins (alphabetical), then
-  // discovered local providers (alphabetical).
+  // `providers` is a support gate, not a hint: an agent advertises exactly the
+  // providers it declared, the providers its own routes use, and whatever local
+  // discovery found. A Pi built-in nobody declared is NOT selectable — offering
+  // all 39 would let an operator pick a provider the agent holds no credential
+  // for, and the failure would only surface at turn time.
+  //
+  // Deterministic order: declared providers (config order, id-sorted at load),
+  // then route providers not already declared (route order), then discovered
+  // local providers (alphabetical).
   const orderedIds: string[] = [];
   const seen = new Set<string>();
   for (const provider of providers) {
@@ -147,13 +153,10 @@ export function buildProviderModelCatalog(
     seen.add(provider.id);
     orderedIds.push(provider.id);
   }
-  const remainingBuiltins = builtinProviders
-    .map((provider) => provider.id)
-    .filter((id) => !seen.has(id))
-    .sort(compareModelId);
-  for (const id of remainingBuiltins) {
-    seen.add(id);
-    orderedIds.push(id);
+  for (const ref of configuredRoutes) {
+    if (seen.has(ref.provider)) continue;
+    seen.add(ref.provider);
+    orderedIds.push(ref.provider);
   }
   const remainingDiscovered = [...discoveredByProvider.keys()]
     .filter((id) => !seen.has(id))

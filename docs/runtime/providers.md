@@ -5,7 +5,13 @@ sidebar:
   order: 2
 ---
 
-The `providers` config map declares which model providers the agent supports. Choosing beyond the default `runtime.model` — whether by config, per-trigger override, or per-conversation selection — is limited to the providers listed here, to Pi's built-in catalog, and to the two zero-config local providers. Declaring a provider widens what is selectable to that provider's full catalog.
+The `providers` config map declares which model providers the agent supports, and it is a **gate**, not a hint. What an agent advertises as selectable is exactly:
+
+- every provider listed in `providers`,
+- every provider named by `runtime.model` or a `runtime.fallbacks[]` entry — routing through a provider you did not mean to support is not possible, so those count as declared,
+- `ollama` and `lmstudio` when zero-config discovery finds them running.
+
+Declaring a provider widens selection to that provider's **full catalog**, not just the models you route to. A Pi built-in that nobody declared and no route uses is not offered at all: advertising all 39 would let an operator pick a provider the agent holds no credential for, and the failure would surface only when the turn ran.
 
 Coverage: **config**. Configure the map in `mono-agent.config.json` under `providers`, or via `MONO_AGENT_PROVIDERS_JSON` as a JSON object with the same shape.
 

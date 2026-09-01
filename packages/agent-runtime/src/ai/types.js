@@ -224,23 +224,6 @@
  * @property {"sequential"|"safe-parallel"} [piToolExecutionMode] Pi built-in tool scheduling mode. Safe parallelism is the default.
  * @property {"one-at-a-time"|"all"} [piToolParallelismMode] DEPRECATED. Compatibility alias mapped to piToolExecutionMode.
  * @property {Object} [settings] DEPRECATED. Legacy flat settings bag; consumed only as a per-group FALLBACK when the corresponding typed object (`toolLimits` / `compaction`) is absent. Consuming any key emits one `deprecated_settings_option` runtime_warning per run. Migrate via resolveRuntimePolicies (@mono-agent/runtime-adapter).
- * @property {ReadonlyArray<"user" | "project" | "local">} [settingSources] Claude Agent SDK only. Filesystem
- *   settings the SDK may load for this run. Omitted/empty disables user, project, and local sources, including their
- *   CLAUDE.md, hooks, plugins, and on-disk agent profiles. Anthropic managed settings remain in force and may still
- *   configure hooks or plugins; this option is not a managed-policy bypass. Each opted-in source may execute configured
- *   hooks and plugins, so enable only trusted settings and avoid these sources in an untrusted checkout. Include
- *   `"project"`/`"user"` to let the native `Task` tool discover `.claude/agents` definitions. Unrecognized entries are
- *   dropped. The Claude Code CLI bridge does not take this option: that binary performs its own settings discovery and
- *   mono-agent passes no `--setting-sources`, so a CLI run already reads the host config regardless of this value.
- * @property {boolean} [codexLoadProjectDocs] Codex app-server only. Omitted/false starts the managed app-server with
- *   `project_doc_max_bytes=0`, preventing automatic repository-instruction discovery. True restores Codex's native
- *   project-doc loading defaults. An explicit `codexAppServerArgs` array wins over this convenience option.
- * @property {boolean} [codexSandboxNetworkAccess] Codex app-server only, code-only. Strict `true` enables native
- *   network access for plan/read-only and default/acceptEdits/workspace-write turns; omitted or any other runtime
- *   value denies it. No-tool probes always deny network access, and bypass/danger-full-access remains unchanged. This
- *   is unrelated to `RuntimeRunOptions.sandboxPolicy`, which controls mono-agent's own sandbox and is not consumed by
- *   Codex's provider-owned tool loop. Default/acceptEdits workspace-write plus network true grants repository read and
- *   network egress in the same turn; prefer plan when only read-only browsing is needed.
  * @property {RuntimeSubagentsOptions} [subagents] In-process `Agent` built-in: profiles, caps, and the nested-run callback.
  * @property {import('../agent/tools/shared/process-jobs.js').ProcessJobsController} [processJobs] Pi-native-only structural process-job controller. When absent, Exec/Bash schemas and foreground behavior are unchanged.
  * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when

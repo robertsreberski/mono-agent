@@ -67,9 +67,6 @@ type RuntimeRunComparableKeys =
   | "toolLimits"
   | "compaction"
   | "prompts"
-  | "settingSources"
-  | "codexLoadProjectDocs"
-  | "codexSandboxNetworkAccess"
   | "processJobs";
 type RuntimeRunComparableOptions = Pick<RuntimeRunOptions, RuntimeRunComparableKeys>;
 type KnownKeys<T> = {
@@ -166,19 +163,13 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
     }
   });
 
-  it("keeps provider controls typed at the facade/kernel seam", () => {
-    expectTypeOf<RuntimeRunOptions["settingSources"]>()
-      .toEqualTypeOf<readonly ("user" | "project" | "local")[] | undefined>();
-    expectTypeOf<RuntimeRunOptions["codexLoadProjectDocs"]>()
-      .toEqualTypeOf<boolean | undefined>();
-    expectTypeOf<KernelRunOptions["settingSources"]>()
-      .toEqualTypeOf<readonly ("user" | "project" | "local")[] | undefined>();
-    expectTypeOf<KernelRunOptions["codexLoadProjectDocs"]>()
-      .toEqualTypeOf<boolean | undefined>();
-    expectTypeOf<RuntimeRunOptions["codexSandboxNetworkAccess"]>()
-      .toEqualTypeOf<boolean | undefined>();
-    expectTypeOf<KernelRunOptions["codexSandboxNetworkAccess"]>()
-      .toEqualTypeOf<boolean | undefined>();
+  it("rejects provider controls that only the deleted bridges honored", () => {
+    // These were typed, forwarded and silently ignored once their bridges were
+    // removed — a caller could set one and get different behavior than the
+    // published contract promised. `never` makes that a compile error instead.
+    expectTypeOf<RuntimeRunOptions["settingSources"]>().toEqualTypeOf<undefined>();
+    expectTypeOf<RuntimeRunOptions["codexLoadProjectDocs"]>().toEqualTypeOf<undefined>();
+    expectTypeOf<RuntimeRunOptions["codexSandboxNetworkAccess"]>().toEqualTypeOf<undefined>();
   });
 
   it("types per-attempt tool-policy projection without opening other request fields", () => {
@@ -200,14 +191,6 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
         },
       } satisfies MonoRuntimeAttemptResolution;
       assertAssignable<MonoRuntimeAttemptResolution>(invalid);
-
-      const invalidResolverOptions = {
-        options: {
-          // @ts-expect-error route plugins cannot replace logical Codex network policy.
-          codexSandboxNetworkAccess: true,
-        },
-      } satisfies MonoRuntimeAttemptResolution;
-      void invalidResolverOptions;
 
       const invalidProcessJobsResolver = {
         options: {
