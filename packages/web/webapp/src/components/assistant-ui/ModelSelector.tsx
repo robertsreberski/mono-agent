@@ -4,6 +4,7 @@ import { RadioGroup } from "@base-ui/react/radio-group";
 import { Command } from "cmdk";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../Icon";
+import type { AgentProvider } from "../../types";
 import {
   groupSelectorModels,
   selectorProvides,
@@ -30,6 +31,8 @@ export type ModelSelectorProps = {
   readonly onReset?: () => void;
   /** Asks the caller to fetch a provider's catalog lazily (chips and open). */
   readonly onProviderRequest?: (provider: string) => void;
+  /** Providers the agent advertises, so a declared-but-unfetched one still gets a chip. */
+  readonly agentProviders?: readonly AgentProvider[];
   /** Fetch state per provider, used to tell "still loading" from "no match". */
   readonly providerStatus?: Readonly<Record<string, ProviderCatalogStatus>>;
 };
@@ -64,6 +67,7 @@ export function ModelSelector({
   onReset,
   onProviderRequest,
   providerStatus,
+  agentProviders,
 }: ModelSelectorProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -121,7 +125,7 @@ export function ModelSelector({
   }, [activeProvider, models, query]);
 
   const groups = useMemo(() => groupSelectorModels(filteredModels), [filteredModels]);
-  const provides = useMemo(() => selectorProvides(groups), [groups]);
+  const provides = useMemo(() => selectorProvides(groups, agentProviders), [agentProviders, groups]);
 
   const emptyMessage = query.trim().length === 0
     ? activeProvider !== null && (

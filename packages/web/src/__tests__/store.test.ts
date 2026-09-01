@@ -1715,7 +1715,7 @@ describe("WebStore", () => {
     reopened.close();
   });
 
-  it("migrates a seeded schema v10 database to v11 keeping its thread rows", async () => {
+  it("migrates a seeded schema v10 database to v12 keeping its thread rows", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -1745,12 +1745,17 @@ describe("WebStore", () => {
     const inspected = new DatabaseSync(databasePath);
     const version = inspected.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
     const columns = inspected.prepare("PRAGMA table_info(threads)").all() as unknown as Array<{ name: string }>;
+    // v12 adds the agent provider summary. `agentSelectSql` uses `a.*`, so the
+    // column is readable the moment it exists -- but only if the ALTER ran.
+    const agentColumns = new Set((inspected.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
+      .map((column) => column.name));
     inspected.close();
-    expect(version.user_version).toBe(11);
+    expect(version.user_version).toBe(12);
+    expect(agentColumns.has("providers_json")).toBe(true);
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(["run_model", "run_effort"]));
   });
 
-  it("re-runs the v11 migration without failing when the new columns already exist", async () => {
+  it("re-runs the v11/v12 migrations without failing when the new columns already exist", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -1771,7 +1776,7 @@ describe("WebStore", () => {
     reopened.close();
     expect(
       new DatabaseSync(databasePath, { readOnly: true }).prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 11 });
+    ).toMatchObject({ user_version: 12 });
   });
 
   it("sets, merges, and clears per-thread model and effort overrides", async () => {
@@ -1874,7 +1879,7 @@ describe("WebStore", () => {
     const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
     const processJobCards = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'").get();
     inspected.close();
-    expect(version.user_version).toBe(11);
+    expect(version.user_version).toBe(12);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
     expect(liveInputs).toBeDefined();
@@ -1901,7 +1906,7 @@ describe("WebStore", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'",
     ).get();
     inspected.close();
-    expect(version.user_version).toBe(11);
+    expect(version.user_version).toBe(12);
     expect(processJobCards).toBeDefined();
   });
 
@@ -1914,7 +1919,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 12");
+    future.exec("PRAGMA user_version = 13");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 
@@ -2969,7 +2974,7 @@ describe("WebStore conversation search", () => {
     expect(
       new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true })
         .prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 11 });
+    ).toMatchObject({ user_version: 12 });
     reopened.close();
   });
 });

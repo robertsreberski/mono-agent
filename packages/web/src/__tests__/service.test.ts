@@ -2016,6 +2016,39 @@ describe("WebService", () => {
     await service.stop();
   });
 
+
+  it("carries the agent's advertised providers through to the bootstrap summary", async () => {
+    // The gap this covers: `/v1/info.providers` was parsed nowhere, so the
+    // console never learned which providers existed. The selector's chips and
+    // groups are built from that list, so a provider declared purely to widen
+    // selection was unreachable -- its catalog page could never be requested.
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "provider/default",
+        models: ["provider/default"],
+        providers: [
+          { id: "provider", label: "Provider", modelCount: 2, source: "builtin", configured: true },
+          { id: "anthropic", label: "Anthropic", modelCount: 13, source: "builtin", configured: true },
+          { id: "bad", modelCount: 1, source: "builtin" },
+          { label: "no id", modelCount: 1, source: "builtin" },
+        ],
+        capabilities: { attachments: true },
+      });
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+
+    const service = await createService({ fetchImpl });
+    const summary = (await service.bootstrap()).agents[0];
+    expect(summary?.providers?.map((provider) => provider.id))
+      .toEqual(["provider", "anthropic", "bad"]);
+    // A missing label falls back to the id rather than dropping the provider,
+    // and a malformed entry is skipped instead of throwing -- a throw here
+    // becomes a 500 for the whole /v1/info response and shows the agent offline.
+    expect(summary?.providers?.find((provider) => provider.id === "bad")?.label).toBe("bad");
+  });
+
   it("validates model selection across shortlist, catalog cache, and provider-prefix tiers", async () => {
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;

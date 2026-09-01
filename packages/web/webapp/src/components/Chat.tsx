@@ -133,7 +133,7 @@ export function ModelControls() {
   const {
     usage, selectorModels, model, effort, setModel, setEffort,
     agentDefaultModel, hasRunOverride, resetRunOverride, disabled, hasSettings,
-    catalogStatusByProvider, openCatalog, requestProvider,
+    catalogStatusByProvider, openCatalog, requestProvider, agentProviders,
   } = useRunControls();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -156,6 +156,7 @@ export function ModelControls() {
       {hasSettings && (
         <ModelSelector
           models={selectorModels}
+          agentProviders={agentProviders}
           value={model}
           effort={effort}
           onValueChange={setModel}

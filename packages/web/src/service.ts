@@ -1525,6 +1525,7 @@ export class WebService {
           ...(info.effort === undefined ? {} : { defaultEffort: info.effort }),
           ...(efforts.length === 0 ? {} : { efforts }),
           ...(info.modelOptions === undefined ? {} : { modelOptions: info.modelOptions }),
+          ...(info.providers === undefined ? {} : { providers: info.providers }),
           ...(info.cron === undefined ? {} : { cron: info.cron }),
           ...(info.supportsAskById ? { supportsAskById: true } : {}),
           updatedAt: agent.source.updatedAt,

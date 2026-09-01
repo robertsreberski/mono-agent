@@ -32,6 +32,7 @@ import type {
   WebCronRunDetail,
   WebCronRunPage,
   WebCronRunSummary,
+  WebAgentProvider,
   WebModelOption,
   WebModelPage,
   WebSkillInfo,
@@ -55,6 +56,13 @@ const PRESERVED_MCP_APP_OPERATOR_ERRORS = new Map<string, number>([
 ]);
 const CANCEL_TIMEOUT_MS = 2_000;
 const HISTORY_APPEND_TIMEOUT_MS = 5_000;
+// The provider summary rides `/v1/info`, which shares one 1 MiB body cap with
+// every other field and is polled every 5s. Provider ids and labels are not
+// length-bounded at their source, so bound them here: an oversized summary must
+// cost the summary, never the whole response (which shows the agent OFFLINE).
+const MAX_PROVIDER_ITEMS = 64;
+const MAX_PROVIDER_ID_BYTES = 128;
+const MAX_PROVIDER_LABEL_BYTES = 128;
 const MAX_SKILL_ITEMS = 256;
 const MAX_SKILL_DESCRIPTION_BYTES = 256;
 const MAX_SKILL_NAME_BYTES = 256;
@@ -79,6 +87,8 @@ export interface OperatorInfo {
   readonly effort?: string;
   readonly models?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, WebModelOption>>;
+  /** Providers this agent supports, for the catalog selector. Bounded. */
+  readonly providers?: readonly WebAgentProvider[];
   /** Live registry snapshot. Absent when the producer predates skill discovery. */
   readonly skills?: OperatorSkillRegistry;
   readonly supportsAttachments: boolean;
@@ -169,6 +179,7 @@ export class OperatorClient {
     }
     const models = stringArray(body.models);
     const modelOptions = parseModelOptions(body.modelOptions);
+    const providers = parseProviders(body.providers);
     const skills = parseSkillRegistry(body.skills);
     const capabilities = record(body.capabilities);
     const cron = record(capabilities?.cron);
@@ -181,6 +192,7 @@ export class OperatorClient {
       ...(typeof body.effort === "string" ? { effort: body.effort } : {}),
       ...(models === undefined ? {} : { models }),
       ...(modelOptions === undefined ? {} : { modelOptions }),
+      ...(providers === undefined ? {} : { providers }),
       ...(skills === undefined ? {} : { skills }),
       supportsAttachments: capabilities?.attachments === true,
       supportsHistoryAppend: capabilities?.historyAppend === true,
@@ -1059,6 +1071,32 @@ function parseModelOptions(value: unknown): Record<string, WebModelOption> | und
     };
   }
   return Object.keys(result).length === 0 ? undefined : result;
+}
+
+/**
+ * Parse the agent's provider summary. Total by construction: a malformed entry
+ * is skipped rather than throwing, because a throw here becomes a 500 for the
+ * entire `/v1/info` response and takes the agent offline.
+ */
+function parseProviders(value: unknown): readonly WebAgentProvider[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const result: WebAgentProvider[] = [];
+  for (const raw of value) {
+    if (result.length >= MAX_PROVIDER_ITEMS) break;
+    const entry = record(raw);
+    if (entry === undefined) continue;
+    const id = typeof entry.id === "string" ? entry.id : undefined;
+    if (id === undefined || id.length === 0) continue;
+    if (Buffer.byteLength(id, "utf8") > MAX_PROVIDER_ID_BYTES) continue;
+    const rawLabel = typeof entry.label === "string" && entry.label.length > 0 ? entry.label : id;
+    const label = Buffer.byteLength(rawLabel, "utf8") > MAX_PROVIDER_LABEL_BYTES ? id : rawLabel;
+    result.push({
+      id,
+      label,
+      ...(entry.configured === true ? { configured: true } : {}),
+    });
+  }
+  return result.length === 0 ? undefined : result;
 }
 
 function stringArray(value: unknown): readonly string[] | undefined {

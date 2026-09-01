@@ -120,6 +120,13 @@ export interface WebAgentSummary {
   readonly defaultEffort?: string;
   readonly efforts?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, WebModelOption>>;
+  /**
+   * Providers this agent supports. `models`/`modelOptions` stay the configured
+   * shortlist; this is what the selector groups and filters by, and what tells
+   * a client which providers are worth requesting a `/v1/models` page for.
+   * Absent when the agent predates the provider catalog.
+   */
+  readonly providers?: readonly WebAgentProvider[];
   /** Absent when the addressed agent predates first-class cron operator routes. */
   readonly cron?: WebCronCapability;
   readonly supportsAskById?: boolean;
@@ -390,6 +397,14 @@ export interface WebCronOverview extends Omit<CronOperatorOverview, "jobs"> {
 export interface WebCronRunPage extends CronOperatorRunPage {
   /** Canonical messages reconciled by the web backend for this page. */
   readonly messages?: readonly WebMessage[];
+}
+
+/** One provider an agent advertises as supported. */
+export interface WebAgentProvider {
+  readonly id: string;
+  readonly label: string;
+  /** The agent declared this provider or routes through it. */
+  readonly configured?: true;
 }
 
 /** One model served by the lazy agent `/v1/models` catalog endpoint. */
