@@ -1,6 +1,6 @@
 ---
 title: "Home"
-description: "Build and operate a config-first agent across channels, runtimes, tools, memory, and observability."
+description: "Build and operate a config-first agent across channels, model references, tools, memory, and observability."
 sidebar:
   order: 0
 ---
@@ -13,26 +13,26 @@ New here? Read [Getting Started → Quickstart](/getting-started/quickstart/) to
 
 ## What you get
 
-- **Any backend, one model string** — `runtime.model` defaults to `codex:gpt-5.6-terra` and can select claude (sdk/cli), codex (cli), pi (sdk, 15+ providers), or opencode (cli); e.g. `codex:gpt-5.6-terra`, `codex:gpt-5.6-sol`, `pi:openai-codex:gpt-5.6-sol`, and `pi:opencode-go:kimi-k2.6`.
+- **One runtime, any provider** — `runtime.model` defaults to `openai-codex:gpt-5.6-terra` and can select any `<provider>:<model>` ref; e.g. `openai-codex:gpt-5.6-terra`, `openai-codex:gpt-5.6-sol`, `anthropic:claude-sonnet-4-6`, and `ollama:gemma4:31b`.
 - **Many channels, one config** — external transports are opt-in, the loopback TUI operator endpoint is opt-out, and every active surface uses the same configured runtime, tools, memory, and context through its own responder/harness.
 - **Batteries included** — managed Read/Write/Edit/Glob/Grep/Exec/Bash/NodeRepl/WebFetch/WebSearch tools, a tool policy, MCP servers, a native sandbox, tiered memory, and observability.
 
 ```json
 {
-  "runtime": { "model": "codex:gpt-5.6-terra" },
+  "runtime": { "model": "openai-codex:gpt-5.6-terra" },
   "context": { "identityPath": "./IDENTITY.md" },
   "telegram": { "enabled": true },
   "openaiApi": { "enabled": true }
 }
 ```
 
-Equivalent env overrides: `MONO_AGENT_MODEL=codex:gpt-5.6-terra` and, for the enabled Telegram channel, `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`. Source configs omit credentials; see [Environment variables](/config/env-vars/) for the full mapping.
+Equivalent env overrides: `MONO_AGENT_MODEL=openai-codex:gpt-5.6-terra` and, for the enabled Telegram channel, `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`. Source configs omit credentials; see [Environment variables](/config/env-vars/) for the full mapping.
 
 ## Site map
 
 - **[Getting Started](/getting-started/)** — install the CLI, scaffold a config, and run your first agent.
 - **[Config](/config/)** — the `mono-agent.config.json` blueprint, env-var precedence, and folder layout.
-- **[Runtime](/runtime/)** — model backends, fallback chains, local providers, effort/permissions, sessions, concurrency, and tool guards.
+- **[Runtime](/runtime/)** — Pi runtime & model references, fallback chains, local providers, effort/permissions, sessions, concurrency, and tool guards.
 - **[Channels](/channels/)** — Telegram, Slack, WhatsApp, Webhook, OpenAI-compatible API, A2A, cron, and proactive delivery.
 - **[Memory](/memory/)** — tiered capture/recall, embeddings, consolidation, the entity graph, and validation/CLI.
 - **[Context](/context/)** — identity/soul, skills, and how the system prompt is assembled per turn.
@@ -47,4 +47,4 @@ Equivalent env overrides: `MONO_AGENT_MODEL=codex:gpt-5.6-terra` and, for the en
 
 Everything that defines a running agent lives in `mono-agent.config.json`, resolved with a strict precedence for fields that expose an environment mapping: **process env > `mono-agent.config.json` > built-in defaults**. Documented `MONO_AGENT_*` overrides let one source config run in different environments without embedding credentials; JSON-only fields remain in the config file.
 
-External channels and optional subsystems are generally **opt-in**: a transport is dormant until you enable it, while the loopback TUI endpoint defaults on and can be disabled explicitly. Security-sensitive surfaces (sandbox fallback, network policy, send-tool allowlists) **fail closed** by default. Approval gates, structured output, custom runtimes/channels, and direct runtime live input are programmatic escape hatches; managed Slack, Telegram, and web-console turns provide live follow-up steering automatically on capable backends. See [Programmatic](/programmatic/).
+External channels and optional subsystems are generally **opt-in**: a transport is dormant until you enable it, while the loopback TUI endpoint defaults on and can be disabled explicitly. Security-sensitive surfaces (sandbox fallback, network policy, send-tool allowlists) **fail closed** by default. Approval gates, structured output, custom runtimes/channels, and direct runtime live input are programmatic escape hatches; managed Slack, Telegram, and web-console turns provide live follow-up steering automatically on capable providers. See [Programmatic](/programmatic/).

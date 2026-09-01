@@ -21,7 +21,7 @@ The discovery document an A2A provider publishes describing its name, version, p
 
 ## Backend
 
-The underlying runtime/provider that actually runs the model. mono-agent supports multiple backends — `claude` (sdk/cli), `codex` (cli), `pi` (sdk, 15+ providers), and `opencode` (cli) — selected through the [model reference](#model-reference). See [Backends](/runtime/backends/).
+The Pi runtime that actually runs the model. mono-agent is Pi-only: every provider ([openai-codex](#model-reference), anthropic, opencode-go, local Ollama/LM Studio, and the rest of the Pi catalog) runs through the same SDK runtime and provider bridge, selected through the [model reference](#model-reference). See [Providers](/runtime/providers/).
 
 ## Bloat guard
 
@@ -49,34 +49,29 @@ The default-deny posture. It survives in two places: the **programmatic** harnes
 
 ## Fallback router
 
-The retry layer that walks ordered canonical `{model, effort?}` routes after fallback-eligible provider/auth failures. It records failover and safety history, keeps the chain provider-session-stateless, and carries bounded transcript context between attempts. Configured via `runtime.fallbacks` (`MONO_AGENT_FALLBACKS_JSON`); legacy `runtime.fallbackModels` remains compatible.
+The retry layer that walks ordered canonical `{model, effort?}` routes after fallback-eligible provider/auth failures. It records failover and safety history, keeps the chain provider-session-stateless, and carries bounded transcript context between attempts. Configured via `runtime.fallbacks` (`MONO_AGENT_FALLBACKS_JSON`); the legacy `runtime.fallbackModels` CSV form is retired and warns.
 
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.6-terra",
+    "model": "openai-codex:gpt-5.6-terra",
     "fallbacks": [
-      { "model": "codex:gpt-5.6-sol", "effort": "xhigh" },
-      { "model": "pi:ollama:gemma4:31b" }
-    ],
-    "routeSafety": "per-route-native"
+      { "model": "anthropic:claude-sonnet-4-6", "effort": "xhigh" },
+      { "model": "ollama:gemma4:31b" }
+    ]
   }
 }
 ```
-
-`routeSafety: "uniform"` (default) requires one compatible monotonic contract.
-Explicit `per-route-native` isolates mixed providers and applies their documented
-native contracts; unsupported capabilities skip/fail rather than disappearing.
 
 See [Fallback](/runtime/fallback/).
 
 ## Harness
 
-The execution engine (`@mono-agent/agent-harness`) that runs a single turn against a backend, applies tool policy and guards, drives compaction, and returns an explicit result or failure object (it never fakes success). The run path begins at `responder.respond`. See [Tools and guards](/runtime/tools-and-guards/).
+The execution engine (`@mono-agent/agent-harness`) that runs a single turn against a provider, applies tool policy and guards, drives compaction, and returns an explicit result or failure object (it never fakes success). The run path begins at `responder.respond`. See [Tools and guards](/runtime/tools-and-guards/).
 
 ## Model reference
 
-The string that names a backend and model together, in the form `backend:model` (or `backend:provider:model` for pi). Examples: `pi:openai-codex:gpt-5.6-terra`, `pi:opencode-go:kimi-k2.6`, `codex:gpt-5.6-terra`. Set via `runtime.model` (`MONO_AGENT_MODEL`). See [Backends](/runtime/backends/).
+The string that names a provider and model together, in the form `<provider>:<model>`. Examples: `openai-codex:gpt-5.6-terra`, `opencode-go:kimi-k2.6`, `anthropic:claude-sonnet-4-6`, `ollama:gemma4:31b`. A legacy `pi:` prefix is canonicalized away. Set via `runtime.model` (`MONO_AGENT_MODEL`). See [Providers](/runtime/providers/).
 
 ## OpenInference
 
@@ -84,7 +79,7 @@ The semantic-convention vocabulary mono-agent uses when exporting traces (`openi
 
 ## Provider session
 
-A continuous, per-conversation session against the backend, kept warm and evicted after idle time so follow-up turns resume without re-sending full history. Configured via `runtime.session.mode` and `runtime.session.idleTimeoutMs` (`MONO_AGENT_SESSION_MODE`, `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS`); pi-native sessions can be persisted to JSONL via `providers.piNative.piSessionsRoot`. See [Sessions and concurrency](/runtime/sessions-concurrency/).
+A continuous, per-conversation session against the provider, kept warm and evicted after idle time so follow-up turns resume without re-sending full history. Configured via `runtime.session.mode` and `runtime.session.idleTimeoutMs` (`MONO_AGENT_SESSION_MODE`, `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS`); pi-native sessions can be persisted to JSONL via `providers.piNative.piSessionsRoot`. See [Sessions and concurrency](/runtime/sessions-concurrency/).
 
 ## Rapid-log
 
@@ -104,7 +99,7 @@ Reciprocal Rank Fusion — the method the journal and BuJo tiers use to combine 
 
 ## Runtime bridge
 
-The backend-specific glue (e.g. the pi-native bridge) that translates harness operations into a provider's API: it drives compaction, applies retry/session behavior, and emits the `provider_bridge_latency` event separating provider/tool/IO time from harness overhead. See [Backends](/runtime/backends/).
+The provider-specific glue (the pi-native bridge) that translates harness operations into a provider's API: it drives compaction, applies retry/session behavior, and emits the `provider_bridge_latency` event separating provider/tool/IO time from harness overhead. See [Providers](/runtime/providers/).
 
 ## Salience
 

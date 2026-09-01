@@ -40,16 +40,16 @@ Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-na
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_NAME` | `agent.name` | Public display name. It may seed human-facing trace/A2A labels but never paths, service ids, sessions, or provider identity. |
-| `MONO_AGENT_MODEL` | `runtime.model` | Backend-prefixed model, e.g. `codex:gpt-5.6-terra`, `pi:openai-codex:gpt-5.6-terra`, `pi:opencode-go:kimi-k2.6`. Required. |
-| `MONO_AGENT_EXECUTION_MODE` | `runtime.executionMode` | `sdk` vs `cli`; default inferred from model. |
-| `MONO_AGENT_FALLBACKS_JSON` | `runtime.fallbacks` | Canonical JSON array of `{ "model": "...", "effort"?: "...", "attempts"?: 1-10 }`; ordered and uncapped. Omitted effort means that route's provider default. Mutually exclusive with the legacy CSV variable. |
-| `MONO_AGENT_FALLBACK_MODELS` | `runtime.fallbackModels` | Legacy CSV compatibility surface. Entries inherit `runtime.effort`; prefer `MONO_AGENT_FALLBACKS_JSON`. See [runtime fallback configuration](/runtime/fallback/). |
+| `MONO_AGENT_MODEL` | `runtime.model` | `<provider>:<model>` runtime reference, e.g. `openai-codex:gpt-5.6-terra`, `anthropic:claude-sonnet-4-6`, `ollama:qwen3:8b`. Required. |
+| `MONO_AGENT_EXECUTION_MODE` | `runtime.executionMode` | **Retired.** `assertNoRetiredConfigEnv` warns and the value is ignored; mono-agent runs only the Pi runtime. Delete the key or variable. |
+| `MONO_AGENT_FALLBACKS_JSON` | `runtime.fallbacks` | Canonical JSON array of `{ "model": "...", "effort"?: "...", "attempts"?: 1-10 }`; ordered and uncapped. Omitted effort means that route's provider default. |
+| `MONO_AGENT_FALLBACK_MODELS` | `runtime.fallbackModels` | **Retired**, replaced by `MONO_AGENT_FALLBACKS_JSON` above (same repair everywhere `runtime.fallbackModels` appears). |
 | `MONO_AGENT_RETRY_PRIMARY_ATTEMPTS` | `runtime.retry.primaryAttempts` | Total attempts on `runtime.model` including the first, 1-10. Default `2`. Set `1` to disable same-model retries. See [runtime fallback configuration](/runtime/fallback/). |
 | `MONO_AGENT_RETRY_BACKOFF_MS` | `runtime.retry.backoffMs` | Delay before the first same-model retry, doubling on each further retry. Default `1000`. |
 | `MONO_AGENT_RETRY_MAX_BACKOFF_MS` | `runtime.retry.maxBackoffMs` | Ceiling for the doubling retry delay. Default `15000`. |
-| `MONO_AGENT_ROUTE_SAFETY` | `runtime.routeSafety` | `uniform` (default common monotonic contract) or explicit `per-route-native` mixed-provider contracts. |
-| `MONO_AGENT_EFFORT` | `runtime.effort` | `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`; the selected model may support only a subset. Reasoning-capable `pi:*` maps `ultra` to LOW; Pi without reasoning uses OFF. Direct `codex:*` forwards `ultra` unchanged. Mono-agent rejects `ultra` on its Claude SDK route because the pinned SDK public contract ends at `max` (the SDK JavaScript itself forwards the value). The Claude CLI route passes `--effort ultra`, but both tested Claude Code binaries (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort. Direct OpenCode rejects explicit effort. Ranking above `max` only prevents keyword downgrade. See [execution, effort, and permissions](/runtime/execution-effort-permissions/). |
-| `MONO_AGENT_PERMISSION_MODE` | `runtime.permissionMode` | `default` / `plan` / `acceptEdits` / `bypassPermissions` (CLI backends). |
+| `MONO_AGENT_ROUTE_SAFETY` | `runtime.routeSafety` | **Retired.** Every route is Pi-native, so `per-route-native` has no meaning; the variable is ignored with a warning. Delete it. |
+| `MONO_AGENT_EFFORT` | `runtime.effort` | `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`; the selected model may support only a subset. Reasoning-capable models map `ultra` to LOW; models without reasoning use OFF. `max` degrades to `xhigh` unless the resolved model advertises it. `mono-agent doctor` validates effort against the model's advertised levels and warns, naming the nearest supported level, when a configured value is outside that set. Ranking above `max` only prevents keyword downgrade. See [execution, effort, and permissions](/runtime/execution-effort-permissions/). |
+| `MONO_AGENT_PERMISSION_MODE` | `runtime.permissionMode` | `default` / `plan` / `acceptEdits` / `bypassPermissions`. Validated and forwarded for compatibility, but the Pi runtime drives supervision from direct tool allow/deny policy rather than consuming the mode. |
 | `MONO_AGENT_MAX_TURNS` | `runtime.maxTurns` | Turn cap per run; omitted or `0` means unlimited. |
 | `MONO_AGENT_COMPACTION_ENABLED` | `runtime.compaction.enabled` | Enables adaptive proactive compaction and one-shot reactive overflow recovery; default `true`. |
 | `MONO_AGENT_COMPACTION_TRIGGER_RATIO` | `runtime.compaction.triggerRatio` | Proactive window ratio, `0.2`-`0.95`; default `0.70`, additionally capped by adaptive safety headroom. |
@@ -72,10 +72,9 @@ Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-na
 {
   "agent": { "name": "Research Companion" },
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.6-terra",
+    "model": "openai-codex:gpt-5.6-terra",
     "effort": "high",
-    "fallbacks": [{ "model": "pi:opencode-go:kimi-k2.6", "effort": "medium" }],
-    "routeSafety": "uniform",
+    "fallbacks": [{ "model": "opencode-go:kimi-k2.6", "effort": "medium" }],
     "session": { "mode": "continuous", "idleTimeoutMs": 600000, "rollover": "daily", "rolloverTimezone": "UTC", "rolloverNotice": false }
   },
   "concurrency": { "maxConcurrentRuns": 4, "maxPendingRuns": 8 }
@@ -83,9 +82,9 @@ Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-na
 ```
 
 ```bash
-MONO_AGENT_MODEL=pi:openai-codex:gpt-5.6-terra
+MONO_AGENT_MODEL=openai-codex:gpt-5.6-terra
 MONO_AGENT_EFFORT=high
-MONO_AGENT_FALLBACKS_JSON='[{"model":"pi:opencode-go:kimi-k2.6","effort":"medium"}]'
+MONO_AGENT_FALLBACKS_JSON='[{"model":"opencode-go:kimi-k2.6","effort":"medium"}]'
 MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS=4
 ```
 
@@ -93,15 +92,16 @@ MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS=4
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_LOCAL_PROVIDERS_JSON` | `providers.local[]` | Full JSON array of local providers (id, type, baseUrl, apiKey/apiKeyEnv, models). |
-| `MONO_AGENT_LOCAL_PROVIDER_*` | `providers.local[]` | Single-provider field overrides. |
+| `MONO_AGENT_PROVIDERS_JSON` | `providers` | Canonical provider map. Object of provider-id keys with a `local` array beside them, or the JSON `entries[]` array form; may also set reserved `piNative` and `piAuthPath`. See [Provider configuration](/runtime/providers/). |
+| `MONO_AGENT_LOCAL_PROVIDERS_JSON` | `providers` | **Deprecated**, replaced by `MONO_AGENT_PROVIDERS_JSON` with the provider-map shape; still accepted with a warning for backward compatibility. |
+| `MONO_AGENT_LOCAL_PROVIDER_*` | `providers` | Legacy single-provider field overrides; still loaded. Prefer the provider map. |
 | `MONO_AGENT_PI_AUTH_PATH` | `providers.piAuthPath` | Pi credential file; a non-empty value wins over JSON and loses only to `auth login --pi-auth-path`. Default `~/.pi/agent/auth.json`; `~` expands to home and relative paths resolve from the agent/invocation working directory. |
 | `MONO_AGENT_PI_TRANSPORT` | `providers.piNative.transport` | Preferred Pi transport: `auto` (default), `sse`, `websocket`, or `websocket-cached`; unsupported providers ignore it. |
 | `MONO_AGENT_PI_MAX_RETRIES` | `providers.piNative.piMaxRetries` | Pi-native transport retries, 0-8, default 2. |
 | `MONO_AGENT_MAX_RETRY_DELAY_MS` | `providers.piNative.maxRetryDelayMs` | Default 60000. |
 | `MONO_AGENT_PI_SESSIONS_ROOT` | `providers.piNative.piSessionsRoot` | Durable JSONL session storage (e.g. `.mono-agent/sessions`); unset = in-memory. |
 
-See [local provider configuration](/runtime/local-providers/) for the local provider shape and [runtime backends](/runtime/backends/) for Pi auth.
+See [local provider configuration](/runtime/local-providers/) for the local provider shape and [providers](/runtime/providers/) for the map env form and Pi auth.
 
 ## Context
 
@@ -144,7 +144,7 @@ See [local provider configuration](/runtime/local-providers/) for the local prov
 | `MONO_AGENT_MEMORY_CONSOLIDATION_CRON` | `memory.consolidation.cron` | Default `0 */2 * * *`. See [memory rituals and scheduling](/memory/rituals/). |
 | `MONO_AGENT_MEMORY_LLM_PROVIDER` | `memory.llm.provider` | `ollama` or `agent-host`. Strictly required for BuJo capture and tier selection; projection-only consolidation itself makes no model call. Missing prerequisites fail instead of downshifting tiers. |
 | `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline. |
-| `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` | `memory.llm.executionMode` | `sdk` for `agent-host` refs. |
+| `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` | `memory.llm.executionMode` | **Retired** for the same reason as `runtime.executionMode`; ignored with a warning. Delete the key or variable. |
 | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama-only endpoint override. |
 | `MONO_AGENT_MEMORY_LLM_TRACE` | `memory.llm.trace` | Enables trace recording for an `agent-host` memory LLM; default `true`. |
 | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | `memory.llm.timeoutMs` | In-app per-call memory-LLM timeout (`1000`–`600000`, **default `60000`**); see [the memory-LLM timeout](/memory/validation-and-cli/#the-memory-llm-timeout). |
@@ -322,7 +322,7 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | `MONO_AGENT_WEBHOOK_NOTIFY` | `webhook.notify` | Single-endpoint native notification toggle. |
 | `MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID` | `webhook.notifyConversationId` | Single-endpoint native notification destination. |
 | `MONO_AGENT_WEBHOOK_MODEL` | `webhook.model` | Single-endpoint model override (e.g. `claude:claude-opus-4-8`). A request body `model` wins. |
-| `MONO_AGENT_WEBHOOK_EFFORT` | `webhook.effort` | Single-endpoint reasoning-effort override (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. Reasoning-capable `pi:*` maps `ultra` to LOW; Pi without reasoning uses OFF. Direct `codex:*` forwards `ultra` unchanged. Mono-agent rejects `ultra` on its Claude SDK route because the pinned SDK public contract ends at `max` (the SDK JavaScript itself forwards the value). The Claude CLI route passes `--effort ultra`, but both tested Claude Code binaries (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort. Direct OpenCode rejects explicit effort. Ranking above `max` only prevents keyword downgrade. A request body `effort` wins. |
+| `MONO_AGENT_WEBHOOK_EFFORT` | `webhook.effort` | Single-endpoint reasoning-effort override (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. Reasoning-capable models map `ultra` to LOW; models without reasoning use OFF. `max` degrades to `xhigh` unless the resolved model advertises it. `mono-agent doctor` validates effort against the model's advertised levels and warns, naming the nearest supported level, when a configured value is outside that set. Ranking above `max` only prevents keyword downgrade. A request body `effort` wins. |
 | `MONO_AGENT_WEBHOOK_DIR` | `webhook.dir` | Folder of `*.md` endpoint files. See [webhook channel configuration](/channels/webhook/). |
 | `MONO_AGENT_WEBHOOK_MAX_RUN_MS` | `webhook.maxRunMs` | Wall-clock bound (ms) per webhook run; default 20 min, `0` disables. Reclaims a hung run's slot (esp. async, which has no client disconnect). |
 

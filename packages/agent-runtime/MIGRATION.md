@@ -6,14 +6,132 @@ current pre-1.0 contract. `createRuntime()` remains the package entry point;
 `@mono-agent/runtime-adapter`. Provider-session input/output uses
 `providerSessionId`, with `disposeSession()` and `disposeAllSessions()` retained.
 
-Review every section that matches your usage. The package now has an explicit
-exports map, a five-bridge lazy registry, typed policy objects, stricter sandbox
-behavior, and revised provider-session semantics even when Pi is not your
-primary route.
+Review every section that matches your usage. As of `0.21.0` the package runs
+exactly one runtime — Pi — behind an explicit exports map, with typed policy
+objects, stricter sandbox behavior, and revised provider-session semantics.
 
 Migration policy: every newly introduced fail-closed validation belongs in the
 first affected version section, even when it tightens behavior without changing
 the configuration schema.
+
+---
+
+## 0.21.0
+
+**This is the largest breaking change since `0.3.x`.** mono-agent shipped six
+runtime bridges behind a dispatch table; it now runs only its Pi implementation.
+Read the whole section before upgrading a live agent, and run the codemod below
+before restarting one.
+
+### Deleted runtime bridges
+
+`claude-sdk`, `claude-code-cli`, `codex-app-cli`, `opencode-app-cli` and
+`acp-stdio` are gone. `pi-sdk` remains and is no longer *a* backend — it is the
+runtime. The backend descriptor table, the selection table and
+`MonoRuntimeBackendId` are removed with them.
+
+### What is NOT deleted
+
+Four surfaces share names with the deleted bridges and are unaffected. If you
+use any of them, nothing changes:
+
+- **The ACP *server* bridge** (`mono-agent bridge acp`) — mono-agent still
+  serves ACP to clients. Only the ACP *client* backend was removed.
+- **`install-skill --target claude|codex`** — writes skills into those tools'
+  directories.
+- **`docs-mcp-pairing`** — pairs the docs MCP with Claude Code and Codex.
+- **The Codex web-search backend** (`tools.webSearch.backend: "codex"`) — it
+  drives a real Codex app-server through an extracted client.
+
+Note also that `openai-codex` and `opencode-go` are **Pi provider ids**, not
+references to the deleted bridges. Routes naming them keep working.
+
+### Model reference grammar
+
+Old: `<sdk>:[<provider>:]<model>`. New: **`<provider>:<model>`**, split at the
+first colon only.
+
+| before | after |
+| --- | --- |
+| `pi:openai-codex:gpt-5.6-sol` | `openai-codex:gpt-5.6-sol` |
+| `pi:anthropic:claude-opus-5` | `anthropic:claude-opus-5` |
+| `ollama:llama3.1:8b` | unchanged — only the first colon splits |
+| `codex:gpt-5.6-terra` | **rejected**; no mechanical replacement |
+
+A leading `pi:` is canonicalized away automatically, so those refs keep working
+and the codemod rewrites them for you. `codex:`, `claude:`, `claude-code:`,
+`codex-cli:`, `acp:` and `vercel:` are rejected at load with the replacement
+named. They are **not** migrated automatically: `codex:gpt-5.6-terra` →
+`openai-codex:gpt-5.6-terra` looks mechanical but changes which auth store the
+agent reads, and refs paired with `executionMode: "cli"` have no Pi equivalent
+at all. A human has to choose.
+
+### Retired configuration keys
+
+Each now fails at load with the repair, instead of a generic unknown-key error:
+
+| key | replacement |
+| --- | --- |
+| `runtime.executionMode` | delete it — only the Pi runtime remains |
+| `memory.llm.executionMode` | delete it, same reason |
+| `runtime.routeSafety` | delete it — every route is Pi-native, so `per-route-native` has no meaning |
+| `runtime.fallbackModels` | `runtime.fallbacks: [{ "model": "..." }]` |
+
+`runtime.fallbacks` stays uncapped: `runtime.model` plus its fallbacks are the
+default route and its backups, nothing more.
+
+### New: `providers`
+
+`providers` declares which providers the agent supports, and widens what is
+*selectable* to those providers' full catalogs — previously you could only pick
+`runtime.model` or a declared fallback, so trying a new model meant editing
+config and restarting. `ollama` and `lmstudio` are zero-config autodiscovered on
+`localhost:11434` and `localhost:1234`; an explicit entry only overrides
+endpoint or credentials. `providers.local[]` migrates on load.
+
+Agents advertise the catalog additively: a slim `providers` array on `/v1/info`
+plus a lazy `GET /v1/models`. `TUI_WIRE_SCHEMA` is **not** bumped, so existing
+consoles keep working.
+
+### Removed deep exports
+
+Subpath exports went from 26 to 17. The removed subpaths all belonged to deleted
+bridges; import the Pi equivalents from the package root.
+
+### Web console store
+
+Schema v10 → v11, adding per-thread `run_model` / `run_effort`. The migration is
+guarded and re-runnable, and adds columns only — no rows are rewritten. Per-
+conversation model and effort overrides now persist server-side, so they roam
+between devices instead of living in one browser's localStorage.
+
+### The codemod
+
+`mono-agent migrate-config` ships as a CLI subcommand, not a repo script:
+deployed agents run immutable managed runtime snapshots under
+`~/.mono-agent/runtimes/`, where a `scripts/` file is unreachable.
+
+```bash
+mono-agent migrate-config --check              # exit 1 while work remains
+mono-agent migrate-config --write              # applies, writing <config>.bak
+```
+
+It deletes the retired keys, converts `fallbackModels` to `fallbacks`, and
+strips `pi:` from `runtime.model`, `runtime.fallbacks[].model` and
+`memory.llm.model`. It edits the source text in place, so untouched bytes stay
+byte-identical and the `.bak` diff shows only real changes. It refuses to guess
+non-Pi prefixes, and skips `configVersion: 1` files untouched. Re-running it is
+a no-op.
+
+### Deployment order
+
+Run the check with the **new** CLI, **before** restarting — running it with the
+old CLI does nothing useful:
+
+```text
+merge → release 0.21.0 → per consumer: mono-agent migrate-config --check
+      → migrate → mono-agent restart
+```
 
 ---
 

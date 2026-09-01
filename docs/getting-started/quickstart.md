@@ -25,7 +25,7 @@ The wizard reviews the files before writing, proves each selected runtime route,
 
 You need Node.js installed, the `mono-agent` CLI available, and credentials for whatever model you choose. The quickest path is the `npm create mono-agent@latest` installer (equivalently `npx create-mono-agent`) with no global install, or `npm i -g create-mono-agent` for the persistent command. The CLI itself ships in `@mono-agent/agent-app`, so installing or invoking that scoped package is equivalent.
 
-Guided init searches every bundled model for Pi Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go; the live Codex account catalog when available; the Claude SDK catalog; and discovered local models. Other hand-authored Pi refs and `providers.local[]` remain runtime-compatible but are outside guided cloud-provider setup. The provider-declared Codex default leads when discovery succeeds; curated `codex:gpt-5.6-terra` is the offline fallback. The offline entry does not guess effort support and therefore offers only **Provider default** until live `model/list` metadata is available. The wizard keeps catalog availability, credential detection, and live verification separate. It does not install Codex silently; use only the [official Codex CLI instructions](https://developers.openai.com/codex/cli/). Browser login runs `codex login`; a remote/headless machine can select `codex login --device-auth`. GPT-5.6 Sol is available as `codex:gpt-5.6-sol` or `pi:openai-codex:gpt-5.6-sol`. See [Install](/getting-started/install/) and [Environment Variables](/config/env-vars/) for other backends.
+Guided init searches every bundled model for the Pi providers — Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go — plus discovered local models. Other hand-authored refs remain runtime-compatible but are outside guided cloud-provider setup. The provider-declared Codex default leads when discovery succeeds; curated `openai-codex:gpt-5.6-terra` is the offline fallback. The offline entry does not guess effort support and therefore offers only **Provider default** until live `model/list` metadata is available. The wizard keeps catalog availability, credential detection, and live verification separate. Credentials come from the app-owned Pi OAuth flow: `mono-agent auth login openai-codex` prints an auth URL to open in a browser, waits for the localhost callback, and a remote/headless machine can paste the returned redirect URL or authorization code into the live prompt instead. GPT-5.6 Sol is available as `openai-codex:gpt-5.6-sol`. See [Install](/getting-started/install/) and [Environment Variables](/config/env-vars/) for other providers.
 
 If you are testing unreleased source from a clone, replace `mono-agent` in the commands below with the built CLI entry:
 
@@ -55,9 +55,9 @@ The selected provider never falls back to the other one. LM Studio is keyless by
 when its server uses authentication, name the populated owner-only `.env` variable through
 `apiKeyEnv` rather than putting a token in config.
 
-**Allow all tools** is the default and includes shell, file, web, and enabled channel-send tools. `runtime.routeSafety: "uniform"` keeps one common fail-closed contract. A mixed Pi/Claude/Codex/OpenCode chain requires explicit `per-route-native` acceptance after the wizard displays the concrete route matrix. Pi keeps mono-agent tools and optional managed SRT; provider-owned routes use their documented native contract. Unsupported capabilities are never silently dropped.
+**Allow all tools** is the default and includes shell, file, web, and enabled channel-send tools. A mixed chain requires explicit per-route acceptance after the wizard displays the concrete route matrix. Pi keeps mono-agent tools and optional managed SRT; provider-owned routes use their documented native contract. Unsupported capabilities are never silently dropped.
 
-After the explicit **Creation review**, the wizard makes one disposable no-tool call for every selected route, sequentially, with a 90-second cloud or 240-second local deadline per route. A detected Codex/Claude sign-in or Pi auth-store entry skips redundant authentication, but it is not called verified until the exact route succeeds. Escape or Ctrl-C interrupts safely. Recovery can resume routes already verified under the same non-secret plan fingerprint, restart all checks, edit choices, or cancel without writing. Choosing authentication repair clears all prior route proofs before the checks rerun. Provider failure, timeout, empty output, or any tool action fails that route. On macOS, **Agent ready** additionally requires the committed config and every selected credential, channel, sandbox, memory, and observability expectation to be ready. The managed background process must then prove its live identity, exact committed snapshot, durable environment, and reachable TUI endpoint before the wizard opens the TUI. See [Setup security and managed runtime](/reference/setup-security/) for the closure-integrity, single-instance, frozen-input, and snapshot-commitment contracts behind that proof.
+After the explicit **Creation review**, the wizard makes one disposable no-tool call for every selected route, sequentially, with a 90-second cloud or 240-second local deadline per route. A detected Pi auth-store entry or declared `apiKeyEnv` credential skips redundant authentication, but it is not called verified until the exact route succeeds. Escape or Ctrl-C interrupts safely. Recovery can resume routes already verified under the same non-secret plan fingerprint, restart all checks, edit choices, or cancel without writing. Choosing authentication repair clears all prior route proofs before the checks rerun. Provider failure, timeout, empty output, or any tool action fails that route. On macOS, **Agent ready** additionally requires the committed config and every selected credential, channel, sandbox, memory, and observability expectation to be ready. The managed background process must then prove its live identity, exact committed snapshot, durable environment, and reachable TUI endpoint before the wizard opens the TUI. See [Setup security and managed runtime](/reference/setup-security/) for the closure-integrity, single-instance, frozen-input, and snapshot-commitment contracts behind that proof.
 
 Passing any flag or running without a TTY skips the wizard and writes a scaffold only. It never runs the readiness proof, starts a process, or labels the result ready. These flags remain useful for automation:
 
@@ -66,10 +66,9 @@ Optional flags:
 | Flag | Purpose |
 | --- | --- |
 | `--name <display-name>` | Public agent name. Display metadata only; never used for paths/service/session ids. |
-| `--model <ref>` | Primary runtime model. Format: `pi:<provider>:<model>`, `claude:*`, `codex:*`, or `opencode:*`. Defaults to `codex:gpt-5.6-terra`; selectable Sol refs are `codex:gpt-5.6-sol` and `pi:openai-codex:gpt-5.6-sol`. |
+| `--model <ref>` | Primary runtime model. Format: `<provider>:<model>` (e.g. `openai-codex:gpt-5.6-terra`, `anthropic:claude-sonnet-4-6`, `ollama:gemma4:31b`). Defaults to `openai-codex:gpt-5.6-terra`. |
 | `--fallback <ref>` | Repeatable canonical fallback route. Follow immediately with `--fallback-effort <provider-default\|level>` when needed. |
-| `--route-safety uniform\|per-route-native` | Common monotonic contract (default) or explicit isolated provider-native route contracts. |
-| `--codex-auth browser\|device` | Direct Codex login mode when `--auth` runs; `device` is for headless hosts. |
+| `--auth` | Opt in to provider setup before writing: the app-owned Pi OAuth flows and local-provider preflight. Detected credentials are reused |
 | `--memory lite\|journal\|bujo` | Adds a `memory` section with the chosen tier. Omit it and no memory is configured. See [Capture and Recall](/memory/capture-and-recall/). |
 
 A fuller example:
@@ -77,10 +76,9 @@ A fuller example:
 ```bash
 mono-agent init \
   --name "Research Companion" \
-  --model pi:openai-codex:gpt-5.6-terra \
-  --fallback claude:claude-sonnet-5 --fallback-effort xhigh \
-  --fallback pi:ollama:gemma4:31b --fallback-effort provider-default \
-  --route-safety per-route-native \
+  --model openai-codex:gpt-5.6-terra \
+  --fallback anthropic:claude-sonnet-5 --fallback-effort xhigh \
+  --fallback ollama:gemma4:31b --fallback-effort provider-default \
   --memory bujo
 ```
 
@@ -101,12 +99,11 @@ The generated config (with canonical `--fallback` routes and `--memory bujo`) lo
 {
   "agent": { "name": "Research Companion" },
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.6-terra",
+    "model": "openai-codex:gpt-5.6-terra",
     "fallbacks": [
-      { "model": "claude:claude-sonnet-5", "effort": "xhigh" },
-      { "model": "pi:ollama:gemma4:31b" }
+      { "model": "anthropic:claude-sonnet-5", "effort": "xhigh" },
+      { "model": "ollama:gemma4:31b" }
     ],
-    "routeSafety": "per-route-native",
     "workspace": "."
   },
   "context": {
@@ -139,7 +136,7 @@ The generated config (with canonical `--fallback` routes and `--memory bujo`) lo
       "endpoint": "http://localhost:11434",
       "dim": 768
     },
-    "llm": { "provider": "agent-host", "model": "pi:openai-codex:gpt-5.6-terra" },
+    "llm": { "provider": "agent-host", "model": "openai-codex:gpt-5.6-terra" },
     "recallTool": { "enabled": true }
   }
 }
@@ -161,7 +158,7 @@ The console carries a persistent `[SELF-CONFIG]` marker and exit hint. The openi
 
 Approval, rejection, proposal-free turns, `done`, and `no changes` all keep SELF-CONFIG active with the same conversation id and a freshly rotated proposal capability. A fixed host-outcome summary tells the next turn what actually happened. Every non-command message remains configuration-marked; `/configure` simply reports that the session is already active. Only `/quit`, `/exit`, or `ctrl+c` twice exits self-configuration, and quitting does not stop the background agent.
 
-The conversational patch surface is intentionally small: public name; effort, turn/session UX; selected project skills and disclosure; memory size or MemoryRecall enablement; semantic tool-policy tightening; and the separately validated `## Role` body in the identity file resolved from `context.identityPath`. Paths, memory tier/capture behavior, secrets, model/provider or runtime-permission changes, external MCP servers/plugins, channels and cron/proactive jobs, exporters or embeddings/LLM endpoints, sandbox/network policy, and unknown future fields are refused for direct application and handed to an explicit guided flow. During the configuration conversation, ordinary action tools and configured MCP servers are replaced by `ReadSkill`, `MemoryRecall`, and the inert proposal server. Pure direct-Codex chains use native read-only plan mode; mixed chains retain the finite proposal surface. Because direct OpenCode cannot receive the proposal MCP capability, a direct-OpenCode primary uses a configured capable fallback and a direct-OpenCode fallback makes self-configuration refuse explicitly.
+The conversational patch surface is intentionally small: public name; effort, turn/session UX; selected project skills and disclosure; memory size or MemoryRecall enablement; semantic tool-policy tightening; and the separately validated `## Role` body in the identity file resolved from `context.identityPath`. Paths, memory tier/capture behavior, secrets, model/provider or runtime-permission changes, external MCP servers/plugins, channels and cron/proactive jobs, exporters or embeddings/LLM endpoints, sandbox/network policy, and unknown future fields are refused for direct application and handed to an explicit guided flow. During the configuration conversation, ordinary action tools and configured MCP servers are replaced by `ReadSkill`, `MemoryRecall`, and the inert proposal server.
 
 After approval, the host commits the files, restarts the launchd agent, waits for its new ready trace source, swaps the TUI endpoint, and continues SELF-CONFIG against the verified agent. If the new configuration cannot start, it restores the prior files, restarts the previous agent, reports the recovery, and continues without assuming the rejected change is active. Text submitted while a turn or host transaction is settling remains in the editor until you explicitly submit it after readiness; it is never sent as ordinary chat. If rollback or recovery restart fails, the marker remains visible, the unverified endpoint disconnects, and the console reports manual recovery instead of claiming success. Use `mono-agent status`, `mono-agent logs --follow`, `mono-agent restart`, and `mono-agent stop` to inspect or recover the managed instance, then quit and reopen SELF-CONFIG.
 
@@ -191,7 +188,7 @@ unreadable inventory as unavailable, and never rotates or changes permissions:
 | `[disabled]` | Capability is off (not enabled in config). | None. |
 | `[error]` | A real misconfiguration. | Fix before starting. |
 
-Fix every `[error]` section. Standalone `validate` keeps `waiting` non-fatal for operators intentionally starting partial configurations, so exit `0` means structurally valid, not that every selected capability is live. The guided wizard's **Agent ready** gate is stricter: no selected expectation may be waiting, and every selected runtime route must have succeeded in its exact live check. Read-only `codex login status` / `claude auth status --json` is credential detection, not a model-turn claim. Hidden memory and static-trigger dependencies are also validated.
+Fix every `[error]` section. Standalone `validate` keeps `waiting` non-fatal for operators intentionally starting partial configurations, so exit `0` means structurally valid, not that every selected capability is live. The guided wizard's **Agent ready** gate is stricter: no selected expectation may be waiting, and every selected runtime route must have succeeded in its exact live check. Read-only credential detection (the Pi auth store and declared `apiKeyEnv` variables) is not a model-turn claim. Hidden memory and static-trigger dependencies are also validated.
 
 :::tip
 Source-build validation from a separate clean folder should use the worktree CLI explicitly:
@@ -200,7 +197,7 @@ Source-build validation from a separate clean folder should use the worktree CLI
 repo=/absolute/path/to/mono-agent
 agent_dir=$(mktemp -d)
 cd "$agent_dir"
-node "$repo/packages/agent-app/dist/cli.js" init --model codex:gpt-5.6-terra
+node "$repo/packages/agent-app/dist/cli.js" init --model openai-codex:gpt-5.6-terra
 node "$repo/packages/agent-app/dist/cli.js" validate
 ```
 :::

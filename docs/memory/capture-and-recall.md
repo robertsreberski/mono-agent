@@ -207,7 +207,7 @@ owned by the service.
     "writeMode": "capture",
     "path": "./.mono-agent/memory",
     "embeddings": { "provider": "ollama", "model": "nomic-embed-text:v1.5", "dim": 768 },
-    "llm": { "provider": "agent-host", "model": "pi:openai-codex:gpt-5.6-terra" }
+    "llm": { "provider": "agent-host", "model": "openai-codex:gpt-5.6-terra" }
   }
 }
 ```
@@ -221,7 +221,7 @@ MONO_AGENT_MEMORY_WRITE_MODE=capture
 The capture pipeline never replaces the user's successful provider answer. An LLM/embedding timeout emits a memory warning, leaves the admitted turn pending, and retries it durably; only exhaustion moves it to a dead letter. Raise the in-app per-call timeout — `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`), **default `60000`** — for a slow model; see [Validation & CLI](/memory/validation-and-cli/#the-memory-llm-timeout).
 :::
 
-The BuJo chat model used by capture comes from the tier's required `memory.llm` block. [Scheduled consolidation](/memory/rituals/) keeps that strict tier contract but is projection-only and makes no LLM call. With `memory.llm.provider: "agent-host"`, capture can point at an SDK runtime model reference (e.g. `pi:openai-codex:gpt-5.6-terra`). The extraction prompt explicitly states exact fields, array bounds, identifier/reference grammar, lowercase relations, and the canonical `0..1` salience range. The provider-neutral strict parser remains authoritative and never clamps, rescales, or coerces model values. Standalone `migrate` remains Ollama-only; legacy `reflect` is a read-only due-state report and needs no model.
+The BuJo chat model used by capture comes from the tier's required `memory.llm` block. [Scheduled consolidation](/memory/rituals/) keeps that strict tier contract but is projection-only and makes no LLM call. With `memory.llm.provider: "agent-host"`, capture can point at an SDK runtime model reference (e.g. `openai-codex:gpt-5.6-terra`). The extraction prompt explicitly states exact fields, array bounds, identifier/reference grammar, lowercase relations, and the canonical `0..1` salience range. The provider-neutral strict parser remains authoritative and never clamps, rescales, or coerces model values. Standalone `migrate` remains Ollama-only; legacy `reflect` is a read-only due-state report and needs no model.
 
 ## The `MemoryRecall` tool
 

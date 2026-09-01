@@ -149,14 +149,7 @@ The claim credential is short-lived and tied to the run, selected server, origin
 
 ## Runtime support
 
-How the servers reach the underlying runtime depends on the backend:
-
-- **SDK runtimes** — the servers are **inlined** into the runtime options the agent passes to the provider session. The `mcp.json` is read and its `mcpServers` are merged into the request.
-- **Supported CLI runtimes** — mono-agent translates or forwards the server config into the provider-native shape.
-- **Direct OpenCode** — MCP is intentionally unsupported because provider-owned shell tools inherit the server environment. Any configured server, `MemoryRecall`, hosted Supermemory MCP, or real adapter send-tool injection fails validation and the bridge before startup. The host's implicit `RunHistory`, `SessionHistory`, and `SetConversationTitle` tools plus bridge-backed `AskUser` are omitted for a direct OpenCode primary/fallback and for an accepted per-trigger direct OpenCode turn; they do not make an otherwise minimal effective-allow-all config unusable. A rejected per-trigger override stays on its base runtime and keeps those tools. Use a Pi runtime, including `pi:opencode-go:*`, when MCP or host-mediated questions are required.
-- **Direct ACP** — lifecycle persistence and cold projection work, but this route has no compatible request-scoped host seam for the new `SessionHistory` tool, so that tool is omitted for any chain or accepted per-trigger override that can attempt direct ACP. `validate` / `doctor` reports `unsupported_route`. Issue #626 deliberately preserves `RunHistory`'s pre-existing direct-ACP route wiring; use a Pi, Claude, or Codex app-server route when the model must call `SessionHistory`.
-
-For supported backends, you author one `mcp.json` and mono-agent does the translation. See [Runtime backends](/runtime/backends/) for the exact capability boundary.
+The Pi runtime **inlines** the servers into the runtime options it passes to the model session: `mcp.json` is read and its `mcpServers` are merged into the request. You author one `mcp.json` and mono-agent does the translation. See [Providers](/runtime/providers/) for how the Pi runtime reaches the provider delivering the session.
 
 ## External MCP tools are NOT gated by `tools.allowedTools`
 
@@ -166,8 +159,7 @@ Consequences:
 
 - Under allow-all (the default) MCP tools are available because their server is declared, not because of the wildcard. Setting `tools.allowedTools: []` ("no built-in tools") still leaves every MCP tool available.
 - An MCP tool's availability is governed by whether its server is **declared** in `mcp.json` / `tools.mcpServers`, not by the allowlist. To withhold an MCP tool, remove or don't declare its server.
-- On **direct Codex**, a valid declared server also authorizes Codex-generated `mcp_tool_call` approval elicitations for that exact server name. The bridge does not persist the approval and does not accept inherited/unconfigured servers or genuine downstream MCP form/URL elicitations. `permissionMode: "plan"` still permits these declared MCP calls, so their server-owned side effects are outside Codex's read-only filesystem sandbox.
-- On the **pi-native runtime**, `disallowedTools` does **not** filter external MCP-server tools either — declaring the server is the only lever. Claude Code receives `--disallowedTools`; direct Codex has no native name-policy projection and therefore rejects any normal-run restrictive policy instead of partially enforcing it. To hard-restrict an external MCP tool on pi, don't declare its server.
+- On the **pi-native runtime**, `disallowedTools` does **not** filter external MCP-server tools — declaring the server is the only lever. To hard-restrict an external MCP tool on pi, don't declare its server.
 - App-injected MCP tools define their own boundary. `MemoryRecall` and `AskCollaborator` are gated by their own enablement/composition switches; `RunHistory`, `SessionHistory`, `SetConversationTitle`, `Remember`, and adapter send tools are deliberately governed by the normal tool policy.
 
 The `MemoryRecall` description is written to direct **proactive** recall: the agent is told to call it whenever context is missing or uncertain, before assuming or asking. This is behavioral guidance, not a gate — `MemoryRecall`'s availability is still governed by `config.memory.recallTool.enabled`. See [Capture & recall](/memory/capture-and-recall/).
@@ -187,7 +179,7 @@ that a rename landed.
 
 Allow-all exposes the tool automatically on compatible routes. A restrictive
 policy must name `SetConversationTitle`, while `disallowedTools` can remove it.
-Any configured or accepted direct OpenCode route suppresses it. Trigger-created
+Trigger-created
 and archived web threads never advertise title write authority. The web service
 consumes only a successful structured result from this exact tool during the
 active turn, performs a conditional SQLite update, and emits the normal thread
@@ -267,7 +259,7 @@ remains the explicit two-phase `mono-agent memory forget` workflow.
 
 ## `RunHistory`: prior-run evidence
 
-`RunHistory` is an app-owned, read-only, request-scoped MCP tool over the existing local run artifacts. There is no new config key. Under allow-all it is exposed automatically on MCP-capable routes; under a restrictive policy, add the exact `RunHistory` name. The deprecated policy alias `run_history` is accepted in `tools.allowedTools` / `tools.disallowedTools`, but only `RunHistory` is registered and shown to the model. Direct OpenCode and other MCP-incompatible routes suppress it.
+`RunHistory` is an app-owned, read-only, request-scoped MCP tool over the existing local run artifacts. There is no new config key. Under allow-all it is exposed automatically on MCP-capable routes; under a restrictive policy, add the exact `RunHistory` name. The deprecated policy alias `run_history` is accepted in `tools.allowedTools` / `tools.disallowedTools`, but only `RunHistory` is registered and shown to the model.
 
 The compact shorthand is designed for agent exploration:
 
@@ -318,7 +310,7 @@ Use active conversation history first for the current exchange. Use `MemoryRecal
 
 ## `SessionHistory`: retained tool lifecycles
 
-`SessionHistory` is the sibling read-only, request-scoped MCP tool over the canonical managed-tool sidecar, not an extension of `RunHistory`. It has no config key. Allow-all exposes it automatically on compatible routes; a restrictive policy must name `SessionHistory` (`session_history` is a deprecated policy alias), and `disallowedTools` can remove it. The endpoint is bound to a random per-request loopback capability path, requires the exact loopback Host header, creates a fresh stateless MCP server/transport for every HTTP request, and disappears at request cleanup. Direct OpenCode and direct ACP cannot receive it, but their tool lifecycles still persist and cold-project.
+`SessionHistory` is the sibling read-only, request-scoped MCP tool over the canonical managed-tool sidecar, not an extension of `RunHistory`. It has no config key. Allow-all exposes it automatically on compatible routes; a restrictive policy must name `SessionHistory` (`session_history` is a deprecated policy alias), and `disallowedTools` can remove it. The endpoint is bound to a random per-request loopback capability path, requires the exact loopback Host header, creates a fresh stateless MCP server/transport for every HTTP request, and disappears at request cleanup.
 
 | Call arguments | Result |
 | --- | --- |
@@ -340,8 +332,7 @@ The **app-owned adapter tools** (`SlackSendMessage`, `TelegramSendMessage`,
 but, unlike external MCP tools, they **are** governed by the tool policy. Under
 allow-all they become available automatically when their host prerequisites are
 present. On runtimes that enforce specific lists, name them explicitly or deny
-them normally; direct Codex rejects the restrictive configuration before a run.
-Valid `slack.*` / `telegram.*` adapter config is required for send tools. See
+them normally. Valid `slack.*` / `telegram.*` adapter config is required for send tools. See
 [Delivery & send tools](/channels/delivery-and-send-tools/).
 :::
 

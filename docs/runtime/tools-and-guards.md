@@ -104,7 +104,7 @@ pulls any body it needs on demand. It never receives inlined skill bodies:
 over. Under full disclosure a child gets no index, matching its parent. Opt a
 profile out with `"disallowedTools": ["ReadSkill"]`, which withholds both the tool
 and the index. A profile pinned to a model whose runtime lacks skill support
-(direct OpenCode) is skipped automatically rather than failing the run, since a
+is skipped automatically rather than failing the run, since a
 non-empty skill list makes skill support a routing requirement.
 
 ## Built-in tools
@@ -124,7 +124,7 @@ These tools need no extra capability config (coverage: `config` — they exist b
 | `WebFetch` | Fetch and locally extract one public URL, with opt-in browser rendering. |
 | `WebSearch` | Search via local SearXNG, ChatGPT-subscription Codex app-server, or keyless public fallbacks. |
 
-These are gated by `tools.allowedTools` / `tools.disallowedTools`. Deny always wins, and listing the same tool in both is rejected at validation time. Mono-agent-managed built-ins are provided by the Pi bridge; provider-owned routes use their native tool surfaces. See [Tool Policy](/tools/policy/) for the full allow/deny semantics, plus [MCP tools](/tools/mcp/) and the [sandbox](/tools/sandbox/) for process and network confinement.
+These are gated by `tools.allowedTools` / `tools.disallowedTools`. Deny always wins, and listing the same tool in both is rejected at validation time. Mono-agent-managed built-ins are provided by the Pi runtime's managed tool seam on every route. See [Tool Policy](/tools/policy/) for the full allow/deny semantics, plus [MCP tools](/tools/mcp/) and the [sandbox](/tools/sandbox/) for process and network confinement.
 
 ```json
 {
@@ -141,7 +141,7 @@ Env equivalents: `MONO_AGENT_ALLOWED_TOOLS`, `MONO_AGENT_DISALLOWED_TOOLS` (comm
 An **omitted** `allowedTools` (or `["*"]`) allows **every** tool subject to `disallowedTools` — the allow-all default. Listing specific names narrows to those; an **explicit empty** `[]` allows none (a deliberate chat-only agent). Add names to `disallowedTools` to subtract from the open default without switching to a full allowlist.
 :::
 
-These are the normalized policy semantics, but the selected runtime must be able to enforce them. Direct `codex:*` normal runs currently accept only effective allow-all (an omitted or wildcard-containing allowlist, with no denylist); named-only lists, `[]`, and denylist variants fail validation/runtime setup instead of being silently widened. See [Tool policy](/tools/policy/#allow-all-by-default).
+These are the normalized policy semantics. The Pi tool layer enforces them: `allowedTools` (with the `"*"` allow-all sentinel) selects the built-in tool set and skill reads, and `disallowedTools` is the deny-wins filter applied to that final set. MCP tools are gated by the same tool-output, sandbox, and approval machinery but are not re-filtered through the built-in allow/deny list. See [Tool policy](/tools/policy/#allow-all-by-default).
 
 ## Exec and Bash
 
@@ -261,14 +261,13 @@ overhead components on every check, plus `context_compaction_reactive_attempted`
 request still exceeds the primary model's window, the run is classified as
 `context_limit`; the fallback router may then try the next configured model.
 
-This is automatic and configurable on the pi-native bridge. Defaults resolve
-against the effective context window `W`: trigger ratio `0.70`, safety headroom
+This is automatic and configurable on the Pi-native bridge. Defaults resolve against the effective context window `W`: trigger ratio `0.70`, safety headroom
 `clamp(floor(W × 0.25), 16000, 96000)`, retained context
 `clamp(floor(W × 0.10), 4000, 20000)`, summary output
 `clamp(floor(W × 0.04), 2000, 12000)`, and minimum proactive savings
 `clamp(floor(W × 0.10), 4000, 20000)`. Configure overrides under
 `runtime.compaction` (or the matching `MONO_AGENT_COMPACTION_*` variables).
-Other bridges follow their own compaction behavior. See [Backends](/runtime/backends/) for bridge differences, [Sessions & concurrency](/runtime/sessions-concurrency/) for how sessions persist, and [Fallback](/runtime/fallback/) for window changes across the fallback chain.
+See [Sessions & concurrency](/runtime/sessions-concurrency/) for how sessions persist, and [Fallback & failover](/runtime/fallback/) for window changes across the fallback chain.
 
 ## Web research and WebFetch retry
 

@@ -16,7 +16,7 @@ Catalog responsibility: Provides the Pi SDK runtime bridge with native tools, MC
 
 ## Responsibility
 
-Provides six runtime bridges (ACP v1, Claude SDK, Claude Code CLI, Codex app-server, OpenCode app-server, Pi SDK), with capabilities declared per bridge. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind runtime contracts. Pi and ACP-owned stdio children enforce optional mono-agent sandbox policy through an injectable `RuntimeSandbox` seam (a fail-closed passthrough by default; `@mono-agent/runtime-adapter` injects the real implementation). The router supports a compatibility-preserving uniform contract or explicit isolated per-route-native contracts; no provider route silently drops required capabilities.
+Implements the Pi runtime. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind runtime contracts. Pi-owned stdio children enforce optional mono-agent sandbox policy through an injectable `RuntimeSandbox` seam (a fail-closed passthrough by default; `@mono-agent/runtime-adapter` injects the real implementation). Every route in a fallback chain is Pi-native and shares one contract; no route silently drops required capabilities.
 
 ## Install / Usage
 
@@ -40,7 +40,6 @@ import {
 const runtime = createRuntime({ workspace: process.cwd() });
 const result = await runtime.run("You are a concise repository assistant.", {
   model: parseRuntimeModelReference("claude:claude-sonnet-4-6"),
-  executionMode: "sdk",
   messages: [{ role: "user", content: "Summarize README.md." }],
   cwd: process.cwd(),
   allowedTools: ["Read"],
@@ -91,7 +90,7 @@ only after a run selects a matching model reference and execution mode:
 | --- | --- |
 | `src/runtime.js` | Host binding, per-instance tool context, bridge dispatch, and observer flushing |
 | `src/ai/runtime/` | Model-reference parsing, the lazy bridge registry, capabilities, sessions, and fallback routing |
-| `src/ai/providers/` | ACP v1, Claude SDK/CLI, Codex app-server, OpenCode app-server, and Pi SDK integrations |
+| `src/ai/providers/` | Pi provider integrations |
 | `src/agent/tools/` | Managed tools, MCP adaptation, output limits, and the injectable sandbox seam |
 | `src/agent/` | Approvals, allowlists, transcript snapshots, and compaction policy helpers |
 
@@ -114,11 +113,6 @@ actually supplies:
 | Bridge | Genuine tool-result distinctions | Conservative fallback |
 | --- | --- | --- |
 | Pi native | `success`, `error`, numeric `exit_nonzero`, structured `timeout`, structured `signal`, and abort-backed `cancelled`; host approval denial/expiry adds `rejected`/`timeout` | Unknown failed outcome → `error` |
-| Codex app-server | `success`, `error`, and numeric command `exit_nonzero`; shared host abort rules still apply | Other failed item → `error`; no result before run end remains dangling for host closure/recovery |
-| Claude SDK | `success` / `error`; shared host approval events can add `rejected`/`timeout` and an aborted error result can add `cancelled` | Undistinguished failed result → `error` |
-| Claude Code CLI | `success` / `error`; a Codex-shaped command item with an explicit non-zero code is `exit_nonzero`; shared approval/abort rules still apply | Undistinguished failed result → `error` |
-| OpenCode app-server | `success` / `error`; shared approval/abort rules still apply | Undistinguished failed result → `error` |
-| ACP v1 | `completed` → `success`, `failed` → `error`; shared approval/abort rules still apply | ACP exposes no tool-level signal/exit/timeout distinction, so failed → `error` |
 
 The runtime never derives a state from result prose. Structured timeout, signal,
 non-zero exit, completed success, and a specific non-runtime, non-cancellation
@@ -501,7 +495,7 @@ runtimeCapabilities
 
 `@mono-agent/agent-runtime` is purpose-built for **autonomous, long-running agent work** with provider portability and operational resilience as first-class concerns. It is *not* a streaming-chat UI kit. Where each peer fits:
 
-- **Vercel AI SDK** — best when you're building a chat / generative-UI experience inside a React or Next.js app. `useChat`, `useCompletion`, streaming server components, and edge-runtime compatibility are their strengths. Their provider list is curated (Anthropic, OpenAI, Google, etc., via `@ai-sdk/*` packages); there's no Pi gateway, no Claude Code CLI, no Codex CLI app-server, and no per-call provider fallback. If you're rendering a streaming chat into a browser, use them. If you're orchestrating multi-turn autonomous work that must survive a rate-limited primary provider, use us.
+- **Vercel AI SDK** — best when you're building a chat / generative-UI experience inside a React or Next.js app. `useChat`, `useCompletion`, streaming server components, and edge-runtime compatibility are their strengths. Their provider list is curated (Anthropic, OpenAI, Google, etc., via `@ai-sdk/*` packages); there's no Pi gateway and no per-call provider fallback. If you're rendering a streaming chat into a browser, use them. If you're orchestrating multi-turn autonomous work that must survive a rate-limited primary provider, use us.
 - **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) — first-party Anthropic SDK. Tight integration with Claude features (canUseTool, sub-agents, hooks, MCP). We *wrap* it as one of our six bridges and add transcript-resume across provider drops, a structured failure taxonomy, a tool-bloat guard with artifact persistence, and a provider fallback router. Context/window handling remains bridge-specific; the pi-native bridge drives its own compaction recovery. Reach for the bare Anthropic SDK when you only ever talk to Claude and don't need cross-provider portability or resume.
 - **Mastra** — a workflow engine + memory + RAG stack. Different category: it's the layer *above* a runtime. You can layer Mastra workflows on top of `@mono-agent/agent-runtime` if you want both.
 - **OpenAI Agents SDK** — first-party OpenAI SDK. Same trade-off as the Claude Agent SDK: tight integration with OpenAI, no other providers. Pi providers in our runtime cover OpenAI plus a dozen others through a single API.
@@ -534,67 +528,17 @@ runtimeCapabilities
 
 Honest summary: if the agent runs **without a human watching the screen** for minutes-to-hours and **must survive provider blips**, this is the right tool. If a human is watching a streaming chat, Vercel's SDK is the right tool. Both can coexist in the same app.
 
-### Picking a backend
+### Model references
 
-The runtime picks a backend from `options.model` + `options.executionMode`:
+There is one runtime. A `model` is a parsed `{ provider, model }` object;
+convert canonical `<provider>:<model>` strings with
+`parseRuntimeModelReference()` before calling `run()` — `run()` does not parse
+strings.
 
-| `model.sdk` | `executionMode` | Backend |
-|---|---|---|
-| `"claude"` | `"sdk"` (or omitted) | Claude SDK |
-| `"claude"` | `"cli"` | `claude` CLI |
-| `"pi"` | `"sdk"` (or omitted) | Pi SDK |
-| `"codex"` | `"cli"` | Codex app-server CLI |
-| `"opencode"` | `"cli"` | Isolated OpenCode app-server CLI |
-| `"acp"` | `"acp"` | ACP v1 stdio client |
+#### ACP
 
-A `model` is a parsed `{ sdk, model, provider? }` object. Convert canonical
-strings such as `"pi:openai:gpt-5.5"` with
-`parseRuntimeModelReference()` before calling `run()`.
-
-#### ACP v1 host contract
-
-ACP references are canonical `acp:<profile-id>` strings and always use the
-dedicated `executionMode: "acp"`. The host supplies
-`resolveAcpProfile(profileId, context)` either to `createRuntime()` or per run;
-per-run callbacks win. A profile contains an absolute executable command,
-literal arguments, an exact child environment, ownership declarations for
-configuration/workspace/MCP, explicit capability policy, and bounded process
-limits. The runtime never invokes a shell or inherits `process.env`.
-
-Client-owned filesystem, terminal, permission, and elicitation behavior must be
-provided as callbacks and is advertised only when enabled. The runtime-adapter
-facade injects mono-agent's real sandbox implementation; direct kernel callers
-must provide their own when policy requires it. Every owned stdio bridge is
-closed after the operation with stdin close, TERM, then bounded KILL escalation.
-Callback payloads retain their typed operation fields but omit raw protocol
-session ids, extension metadata, and copied raw-id strings. Session-scoped
-callbacks receive the corresponding opaque handle as
-`AcpCallbackContext.providerSessionId`; request ids are opaque host correlation
-tokens as well.
-Session-update dispatch reads only validated own protocol fields. If a valid
-transport frame is too structurally complex for the bounded host sanitizer,
-the turn fails explicitly as `provider_protocol` instead of emitting a partial
-tool, plan, or message event.
-
-ACP provider-session ids and list cursors are confidential, authenticated v2
-handles bound to their token kind and profile. The host must supply an exact
-32-byte binary `acpSessionTokenKey` for every task run, list, validation, and
-delete operation. Call
-`validateAcpProviderSessionId(handle, expectedProfileId, key)` at untrusted
-ingress. Keep the key stable and secret across host restarts; changing it
-invalidates every outstanding handle. Legacy `acp:v1:` and `acp-cursor:v1:`
-values are rejected.
-
-Preserve each returned handle byte-for-byte and pass it back only to the
-matching high-level resume, list, validation, or delete operation. Encryption
-uses a fresh nonce, so two handles for the same remote id are not equality
-keys. Raw protocol session ids, cursors, token keys, and transport connections
-remain private runtime state and are omitted from profile resolver context,
-callbacks, and diagnostics. Under the default `auto` recovery policy, the
-client prefers `session/resume`, then `session/load`, and finally a fresh
-session when neither capability is advertised. Explicit `resume` or `load`
-policies fail closed if missing. Stable usage comes from the latest typed
-`usage_update` notification; unstable `PromptResponse.usage` is ignored.
+The ACP *client* runtime backend was removed in 0.21.0. `mono-agent bridge acp`
+— serving ACP to clients — is unaffected and lives in `@mono-agent/agent-app`.
 
 ### `createRuntime(host)`
 
@@ -649,9 +593,6 @@ createRuntime({
     tempdirPrefix: "agent-runtime-cli-", // mkdtemp prefix for CLI provider scratch dirs
     providerModelPrefix: "agent",  // id prefix for custom Pi providers
     doctorCommand: "agent-runtime doctor", // command suggested in tool error messages
-    serviceName: "agent-runtime",  // Codex app-server serviceName
-    clientInfoName: "agent-runtime", // Codex app-server clientInfo.name
-    clientInfoTitle: "Agent Runtime", // Codex app-server clientInfo.title
   },
 });
 ```
@@ -706,15 +647,12 @@ Per-call options (a non-exhaustive selection):
 | Option | Type | Notes |
 |---|---|---|
 | `model` | `RuntimeModelRef` | **Required.** Pass the object returned by `parseRuntimeModelReference()`; `run()` does not parse strings. |
-| `executionMode` | `"sdk" \| "cli" \| "acp"` | Default `"sdk"`; ACP references require `"acp"`. |
 | `messages` | `Message[]` | Conversation history. |
 | `cwd` | `string` | Working directory for the agent's tools. |
 | `allowedTools` | `string[]` | Built-in tool allowlist. Default: all. |
 | `disallowedTools` | `string[]` | Block list. |
 | `nativeSubagents` | `object` | Caller-defined Claude native `Task` profiles. Direct Codex rejects configured teammate definitions because Codex owns its collaboration agents. |
 | `settingSources` | `("user" \| "project" \| "local")[]` | Claude Agent SDK filesystem settings opt-in. Omitted/empty disables those three sources; Anthropic managed settings still apply. |
-| `codexLoadProjectDocs` | `boolean` | Codex app-server repository-instruction opt-in. Omitted/false sets `project_doc_max_bytes=0`; true restores Codex defaults. Explicit `codexAppServerArgs` wins. |
-| `codexSandboxNetworkAccess` | `boolean` | Code-only Codex app-server per-turn network control. Only strict `true` enables it for plan/default/acceptEdits; omitted or any other value disables it. |
 | `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http); on direct Codex, each forwarded server authorizes its own tool calls. |
 | `sandboxPolicy` | `SandboxPolicy` | Optional fail-closed sandbox policy for built-in tools and stdio MCP process startup. |
 | `webSearchConfig` | `{ backend?, endpoint?, codex?: { model? } }` | Run-scoped local SearXNG, ChatGPT-subscription Codex, and keyless WebSearch backend selection. |
@@ -724,7 +662,6 @@ Per-call options (a non-exhaustive selection):
 | `outputSchema` | `JSONSchema` | Requests structured JSON on capable bridges; see “Structured output” below for bridge-specific return behavior. |
 | `abortSignal` | `AbortSignal` | Cancel the run. |
 | `liveInput` | `AsyncIterable<{ body: string; id?: string; receivedAt?: string; acknowledge?: () => void; reject?: (error?: unknown) => void }>` | Stream of in-flight user messages for steering on capable bridges. A bridge acknowledges only after its native steering boundary accepts the message; per-attempt rejection permits router replay. Acknowledgement emits metadata-only `live_input_applied` telemetry. |
-| `claudeAgentQuery` | `typeof query` | Advanced programmatic/test seam for the Claude SDK bridge. When omitted, the bridge uses the runtime's pinned Claude Agent SDK. This is not a config field or telemetry value. |
 | `onEvent` | `(event) => void` | Fired for every runtime event (assistant text, tool calls/results, applied live input, runtime warnings, structured output). |
 | `runId` | `string` | Tag this run for downstream callbacks (e.g. `onCompactionRecorded`). |
 | `providerSessionId` | `string` | Resume a prior provider session. |
@@ -743,126 +680,21 @@ unsupported on the direct Codex and direct OpenCode bridges and fail before
 provider startup. Built-in bridges always report this field; omission by a
 custom structural bridge means the capability is unknown.
 
-Live input is native on the Claude SDK, Codex app-server, and Pi bridges. The
-one-shot Claude CLI and direct OpenCode bridges advertise it as unsupported so
-routers skip them when a direct runtime call requires steering.
-After a native bridge invokes `acknowledge()`, the runtime emits exactly one
+Live input is native on the Pi bridge.
+After the bridge invokes `acknowledge()`, the runtime emits exactly one
 `{ type: "live_input_applied", inputId, receivedAt? }` event for that logical
 run. It deliberately omits the guidance body. A fallback router reuses the same
 instrumented input stream, so replay or duplicate acknowledgement cannot emit a
 second applied event. A throwing host `acknowledge` or `reject` callback cannot
-change the native steering outcome; the Codex bridge reports it as a bounded
+change the native steering outcome; it is reported as a bounded
 `live_input_callback_failed` runtime warning.
 
-### Provider-native subagents and project instructions
+### Project instructions
 
-Claude SDK runs are filesystem-isolated by default: mono-agent passes
-`settingSources: []`, which disables user, project, and local settings sources,
-including their `CLAUDE.md`, hooks, plugins, and `.claude/agents` profiles.
-Anthropic managed settings remain in force and may still configure hooks or
-plugins; `settingSources` is not a managed-policy bypass. Opt into only the
-needed sources, for example `settingSources: ["project"]`. User, project, and
-local settings may execute configured hooks and plugins, so enable only trusted
-settings and avoid opting in while running in an untrusted checkout. This
-option is SDK only. The Claude Code CLI performs its own settings discovery,
-and mono-agent does not pass it a `--setting-sources` value.
-
-Codex app-server owns its native collaboration agents and their profiles. The
-bridge observes and normalizes their lifecycle, but it does not synthesize a
-`collaborationMode` payload or inject caller-defined `nativeSubagents`
-teammates. A non-empty configured teammate list fails before app-server startup
-with `skipped_capability_mismatch`, allowing a fallback router to continue to a
-Claude route.
-
-Codex app-server runs disable automatic repository-instruction discovery by
-default with `project_doc_max_bytes=0`. Set `codexLoadProjectDocs: true` when
-Codex and its own collaboration agents should load repository instructions. If
-`codexAppServerArgs` is supplied, that explicit argument vector is authoritative
-and `codexLoadProjectDocs` does not alter it.
-
-`codexSandboxNetworkAccess` is a separate code-only, provider-native control.
-It is unrelated to `RuntimeRunOptions.sandboxPolicy`, which controls
-mono-agent's own sandbox and is not consumed by Codex's provider-owned tool
-loop. Only strict `true` enables network access for plan/read-only and
-default/acceptEdits/workspace-write turns; the no-tools probe remains offline
-and bypass remains danger-full-access. Combining workspace-write with network
-access grants repository read and network egress in the same turn. Prefer
-`permissionMode: "plan"` when only read-only browsing is needed.
-
-Provider-native and in-process delegation share `subagent_activity` telemetry.
-`subagent.id` is the canonical parent attachment key: the initiating parent
-tool-use id whenever the provider exposes it, or a stable synthetic key for an
-orphan lifecycle record. `nativeId` is an optional provider task/thread id for
-correlation only and never replaces that key.
-The normalized phases are `agent_started`, `started`, `completed`, `message`,
-and `agent_completed`. A `message` belongs to the child and must not be treated
-as parent answer text or as a completed tool call.
-
-Restrictive allowlists must still authorize the delegation surface. Include
-`Agent` for the in-process built-in. Claude-native teammate definitions add
-`Task` to an explicit allowed list automatically; filesystem profiles enabled
-only through `settingSources` require callers to include `Task` themselves.
-An explicit deny still wins. Direct Codex remains an allow-all-only bridge, so
-a named restrictive allowlist fails before provider startup rather than being
-silently widened.
-
-Returns:
-
-```ts
-{
-  text: string,                     // raw assistant text
-  structuredResult?: any,           // captured JSON on supported bridges
-  structuredResultSource?: string,  // where structuredResult came from
-  events: RuntimeEvent[],           // full event stream (for host-side parsing)
-  usage: {
-    input_tokens, output_tokens,
-    cache_read_tokens, cache_creation_tokens,
-    cost_usd,
-  },
-  durationMs: number,
-  numTurns: number,
-  model: string,
-  effort: string,
-  sdk: "claude" | "pi" | "codex" | "opencode",
-  cancelled: boolean,
-  error: string | null,
-  errorDetails: object | null,
-  failureKind: string | null,
-  providerSessionId: string | null,
-  runtimeWarnings: RuntimeWarning[],
-  diagnostics: object,
-  capabilitiesUsed: {                  // what the backend actually did this call
-    prompt_cache_active: true|false|null,
-    thinking_enabled: true|false|null,
-    structured_output_enforced: boolean,
-    subagent_invoked: true|false|null,
-    mcp_servers_used: string[],
-    native_subagents_used: string[],
-    tool_compaction_applied: boolean,
-    context_compaction_applied: true|false|null,
-  },
-}
-```
-
-`capabilitiesUsed` is the per-call complement to `runtimeCapabilities()`. Tristate fields use `null` to mean "this provider can't tell" — distinct from `false` ("definitely off"). It's also emitted as a `capabilities_resolved` event near the end of the run, so observers can capture it without inspecting the result object.
-
-Successful provider requests may also emit exact context telemetry through
-`onEvent` and `result.events`:
-
-- `context_usage` is one provider-counted request snapshot, never the run's
-  aggregate processed-token total. Pi emits it at each successful assistant
-  `message_end`; Codex uses `thread/tokenUsage/updated.tokenUsage.last`; direct
-  OpenCode requires a completed assistant message with native `tokens.total`;
-  ACP normalizes the agent's exact `usage_update` `used`/`size` pair.
-  Each event identifies the measured model and includes `contextWindow` only
-  when the provider's own model metadata supplied it. The Claude bridges do not
-  currently emit this event.
-- `context_compaction` is a lifecycle event with a stable `operationId`,
-  `status` (`running`, `succeeded`, `skipped`, or `failed`), `sdk`, `trigger`,
-  `timestamp`, and optional safe reason/model/count fields. Pi drives and emits
-  its own lifecycle; Codex and OpenCode normalize their native notifications and
-  suppress deprecated duplicate notifications. Pi's before/after counts are
-  estimates and explicitly set `tokenCountsExact: false`.
+The Pi runtime does not read another tool's filesystem settings, hooks, plugins,
+or project documents. Subagents are the kernel's own in-process delegation
+surface (the `Agent` tool), configured by the host rather than discovered from a
+provider's on-disk profiles.
 
 ### Built-in tools
 
@@ -923,37 +755,29 @@ whose complete tool surface is not authorized for the run.
 
 ### Structured output
 
-Pass `options.outputSchema` (a JSON Schema). Claude SDK, Claude CLI, and Pi SDK
-surface captured JSON as `result.structuredResult`. Codex app-server receives
-the schema and reports that structured output was enforced, but its bridge
-returns provider text rather than parsing `structuredResult`; hosts must parse
-and validate `result.text`. Direct OpenCode rejects `outputSchema` with a typed
-capability mismatch.
-
-The package does **not** validate captured output against your schema. Hosts run
-their own validation (Zod, AJV, and similar) before applying domain effects.
+Pass `options.outputSchema` (a JSON Schema). The Pi runtime surfaces captured
+JSON as `result.structuredResult`.
 
 ### Provider fallback router
 
-`createRouterRuntime({ host, chain, routeSafety, resolveAttempt })` wraps the standard runtime with an ordered chain of model references. On a retryable provider/auth failure it retries the logical run against the next entry with one bounded transcript-tail snapshot. A chain is stateless across provider sessions. Entry `effort` is tri-state: a string fixes that route, `null` asks for provider default, and omission inherits the legacy per-run effort.
+`createRouterRuntime({ host, chain, resolveAttempt })` wraps the standard runtime with an ordered chain of model references. On a retryable provider/auth failure it retries the logical run against the next entry with one bounded transcript-tail snapshot. A chain is stateless across provider sessions. Entry `effort` is tri-state: a string fixes that route, `null` asks for provider default, and omission inherits the legacy per-run effort.
 
 ```js
 import { createRouterRuntime } from "@mono-agent/agent-runtime";
 
 const router = createRouterRuntime({
   host: { /* same shape as createRuntime */ },
-  routeSafety: "per-route-native",
   // Backoff shape for same-model retries; per-route counts live on `attempts`.
   retry: { backoffMs: 1000, maxBackoffMs: 15000 },
   chain: [
-    { model: { sdk: "claude", model: "claude-sonnet-5" }, effort: "high", attempts: 2 },
-    { model: { sdk: "codex", model: "gpt-5.6-sol" }, effort: "xhigh" },
-    { model: { sdk: "pi", provider: "ollama", model: "gemma4:31b" }, effort: null },
+    { model: { provider: "anthropic", model: "claude-sonnet-5" }, effort: "high", attempts: 2 },
+    { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, effort: "xhigh" },
+    { model: { provider: "ollama", model: "gemma4:31b" }, effort: null },
   ],
 });
 
 const result = await router.run("...", { /* same shape as runtime.run */ });
-console.log(result.failoverHistory, result.routeSafetyHistory);
+console.log(result.failoverHistory);
 ```
 
 Behaviour:
@@ -968,14 +792,9 @@ Behaviour:
 - Malformed request/config/billing-type non-retryable failure → returns immediately with `failoverHistory` containing the one attempt.
 - Cancellation → returns immediately.
 - Chain exhausted → `failureKind: "provider_unavailable_exhausted"`, `failoverHistory` lists every attempt.
-- `uniform` safety keeps the shared monotonic runtime; `per-route-native` isolates
-  route runtimes and records each bounded safety contract/status.
-- A `per-route-native` non-Pi route cannot project non-empty internal
-  `sandboxPolicy.protectedRoots`; the router records `safety_unavailable` and
-  advances before route resolution or provider invocation. Empty protected-root
-  sets preserve ordinary provider-native behavior, while Pi routes retain the
-  policy. The same invariant covers model routes reached through `Agent`
-  children.
+- Every route is Pi-native, so the whole chain shares one monotonic runtime
+  contract and each attempt records its bounded safety status. Pi routes retain
+  the sandbox policy, including routes reached through `Agent` children.
 - Pi route telemetry distinguishes `disabled`, fail-closed `mono-agent-srt`,
   and `mono-agent-srt-unsafe-host-fallback`; the last describes a configured
   policy that prefers SRT but permits host execution, not which branch ran.
@@ -1063,15 +882,7 @@ Responses:
 - `{ decision: "deny", reason? }` — block; the agent receives a tool error.
 - `{ decision: "always" }` — allow + session-allowlist for the run.
 
-Backend coverage: Claude SDK (via `canUseTool`) and Pi SDK (via tool dispatch wrapping). Direct OpenCode projects `permissionMode` into its SDK rules and forwards native permission events through the callback; `default`/`acceptEdits` ask for reads, dynamic/custom permission names require explicit host approval in attended modes, and unsupported live-question/subagent permissions are always denied. OpenCode `plan` is read-only but not a secret boundary because path rules follow symlinks; use Pi plus native `srt` for filesystem confinement. Claude CLI and Codex app-server use their backend-native `permissionMode` / `approvalPolicy` instead of the per-call gate.
-
-Direct OpenCode uses a password-authenticated ephemeral loopback server and a unique private database for every run; that database is deleted after the server closes, so user sessions and saved approvals are never imported. Session resume and MCP injection are intentionally unsupported. Repo/global config and external plugins/skills are disabled, and the provider shell inherits only a narrow non-secret environment; built-in providers use the normal OpenCode auth store so token rotation persists. `OPENCODE_AUTH_CONTENT` is rejected, stable OpenCode CLI >=1.15.0 is required, and the user's native DB migration marker must pre-exist. Provider replies are always one-shot—even a host `always` decision stays only in the current mono-agent run. Positive `maxTurns`, explicit effort, structured output, live input, fast mode, native subagents, and runtime skill metadata fail with typed capability mismatches before startup rather than being silently ignored.
-
-Approval lifecycle is observable via `onEvent`:
-
-- `tool_approval_pending` — emitted before calling the host.
-- `tool_approval_granted` — host approved.
-- `tool_approval_denied` — host denied, timed out, threw, or no callback for a high-risk tool.
+Coverage is the Pi runtime, via tool dispatch wrapping.
 
 ### Tool-result bloat handling
 
@@ -1145,22 +956,14 @@ These are stable but treated as advanced API. Most consumers should reach for `c
 ## Dependency Boundary
 
 This package has zero `@mono-agent/*` workspace dependencies. Its runtime
-dependencies are `@agentclientprotocol/sdk`, `@anthropic-ai/claude-agent-sdk`, `@anthropic-ai/sdk`,
-`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`,
-`@modelcontextprotocol/sdk`, `@opencode-ai/sdk`, `@vscode/ripgrep`,
-`cross-spawn`, and `zod`.
+dependencies are `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`,
+`@modelcontextprotocol/sdk`, `@vscode/ripgrep`, `cross-spawn`, and `zod`.
 
-The runtime owns and exact-pins the compatible Pi pair at `0.80.6`; consumers
-use the runtime's Pi façade rather than coordinating a second direct
-`@earendil-works/pi-ai` dependency. Do not attempt to flatten the resulting
-Anthropic dependency tree: Pi AI pins `@anthropic-ai/sdk@0.91.1`, while the
-Claude Agent SDK requires `@anthropic-ai/sdk>=0.93.0` and the runtime supplies
-its compatible newer SDK. Two isolated Anthropic SDK versions are therefore
-expected. `RuntimeRunOptions.claudeAgentQuery` provides deterministic Claude
-tests without mocking package resolution or sending real SDK traffic.
-If a downstream test suite still needs Pi's faux-provider helpers, isolate that
-fixture or keep its development-only Pi dependency on the runtime's exact
-`0.80.6` version until the fixture is removed; a broad host range can otherwise
+The runtime owns and exact-pins its Pi dependencies; consumers use the runtime's
+Pi façade rather than coordinating a second direct `@earendil-works/pi-ai`
+dependency. If a downstream test suite still needs Pi's faux-provider helpers,
+isolate that fixture or keep its development-only Pi dependency on the runtime's
+exact version until the fixture is removed; a broad host range can otherwise
 float Pi Agent Core's own upstream dependency independently of this façade.
 
 Sandbox enforcement is an injectable `RuntimeSandbox` seam.

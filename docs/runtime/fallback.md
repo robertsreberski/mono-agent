@@ -1,6 +1,6 @@
 ---
 title: "Fallback models & failover"
-description: "Configure ordered provider fallback routes, route safety, retry behavior, and readiness checks."
+description: "Configure ordered provider fallback routes, retry behavior, and readiness checks."
 sidebar:
   order: 3
 ---
@@ -8,9 +8,9 @@ sidebar:
 `runtime.fallbacks` is the canonical ordered list of backup routes. Each entry
 selects a model and, optionally, its exact reasoning effort. The list is not
 artificially capped: the router walks it in authored order until one route
-succeeds or every eligible route is exhausted. Failover and route-safety history
-are reported in results and traces, and a run that leaves its configured route
-says so in the transcript — see [Who sees a failover](#who-sees-a-failover).
+succeeds or every eligible route is exhausted. Failover history is reported in
+results and traces, and a run that leaves its configured route says so in the
+transcript — see [Who sees a failover](#who-sees-a-failover).
 mono-agent never silently swaps providers.
 
 ## Configure canonical routes
@@ -18,14 +18,12 @@ mono-agent never silently swaps providers.
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.6-terra",
+    "model": "openai-codex:gpt-5.6-terra",
     "effort": "high",
     "fallbacks": [
-      { "model": "claude:claude-sonnet-5", "effort": "xhigh" },
-      { "model": "codex:gpt-5.6-sol", "effort": "high" },
-      { "model": "pi:ollama:gemma4:31b" }
-    ],
-    "routeSafety": "per-route-native"
+      { "model": "openai-codex:gpt-5.6-sol", "effort": "xhigh" },
+      { "model": "ollama:gemma4:31b" }
+    ]
   }
 }
 ```
@@ -36,15 +34,15 @@ The primary uses `runtime.effort`. Every canonical fallback owns its effort:
   its known model metadata.
 - Omitted `effort` means the provider/model default. It does **not** inherit the
   primary's `runtime.effort`.
-- Each fallback infers its own execution mode from its model reference; it does
-  not inherit `runtime.executionMode` from the primary.
+- Each fallback infers its own execution from its model reference; it does
+  not inherit settings from the primary.
 
 The canonical environment form is JSON:
 
 ```bash
 export MONO_AGENT_FALLBACKS_JSON='[
-  {"model":"claude:claude-sonnet-5","effort":"xhigh"},
-  {"model":"pi:ollama:gemma4:31b"}
+  {"model":"openai-codex:gpt-5.6-sol","effort":"xhigh"},
+  {"model":"ollama:gemma4:31b"}
 ]'
 ```
 
@@ -53,10 +51,9 @@ For non-interactive scaffolding, repeat `--fallback` and put an optional
 
 ```bash
 mono-agent init \
-  --model pi:openai-codex:gpt-5.6-terra --effort high \
-  --fallback claude:claude-sonnet-5 --fallback-effort xhigh \
-  --fallback pi:ollama:gemma4:31b --fallback-effort provider-default \
-  --route-safety per-route-native
+  --model openai-codex:gpt-5.6-terra --effort high \
+  --fallback openai-codex:gpt-5.6-sol --fallback-effort xhigh \
+  --fallback ollama:gemma4:31b --fallback-effort provider-default
 ```
 
 ## Legacy compatibility
@@ -74,43 +71,12 @@ canonical [deprecation tracker](/reference/deprecations/) for the exact scope.
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.6-terra",
+    "model": "openai-codex:gpt-5.6-terra",
     "effort": "high",
-    "fallbackModels": ["pi:ollama:gemma4:31b"]
+    "fallbackModels": ["ollama:gemma4:31b"]
   }
 }
 ```
-
-## Route safety
-
-`runtime.routeSafety` controls whether every provider must represent one common
-safety contract or whether the operator accepts explicit route-local contracts.
-
-| Mode | Contract |
-| --- | --- |
-| `uniform` (default) | Reuses one monotonic mono-agent tool/sandbox contract. A route that cannot represent a required capability is rejected or skipped before execution. |
-| `per-route-native` | Isolates provider runtimes and applies the documented native contract for each attempt. Mixed Pi, Claude, Codex, and OpenCode chains are allowed after explicit review. |
-
-The per-route-native matrix is deliberately concrete:
-
-- **Pi:** mono-agent tool policy, plus managed SRT when configured.
-- **Claude:** provider-native sandbox with the tool restrictions the Claude
-  bridge can represent; mono-agent SRT is not projected onto the route.
-- **Direct Codex:** Codex-native sandbox and an effective allow-all policy at
-  the mono-agent tool-policy layer.
-- **Direct OpenCode:** provider-native permissions and an effective allow-all
-  policy;
-  unsupported capabilities cause the route to be skipped.
-
-Capability-bearing inputs such as MCP, skills, structured output, live input,
-or native subagents are never silently removed to make a route pass. Doctor and
-runtime checks fail closed or skip that route with `safety_unavailable` /
-`skipped_capability_mismatch` and credential-free safety telemetry.
-
-The route-safety telemetry token `tools: "exact-allow-all"` is retained for
-compatibility. It means the effective unrestricted contract—an omitted
-allowlist or any allowlist containing `"*"`, with no denied tools—not a required
-literal `["*"]` array.
 
 ## Same-model retries
 
@@ -123,11 +89,11 @@ same-model retries off entirely.
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.6-terra",
+    "model": "openai-codex:gpt-5.6-terra",
     "retry": { "primaryAttempts": 2, "backoffMs": 1000, "maxBackoffMs": 15000 },
     "fallbacks": [
-      { "model": "claude:claude-sonnet-4-6", "effort": "high", "attempts": 2 },
-      { "model": "pi:ollama:gemma4:31b" }
+      { "model": "anthropic:claude-sonnet-4-6", "effort": "high", "attempts": 2 },
+      { "model": "ollama:gemma4:31b" }
     ]
   }
 }
@@ -176,9 +142,9 @@ uses a bounded transcript-tail snapshot when moving between attempts. This avoid
 attaching one provider's session token to another provider or accumulating nested
 resume blocks across a long chain.
 
-The runtime result includes `failoverHistory` and `routeSafetyHistory`. An
+The runtime result includes `failoverHistory`. An
 exhausted chain reports `provider_unavailable_exhausted` with per-attempt models,
-failure kinds/subkinds, and route safety. Run summaries and Phoenix failover
+failure kinds/subkinds. Run summaries and Phoenix failover
 attributes preserve normalized failover details; the events JSONL preserves the
 separate bounded `provider_route_safety` records.
 
@@ -192,8 +158,8 @@ only when a transition actually happened.
 **While the run is in flight**, the transition joins the activity log:
 
 ```text
-⏳ Retrying pi:openai-codex:gpt-5.6-sol — attempt 2 (overloaded)
-⚠️ Failed over: pi:openai-codex:gpt-5.6-sol → pi:opencode-go:kimi-k2.7-code (overloaded)
+⏳ Retrying openai-codex:gpt-5.6-sol — attempt 2 (overloaded)
+⚠️ Failed over: openai-codex:gpt-5.6-sol → opencode-go:kimi-k2.7-code (overloaded)
 ```
 
 Chat channels (Slack, Telegram) render these alongside tool activity; the TUI shows
@@ -204,7 +170,7 @@ a channel with hints turned off shows neither.
 line:
 
 ```text
-⚠️ Answered by pi:opencode-go:kimi-k2.7-code, not the configured pi:openai-codex:gpt-5.6-sol (overloaded).
+⚠️ Answered by opencode-go:kimi-k2.7-code, not the configured openai-codex:gpt-5.6-sol (overloaded).
 ```
 
 This is attached to the output it explains, so it survives on every surface the
@@ -226,7 +192,7 @@ Ctrl-C interrupts safely. The recovery menu can:
 - edit model choices; or
 - cancel without writing.
 
-Changing routes, effort, execution/safety settings, provider configuration,
+Changing routes, effort, or provider configuration,
 durable non-secret environment, secret names, Pi auth path, or timeout invalidates
 the resume fingerprint. Authentication repair also invalidates every route proof,
 even when the non-secret plan is unchanged, because credential bytes may have
@@ -237,14 +203,14 @@ after its exact live check succeeds.
 
 Order routes by preference because the first success wins. A common production
 shape is capable cloud primary, lower-cost cloud fallback, then local fallback.
-The creation review prints every selected route and effort, the route-safety
-matrix, the number of real readiness calls, and how many may be billed before it
+The creation review prints every selected route and effort,
+the number of real readiness calls, and how many may be billed before it
 asks whether to create the agent.
 
 ## Related
 
 - [Multi-model fallback chain](/playbooks/multi-model-fallback-chain/)
-- [Backends & execution modes](/runtime/backends/)
+- [Pi runtime & model references](/runtime/backends/)
 - [Execution, effort & permissions](/runtime/execution-effort-permissions/)
 - [Sandbox](/tools/sandbox/)
 - [Sessions & concurrency](/runtime/sessions-concurrency/)

@@ -149,17 +149,19 @@ describe("packed consumer verification", () => {
       "@mono-agent/agent-runtime": "file:/tmp/mono-agent-agent-runtime.tgz",
     });
     expect(consumer.dependencies).not.toHaveProperty("@earendil-works/pi-ai");
-    expect(consumer.dependencies).not.toHaveProperty("@anthropic-ai/claude-agent-sdk");
+    expect(consumer.dependencies).not.toHaveProperty("@earendil-works/pi-agent-core");
     expect(runtime.dependencies).toMatchObject({
       "@earendil-works/pi-ai": "0.84.3",
-      "@anthropic-ai/claude-agent-sdk": "0.3.206",
+      "@earendil-works/pi-agent-core": "0.83.0",
     });
 
     const packedImports = publicExportSpecifiers(runtime.name, runtime);
     expect(packedImports).toEqual(expect.arrayContaining([
       "@mono-agent/agent-runtime",
       "@mono-agent/agent-runtime/ai",
-      "@mono-agent/agent-runtime/ai/providers/claude-sdk.js",
+      // The Codex app-server client survives the runtime-bridge removal: it
+      // backs `tools.web.search.backend: "codex"` and must stay published.
+      "@mono-agent/agent-runtime/ai/providers/codex/app-server-client.js",
     ]));
 
     const ai = await import(publicRuntimeExportUrl(runtimeManifestUrl, runtime, "./ai"));
@@ -189,45 +191,14 @@ describe("packed consumer verification", () => {
       cacheWrite: expect.any(Number),
     });
 
-    const claude = await import(publicRuntimeExportUrl(
+    const codexClient = await import(publicRuntimeExportUrl(
       runtimeManifestUrl,
       runtime,
-      "./ai/providers/claude-sdk.js",
+      "./ai/providers/codex/app-server-client.js",
     ));
-    const calls = [];
-    let closeCount = 0;
-    const claudeAgentQuery = (input) => {
-      calls.push(input);
-      const stream = (async function* () {
-        yield {
-          type: "result",
-          subtype: "success",
-          result: "injected query result",
-          usage: { input_tokens: 1, output_tokens: 2 },
-          duration_ms: 3,
-          num_turns: 1,
-          total_cost_usd: 0,
-        };
-      })();
-      stream.close = () => {
-        closeCount += 1;
-      };
-      return stream;
-    };
-
-    const result = await claude.generateClaudeResponse("system", {
-      model: { model: "claude-test", reference: "claude:claude-test" },
-      messages: [{ role: "user", content: "hello" }],
-      cwd: os.tmpdir(),
-      claudeAgentQuery,
-    });
-
-    expect(calls).toHaveLength(1);
-    expect(result).toMatchObject({
-      text: "injected query result",
-      failureKind: null,
-    });
-    expect(closeCount).toBe(1);
+    // The Codex runtime bridge is gone, but this client still backs
+    // `tools.web.search.backend: "codex"`, so the packed subpath must import.
+    expect(Object.keys(codexClient).length).toBeGreaterThan(0);
   });
 
   test("derives the complete declared internal dependency closure", () => {

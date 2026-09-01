@@ -7,7 +7,7 @@ sidebar:
 
 For Pi-native agents, the sandbox confines mono-agent-owned commands by wrapping them with `srt` (the native sandbox runtime) and a generated settings file: a filesystem scope (readable/writable roots, deny-write globs), a network policy, and a fallback for when the sandbox engine is unavailable. This includes both `Bash` commands and the child process behind `NodeRepl`. This page covers the `sandbox` config block, the matching `MONO_AGENT_SANDBOX_*` env vars, and the monotonic merge that lets request-scoped policies tighten — but never widen — the configured baseline.
 
-The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`. Under the default `runtime.routeSafety: "uniform"`, a non-Pi route that cannot represent the configured SRT policy fails closed. Explicit `per-route-native` allows a mixed chain only with route-local contracts: Pi keeps this exact policy, while Claude/Codex/OpenCode use their documented provider-native safety and do not pretend the SRT roots/network rules apply. Use Pi (including `pi:opencode-go:*`) whenever every attempted route must enforce the mono-agent policy.
+The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`.
 
 ## Quick reference
 
@@ -228,20 +228,6 @@ When a request supplies its own sandbox policy, it is merged with the configured
 - `unsafeAllowHostProcess` stays on only if **both** sides have it on.
 
 This merge is **auto** (the harness performs it). Constructing request-scoped policies is a **code** path — see [Programmatic](/programmatic/).
-
-## Runtime boundary
-
-:::caution
-Provider-owned tool loops do not silently bypass this policy. In `uniform` mode,
-validation/runtime reject a route that cannot represent the common contract. In
-explicit `per-route-native` mode, doctor prints every route contract and warns
-that mono-agent readable/writable roots, deny-write globs, and network rules do
-not project onto non-Pi routes. Pi retains SRT; Claude uses provider-native
-controls with representable tool restrictions; direct Codex/OpenCode use native
-safety plus an effective allow-all policy. Unsupported capabilities skip the route instead of
-being removed silently. Static trigger routes and dynamic overrides are checked
-at the same boundary.
-:::
 
 ## Related
 
