@@ -183,6 +183,28 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  app.get("/api/v1/agents/:id/models", (req, res, next) => {
+    try {
+      // The operator clamps to the same 200-model page ceiling; mirror it
+      // server-side rather than trusting the client's requested size.
+      const limit = boundedQueryLimit(req.query.limit, 200, 50);
+      const provider = optionalSearchQuery(req.query.provider, 256);
+      const q = optionalSearchQuery(req.query.q, 512);
+      const cursor = optionalQueryString(req.query.cursor, 4_096);
+      void trackOperation(service.agentModels(
+        pathParam(req.params.id),
+        {
+          limit,
+          ...(provider.length === 0 ? {} : { provider }),
+          ...(q.length === 0 ? {} : { q }),
+          ...(cursor === undefined ? {} : { cursor }),
+        },
+      ), activeOperations).then((page) => res.status(200).json(page)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/v1/agents/:id/cron/jobs/:jobId/runs/:runId", (req, res, next) => {
     void trackOperation(service.cronRun(
       pathParam(req.params.id),
@@ -1021,10 +1043,19 @@ function parsePatchAgent(value: unknown): PatchWebAgentInput {
 function parsePatchThread(value: unknown): PatchWebThreadInput {
   const body = requireRecord(value);
   const title = optionalString(body.title, "title", 120);
+  const model = optionalNullableString(body.model, "model", 120);
+  const effort = optionalNullableString(body.effort, "effort", 120);
   const archived = body.archived;
   if (archived !== undefined && typeof archived !== "boolean") throw invalidBody("archived must be boolean.");
-  if (title === undefined && archived === undefined) throw invalidBody("Provide title or archived.");
-  return { ...(title === undefined ? {} : { title }), ...(archived === undefined ? {} : { archived }) };
+  if (title === undefined && archived === undefined && model === undefined && effort === undefined) {
+    throw invalidBody("Provide title, archived, model, or effort.");
+  }
+  return {
+    ...(title === undefined ? {} : { title }),
+    ...(archived === undefined ? {} : { archived }),
+    ...(model === undefined ? {} : { model }),
+    ...(effort === undefined ? {} : { effort }),
+  };
 }
 
 function parseTurn(value: unknown): StartWebTurnInput {
@@ -1221,6 +1252,13 @@ function requireString(value: unknown, field: string, max: number, allowEmpty = 
 
 function optionalString(value: unknown, field: string, max: number): string | undefined {
   return value === undefined ? undefined : requireString(value, field, max);
+}
+
+/** Optional override field: absent (`undefined`), cleared (`null`), or a bounded string. */
+function optionalNullableString(value: unknown, field: string, max: number): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  return requireString(value, field, max);
 }
 
 function invalidBody(message: string): WebConsoleError {

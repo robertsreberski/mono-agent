@@ -1715,6 +1715,138 @@ describe("WebStore", () => {
     reopened.close();
   });
 
+  it("migrates a seeded schema v10 database to v11 keeping its thread rows", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const seeded = await WebStore.open({ stateDir });
+    seeded.replaceAgents([agent()]);
+    const thread = seeded.createThread("agent-one");
+    seeded.patchThread(thread.id, { title: "kept title" });
+    const databasePath = seeded.paths.database;
+    seeded.close();
+
+    // Wind the file back to schema 10 by removing the v11 columns, so the
+    // guarded ALTER has to re-add them while the seeded row stays untouched.
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      ALTER TABLE threads DROP COLUMN run_model;
+      ALTER TABLE threads DROP COLUMN run_effort;
+      PRAGMA user_version = 10;
+    `);
+    legacy.close();
+
+    const migrated = await WebStore.open({ stateDir });
+    const threads = migrated.listThreads().filter((entry) => entry.sourceId === "agent-one");
+    expect(threads).toHaveLength(1);
+    expect(threads[0]).toMatchObject({ title: "kept title", runModel: null, runEffort: null });
+    migrated.close();
+
+    const inspected = new DatabaseSync(databasePath);
+    const version = inspected.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+    const columns = inspected.prepare("PRAGMA table_info(threads)").all() as unknown as Array<{ name: string }>;
+    inspected.close();
+    expect(version.user_version).toBe(11);
+    expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(["run_model", "run_effort"]));
+  });
+
+  it("re-runs the v11 migration without failing when the new columns already exist", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const seeded = await WebStore.open({ stateDir });
+    seeded.replaceAgents([agent()]);
+    const thread = seeded.createThread("agent-one");
+    const databasePath = seeded.paths.database;
+    seeded.close();
+
+    // Columns already exist at the current schema; winding back only the
+    // version stamp forces initialize() to replay the < 11 block against them.
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec("PRAGMA user_version = 10");
+    legacy.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThread(thread.id)).toMatchObject({ id: thread.id, runModel: null, runEffort: null });
+    reopened.close();
+    expect(
+      new DatabaseSync(databasePath, { readOnly: true }).prepare("PRAGMA user_version").get(),
+    ).toMatchObject({ user_version: 11 });
+  });
+
+  it("sets, merges, and clears per-thread model and effort overrides", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state"), clock: () => new Date(0) });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+
+    const withModel = store.patchThread(thread.id, { model: "anthropic:claude-sonnet-5" });
+    expect(withModel).toMatchObject({ runModel: "anthropic:claude-sonnet-5", runEffort: null });
+
+    const withEffort = store.patchThread(thread.id, { effort: "high" });
+    expect(withEffort).toMatchObject({ runModel: "anthropic:claude-sonnet-5", runEffort: "high" });
+
+    const clearedModel = store.patchThread(thread.id, { model: null });
+    expect(clearedModel).toMatchObject({ runModel: null, runEffort: "high" });
+
+    const clearedEffort = store.patchThread(thread.id, { effort: null });
+    expect(clearedEffort).toMatchObject({ runModel: null, runEffort: null });
+  });
+
+  it("keeps updated_at stable and records run_config_changed for a model-only patch", async () => {
+    let clockMs = 3_000_000;
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state"), clock: () => new Date(clockMs) });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const createdAt = store.getThread(thread.id)!.updatedAt;
+
+    clockMs += 60_000;
+    const patched = store.patchThread(thread.id, { model: "anthropic:claude-sonnet-5" });
+    expect(patched.updatedAt).toBe(createdAt);
+    expect(patched.revision).toBe(2);
+    const cleared = store.patchThread(thread.id, { effort: null });
+    expect(cleared.updatedAt).toBe(createdAt);
+
+    const database = new DatabaseSync(store.paths.database, { readOnly: true });
+    const lastEvent = database.prepare(`
+      SELECT event FROM revisions
+      WHERE entity_kind = 'thread' AND entity_id = ?
+      ORDER BY revision DESC, id DESC LIMIT 1
+    `).get(thread.id) as unknown as { event: string };
+    database.close();
+    expect(lastEvent.event).toBe("run_config_changed");
+  });
+
+  it("keeps updated_at advancing for title/archive patches and emits title_changed then archived", async () => {
+    let clockMs = 4_000_000;
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state"), clock: () => new Date(clockMs) });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const createdAt = store.getThread(thread.id)!.updatedAt;
+
+    clockMs += 60_000;
+    const renamed = store.patchThread(thread.id, { title: "renamed" });
+    expect(renamed.updatedAt).not.toBe(createdAt);
+    clockMs += 60_000;
+    const archived = store.patchThread(thread.id, { archived: true });
+    expect(archived.updatedAt).not.toBe(renamed.updatedAt);
+    expect(archived.archivedAt).not.toBeNull();
+
+    const database = new DatabaseSync(store.paths.database, { readOnly: true });
+    const events = (database.prepare(`
+      SELECT event FROM revisions
+      WHERE entity_kind = 'thread' AND entity_id = ?
+      ORDER BY revision
+    `).all(thread.id) as unknown as Array<{ event: string }>).map((entry) => entry.event);
+    database.close();
+    expect(events.filter((event) => event !== "created")).toEqual(["title_changed", "archived"]);
+  });
+
   it("migrates schema v1 state through notification, live-input, and search storage", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -1742,7 +1874,7 @@ describe("WebStore", () => {
     const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
     const processJobCards = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'").get();
     inspected.close();
-    expect(version.user_version).toBe(10);
+    expect(version.user_version).toBe(11);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
     expect(liveInputs).toBeDefined();
@@ -1769,7 +1901,7 @@ describe("WebStore", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'",
     ).get();
     inspected.close();
-    expect(version.user_version).toBe(10);
+    expect(version.user_version).toBe(11);
     expect(processJobCards).toBeDefined();
   });
 
@@ -1782,7 +1914,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 11");
+    future.exec("PRAGMA user_version = 12");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 
@@ -2837,7 +2969,7 @@ describe("WebStore conversation search", () => {
     expect(
       new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true })
         .prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 10 });
+    ).toMatchObject({ user_version: 11 });
     reopened.close();
   });
 });

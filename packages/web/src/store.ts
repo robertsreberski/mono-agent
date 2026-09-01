@@ -81,6 +81,8 @@ interface ThreadRow {
   can_send: number;
   can_upload: number;
   message_count: number;
+  run_model: string | null;
+  run_effort: string | null;
 }
 
 interface NotificationDeliveryRow {
@@ -431,7 +433,7 @@ export function escapeLikeTerm(raw: string): string {
   return raw.replaceAll(/[\\%_]/gu, (character) => `\\${character}`);
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 10;
+const WEB_STORAGE_SCHEMA_VERSION = 11;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
 export const WEB_MESSAGE_PAGE_MAX = 100;
@@ -1917,15 +1919,22 @@ export class WebStore {
     this.setSetting("current_thread_id", resolved);
   }
 
-  patchThread(id: string, patch: { readonly title?: string; readonly archived?: boolean }): WebThread {
+  patchThread(id: string, patch: {
+    readonly title?: string;
+    readonly archived?: boolean;
+    readonly model?: string | null;
+    readonly effort?: string | null;
+  }): WebThread {
     id = this.resolveThreadId(id);
     const current = this.requireThread(id);
     const now = this.now();
     const title = patch.title === undefined ? undefined : normalizeTitle(patch.title);
     const archivedAt = patch.archived === undefined ? undefined : patch.archived ? now : null;
+    const runModel = patch.model === undefined ? undefined : patch.model;
+    const runEffort = patch.effort === undefined ? undefined : patch.effort;
     this.transaction(() => {
-      const sets = ["updated_at = ?", "revision = revision + 1"];
-      const values: Array<string | null> = [now];
+      const sets: string[] = [];
+      const values: Array<string | null> = [];
       if (title !== undefined) {
         sets.push("title = ?", "title_manual = 1");
         values.push(title);
@@ -1934,9 +1943,34 @@ export class WebStore {
         sets.push("archived_at = ?");
         values.push(archivedAt);
       }
+      if (runModel !== undefined) {
+        sets.push("run_model = ?");
+        values.push(runModel);
+      }
+      if (runEffort !== undefined) {
+        sets.push("run_effort = ?");
+        values.push(runEffort);
+      }
+      // A model/effort-only patch must not reorder the sidebar, so `updated_at`
+      // only advances when title or archived state actually changes.
+      if (title !== undefined || archivedAt !== undefined) {
+        sets.push("updated_at = ?");
+        values.push(now);
+      }
+      sets.push("revision = revision + 1");
       values.push(id);
       this.database.prepare(`UPDATE threads SET ${sets.join(", ")} WHERE id = ?`).run(...values);
-      this.recordThreadRevision(id, title !== undefined ? "title_changed" : patch.archived ? "archived" : "unarchived", now);
+      this.recordThreadRevision(
+        id,
+        title !== undefined
+          ? "title_changed"
+          : archivedAt !== undefined
+            ? patch.archived
+              ? "archived"
+              : "unarchived"
+            : "run_config_changed",
+        now,
+      );
       if (patch.archived === true && this.currentThreadId() === id) {
         this.database.prepare("DELETE FROM settings WHERE key = 'current_thread_id'").run();
       }
@@ -3071,6 +3105,8 @@ export class WebStore {
         archived_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
+        run_model TEXT,
+        run_effort TEXT,
         revision INTEGER NOT NULL DEFAULT 1
       );
       CREATE TABLE IF NOT EXISTS turns (
@@ -3328,6 +3364,19 @@ export class WebStore {
             this.database.exec(
               "ALTER TABLE attachments ADD COLUMN origin TEXT NOT NULL DEFAULT 'upload' CHECK (origin IN ('upload', 'reply'))",
             );
+          }
+        }
+        // Per-conversation model/effort overrides are server-persisted columns.
+        // Guard on PRAGMA table_info so the ALTER is skipped when the columns
+        // already exist, keeping the migration re-runnable.
+        if (versionRow.user_version < 11) {
+          const columns = new Set((this.database.prepare("PRAGMA table_info(threads)").all() as Array<{ name: string }>)
+            .map((column) => column.name));
+          if (!columns.has("run_model")) {
+            this.database.exec("ALTER TABLE threads ADD COLUMN run_model TEXT");
+          }
+          if (!columns.has("run_effort")) {
+            this.database.exec("ALTER TABLE threads ADD COLUMN run_effort TEXT");
           }
         }
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
@@ -3749,6 +3798,8 @@ export class WebStore {
       runState,
       canSend: row.can_send === 1,
       canUpload: row.can_upload === 1,
+      runModel: row.run_model,
+      runEffort: row.run_effort,
     };
   }
 
@@ -4079,6 +4130,7 @@ function isValidVapidKeyPair(publicKey: string, privateKey: string): boolean {
 function threadSelectSql(suffix: string): string {
   return `
     SELECT t.id, t.source_id, t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
+           t.run_model, t.run_effort,
            cc.job_id AS cron_job_id, cc.configured AS cron_configured,
            CASE WHEN t.trigger_kind = 'cron' THEN 0
                 WHEN a.status = 'online' OR a.status = 'degraded' THEN 1 ELSE 0 END AS can_send,

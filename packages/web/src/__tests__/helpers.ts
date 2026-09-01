@@ -109,6 +109,8 @@ export function operatorFetch(options: {
   readonly cronConfigView?: Record<string, unknown>;
   readonly onCronMutation?: (url: string, body: Record<string, unknown>) => Record<string, unknown>;
   readonly onAskSubmit?: (body: Record<string, unknown>) => void;
+  readonly modelsPage?: Record<string, unknown>;
+  readonly onModelsRequest?: (url: string) => void;
   readonly onTurn?: (body: Record<string, unknown>) => void;
   readonly onLiveInput?: (
     conversationId: string,
@@ -179,6 +181,10 @@ export function operatorFetch(options: {
     }
     if (url.includes("/v1/cron/jobs/") && url.includes("/runs")) {
       return Response.json(options.cronRuns ?? { runs: [] });
+    }
+    if (/\/v1\/models(?:\?|$)/u.test(url)) {
+      options.onModelsRequest?.(url);
+      return Response.json(options.modelsPage ?? { models: [], truncated: false });
     }
     if (url.includes("/v1/cron/jobs/") && init?.method === "POST") {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;

@@ -56,6 +56,7 @@ import {
   type WebThreadSearchPage,
   type SearchWebThreadsInput,
   type WebMessagePage,
+  type WebModelPage,
   type WebPushSubscriptionStatus,
 } from "./contracts.js";
 import {
@@ -93,6 +94,8 @@ const DEFAULT_DISCOVERY_INTERVAL_MS = 5_000;
 const DEFAULT_PURGE_INTERVAL_MS = 60 * 60 * 1_000;
 const INFO_TIMEOUT_MS = 2_500;
 const ASK_DISCOVERY_TIMEOUT_MS = 120_000;
+/** Bounded per-agent catalog-admitted model refs; beyond it, oldest go first. */
+const MODEL_CATALOG_CACHE_CAP = 2_048;
 const REPLY_ACCESS_TTL_MS = 10 * 60 * 1_000;
 /**
  * Raster types the console keeps its own copy of. `image/svg+xml` is absent on
@@ -229,6 +232,10 @@ export class WebService {
   private readonly replyAccessKey: Buffer;
   private readonly askWatches = new Map<string, AskWatch>();
   private connections = new Map<string, AgentConnection>();
+  /** Bounded catalog-admitted model refs per agent, seeded from `modelOptions`
+   *  and appended to by every proxied `/v1/models` page. Set preserves
+   *  insertion order, so evicting the oldest entry is deleting the head. */
+  private readonly modelCatalogCache = new Map<string, Set<string>>();
   /** Parts whose durable copy is being fetched, so concurrent reads fetch once. */
   private persistingReplyImages = new Set<string>();
   private discoveryTimer: ReturnType<typeof setInterval> | undefined;
@@ -604,7 +611,12 @@ export class WebService {
     return result;
   }
 
-  patchThread(id: string, patch: { readonly title?: string; readonly archived?: boolean }): WebThread {
+  patchThread(id: string, patch: {
+    readonly title?: string;
+    readonly archived?: boolean;
+    readonly model?: string | null;
+    readonly effort?: string | null;
+  }): WebThread {
     const thread = this.store.patchThread(id, patch);
     this.emit("thread.changed", thread.id, { thread });
     this.emit("threads.changed", thread.id);
@@ -711,6 +723,30 @@ export class WebService {
       this.emit("threads.changed", message.threadId);
     }
     return this.decorateMessage(message);
+  }
+
+  async agentModels(sourceId: string, input: {
+    readonly provider?: string;
+    readonly q?: string;
+    readonly cursor?: string;
+    readonly limit: number;
+  }): Promise<WebModelPage> {
+    const agent = this.store.getAgent(sourceId);
+    if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const connection = this.connections.get(sourceId);
+    if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
+    const page = await connection.client.models({
+      ...(input.provider === undefined ? {} : { provider: input.provider }),
+      ...(input.q === undefined ? {} : { q: input.q }),
+      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+      limit: input.limit,
+      signal: AbortSignal.timeout(INFO_TIMEOUT_MS),
+    });
+    // Every proxied page widens the per-agent catalog cache, the only feed
+    // (besides `modelOptions` keys) that makes tier-2 model admission possible.
+    const set = this.catalogSet(sourceId);
+    for (const model of page.models) this.admitModelRef(set, model.id);
+    return page;
   }
 
   async cronConfigView(sourceId: string): Promise<WebChannelConfigView> {
@@ -844,7 +880,7 @@ export class WebService {
     if (agent === undefined || connection === undefined || !thread.canSend) {
       throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
     }
-    validateModelAndEffort(agent, input.model, input.effort);
+    this.validateModelAndEffort(thread.sourceId, agent, input.model, input.effort);
     const started = this.store.beginTurn({ threadId, text, attachmentIds, ...(input.quote === undefined ? {} : { quote: input.quote }), ...(input.model === undefined ? {} : { model: input.model }), ...(input.effort === undefined ? {} : { effort: input.effort }) });
     this.launchTurn(started, connection.client, operatorText);
     this.emit("turn.changed", threadId, { turn: started.thread.runState });
@@ -1475,6 +1511,7 @@ export class WebService {
       try {
         const info = await client.info(AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]));
         nextConnections.set(agent.source.sourceId, { client, info });
+        this.seedModelCatalogFromOptions(agent.source.sourceId, info.modelOptions);
         const efforts = collectEfforts(info);
         return {
           sourceId: agent.source.sourceId,
@@ -1716,6 +1753,66 @@ export class WebService {
       );
     }
     return connection;
+  }
+
+  /** Tier-2 admission: the catalog cache, seeded from `modelOptions` keys and
+   *  appended to by every proxied `/v1/models` page. */
+  private catalogSet(sourceId: string): Set<string> {
+    let set = this.modelCatalogCache.get(sourceId);
+    if (set === undefined) {
+      set = new Set();
+      this.modelCatalogCache.set(sourceId, set);
+    }
+    return set;
+  }
+
+  private seedModelCatalogFromOptions(
+    sourceId: string,
+    modelOptions: Readonly<Record<string, WebModelOption>> | undefined,
+  ): void {
+    if (modelOptions === undefined) return;
+    const set = this.catalogSet(sourceId);
+    for (const key of Object.keys(modelOptions)) this.admitModelRef(set, key);
+  }
+
+  private admitModelRef(set: Set<string>, ref: string): void {
+    if (set.has(ref)) return;
+    set.add(ref);
+    if (set.size > MODEL_CATALOG_CACHE_CAP) {
+      const oldest = set.values().next().value;
+      if (oldest !== undefined) set.delete(oldest);
+    }
+  }
+
+  private validateModelAndEffort(
+    sourceId: string,
+    agent: WebAgentSummary,
+    model: string | undefined,
+    effort: string | undefined,
+  ): void {
+    if (model !== undefined && !this.modelAdmitted(sourceId, agent, model)) {
+      throw new WebConsoleError("invalid_model", "This agent did not advertise the selected model.", 400);
+    }
+    const effectiveModel = model ?? agent.defaultModel;
+    const option = effectiveModel === undefined ? undefined : agent.modelOptions?.[effectiveModel];
+    const allowedEfforts = agent.modelOptions === undefined
+      ? agent.efforts
+      : effortLevelsForOption(option);
+    if (effort !== undefined && (allowedEfforts === undefined || !allowedEfforts.includes(effort))) {
+      throw new WebConsoleError("invalid_effort", "This agent did not advertise the selected effort for this model.", 400);
+    }
+  }
+
+  private modelAdmitted(sourceId: string, agent: WebAgentSummary, model: string): boolean {
+    // Tier 1: the configured-route shortlist — unchanged, always allowed.
+    if (agent.models === undefined ? model === agent.defaultModel : agent.models.includes(model)) return true;
+    // Tier 2: a model reached only through the catalog cache.
+    const cached = this.modelCatalogCache.get(sourceId);
+    if (cached !== undefined && cached.has(model)) return true;
+    // Tier 3: syntactic `<provider>:<model>` floor. The web package has no pi-ai
+    // access, so a well-formed ref passes here and the agent itself is the real
+    // gate at turn time.
+    return modelPassesSyntacticFloor(model);
   }
 
   private authorizeReplyPart<T extends "attachment" | "mcp_app">(
@@ -2164,19 +2261,9 @@ function collectEfforts(info: OperatorInfo): readonly string[] {
   return [...new Set(models.flatMap((model) => effortLevelsForOption(info.modelOptions?.[model])))];
 }
 
-function validateModelAndEffort(agent: WebAgentSummary, model: string | undefined, effort: string | undefined): void {
-  if (model !== undefined
-    && (agent.models === undefined ? model !== agent.defaultModel : !agent.models.includes(model))) {
-    throw new WebConsoleError("invalid_model", "This agent did not advertise the selected model.", 400);
-  }
-  const effectiveModel = model ?? agent.defaultModel;
-  const option = effectiveModel === undefined ? undefined : agent.modelOptions?.[effectiveModel];
-  const allowedEfforts = agent.modelOptions === undefined
-    ? agent.efforts
-    : effortLevelsForOption(option);
-  if (effort !== undefined && (allowedEfforts === undefined || !allowedEfforts.includes(effort))) {
-    throw new WebConsoleError("invalid_effort", "This agent did not advertise the selected effort for this model.", 400);
-  }
+function modelPassesSyntacticFloor(model: string): boolean {
+  const separator = model.indexOf(":");
+  return separator > 0 && separator < model.length - 1;
 }
 
 function effortLevelsForOption(option: WebModelOption | undefined): readonly string[] {

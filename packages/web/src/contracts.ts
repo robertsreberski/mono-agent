@@ -181,6 +181,10 @@ export interface WebThread {
   readonly runState: WebRunState;
   readonly canSend: boolean;
   readonly canUpload: boolean;
+  /** Per-conversation model override, or null when the agent default applies. */
+  readonly runModel: string | null;
+  /** Per-conversation effort override, or null when the agent default applies. */
+  readonly runEffort: string | null;
 }
 
 export type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" | "interrupted";
@@ -388,6 +392,25 @@ export interface WebCronRunPage extends CronOperatorRunPage {
   readonly messages?: readonly WebMessage[];
 }
 
+/** One model served by the lazy agent `/v1/models` catalog endpoint. */
+export interface WebCatalogModel {
+  readonly id: string;
+  readonly name: string;
+  readonly provider: string;
+  readonly providerLabel: string;
+  readonly contextWindow?: number;
+  readonly reasoning?: boolean;
+  readonly effortLevels?: readonly string[];
+  readonly reasoningMode?: string;
+}
+
+/** A bounded model-catalog page proxied from an agent's `/v1/models` endpoint. */
+export interface WebModelPage {
+  readonly models: readonly WebCatalogModel[];
+  readonly nextCursor?: string;
+  readonly truncated: boolean;
+}
+
 export interface WebCronConfirmation {
   readonly token: string;
   readonly expiresAt: string;
@@ -485,6 +508,8 @@ export interface PatchWebAgentInput {
 export interface PatchWebThreadInput {
   readonly title?: string;
   readonly archived?: boolean;
+  readonly model?: string | null;
+  readonly effort?: string | null;
 }
 
 export interface StartWebTurnInput {
