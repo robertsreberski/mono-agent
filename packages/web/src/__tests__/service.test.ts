@@ -2071,7 +2071,7 @@ describe("WebService", () => {
       return operatorFetch()(input, init);
     }) as typeof fetch;
     const service = await createService({ fetchImpl });
-    await service.agentModels("agent-one", { provider: "anthropic" });
+    await service.agentModels("agent-one", { provider: "anthropic", limit: 50 });
 
     // The shortlist model keeps its narrow advertised ladder.
     const narrow = service.createThread("agent-one");

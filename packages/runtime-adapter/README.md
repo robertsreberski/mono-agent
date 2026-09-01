@@ -126,7 +126,6 @@ provider kernel:
 | API | Use it for |
 | --- | --- |
 | `createMonoRuntime()` | Construct the typed runtime facade and inject mono-agent's sandbox implementation |
-| `probeAcpProfile()` / ACP management helpers | Operate a host-resolved ACP profile while injecting the same sandbox implementation |
 | `parseMonoRuntimeModelReference()` | Parse and validate a canonical model string |
 | `listMonoRuntimeBackends()` / `describeMonoRuntimeSupport()` / `monoRuntimeSupportsLiveInput()` | Present backend capabilities and compatibility without starting a provider |
 | `createSandboxPolicy()` / `failClosedSandboxPolicy()` | Build explicit filesystem and network policy data |

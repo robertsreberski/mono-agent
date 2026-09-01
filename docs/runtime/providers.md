@@ -48,7 +48,7 @@ Each non-reserved key is a provider id, and its value is a provider definition:
 
 Each definition accepts: `enabled`, `type` (`ollama`/`lmstudio`/`openai_compat` for a self-hosted endpoint — a `baseUrl` requires one of these unless the id is `ollama` or `lmstudio`), `baseUrl`, `trustPublicUrl`, `apiKey` / `apiKeyEnv` (give the secret's variable name in `.env`, never an inline value), `models[]` (with `name`, optional `alias`/`displayName`, `enabled`, `capabilities` like `context_window`, and `pricing`), and `maxAdvertisedModels`.
 
-The canonical programmatic/JSON shape also accepts a `providers.entries[]` array of `{ id, ... }` definitions; the provider-map shape and the entries array resolve to the same effective provider set. Duplicate provider ids are rejected.
+In JSON config, providers are always the map above (or the legacy `providers.local[]`). `providers.entries[]` is the **resolved** shape — what `resolveConfiguredProviders()` returns and what a programmatic embedder constructing a `MonoAgentConfig` in code may set directly. It is not accepted from `mono-agent.config.json` or `MONO_AGENT_PROVIDERS_JSON`: `entries` is not a reserved key there, so it would be read as a provider whose id is `entries`. Duplicate provider ids are rejected.
 
 ## Zero-config local autodiscovery
 

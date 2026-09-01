@@ -211,16 +211,42 @@ export function buildProviderModelCatalog(
     if (allowlist !== undefined && allowlist.length > 0) {
       // An explicit `models` allowlist bypasses the cap and preserves its
       // declared order — the operator narrowed the provider on purpose.
-      models = allowlist.map((model) => {
+      //
+      // For a Pi built-in the allowlist NARROWS the real catalog; it does not
+      // replace it. Emitting the declared name verbatim advertised a model Pi
+      // cannot resolve when the name was wrong (selectable, then `pi model not
+      // found` at turn time) and dropped reasoning/effort metadata when it was
+      // right. Resolve against the snapshot, keep the operator's ordering and
+      // display overrides, and drop names the provider does not have.
+      const builtinByName = new Map<string, PiBuiltinModelSnapshot>();
+      if (builtinIds.has(id)) {
+        try {
+          for (const snapshot of listBuiltin(id)) builtinByName.set(snapshot.id, snapshot);
+        } catch {
+          builtinByName.clear();
+        }
+      }
+      models = allowlist.flatMap((model) => {
+        const snapshot = builtinByName.get(model.name);
+        if (snapshot === undefined && builtinIds.has(id) && builtinByName.size > 0) return [];
         const contextWindow = positiveContextWindow(model.capabilities?.context_window)
-          ?? positiveContextWindow(model.capabilities?.num_ctx);
-        return {
+          ?? positiveContextWindow(model.capabilities?.num_ctx)
+          ?? (snapshot === undefined ? undefined : positiveContextWindow(snapshot.contextWindow));
+        const effort = snapshot === undefined
+          ? undefined
+          : resolveAdvertisedModelEffortForBuiltin(snapshot);
+        return [{
           id: model.name,
-          name: model.displayName ?? model.alias ?? model.name,
+          name: model.displayName ?? model.alias ?? snapshot?.name ?? model.name,
           provider: id,
           providerLabel,
           ...(contextWindow === undefined ? {} : { contextWindow }),
-        };
+          ...(effort === undefined ? {} : {
+            reasoning: effort.reasoning,
+            ...(effort.reasoningMode === undefined ? {} : { reasoningMode: effort.reasoningMode }),
+            ...(effort.effortLevels === undefined ? {} : { effortLevels: effort.effortLevels }),
+          }),
+        }];
       });
       totalModelCount = undefined;
     } else if (builtinIds.has(id)) {
@@ -253,7 +279,16 @@ export function buildProviderModelCatalog(
       totalModelCount = undefined;
     }
 
-    const frozenModels = Object.freeze(models);
+    // Ids must be unique per provider: the pagination cursor IS the last row's
+    // id, and `pageStartIndex` resolves it with `findIndex`. A duplicate id
+    // therefore resolves to the FIRST occurrence, the cursor never advances,
+    // and the walk serves the same page forever. First declaration wins so an
+    // operator's allowlist ordering is preserved.
+    const byId = new Map<string, TuiCatalogModel>();
+    for (const model of models) {
+      if (!byId.has(model.id)) byId.set(model.id, model);
+    }
+    const frozenModels = Object.freeze([...byId.values()]);
     const info: TuiProviderInfo = Object.freeze({
       id,
       label: providerLabel,
