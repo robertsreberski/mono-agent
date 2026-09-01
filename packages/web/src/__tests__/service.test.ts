@@ -1983,6 +1983,135 @@ describe("WebService", () => {
     expect(isChannelUserCancelReason(turnAbortReason)).toBe(false);
   });
 
+  it("proxies the agent model catalog, forwarding bounded params and seeding tier-2 admission", async () => {
+    const requests: string[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        modelsPage: {
+          models: [
+            { id: "onlycatalog", name: "Catalog Only", provider: "provider", providerLabel: "Provider" },
+          ],
+          truncated: true,
+        },
+        onModelsRequest: (url) => { requests.push(url); },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await expect(service.startTurn(thread.id, { text: "proto", model: "onlycatalog" })).rejects.toMatchObject({ code: "invalid_model" });
+
+    const page = await service.agentModels("agent-one", { provider: "provider", q: "catalog", cursor: "w1", limit: 77 });
+    expect(page).toEqual({
+      models: [{ id: "onlycatalog", name: "Catalog Only", provider: "provider", providerLabel: "Provider" }],
+      truncated: true,
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toContain("provider=provider");
+    expect(requests[0]).toContain("q=catalog");
+    expect(requests[0]).toContain("cursor=w1");
+    expect(requests[0]).toContain("limit=77");
+
+    const admitted = service.createThread("agent-one");
+    await expect(service.startTurn(admitted.id, { text: "catalog", model: "onlycatalog" })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+
+  it("validates model selection across shortlist, catalog cache, and provider-prefix tiers", async () => {
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "provider/default",
+        models: ["provider/default"],
+        modelOptions: { "provider/default": { effortLevels: ["low", "medium", "high"], reasoning: true } },
+        capabilities: { attachments: true },
+      });
+      if (/\/v1\/models(?:\?|$)/u.test(url)) {
+        return Response.json({
+          models: [
+            { id: "provider/catalog-widened", name: "Widened", provider: "provider", providerLabel: "Provider" },
+            { id: "catalogonly", name: "Catalog Only", provider: "provider", providerLabel: "Provider" },
+          ],
+          truncated: false,
+        });
+      }
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+
+    // Tier 1: the configured shortlist is unchanged and always allowed.
+    const shortlist = service.createThread("agent-one");
+    await expect(service.startTurn(shortlist.id, { text: "tier1", model: "provider/default" })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+
+    // Tier 3: a well-formed but never-seen provider ref passes the floor.
+    const floor = service.createThread("agent-one");
+    await expect(service.startTurn(floor.id, { text: "floor", model: "anthropic:claude-sonnet-5" })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+
+    // Before any catalog proxy the cache-only model is rejected (no shortlist
+    // entry, no cache entry, and no colon for the floor).
+    const proto = service.createThread("agent-one");
+    await expect(service.startTurn(proto.id, { text: "proto", model: "catalogonly" })).rejects.toMatchObject({ code: "invalid_model" });
+
+    const page = await service.agentModels("agent-one", { limit: 50 });
+    expect(page.models.map((model) => model.id)).toEqual(["provider/catalog-widened", "catalogonly"]);
+
+    // Tier 2: both proxied models are now selectable, including the no-colon
+    // one that only the catalog cache can have admitted.
+    const widened = service.createThread("agent-one");
+    await expect(service.startTurn(widened.id, { text: "catalog", model: "provider/catalog-widened" })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    const cacheOnly = service.createThread("agent-one");
+    await expect(service.startTurn(cacheOnly.id, { text: "cache", model: "catalogonly" })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+
+  it("rejects malformed provider-prefix refs that cannot reach any validation tier", async () => {
+    const service = await createService({});
+    for (const model of ["no-colon", ":leading", "trailing:", ""]) {
+      const thread = service.createThread("agent-one");
+      await expect(service.startTurn(thread.id, { text: `model ${model}`, model })).rejects.toMatchObject({ code: "invalid_model" });
+    }
+    await service.stop();
+  });
+
+  it("evicts the oldest catalog-admitted model at the 2048 cap and keeps the newest", async () => {
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "provider/default",
+        models: ["provider/default"],
+        modelOptions: { "provider/default": { effortLevels: ["low", "high"], reasoning: true } },
+        capabilities: { attachments: true },
+      });
+      if (/\/v1\/models(?:\?|$)/u.test(url)) {
+        return Response.json({
+          models: Array.from({ length: 2_049 }, (_, index) => ({
+            id: `pmodel-${String(index)}`,
+            name: `Model ${String(index)}`,
+            provider: "provider",
+            providerLabel: "Provider",
+          })),
+          truncated: false,
+        });
+      }
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    const page = await service.agentModels("agent-one", { limit: 200 });
+    expect(page.models).toHaveLength(2_049);
+
+    const newest = service.createThread("agent-one");
+    await expect(service.startTurn(newest.id, { text: "newest", model: "pmodel-2048" })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    const evicted = service.createThread("agent-one");
+    await expect(service.startTurn(evicted.id, { text: "evicted", model: "pmodel-0" })).rejects.toMatchObject({ code: "invalid_model" });
+    await service.stop();
+  });
+
   it("keeps thread selection read-only and validates advertised model/effort semantics", async () => {
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;

@@ -33,6 +33,7 @@ import type {
   WebCronRunPage,
   WebCronRunSummary,
   WebModelOption,
+  WebModelPage,
   WebSkillInfo,
   WebSkillRegistry,
 } from "./contracts.js";
@@ -379,6 +380,27 @@ export class OperatorClient {
     return parseCronRunPage(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_cron_too_large")));
   }
 
+  async models(input: {
+    readonly provider?: string;
+    readonly q?: string;
+    readonly cursor?: string;
+    readonly limit: number;
+    readonly signal?: AbortSignal;
+  }): Promise<WebModelPage> {
+    const query = new URLSearchParams({ limit: String(input.limit) });
+    if (input.provider !== undefined) query.set("provider", input.provider);
+    if (input.q !== undefined) query.set("q", input.q);
+    if (input.cursor !== undefined) query.set("cursor", input.cursor);
+    const response = await this.request(
+      `${this.baseUrl}/v1/models?${query.toString()}`,
+      {
+        headers: this.headers(false),
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      },
+    );
+    return parseModelPage(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_models_too_large")));
+  }
+
   async cronRun(jobId: string, runId: string, signal?: AbortSignal): Promise<WebCronRunDetail> {
     const response = await this.request(
       `${this.baseUrl}/v1/cron/jobs/${encodeURIComponent(jobId)}/runs/${encodeURIComponent(runId)}`,
@@ -723,6 +745,55 @@ function parseCronRunDetail(value: unknown): WebCronRunDetail {
 
 function parseCronRunPage(value: unknown): WebCronRunPage {
   return parseSharedCron(parseCronOperatorRunPage, value);
+}
+
+function parseModelPage(value: unknown): WebModelPage {
+  const body = record(value);
+  if (body === undefined
+    || !Array.isArray(body.models)
+    || (body.nextCursor !== undefined && typeof body.nextCursor !== "string")
+    || typeof body.truncated !== "boolean") {
+    throw new WebConsoleError("invalid_operator_models", "The agent returned invalid model catalog data.", 502);
+  }
+  return {
+    models: body.models.map(parseCatalogModel),
+    ...(body.nextCursor === undefined ? {} : { nextCursor: body.nextCursor }),
+    truncated: body.truncated,
+  };
+}
+
+function parseCatalogModel(value: unknown): WebModelPage["models"][number] {
+  const model = record(value);
+  if (model === undefined
+    || typeof model.id !== "string"
+    || typeof model.name !== "string"
+    || typeof model.provider !== "string"
+    || typeof model.providerLabel !== "string") {
+    throw new WebConsoleError("invalid_operator_models", "The agent returned invalid model catalog data.", 502);
+  }
+  const effortLevels = stringArray(model.effortLevels);
+  if (model.effortLevels !== undefined && effortLevels === undefined) {
+    throw new WebConsoleError("invalid_operator_models", "The agent returned invalid model catalog data.", 502);
+  }
+  if (model.contextWindow !== undefined && typeof model.contextWindow !== "number") {
+    throw new WebConsoleError("invalid_operator_models", "The agent returned invalid model catalog data.", 502);
+  }
+  if (model.reasoning !== undefined && typeof model.reasoning !== "boolean") {
+    throw new WebConsoleError("invalid_operator_models", "The agent returned invalid model catalog data.", 502);
+  }
+  if (model.reasoningMode !== undefined && typeof model.reasoningMode !== "string") {
+    throw new WebConsoleError("invalid_operator_models", "The agent returned invalid model catalog data.", 502);
+  }
+  return {
+    id: model.id,
+    name: model.name,
+    provider: model.provider,
+    providerLabel: model.providerLabel,
+    ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
+    ...(model.reasoning === undefined ? {} : { reasoning: model.reasoning }),
+    ...(effortLevels === undefined ? {} : { effortLevels }),
+    ...(model.reasoningMode === undefined ? {} : { reasoningMode: model.reasoningMode }),
+  };
 }
 
 function parseSharedCron<T>(parser: (value: unknown) => T, value: unknown): T {
