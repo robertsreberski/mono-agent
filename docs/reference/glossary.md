@@ -117,10 +117,9 @@ The sandbox runtime that wraps executed commands when `sandbox.mode: "native"` i
 
 Env: `MONO_AGENT_SANDBOX_MODE`, `MONO_AGENT_SANDBOX_FALLBACK`. See [Sandbox](/tools/sandbox/).
 
-The native `srt` contract applies to Pi-owned mono-agent tools. Uniform route
-safety rejects a route that cannot enforce those scopes. Explicit
-per-route-native routing may use Claude/Codex/OpenCode only under their recorded
-provider-native contracts; SRT never pretends to cover those attempts.
+The native `srt` contract applies to Pi-owned mono-agent tools, which is every
+route. A route that cannot enforce those scopes is rejected rather than run with
+SRT silently not covering it.
 
 ## Trace source
 

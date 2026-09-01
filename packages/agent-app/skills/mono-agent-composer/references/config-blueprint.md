@@ -28,29 +28,22 @@ my-agent/
 
 ## Annotated Config
 
-New configs use `runtime.fallbacks[]`, where each route owns its optional exact
-effort. Legacy `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain
-supported compatibility inputs with no removal deadline; do not emit them for a
-new agent.
+Configs use `runtime.fallbacks[]`, where each route owns its optional exact
+effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired in
+0.21.0 and are now rejected at load — never emit them.
 
 ```jsonc
 {
   // Runtime: primary model plus ordered backups tried on retryable provider
   // failures (failover is reported in run results, never silent).
   "runtime": {
-    "model": "claude:claude-sonnet-4-6",   // claude:* | codex:* | pi:<provider>:<model>
-    "fallbacks": [{ "model": "pi:ollama:gemma4:31b" }],
-    "routeSafety": "uniform",              // uniform | per-route-native
-    "executionMode": "sdk",                // sdk | cli (default inferred from model)
-    "effort": "medium",                    // none|minimal|low|medium|high|xhigh|max|ultra; omit for direct opencode:*
-                                           // Reasoning-capable pi:* maps ultra to LOW; Pi without reasoning uses OFF.
-                                           // Direct codex:* forwards ultra unchanged. Mono-agent rejects ultra on its Claude SDK route
-                                           // because the pinned SDK public contract ends at max (the SDK JavaScript itself forwards the value).
-                                           // The Claude CLI route passes --effort ultra, but both tested Claude Code binaries
-                                           // (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort.
-                                           // Direct OpenCode rejects explicit effort.
+    "model": "anthropic:claude-sonnet-4-6", // canonical <provider>:<model>, split at the first colon only
+    "fallbacks": [{ "model": "ollama:gemma4:31b" }],
+    "effort": "medium",                    // none|minimal|low|medium|high|xhigh|max|ultra
+                                           // Narrowed per model for display; still accepted at turn time.
+                                           // A model advertising no ultra rung simply does not offer it in pickers.
                                            // Ranking above max only prevents keyword downgrade.
-    "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (CLI backends)
+    "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "compaction": {
       "enabled": true,                     // default true
@@ -130,9 +123,9 @@ new agent.
     "llm": {                               // enables bujo capture and the effective bujo tier; omit for lite/journal
       // Env: MONO_AGENT_MEMORY_LLM_PROVIDER / _MODEL / _EXECUTION_MODE / _ENDPOINT.
       "provider": "ollama",                // ollama | agent-host
-      "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. pi:openai-codex:gpt-5.5
+      "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. openai-codex:gpt-5.6-sol
       "endpoint": "http://localhost:11434" // ollama only; invalid for agent-host
-      // For agent-host, use: "model": "pi:openai-codex:gpt-5.5", "executionMode": "sdk"; omit endpoint.
+      // For agent-host, use: "model": "openai-codex:gpt-5.6-sol"; omit endpoint.
     },
     // Bujo auto-scheduler — override the default or disable it.
     // Consolidation runs in-app; no external cron or launchd needed.
@@ -275,7 +268,7 @@ new agent.
         "path": "/webhook/invoke",
         "mode": "sync",
         "prompt": "Respond to this request:",
-        "model": "claude:claude-sonnet-4-6", // optional per-trigger override
+        "model": "anthropic:claude-sonnet-4-6", // optional per-trigger override
         "effort": "high",                  // same eight-level effort enum as runtime
         "maxRunMs": 3600000,               // endpoint override; 0 disables only this watchdog
         "notify": true,                     // deliver the successful final answer verbatim
@@ -414,7 +407,7 @@ new agent.
         "timezone": "UTC",                 // IANA timezone
         "prompt": "Post the morning summary.",
         "conversationId": "cron-daily",    // optional: share memory/history across ticks
-        "model": "claude:claude-sonnet-4-6", // optional per-trigger override
+        "model": "anthropic:claude-sonnet-4-6", // optional per-trigger override
         "effort": "high",
         "notify": true,                     // successful non-empty final answer is delivered verbatim
         // Explicit destination; if omitted, infer only with exactly one candidate.
@@ -437,7 +430,7 @@ new agent.
 mono-agent presets list                 # saved answer-sets (id, risk, description)
 mono-agent presets show <id>            # generated config + .env.example + follow-up checklist
 mono-agent init --preset <id> --yes [--with slack,cron] [--dry-run]   # scaffold from a preset (non-interactive)
-mono-agent init --model claude:claude-sonnet-4-6 --fallback pi:ollama:gemma4:31b [--memory lite|journal|bujo]
+mono-agent init --model anthropic:claude-sonnet-4-6 --fallback ollama:gemma4:31b [--memory lite|journal|bujo]
 mono-agent config       # resolved config field-by-field, each value tagged env/json/default
 mono-agent validate [--preset <id>] [--consumer <path>]     # per-section report; --preset also checks the preset's capabilities
 mono-agent start        # traceability + every configured channel

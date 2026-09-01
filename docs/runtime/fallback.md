@@ -56,24 +56,23 @@ mono-agent init \
   --fallback ollama:gemma4:31b --fallback-effort provider-default
 ```
 
-## Legacy compatibility
+## Retired: `fallbackModels`
 
-Existing `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain
-supported. Legacy entries retain their historic behavior: they inherit the
-global `runtime.effort`. Do not configure canonical and legacy forms together;
-choose `runtime.fallbacks` for new agents.
+`runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were **retired** in
+0.21.0. They are rejected at load with the replacement named, so an agent still
+carrying one does not start. The CLI CSV flag `--fallback-models` was removed
+earlier; repeat `--fallback <ref>` instead. See the canonical
+[deprecation tracker](/reference/deprecations/).
 
-The CLI CSV flag `--fallback-models` was **removed**; it now errors with a
-pointer to repeat `--fallback <ref>` instead. That removal covers only the CLI
-flag — the JSON and environment compatibility inputs are unaffected. See the
-canonical [deprecation tracker](/reference/deprecations/) for the exact scope.
+Convert with `mono-agent migrate-config --write` — run `--check` with the new
+CLI **before** restarting a live agent:
 
 ```json
 {
   "runtime": {
     "model": "openai-codex:gpt-5.6-terra",
     "effort": "high",
-    "fallbackModels": ["ollama:gemma4:31b"]
+    "fallbacks": [{ "model": "ollama:gemma4:31b" }]
   }
 }
 ```
