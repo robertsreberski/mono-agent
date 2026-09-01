@@ -24,6 +24,19 @@ import {
 
 export const DEFAULT_PAGE_SIZE = 100;
 export const MAX_PAGE_SIZE = 200;
+/**
+ * Producer-side length bounds. Provider ids, model ids and display names are
+ * not length-bounded by config validation, and `/v1/info` shares a single 1 MiB
+ * body cap with every other field: exceeding it fails `info()` wholesale and
+ * shows the agent OFFLINE rather than degraded. A page that exceeds the
+ * catalog body cap 500s instead of serving. Oversized entries are skipped
+ * rather than truncated, because a truncated id would not resolve anyway.
+ */
+export const MAX_CATALOG_ID_BYTES = 256;
+export const MAX_CATALOG_LABEL_BYTES = 256;
+
+const withinBytes = (value: string, max: number): boolean =>
+  Buffer.byteLength(value, "utf8") <= max;
 export const DEFAULT_MAX_ADVERTISED_PER_PROVIDER = 100;
 export const MAX_SEARCH_RESULTS = 100;
 
@@ -172,6 +185,13 @@ export function buildProviderModelCatalog(
     orderedIds.push(id);
   }
 
+  // Drop oversized provider ids here rather than mid-loop: `orderedIds` drives
+  // the final `listProviders()` projection, so an id skipped later would still
+  // be dereferenced there.
+  const boundedIds = orderedIds.filter((id) => withinBytes(id, MAX_CATALOG_ID_BYTES));
+  orderedIds.length = 0;
+  orderedIds.push(...boundedIds);
+
   const byProviderId = new Map<string, ProviderModelEntry>();
   const byRef = new Map<string, TuiCatalogModel>();
 
@@ -194,7 +214,8 @@ export function buildProviderModelCatalog(
   };
 
   for (const id of orderedIds) {
-    const providerLabel = providerLabelById.get(id) ?? id;
+    const rawLabel = providerLabelById.get(id) ?? id;
+    const providerLabel = withinBytes(rawLabel, MAX_CATALOG_LABEL_BYTES) ? rawLabel : id;
     const configured = configuredById.get(id);
     const source: TuiProviderInfo["source"] = builtinIds.has(id)
       ? "builtin"
@@ -288,7 +309,11 @@ export function buildProviderModelCatalog(
     for (const model of models) {
       if (!byId.has(model.id)) byId.set(model.id, model);
     }
-    const frozenModels = Object.freeze([...byId.values()]);
+    const frozenModels = Object.freeze(
+      [...byId.values()].filter((model) =>
+        withinBytes(model.id, MAX_CATALOG_ID_BYTES)
+        && withinBytes(model.name, MAX_CATALOG_LABEL_BYTES)),
+    );
     const info: TuiProviderInfo = Object.freeze({
       id,
       label: providerLabel,

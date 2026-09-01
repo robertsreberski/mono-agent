@@ -131,6 +131,9 @@ const cronRouteSelection = (): { readonly sourceId: string; readonly jobId: stri
 
 export const SELECTED_AGENT_STORAGE_KEY = "mono-agent.web.selected-agent";
 export const SELECTED_THREADS_STORAGE_KEY = "mono-agent.web.selected-threads";
+/** Bounded catalog walk: 5 x 100 rows is well past any advertised cap. */
+const CATALOG_PAGE_LIMIT = 5;
+
 export const RUN_PREFERENCES_STORAGE_KEY = "mono-agent.web.run-preferences";
 export const preferenceKeyForThread = (sourceId: string, threadId: string | null): string =>
   JSON.stringify([sourceId, threadId ?? "new"]);
@@ -1061,19 +1064,37 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       [provider]: { models: [...(current[provider]?.models ?? [])], status: "loading" },
     }));
     try {
-      const page = await api.agentModels(sourceId, provider);
-      if (selectedAgentRef.current !== sourceId) return;
+      // Follow the cursor instead of treating the first page as the whole
+      // catalog. A provider whose `maxAdvertisedModels` exceeds the 100-row
+      // page size otherwise shows only its first page, with the rest silently
+      // unreachable. Bounded so a large or misbehaving producer cannot make the
+      // picker fetch forever; the agent caps what it advertises anyway.
+      const collected: CatalogModel[] = [];
+      let cursor: string | undefined;
+      let lastCursor: string | undefined;
+      for (let page = 0; page < CATALOG_PAGE_LIMIT; page += 1) {
+        const result = await api.agentModels(sourceId, provider, cursor);
+        if (selectedAgentRef.current !== sourceId) return;
+        collected.push(...result.models);
+        // A producer that repeats a cursor would loop forever; stop instead.
+        if (result.nextCursor === undefined || result.nextCursor === lastCursor) {
+          cursor = undefined;
+          break;
+        }
+        lastCursor = result.nextCursor;
+        cursor = result.nextCursor;
+      }
       setCatalogByProvider((current) => {
         const merged = new Map(
           (current[provider]?.models ?? []).map((catalog) => [catalog.id, catalog]),
         );
-        for (const catalog of page.models) merged.set(catalog.id, catalog);
+        for (const catalog of collected) merged.set(catalog.id, catalog);
         return {
           ...current,
           [provider]: {
             models: [...merged.values()],
             status: "loaded",
-            nextCursor: page.nextCursor,
+            ...(cursor === undefined ? {} : { nextCursor: cursor }),
           },
         };
       });

@@ -2086,6 +2086,23 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("applies the thread's persisted override to a turn that omits model and effort", async () => {
+    // The override is server state, so a turn this server starts -- a
+    // process-job follow-up, any assistant-owned wake -- must honour the
+    // selection made in that conversation rather than the agent default.
+    const service = await createService({});
+    const thread = service.createThread("agent-one");
+    service.patchThread(thread.id, { model: "anthropic:claude-sonnet-5", effort: "high" });
+
+    await service.startTurn(thread.id, { text: "no explicit model" });
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+
+    const stored = service.store.getThread(thread.id);
+    expect(stored?.runModel).toBe("anthropic:claude-sonnet-5");
+    expect(stored?.runEffort).toBe("high");
+    await service.stop();
+  });
+
   it("keeps the syntactic floor no looser than the runtime parser", async () => {
     const service = await createService({});
     for (const model of ["bad provider:model", "UPPER:model", "provider: model", "provider:  "]) {
