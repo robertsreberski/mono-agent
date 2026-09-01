@@ -6,7 +6,7 @@ import { EFFORT_LEVELS } from "@mono-agent/config";
 import type { TuiHistoryStore } from "../agent/history.js";
 import { discoverInstances, resolveInstanceApiKey, toInstance } from "../data/instances.js";
 import type { DiscoveredInstance } from "../data/instances.js";
-import { RemoteAgentResponder } from "../remote/client.js";
+import { RemoteAgentResponder, type RemoteProviderInfo } from "../remote/client.js";
 import { selectListTheme, styles } from "./theme.js";
 import { StatusBar } from "./components/status-bar.js";
 import { ChatView, type ChatTurnSettledEvent } from "./views/chat.js";
@@ -95,6 +95,13 @@ const VIEW_ORDER: readonly TuiViewId[] = ["chat", "replay", "config", "picker"];
 
 /** Sentinel `SelectItem.value` for the model picker's "clear override" row (never a real model ref). */
 const MODEL_PICKER_DEFAULT_VALUE = "tui-model-picker:__default__";
+/**
+ * Prefix for provider group-header rows in the `/model` picker. These are
+ * non-selectable labels; selecting one is a no-op (guarded in the picker's
+ * onSelect). Distinguishable from real model refs, which never carry this
+ * prefix.
+ */
+const MODEL_GROUP_VALUE_PREFIX = "tui-model-picker:group:";
 /** Sentinel `SelectItem.value` for the effort picker's "clear override" row (never a real level). */
 const EFFORT_PICKER_DEFAULT_VALUE = "tui-effort-picker:__default__";
 /**
@@ -219,6 +226,12 @@ export class MonoAgentTuiApp {
   private availableModels: readonly string[] = [];
   /** Per-model effort/reasoning/mode/label options from `/v1/info` (keyed by model ref); drives the model-aware effort picker + `/model` row annotations. */
   private modelOptions: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; reasoningMode?: string; label?: string }> = {};
+  /**
+   * Bounded provider catalog from `/v1/info` used to group the `/model` picker
+   * by provider. Absent for older agents that advertise only the flat `models`
+   * shortlist — in that case the picker renders the flat list (all "Unknown").
+   */
+  private availableProviders: readonly RemoteProviderInfo[] = [];
   /** The connected agent's own default model ref (from `/v1/info`) — the effort picker's effective model when no `/model` override is active. */
   private agentModel: string | undefined;
   /** The single open picker/review overlay; only one at a time. */
@@ -438,6 +451,7 @@ export class MonoAgentTuiApp {
     readonly effort?: string;
     readonly models?: readonly string[];
     readonly modelOptions?: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; reasoningMode?: string; label?: string }>;
+    readonly providers?: readonly RemoteProviderInfo[];
   }): void {
     // Routed through ChatView (not statusBar directly) so it can remember these
     // as the agent's defaults -- what a later /model|/effort default repaints
@@ -452,6 +466,7 @@ export class MonoAgentTuiApp {
     // previously connected agent must not leak into this one's pickers.
     this.availableModels = info.models ?? [];
     this.modelOptions = info.modelOptions ?? {};
+    this.availableProviders = info.providers ?? [];
   }
 
   private applyStaticIdentity(): void {
@@ -735,27 +750,83 @@ export class MonoAgentTuiApp {
       return;
     }
     const current = this.chat.getModelOverride();
-    const items: SelectItem[] = this.availableModels.map((model) => {
-      const opts = this.modelOptions[model];
-      // Prefer the friendly label for discovered local models; keep the ref as
-      // the selection value so the override contract is unchanged. A dim
-      // "· no thinking" flags models that don't support reasoning/effort.
-      const base = opts?.label ?? model;
-      const noThinking = opts?.reasoning === false ? styles.dim(" · no thinking") : "";
-      return { value: model, label: `${withCurrentMarker(base, model === current)}${noThinking}` };
-    });
+    const items: SelectItem[] = this.buildModelPickerItems(current);
     items.push({
       value: MODEL_PICKER_DEFAULT_VALUE,
       label: withCurrentMarker("— default (clear override) —", current === undefined),
     });
 
     this.openPickerOverlay("Session model override", items, (item) => {
+      // Provider group headers are non-selectable labels; selecting one is a no-op.
+      if (item.value.startsWith(MODEL_GROUP_VALUE_PREFIX)) {
+        return;
+      }
       const choice = item.value === MODEL_PICKER_DEFAULT_VALUE ? undefined : item.value;
       this.chat.setModelOverride(choice);
       this.statusBar.setEphemeral(
         choice === undefined ? "model override cleared" : `model override → ${choice}`,
       );
     });
+  }
+
+  /**
+   * Build the model picker rows. When the agent advertises a `providers`
+   * catalog the rows are grouped by provider, matching the console's ordering:
+   * configured providers first (in config order), then the advertised
+   * providers, then any leftover models under "Unknown". Models use the
+   * canonical `<provider>:<model>` ref, split at the first ":" only. An older
+   * agent that advertises no `providers` renders the flat shortlist untouched
+   * — that is the documented fallback. The current override is marked
+   * `(current)` exactly as the effort picker marks its active level.
+   */
+  private buildModelPickerItems(current: string | undefined): SelectItem[] {
+    if (this.availableProviders.length === 0) {
+      // Older agent / flat shortlist: no grouping, preserving the legacy behavior.
+      return this.availableModels.map((model) => this.modelPickerRow(model, current));
+    }
+    const providerIdFor = (model: string): string | undefined => {
+      const index = model.indexOf(":");
+      return index > 0 ? model.slice(0, index) : undefined;
+    };
+    const grouped = Array.from(
+      new Set(this.availableProviders.map((provider) => provider.id)),
+    );
+    const items: SelectItem[] = [];
+    const pushedModels = new Set<string>();
+    for (const providerId of grouped) {
+      const provider = this.availableProviders.find((candidate) => candidate.id === providerId);
+      const groupModels = this.availableModels.filter((model) => providerIdFor(model) === providerId);
+      if (groupModels.length === 0) {
+        continue;
+      }
+      items.push({
+        value: `${MODEL_GROUP_VALUE_PREFIX}${providerId}`,
+        label: styles.bold(provider?.label ?? providerId),
+      });
+      for (const model of groupModels) {
+        items.push(this.modelPickerRow(model, current));
+        pushedModels.add(model);
+      }
+    }
+    const unknown = this.availableModels.filter((model) => !pushedModels.has(model));
+    if (unknown.length > 0) {
+      items.push({ value: `${MODEL_GROUP_VALUE_PREFIX}unknown`, label: styles.bold("Unknown") });
+      for (const model of unknown) {
+        items.push(this.modelPickerRow(model, current));
+      }
+    }
+    return items;
+  }
+
+  /** A single model row: friendly label (falling back to the ref), `(current)` marker, and a dim "no thinking" flag. */
+  private modelPickerRow(model: string, current: string | undefined): SelectItem {
+    const opts = this.modelOptions[model];
+    // Prefer the friendly label for discovered local models; keep the ref as
+    // the selection value so the override contract is unchanged. A dim
+    // "· no thinking" flags models that don't support reasoning/effort.
+    const base = opts?.label ?? model;
+    const noThinking = opts?.reasoning === false ? styles.dim(" · no thinking") : "";
+    return { value: model, label: `${withCurrentMarker(base, model === current)}${noThinking}` };
   }
 
   private enterConfiguration(): void {

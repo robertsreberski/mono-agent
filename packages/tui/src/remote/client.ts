@@ -17,6 +17,20 @@ export interface RemoteAgentResponderOptions {
   readonly fetchImpl?: typeof fetch;
 }
 
+/**
+ * Bounded provider summary from `/v1/info` — mirrors the operator-adapter's
+ * `TuiProviderInfo` without importing it, so the TUI stays dependency-free.
+ * Older agents that omit `providers` degrade to the flat model shortlist.
+ */
+export interface RemoteProviderInfo {
+  readonly id: string;
+  readonly label: string;
+  readonly modelCount: number;
+  readonly totalModelCount?: number;
+  readonly source: "builtin" | "custom" | "discovered";
+  readonly configured?: true;
+}
+
 export class RemoteAgentResponderError extends Error {
   readonly code?: string;
 
@@ -63,6 +77,7 @@ export class RemoteAgentResponder implements AgentResponder {
     effort?: string;
     models?: readonly string[];
     modelOptions?: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; reasoningMode?: string; label?: string }>;
+    providers?: readonly RemoteProviderInfo[];
   }> {
     const response = await this.request(`${this.baseUrl}/v1/info`, { headers: this.headers(false) });
     const body = (await response.json()) as {
@@ -73,9 +88,11 @@ export class RemoteAgentResponder implements AgentResponder {
       effort?: unknown;
       models?: unknown;
       modelOptions?: unknown;
+      providers?: unknown;
     };
-    const { effort, models, modelOptions, ...rest } = body;
+    const { effort, models, modelOptions, providers, ...rest } = body;
     const parsedModelOptions = parseModelOptions(modelOptions);
+    const parsedProviders = parseProviders(providers);
     return {
       ...rest,
       // Older agents may omit `effort` entirely, or send a malformed value; either
@@ -90,6 +107,10 @@ export class RemoteAgentResponder implements AgentResponder {
       // the same ref strings as `models`. Parsed defensively per-entry so one
       // malformed entry never poisons the well-formed rest.
       ...(parsedModelOptions === undefined ? {} : { modelOptions: parsedModelOptions }),
+      // Older agents omit `providers`; the picker falls back to the flat model
+      // shortlist when this is absent. Parsed defensively so one malformed entry
+      // never poisons the rest.
+      ...(parsedProviders === undefined ? {} : { providers: parsedProviders }),
     };
   }
 
@@ -228,4 +249,41 @@ function parseModelOptions(
     }
   }
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+/**
+ * Defensively parses `/v1/info`'s `providers` field: tolerates absence (an
+ * older agent that advertises only the flat `models` shortlist), a non-array
+ * payload, and per-entry shape mismatches — a malformed entry is dropped rather
+ * than surfacing garbage or throwing. Never returns an empty array; an
+ * all-malformed/all-empty payload degrades to `undefined`, same as an agent
+ * that never sent the field.
+ */
+function parseProviders(value: unknown): readonly RemoteProviderInfo[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const result: RemoteProviderInfo[] = [];
+  for (const raw of value) {
+    if (typeof raw !== "object" || raw === null) {
+      continue;
+    }
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.id !== "string" || entry.id.length === 0 || typeof entry.label !== "string" || typeof entry.modelCount !== "number") {
+      continue;
+    }
+    if (entry.source !== "builtin" && entry.source !== "custom" && entry.source !== "discovered") {
+      continue;
+    }
+    const parsed: RemoteProviderInfo = {
+      id: entry.id,
+      label: entry.label,
+      modelCount: entry.modelCount,
+      ...(typeof entry.totalModelCount === "number" ? { totalModelCount: entry.totalModelCount } : {}),
+      source: entry.source,
+      ...(entry.configured === true ? { configured: true as const } : {}),
+    };
+    result.push(parsed);
+  }
+  return result.length > 0 ? result : undefined;
 }
