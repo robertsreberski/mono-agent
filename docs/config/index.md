@@ -21,12 +21,12 @@ A minimal valid config has exactly two fields:
 
 ```json
 {
-  "runtime": { "model": "codex:gpt-5.6-terra" },
+  "runtime": { "model": "openai-codex:gpt-5.6-terra" },
   "context": { "identityPath": "./IDENTITY.md" }
 }
 ```
 
-`runtime.model` selects the backend (`claude:*`, `codex:*`, `pi:<provider>:<model>`, or `opencode:*`). `context.identityPath` points at the identity markdown. All other fields are optional, but omission does not always mean disabled: the loopback `tui` operator endpoint defaults on, and the interaction bridge can auto-start when its tools are available.
+`runtime.model` is a `<provider>:<model>` reference served by the Pi runtime (`openai-codex:*`, `anthropic:*`, `opencode-go:*`, local providers, and more; a legacy `pi:` prefix is canonicalized away). `context.identityPath` points at the identity markdown. All other fields are optional, but omission does not always mean disabled: the loopback `tui` operator endpoint defaults on, and the interaction bridge can auto-start when its tools are available.
 
 ## How configuration is loaded
 
@@ -43,12 +43,12 @@ The CLI prepares the environment before it invokes the config loader. It loads `
 For example, these variables override both JSON values:
 
 ```json
-{ "runtime": { "model": "codex:gpt-5.6-terra", "effort": "medium" } }
+{ "runtime": { "model": "openai-codex:gpt-5.6-terra", "effort": "medium" } }
 ```
 
 ```bash
 # Overrides both fields above without editing the file
-export MONO_AGENT_MODEL="pi:opencode-go:kimi-k2.6"
+export MONO_AGENT_MODEL="opencode-go:kimi-k2.6"
 export MONO_AGENT_EFFORT="high"
 ```
 
@@ -65,9 +65,9 @@ Each top-level key maps to one capability area. All are optional except the two 
 | Section | Purpose | Page |
 | --- | --- | --- |
 | `agent` | Public display name; never used for paths, service ids, sessions, or provider identity | [Identity & Soul](/context/identity-and-soul/) |
-| `runtime` | Model, execution mode, effort, sessions, concurrency | [Runtime](/runtime/) |
+| `runtime` | Model, effort, sessions, fallbacks | [Runtime](/runtime/) |
 | `concurrency` | Per-channel admission and provider-execution bounds | [Sessions and concurrency](/runtime/sessions-concurrency/) |
-| `providers` | Local/self-hosted providers, Pi credentials, pi-native tuning | [Local Providers](/runtime/local-providers/) |
+| `providers` | Provider map: local/self-hosted providers, Pi credentials, pi-native tuning | [Providers](/runtime/providers/), [Local Providers](/runtime/local-providers/) |
 | `context` | Identity, soul, selected skills | [Context Assembly](/context/assembly/) |
 | `memory` | Tiered memory (lite/journal/bujo), embeddings, consolidation | [Capture & Recall](/memory/capture-and-recall/) |
 | `tools` | Allow-all-by-default, runtime-enforced allow/deny policy; MCP servers | [Tool Policy](/tools/policy/), [MCP](/tools/mcp/) |
@@ -108,7 +108,7 @@ The [Feature Registry](/reference/feature-registry/) tags each capability so you
 A handful of capabilities are `code`-only — for example structured output
 schemas, tool approval gates, and custom runtimes/channels. Direct runtime live
 input is also a code API, while the managed Slack, Telegram, and web-console
-hosts expose it automatically on capable backends. See [Programmatic
+hosts expose it automatically. See [Programmatic
 Composition](/programmatic/) and [Live input steering](/programmatic/approval-and-structured-output/#live-input-steering).
 :::
 

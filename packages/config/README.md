@@ -55,30 +55,30 @@ blanket override. A missing or empty JSON file contributes an empty layer.
 labels, but it never changes paths, service ids, session keys, or provider
 identity. `MONO_AGENT_NAME` overrides the JSON value.
 
-Use `runtime.fallbacks` for new fallback chains. It is an ordered, uncapped array
-of `{ model, effort? }` entries; omitted route effort means the provider default.
-`runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain compatibility
-surfaces and retain their historical inheritance from `runtime.effort`.
+Use `runtime.fallbacks` for fallback chains. It is an ordered, uncapped array of
+`{ model, effort? }` entries; omitted route effort means the provider default.
+The legacy `runtime.fallbackModels` / `MONO_AGENT_FALLBACK_MODELS` surfaces were
+retired in 0.21.0 and now fail at load with the replacement named — run
+`mono-agent migrate-config` to convert them.
 
 ```json
 {
   "agent": { "name": "Research Companion" },
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.6-terra",
+    "model": "openai-codex:gpt-5.6-terra",
     "effort": "high",
     "fallbacks": [
-      { "model": "claude:claude-sonnet-5", "effort": "xhigh" },
-      { "model": "pi:ollama:gemma4:31b" }
-    ],
-    "routeSafety": "per-route-native"
+      { "model": "anthropic:claude-sonnet-5", "effort": "xhigh" },
+      { "model": "ollama:gemma4:31b" }
+    ]
   }
 }
 ```
 
-`routeSafety` defaults to `uniform`; `per-route-native` is the explicit opt-in
-for isolated provider-native contracts in a mixed chain. Effort values are
-`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`, subject
-to the selected model's supported subset.
+Every route is Pi-native, so one contract covers the whole chain. Effort values
+are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`,
+subject to the selected model's supported subset — narrowed for display, still
+accepted at turn time.
 
 `ultra` is route-specific. Reasoning-capable `pi:*` maps `ultra` to LOW; Pi
 without reasoning uses OFF. Direct `codex:*` forwards `ultra` unchanged.
@@ -122,8 +122,7 @@ Core config can also define local Pi providers under `providers.local`. The prim
 ```json
 {
   "runtime": {
-    "model": "pi:ollama:qwen3:8b",
-    "executionMode": "sdk",
+    "model": "ollama:qwen3:8b",
     "workspace": "."
   },
   "providers": {

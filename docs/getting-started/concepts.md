@@ -14,7 +14,7 @@ A mono-agent is fully described by a single `mono-agent.config.json` in the agen
 ```json
 {
   "runtime": {
-    "model": "codex:gpt-5.6-terra"
+    "model": "openai-codex:gpt-5.6-terra"
   },
   "context": {
     "identityPath": "./IDENTITY.md"
@@ -78,9 +78,9 @@ There is no "off but configured" trap: a channel with `enabled: false` reports `
 
 ## Explicit side-effect boundaries
 
-mono-agent ships with an open tool surface. Memory, channel admission, HTTP bind, and sandbox controls are separate; do not mistake one for another. Guided init names the shell/file/web/channel effects of allow-all and requires a second confirmation when no enforceable sandbox will constrain them. Native mono-agent SRT applies to Pi-owned tools. Uniform route safety rejects providers that cannot represent the common contract; explicit per-route-native routing displays and applies their provider-native contract instead.
+mono-agent ships with an open tool surface. Memory, channel admission, HTTP bind, and sandbox controls are separate; do not mistake one for another. Guided init names the shell/file/web/channel effects of allow-all and requires a second confirmation when no enforceable sandbox will constrain them. Native mono-agent SRT applies to Pi-owned tools.
 
-- **Allow-all tools, runtime-specific narrowing.** Omit `tools.allowedTools` (or include `"*"` anywhere in it) and the agent can call every built-in available on its route (the managed `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch` set on the Pi bridge) and every enabled channel's send tools. Pi and supported CLI runtimes can narrow their respective surfaces; direct `codex:*` normal runs accept only effective allow-all with an empty denylist and reject restrictive policies instead of widening them.
+- **Allow-all tools, runtime-specific narrowing.** Omit `tools.allowedTools` (or include `"*"` anywhere in it) and the agent can call every built-in available on its route (the managed `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch` set on the Pi runtime) and every enabled channel's send tools. See [Tools → Policy](/tools/policy/).
 
   ```json
   {
@@ -90,8 +90,6 @@ mono-agent ships with an open tool surface. Memory, channel admission, HTTP bind
     }
   }
   ```
-
-  See [Tools → Policy](/tools/policy/).
 
 - **No memory writes.** `memory.writeMode` defaults to `disabled` — the agent records nothing until you choose `append-host-summary` or (bujo only) `capture`. See [Memory → Capture and Recall](/memory/capture-and-recall/).
 
@@ -109,7 +107,7 @@ Fields with a documented `MONO_AGENT_*` environment mapping use this resolution 
 2. **`mono-agent.config.json`** — the JSON value.
 3. **Built-in default** — used when neither is set.
 
-So `MONO_AGENT_MODEL=pi:opencode-go:kimi-k2.6` overrides `runtime.model` in the JSON for that process. A `.env` file in the agent folder is loaded automatically (exported shell variables still win); use `--env-file <path>` for an alternate file.
+So `MONO_AGENT_MODEL=opencode-go:kimi-k2.6` overrides `runtime.model` in the JSON for that process. A `.env` file in the agent folder is loaded automatically (exported shell variables still win); use `--env-file <path>` for an alternate file.
 
 | Config key | Env var |
 | --- | --- |

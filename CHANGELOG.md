@@ -4,6 +4,32 @@
 
 - Remove the repository-owned final-agent and SearXNG demos together with their
   root commands, build provenance, verification, CI, and documentation wiring.
+- **Breaking: mono-agent runs only its Pi implementation.** The `claude-sdk`,
+  `claude-code-cli`, `codex-app-cli`, `opencode-app-cli` and `acp-stdio` runtime
+  bridges are removed, along with the backend dispatch table. The ACP *server*
+  bridge, `install-skill --target claude|codex`, `docs-mcp-pairing` and the Codex
+  web-search backend are unaffected.
+- **Breaking: model references are `<provider>:<model>`,** split at the first
+  colon only. A leading `pi:` is canonicalized away; `codex:`, `claude:`,
+  `claude-code:`, `codex-cli:`, `acp:` and `vercel:` are rejected at load with
+  the replacement named.
+- **Breaking: `runtime.executionMode`, `memory.llm.executionMode`,
+  `runtime.routeSafety` and `runtime.fallbackModels` are retired.** Each now
+  fails at load with the exact repair rather than a generic unknown-key error.
+- **New `providers` config map** declaring which providers an agent supports,
+  widening selection to those providers' full catalogs instead of just
+  `runtime.model` and its fallbacks. `ollama` and `lmstudio` are zero-config
+  autodiscovered. Agents advertise it additively — a slim `providers` array on
+  `/v1/info` plus a lazy `GET /v1/models` — with no wire-schema bump.
+- **Per-conversation model and effort overrides persist server-side** (web store
+  v10 → v11), so a choice made on the desktop shows up on the phone instead of
+  living in one browser's localStorage. The console selector groups and filters
+  by provider.
+- **New `mono-agent migrate-config [--check] [--write]`** codemod. It edits
+  config text in place so untouched bytes stay byte-identical, refuses to guess
+  non-Pi model prefixes, and skips `configVersion: 1` files. See
+  `packages/agent-runtime/MIGRATION.md` for the deployment order.
+
 - Upgrade the exact-pinned Pi AI catalog and TUI to 0.84.3, including GitHub
   Copilot support for Gemini 3.7 Flash and Grok 4.6, provider-required OAuth
   cancellation signals, and the current GPT-5.6 Terra pricing metadata. Keep

@@ -28,8 +28,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   external channel plugins from `channels.plugins[]`.
 - Build the shared runtime/responder/memory stack through app-owned configured
   composition
-  (including canonical `runtime.fallbacks` routes and legacy
-  `runtime.fallbackModels` compatibility).
+  (canonical `runtime.fallbacks` routes).
 - Preserve bounded answered/expired `AskUser` evidence in the assistant history
   copy so cold/stateless provider replay does not lose the out-of-band exchange;
   cancelled asks are not journaled.
@@ -440,20 +439,11 @@ without being advertised as guided cloud integrations. Supported OAuth methods a
 the OpenCode-Go key flow come from the bundled upstream catalog;
 stale auth locks are repaired only when the recorded process is securely proven
 gone. The
-wizard keeps **Allow all tools** as its default. Pi/Claude flows disclose
-shell/file/web/channel effects and reconfirm an unsandboxed choice. Direct Codex
-fixes policy to effective allow-all (an omitted or wildcard-containing
-allowlist with no denied tools), uses its native network-off workspace sandbox,
-denies unattended escalations, and fails unexpected server requests promptly.
-Mixed chains are unrestricted only under explicit `runtime.routeSafety:
-"per-route-native"`, which isolates provider runtimes and applies a documented
-route-local contract. The default `uniform` mode keeps one common monotonic
-contract and rejects/skips routes that cannot represent it. Pi keeps mono-agent
-tool policy and optional SRT; Claude uses representable provider-native controls;
-direct Codex/OpenCode use provider-native safety plus effective allow-all. No route
-silently drops a required capability. Pi `pi:opencode-go:*` remains a Pi route.
-Direct OpenCode has the same omitted-or-wildcard/empty-deny requirement; restrictive static policies fail
-validation/runtime and an incompatible dynamic override is warned and ignored.
+wizard keeps **Allow all tools** as its default, disclosing shell/file/web/channel
+effects and reconfirming an unsandboxed choice. Every route is Pi-native, so one
+common monotonic contract covers the whole chain and rejects or skips a route
+that cannot represent it. Pi keeps mono-agent tool policy and optional SRT. No
+route silently drops a required capability.
 
 ### Run history
 

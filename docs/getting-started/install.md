@@ -19,14 +19,12 @@ The bare `mono-agent` npm name isn't ours — npm rejects it as too similar to a
 | --- | --- | --- |
 | Node.js | `>=22.19.0` | Runtime for the CLI, host, and TUI. This matches the minimum required by the bundled Pi runtime. |
 | pnpm | `>=10` | Only needed to build the workspace from source (the published packages install with plain `npm`/`npm exec`). |
-| Codex CLI | Supported version; `>=0.144.0` for GPT-5.6 | Required for every direct `codex:*` route. |
+| Provider sign-in | Provider account | Anthropic, GitHub Copilot, and OpenAI Codex sign in through the Pi runtime's bundled OAuth flow (`mono-agent auth login <provider>`); OpenCode-Go uses `OPENCODE_API_KEY`. No external CLI install is required. |
 
-The default `codex:gpt-5.6-terra` runtime also needs Codex CLI 0.144.0 or newer installed and signed in. The init wizard checks version and sign-in state but never installs software or starts an unrequested login flow. Follow only the [official Codex CLI instructions](https://developers.openai.com/codex/cli/): on macOS/Linux the standalone installer is:
+The default `openai-codex:gpt-5.6-terra` runtime signs in through the bundled Pi OAuth flow rather than a separate Codex CLI. `mono-agent auth login openai-codex` prints an auth URL to open in a browser, waits for the localhost callback, and accepts a pasted redirect URL / authorization code on remote or headless machines:
 
 ```bash
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
-codex                    # first run prompts for sign-in
-codex login status
+mono-agent auth login openai-codex
 ```
 
 :::note
@@ -133,7 +131,7 @@ cd my-agent
 mono-agent init
 ```
 
-On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-by-step wizard: name the agent, enter the exact Role destined for `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure any number of fallbacks and their exact efforts, then choose capabilities and route safety. The review says whether that Role will be written or an existing identity preserved. Escape goes back. A concrete creation review precedes provider/SRT mutations. On macOS it proves every selected route sequentially, prepares the private managed runtime, starts or refreshes the single canonical per-config launchd agent, waits for a fresh exact-snapshot ready trace source, and only then opens the remote, persistent **SELF-CONFIG** workflow conversation. Interrupted preflight can resume fingerprint-matching successes or restart all checks. Pass `--yes` or any flag (or run in a non-TTY) for scaffold-only automation; that path never starts a process or makes a readiness claim. Off macOS, edit the preserved scaffold manually, validate, start with `--foreground`, and open ordinary `mono-agent tui`; conversational configuration requires the managed macOS lifecycle. See [Setup security and managed runtime](/reference/setup-security/) for the closure, environment, single-instance, and snapshot-integrity contracts behind the managed path.
+On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-by-step wizard: name the agent, enter the exact Role destined for `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure any number of fallbacks and their exact efforts, then choose capabilities. The review says whether that Role will be written or an existing identity preserved. Escape goes back. A concrete creation review precedes provider/SRT mutations. On macOS it proves every selected route sequentially, prepares the private managed runtime, starts or refreshes the single canonical per-config launchd agent, waits for a fresh exact-snapshot ready trace source, and only then opens the remote, persistent **SELF-CONFIG** workflow conversation. Interrupted preflight can resume fingerprint-matching successes or restart all checks. Pass `--yes` or any flag (or run in a non-TTY) for scaffold-only automation; that path never starts a process or makes a readiness claim. Off macOS, edit the preserved scaffold manually, validate, start with `--foreground`, and open ordinary `mono-agent tui`; conversational configuration requires the managed macOS lifecycle. See [Setup security and managed runtime](/reference/setup-security/) for the closure, environment, single-instance, and snapshot-integrity contracts behind the managed path.
 
 ```bash
 mono-agent init --preset telegram-assistant --yes   # scaffold from a preset
@@ -217,7 +215,7 @@ entry directly:
 repo=/absolute/path/to/mono-agent
 agent_dir=$(mktemp -d)
 cd "$agent_dir"
-node "$repo/packages/agent-app/dist/cli.js" init --model pi:openai-codex:gpt-5.6-terra
+node "$repo/packages/agent-app/dist/cli.js" init --model openai-codex:gpt-5.6-terra
 node "$repo/packages/agent-app/dist/cli.js" validate
 ```
 

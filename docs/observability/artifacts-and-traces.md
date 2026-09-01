@@ -167,9 +167,7 @@ cursors, and a maximum of 10 previews; `get` returns a selected invocation or
 result in chunks of at most 8 KiB. Current-run and foreign-conversation records
 are opaque, daily rollover buckets remain one logical scope, isolated/proactive
 runs require `includeIsolated: true`, nested history-tool result bodies are
-omitted, and every result is marked untrusted. Direct OpenCode and ACP routes
-still persist and cold-project lifecycle records but cannot expose this host
-tool because they have no request-scoped host-tool seam. See [MCP
+omitted, and every result is marked untrusted. Lifecycle records persist and cold-project for every route, and the pi-native runtime exposes this host tool through its request-scoped host-tool seam. See [MCP
 servers](/tools/mcp/#sessionhistory-retained-tool-lifecycles) and [Tool
 policy](/tools/policy/#sessionhistory).
 

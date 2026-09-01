@@ -73,7 +73,7 @@ confirm whether automatic consolidation will run.
 
 Requires embeddings and a chat model for the LLM pipelines. The app-level chat model can
 be a direct Ollama model or an `agent-host` runtime model reference such as
-`pi:openai-codex:gpt-5.6-terra`.
+`openai-codex:gpt-5.6-terra`.
 
 The tier matrix is strict. `lite` rejects embeddings/LLM configuration, `journal` requires
 embeddings and rejects a memory LLM/consolidation, and `bujo` requires both embeddings and
@@ -183,16 +183,13 @@ For Pi SDK memory capture through the host runtime, use:
     },
     "llm": {
       "provider": "agent-host",
-      "model": "pi:openai-codex:gpt-5.6-terra",
-      "executionMode": "sdk"
+      "model": "openai-codex:gpt-5.6-terra"
     }
   }
 }
 ```
 
-`agent-host` memory LLMs are SDK-only for now. CLI-backed refs such as
-`codex:gpt-5.6-terra`, or explicit `executionMode: "cli"`, are rejected because those
-runtimes cannot yet guarantee a no-tools/no-external-actions memory turn.
+`agent-host` memory LLMs run on their own dedicated SDK runtime.
 
 ### Per-turn write mode (`memory.writeMode`)
 
@@ -252,7 +249,7 @@ ollama pull qwen3.6:latest   # or any local chat model you prefer
 
 Set `memory.llm.model` or `MONO_AGENT_MEMORY_LLM_MODEL` to the capture model used by the
 configured app. With `memory.llm.provider: "agent-host"`, that value may be an SDK runtime
-model reference such as `pi:openai-codex:gpt-5.6-terra`. The old standalone `migrate` and
+model reference such as `openai-codex:gpt-5.6-terra`. The old standalone `migrate` and
 `reflect` workflows are not part of the current operator surface.
 
 ## Auto-Scheduler (bujo tier)

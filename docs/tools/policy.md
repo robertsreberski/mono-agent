@@ -9,7 +9,7 @@ The tool policy decides which tools an agent may call — built-in tools (Read, 
 
 ## Allow-all by default
 
-If you set no `tools` block, or omit `allowedTools`, the agent can call **every** built-in, the eligible app-owned history, web-title, and durable-memory-write tools on a compatible route, and every enabled channel's send tools. There is no allowlist to curate before an agent can do anything — you start open and remove what you don't want. `allowedTools` accepts four shapes:
+If you set no `tools` block, or omit `allowedTools`, the agent can call **every** built-in, the eligible app-owned history, web-title, structured-question, and durable-memory-write tools, and every enabled channel's send tools. There is no allowlist to curate before an agent can do anything — you start open and remove what you don't want. `allowedTools` accepts four shapes:
 
 | `tools.allowedTools` | Result |
 | --- | --- |
@@ -29,30 +29,26 @@ If you set no `tools` block, or omit `allowedTools`, the agent can call **every*
 
 An explicit empty list is still expressible and still meaningful: `"allowedTools": []` means the agent can hold a conversation but cannot read files, run commands, or send proactively. [`validate` / `doctor`](/observability/cli-reference/#validate) reports that as `waiting` (never a silent `ok`) so an accidental empty list surfaces, while allow-all reports `All tools allowed.`
 
-In guided init, **Allow all tools** remains the default product choice. Pi/Claude flows explicitly name the resulting code-execution, file, web, and enabled channel-send surface before accepting it. If no enforceable sandbox constrains that runtime, a second confirmation is required before continuing; the review never presents allow-all as a risk-free default. Direct Codex skips the tool and mono-srt prompts because normal runs require an effective allow-all policy and use the Codex-native network-off workspace sandbox.
+In guided init, **Allow all tools** remains the default product choice. The flow explicitly names the resulting code-execution, file, web, and enabled channel-send surface before accepting it. If no enforceable sandbox constrains the runtime, a second confirmation is required before continuing; the review never presents allow-all as a risk-free default.
 
 :::note
 Allow-all is the **config** default, not a programmatic one. For code-defined agents built directly on `@mono-agent/agent-harness`, the no-config safety net is the opposite: `failClosedToolPolicy()` returns `{ allowedTools: [], disallowedTools: [] }` — an empty, fail-closed policy — so a harness constructed with no policy starts with zero tools until you pass one. The allow-all default lives in the config loader, not the harness.
 :::
 
 :::caution
-**Enforcement varies by runtime.** Unsupported combinations fail before provider startup instead of silently widening the tool surface.
-
-- **pi-native** — both guarantees hold: `[]` is a true chat-only agent, and a specific list is the agent's complete tool surface.
-- **Claude SDK** — both guarantees hold through the SDK's native tool options.
-- **Claude Code** CLI — a specific non-empty list is passed as `--tools` and restricts the surface; `disallowedTools` reaches the native denylist. An explicit `[]` cannot represent chat-only in that CLI and is therefore rejected by validation and runtime before spawn.
-- **Codex** CLI — the app-server cannot enforce arbitrary mono-agent name lists. Normal direct `codex:*` runs require effective allow-all: `allowedTools` is omitted or contains `"*"`, and `disallowedTools` is empty. Named entries alongside `"*"` are redundant but accepted because the wildcard dominates. A named-only list, `[]`, or any denylist fails validation and runtime startup with a capability mismatch; mono-agent never silently widens it. Choose another runtime for a restrictive policy.
-- **Direct OpenCode** — the app-server bridge has the same effective allow-all requirement. Restrictive policies fail validation and runtime before the OpenCode server is created. `pi:opencode-go:*` is a Pi runtime and supports Pi's full policy instead.
-
-The guided direct-Codex route check is not an exception operators can reuse: it is a dedicated internal contract with a read-only sandbox, approval policy `never`, no MCP/dynamic tools, a disposable session, and interruption/failure on the first tool-action event. Its exact no-tool policy is unchanged by the normal-run wildcard normalization.
+**Enforcement is uniform.** Every route runs the Pi runtime, which projects the
+policy directly instead of silently widening the tool surface. `[]` is a true
+chat-only agent, a specific list is the agent's complete tool surface, and any
+`disallowedTools` entry is honored for built-ins and app-owned tools. There is
+no route that downgrades a restrictive policy to allow-all — a combination the
+runtime cannot enforce fails before provider startup.
 :::
 
-Runtime discovery exposes this distinction as `RuntimeCapabilities.tool_policy`.
-`"projected"` means the bridge can project restrictive allow/deny policy;
-`"allow_all_only"` means it accepts only the effective unrestricted contract
-described above. Built-in bridges always report the field. A custom structural
-bridge that omits it has unknown tool-policy capability and should be treated
-conservatively.
+Runtime discovery still exposes this distinction as
+`RuntimeCapabilities.tool_policy`. The Pi bridge always reports
+`"projected"`, meaning it enforces the allow/deny lists directly. A custom
+structural bridge (injected via `MonoRuntimeLike`) that omits the field has
+unknown tool-policy capability and should be treated conservatively.
 
 ## allowedTools / disallowedTools
 
@@ -80,9 +76,9 @@ Each list must contain unique, non-empty strings; duplicate names within a singl
 The example above keeps allow-all (every tool stays available) but denies `Bash` — the agent can read, edit, fetch, and send, just not run shell commands. To go the other way and hand-pick a minimal surface, list the exact names in `allowedTools` instead.
 :::
 
-## Deny enforcement by runtime
+## Deny enforcement
 
-`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, `RunHistory`, `SessionHistory`, `SetConversationTitle`, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …) on runtimes that expose those tools through mono-agent. The **Claude Code** CLI additionally receives `--disallowedTools`, so the denial reaches its native tools. Pi-native honors the list for built-ins and policy-gated app-owned tools. Direct Codex has no corresponding native denylist boundary, so configurations containing `disallowedTools` are rejected rather than partially enforced.
+`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, `RunHistory`, `SessionHistory`, `SetConversationTitle`, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …). The Pi runtime honors the list for all of those on every route.
 
 :::caution
 **Known limitation — external MCP tools on pi.** Arbitrary tools advertised by an external MCP server are **not** deny-filtered on the pi-native runtime yet. Listing such a tool in `disallowedTools` has no effect there. To hard-restrict an external MCP tool on pi, **don't declare its server** in `mcp.json` / `tools.mcpServers` — server declaration, not the denylist, is what governs its availability. (The app-owned adapter send tools are exempt from this limitation: they are gated by the app, so their `disallowedTools` entries are honored everywhere.)
@@ -93,8 +89,8 @@ The example above keeps allow-all (every tool stays available) but denies `Bash`
 These are the names recognized for built-in runtime tools (coverage: `config`, gated by this policy):
 
 Managed built-ins: `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `Exec`,
-`NodeRepl`, `WebFetch`, `WebSearch`. They are supplied through the Pi bridge;
-provider-owned routes use their documented native tool surfaces.
+`NodeRepl`, `WebFetch`, `WebSearch`. They are supplied through the Pi runtime's
+managed tool seam on every route.
 
 `Exec` runs direct argv; `Bash` is reserved for shell syntax. `NodeRepl`
 evaluates JavaScript in one REPL child per run. Code run by `Exec`, `Bash`, or
@@ -125,17 +121,16 @@ The adapter's own allowlist (channels/chats it may post to) remains the destinat
 
 `RunHistory` is an app-owned, read-only, request-scoped MCP tool for listing, searching, and cursor-inspecting safe normalized evidence from completed prior runs in the logical current conversation. Configured daily rollover buckets do not partition that scope. It has no separate config key:
 
-- Under allow-all, it is available automatically on MCP-capable routes.
+- Under allow-all, it is available automatically on every route.
 - Under a specific allowlist, include `RunHistory` explicitly.
 - `disallowedTools` can remove it, with deny still winning.
 - `run_history` is accepted only as a deprecated policy alias; the registered/model-facing name is `RunHistory`. Tool input also accepts `run_id` as an alias for `runId`.
-- Direct OpenCode and other MCP-incompatible routes suppress it.
 
 The tool excludes the current/running run, unrelated conversations or threads, system prompts, reasoning, recalled memory, and raw artifact paths. See [MCP servers](/tools/mcp/#runhistory-prior-run-evidence) for its list/search/overview/timeline interface and [Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory) for its evidence boundary.
 
 ## SessionHistory
 
-`SessionHistory` is the separate read-only, request-scoped tool for redacted and bounded managed-tool invocations/results retained in the current logical session. Under a specific allowlist, include `SessionHistory`; `session_history` is a deprecated policy alias, and deny still wins. Direct OpenCode and direct ACP routes suppress the model tool because they lack a compatible request-scoped host MCP seam, while persistence and cold projection continue. It excludes the current run and isolated/proactive records by default, keeps foreign conversations opaque, and cannot execute, mutate, or rerun anything. See [MCP servers](/tools/mcp/#sessionhistory-retained-tool-lifecycles) for search/get, cursor, tombstone, artifact, and untrusted-data bounds.
+`SessionHistory` is the separate read-only, request-scoped tool for redacted and bounded managed-tool invocations/results retained in the current logical session. Under a specific allowlist, include `SessionHistory`; `session_history` is a deprecated policy alias, and deny still wins. It excludes the current run and isolated/proactive records by default, keeps foreign conversations opaque, and cannot execute, mutate, or rerun anything. See [MCP servers](/tools/mcp/#sessionhistory-retained-tool-lifecycles) for search/get, cursor, tombstone, artifact, and untrusted-data bounds.
 
 ## SetConversationTitle
 
@@ -144,8 +139,8 @@ ordinary interactive web turns whose title remains automatic. It accepts one
 normalized semantic title of at most 80 characters. Under a specific allowlist,
 include `SetConversationTitle`; deny still wins. Trigger-created and archived
 threads are ineligible, and any user rename permanently locks the title against
-agent updates. Direct OpenCode routes suppress the tool. If it is unavailable or
-unused, the web console keeps its existing first-user-message fallback. See
+agent updates. If it is unavailable or unused, the web console keeps its
+existing first-user-message fallback. See
 [MCP servers](/tools/mcp/#setconversationtitle-web-conversation-naming) for the
 request and persistence boundary.
 
@@ -183,7 +178,7 @@ The allow/deny lists can be supplied via environment variables (coverage: `confi
 | `MONO_AGENT_ALLOWED_TOOLS` | `tools.allowedTools` |
 | `MONO_AGENT_DISALLOWED_TOOLS` | `tools.disallowedTools` |
 
-The same rules apply through the environment: an **unset** `MONO_AGENT_ALLOWED_TOOLS` keeps the allow-all default, while an empty value (`MONO_AGENT_ALLOWED_TOOLS=""`) requests explicit chat-only `[]`. That request is valid on Pi/Claude SDK and rejected on direct Codex, direct OpenCode, and Claude Code CLI because those boundaries cannot enforce it. Deny-wins / overlap-rejection are otherwise unchanged. See [Environment variables](/config/env-vars/).
+The same rules apply through the environment: an **unset** `MONO_AGENT_ALLOWED_TOOLS` keeps the allow-all default, while an empty value (`MONO_AGENT_ALLOWED_TOOLS=""`) requests explicit chat-only `[]`, which every route enforces. Deny-wins / overlap-rejection are unchanged. See [Environment variables](/config/env-vars/).
 
 ## Back-compat: legacy tool names
 
