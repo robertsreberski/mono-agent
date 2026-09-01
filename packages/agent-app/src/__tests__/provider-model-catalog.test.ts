@@ -199,6 +199,23 @@ describe("provider-model-catalog", () => {
     expect(catalog.listModels("anthropic").models).toEqual([]);
   });
 
+  it("skips oversized provider and model identifiers instead of emitting them", () => {
+    // Config validation does not length-bound these. `/v1/info` shares one
+    // 1 MiB body cap with every other field, so an oversized entry takes the
+    // agent OFFLINE rather than degrading it.
+    const huge = "x".repeat(600_000);
+    const catalog = buildProviderModelCatalog({
+      providers: [
+        { id: huge, type: "openai_compat", baseUrl: "http://localhost:9000" },
+        { id: "anthropic", models: [{ name: "y".repeat(400), displayName: "ok" }] },
+      ],
+    });
+
+    expect(catalog.listProviders().map((provider) => provider.id)).not.toContain(huge);
+    expect(catalog.listModels("anthropic").models).toEqual([]);
+    expect(JSON.stringify(catalog.listProviders()).length).toBeLessThan(8_192);
+  });
+
   it("degrades an unknown provider to an empty page and never throws", () => {
     const catalog = buildProviderModelCatalog();
     expect(catalog.listModels("does-not-exist")).toEqual({ models: [], truncated: false });

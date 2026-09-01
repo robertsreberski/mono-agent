@@ -880,8 +880,15 @@ export class WebService {
     if (agent === undefined || connection === undefined || !thread.canSend) {
       throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
     }
-    this.validateModelAndEffort(thread.sourceId, agent, input.model, input.effort);
-    const started = this.store.beginTurn({ threadId, text, attachmentIds, ...(input.quote === undefined ? {} : { quote: input.quote }), ...(input.model === undefined ? {} : { model: input.model }), ...(input.effort === undefined ? {} : { effort: input.effort }) });
+    // The per-thread override is server state now, so it governs turns this
+    // server starts too -- process-job follow-ups and other assistant-owned
+    // wakes omit model/effort and would otherwise silently run on the agent
+    // default, ignoring the selection made in that very conversation. An
+    // explicit request value still wins.
+    const model = input.model ?? thread.runModel ?? undefined;
+    const effort = input.effort ?? thread.runEffort ?? undefined;
+    this.validateModelAndEffort(thread.sourceId, agent, model, effort);
+    const started = this.store.beginTurn({ threadId, text, attachmentIds, ...(input.quote === undefined ? {} : { quote: input.quote }), ...(model === undefined ? {} : { model }), ...(effort === undefined ? {} : { effort }) });
     this.launchTurn(started, connection.client, operatorText);
     this.emit("turn.changed", threadId, { turn: started.thread.runState });
     this.emit("threads.changed", threadId);

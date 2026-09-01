@@ -241,7 +241,7 @@ describe("tui channel driver — info composition", () => {
     expect(info.modelOptions).toEqual({ "anthropic:claude-fable-5": FABLE_MODEL_OPTIONS });
   });
 
-  it("keeps info.models to configured routes and serves live-discovered models via the catalog", async () => {
+  it("keeps live-discovered models in info.models and also serves them via the catalog", async () => {
     const localProviders: readonly LocalProviderDefinition[] = [
       { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
     ];
@@ -253,10 +253,21 @@ describe("tui channel driver — info composition", () => {
     const captured = await startCapturingTui({ localProviders, discoverModels });
     const info = await resolveInfo(captured);
 
-    // The /v1/info shortlist stays configured routes only; discovered models
-    // move into the bounded provider catalog + the lazy /v1/models endpoint.
-    expect(info.models).toEqual(["anthropic:claude-fable-5"]);
-    expect(info.modelOptions).toEqual({ "anthropic:claude-fable-5": FABLE_MODEL_OPTIONS });
+    // Discovered local models stay in `models`, and ALSO appear in the bounded
+    // provider catalog. Dropping them from `models` would be a subtractive wire
+    // change at an unchanged TUI_WIRE_SCHEMA: a console that reads only
+    // `models` -- every client predating /v1/models -- would silently lose the
+    // lmstudio entries it used to offer, with no skew error to explain it.
+    expect(info.models).toEqual([
+      "anthropic:claude-fable-5",
+      "lmstudio:qwen/qwen3-8b",
+      "lmstudio:llama-3.1",
+    ]);
+    expect(info.modelOptions?.["anthropic:claude-fable-5"]).toEqual(FABLE_MODEL_OPTIONS);
+    expect(Object.keys(info.modelOptions ?? {})).toEqual(expect.arrayContaining([
+      "lmstudio:qwen/qwen3-8b",
+      "lmstudio:llama-3.1",
+    ]));
     expect(info.providers?.find((provider) => provider.id === "lmstudio")).toMatchObject({
       id: "lmstudio",
       source: "custom",

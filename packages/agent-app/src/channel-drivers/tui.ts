@@ -15,10 +15,12 @@ import {
   discoverLocalProviderModels,
   discoverLocalProviders,
   modelReferenceKey,
+  parseMonoRuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
 import type {
   DiscoveredLocalModel,
   LocalProviderDefinition,
+  RuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
 import {
   ACP_BRIDGE_SOURCE_SCHEMA,
@@ -193,11 +195,30 @@ export function createTuiChannelDriver(
         discoveredModels,
       });
 
+      // `/v1/info.models` must keep listing live-discovered local models
+      // alongside the configured routes. Narrowing it to configured routes was
+      // a SUBTRACTIVE wire change at an unchanged schema: a console that only
+      // reads `models` (every client predating `/v1/models`) silently lost the
+      // `ollama:*` entry it used to offer, with no skew error to explain it.
+      const discoveredRefs: RuntimeModelReference[] = [];
+      for (const model of discoveredModels) {
+        if (configModelKeys.includes(model.ref)) continue;
+        try {
+          discoveredRefs.push(parseMonoRuntimeModelReference(model.ref));
+        } catch {
+          // A provider that reports an unparseable ref is skipped, not fatal.
+        }
+      }
+      const infoModelKeys = [
+        ...configModelKeys,
+        ...discoveredRefs.map((ref) => modelReferenceKey(ref)),
+      ];
+
       // Resolve both /v1/info projections once, here. `/v1/info` is polled every
       // 5s per connected console, and a throwing or slow info provider returns
       // 500 for the WHOLE response — showing the agent offline rather than
       // degraded. Neither projection may run per request.
-      const infoModelOptions = catalog.describe(configuredRefs);
+      const infoModelOptions = catalog.describe([...configuredRefs, ...discoveredRefs]);
       const infoProviders = catalog.listProviders();
 
       const modelCatalog: TuiModelCatalogProvider = (request) => {
@@ -220,7 +241,7 @@ export function createTuiChannelDriver(
         return {
           model: modelReferenceKey(input.coreConfig.runtime.model),
           ...(input.coreConfig.runtime.effort === undefined ? {} : { effort: input.coreConfig.runtime.effort }),
-          models: configModelKeys,
+          models: infoModelKeys,
           modelOptions: infoModelOptions,
           providers: infoProviders,
           skills: skillRegistry.snapshot(),
