@@ -88,14 +88,24 @@ describe("channel config view", () => {
     expect(JSON.stringify(section)).not.toContain("fixture-webhook-secret");
   });
 
-  it("reports an unset Slack mention policy as provenance-default, not false", async () => {
-    const configPath = await writeConfig({ slack: { enabled: false } });
+  it("reports Slack optional booleans with their source without materializing defaults", async () => {
+    const configPath = await writeConfig({
+      slack: { enabled: false, unfurlLinks: false, unfurlMedia: true },
+    });
     const section = await defaultChannelDrivers()
       .find((driver) => driver.id === "slack")!
-      .configView!({ env: {}, cwd: dir, configPath });
+      .configView!({
+        env: { MONO_AGENT_SLACK_UNFURL_MEDIA: "false" },
+        cwd: dir,
+        configPath,
+      });
 
     expect(section.fields.find((field) => field.id === "slack.stripMentionText"))
       .toMatchObject({ value: "—", source: "default" });
+    expect(section.fields.find((field) => field.id === "slack.unfurlLinks"))
+      .toMatchObject({ value: "false", source: "json" });
+    expect(section.fields.find((field) => field.id === "slack.unfurlMedia"))
+      .toMatchObject({ value: "false", source: "env" });
   });
 
   it("limits cron config view to the registered already-visible surface", async () => {

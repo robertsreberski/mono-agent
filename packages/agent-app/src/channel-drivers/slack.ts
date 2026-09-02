@@ -111,6 +111,9 @@ export function createSlackChannelDriver(
       const heartbeat: { intervalMs?: number; timeoutMs?: number } = {};
       if (input.config.heartbeatIntervalMs !== undefined) heartbeat.intervalMs = input.config.heartbeatIntervalMs;
       if (input.config.heartbeatTimeoutMs !== undefined) heartbeat.timeoutMs = input.config.heartbeatTimeoutMs;
+      const stream: NonNullable<SlackAdapterStartOptions["stream"]> = {};
+      if (input.config.unfurlLinks !== undefined) stream.unfurlLinks = input.config.unfurlLinks;
+      if (input.config.unfurlMedia !== undefined) stream.unfurlMedia = input.config.unfurlMedia;
       const result = await startAdapter({
         botToken: input.config.botToken,
         appToken: input.config.appToken,
@@ -137,6 +140,7 @@ export function createSlackChannelDriver(
         onConnectionRestored: () => input.onRecovered?.(),
         ...(Object.keys(reconnect).length === 0 ? {} : { reconnect }),
         ...(Object.keys(heartbeat).length === 0 ? {} : { heartbeat }),
+        ...(Object.keys(stream).length === 0 ? {} : { stream }),
         ...(input.logger === undefined ? {} : { logger: input.logger }),
         ...(input.interaction === undefined
           ? {}
