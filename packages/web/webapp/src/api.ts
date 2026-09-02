@@ -315,13 +315,28 @@ export const api = {
     );
   },
 
+  /**
+   * `ifRunConfigUnset` is a compare-and-set: the server applies nothing unless
+   * the conversation still has no run override. The one-time adoption of a
+   * browser-local preference needs it -- it reads the thread and then writes
+   * it, and another tab can set a real override in between. `signal` matters
+   * for the same path: thread writes are serialized, so an unbounded one
+   * blocks every later write to that conversation.
+   */
   patchThread: async (
     threadId: string,
-    patch: { title?: string; archived?: boolean; model?: string | null; effort?: string | null },
+    patch: {
+      title?: string;
+      archived?: boolean;
+      model?: string | null;
+      effort?: string | null;
+      ifRunConfigUnset?: boolean;
+    },
+    signal?: AbortSignal,
   ) => {
     const result = await request<{ thread: ThreadSummary }>(
       `/api/v1/threads/${encodeURIComponent(threadId)}`,
-      { method: "PATCH", body: JSON.stringify(patch) },
+      { method: "PATCH", body: JSON.stringify(patch), ...(signal === undefined ? {} : { signal }) },
     );
     return result.thread;
   },

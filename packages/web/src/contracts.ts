@@ -525,6 +525,17 @@ export interface PatchWebThreadInput {
   readonly archived?: boolean;
   readonly model?: string | null;
   readonly effort?: string | null;
+  /**
+   * Compare-and-set: apply nothing unless this conversation still has NO run
+   * override. The console's one-time adoption of a browser-local preference
+   * reads the thread and then writes it, and between those two calls another
+   * tab (or another device) can set a real override -- an unconditional write
+   * then makes the adopting tab's stale local value the final server state.
+   * The precondition is checked and the write applied in one synchronous step,
+   * so nothing can interleave. When it does not hold the current thread comes
+   * back untouched, which is exactly what the caller must adopt.
+   */
+  readonly ifRunConfigUnset?: boolean;
 }
 
 export interface StartWebTurnInput {

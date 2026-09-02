@@ -524,9 +524,13 @@ describe("ConsoleStoreProvider integration", () => {
 
       const store = await renderStore();
 
+      // Conditional: the server applies it only while the conversation still
+      // has no override, so a write from another tab cannot be overwritten by
+      // this stale local value.
       await waitFor(() => expect(api.patchThread).toHaveBeenCalledWith(
         "alpha-thread",
-        { model: "anthropic:opus-5", effort: "high" },
+        { model: "anthropic:opus-5", effort: "high", ifRunConfigUnset: true },
+        expect.any(AbortSignal),
       ));
       await waitFor(() => expect(store.current.selectedThread?.runModel).toBe("anthropic:opus-5"));
       expect(localStorage.getItem(RUN_PREFERENCES_STORAGE_KEY)).toBe("{}");
@@ -579,12 +583,260 @@ describe("ConsoleStoreProvider integration", () => {
       await waitFor(() => expect(api.patchThread).toHaveBeenCalledWith(
         "alpha-thread",
         { effort: "low" },
+        expect.any(AbortSignal),
       ));
       await settle();
 
       // Exactly one write reached the server, and it is the operator's.
       expect(api.patchThread).toHaveBeenCalledTimes(1);
       expect(store.current.selectedThread?.runEffort).toBe("low");
+    });
+
+    it("keeps a thread's migration waiting on ITS own writes, not another thread's", async () => {
+      // The write generation used to be one shared counter, so any override
+      // write anywhere read as a write to the migrating conversation. Changing
+      // thread B made A's migration abandon: it dropped A's browser-local
+      // preference and sent no PATCH, so the preference was deleted outright
+      // while A's server override stayed null.
+      const betaThread = thread("beta-thread", "beta");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [alphaThread, betaThread],
+      ));
+      vi.mocked(api.threads).mockImplementation(async (sourceId) => ({
+        threads: sourceId === "alpha" ? [alphaThread] : [betaThread],
+      }));
+      seedLocalOverride("alpha", "alpha-thread");
+      let releaseAlphaRead: (() => void) | undefined;
+      const alphaRead = new Promise<void>((resolve) => { releaseAlphaRead = resolve; });
+      let alphaReads = 0;
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId === "alpha-thread") {
+          alphaReads += 1;
+          // Read 1 is the detail load; read 2 is the migration's re-check.
+          if (alphaReads > 1) await alphaRead;
+          return detail(alphaThread, "hello");
+        }
+        return detail(betaThread, "hi");
+      });
+      vi.mocked(api.patchThread).mockImplementation(async (threadId, patch) => ({
+        ...(threadId === "alpha-thread" ? alphaThread : betaThread),
+        runModel: "model" in patch ? patch.model ?? null : null,
+        runEffort: "effort" in patch ? patch.effort ?? null : null,
+      }));
+
+      const store = await renderStore();
+      await waitFor(() => expect(alphaReads).toBeGreaterThan(1));
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("beta-thread"));
+      act(() => { store.current.setEffort("low"); });
+      await waitFor(() => expect(api.patchThread).toHaveBeenCalledWith(
+        "beta-thread",
+        { effort: "low" },
+        expect.any(AbortSignal),
+      ));
+
+      releaseAlphaRead?.();
+      // Alpha's own preference is still adopted: nothing was written to alpha.
+      await waitFor(() => expect(api.patchThread).toHaveBeenCalledWith(
+        "alpha-thread",
+        { model: "anthropic:opus-5", effort: "high", ifRunConfigUnset: true },
+        expect.any(AbortSignal),
+      ));
+      await settle();
+      expect(localStorage.getItem(RUN_PREFERENCES_STORAGE_KEY)).toBe("{}");
+    });
+
+    it("sends an operator choice made after the migration PATCH only once it lands", async () => {
+      // The migration's PATCH is already in flight, so the generation guard is
+      // behind us: only ordering can keep the operator's choice last. Released
+      // concurrently, the adopted legacy value landed after it and became the
+      // conversation's final state.
+      seedTwoAgentsOneThread();
+      seedLocalOverride("alpha", "alpha-thread");
+      let releaseMigrationPatch: (() => void) | undefined;
+      const migrationPatch = new Promise<void>((resolve) => { releaseMigrationPatch = resolve; });
+      vi.mocked(api.patchThread).mockImplementation(async (_threadId, patch) => {
+        if ("ifRunConfigUnset" in patch) {
+          await migrationPatch;
+          return { ...alphaThread, runModel: "anthropic:opus-5", runEffort: "high" };
+        }
+        return {
+          ...alphaThread,
+          runModel: null,
+          runEffort: "effort" in patch ? patch.effort ?? null : null,
+        };
+      });
+
+      const store = await renderStore();
+      await waitFor(() => expect(api.patchThread).toHaveBeenCalledTimes(1));
+
+      act(() => { store.current.setEffort("low"); });
+      await settle();
+      // Still queued: issuing it now would let the adoption land last.
+      expect(api.patchThread).toHaveBeenCalledTimes(1);
+
+      releaseMigrationPatch?.();
+      await waitFor(() => expect(api.patchThread).toHaveBeenCalledTimes(2));
+      await settle();
+      expect(vi.mocked(api.patchThread).mock.calls[1]?.[1]).toEqual({ effort: "low" });
+      expect(store.current.selectedThread?.runEffort).toBe("low");
+      expect(store.current.selectedThread?.runModel).toBeNull();
+    });
+
+    it("adopts the override another tab wrote instead of overwriting it", async () => {
+      // The fresh read is still a projection: another tab can write between it
+      // and the PATCH. The write is therefore conditional, and the server
+      // hands back whatever it kept -- which is what this tab must show.
+      seedTwoAgentsOneThread();
+      seedLocalOverride("alpha", "alpha-thread");
+      vi.mocked(api.patchThread).mockResolvedValue({
+        ...alphaThread,
+        runModel: "anthropic:sonnet-5",
+        runEffort: "low",
+      });
+
+      const store = await renderStore();
+
+      await waitFor(() => expect(api.patchThread).toHaveBeenCalledWith(
+        "alpha-thread",
+        { model: "anthropic:opus-5", effort: "high", ifRunConfigUnset: true },
+        expect.any(AbortSignal),
+      ));
+      await waitFor(() => expect(store.current.selectedThread?.runModel).toBe("anthropic:sonnet-5"));
+      expect(store.current.selectedThread?.runEffort).toBe("low");
+      expect(localStorage.getItem(RUN_PREFERENCES_STORAGE_KEY)).toBe("{}");
+    });
+
+    it("does not resurrect a deleted conversation with a late migration response", async () => {
+      seedTwoAgentsOneThread();
+      seedLocalOverride("alpha", "alpha-thread");
+      let releaseFreshRead: (() => void) | undefined;
+      const freshRead = new Promise<void>((resolve) => { releaseFreshRead = resolve; });
+      let threadReads = 0;
+      vi.mocked(api.thread).mockImplementation(async () => {
+        threadReads += 1;
+        if (threadReads > 1) await freshRead;
+        return detail(alphaThread, "hello");
+      });
+      vi.mocked(api.deleteThread).mockResolvedValue(undefined);
+      vi.mocked(api.patchThread).mockResolvedValue({
+        ...alphaThread,
+        runModel: "anthropic:opus-5",
+        runEffort: "high",
+      });
+
+      const store = await renderStore();
+      await waitFor(() => expect(threadReads).toBeGreaterThan(1));
+
+      await act(async () => { await store.current.deleteThread("alpha-thread"); });
+      expect(store.current.threads.map((item) => item.id)).toEqual([]);
+
+      releaseFreshRead?.();
+      await settle();
+      // The adoption answered for a conversation the server no longer has, and
+      // `mergeThreads` would have put it back in the sidebar.
+      expect(store.current.threads.map((item) => item.id)).toEqual([]);
+      // It must not have written to it either.
+      expect(api.patchThread).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("thread override writes", () => {
+    const alphaThread = thread("alpha-thread", "alpha");
+
+    const seedOneThread = () => {
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alphaThread],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alphaThread] });
+      vi.mocked(api.thread).mockResolvedValue(detail(alphaThread, "hello"));
+    };
+
+    it("serializes rapid operator choices so the newest one lands last", async () => {
+      // Two choices released together raced: by delaying the first PATCH, the
+      // newer selection landed first and the older landed last, becoming the
+      // conversation's final server and UI state.
+      seedOneThread();
+      let releaseFirst: (() => void) | undefined;
+      const first = new Promise<void>((resolve) => { releaseFirst = resolve; });
+      let patches = 0;
+      vi.mocked(api.patchThread).mockImplementation(async (_threadId, patch) => {
+        patches += 1;
+        if (patches === 1) await first;
+        return {
+          ...alphaThread,
+          runModel: null,
+          runEffort: "effort" in patch ? patch.effort ?? null : null,
+        };
+      });
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      act(() => { store.current.setEffort("low"); });
+      act(() => { store.current.setEffort("high"); });
+      await new Promise((resolve) => { setTimeout(resolve, 0); });
+      // The second choice must not be in flight while the first is unresolved.
+      expect(api.patchThread).toHaveBeenCalledTimes(1);
+
+      releaseFirst?.();
+      await waitFor(() => expect(api.patchThread).toHaveBeenCalledTimes(2));
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+      expect(vi.mocked(api.patchThread).mock.calls.map((call) => call[1])).toEqual([
+        { effort: "low" },
+        { effort: "high" },
+      ]);
+      expect(store.current.selectedThread?.runEffort).toBe("high");
+    });
+
+    it("lets the next write through after one fails, instead of wedging the queue", async () => {
+      // Writes to one conversation are serialized, so a failed one must hand
+      // the queue on rather than keep it: every later write to that
+      // conversation would be dropped, silently, behind an optimistic UI.
+      seedOneThread();
+      vi.mocked(api.patchThread)
+        .mockRejectedValueOnce(new Error("write failed"))
+        .mockResolvedValue({ ...alphaThread, runModel: null, runEffort: "high" });
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      act(() => { store.current.setEffort("low"); });
+      await waitFor(() => expect(store.current.actionError).toBe("write failed"));
+
+      act(() => { store.current.setEffort("high"); });
+      await waitFor(() => expect(api.patchThread).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(store.current.selectedThread?.runEffort).toBe("high"));
+    });
+
+    it("does not resurrect a conversation deleted while its write was in flight", async () => {
+      // Any response can outlive the conversation it describes -- the write's
+      // own result, or the rollback of a failed one. `mergeThreads` re-adds
+      // whatever it is handed, so the sidebar showed a conversation the server
+      // had already destroyed until the next refresh.
+      seedOneThread();
+      let releasePatch: (() => void) | undefined;
+      const held = new Promise<void>((resolve) => { releasePatch = resolve; });
+      vi.mocked(api.patchThread).mockImplementation(async () => {
+        await held;
+        return { ...alphaThread, runModel: null, runEffort: "low" };
+      });
+      vi.mocked(api.deleteThread).mockResolvedValue(undefined);
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      act(() => { store.current.setEffort("low"); });
+      await waitFor(() => expect(api.patchThread).toHaveBeenCalledTimes(1));
+      await act(async () => { await store.current.deleteThread("alpha-thread"); });
+      expect(store.current.threads.map((item) => item.id)).toEqual([]);
+
+      releasePatch?.();
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+      expect(store.current.threads.map((item) => item.id)).toEqual([]);
     });
   });
 });

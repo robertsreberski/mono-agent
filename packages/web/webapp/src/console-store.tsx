@@ -265,6 +265,47 @@ export const resolveBootstrapSelection = (
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : "The web console request failed.";
 
+/**
+ * How long any one thread write may take before it is abandoned. Writes to one
+ * conversation are serialized (see `enqueueThreadWrite`), so an unbounded one
+ * does not merely hang itself: it wedges every later write to that thread, and
+ * the optimistic UI keeps showing a selection that never reached the server.
+ */
+export const THREAD_WRITE_TIMEOUT_MS = 15_000;
+
+/**
+ * Run one request under a deadline. The signal is what a healthy `fetch`
+ * needs, and the race is what makes the deadline hold anyway: a transport that
+ * ignores abort (a proxy holding the socket, a service worker that never
+ * answers) would otherwise leave the returned promise pending forever, and the
+ * whole point here is that the caller always settles.
+ */
+export const boundedRequest = async <T,>(
+  run: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number = THREAD_WRITE_TIMEOUT_MS,
+): Promise<T> => {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const attempt = run(controller.signal);
+  // The race may settle on the deadline first; keep the loser handled so a
+  // late rejection is not reported as unhandled.
+  attempt.catch(() => undefined);
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error("The web console request timed out."));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([attempt, deadline]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
+
+/** Deleted conversations remembered long enough to reject a late response. */
+const REMOVED_THREAD_MEMORY = 256;
+
 export const validateRunPreference = (
   agent: AgentSummary | null,
   preference: StoredRunPreference,
@@ -345,15 +386,24 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const [catalogByProvider, setCatalogByProvider] = useState<Record<string, ProviderCatalogState>>({});
   const catalogInFlightRef = useRef<Set<string>>(new Set());
   const migratedKeysRef = useRef<Set<string>>(new Set());
-  // Bumped by every operator-initiated override write. The legacy-preference
-  // migration reads the thread and then patches it; a selection made inside
-  // that window is newer than the browser-local value being adopted, so the
-  // migration abandons rather than restoring the stale value over it.
-  const overrideWriteRef = useRef(0);
-  // The migration PATCH still in flight per thread. An operator write that
-  // starts after it was sent waits for it, so the operator's choice is the
-  // last one the server sees instead of racing the adoption.
-  const migrationInFlightRef = useRef<Map<string, Promise<void>>>(new Map());
+  // Bumped by every operator-initiated override write, PER THREAD. The
+  // legacy-preference migration reads the thread and then patches it; a
+  // selection made inside that window is newer than the browser-local value
+  // being adopted, so the migration abandons rather than restoring the stale
+  // value over it. One shared counter read any write anywhere as a write to
+  // the migrating thread: changing thread B made A's migration drop A's
+  // preference and send no PATCH, deleting it while A's server override stayed
+  // null. The generation therefore has to be per conversation.
+  const overrideWriteRef = useRef<Map<string, number>>(new Map());
+  // The tail of each thread's serialized write chain. Every write to one
+  // conversation -- the one-time migration and each operator choice alike --
+  // queues behind the previous one, so the server sees them in the order the
+  // operator made them. Two writes released concurrently landed out of order,
+  // making the OLDER selection final.
+  const threadWriteChainRef = useRef<Map<string, Promise<unknown>>>(new Map());
+  // Conversations deleted in this session. A response already in flight when
+  // one was deleted must not put it back into the projection.
+  const removedThreadsRef = useRef<Set<string>>(new Set());
   const selectedThreadRef = useRef<string | null>(null);
   const selectedAgentRef = useRef<string | null>(selectedAgentId);
   const skillRequestGenerationRef = useRef(0);
@@ -1033,6 +1083,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     try {
       const thread = await fetchThreadSummary(threadId);
       await api.deleteThread(thread.id);
+      // Bounded: only conversations deleted in this session, oldest evicted.
+      // Enough to outlast any request that was in flight when they went.
+      const removed = removedThreadsRef.current;
+      removed.add(thread.id);
+      if (removed.size > REMOVED_THREAD_MEMORY) {
+        const oldest = removed.values().next().value;
+        if (oldest !== undefined) removed.delete(oldest);
+      }
+      // Nothing can write to it again, so its write generation is dead weight.
+      overrideWriteRef.current.delete(thread.id);
       const preferenceKey = preferenceKeyForThread(thread.sourceId, thread.id);
       setModelByContext((current) => {
         const next = { ...current };
@@ -1065,12 +1125,44 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [fetchThreadSummary, visibleThreads]);
 
   const applyThreadUpdate = useCallback((nextThread: ThreadSummary) => {
+    // A response can outlive the conversation it describes: the migration's
+    // read, an optimistic rollback, any write already in flight when the
+    // operator deleted the thread. `mergeThreads` would re-add it, so the
+    // sidebar showed a conversation the server had already destroyed.
+    if (removedThreadsRef.current.has(nextThread.id)) return;
     setBootstrap((current) =>
       current ? { ...current, threads: mergeThreads(current.threads, [nextThread]) } : current,
     );
     setDetail((current) =>
       current?.thread.id === nextThread.id ? { ...current, thread: nextThread } : current,
     );
+  }, []);
+
+  /**
+   * Serialize every write to one conversation. Ordering is the contract: two
+   * operator choices released together landed in transport order, so the older
+   * one could overwrite the newer, and the one-time migration could land after
+   * a selection the operator had already made.
+   *
+   * The tail kept is the SETTLED-either-way link, never the caller's promise:
+   * a failed write must hand the queue on rather than strand every write
+   * behind it. The entry is dropped once it is the tail again, so the map
+   * holds only conversations with work in flight.
+   */
+  const enqueueThreadWrite = useCallback(<T,>(
+    threadId: string,
+    run: () => Promise<T>,
+  ): Promise<T> => {
+    const previous = threadWriteChainRef.current.get(threadId) ?? Promise.resolve();
+    const next = previous.then(run);
+    const link: Promise<unknown> = next.catch(() => undefined);
+    threadWriteChainRef.current.set(threadId, link);
+    void link.then(() => {
+      if (threadWriteChainRef.current.get(threadId) === link) {
+        threadWriteChainRef.current.delete(threadId);
+      }
+    });
+    return next;
   }, []);
 
   const ensureProviderCatalog = useCallback(async (provider: string) => {
@@ -1234,7 +1326,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     };
     if (local.model === "" && local.effort === "") return;
     const threadId = selectedThread.id;
-    const writeGeneration = overrideWriteRef.current;
+    const writeGeneration = overrideWriteRef.current.get(threadId) ?? 0;
     migratedKeysRef.current.add(preferenceKey);
     const dropLocal = () => {
       setModelByContext((current) => {
@@ -1248,9 +1340,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         return nextMap;
       });
     };
-    const migration = (async () => {
+    // Queued like any other write to this conversation, so an operator choice
+    // made while it runs is sent after it rather than racing it. The body
+    // reports its own failures, so nothing here can reject.
+    void enqueueThreadWrite(threadId, async () => {
       try {
-        const fresh = await api.thread(threadId);
+        const fresh = await boundedRequest((signal) => api.thread(threadId, signal));
+        if (removedThreadsRef.current.has(threadId)) {
+          dropLocal();
+          return;
+        }
         if (
           (fresh.thread.runModel ?? null) !== null
           || (fresh.thread.runEffort ?? null) !== null
@@ -1261,17 +1360,21 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           dropLocal();
           return;
         }
-        if (overrideWriteRef.current !== writeGeneration) {
-          // The operator picked a model or effort during the read. That write
-          // is already on its way to the server; adopting the browser-local
-          // value now would land last and restore what they just replaced.
+        if ((overrideWriteRef.current.get(threadId) ?? 0) !== writeGeneration) {
+          // The operator picked a model or effort for THIS conversation during
+          // the read. That write is already queued behind this one; adopting
+          // the browser-local value now would restore what they just replaced.
           dropLocal();
           return;
         }
-        const next = await api.patchThread(threadId, {
+        // Conditional: the read above is a projection, and only the server can
+        // rule on it. Another tab may have written between the two calls, and
+        // an unconditional PATCH makes this tab's stale local value final.
+        const next = await boundedRequest((signal) => api.patchThread(threadId, {
           model: local.model || null,
           effort: local.effort || null,
-        });
+          ifRunConfigUnset: true,
+        }, signal));
         applyThreadUpdate(next);
         dropLocal();
         setActionError(null);
@@ -1279,16 +1382,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         migratedKeysRef.current.delete(preferenceKey);
         setActionError(errorMessage(migrationError));
       }
-    })();
-    migrationInFlightRef.current.set(threadId, migration);
-    void migration.finally(() => {
-      if (migrationInFlightRef.current.get(threadId) === migration) {
-        migrationInFlightRef.current.delete(threadId);
-      }
-    });
+    }).catch(() => undefined);
   }, [
     applyThreadUpdate,
     effortByContext,
+    enqueueThreadWrite,
     modelByContext,
     preferenceKey,
     selectedAgentId,
@@ -1301,26 +1399,29 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   ) => {
     const thread = selectedThread;
     if (!thread) return;
-    // Tell any in-flight legacy-preference migration that the operator has
-    // spoken since it read the thread, then let it finish before writing: the
-    // operator's value has to be the last one the server sees.
-    overrideWriteRef.current += 1;
+    // Tell this conversation's in-flight legacy-preference migration that the
+    // operator has spoken since it read the thread.
+    const generations = overrideWriteRef.current;
+    generations.set(thread.id, (generations.get(thread.id) ?? 0) + 1);
     const previous = { model: thread.runModel ?? null, effort: thread.runEffort ?? null };
+    // Optimistic straight away; the write itself queues behind whatever else
+    // is already writing to this conversation, so the server sees the
+    // operator's choices in the order they were made.
+    applyThreadUpdate({
+      ...thread,
+      runModel: "model" in patch ? patch.model ?? null : previous.model,
+      runEffort: "effort" in patch ? patch.effort ?? null : previous.effort,
+    });
     try {
-      applyThreadUpdate({
-        ...thread,
-        runModel: "model" in patch ? patch.model ?? null : previous.model,
-        runEffort: "effort" in patch ? patch.effort ?? null : previous.effort,
-      });
-      await migrationInFlightRef.current.get(thread.id)?.catch(() => undefined);
-      const next = await api.patchThread(thread.id, patch);
+      const next = await enqueueThreadWrite(thread.id, () =>
+        boundedRequest((signal) => api.patchThread(thread.id, patch, signal)));
       applyThreadUpdate(next);
       setActionError(null);
     } catch (patchError) {
       applyThreadUpdate(thread);
       setActionError(errorMessage(patchError));
     }
-  }, [applyThreadUpdate, selectedThread]);
+  }, [applyThreadUpdate, enqueueThreadWrite, selectedThread]);
 
   const setModel = useCallback(
     (next: string) => {
