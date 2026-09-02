@@ -1,11 +1,51 @@
-import { mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
+import {
+  chmod,
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { migrateConfigSource } from "../cli-migrate-config-command.js";
+import { migrateConfigSource, migrateTriggerMarkdown } from "../cli-migrate-config-command.js";
 import { runCli } from "../cli.js";
+
+/**
+ * A FIFO of one-shot "something else happened right after this read" hooks,
+ * matched by path and AWAITED before the read resolves. Interposing here is the
+ * only deterministic way to place another writer inside the window between
+ * `migrate-config` reading a config and replacing it, and to hold two runs in
+ * lock-step across that window instead of hoping the scheduler interleaves
+ * them. Everything else about `node:fs/promises` passes straight through.
+ */
+const fsHooks = vi.hoisted(() => ({
+  queue: [] as { readonly path: string; readonly run: () => void | Promise<void> }[],
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const readFileWithHook = async (...args: Parameters<typeof actual.readFile>): Promise<unknown> => {
+    const contents = await (actual.readFile as (...a: unknown[]) => Promise<unknown>)(...args);
+    const index = fsHooks.queue.findIndex((hook) => hook.path === String(args[0]));
+    if (index !== -1) {
+      const [hook] = fsHooks.queue.splice(index, 1);
+      await hook!.run();
+    }
+    return contents;
+  };
+  return { ...actual, readFile: readFileWithHook, default: { ...actual, readFile: readFileWithHook } };
+});
 
 describe("migrateConfigSource", () => {
   it("deletes runtime.executionMode and memory.llm.executionMode", () => {
@@ -75,7 +115,7 @@ describe("migrateConfigSource", () => {
   },
   "memory": {
     "mode": "lite",
-    "llm": { "model": "pi:openai:gpt-4.1-mini" }
+    "llm": { "provider": "agent-host", "model": "pi:openai:gpt-4.1-mini" }
   }
 }
 `);
@@ -96,7 +136,7 @@ describe("migrateConfigSource", () => {
   },
   "memory": {
     "mode": "lite",
-    "llm": { "model": "pi:openai:gpt-4.1-mini", "executionMode": "sdk" }
+    "llm": { "provider": "agent-host", "model": "pi:openai:gpt-4.1-mini", "executionMode": "sdk" }
   }
 }
 `);
@@ -209,6 +249,37 @@ describe("migrateConfigSource", () => {
     expect(result.output).toBe(source);
   });
 
+  it("leaves memory.llm.model alone unless the provider makes it a runtime reference", () => {
+    // `readMemoryLlmConfig` parses this field as a mono runtime reference only
+    // under `agent-host`. The default `ollama` provider hands the string to the
+    // Ollama service, where a colon is a tag separator -- so `pi:qwen3` is a
+    // real local model name and stripping the prefix breaks memory silently.
+    for (const llm of ['{ "model": "pi:qwen3" }', '{ "provider": "ollama", "model": "pi:qwen3" }']) {
+      const source = `{\n  "runtime": { "model": "openai-codex:gpt-5.6-sol" },\n  "memory": { "llm": ${llm} }\n}\n`;
+      const result = migrateConfigSource(source);
+      expect(result.changed).toBe(false);
+      expect(result.manualMigrations).toEqual([]);
+      expect(result.output).toBe(source);
+    }
+
+    const hosted = migrateConfigSource(
+      `{\n  "memory": { "llm": { "provider": "agent-host", "model": "pi:openai:gpt-4.1-mini" } }\n}\n`,
+    );
+    expect(hosted.changed).toBe(true);
+    expect(hosted.output).toContain('"model": "openai:gpt-4.1-mini"');
+  });
+
+  it("still deletes retired memory.llm keys under the ollama provider", () => {
+    // Only the model REFERENCE is provider-specific; a retired key is retired
+    // either way and would make the loader throw at restart.
+    const result = migrateConfigSource(
+      `{\n  "memory": { "llm": { "model": "pi:qwen3", "executionMode": "sdk" } }\n}\n`,
+    );
+    expect(result.changed).toBe(true);
+    expect(result.output).not.toContain("executionMode");
+    expect(result.output).toContain('"model": "pi:qwen3"');
+  });
+
   it("leaves configVersion 1 prototypes byte-identical", () => {
     const source = `{
   "configVersion": 1,
@@ -294,6 +365,7 @@ describe("migrateConfigSource", () => {
   "memory": {
     "mode": "bujo",
     "llm": {
+      "provider": "agent-host",
       "model": "pi:openai-codex:gpt-5.6-luna",
       "executionMode": "sdk",
       "trace": "won\\u2019t unescape, nor \\u2014 this",
@@ -323,6 +395,7 @@ describe("migrateConfigSource", () => {
   "memory": {
     "mode": "bujo",
     "llm": {
+      "provider": "agent-host",
       "model": "openai-codex:gpt-5.6-luna",
       "trace": "won\\u2019t unescape, nor \\u2014 this",
       "note": "raw ’ stays raw —"
@@ -356,6 +429,56 @@ describe("migrateConfigSource", () => {
   });
 });
 
+describe("migrateTriggerMarkdown", () => {
+  it("rewrites the frontmatter model and leaves every other byte identical", () => {
+    const source = "---\nexpression: 0 7 * * *\nmodel: pi:openai:gpt-4.1-mini\neffort: high\n---\n\n# Digest\n\nmodel: pi:not-frontmatter\n";
+    const result = migrateTriggerMarkdown(source, "cron/digest.md");
+    expect(result.changed).toBe(true);
+    expect(result.output).toBe(
+      "---\nexpression: 0 7 * * *\nmodel: openai:gpt-4.1-mini\neffort: high\n---\n\n# Digest\n\nmodel: pi:not-frontmatter\n",
+    );
+    expect(result.changes).toEqual([{
+      kind: "rewrite",
+      pointer: "cron/digest.md#model",
+      before: '"pi:openai:gpt-4.1-mini"',
+      after: '"openai:gpt-4.1-mini"',
+    }]);
+  });
+
+  it("keeps the authored quoting style", () => {
+    const result = migrateTriggerMarkdown('---\npath: /t\nmodel: "pi:openai:gpt-4.1"\n---\n\nGo.\n', "webhook/t.md");
+    expect(result.output).toBe('---\npath: /t\nmodel: "openai:gpt-4.1"\n---\n\nGo.\n');
+  });
+
+  it("refuses to guess a removed backend and reports it for a human", () => {
+    const result = migrateTriggerMarkdown("---\nexpression: @daily\nmodel: codex:gpt-5.6-terra\n---\n\nGo.\n", "cron/j.md");
+    expect(result.changed).toBe(false);
+    expect(result.manualMigrations).toEqual([{ pointer: "cron/j.md#model", value: "codex:gpt-5.6-terra" }]);
+  });
+
+  it("edits the last model line, which is the one the loader's flat map keeps", () => {
+    const result = migrateTriggerMarkdown(
+      "---\nmodel: openai:a\n# model: pi:commented-out\nmodel: pi:openai:b\n---\n\nGo.\n",
+      "cron/j.md",
+    );
+    expect(result.output).toBe("---\nmodel: openai:a\n# model: pi:commented-out\nmodel: openai:b\n---\n\nGo.\n");
+  });
+
+  it("ignores a file with no frontmatter, and a frontmatter with no model", () => {
+    for (const source of ["Just a prompt with model: pi:x in it.\n", "---\nexpression: @daily\n---\n\nGo.\n"]) {
+      const result = migrateTriggerMarkdown(source, "cron/j.md");
+      expect(result.changed).toBe(false);
+      expect(result.manualMigrations).toEqual([]);
+      expect(result.output).toBe(source);
+    }
+  });
+
+  it("preserves CRLF line endings byte for byte", () => {
+    const result = migrateTriggerMarkdown("---\r\nexpression: @daily\r\nmodel: pi:openai:a\r\n---\r\n\r\nGo.\r\n", "cron/j.md");
+    expect(result.output).toBe("---\r\nexpression: @daily\r\nmodel: openai:a\r\n---\r\n\r\nGo.\r\n");
+  });
+});
+
 describe("runCli migrate-config", () => {
   let dir: string;
   let previousCwd: string;
@@ -366,6 +489,7 @@ describe("runCli migrate-config", () => {
   });
 
   afterEach(async () => {
+    fsHooks.queue.length = 0;
     process.chdir(previousCwd);
     await rm(dir, { recursive: true, force: true });
   });
@@ -386,6 +510,52 @@ describe("runCli migrate-config", () => {
       const code = await runCli(argv);
       return { code, stdout: stdout.join(""), stderr: stderr.join("") };
     } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+  }
+
+  interface WriteOutcome { readonly code: number; readonly error?: string }
+
+  /**
+   * Two `--write` runs guaranteed to be in flight at once: the second is
+   * launched from inside the first's config read, so it cannot observe the
+   * first's replacement and both compute their migration from the same bytes.
+   * Output is silenced ONCE around the pair, because nesting `captureRunCli`'s
+   * spies would restore them out of order. A rejection is folded into the
+   * outcome so an assertion can name it instead of failing on an unhandled
+   * error.
+   */
+  async function racedWrites(configPath: string): Promise<readonly WriteOutcome[]> {
+    const silence = (() => true) as typeof process.stdout.write;
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(silence);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(silence);
+    const attempt = async (): Promise<WriteOutcome> => {
+      try {
+        return { code: await runCli(["migrate-config", "--write"]) };
+      } catch (error) {
+        return { code: -1, error: error instanceof Error ? error.message : String(error) };
+      }
+    };
+    // Freeze the clock so the two runs provably share a millisecond -- the
+    // exact precondition the old path/pid/millisecond temp name needed to
+    // collide. Nothing in `migrate-config` reads the clock for anything else.
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    try {
+      let second: Promise<WriteOutcome> | undefined;
+      let secondHasRead = (): void => {};
+      const secondRead = new Promise<void>((resolve) => { secondHasRead = resolve; });
+      fsHooks.queue.push(
+        // Fired by the first run's read: start the second run and hold the
+        // first inside its own read until the second has read the same bytes.
+        { path: configPath, run: async () => { second = attempt(); await secondRead; } },
+        { path: configPath, run: () => { secondHasRead(); } },
+      );
+      const first = await attempt();
+      return [first, await second!];
+    } finally {
+      fsHooks.queue.length = 0;
+      nowSpy.mockRestore();
       stdoutSpy.mockRestore();
       stderrSpy.mockRestore();
     }
@@ -474,23 +644,166 @@ describe("runCli migrate-config", () => {
     expect(result.stdout).toContain("codex:gpt-5.6-terra");
   });
 
-  it("--write replaces the config atomically, keeping its mode and leaving no temp file", async () => {
+  it("--write replaces the config by rename, so no reader ever sees a truncated file", async () => {
     const configPath = join(dir, "mono-agent.config.json");
-    await writeFile(configPath, dirtyConfig, { encoding: "utf8", mode: 0o600 });
+    await writeFile(configPath, dirtyConfig, "utf8");
+    await chmod(configPath, 0o600);
+    // A second name for the SAME inode. `writeFile` mutates the inode in
+    // place, so it would truncate and rewrite this witness too; a rename
+    // swaps in a new inode and leaves the witness on the original bytes.
+    // Checking only the final content and the absence of debris (as this test
+    // once did) passes with the atomic writer removed entirely.
+    const witness = join(dir, "witness.json");
+    await link(configPath, witness);
+    const before = await stat(configPath);
     process.chdir(dir);
 
     const result = await captureRunCli(["migrate-config", "--write"]);
     expect(result.code).toBe(0);
 
-    // A plain writeFile truncates first: a crash mid-write leaves the LIVE
-    // config empty. The replacement must land as one rename, with no debris.
+    const after = await stat(configPath);
+    expect(after.ino).not.toBe(before.ino);
+    expect(await readFile(witness, "utf8")).toBe(dirtyConfig);
     expect(await readFile(configPath, "utf8")).not.toContain("executionMode");
-    expect((await stat(configPath)).mode & 0o777).toBe(0o600);
+    expect(after.mode & 0o777).toBe(0o600);
     expect((await readdir(dir)).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
     expect((await readdir(dir)).sort()).toEqual([
       "mono-agent.config.json",
       "mono-agent.config.json.bak",
+      "witness.json",
     ]);
+  });
+
+  it.each([0o600, 0o640])("gives the backup the config's own mode (%i), not the umask default", async (mode) => {
+    // `writeFileAtomic` used to stat the BACKUP pathname, which does not exist
+    // on a first run, so the `.bak` — a byte-exact copy of a private config —
+    // was created with whatever the umask allowed.
+    const home = join(dir, `mode-${mode.toString(8)}`);
+    await mkdir(home);
+    const configPath = join(home, "mono-agent.config.json");
+    await writeFile(configPath, dirtyConfig, "utf8");
+    await chmod(configPath, mode);
+    process.chdir(home);
+
+    const result = await captureRunCli(["migrate-config", "--write"]);
+    expect(result.code).toBe(0);
+    expect((await stat(configPath)).mode & 0o777).toBe(mode);
+    expect((await stat(`${configPath}.bak`)).mode & 0o777).toBe(mode);
+  });
+
+  it("writes THROUGH a symlinked config instead of replacing the link", async () => {
+    // Renaming over the link's own dirent turns a shared config into a private
+    // regular file and leaves the shared original unmigrated. The `writeFile`
+    // this replaced followed the link, and so must the atomic replacement.
+    const shared = join(dir, "shared.config.json");
+    const configPath = join(dir, "mono-agent.config.json");
+    await writeFile(shared, dirtyConfig, "utf8");
+    await symlink(shared, configPath);
+    process.chdir(dir);
+
+    const result = await captureRunCli(["migrate-config", "--write"]);
+    expect(result.code).toBe(0);
+    expect((await lstat(configPath)).isSymbolicLink()).toBe(true);
+    expect(await readFile(shared, "utf8")).not.toContain("executionMode");
+    expect(await readFile(configPath, "utf8")).not.toContain("executionMode");
+    expect(await readFile(`${configPath}.bak`, "utf8")).toBe(dirtyConfig);
+  });
+
+  it("refuses to overwrite a config another writer changed after it was read", async () => {
+    const configPath = join(dir, "mono-agent.config.json");
+    await writeFile(configPath, dirtyConfig, "utf8");
+    process.chdir(dir);
+
+    const concurrent = `{
+  "runtime": {
+    "model": "openai-codex:gpt-5.6-sol",
+    "note": "written by someone else"
+  }
+}
+`;
+    fsHooks.queue.push({ path: configPath, run: () => writeFileSync(configPath, concurrent, "utf8") });
+
+    const result = await captureRunCli(["migrate-config", "--write"]);
+    expect(result.code).toBe(1);
+    expect(`${result.stdout}${result.stderr}`).toContain("changed on disk");
+    // The other writer's bytes survive, and nothing was backed up over.
+    expect(await readFile(configPath, "utf8")).toBe(concurrent);
+    expect(await readdir(dir)).toEqual(["mono-agent.config.json"]);
+  });
+
+  it("lets concurrent --write runs share a directory without destroying each other's staged file", async () => {
+    // The temp name used to be path + pid + millisecond, so two callers in the
+    // same tick picked the SAME name; the loser of `open(...,"wx")` then
+    // deleted the winner's staged file and BOTH runs failed -- with the config
+    // left unmigrated. At least one run must succeed and the config must end up
+    // migrated. (Both succeeding is legitimate: they computed identical output
+    // from identical bytes, so the second rename is a no-op replacement.)
+    for (let pair = 0; pair < 3; pair += 1) {
+      const home = join(dir, `pair-${pair}`);
+      await mkdir(home);
+      const configPath = join(home, "mono-agent.config.json");
+      await writeFile(configPath, dirtyConfig, "utf8");
+      process.chdir(home);
+
+      const outcomes = await racedWrites(configPath);
+      expect(outcomes.filter((outcome) => outcome.error !== undefined)).toEqual([]);
+      expect(outcomes.map((outcome) => outcome.code)).toContain(0);
+      expect(await readFile(configPath, "utf8")).not.toContain("executionMode");
+      expect(await readFile(`${configPath}.bak`, "utf8")).toBe(dirtyConfig);
+      expect((await readdir(home)).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
+    }
+  });
+
+  it("migrates cron and webhook markdown overrides the JSON document never mentions", async () => {
+    const configPath = join(dir, "mono-agent.config.json");
+    await writeFile(configPath, `{\n  "runtime": { "model": "openai-codex:gpt-5.6-sol" }\n}\n`, "utf8");
+    await mkdir(join(dir, "cron"));
+    const jobPath = join(dir, "cron", "digest.md");
+    const job = "---\nexpression: 0 7 * * *\nmodel: pi:openai:gpt-4.1-mini\neffort: high\n---\n\nSummarise the day.\n";
+    await writeFile(jobPath, job, "utf8");
+    await mkdir(join(dir, "webhook"));
+    const endpointPath = join(dir, "webhook", "triage.md");
+    await writeFile(endpointPath, "---\npath: /t\nmodel: acp:claude\n---\n\nTriage it.\n", "utf8");
+    process.chdir(dir);
+
+    // The JSON alone is clean, so a config-only codemod exited 0 here while the
+    // adapters still loaded both overrides straight off these files.
+    const checked = await captureRunCli(["migrate-config", "--check", "--json"]);
+    expect(checked.code).toBe(1);
+    const payload = JSON.parse(checked.stdout) as {
+      readonly changed: boolean;
+      readonly changes: readonly { readonly pointer: string }[];
+      readonly manualMigrations: readonly { readonly pointer: string; readonly value: string }[];
+    };
+    expect(payload.changed).toBe(true);
+    expect(payload.changes.map((change) => change.pointer)).toEqual(["cron/digest.md#model"]);
+    expect(payload.manualMigrations).toEqual([{ pointer: "webhook/triage.md#model", value: "acp:claude" }]);
+
+    const written = await captureRunCli(["migrate-config", "--write"]);
+    expect(written.code).toBe(1); // the acp: ref still needs a human
+    expect(await readFile(jobPath, "utf8")).toBe(
+      "---\nexpression: 0 7 * * *\nmodel: openai:gpt-4.1-mini\neffort: high\n---\n\nSummarise the day.\n",
+    );
+    expect(await readFile(`${jobPath}.bak`, "utf8")).toBe(job);
+    // Refused, not guessed: the endpoint file is untouched and unbacked-up.
+    expect(await readFile(endpointPath, "utf8")).toContain("model: acp:claude");
+    expect((await readdir(join(dir, "webhook"))).sort()).toEqual(["triage.md"]);
+  });
+
+  it("honours a renamed cron.dir when hunting trigger markdown", async () => {
+    const configPath = join(dir, "mono-agent.config.json");
+    await writeFile(configPath, `{\n  "cron": { "dir": "schedules" }\n}\n`, "utf8");
+    await mkdir(join(dir, "schedules"));
+    await writeFile(
+      join(dir, "schedules", "nightly.md"),
+      "---\nexpression: 0 3 * * *\nmodel: pi:anthropic:claude-opus-5\n---\n\nRun.\n",
+      "utf8",
+    );
+    process.chdir(dir);
+
+    const result = await captureRunCli(["migrate-config", "--check"]);
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain("schedules/nightly.md#model");
   });
 
   it("skips configVersion 1 prototypes and leaves them byte-identical", async () => {
@@ -533,7 +846,7 @@ describe("runCli migrate-config", () => {
   },
   "meta": {"owner": "robert"},
   "tags": ["a8c", "read-only"],
-  "memory": { "llm": { "model": "pi:openai-codex:gpt-5.6-luna", "executionMode": "sdk" } },
+  "memory": { "llm": { "provider": "agent-host", "model": "pi:openai-codex:gpt-5.6-luna", "executionMode": "sdk" } },
   "desc": "won\\u2019t unescape —"
 }
 `;
@@ -543,7 +856,7 @@ describe("runCli migrate-config", () => {
   },
   "meta": {"owner": "robert"},
   "tags": ["a8c", "read-only"],
-  "memory": { "llm": { "model": "openai-codex:gpt-5.6-luna" } },
+  "memory": { "llm": { "provider": "agent-host", "model": "openai-codex:gpt-5.6-luna" } },
   "desc": "won\\u2019t unescape —"
 }
 `;
