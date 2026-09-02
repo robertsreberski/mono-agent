@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { access, readFile, readdir, stat } from "node:fs/promises";
+import { access, lstat, readFile, readdir, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,7 +47,7 @@ const retiredDemoRootCommands = [
   "deploy:final",
 ];
 const retiredDemoRootCommandPattern = new RegExp(
-  `(?<![A-Za-z0-9:._-])(?:${retiredDemoRootCommands.map(escapedPattern).join("|")})(?![A-Za-z0-9:_-]|\\.[A-Za-z0-9:_-])`,
+  `(?<![A-Za-z0-9:._-])(?:${retiredDemoRootCommands.map(escapedPattern).join("|")})(?![A-Za-z0-9:_/-]|\\.[A-Za-z0-9:_/-])`,
   "iu",
 );
 
@@ -466,12 +466,38 @@ async function scanRetiredDemoRepositorySurfaces(repoRoot) {
   ];
   for (const root of retiredRoots) {
     const absolutePath = join(repoRoot, root.relativePath);
-    if (!(await pathExists(absolutePath))) continue;
-    const entries = await readdir(absolutePath, { withFileTypes: true });
-    const prohibited = entries
-      .filter((entry) => !root.allowedEntries.has(entry.name) || !entry.isFile())
-      .map((entry) => entry.name)
-      .sort(compareCodeUnits);
+    let rootDetails;
+    try {
+      rootDetails = await lstat(absolutePath);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
+      issues.push(
+        `${absolutePath}: could not inspect retired repository demo root (${reasonOf(error)}).`,
+      );
+      continue;
+    }
+    if (rootDetails.isSymbolicLink() || !rootDetails.isDirectory()) {
+      issues.push(
+        `${absolutePath}: retired repository demo root must be a real directory when present.`,
+      );
+      continue;
+    }
+    const entries = await readdir(absolutePath);
+    const prohibited = [];
+    for (const entry of entries) {
+      if (!root.allowedEntries.has(entry)) {
+        prohibited.push(entry);
+        continue;
+      }
+      try {
+        const details = await lstat(join(absolutePath, entry));
+        if (details.isSymbolicLink() || !details.isFile()) prohibited.push(entry);
+      } catch {
+        // A disappearing or uninspectable exception path is not an allowed legacy secret file.
+        prohibited.push(entry);
+      }
+    }
+    prohibited.sort(compareCodeUnits);
     if (prohibited.length > 0) {
       issues.push(
         `${absolutePath}: contains retired repository demo surface(s): ${prohibited.join(", ")}.`,

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -110,6 +110,7 @@ describe("check-consumer-docs-consistency", () => {
       "See demos/final-agent.v2 and demos/searxng.snapshot.",
       "Run test:demo-extra or team-build:demo-tools.",
       "Run test:demo.extra or team-build:demo.tools.",
+      "Run test:demo/extra as a distinct namespaced task.",
       "",
     ].join("\n"));
     await writeRepoDoc(repoRoot, "package.json", JSON.stringify({
@@ -118,6 +119,8 @@ describe("check-consumer-docs-consistency", () => {
         "team-build:demo-tools": "pnpm run test:demo-extra",
         "test:demo.extra": "node fixture.js",
         "team-build:demo.tools": "pnpm run test:demo.extra",
+        "test:demo/extra": "node fixture.js",
+        test: "pnpm run test:demo/extra",
       },
     }));
 
@@ -157,6 +160,27 @@ describe("check-consumer-docs-consistency", () => {
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0]).toContain("demos/searxng");
     expect(result.issues[0]).toContain(".env");
+  });
+
+  it("rejects broken and directory symlinks at retired demo roots", async () => {
+    const repoRoot = await tempRepo();
+    const externalDirectory = join(repoRoot, "fixture-searxng");
+    await mkdir(join(repoRoot, "demos"), { recursive: true });
+    await mkdir(externalDirectory);
+    await writeFile(join(externalDirectory, ".env"), "SEARXNG_SECRET=fixture\n");
+    await symlink(
+      join(repoRoot, "missing-final-agent"),
+      join(repoRoot, "demos/final-agent"),
+      "dir",
+    );
+    await symlink(externalDirectory, join(repoRoot, "demos/searxng"), "dir");
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+
+    expect(result.issues).toHaveLength(2);
+    expect(result.issues.every((issue) => issue.includes("must be a real directory"))).toBe(true);
+    expect(result.issues.some((issue) => issue.includes("demos/final-agent"))).toBe(true);
+    expect(result.issues.some((issue) => issue.includes("demos/searxng"))).toBe(true);
   });
 
   it("orders recursive documentation by locale-independent UTF-16 code units", async () => {

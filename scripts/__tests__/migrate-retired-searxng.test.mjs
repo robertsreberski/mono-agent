@@ -622,53 +622,65 @@ describe("migrate-retired-searxng", () => {
       .toEqual([".env", "compose.yaml", "settings.yml"]);
   });
 
-  it("reports indeterminate when the canonical parent is swapped during staging removal", async () => {
-    const migration = await fixture();
-    const operatorParent = join(migration.root, "operator-parent");
-    const movedParent = join(migration.root, "moved-operator-parent");
-    await mkdir(operatorParent, { mode: 0o700 });
-    migration.destination = join(operatorParent, "operator");
-    const cleanupCause = new Error("injected parent swap during private staging cleanup");
-    cleanupCause.code = "EIO";
-    let racedStaging;
-    let migrationError;
+  it.each([
+    { removerOutcome: "returns", throwsAfterSwap: false },
+    { removerOutcome: "throws", throwsAfterSwap: true },
+  ])(
+    "reports indeterminate when the canonical parent is swapped and the remover $removerOutcome",
+    async ({ throwsAfterSwap }) => {
+      const migration = await fixture();
+      const operatorParent = join(migration.root, "operator-parent");
+      const movedParent = join(migration.root, "moved-operator-parent");
+      await mkdir(operatorParent, { mode: 0o700 });
+      migration.destination = join(operatorParent, "operator");
+      const cleanupCause = new Error("injected parent swap during private staging cleanup");
+      cleanupCause.code = "EIO";
+      let racedStaging;
+      let migrationError;
 
-    try {
-      migrateRetiredSearxng({
-        repoRoot: migration.repoRoot,
-        destination: migration.destination,
-        log: () => {},
-        beforeAtomicPublish: () => {
-          publishConcurrentBundle(migration);
-        },
-        removeStaging: (stagingPath) => {
-          racedStaging = stagingPath;
-          renameSync(operatorParent, movedParent);
-          mkdirSync(operatorParent, { mode: 0o700 });
-          throw cleanupCause;
-        },
+      try {
+        migrateRetiredSearxng({
+          repoRoot: migration.repoRoot,
+          destination: migration.destination,
+          log: () => {},
+          beforeAtomicPublish: () => {
+            publishConcurrentBundle(migration);
+          },
+          removeStaging: (stagingPath) => {
+            racedStaging = stagingPath;
+            renameSync(operatorParent, movedParent);
+            mkdirSync(operatorParent, { mode: 0o700 });
+            if (throwsAfterSwap) throw cleanupCause;
+          },
+        });
+      } catch (error) {
+        migrationError = error;
+      }
+
+      expect(migrationError).toMatchObject({
+        code: "SEARXNG_DESTINATION_REVALIDATION_FAILED",
+        published: false,
+        destinationState: "indeterminate",
+        stagingState: "indeterminate",
+        cleanupCause: expect.any(Error),
+        inspectionCause: expect.any(Error),
       });
-    } catch (error) {
-      migrationError = error;
-    }
-
-    expect(migrationError).toMatchObject({
-      code: "SEARXNG_DESTINATION_REVALIDATION_FAILED",
-      published: false,
-      destinationState: "indeterminate",
-      stagingState: "indeterminate",
-      cleanupCause,
-      inspectionCause: expect.any(Error),
-    });
-    expect(migrationError.message).toContain("post-error staging state is indeterminate");
-    expect(migrationError.message).toContain(
-      "Do not assume the path is absent, unchanged, or protected",
-    );
-    expect(existsSync(racedStaging)).toBe(false);
-    const movedStaging = join(movedParent, basename(racedStaging));
-    expect(await readFile(join(movedStaging, ".env"), "utf8"))
-      .toBe(`SEARXNG_SECRET=${VALID_SECRET}\n`);
-  });
+      if (throwsAfterSwap) {
+        expect(migrationError.cleanupCause).toBe(cleanupCause);
+      } else {
+        expect(migrationError.cleanupCause.message)
+          .toContain("cleanup outcome could not be verified safely");
+      }
+      expect(migrationError.message).toContain("post-error staging state is indeterminate");
+      expect(migrationError.message).toContain(
+        "Do not assume the path is absent, unchanged, or protected",
+      );
+      expect(existsSync(racedStaging)).toBe(false);
+      const movedStaging = join(movedParent, basename(racedStaging));
+      expect(await readFile(join(movedStaging, ".env"), "utf8"))
+        .toBe(`SEARXNG_SECRET=${VALID_SECRET}\n`);
+    },
+  );
 
   it("classifies a partially removed same private directory as retained", async () => {
     const migration = await fixture();
