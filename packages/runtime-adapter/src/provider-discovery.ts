@@ -25,9 +25,18 @@ export interface DiscoverLocalProvidersInput {
   readonly forceRefresh?: boolean;
 }
 
+/**
+ * Only the *live* half of a probe is cached: the model ids the endpoint
+ * reported. The advertised projection (allowlist filter, `maxAdvertisedModels`
+ * cap, and every other field of the definition) is recomputed from the caller's
+ * current configuration on every read, so editing a provider takes effect on
+ * the next channel restart instead of after the 60 s TTL expires. `liveModels`
+ * absent means the last probe found nothing — the provider stays unadvertised
+ * for the rest of the window without being re-probed.
+ */
 interface DiscoveryCacheEntry {
   readonly expiresAt: number;
-  readonly provider?: DiscoveredProvider;
+  readonly liveModels?: readonly LocalProviderModelDefinition[];
   readonly forcedRefreshUsed: boolean;
 }
 
@@ -89,27 +98,59 @@ async function discoverCachedProvider(
   input: DiscoverLocalProvidersInput,
 ): Promise<DiscoveredProvider | undefined> {
   const normalized = validateLocalProviderDefinition(provider);
-  const key = `${normalized.id}|${normalized.baseUrl as string}`;
+  // Key by the probed endpoint, not the raw baseUrl: `type` participates in the
+  // URL, so `{id:"ollama", type:"openai_compat"}` addresses a different endpoint
+  // than the same id and baseUrl with the inferred ollama type.
+  const key = `${normalized.id}|${modelsEndpointForProvider(normalized)}`;
   const now = Date.now();
   const cached = discoveryCache.get(key);
   const cacheIsWarm = cached !== undefined && cached.expiresAt > now;
   if (cacheIsWarm && (!input.forceRefresh || cached.forcedRefreshUsed)) {
-    return cached.provider;
+    return advertisedProvider(normalized, cached.liveModels);
   }
 
-  const discovered = await probeProvider(normalized, input);
+  const liveModels = await probeProvider(normalized, input);
   discoveryCache.set(key, {
     expiresAt: cacheIsWarm ? cached.expiresAt : now + DISCOVERY_CACHE_TTL_MS,
-    ...(discovered === undefined ? {} : { provider: discovered }),
+    ...(liveModels === undefined ? {} : { liveModels }),
     forcedRefreshUsed: cacheIsWarm && input.forceRefresh === true,
   });
-  return discovered;
+  return advertisedProvider(normalized, liveModels);
 }
 
+/**
+ * Project a probe result onto the provider definition as it is configured
+ * *now*. A declared `models` allowlist replaces the live list entirely (the
+ * probe then only proves liveness); everything else advertises what the
+ * endpoint reported. Pure and total, preserving the caller's "never throws"
+ * guarantee — `/v1/info` returns 500 for the whole response if this escapes.
+ */
+function advertisedProvider(
+  provider: LocalProviderDefinition,
+  liveModels: readonly LocalProviderModelDefinition[] | undefined,
+): DiscoveredProvider | undefined {
+  if (liveModels === undefined) {
+    return undefined;
+  }
+  const advertised = provider.models === undefined
+    ? liveModels
+    : provider.models.filter((model) => model.enabled ?? true);
+  return {
+    ...provider,
+    baseUrl: provider.baseUrl as string,
+    models: advertised.slice(0, provider.maxAdvertisedModels ?? 100),
+  };
+}
+
+/**
+ * One liveness probe. Resolves the live model ids on success, or `undefined`
+ * when the endpoint did not answer usefully (transport failure, timeout,
+ * non-2xx, response-shape drift) — never throws.
+ */
 async function probeProvider(
   provider: LocalProviderDefinition,
   input: DiscoverLocalProvidersInput,
-): Promise<DiscoveredProvider | undefined> {
+): Promise<readonly LocalProviderModelDefinition[] | undefined> {
   try {
     const controller = new AbortController();
     const forwardAbort = (): void => controller.abort(input.signal?.reason);
@@ -131,16 +172,7 @@ async function probeProvider(
       if (!isPlainObject(body) || !Array.isArray(body.data)) {
         return undefined;
       }
-      const liveModels = modelsFromResponse(body.data);
-      const advertised = provider.models === undefined
-        ? liveModels
-        : provider.models.filter((model) => model.enabled ?? true);
-      const maxAdvertisedModels = provider.maxAdvertisedModels ?? 100;
-      return {
-        ...provider,
-        baseUrl: provider.baseUrl as string,
-        models: advertised.slice(0, maxAdvertisedModels),
-      };
+      return modelsFromResponse(body.data);
     } finally {
       clearTimeout(timer);
       input.signal?.removeEventListener("abort", forwardAbort);

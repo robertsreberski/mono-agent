@@ -48,12 +48,13 @@ import { createToolLifecycleEventGate } from "./ai/tool-lifecycle.js";
  * @typedef {import('./ai/types.js').RuntimeResult} RuntimeResult
  */
 
+// Host-integration callbacks bound onto every request. This list is the runtime
+// half of the `Pick<AgentRuntimeHostOptions, ...>` clause in the `RuntimeRequest`
+// typedef (ai/types.js) -- the two must stay identical, or hosts get keys the
+// declared request shape does not admit.
 const HOST_KEYS = [
   "resolveCustomPricing",
   "resolvePiApiKey",
-  "resolveAcpProfile",
-  "onAcpInteractionRequest",
-  "acpSessionTokenKey",
   "persistArtifact",
   "onCompactionRecorded",
   "onToolApprovalRequest",

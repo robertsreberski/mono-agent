@@ -757,15 +757,18 @@ export class MonoAgentTuiApp {
     });
 
     this.openPickerOverlay("Session model override", items, (item) => {
-      // Provider group headers are non-selectable labels; selecting one is a no-op.
+      // Provider group headings are labels, not choices. Report "not chosen" so
+      // the overlay stays open: closing here would look like the picker had
+      // accepted an Enter it silently ignored.
       if (item.value.startsWith(MODEL_GROUP_VALUE_PREFIX)) {
-        return;
+        return false;
       }
       const choice = item.value === MODEL_PICKER_DEFAULT_VALUE ? undefined : item.value;
       this.chat.setModelOverride(choice);
       this.statusBar.setEphemeral(
         choice === undefined ? "model override cleared" : `model override → ${choice}`,
       );
+      return true;
     });
   }
 
@@ -1134,20 +1137,30 @@ export class MonoAgentTuiApp {
       this.statusBar.setEphemeral(
         choice === undefined ? "effort override cleared" : `effort override → ${choice}`,
       );
+      return true; // Every effort row is a real choice.
     });
   }
 
   /**
    * Open a modal select overlay (the model and effort pickers share this).
-   * `onChoose` handles the picked item; the overlay always closes afterward.
-   * nonCapturing keeps input routed through the global listener (which drives
-   * the list explicitly and swallows the rest), so the overlay never contends
-   * for focus with the chat editor underneath it.
+   * `onChoose` handles the picked item and reports whether the row was a real
+   * choice; the overlay closes only then. pi-tui's `SelectList` has no
+   * non-selectable row, so a `false` return is how a decorative row (the model
+   * picker's provider headings) stays inert instead of dismissing the picker
+   * without changing anything. nonCapturing keeps input routed through the
+   * global listener (which drives the list explicitly and swallows the rest),
+   * so the overlay never contends for focus with the chat editor underneath it.
    */
-  private openPickerOverlay(title: string, items: SelectItem[], onChoose: (item: SelectItem) => void): void {
+  private openPickerOverlay(
+    title: string,
+    items: SelectItem[],
+    onChoose: (item: SelectItem) => boolean,
+  ): void {
     const list = new SelectList(items, 10, selectListTheme);
     list.onSelect = (item: SelectItem) => {
-      onChoose(item);
+      if (!onChoose(item)) {
+        return;
+      }
       this.closePicker();
     };
     list.onCancel = () => this.closePicker();

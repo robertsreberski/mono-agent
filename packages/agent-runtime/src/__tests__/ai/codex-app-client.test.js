@@ -238,6 +238,42 @@ describe("Codex app-server client", () => {
     }
   });
 
+  it("warns instead of crashing the host when the app-server emits non-object JSON lines", async () => {
+    const notifications = [];
+    // `null` is the dangerous one: it parses cleanly, so it reaches the frame
+    // dispatch, where a prototype lookup on it throws inside readline's `line`
+    // listener and would take the host process down. Scalars and arrays are
+    // parseable-but-invalid frames for the same reason.
+    const childSource = `
+      const readline = require("node:readline");
+      const rl = readline.createInterface({ input: process.stdin });
+      rl.once("line", (line) => {
+        const message = JSON.parse(line);
+        process.stdout.write("null\\n");
+        process.stdout.write("42\\n");
+        process.stdout.write('"bare-string"\\n');
+        process.stdout.write("[]\\n");
+        process.stdout.write(JSON.stringify({ id: message.id, result: { ok: true } }) + "\\n");
+      });
+    `;
+    const client = createCodexAppServerClient({
+      command: process.execPath,
+      args: ["-e", childSource],
+      onNotification: (notification) => notifications.push(notification),
+    });
+    try {
+      await expect(client.request("probe", {})).resolves.toEqual({ ok: true });
+      expect(notifications.map((notification) => notification.params.message)).toEqual([
+        "Malformed Codex app-server output: null",
+        "Malformed Codex app-server output: 42",
+        'Malformed Codex app-server output: "bare-string"',
+        "Malformed Codex app-server output: []",
+      ]);
+    } finally {
+      await client.close();
+    }
+  });
+
   it("bounds and redacts app-server stderr before it reaches errors", async () => {
     const secret = "fixture-sensitive-value-1234567890";
     const basicCredential = Buffer.from(["fixture-user", "fixture-password"].join(":"), "utf8").toString("base64");
