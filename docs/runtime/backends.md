@@ -16,7 +16,7 @@ A model reference is a `:`-delimited string. The first colon separates the provi
 | Shape | Example |
 | --- | --- |
 | `<provider>:<model>` | `github-copilot:gpt-4.1` |
-| `<provider>:<model>` with nested id | `openai-openai-codex:gpt-5.6-terra` |
+| Hyphenated provider id | `openai-codex:gpt-5.6-terra` |
 | Local provider | `ollama:gemma4:31b` |
 
 Only the **first** colon is significant — model ids may contain slashes and colons (e.g. `openrouter:anthropic/claude-3.5-sonnet`).
@@ -33,8 +33,9 @@ These prefixes were removed in 0.21.0 and are hard-rejected with a named replace
 | `codex-cli:<model>` | `openai-codex:<model>` (via Pi) |
 | `acp:<model>` | The ACP client runtime backend was removed; use Pi directly |
 | `vercel:<provider>:<model>` | `<provider>:<model>` |
+| `opencode:<provider>:<model>` | `<provider>:<model>` (the inner pair; a plain `opencode:<model>` stays valid) |
 
-A leading `pi:` prefix (e.g. `openai-openai-codex:gpt-5.6-terra`) is silently canonicalized away — the `pi:` is not part of the provider id. Tier aliases (`haiku`, `sonnet`, `opus`) are rejected; use an exact model id.
+A leading `pi:` prefix is silently canonicalized away (`pi:openai-codex:gpt-5.6-terra` loads as `openai-codex:gpt-5.6-terra`) — the `pi:` is not part of the provider id. Tier aliases (`haiku`, `sonnet`, `opus`) are rejected; use an exact model id.
 
 Note that `openai-codex` and `opencode-go` are **Pi provider ids**, not survivals of the removed bridges. Routes naming them are ordinary Pi routes and keep working.
 
@@ -62,7 +63,7 @@ Four surfaces share names with the deleted runtime bridges and are unaffected by
 }
 ```
 
-Self-hosted and local providers used via `<provider>:<model>` are declared under `providers.local[]` — see [Local providers](/runtime/local-providers/). Zero-config autodiscovery covers `ollama` (localhost:11434) and `lmstudio` (localhost:1234); see [Providers](/runtime/providers/).
+Self-hosted and local providers used via `<provider>:<model>` are declared in the `providers` map (the legacy `providers.local[]` array still loads) — see [Local providers](/runtime/local-providers/). Zero-config autodiscovery finds `ollama` (localhost:11434) and `lmstudio` (localhost:1234) for the catalog, but running one still needs a declared entry; see [Providers](/runtime/providers/).
 
 ## Provider credentials
 
@@ -72,11 +73,12 @@ Pi credentials are resolved from the auth store at `providers.piAuthPath` (defau
 
 The Pi runtime resolves a `<provider>:<model>` reference by matching the provider id against:
 
-1. Declared `providers.entries[]` or `providers.local[]` entries (explicit)
+1. Providers declared in the `providers` map — one key per provider id, plus legacy `providers.local[]` entries (explicit)
 2. Pi built-in providers (bundled catalog)
-3. Zero-config autodiscovered local providers (`ollama`, `lmstudio`)
 
 If no match is found, the runtime rejects the route with a repair message suggesting a `providers` config entry.
+
+Zero-config autodiscovery of `ollama` and `lmstudio` is a third source for *route admission and the model catalog*, not for execution: it lets an undeclared local route load and be picked, but the turn itself still needs a declared entry — `"providers": { "ollama": {} }` — to get an endpoint. See [Providers](/runtime/providers/#zero-config-local-autodiscovery).
 
 ## Fallback chains
 
@@ -85,10 +87,10 @@ If no match is found, the runtime rejects the route with a repair message sugges
 ```json
 {
   "runtime": {
-    "model": "openai-openai-codex:gpt-5.6-terra",
+    "model": "openai-codex:gpt-5.6-terra",
     "effort": "high",
     "fallbacks": [
-      { "model": "openai-openai-codex:gpt-5.6-sol", "effort": "xhigh" },
+      { "model": "openai-codex:gpt-5.6-sol", "effort": "xhigh" },
       { "model": "ollama:gemma4:31b" }
     ]
   }

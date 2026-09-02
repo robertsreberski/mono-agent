@@ -49,7 +49,7 @@ The default-deny posture. It survives in two places: the **programmatic** harnes
 
 ## Fallback router
 
-The retry layer that walks ordered canonical `{model, effort?}` routes after fallback-eligible provider/auth failures. It records failover and safety history, keeps the chain provider-session-stateless, and carries bounded transcript context between attempts. Configured via `runtime.fallbacks` (`MONO_AGENT_FALLBACKS_JSON`); the legacy `runtime.fallbackModels` CSV form is retired and warns.
+The retry layer that walks ordered canonical `{model, effort?}` routes after fallback-eligible provider/auth failures. It records failover and safety history, keeps the chain provider-session-stateless, and carries bounded transcript context between attempts. Configured via `runtime.fallbacks` (`MONO_AGENT_FALLBACKS_JSON`); the legacy `runtime.fallbackModels` CSV form is retired and is now **rejected at load** — the key and `MONO_AGENT_FALLBACK_MODELS` both fail with `` `runtime.fallbackModels` was replaced by `runtime.fallbacks: [{ "model": "..." }]` ``.
 
 ```json
 {

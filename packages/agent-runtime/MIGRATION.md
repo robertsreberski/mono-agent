@@ -40,7 +40,7 @@ use any of them, nothing changes:
 - **`install-skill --target claude|codex`** — writes skills into those tools'
   directories.
 - **`docs-mcp-pairing`** — pairs the docs MCP with Claude Code and Codex.
-- **The Codex web-search backend** (`tools.webSearch.backend: "codex"`) — it
+- **The Codex web-search backend** (`tools.web.search.backend: "codex"`) — it
   drives a real Codex app-server through an extracted client.
 
 Note also that `openai-codex` and `opencode-go` are **Pi provider ids**, not
@@ -98,12 +98,26 @@ consoles keep working.
 Subpath exports went from 26 to 17. The removed subpaths all belonged to deleted
 bridges; import the Pi equivalents from the package root.
 
+### Removed host options
+
+Three `createRuntime()` host options went with the ACP *client* backend that was
+their only consumer: `resolveAcpProfile`, `onAcpInteractionRequest` and
+`acpSessionTokenKey`. The `0.18.0` and `0.18.1` sections below still describe
+them as required — that is a correct record of what those releases needed, and
+those sections are deliberately unchanged. As of `0.21.0` the runtime no longer
+binds them, and passing them is inert.
+
+This does **not** affect the ACP *server* bridge (`mono-agent bridge acp`),
+which never used them; see [What is NOT deleted](#what-is-not-deleted).
+
 ### Web console store
 
-Schema v10 → v11, adding per-thread `run_model` / `run_effort`. The migration is
-guarded and re-runnable, and adds columns only — no rows are rewritten. Per-
-conversation model and effort overrides now persist server-side, so they roam
-between devices instead of living in one browser's localStorage.
+Schema v10 → v12, in two guarded steps: v11 adds per-thread `run_model` /
+`run_effort`, and v12 adds `agents.providers_json`, the persisted summary of the
+providers an agent advertises. Each step is guarded on `PRAGMA table_info` and
+re-runnable, and adds columns only — no rows are rewritten. Per-conversation
+model and effort overrides now persist server-side, so they roam between devices
+instead of living in one browser's localStorage.
 
 ### The codemod
 

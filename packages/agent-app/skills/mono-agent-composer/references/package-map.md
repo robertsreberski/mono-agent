@@ -22,7 +22,7 @@ Every real host needs these concepts:
 | --- | --- | --- | --- |
 | Shared request/response shape | `@mono-agent/agent-contracts` | `AgentResponder`, request, response, stream, cancellation contracts | Prompt building, runtime execution, transport |
 | Core config | `@mono-agent/config` | Runtime, context, memory, tools, artifact, traceability settings | Adapter credentials, chat allowlists |
-| Runtime facade | `@mono-agent/runtime-adapter` | Model refs, execution-mode validation, local provider runtime options | Prompts, adapters, memory |
+| Runtime facade | `@mono-agent/runtime-adapter` | Canonical `<provider>:<model>` refs, the Pi backend descriptor, sandbox policy, local provider runtime options | Prompts, adapters, memory |
 | Configured responder | `@mono-agent/agent-app` | Turns `MonoAgentConfig` into runtime, memory, harness, and responder | Polling chats, serving APIs, adapter settings |
 
 Minimal local host:
@@ -87,18 +87,19 @@ request-scoped tools, not entries for `mcp.json`. `SessionHistory` searches the
 current logical session's retained managed-tool calls/results and needs no config
 key. `SetConversationTitle` appears only for writable interactive web threads;
 it keeps automatic semantic titles current, while a user rename permanently
-wins. Allow-all exposes eligible tools on compatible routes; a specific
-allowlist must name each one. Direct OpenCode suppresses all three; direct ACP
-retains and cold-projects lifecycle evidence but cannot expose `SessionHistory`.
+wins. Allow-all exposes eligible tools; a specific allowlist must name each one.
+Every route is Pi-native, so no route family suppresses any of the three; the
+surface conditions above (writable interactive web thread, retained managed-tool
+calls) are the only gates.
 `@mono-agent/agent-app` also owns rich reply composition. `PublishReplyFile`
 copies a confined generated file into owner-private integrity storage and is
 available under allow-all (or by exact name in a restrictive policy). Supported
 Pi-native MCP tool results can register their declared MCP App UI resource for
-the web console. An all-Pi route chain is required for Apps; direct or fallback
-routes that cannot carry the bridge do not advertise it. Adapters consume the
-shared reply-part contract: Slack and Telegram confirm native uploads, the web
-serves authorized downloads and sandboxed Apps, and machine/verbatim adapters
-preserve answer text when they cannot represent a part.
+the web console, and because every route is Pi-native the whole fallback chain
+carries that bridge. Adapters consume the shared reply-part contract: Slack and
+Telegram confirm native uploads, the web serves authorized downloads and
+sandboxed Apps, and machine/verbatim adapters preserve answer text when they
+cannot represent a part.
 
 ```ts
 import { createToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/agent-harness";
@@ -150,11 +151,16 @@ Use `@mono-agent/agent-orchestrator` when one runtime should call named collabor
 
 Use `@mono-agent/runtime-adapter` unless the host has a custom runtime implementation that already satisfies `MonoRuntimeLike`.
 
-Supported model reference families:
+There is one supported model reference family: canonical `<provider>:<model>`,
+run Pi-native. Only the first colon is structural, so `ollama:gemma4:31b` is
+provider `ollama` and model `gemma4:31b`. `<provider>` is a Pi provider id —
+`openai-codex`, `anthropic`, `openai`, `github-copilot`, `openrouter`,
+`opencode-go`, or a local/self-hosted id such as `ollama` or `lmstudio`.
 
-- `codex:<model>` with CLI execution
-- `claude:<model>` with SDK or CLI execution
-- `pi:<provider>:<model>` with SDK execution, including Pi OpenAI-Codex, OpenCode-through-Pi (`opencode-go:*`), and local providers such as Ollama and LM Studio
-- `opencode:<provider>:<model>` with CLI execution for hand-authored OpenCode backend config
+A leading `pi:` is canonicalized away, so `pi:ollama:gemma4:31b` still loads —
+but emit the canonical form. `codex:`, `claude:`, `claude-code:`, `codex-cli:`,
+`acp:`, `vercel:` and the nested `opencode:<provider>:<model>` form were
+retired in 0.21.0 and are rejected at load with the replacement named. Tier
+aliases (`haiku`, `sonnet`, `opus`) are not model ids; use an exact model id.
 
 Provider credentials belong in the provider/runtime environment, not in committed config.

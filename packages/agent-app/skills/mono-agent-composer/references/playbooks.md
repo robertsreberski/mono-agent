@@ -20,7 +20,7 @@ Put `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`; the source config omits the c
 
 ```json
 {
-  "runtime": { "model": "openai-openai-codex:gpt-5.6-terra" },
+  "runtime": { "model": "openai-codex:gpt-5.6-terra" },
   "telegram": { "enabled": true, "allowedChatIds": ["123456789"] },
   "memory": {
     "mode": "bujo", "path": "./.mono-agent/memory", "writeMode": "capture",
@@ -42,7 +42,7 @@ Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the
 
 ```json
 {
-  "runtime": { "model": "openai-openai-codex:gpt-5.6-terra" },
+  "runtime": { "model": "openai-codex:gpt-5.6-terra" },
   "slack": { "enabled": true, "allowedChannelIds": ["C012345"], "stripMentionText": true },
   "tools": { "allowedTools": ["Read", "Grep", "SlackSendMessage", "deployTool"], "mcpConfigPath": "./mcp.json" },
   "concurrency": { "maxConcurrentRuns": 4, "maxPendingRuns": 8 }
@@ -180,13 +180,13 @@ const orchestrator = await createConfiguredAgentResponder({
 
 ```json
 {
-  "runtime": { "model": "openai-openai-codex:gpt-5.6-terra" },
+  "runtime": { "model": "openai-codex:gpt-5.6-terra" },
   "tools": { "allowedTools": ["*"] },
   "sandbox": { "mode": "native", "network": { "mode": "localhost" }, "readableRoots": ["."], "writableRoots": ["."], "denyWrite": [".env", ".env.*", ".git/config", ".git/hooks/**"], "fallback": "fail-closed" }
 }
 ```
 **Steps:** `mono-agent init --memory journal` → leave tools at the allow-all default (`["*"]`); the **sandbox**, not an allowlist, is what constrains the code tools → `sandbox.mode native` + `network localhost` + deny-write defaults → keep `fallback: fail-closed` (do NOT set `unsafe-host-process`) → `validate` → `start`.
-**Smoke:** ask it to read a file, use Exec for one argv-safe command, run one Bash pipeline, then use NodeRepl twice to retain a variable and produce `42` (all work); next fetch an external URL or write `.env` (both blocked in the artifact). Keep every primary/fallback/trigger model on Pi; direct Codex, Claude, and direct OpenCode reject this mono-agent sandbox policy.
+**Smoke:** ask it to read a file, use Exec for one argv-safe command, run one Bash pipeline, then use NodeRepl twice to retain a variable and produce `42` (all work); next fetch an external URL or write `.env` (both blocked in the artifact). Every route is Pi-native, so this sandbox policy applies uniformly to the primary, every fallback, and every per-trigger override.
 
 ## 10. Phoenix-observed agent with the TUI
 **For:** an agent builder evaluating runs in a tracing dashboard.
@@ -223,7 +223,7 @@ const orchestrator = await createConfiguredAgentResponder({
 
 ```json
 {
-  "runtime": { "model": "anthropic:claude-sonnet-4-6", "fallbacks": [{ "model": "openai-openai-codex:gpt-5.6-sol" }, { "model": "ollama:gemma4:31b" }], "session": { "mode": "continuous" } },
+  "runtime": { "model": "anthropic:claude-sonnet-4-6", "fallbacks": [{ "model": "openai-codex:gpt-5.6-sol" }, { "model": "ollama:gemma4:31b" }], "session": { "mode": "continuous" } },
   "providers": { "local": [{ "id": "ollama", "type": "ollama", "baseUrl": "http://localhost:11434", "enabled": true }], "piNative": { "transport": "auto", "piMaxRetries": 2, "maxRetryDelayMs": 60000, "piSessionsRoot": ".mono-agent/sessions" } }
 }
 ```
@@ -275,7 +275,7 @@ and are rejected at load; emit `runtime.fallbacks[]` only.
 
 ```json
 {
-  "runtime": { "model": "openai-openai-codex:gpt-5.6-sol" },
+  "runtime": { "model": "openai-codex:gpt-5.6-sol" },
   "tools": { "allowedTools": ["Read", "AskUser", "TelegramSendFile", "PublishReplyFile"], "mcpConfigPath": "./.mcp.json", "mcpCallMaxTotalTimeoutMs": 2700000 },
   "interaction": { "bridge": { "host": "127.0.0.1", "port": 4471 }, "askUser": { "timeoutMs": 600000 }, "progress": { "enabled": true } },
   "telegram": { "enabled": true, "allowedChatIds": ["123456789"], "apiRoot": "http://127.0.0.1:8081", "attachments": { "maxBytes": 268435456, "maxUploadBytes": 268435456 } }
@@ -291,7 +291,7 @@ and are rejected at load; emit `runtime.fallbacks[]` only.
 
 ```json
 {
-  "runtime": { "model": "openai-openai-codex:gpt-5.6-sol" },
+  "runtime": { "model": "openai-codex:gpt-5.6-sol" },
   "tools": {
     "allowedTools": ["Read", "Glob", "Grep", "WebSearch", "WebFetch"],
     "web": {

@@ -17,7 +17,7 @@ An agent that runs entirely on a local LM Studio provider via the Pi SDK runtime
 
 ## Features used
 
-- [`runtime.local-providers`](/runtime/local-providers/) — register LM Studio as a `pi:<provider>:<model>` runtime
+- [`runtime.local-providers`](/runtime/local-providers/) — register LM Studio and reference it as `lmstudio:<model>`
 - [`runtime.multi-backend`](/runtime/backends/) — the Pi SDK bridge that drives the local provider
 - [`memory.lite`](/memory/capture-and-recall/) — FTS-only recall, no embeddings or chat LLM required
 

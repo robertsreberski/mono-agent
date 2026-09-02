@@ -21,7 +21,7 @@ A minimal valid config has exactly two fields:
 
 ```json
 {
-  "runtime": { "model": "openai-openai-codex:gpt-5.6-terra" },
+  "runtime": { "model": "openai-codex:gpt-5.6-terra" },
   "context": { "identityPath": "./IDENTITY.md" }
 }
 ```
@@ -43,7 +43,7 @@ The CLI prepares the environment before it invokes the config loader. It loads `
 For example, these variables override both JSON values:
 
 ```json
-{ "runtime": { "model": "openai-openai-codex:gpt-5.6-terra", "effort": "medium" } }
+{ "runtime": { "model": "openai-codex:gpt-5.6-terra", "effort": "medium" } }
 ```
 
 ```bash

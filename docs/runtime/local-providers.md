@@ -21,14 +21,26 @@ Coverage: `config` — `providers` map (`MONO_AGENT_PROVIDERS_JSON`). The legacy
 
 ## Zero-config autodiscovery
 
-`ollama` and `lmstudio` need no provider entry at all. The runtime admits a route that names either id against their known localhost endpoints and probes them live:
+`ollama` and `lmstudio` need no provider entry to be *discovered*. A route that names either id loads without one, and the agent probes their known localhost endpoints live:
 
 | Provider id | Endpoint |
 | --- | --- |
 | `ollama` | `http://localhost:11434` |
 | `lmstudio` | `http://localhost:1234` |
 
-That is what lets a bare `runtime.model: "ollama:gemma4:31b"` work with zero provider config. Probes run concurrently, fail independently, and a live probe lists the endpoint's models into the operator-facing catalog (bounded by `maxAdvertisedModels`, default 100). Declare an entry (`enabled: false`, custom `baseUrl`, credentials) only when you need to narrow, move, or key that provider. See [Providers](/runtime/providers/) for the full map reference.
+Probes run concurrently, fail independently, and a live probe lists the endpoint's models into the operator-facing catalog (bounded by `maxAdvertisedModels`, default 100).
+
+:::caution
+Discovery is not execution. A bare `runtime.model: "ollama:gemma4:31b"` loads and appears in the model picker, but the turn fails with `pi model not found: ollama:gemma4:31b` — Pi's built-in catalog has no `ollama`/`lmstudio` models, and only a declared entry produces the custom-provider block the runtime executes against. Declaring costs one line, because the id implies the type and the type implies the endpoint:
+
+```json
+{ "providers": { "ollama": {} } }
+```
+
+Add `baseUrl`, `models`, `enabled: false`, or credentials on top of that only when you need to move, narrow, or key the provider.
+:::
+
+See [Providers](/runtime/providers/) for the full map reference.
 
 ## The provider entry shape
 
@@ -61,11 +73,11 @@ That is what lets a bare `runtime.model: "ollama:gemma4:31b"` work with zero pro
 
 The `capabilities.context_window` you declare tells the runtime how large the model's window is — it drives compaction and budgeting. Set it to the real window of the model you pulled; an inaccurate value leads to premature or missed compaction.
 
-The same definitions can be expressed as `providers.entries[]` (each entry adds `id`), and old `providers.local[]` entries load unchanged into the same effective provider set.
+Old `providers.local[]` entries (each carrying its own `id`) load unchanged into the same effective provider set. `providers.entries[]` is **not** a config shape — it is the resolved array the loader produces for programmatic consumers; see [Provider configuration](/runtime/providers/#declaring-a-provider).
 
 ## Ollama (primary path)
 
-Ollama is the recommended local path. Pull the model first, then reference it. A standard local Ollama install listening on `localhost:11434` needs no API key — just the `ollama:*` reference.
+Ollama is the recommended local path. Pull the model first, then declare the provider and reference it. A standard local Ollama install listening on `localhost:11434` needs no API key, and no `type` or `baseUrl` either — the id supplies both.
 
 ```bash
 ollama pull gemma4:31b

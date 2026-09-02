@@ -50,13 +50,22 @@ longer read by any code; its only reader was the removed `sessions` command.
 
 `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were **retired** in
 0.21.0 and are now rejected at load with the replacement named; the CLI CSV flag
-`--fallback-models` was already removed. Convert with
-`mono-agent migrate-config --write`, which rewrites the key as
-`runtime.fallbacks: [{ "model": "..." }]`. The retired
+`--fallback-models` was already removed. Convert the JSON key with
+`mono-agent migrate-config --write`, which rewrites it as
+`runtime.fallbacks: [{ "model": "..." }]`. The codemod edits
+`mono-agent.config.json` text only — it never reads or rewrites the environment,
+so a value that lives solely in `MONO_AGENT_FALLBACK_MODELS` (or a `.env` file)
+has to be removed by hand and re-expressed as `MONO_AGENT_FALLBACKS_JSON`. The retired
 recipe → preset mapping is recorded as static documentation in
 [Presets & capability modules](/reference/presets/#deprecations). The
 `memory-bujo` bin entry and its error-deflector were removed; use
 `mono-agent memory <subcommand>` instead.
+
+Every retired environment variable (`MONO_AGENT_EXECUTION_MODE`,
+`MONO_AGENT_ROUTE_SAFETY`, `MONO_AGENT_FALLBACK_MODELS`,
+`MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`) fails config load when it carries a
+value, naming the exact repair. An empty assignment (`KEY=`) is still treated as
+unset — an inert leftover line in a deployed `.env` does not break startup.
 
 ## Permanent compatibility
 
