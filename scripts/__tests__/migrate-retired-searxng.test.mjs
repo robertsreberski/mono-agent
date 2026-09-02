@@ -19,7 +19,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -32,9 +32,11 @@ import { migrateRetiredSearxng, parseArgs } from "../migrate-retired-searxng.mjs
 
 const tempDirs = [];
 const VALID_SECRET = "a".repeat(64);
-const MIGRATION_MODULE_URL = pathToFileURL(
-  join(dirname(fileURLToPath(import.meta.url)), "../migrate-retired-searxng.mjs"),
-).href;
+const MIGRATION_SCRIPT_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../migrate-retired-searxng.mjs",
+);
+const MIGRATION_MODULE_URL = pathToFileURL(MIGRATION_SCRIPT_PATH).href;
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -673,6 +675,55 @@ describe("migrate-retired-searxng", () => {
       .toBe(`SEARXNG_SECRET=${VALID_SECRET}\n`);
     expect((await stat(join(retainedError.stagingPath, ".env"))).mode & 0o777)
       .toBe(0o600);
+  });
+
+  it("prints bounded redacted operation and cleanup causes through the real CLI", async () => {
+    const migration = await fixture();
+    const envFile = join(migration.repoRoot, "demos/searxng/.env");
+    const childSource = [
+      'import fs from "node:fs";',
+      'import { syncBuiltinESMExports } from "node:module";',
+      'import { pathToFileURL } from "node:url";',
+      "const [scriptPath, destination, envFile] = process.argv.slice(1);",
+      'fs.renameSync = () => {',
+      '  const error = new Error(`injected atomic rename failure ${"a".repeat(64)} ${"x".repeat(300)}`);',
+      '  error.code = "EACCES";',
+      '  throw error;',
+      '};',
+      'fs.rmSync = () => {',
+      '  const error = new Error(`injected cleanup failure SEARXNG_SECRET=${"a".repeat(64)}`);',
+      '  error.code = "EIO";',
+      '  throw error;',
+      '};',
+      "syncBuiltinESMExports();",
+      "process.argv = [process.execPath, scriptPath, '--destination', destination, '--env-file', envFile];",
+      "await import(pathToFileURL(scriptPath).href);",
+    ].join("\n");
+
+    const child = spawnSync(process.execPath, [
+      "--input-type=module",
+      "-e",
+      childSource,
+      MIGRATION_SCRIPT_PATH,
+      migration.destination,
+      envFile,
+    ], { encoding: "utf8" });
+
+    expect(child.status).toBe(1);
+    expect(child.signal).toBeNull();
+    expect(child.stdout).toBe("");
+    expect(child.stderr).toContain("[SEARXNG_UNPUBLISHED_STAGING_CLEANUP_FAILED]");
+    const operationLine = child.stderr.split("\n").find((line) => line.startsWith("Operation cause:"));
+    expect(operationLine).toContain(
+      "Operation cause: Error (EACCES): injected atomic rename failure [redacted-64-hex]",
+    );
+    expect(operationLine.endsWith("…")).toBe(true);
+    expect(operationLine.length).toBeLessThanOrEqual(240);
+    expect(child.stderr).toContain(
+      "Cleanup cause: Error (EIO): injected cleanup failure SEARXNG_SECRET=[redacted]",
+    );
+    expect(child.stderr).not.toContain(VALID_SECRET);
+    expect(existsSync(migration.destination)).toBe(false);
   });
 
   it("requires an explicit destination and accepts an explicit legacy env path", async () => {

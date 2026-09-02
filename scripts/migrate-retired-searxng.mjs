@@ -627,7 +627,37 @@ function usage() {
 }
 
 function reasonOf(error) {
-  return error instanceof Error ? error.message : String(error);
+  if (!(error instanceof Error)) return String(error);
+  if (!(error instanceof RetiredSearxngStagingCleanupError)
+    && !(error instanceof RetiredSearxngUnpublishedStagingCleanupError)) {
+    return error.message;
+  }
+
+  const lines = [`[${error.code}] ${error.message}`];
+  if (error.operationCause !== undefined) {
+    lines.push(`Operation cause: ${safeCauseSummary(error.operationCause)}`);
+  }
+  lines.push(`Cleanup cause: ${safeCauseSummary(error.cleanupCause)}`);
+  if (error.inspectionCause !== undefined) {
+    lines.push(`Inspection cause: ${safeCauseSummary(error.inspectionCause)}`);
+  }
+  return lines.join("\n");
+}
+
+function safeCauseSummary(cause) {
+  if (!(cause instanceof Error)) return "non-Error failure";
+  const name = /^[A-Za-z][A-Za-z0-9_.-]{0,31}$/u.test(cause.name) ? cause.name : "Error";
+  const code = typeof cause.code === "string" && /^[A-Z][A-Z0-9_]{0,31}$/u.test(cause.code)
+    ? ` (${cause.code})`
+    : "";
+  const message = cause.message
+    .replace(/SEARXNG_SECRET\s*=\s*[^\s,;]*/giu, "SEARXNG_SECRET=[redacted]")
+    .replace(/[0-9a-f]{64}/giu, "[redacted-64-hex]")
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  const boundedMessage = message.length > 200 ? `${message.slice(0, 199)}…` : message;
+  return `${name}${code}${boundedMessage.length > 0 ? `: ${boundedMessage}` : ""}`;
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
