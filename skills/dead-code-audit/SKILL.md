@@ -109,7 +109,7 @@ A shallow single grep produces wrong verdicts. Run **all five** before declaring
 a deprecated surface "removable":
 
 1. grep the symbol across all non-test app/cli source;
-2. grep `demos/` and `scripts/`;
+2. grep `scripts/` and any task-specific top-level executable surfaces;
 3. grep **both** live-instance directories **and every launchd plist**;
 4. grep `docs/` — this distinguishes *documented-as-intentionally-retained
    legacy* from *accidentally-orphaned*;
@@ -119,7 +119,7 @@ a deprecated surface "removable":
 ```bash
 S=<symbol>
 grep -rln "$S" packages/*/src extras/*/src --include="*.ts" | grep -v __tests__   # 1
-grep -rln "$S" demos/ scripts/                                                     # 2
+grep -rln "$S" scripts/                                                            # 2
 grep -rln "$S" ~/personal-agent ~/agents ~/personal ~/Library/LaunchAgents/com.mono-agent.*.plist  # 3
 grep -rln "$S" docs/                                                               # 4
 grep -n "\"bin\"" packages/*/package.json                                          # 5, if a CLI

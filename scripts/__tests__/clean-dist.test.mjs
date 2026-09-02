@@ -29,7 +29,6 @@ describe("clean-dist", () => {
       "packages/telegram-adapter/src",
       "packages/web/webapp/dist",
       "extras/whatsapp-adapter/dist",
-      "demos/final-agent/dist",
     ]);
     await writeFile(join(repoRoot, "packages/telegram-adapter/dist/ask.js"), "");
     await writeFile(join(repoRoot, "packages/telegram-adapter/src/index.ts"), "");
@@ -37,7 +36,6 @@ describe("clean-dist", () => {
     const removed = cleanBuildOutputs({ repoRoot, log: () => {} });
 
     expect(removed.sort()).toEqual([
-      "demos/final-agent/dist",
       "extras/whatsapp-adapter/dist",
       "packages/telegram-adapter/dist",
       "packages/web/webapp/dist",

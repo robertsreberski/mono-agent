@@ -18,7 +18,6 @@ const userDocRoots = [
   "packages/tui/README.md",
   "packages/agent-app/skills/mono-agent-composer/references",
 ];
-const demoMarkdownRoot = "demos";
 
 const artifactContractSourcePaths = [
   "packages/agent-app/src/cli-background-command.ts",
@@ -65,10 +64,6 @@ const retiredDocReferences = [
     pattern: /@mono-agent\/agent-evals|\bpackages\/agent-evals\b|\bagent-evals\b/iu,
   },
   {
-    label: "demos package",
-    pattern: /@mono-agent\/demos|\bpackages\/demos\b|\bdemos\s+(?:package|workspace|surface)\b/iu,
-  },
-  {
     label: "WhatsApp/A2A in core",
     pattern:
       /\b(?:whatsapp|a2a)(?:(?:\s+and\s+|\/)(?:whatsapp|a2a))?\s+(?:is|are|as)\s+(?:a\s+)?(?:built[- ]in|bundled|core|in[- ]core)\b|\b(?:built[- ]in|bundled|core|in[- ]core)\s+(?:whatsapp|a2a)(?:(?:\s+and\s+|\/)(?:whatsapp|a2a))?\s+(?:channel|adapter|package|surface)s?\b|\b(?:whatsapp|a2a)[-/](?:whatsapp|a2a)-in-core\b/iu,
@@ -110,14 +105,6 @@ const retiredDocReferences = [
     label: "NotifyConversation",
     pattern: /\bNotifyConversation\b|\bnotify_conversation\b/iu,
   },
-];
-
-const retiredDemoToolReferences = [
-  { label: "journal_append", pattern: /\bjournal_append\b/iu },
-  { label: "memory_search", pattern: /\bmemory_search\b/iu },
-  { label: "entity_get", pattern: /\bentity_get\b/iu },
-  { label: "memory_read_day", pattern: /\bmemory_read_day\b/iu },
-  { label: "memory_list_days", pattern: /\bmemory_list_days\b/iu },
 ];
 
 const deprecatedMemoryRecallAlias = "memory_recall";
@@ -254,15 +241,12 @@ export async function checkConsumerDocsConsistency(consumerPaths, options = {}) 
   if (options.scanUserDocs !== false) {
     const repoRoot = resolve(options.repoRoot ?? process.cwd());
     const userDocRecords = options.userDocRecords ?? await readUserDocRecords(repoRoot);
-    const demoMarkdownRecords = options.demoMarkdownRecords
-      ?? await readMarkdownRecordsIfPresent(join(repoRoot, demoMarkdownRoot));
     const artifactContractSourceRecords = options.artifactContractSourceRecords
       ?? await readExplicitTextRecords(repoRoot, artifactContractSourcePaths);
-    const shippedDocRecords = [...userDocRecords, ...demoMarkdownRecords];
+    const shippedDocRecords = userDocRecords;
     userDocsChecked = shippedDocRecords.length;
     artifactContractSourcesChecked = artifactContractSourceRecords.length;
     issues.push(...scanRetiredDocReferences(shippedDocRecords));
-    issues.push(...scanRetiredDemoTools(demoMarkdownRecords));
     issues.push(...scanDeprecatedMemoryRecallAliases(shippedDocRecords, repoRoot));
     issues.push(...scanMisleadingArtifactDurabilityClaims([
       ...shippedDocRecords,
@@ -418,13 +402,6 @@ export function compareCodeUnits(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-async function readMarkdownRecordsIfPresent(dir) {
-  if (!(await pathExists(dir))) {
-    return [];
-  }
-  return await readMarkdownRecords(dir);
-}
-
 function scanRetiredDocReferences(records) {
   const issues = [];
   for (const record of records) {
@@ -434,23 +411,6 @@ function scanRetiredDocReferences(records) {
         issues.push(
           `${record.path}:${location.line}:${location.column}: references retired pre-v1 surface ` +
             `"${retiredReference.label}". Update the user docs to the current v1 package map.`,
-        );
-      }
-    }
-  }
-  return issues;
-}
-
-function scanRetiredDemoTools(records) {
-  const issues = [];
-  for (const record of records) {
-    for (const retiredReference of retiredDemoToolReferences) {
-      for (const match of findPatternMatches(retiredReference.pattern, record.text)) {
-        const location = lineAndColumn(record.text, match.index);
-        issues.push(
-          `${record.path}:${location.line}:${location.column}: references retired memory tool ` +
-            `"${retiredReference.label}". Use the current read-only MemoryRecall surface or ` +
-            "describe host-driven capture instead.",
         );
       }
     }
@@ -650,7 +610,7 @@ function usage() {
     `  node ${bin} [--consumer <path> ...]`,
     "",
     "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, relevant package READMEs,",
-    "mono-agent-composer references, and demos/**/*.md)",
+    "and mono-agent-composer references)",
     "for retired pre-v1 surfaces",
     "and scans those docs plus TUI source text for absolute artifact/replay claims",
     "that contradict wire truncation, best-effort export, recorder redaction, or terminal persistence.",

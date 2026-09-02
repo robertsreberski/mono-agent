@@ -36,11 +36,9 @@ const MAX_PATH_ENTRIES = 1024;
 const WINDOWS_RESERVED_BASENAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9]|conin\$|conout\$)$/iu;
 const BUILD_COMMANDS = Object.freeze([
   ["pnpm", ["-r", "--sort", "run", "build"]],
-  ["pnpm", ["run", "build:demo"]],
 ]);
 const WINDOWS_PNPM_ARGUMENTS = new Set([
   JSON.stringify(["-r", "--sort", "run", "build"]),
-  JSON.stringify(["run", "build:demo"]),
 ]);
 const REQUIRED_EXECUTABLES = Object.freeze([
   "packages/agent-app/dist/cli.js",

@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
-const WORKSPACE_PARENTS = ["packages", "extras", "demos"];
+const WORKSPACE_PARENTS = ["packages", "extras"];
 const OUTPUT_DIRECTORIES = ["dist", path.join("webapp", "dist")];
 
 /**

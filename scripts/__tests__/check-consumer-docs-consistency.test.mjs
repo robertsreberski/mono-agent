@@ -61,47 +61,16 @@ describe("check-consumer-docs-consistency", () => {
     expect(result.issues).toEqual([]);
   });
 
-  it("flags retired memory tools across shipped demo Markdown while excluding generated and historical copies", async () => {
-    const repoRoot = await tempRepo();
-    await writeRepoDoc(repoRoot, "demos/a/IDENTITY.example.md", [
-      "# Identity",
-      "",
-      "Use journal_append.",
-      "",
-    ].join("\n"));
-    await writeRepoDoc(repoRoot, "demos/a/SOUL.example.md", "Use entity_get.\n");
-    await writeRepoDoc(repoRoot, "demos/b/README.md", "Use memory_search.\n");
-    await writeRepoDoc(repoRoot, "demos/c/PLAYBOOK.example.md", "Use memory_read_day or memory_list_days.\n");
-    await writeRepoDoc(
-      repoRoot,
-      "website/src/content/docs/demo.md",
-      "Generated copy says to use memory_search and journal_append.\n",
-    );
-    await writeRepoDoc(repoRoot, "audit/history.md", "Historical memory_search and journal_append references.\n");
-
-    const result = await checkConsumerDocsConsistency([], { repoRoot });
-
-    expect(result.userDocsChecked).toBe(4);
-    expect(result.issues).toHaveLength(5);
-    expect(result.issues[0]).toContain('demos/a/IDENTITY.example.md:3:5: references retired memory tool "journal_append"');
-    expect(result.issues[1]).toContain('demos/a/SOUL.example.md:1:5: references retired memory tool "entity_get"');
-    expect(result.issues[2]).toContain('demos/b/README.md:1:5: references retired memory tool "memory_search"');
-    expect(result.issues[3]).toContain('demos/c/PLAYBOOK.example.md:1:5: references retired memory tool "memory_read_day"');
-    expect(result.issues[4]).toContain('demos/c/PLAYBOOK.example.md:1:24: references retired memory tool "memory_list_days"');
-    expect(result.issues.join("\n")).not.toContain("website/src/content/docs");
-    expect(result.issues.join("\n")).not.toContain("audit/history.md");
-  });
-
-  it("orders recursive demo Markdown by locale-independent UTF-16 code units", async () => {
+  it("orders recursive documentation by locale-independent UTF-16 code units", async () => {
     const repoRoot = await tempRepo();
     const orderedPaths = [
-      "demos/A/README.md",
-      "demos/Z/README.md",
-      "demos/Ä/README.md",
-      "demos/á/README.md",
+      "docs/A/README.md",
+      "docs/Z/README.md",
+      "docs/Ä/README.md",
+      "docs/á/README.md",
     ];
     for (const relativePath of orderedPaths) {
-      await writeRepoDoc(repoRoot, relativePath, "Use journal_append.\n");
+      await writeRepoDoc(repoRoot, relativePath, "Install @mono-agent/agent-evals.\n");
     }
 
     const result = await checkConsumerDocsConsistency([], { repoRoot });
@@ -158,8 +127,8 @@ describe("check-consumer-docs-consistency", () => {
     );
     await writeRepoDoc(
       repoRoot,
-      "demos/current/SOUL.example.md",
-      historyAnnotationBlock("demos/current/SOUL.example.md", 2) + "\n",
+      "docs/current/SOUL.example.md",
+      historyAnnotationBlock("docs/current/SOUL.example.md", 2) + "\n",
     );
     await writeRepoDoc(
       repoRoot,
@@ -215,7 +184,7 @@ describe("check-consumer-docs-consistency", () => {
       "This is not actually a deprecated alias `memory_recall`; use it as the current tool.",
       "The retired alias `run_history` remains documented; use `memory_recall` for current recall.",
     ];
-    await writeRepoDoc(repoRoot, "demos/current/NEGATED.example.md", `${probes.join("\n")}\n`);
+    await writeRepoDoc(repoRoot, "docs/current/NEGATED.example.md", `${probes.join("\n")}\n`);
 
     const result = await checkConsumerDocsConsistency([], { repoRoot });
 

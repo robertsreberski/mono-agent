@@ -11,25 +11,26 @@ extraction, and optional isolated browser rendering for sparse JavaScript pages.
 SearXNG and the browser run locally, but fetched/search-engine traffic still
 leaves the machine.
 
-## 1. Start the optional SearXNG companion
+## 1. Provision an optional SearXNG instance
 
-The repository includes a pinned, loopback-only Compose definition:
-
-```bash
-cd demos/searxng
-cp .env.example .env
-openssl rand -hex 32
-```
-
-Put the generated secret in `.env`, then:
+Mono-agent does not ship or manage SearXNG. Provision an operator-owned
+instance by following the upstream
+[container installation guide](https://docs.searxng.org/admin/installation-docker),
+bind it to loopback, and enable JSON search responses. Configure at least one
+engine that works from the operator network, then verify the exact API that
+`WebSearch` uses:
 
 ```bash
-docker compose up -d
-docker compose ps
+curl --fail --silent --show-error \
+  --request POST \
+  --header 'Accept: application/json' \
+  --data 'q=mono-agent&format=json&categories=general' \
+  http://127.0.0.1:8088/search
 ```
 
-The service listens at `http://127.0.0.1:8088`. Mono-agent does not own its
-lifecycle.
+The examples below assume the independently managed service listens at
+`http://127.0.0.1:8088`. Keep credentials out of the endpoint URL; mono-agent's
+SearXNG transport is deliberately unauthenticated and loopback-only.
 
 ## 2. Configure the agent
 
@@ -131,8 +132,7 @@ Require these lines in the validation report:
 The probe fails when the endpoint answers with an empty result set *and* one or
 more unresponsive engines — a fully blocked instance still returns `HTTP 200`,
 so treat that `[WARN]` as "search is down", not as a slow start. Fix the engine
-selection before continuing; see
-[`demos/searxng`](https://github.com/robertsreberski/mono-agent/tree/main/demos/searxng).
+selection in the operator-owned SearXNG instance before continuing.
 
 ## 5. Smoke the real tools
 
@@ -151,13 +151,6 @@ The run artifact should contain:
 - bounded `tool_timing` metadata (`backend`, attempts, bytes, HTTP status,
   cache/render flags) without the query or URL;
 - no duplicate network work when an identical call repeats within that run.
-
-Stop or inspect the independently managed companion from its directory:
-
-```bash
-docker compose logs --tail 100 searxng
-docker compose down
-```
 
 See [Local-first web research](/tools/web-research/) for all parameters,
 failure behavior, extraction formats, retries, browser isolation, and sandbox

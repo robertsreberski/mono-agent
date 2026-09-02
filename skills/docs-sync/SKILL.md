@@ -39,10 +39,6 @@ site.
   structure, while `## Public API` starts with a curated entry-point map and
   keeps its generated inventory in parity with the real export map
 - Root `README.md`, `PACKAGES.md`
-- `demos/*/IDENTITY.example.md`, `demos/*/SOUL.example.md`, and any other
-  `demos/*/*.example.md` — copy-paste seed templates that actively break a fresh
-  agent when stale, and a `docs/`-only pass misses them. Add them to the checklist
-  on every memory / tool-surface PR.
 - `packages/agent-app/skills/mono-agent-composer/references/*.md` — the composer
   skill's knowledge base; fold it into the "after any user-facing feature lands"
   pass. It silently drifted out of the loop for ≥3 PRs (native-notify #98,

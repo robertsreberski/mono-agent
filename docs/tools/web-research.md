@@ -123,11 +123,10 @@ requests`), so a blocked instance is diagnosable from the tool output without
 reading container logs. In `auto` mode Codex subscription search and then the
 keyless chain still run after it.
 
-The stock SearXNG engine set is not usable from an ordinary residential IP —
-DuckDuckGo, Startpage and Qwant all answer with a CAPTCHA, and `google cse`
-needs an API key. [`demos/searxng`](https://github.com/robertsreberski/mono-agent/tree/main/demos/searxng)
-ships a Yahoo-only engine selection; check yours with
-`curl -sS -X POST http://127.0.0.1:8088/search -d 'q=test&format=json&engines=yahoo'`.
+The stock SearXNG engine set may not be usable from an ordinary residential IP:
+engines can answer with a CAPTCHA or require an API key. Configure at least one
+engine that works from the operator network and check it directly with
+`curl -sS -X POST http://127.0.0.1:8088/search -d 'q=test&format=json'`.
 
 ### Keyless rate limiting
 
@@ -175,9 +174,9 @@ matter how politely it is throttled. Point such an agent at a local SearXNG:
 { "tools": { "web": { "search": { "backend": "searxng", "endpoint": "http://127.0.0.1:8088" } } } }
 ```
 
-For the copyable local companion, see
-[`demos/searxng`](https://github.com/robertsreberski/mono-agent/tree/main/demos/searxng).
-Its Compose service is loopback-only and enables SearXNG's JSON format.
+Provision the instance independently using the upstream
+[container installation guide](https://docs.searxng.org/admin/installation-docker),
+bind it to loopback, and enable SearXNG's JSON format.
 
 ## WebFetch
 

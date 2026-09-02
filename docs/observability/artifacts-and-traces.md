@@ -308,7 +308,7 @@ environment for the Node/ABI, build-marker, `validate --json`, `memory audit --s
 structured arguments, working directory, origin plist, and PID. The running PID's actual Node executable
 device/inode and cwd must also match.
 On supported POSIX/macOS hosts, the root build holds an exclusive lock from before clearing the old
-marker through package/demo build, required CLI/TUI executable-mode finalization, output sync,
+marker through the package build, required CLI/TUI executable-mode finalization, output sync,
 deterministic output-digest calculation, installed
 root/workspace dependency-tree calculation, and atomic owner-only marker publication. The dependency
 digest covers file bytes, modes, and canonical symlink topology without following links, so rebuilding a

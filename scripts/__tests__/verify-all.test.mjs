@@ -93,7 +93,6 @@ describe("verify-all", () => {
       "release:consumer",
       "typecheck",
       "test",
-      "test:demo",
       "git diff --check",
     ]);
     expect(stdout.text.endsWith([
@@ -311,21 +310,6 @@ describe("verify-all", () => {
       "        run: pnpm run release:pack -- --tag \"${{ steps.release-smoke.outputs.tag }}\"",
     ].join("\n");
     const mutatedSource = replaceExactly(source, `${consumer}\n\n${pack}`, `${pack}\n\n${consumer}`);
-
-    expect(() => expectCiParity(mutatedSource)).toThrow();
-  });
-
-  it("rejects stale intentional-delta declarations", () => {
-    const source = readCiWorkflow();
-    const testStep = [
-      "      - name: Run tests",
-      "        run: pnpm test",
-    ].join("\n");
-    const localOnlyStep = [
-      "      - name: Test demos",
-      "        run: pnpm run test:demo",
-    ].join("\n");
-    const mutatedSource = replaceExactly(source, testStep, `${testStep}\n\n${localOnlyStep}`);
 
     expect(() => expectCiParity(mutatedSource)).toThrow();
   });
@@ -1161,21 +1145,6 @@ const CI_RUN_STEP_CONTRACTS = Object.freeze([
     label: "test",
     command: "pnpm",
     args: ["test"],
-  }),
-  gateRunContract("pnpm run build:demo", {
-    label: "build:demo",
-    command: "pnpm",
-    args: ["run", "build:demo"],
-  }),
-  gateRunContract("pnpm run typecheck:demo", {
-    label: "typecheck:demo",
-    command: "pnpm",
-    args: ["run", "typecheck:demo"],
-  }),
-  gateRunContract("pnpm run test:demo", {
-    label: "test:demo",
-    command: "pnpm",
-    args: ["run", "test:demo"],
   }),
   gateRunContract("git diff --check", {
     label: "git diff --check",
