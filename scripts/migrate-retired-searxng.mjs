@@ -64,6 +64,32 @@ class RetiredSearxngUnpublishedStagingCleanupError extends AggregateError {
   }
 }
 
+class RetiredSearxngDestinationRevalidationError extends AggregateError {
+  constructor({ destination, stagingPath, destinationCause, cleanup }) {
+    const causes = [destinationCause];
+    if (cleanup.cause !== undefined) causes.push(cleanup.cause);
+    if (cleanup.inspectionCause !== undefined) causes.push(cleanup.inspectionCause);
+    super(
+      [...new Set(causes)],
+      `The concurrently completed SearXNG bundle at ${destination} changed during private `
+      + "staging cleanup; no valid published destination is claimed. "
+      + describeStagingState(cleanup.status, stagingPath),
+      { cause: destinationCause },
+    );
+    this.name = "RetiredSearxngDestinationRevalidationError";
+    this.code = "SEARXNG_DESTINATION_REVALIDATION_FAILED";
+    this.published = false;
+    this.destination = destination;
+    this.destinationState = "indeterminate";
+    this.stagingPath = stagingPath;
+    this.stagingState = cleanup.status;
+    this.operationCause = destinationCause;
+    this.destinationCause = destinationCause;
+    this.cleanupCause = cleanup.cause;
+    this.inspectionCause = cleanup.inspectionCause;
+  }
+}
+
 // This is the last repository-owned Compose contract. The fixed project, service, and volume
 // names let an operator re-home an existing deployment without silently creating a parallel one.
 const COMPOSE_YAML = `name: mono-agent-searxng
@@ -228,6 +254,26 @@ export function migrateRetiredSearxng({
       throw new Error("Destination path changed or resolves inside the mono-agent repository.");
     }
   };
+  const revalidateConcurrentDestination = (expectedIdentity, cleanup, stagingPath) => {
+    try {
+      assertDestinationBoundary();
+      assertSecureDirectoryIdentity(
+        stableDestination,
+        expectedIdentity,
+        "Concurrently completed migration destination changed identity during staging cleanup.",
+        stableDestination,
+        currentUid,
+      );
+      assertCompleteBundle(stableDestination, secret);
+    } catch (destinationCause) {
+      throw new RetiredSearxngDestinationRevalidationError({
+        destination: absoluteDestination,
+        stagingPath,
+        destinationCause,
+        cleanup,
+      });
+    }
+  };
 
   assertDestinationBoundary();
   if (entryExists(stableDestination)) {
@@ -244,7 +290,7 @@ export function migrateRetiredSearxng({
   let stagingCreated = false;
   let stagingIdentity;
   let published = false;
-  let wonPublication = false;
+  let publishedDestinationIdentity;
   try {
     assertDestinationBoundary();
     mkdirSync(staging, { mode: 0o700 });
@@ -289,7 +335,12 @@ export function migrateRetiredSearxng({
     assertPrivateStaging();
     assertCompleteBundle(staging, secret);
     if (entryExists(stableDestination)) {
-      if (!isCompletedBundle(stableDestination, secret, currentUid)) {
+      const concurrentIdentity = completedBundleIdentityIfValid(
+        stableDestination,
+        secret,
+        currentUid,
+      );
+      if (concurrentIdentity === undefined) {
         throw new Error(`Destination already exists: ${absoluteDestination}`);
       }
       const cleanup = cleanupPrivateStaging(
@@ -300,6 +351,8 @@ export function migrateRetiredSearxng({
         removeStaging,
       );
       published = true;
+      stagingCreated = cleanup.status !== "removed";
+      revalidateConcurrentDestination(concurrentIdentity, cleanup, staging);
       throwIfStagingCleanupFailed(cleanup, absoluteDestination, staging);
       stagingCreated = false;
       return completedResult(absoluteDestination, log, "Accepted the concurrently completed");
@@ -312,10 +365,16 @@ export function migrateRetiredSearxng({
       renameStaging(staging, stableDestination);
       stagingCreated = false;
       published = true;
-      wonPublication = true;
+      publishedDestinationIdentity = stagingIdentity;
     } catch (error) {
-      if (!isCompletedBundle(stableDestination, secret, currentUid)) throw error;
+      const concurrentIdentity = completedBundleIdentityIfValid(
+        stableDestination,
+        secret,
+        currentUid,
+      );
+      if (concurrentIdentity === undefined) throw error;
       published = true;
+      publishedDestinationIdentity = concurrentIdentity;
       const cleanup = cleanupPrivateStaging(
         staging,
         stagingIdentity,
@@ -323,21 +382,21 @@ export function migrateRetiredSearxng({
         currentUid,
         removeStaging,
       );
+      stagingCreated = cleanup.status !== "removed";
+      revalidateConcurrentDestination(concurrentIdentity, cleanup, staging);
       throwIfStagingCleanupFailed(cleanup, absoluteDestination, staging);
       stagingCreated = false;
     }
 
     afterAtomicPublish?.();
     assertDestinationBoundary();
-    if (wonPublication) {
-      assertSecureDirectoryIdentity(
-        stableDestination,
-        stagingIdentity,
-        "Published migration bundle changed identity.",
-        stableDestination,
-        currentUid,
-      );
-    }
+    assertSecureDirectoryIdentity(
+      stableDestination,
+      publishedDestinationIdentity,
+      "Published migration bundle changed identity.",
+      stableDestination,
+      currentUid,
+    );
     assertCompleteBundle(stableDestination, secret);
   } catch (operationCause) {
     if (!published && stagingCreated && stagingIdentity !== undefined) {
@@ -383,10 +442,8 @@ function cleanupPrivateStaging(
   removeStaging,
 ) {
   let cleanupCause;
-  let canonicalParentValidated = false;
   try {
     assertStableCanonicalParent();
-    canonicalParentValidated = true;
     assertSecureDirectoryIdentity(
       staging,
       stagingIdentity,
@@ -399,14 +456,27 @@ function cleanupPrivateStaging(
     cleanupCause = error;
   }
 
-  const state = canonicalParentValidated
+  let parentInspectionCause;
+  try {
+    // A missing lexical staging path is meaningful only while it is still reached through the
+    // exact canonical parent validated before cleanup. Otherwise the original private directory
+    // may merely have moved with that parent.
+    assertStableCanonicalParent();
+  } catch (error) {
+    parentInspectionCause = error;
+  }
+  const state = parentInspectionCause === undefined
     ? inspectPrivateStagingAfterCleanup(staging, stagingIdentity, currentUid)
-    : { status: "indeterminate" };
+    : { status: "indeterminate", inspectionCause: parentInspectionCause };
   if (cleanupCause !== undefined) return { ...state, cause: cleanupCause };
   if (state.status === "removed") return state;
   return {
     ...state,
-    cause: new Error("Private staging remover returned without removing the directory."),
+    cause: new Error(
+      state.status === "retained"
+        ? "Private staging remover returned without removing the directory."
+        : "Private staging cleanup outcome could not be verified safely.",
+    ),
   };
 }
 
@@ -488,14 +558,22 @@ function assertCompleteBundle(directory, secret) {
   }
 }
 
-function isCompletedBundle(destination, secret, currentUid) {
+function completedBundleIdentityIfValid(destination, secret, currentUid) {
   try {
-    secureDirectoryIdentity(destination, "completed migration destination", currentUid);
+    const identity = secureDirectoryIdentity(
+      destination,
+      "completed migration destination",
+      currentUid,
+    );
     assertCompleteBundle(destination, secret);
-    return true;
+    return identity;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+function isCompletedBundle(destination, secret, currentUid) {
+  return completedBundleIdentityIfValid(destination, secret, currentUid) !== undefined;
 }
 
 function completedResult(destination, log, action) {
@@ -629,7 +707,8 @@ function usage() {
 function reasonOf(error) {
   if (!(error instanceof Error)) return String(error);
   if (!(error instanceof RetiredSearxngStagingCleanupError)
-    && !(error instanceof RetiredSearxngUnpublishedStagingCleanupError)) {
+    && !(error instanceof RetiredSearxngUnpublishedStagingCleanupError)
+    && !(error instanceof RetiredSearxngDestinationRevalidationError)) {
     return error.message;
   }
 
@@ -637,7 +716,9 @@ function reasonOf(error) {
   if (error.operationCause !== undefined) {
     lines.push(`Operation cause: ${safeCauseSummary(error.operationCause)}`);
   }
-  lines.push(`Cleanup cause: ${safeCauseSummary(error.cleanupCause)}`);
+  if (error.cleanupCause !== undefined) {
+    lines.push(`Cleanup cause: ${safeCauseSummary(error.cleanupCause)}`);
+  }
   if (error.inspectionCause !== undefined) {
     lines.push(`Inspection cause: ${safeCauseSummary(error.inspectionCause)}`);
   }

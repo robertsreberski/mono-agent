@@ -467,8 +467,11 @@ async function scanRetiredDemoRepositorySurfaces(repoRoot) {
   for (const root of retiredRoots) {
     const absolutePath = join(repoRoot, root.relativePath);
     if (!(await pathExists(absolutePath))) continue;
-    const entries = await readdir(absolutePath);
-    const prohibited = entries.filter((entry) => !root.allowedEntries.has(entry)).sort(compareCodeUnits);
+    const entries = await readdir(absolutePath, { withFileTypes: true });
+    const prohibited = entries
+      .filter((entry) => !root.allowedEntries.has(entry.name) || !entry.isFile())
+      .map((entry) => entry.name)
+      .sort(compareCodeUnits);
     if (prohibited.length > 0) {
       issues.push(
         `${absolutePath}: contains retired repository demo surface(s): ${prohibited.join(", ")}.`,

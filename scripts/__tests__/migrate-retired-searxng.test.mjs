@@ -22,7 +22,7 @@ import {
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -400,6 +400,79 @@ describe("migrate-retired-searxng", () => {
     expect((await readdir(migration.root)).some((entry) => entry.includes(".migrating-"))).toBe(false);
   });
 
+  it("does not report success when cleanup removes the concurrently completed destination", async () => {
+    const migration = await fixture();
+    const logs = [];
+    let migrationError;
+
+    try {
+      migrateRetiredSearxng({
+        repoRoot: migration.repoRoot,
+        destination: migration.destination,
+        log: (line) => logs.push(line),
+        beforeAtomicPublish: () => {
+          publishConcurrentBundle(migration);
+        },
+        removeStaging: (stagingPath, options) => {
+          rmSync(migration.destination, { recursive: true, force: true });
+          rmSync(stagingPath, options);
+        },
+      });
+    } catch (error) {
+      migrationError = error;
+    }
+
+    expect(migrationError).toMatchObject({
+      name: "RetiredSearxngDestinationRevalidationError",
+      code: "SEARXNG_DESTINATION_REVALIDATION_FAILED",
+      published: false,
+      destination: migration.destination,
+      destinationState: "indeterminate",
+      stagingState: "removed",
+    });
+    expect(migrationError.message).toContain("no valid published destination is claimed");
+    expect(migrationError.destinationCause.message).toContain("changed identity");
+    expect(logs).toEqual([]);
+    expect(existsSync(migration.destination)).toBe(false);
+    expect(existsSync(migrationError.stagingPath)).toBe(false);
+  });
+
+  it("rejects an exact-content destination whose identity changes during cleanup", async () => {
+    const migration = await fixture();
+    const movedWinner = `${migration.destination}.moved-winner`;
+    let migrationError;
+
+    try {
+      migrateRetiredSearxng({
+        repoRoot: migration.repoRoot,
+        destination: migration.destination,
+        log: () => {},
+        beforeAtomicPublish: () => {
+          publishConcurrentBundle(migration);
+        },
+        removeStaging: (stagingPath, options) => {
+          renameSync(migration.destination, movedWinner);
+          publishConcurrentBundle(migration);
+          rmSync(stagingPath, options);
+        },
+      });
+    } catch (error) {
+      migrationError = error;
+    }
+
+    expect(migrationError).toMatchObject({
+      code: "SEARXNG_DESTINATION_REVALIDATION_FAILED",
+      published: false,
+      destinationState: "indeterminate",
+      stagingState: "removed",
+    });
+    expect(migrationError.destinationCause.message).toContain("changed identity");
+    expect((await readdir(migration.destination)).sort())
+      .toEqual([".env", "compose.yaml", "settings.yml"]);
+    expect((await readdir(movedWinner)).sort())
+      .toEqual([".env", "compose.yaml", "settings.yml"]);
+  });
+
   it("reports published true when pre-rename concurrent-winner cleanup fails", async () => {
     const migration = await fixture();
     const logs = [];
@@ -547,6 +620,54 @@ describe("migrate-retired-searxng", () => {
     expect(concurrentResult.destination).toBe(migration.destination);
     expect((await readdir(migration.destination)).sort())
       .toEqual([".env", "compose.yaml", "settings.yml"]);
+  });
+
+  it("reports indeterminate when the canonical parent is swapped during staging removal", async () => {
+    const migration = await fixture();
+    const operatorParent = join(migration.root, "operator-parent");
+    const movedParent = join(migration.root, "moved-operator-parent");
+    await mkdir(operatorParent, { mode: 0o700 });
+    migration.destination = join(operatorParent, "operator");
+    const cleanupCause = new Error("injected parent swap during private staging cleanup");
+    cleanupCause.code = "EIO";
+    let racedStaging;
+    let migrationError;
+
+    try {
+      migrateRetiredSearxng({
+        repoRoot: migration.repoRoot,
+        destination: migration.destination,
+        log: () => {},
+        beforeAtomicPublish: () => {
+          publishConcurrentBundle(migration);
+        },
+        removeStaging: (stagingPath) => {
+          racedStaging = stagingPath;
+          renameSync(operatorParent, movedParent);
+          mkdirSync(operatorParent, { mode: 0o700 });
+          throw cleanupCause;
+        },
+      });
+    } catch (error) {
+      migrationError = error;
+    }
+
+    expect(migrationError).toMatchObject({
+      code: "SEARXNG_DESTINATION_REVALIDATION_FAILED",
+      published: false,
+      destinationState: "indeterminate",
+      stagingState: "indeterminate",
+      cleanupCause,
+      inspectionCause: expect.any(Error),
+    });
+    expect(migrationError.message).toContain("post-error staging state is indeterminate");
+    expect(migrationError.message).toContain(
+      "Do not assume the path is absent, unchanged, or protected",
+    );
+    expect(existsSync(racedStaging)).toBe(false);
+    const movedStaging = join(movedParent, basename(racedStaging));
+    expect(await readFile(join(movedStaging, ".env"), "utf8"))
+      .toBe(`SEARXNG_SECRET=${VALID_SECRET}\n`);
   });
 
   it("classifies a partially removed same private directory as retained", async () => {

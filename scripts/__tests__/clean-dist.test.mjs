@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, renameSync, symlinkSync } from "node:fs";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,6 +74,33 @@ describe("clean-dist", () => {
     expect(existsSync(join(externalRoot, "dist/cli.js"))).toBe(true);
     expect(logs).toContain(
       "skipped demos/final-agent/dist: a parent path is a symbolic link",
+    );
+  });
+
+  it("fails closed when a validated retired-demo parent is swapped to an external symlink", async () => {
+    const repoRoot = await fixtureRepo(["demos/final-agent/dist"]);
+    const externalRoot = await mkdtemp(join(tmpdir(), "mono-agent-external-demo-race-"));
+    tempDirs.push(externalRoot);
+    await mkdir(join(externalRoot, "dist"));
+    await writeFile(join(externalRoot, "dist/cli.js"), "external data");
+    const originalParent = join(repoRoot, "demos/final-agent");
+    const movedParent = join(repoRoot, "demos/final-agent-original");
+    const logs = [];
+
+    const removed = cleanBuildOutputs({
+      repoRoot,
+      log: (line) => logs.push(line),
+      beforeRetiredOutputRemoval: () => {
+        renameSync(originalParent, movedParent);
+        symlinkSync(externalRoot, originalParent, "dir");
+      },
+    });
+
+    expect(removed).toEqual([]);
+    expect(existsSync(join(externalRoot, "dist/cli.js"))).toBe(true);
+    expect(existsSync(join(movedParent, "dist"))).toBe(true);
+    expect(logs).toContain(
+      "skipped demos/final-agent/dist: path identity changed during deletion",
     );
   });
 });

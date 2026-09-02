@@ -148,6 +148,17 @@ describe("check-consumer-docs-consistency", () => {
     expect(result.issues.join("\n")).not.toContain("SEARXNG_SECRET");
   });
 
+  it("rejects a directory masquerading as the one allowed legacy SearXNG env file", async () => {
+    const repoRoot = await tempRepo();
+    await writeRepoDoc(repoRoot, "demos/searxng/.env/compose.yaml", "services: {}\n");
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toContain("demos/searxng");
+    expect(result.issues[0]).toContain(".env");
+  });
+
   it("orders recursive documentation by locale-independent UTF-16 code units", async () => {
     const repoRoot = await tempRepo();
     const orderedPaths = [
