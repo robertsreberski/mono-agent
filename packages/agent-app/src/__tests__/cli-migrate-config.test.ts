@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -120,6 +120,93 @@ describe("migrateConfigSource", () => {
     expect(result.manualMigrations).toEqual([{ pointer: "runtime.model", value: "codex:gpt-5.6-terra" }]);
     expect(result.output).toContain('"codex:gpt-5.6-terra"');
     expect(result.output).not.toContain("executionMode");
+  });
+
+  it("visits every config-owned model reference, not just runtime and memory", () => {
+    // `--check` is a pre-restart gate. Visiting only runtime/memory let it exit
+    // 0 while the loader still threw on `subagents.definitions[].model` and the
+    // cron/webhook overrides were silently warn-and-ignored at turn time.
+    const result = migrateConfigSource(`{
+  "runtime": { "model": "openai-codex:gpt-5.6-sol" },
+  "subagents": {
+    "enabled": true,
+    "definitions": [
+      { "name": "researcher", "description": "d", "prompt": "p", "model": "pi:anthropic:claude-opus-5" }
+    ]
+  },
+  "cron": {
+    "model": "pi:openai:gpt-4.1-mini",
+    "jobs": [
+      { "id": "digest", "expression": "0 7 * * *", "prompt": "p", "model": "pi:openai-codex:gpt-5.6-luna" }
+    ]
+  },
+  "webhook": {
+    "model": "pi:anthropic:claude-sonnet-4-6",
+    "endpoints": [
+      { "name": "triage", "path": "/t", "model": "pi:openai:gpt-4.1" }
+    ]
+  }
+}
+`);
+
+    expect(result.changed).toBe(true);
+    expect(result.changes.map((change) => change.pointer)).toEqual(expect.arrayContaining([
+      "subagents.definitions[0].model",
+      "cron.model",
+      "cron.jobs[0].model",
+      "webhook.model",
+      "webhook.endpoints[0].model",
+    ]));
+    expect(result.output).not.toContain("pi:");
+    expect(result.output).toContain('"model": "anthropic:claude-opus-5"');
+    expect(result.output).toContain('"model": "openai-codex:gpt-5.6-luna"');
+    expect(result.output).toContain('"model": "openai:gpt-4.1"');
+  });
+
+  it("refuses to guess a removed backend ref outside runtime, and reports it", () => {
+    const result = migrateConfigSource(`{
+  "runtime": { "model": "openai-codex:gpt-5.6-sol" },
+  "subagents": {
+    "definitions": [
+      { "name": "helper", "description": "d", "prompt": "p", "model": "claude:sonnet" }
+    ]
+  },
+  "cron": {
+    "jobs": [
+      { "id": "j", "expression": "0 7 * * *", "prompt": "p", "model": "opencode:github-copilot:gpt-4.1" }
+    ]
+  },
+  "webhook": {
+    "endpoints": [{ "name": "e", "path": "/e", "model": "codex:gpt-5.6-terra" }]
+  }
+}
+`);
+
+    expect(result.manualMigrations).toEqual([
+      { pointer: "subagents.definitions[0].model", value: "claude:sonnet" },
+      { pointer: "cron.jobs[0].model", value: "opencode:github-copilot:gpt-4.1" },
+      { pointer: "webhook.endpoints[0].model", value: "codex:gpt-5.6-terra" },
+    ]);
+    expect(result.changed).toBe(false);
+    expect(result.output).toContain('"claude:sonnet"');
+    expect(result.output).toContain('"codex:gpt-5.6-terra"');
+  });
+
+  it("never rewrites model fields that are not runtime references", () => {
+    // `tools.web.search.codex.model` is a Codex app-server model id for the
+    // SURVIVING Codex web-search backend, not a removed runtime bridge.
+    const source = `{
+  "runtime": { "model": "openai-codex:gpt-5.6-sol" },
+  "tools": { "web": { "search": { "backend": "codex", "codex": { "model": "gpt-5.6-luna" } } } },
+  "telegram": { "transcription": { "model": "whisper-1" } },
+  "openaiApi": { "modelId": "agent" },
+  "memory": { "mode": "lite", "embeddingModel": "nomic-embed-text:v1.5" }
+}
+`;
+    const result = migrateConfigSource(source);
+    expect(result.changed).toBe(false);
+    expect(result.manualMigrations).toEqual([]);
+    expect(result.output).toBe(source);
   });
 
   it("leaves configVersion 1 prototypes byte-identical", () => {
@@ -366,6 +453,44 @@ describe("runCli migrate-config", () => {
     const after = await readFile(configPath, "utf8");
     expect(after).not.toContain("executionMode");
     expect(after).toContain('"codex:gpt-5.6-terra"');
+  });
+
+  it("--check fails on a removed backend ref the loader would reject at restart", async () => {
+    const configPath = join(dir, "mono-agent.config.json");
+    await writeFile(configPath, `{
+  "runtime": { "model": "openai-codex:gpt-5.6-sol" },
+  "subagents": {
+    "definitions": [
+      { "name": "helper", "description": "d", "prompt": "p", "model": "codex:gpt-5.6-terra" }
+    ]
+  }
+}
+`, "utf8");
+    process.chdir(dir);
+
+    const result = await captureRunCli(["migrate-config", "--check"]);
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain("subagents.definitions[0].model");
+    expect(result.stdout).toContain("codex:gpt-5.6-terra");
+  });
+
+  it("--write replaces the config atomically, keeping its mode and leaving no temp file", async () => {
+    const configPath = join(dir, "mono-agent.config.json");
+    await writeFile(configPath, dirtyConfig, { encoding: "utf8", mode: 0o600 });
+    process.chdir(dir);
+
+    const result = await captureRunCli(["migrate-config", "--write"]);
+    expect(result.code).toBe(0);
+
+    // A plain writeFile truncates first: a crash mid-write leaves the LIVE
+    // config empty. The replacement must land as one rename, with no debris.
+    expect(await readFile(configPath, "utf8")).not.toContain("executionMode");
+    expect((await stat(configPath)).mode & 0o777).toBe(0o600);
+    expect((await readdir(dir)).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
+    expect((await readdir(dir)).sort()).toEqual([
+      "mono-agent.config.json",
+      "mono-agent.config.json.bak",
+    ]);
   });
 
   it("skips configVersion 1 prototypes and leaves them byte-identical", async () => {

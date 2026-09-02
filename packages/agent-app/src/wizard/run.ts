@@ -42,6 +42,7 @@ import {
 import { findPreset, presetAnswers } from "./presets.js";
 import {
   assertConcreteWizardModelRef,
+  canonicalWizardModelRef,
   channelSelectOptions,
   creationReviewOptions,
   CUSTOM_PI_MODEL_OPTION,
@@ -360,7 +361,18 @@ async function collectCustom(ctx: WizardRunContext): Promise<CollectedAnswers> {
   }));
 }
 
+/**
+ * Every accepted selection is stored CANONICALIZED. Validation accepts a legacy
+ * `pi:<provider>:<model>` because the parser strips the prefix, but storing the
+ * raw string made downstream literal-prefix checks (local-provider module
+ * selection, the credential/billing review) misclassify the route — see
+ * `canonicalWizardModelRef`.
+ */
 async function resolveModelSelection(model: string, opts: ModelResolutionOptions): Promise<string> {
+  return canonicalWizardModelRef(await selectModelRef(model, opts));
+}
+
+async function selectModelRef(model: string, opts: ModelResolutionOptions): Promise<string> {
   if (model === "__pi_other__") {
     return await promptPiModelSelection(opts);
   }

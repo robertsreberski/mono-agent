@@ -1,5 +1,6 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { open, readFile, rename, rm, stat } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import process from "node:process";
 
 import { RETIRED_CONFIG_FIELDS } from "@mono-agent/config";
@@ -16,6 +17,37 @@ const RETIRED_MESSAGE_BY_PATH: Map<string, string> = new Map(
 );
 
 const FALLBACK_MODELS_PATH = "runtime.fallbackModels";
+
+/**
+ * Every mono-agent runtime model reference the config DOCUMENT itself owns,
+ * beyond `runtime.model` / `runtime.fallbacks[].model` / `memory.llm.model`
+ * (which carry extra retired-key handling and stay inline below).
+ *
+ * `--check` is a pre-restart gate, so an unvisited site defeats its purpose: a
+ * `codex:` ref left in `subagents.definitions[].model` makes the LOADER throw
+ * at restart (`parseSubagentModel`), and one left in a cron/webhook override is
+ * warn-and-ignored at turn time — both while `--check` exited 0 "already
+ * migrated".
+ *
+ * Deliberately EXCLUDED, because they are not mono runtime references and a
+ * rewrite would corrupt them: `tools.web.search.codex.model` (a Codex
+ * app-server model id for the surviving Codex web-search backend),
+ * `telegram.transcription.model`, `openaiApi.modelId`, and
+ * `memory.embeddingModel`.
+ */
+const SCALAR_MODEL_REF_PATHS: readonly (readonly string[])[] = [
+  // Single-trigger legacy forms, still layered onto MONO_AGENT_CRON_MODEL /
+  // MONO_AGENT_WEBHOOK_MODEL by the adapters.
+  ["cron", "model"],
+  ["webhook", "model"],
+];
+
+/** Arrays of objects whose `model` member is a runtime model reference. */
+const ARRAY_MODEL_REF_PATHS: readonly (readonly string[])[] = [
+  ["subagents", "definitions"],
+  ["cron", "jobs"],
+  ["webhook", "endpoints"],
+];
 
 /**
  * Removed runtime backends whose model references must never be guessed: a
@@ -454,16 +486,17 @@ function editModelString(
   }
 }
 
-function editExistingFallbacks(
-  member: JsonMember,
-  parsedFallbacks: unknown,
+/** Rewrite the `model` member of every object in an array of entries. */
+function editModelArrayMembers(
+  arrayNode: JsonNode,
+  parsedArray: unknown,
+  pointerBase: string,
   edits: TextEdit[],
   changes: MigrateChange[],
   manual: ManualMigration[],
 ): void {
-  const arrayNode = member.value;
   if (arrayNode.kind !== "array") return;
-  const parsedItems = Array.isArray(parsedFallbacks) ? parsedFallbacks : [];
+  const parsedItems = Array.isArray(parsedArray) ? parsedArray : [];
   (arrayNode.items ?? []).forEach((itemNode, index) => {
     if (itemNode.kind !== "object") return;
     const modelMember = (itemNode.members ?? []).find((entry) => entry.key === "model");
@@ -472,13 +505,41 @@ function editExistingFallbacks(
     if (parsedItem === undefined) return;
     editModelString(
       modelMember,
-      `runtime.fallbacks[${index}].model`,
+      `${pointerBase}[${index}].model`,
       parsedItem.model,
       edits,
       changes,
       manual,
     );
   });
+}
+
+function editExistingFallbacks(
+  member: JsonMember,
+  parsedFallbacks: unknown,
+  edits: TextEdit[],
+  changes: MigrateChange[],
+  manual: ManualMigration[],
+): void {
+  editModelArrayMembers(
+    member.value,
+    parsedFallbacks,
+    "runtime.fallbacks",
+    edits,
+    changes,
+    manual,
+  );
+}
+
+/** The parsed value at a dot-separated path, if the whole path is objects. */
+function parsedValueAt(root: JsonObject, path: readonly string[]): unknown {
+  let current: unknown = root;
+  for (const key of path) {
+    const object = asObject(current);
+    if (object === undefined) return undefined;
+    current = object[key];
+  }
+  return current;
 }
 
 function editFallbackModelsRename(
@@ -656,6 +717,25 @@ export function migrateConfigSource(source: string): MigrateConfigResult {
     }
   }
 
+  for (const path of SCALAR_MODEL_REF_PATHS) {
+    const located = locateMember(scan, path);
+    if (located === undefined) continue;
+    editModelString(located.member, path.join("."), parsedValueAt(root, path), edits, changes, manual);
+  }
+
+  for (const path of ARRAY_MODEL_REF_PATHS) {
+    const located = locateMember(scan, path);
+    if (located === undefined) continue;
+    editModelArrayMembers(
+      located.member.value,
+      parsedValueAt(root, path),
+      path.join("."),
+      edits,
+      changes,
+      manual,
+    );
+  }
+
   if (edits.length === 0) {
     return {
       skipped: false,
@@ -677,6 +757,42 @@ export function migrateConfigSource(source: string): MigrateConfigResult {
     changes,
     manualMigrations: manual,
   };
+}
+
+/**
+ * Replace a file's contents atomically: write a SIBLING temp file, fsync it,
+ * then rename over the target. `writeFile` truncates first, so a process death
+ * (or a full disk) between truncate and the final write left the LIVE config
+ * empty — the `.bak` made that recoverable, not harmless: the agent refuses to
+ * start until a human notices and restores it. The temp file is a sibling so
+ * the rename stays inside one filesystem, which is what makes it atomic, and
+ * the target's existing mode is carried over so migrating never widens
+ * permissions. A partial temp file is removed rather than left behind.
+ */
+async function writeFileAtomic(path: string, contents: string): Promise<void> {
+  const temporaryPath = join(
+    dirname(path),
+    `.${basename(path)}.${process.pid}.${Date.now()}.tmp`,
+  );
+  const existingMode = await stat(path)
+    .then((stats) => stats.mode & 0o777)
+    .catch(() => undefined);
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(temporaryPath, "wx");
+    await handle.writeFile(contents, "utf8");
+    if (existingMode !== undefined) {
+      await handle.chmod(existingMode);
+    }
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(temporaryPath, path);
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    await rm(temporaryPath, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 function renderHumanReport(configPath: string, result: MigrateConfigResult, applied: boolean): string {
@@ -753,8 +869,8 @@ export async function runMigrateConfig(args: ParsedCliArgs): Promise<number> {
 
   const applied = write && !result.skipped && result.conflict === undefined && result.changed;
   if (applied) {
-    await writeFile(`${configPath}.bak`, source, "utf8");
-    await writeFile(configPath, result.output, "utf8");
+    await writeFileAtomic(`${configPath}.bak`, source);
+    await writeFileAtomic(configPath, result.output);
   }
 
   const ok = result.conflict === undefined && result.manualMigrations.length === 0;
