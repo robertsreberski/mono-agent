@@ -196,4 +196,62 @@ describe("discoverLocalProviders", () => {
       expect.objectContaining({ name: "configured-only" }),
     ]);
   });
+
+  it("does not let a slower earlier probe negative-cache over a newer live result", async () => {
+    // `discoverLocalProviders` is exported publicly, so two callers can force a
+    // refresh concurrently. Both then probe, and completion order is not start
+    // order: the earlier probe answering last used to overwrite the later one,
+    // caching "no models" over a live answer for the rest of the 60 s TTL.
+    const deferred: { resolve: (value: Response) => void; reject: (reason: unknown) => void }[] = [];
+    const racingFetch = vi.fn(() => new Promise<Response>((resolve, reject) => {
+      deferred.push({ resolve, reject });
+    })) as unknown as typeof fetch;
+    const warmFetch = vi.fn(() => Promise.resolve(response({ data: [{ id: "warm" }] }))) as unknown as typeof fetch;
+    const configured = [{ id: "lmstudio", enabled: false } as const];
+
+    // Warm the entry so both forced refreshes take the probe path.
+    await discoverLocalProviders({ fetch: warmFetch, configured });
+    expect(warmFetch).toHaveBeenCalledTimes(1);
+
+    const older = discoverLocalProviders({ fetch: racingFetch, configured, forceRefresh: true });
+    const newer = discoverLocalProviders({ fetch: racingFetch, configured, forceRefresh: true });
+    expect(deferred).toHaveLength(2);
+
+    // The probe that STARTED SECOND answers first, and answers live.
+    deferred[1]!.resolve(response({ data: [{ id: "live" }] }));
+    await expect(newer).resolves.toEqual([
+      expect.objectContaining({ id: "ollama", models: [{ name: "live" }] }),
+    ]);
+    // The probe that started FIRST then fails.
+    deferred[0]!.reject(new Error("ECONNREFUSED"));
+
+    // Its caller is handed the newer cached observation, not its own stale one.
+    await expect(older).resolves.toEqual([
+      expect.objectContaining({ id: "ollama", models: [{ name: "live" }] }),
+    ]);
+
+    // And the next warm read still serves the live model without re-probing.
+    const afterwards = await discoverLocalProviders({ fetch: warmFetch, configured });
+    expect(afterwards.find((provider) => provider.id === "ollama")?.models).toEqual([{ name: "live" }]);
+    expect(warmFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops an in-flight probe's result when the cache is cleared beneath it", async () => {
+    let settle: ((value: Response) => void) | undefined;
+    const slowFetch = vi.fn(() => new Promise<Response>((resolve) => {
+      settle = resolve;
+    })) as unknown as typeof fetch;
+    const configured = [{ id: "lmstudio", enabled: false } as const];
+
+    const pending = discoverLocalProviders({ fetch: slowFetch, configured });
+    clearLocalProviderDiscoveryCache();
+    settle!(response({ data: [{ id: "retired" }] }));
+    await pending;
+
+    const nextFetch = vi.fn(() => Promise.resolve(response({ data: [{ id: "fresh" }] }))) as unknown as typeof fetch;
+    const after = await discoverLocalProviders({ fetch: nextFetch, configured });
+
+    expect(after.find((provider) => provider.id === "ollama")?.models).toEqual([{ name: "fresh" }]);
+    expect(nextFetch).toHaveBeenCalledTimes(1);
+  });
 });

@@ -60,6 +60,29 @@ export interface TuiChannelOverrides {
   readonly deliverNotification?: typeof deliverWebNotification;
 }
 
+/**
+ * Payload budget for the live-discovered half of the legacy `/v1/info`
+ * projections (`models` plus their `modelOptions` entries). A local endpoint's
+ * `/v1/models` response is bounded by neither count nor id length, and
+ * `/v1/info` shares ONE 1 MiB body cap (`MAX_INFO_BODY_BYTES`, enforced in
+ * `@mono-agent/web`'s operator client) across every field it carries — skills,
+ * providers, capabilities and the configured routes included. A body over that
+ * cap does not degrade: it fails `info()` wholesale and the console shows the
+ * agent OFFLINE, on a 5 s poll. A quarter of the budget is far beyond any real
+ * local install (~190 typical refs) while leaving the rest of the body room.
+ */
+const MAX_DISCOVERED_INFO_MODEL_BYTES = 256 * 1024;
+/** Effort levels, reasoning mode, context window and JSON punctuation per `modelOptions` entry. */
+const INFO_MODEL_METADATA_BYTES = 512;
+
+/**
+ * Upper bound on what publishing one discovered ref costs the `/v1/info` body:
+ * its own bytes in `models`, again as the `modelOptions` key, and up to twice
+ * more as that entry's `provider` + `providerLabel`, plus the fixed metadata.
+ */
+const infoModelCostBytes = (ref: string): number =>
+  Buffer.byteLength(ref, "utf8") * 4 + INFO_MODEL_METADATA_BYTES;
+
 const APP_OWNED_TUI_START = Symbol("app-owned-tui-start");
 
 interface AppOwnedTuiChannelDriver extends ChannelDriver<TuiAdapterConfig> {
@@ -200,25 +223,34 @@ export function createTuiChannelDriver(
       // a SUBTRACTIVE wire change at an unchanged schema: a console that only
       // reads `models` (every client predating `/v1/models`) silently lost the
       // `ollama:*` entry it used to offer, with no skew error to explain it.
+      //
+      // Bound this projection on its OWN payload budget, never on catalog
+      // membership. The catalog's `MAX_CATALOG_ID_BYTES` is a display/paging
+      // bound, not a validity bound: a 257-byte model id parses, routes and runs
+      // exactly like a 20-byte one, so gating `models` on `catalog.resolve()`
+      // deleted a runnable model from every schema-1 client — subtractive at a
+      // schema that cannot be bumped (`TUI_WIRE_SCHEMA` is compared with `!==`).
+      // What genuinely must stay bounded is the ONE 1 MiB body `/v1/info` shares
+      // across every field: over it, `info()` fails wholesale and the agent shows
+      // OFFLINE rather than degraded. So the only reasons a discovered ref is
+      // withheld here are that it names nothing a turn could route to (it does
+      // not parse), or that it no longer fits the budget.
       const discoveredRefs: RuntimeModelReference[] = [];
+      let discoveredInfoBytes = 0;
       for (const model of discoveredModels) {
         if (configModelKeys.includes(model.ref)) continue;
-        // Publish only what the BOUNDED catalog kept. This legacy projection is
-        // not itself bounded, so a local provider returning an oversized id or
-        // label produced a ref the catalog skipped but `models`/`modelOptions`
-        // still advertised: a model no picker can resolve, and — since
-        // `/v1/info` shares ONE 1 MiB body cap — a large enough value fails
-        // `info()` wholesale and shows the agent OFFLINE rather than degraded.
-        // Membership, not a second copy of the bounds, so the two projections
-        // cannot drift. Refs that survive are still all published, in discovery
-        // order: narrowing `models` further would be a subtractive wire change
-        // at an unchanged TUI_WIRE_SCHEMA.
-        if (catalog.resolve(model.ref) === undefined) continue;
+        let parsed: RuntimeModelReference;
         try {
-          discoveredRefs.push(parseMonoRuntimeModelReference(model.ref));
+          parsed = parseMonoRuntimeModelReference(model.ref);
         } catch {
           // A provider that reports an unparseable ref is skipped, not fatal.
+          continue;
         }
+        const cost = infoModelCostBytes(model.ref);
+        // `continue`, not `break`: one pathological id must cost only itself.
+        if (discoveredInfoBytes + cost > MAX_DISCOVERED_INFO_MODEL_BYTES) continue;
+        discoveredInfoBytes += cost;
+        discoveredRefs.push(parsed);
       }
       const infoModelKeys = [
         ...configModelKeys,
