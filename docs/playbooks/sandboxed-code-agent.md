@@ -7,7 +7,7 @@ sidebar:
 
 This playbook builds a code-reading assistant that can run `Bash` and `NodeRepl` inside the native `srt` sandbox with loopback-only network access and protected secrets, while recalling prior context from local journal memory. Every capability here is `config`-driven — no code required.
 
-On macOS, mono-agent can install the exact pinned SRT runtime into its private user cache; no global `srt` or `PATH` mutation is required. This recipe uses `fallback: "fail-closed"`, so an absent, corrupt, or non-enforcing engine yields `sandbox_unavailable` instead of host execution.
+On macOS, mono-agent can install the exact pinned SRT runtime into its private user cache; no global `srt` or `PATH` mutation is required. This recipe uses `fallback: "fail-closed"`, so an absent, corrupt, or non-enforcing engine stops the command — a `sandbox_prepare_failed` tool result — instead of running it on the host.
 
 ## Who this is for
 

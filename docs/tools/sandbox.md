@@ -156,7 +156,7 @@ If you set `denyWrite` yourself, you replace the defaults — include the four e
 
 If `mode: "native"` but no SRT engine passes its functional proof, the `fallback` decides what happens:
 
-- **`fail-closed`** (default) — the command is rejected with a `sandbox_unavailable` error. Nothing runs unsandboxed.
+- **`fail-closed`** (default) — the command is rejected and nothing runs unsandboxed. The sandbox raises `sandbox_unavailable` internally; what the tool call returns is the outcome code `sandbox_prepare_failed`, with the text `Error: Sandbox engine is unavailable and policy is fail-closed.` The run continues — only that command fails.
 - **`unsafe-host-process`** — the command runs **unwrapped on the host**. This requires **both** `fallback: "unsafe-host-process"` **and** `unsafeAllowHostProcess: true`. Setting `fallback` to `unsafe-host-process` without the explicit `unsafeAllowHostProcess: true` is a config error.
 
 ```json
@@ -173,7 +173,7 @@ If `mode: "native"` but no SRT engine passes its functional proof, the `fallback
 The `unsafe-host-process` fallback runs tool commands directly on the host with no isolation if the sandbox engine is missing. When it is active, mono-agent reports: `WARNING: Unsafe sandbox fallback is active: all sandbox roots/denyWrite entries are inert; commands run unsandboxed.` Use it only in trusted, controlled environments (e.g. CI you own end to end). Prefer `fail-closed` for anything handling untrusted input or running untrusted code.
 :::
 
-`mono-agent start` does not silently relax a fail-closed policy. It records the effective sandbox state at startup; `mono-agent status` prints `effective`, `engine`, `fallback`, and whether the fallback is active. For a fail-closed missing engine, sandboxed commands fail with `sandbox_unavailable`. For an unsafe fallback, `start`/`status` include the unsafe warning above so the operator can see that filesystem roots and `denyWrite` entries are not protecting the host process.
+`mono-agent start` does not silently relax a fail-closed policy. It records the effective sandbox state at startup; `mono-agent status` prints `effective`, `engine`, `fallback`, and whether the fallback is active. For a fail-closed missing engine, `status` describes the engine as unavailable with `sandbox_unavailable`, and the sandboxed commands themselves fail with the `sandbox_prepare_failed` tool outcome. For an unsafe fallback, `start`/`status` include the unsafe warning above so the operator can see that filesystem roots and `denyWrite` entries are not protecting the host process.
 
 Runtime resolution prefers the managed macOS install and re-hashes its complete
 tree against the independent release digest before each command. A

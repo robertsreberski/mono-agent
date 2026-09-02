@@ -18,6 +18,7 @@ import {
   configureToolRuntime,
   resetToolRuntime,
 } from "../../agent/tools/shared/runtime-context.js";
+import { createApprovalManager } from "../../agent/approval.js";
 
 function makeSink(runDir) {
   return ({ filename, buffer }) => {
@@ -559,6 +560,73 @@ describe("pi MCP tool helpers", () => {
       // Forwarding in both directions is covered by the two tests below.
       expect(requestOptions.signal).toBeInstanceOf(AbortSignal);
       expect(requestOptions.signal).not.toBe(ac.signal);
+    } finally {
+      connectSpy.mockRestore();
+      listSpy.mockRestore();
+      callSpy.mockRestore();
+    }
+  });
+
+  // CONTRACT PIN (not an endorsement): host approval gates cover BUILT-IN tools
+  // only. `getPiBuiltinTools` wraps its tools with wrapToolsWithApprovalGate;
+  // `initPiMcpTools` has no approvalManager option at all, and pi-native's
+  // turn-runner passes one only to the built-ins. So declaring an MCP server —
+  // not approving a call — is the authorization boundary for its tools.
+  //
+  // This test exists because the agent-runtime README once promised the
+  // opposite ("Per-call gating is the host's onToolApprovalRequest callback"),
+  // which no test contradicted. If MCP calls ever DO become gated, this test
+  // must fail, and the README's MCP + "Approval gates" sections must be
+  // rewritten in the same change rather than the test being relaxed.
+  it("does not route MCP tool calls through the host approval gate, though built-ins with the same manager are gated", async () => {
+    const approvalCalls = [];
+    const approvalManager = createApprovalManager({
+      // Highest tier + a blanket deny: nothing that reaches the gate can run.
+      defaultRiskTier: "high",
+      onToolApprovalRequest: async (payload) => {
+        approvalCalls.push(payload.toolName);
+        return { decision: "deny", reason: "test denies every gated call" };
+      },
+    });
+
+    // Control. Without this, a passing MCP assertion below could equally be
+    // explained by an approval manager that never fires for anything.
+    const root = tempWorkspace();
+    const [bash] = getPiBuiltinTools(["Bash"], {
+      cwd: root,
+      onEvent: () => {},
+      toolLimits: {},
+      approvalManager,
+    });
+    await expect(bash.execute("gated-call", { command: "echo should-not-run" }))
+      .rejects.toThrow(/Tool call denied/);
+    expect(approvalCalls).toEqual(["Bash"]);
+
+    const connectSpy = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const listSpy = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+      tools: [{ name: "danger_wipe", description: "mutating", inputSchema: { type: "object", properties: {} } }],
+    });
+    const callSpy = vi
+      .spyOn(McpClient.prototype, "callTool")
+      .mockResolvedValue({ content: [{ type: "text", text: "wiped" }] });
+    try {
+      const { tools } = await initPiMcpTools(
+        { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+        new Set(),
+        // The same manager the built-in above was denied by, passed the same way
+        // a host would expect it to apply everywhere.
+        { cwd: root, limits: {}, approvalManager },
+      );
+      const tool = tools.find((entry) => entry.name === "danger_wipe");
+      expect(tool).toBeTruthy();
+
+      const result = await tool.execute("ungated-call", {});
+
+      // The mutating MCP call completed under a blanket-deny approval manager.
+      expect(callSpy).toHaveBeenCalledTimes(1);
+      expect(result.content).toEqual([{ type: "text", text: "wiped" }]);
+      // And the host was never consulted: still only the built-in's request.
+      expect(approvalCalls).toEqual(["Bash"]);
     } finally {
       connectSpy.mockRestore();
       listSpy.mockRestore();

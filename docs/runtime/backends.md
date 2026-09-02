@@ -82,7 +82,7 @@ Zero-config autodiscovery of `ollama` and `lmstudio` is a third source for *rout
 
 ## Fallback chains
 
-`runtime.fallbacks` takes an ordered, uncapped list of `{ model, effort? }` routes tried on retryable provider/auth failures. Omitted effort means the route's provider default. Every fallback route uses the same Pi runtime — there is no cross-runtime safety concern. Pi keeps mono-agent tool policy and records the configured sandbox guarantee: `disabled` for no sandbox policy, `mono-agent-srt` for fail-closed SRT, or `mono-agent-srt-unsafe-host-fallback` when policy prefers SRT but explicitly permits unsandboxed host execution. Unsupported capabilities skip a route rather than being silently removed. Any fallback chain disables cross-turn provider-session reuse and relies on history/snapshot replay.
+`runtime.fallbacks` takes an ordered, uncapped list of `{ model, effort? }` routes tried on retryable provider/auth failures. Omitted effort means the route's provider default. Every fallback route uses the same Pi runtime — there is no cross-runtime safety concern, and no per-route sandbox guarantee to record. Every route keeps the same mono-agent tool policy and the one configured `sandbox` block; `mono-agent status` and `mono-agent validate` report that one effective state for the agent, not one per route. Unsupported capabilities skip a route rather than being silently removed. Any fallback chain disables cross-turn provider-session reuse and relies on history/snapshot replay.
 
 ```json
 {

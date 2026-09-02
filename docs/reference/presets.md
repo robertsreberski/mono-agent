@@ -98,7 +98,7 @@ mono-agent sandbox check
 mono-agent validate --preset code-sandbox
 ```
 
-The composed sandbox sets `fallback: "fail-closed"`. Setup/check proves filesystem and localhost/domain enforcement, not just a version command. If SRT is absent, corrupt, or fails the proof, sandboxed commands stop with `sandbox_unavailable`; a corrupt managed install never falls back to `PATH`.
+The composed sandbox sets `fallback: "fail-closed"`. Setup/check proves filesystem and localhost/domain enforcement, not just a version command. If SRT is absent, corrupt, or fails the proof, sandboxed commands stop with a `sandbox_prepare_failed` tool result (`mono-agent validate` reports the engine state as `sandbox_unavailable`); a corrupt managed install never falls back to `PATH`.
 
 `mono-agent start` and `mono-agent status` surface the effective sandbox state (`native`, `blocked`, `unsafe-host-process`, or `off`), the engine availability, the fallback, and whether the fallback is active. The intentionally-unsafe `unsafe-host-process` fallback (roots/denyWrite inert, commands run unsandboxed when `srt` is missing) is not a wizard choice — set `sandbox.fallback` explicitly in the JSON if you accept that consequence for a trusted local operator profile. Existing configs are never rewritten.
 
