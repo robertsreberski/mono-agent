@@ -165,6 +165,7 @@ export function migrateRetiredSearxng({
   afterAtomicPublish,
   getCurrentUid = DEFAULT_GET_CURRENT_UID,
   removeStaging = rmSync,
+  renameStaging = renameSync,
 } = {}) {
   if (typeof destination !== "string" || destination.trim().length === 0) {
     throw new Error("destination is required.");
@@ -308,7 +309,7 @@ export function migrateRetiredSearxng({
       // The destination is published exactly once. A whole-directory rename
       // does not follow a raced destination symlink and never exposes a partial
       // bundle; a normal concurrent loser validates the non-empty winner below.
-      renameSync(staging, stableDestination);
+      renameStaging(staging, stableDestination);
       stagingCreated = false;
       published = true;
       wonPublication = true;

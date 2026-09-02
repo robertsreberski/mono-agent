@@ -398,7 +398,7 @@ describe("migrate-retired-searxng", () => {
     expect((await readdir(migration.root)).some((entry) => entry.includes(".migrating-"))).toBe(false);
   });
 
-  it("fails explicitly and retains protected staging when concurrent-winner cleanup fails", async () => {
+  it("reports published true when pre-rename concurrent-winner cleanup fails", async () => {
     const migration = await fixture();
     const logs = [];
     const cleanupCause = new Error("injected private staging cleanup failure");
@@ -452,6 +452,54 @@ describe("migrate-retired-searxng", () => {
       .toBe(`SEARXNG_SECRET=${VALID_SECRET}\n`);
     expect((await stat(join(cleanupError.stagingPath, ".env"))).mode & 0o777)
       .toBe(0o600);
+  });
+
+  it("reports published true when lost-rename-race cleanup fails", async () => {
+    const migration = await fixture();
+    const logs = [];
+    const cleanupCause = new Error("injected private staging cleanup failure");
+    cleanupCause.code = "EIO";
+    const renameCause = new Error("injected lost atomic rename race");
+    renameCause.code = "EEXIST";
+    let concurrentResult;
+    let cleanupError;
+
+    try {
+      migrateRetiredSearxng({
+        repoRoot: migration.repoRoot,
+        destination: migration.destination,
+        log: (line) => logs.push(line),
+        renameStaging: () => {
+          concurrentResult = publishConcurrentBundle(migration);
+          throw renameCause;
+        },
+        removeStaging: () => {
+          throw cleanupCause;
+        },
+      });
+    } catch (error) {
+      cleanupError = error;
+    }
+
+    expect(cleanupError).toMatchObject({
+      name: "RetiredSearxngStagingCleanupError",
+      code: "SEARXNG_STAGING_CLEANUP_FAILED",
+      published: true,
+      destination: migration.destination,
+      stagingPath: expect.stringContaining(".operator.migrating-"),
+      stagingState: "retained",
+      cleanupCause,
+      cause: cleanupCause,
+    });
+    expect(cleanupError.message).toContain("valid SearXNG bundle is published");
+    expect(logs).toEqual([]);
+    expect(concurrentResult.destination).toBe(migration.destination);
+    expect((await readdir(migration.destination)).sort())
+      .toEqual([".env", "compose.yaml", "settings.yml"]);
+    expect(await readFile(join(migration.destination, ".env"), "utf8"))
+      .toBe(`SEARXNG_SECRET=${VALID_SECRET}\n`);
+    expect(existsSync(cleanupError.stagingPath)).toBe(true);
+    expect((await stat(cleanupError.stagingPath)).mode & 0o777).toBe(0o700);
   });
 
   it("reports a remove-then-throw anomaly without claiming staging was retained", async () => {
