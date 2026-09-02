@@ -3,6 +3,7 @@ import { access, readFile, readdir, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { packageCatalog } from "./package-catalog.mjs";
 
 const userDocRoots = [
   "AGENTS.md",
@@ -18,6 +19,9 @@ const userDocRoots = [
   "packages/tui/README.md",
   "packages/agent-app/skills/mono-agent-composer/references",
 ];
+const catalogDemoOnlyReadmes = packageCatalog
+  .map((entry) => `${entry.path ?? `packages/${entry.dir}`}/README.md`)
+  .filter((path) => !userDocRoots.includes(path));
 
 const artifactContractSourcePaths = [
   "packages/agent-app/src/cli-background-command.ts",
@@ -43,7 +47,7 @@ const retiredDemoRootCommands = [
   "deploy:final",
 ];
 const retiredDemoRootCommandPattern = new RegExp(
-  `\\b(?:${retiredDemoRootCommands.map(escapedPattern).join("|")})\\b`,
+  `(?<![A-Za-z0-9:._-])(?:${retiredDemoRootCommands.map(escapedPattern).join("|")})(?![A-Za-z0-9:_-]|\\.[A-Za-z0-9:_-])`,
   "iu",
 );
 
@@ -69,27 +73,31 @@ function packageSurfacePattern(...nameParts) {
   ].join("|"), "iu");
 }
 
-const retiredDocReferences = [
-  {
-    label: "@mono-agent/agent-evals",
-    pattern: /@mono-agent\/agent-evals|\bpackages\/agent-evals\b|\bagent-evals\b/iu,
-  },
+const retiredDemoDocReferences = [
   {
     label: "demos package",
-    pattern: /@mono-agent\/demos|\bpackages\/demos\b|\bdemos\s+(?:package|workspace|surface)\b/iu,
+    pattern: /@mono-agent\/demos(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])|(?<![A-Za-z0-9._-])packages\/demos(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])|(?<![A-Za-z0-9._-])demos\s+(?:package|workspace|surface)\b/iu,
   },
   {
     label: "demos/final-agent path",
-    pattern: /\bdemos\/final-agent\b/iu,
+    pattern: /(?<![A-Za-z0-9._-])demos\/final-agent(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])/iu,
   },
   {
     label: "demos/searxng path",
-    pattern: /\bdemos\/searxng\b/iu,
+    pattern: /(?<![A-Za-z0-9._-])demos\/searxng(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])/iu,
   },
   {
     label: "retired root demo command",
     pattern: retiredDemoRootCommandPattern,
   },
+];
+
+const retiredDocReferences = [
+  {
+    label: "@mono-agent/agent-evals",
+    pattern: /@mono-agent\/agent-evals|\bpackages\/agent-evals\b|\bagent-evals\b/iu,
+  },
+  ...retiredDemoDocReferences,
   {
     label: "WhatsApp/A2A in core",
     pattern:
@@ -268,12 +276,15 @@ export async function checkConsumerDocsConsistency(consumerPaths, options = {}) 
   if (options.scanUserDocs !== false) {
     const repoRoot = resolve(options.repoRoot ?? process.cwd());
     const userDocRecords = options.userDocRecords ?? await readUserDocRecords(repoRoot);
+    const catalogDemoOnlyRecords = options.catalogDemoOnlyRecords
+      ?? await readExplicitTextRecords(repoRoot, catalogDemoOnlyReadmes);
     const artifactContractSourceRecords = options.artifactContractSourceRecords
       ?? await readExplicitTextRecords(repoRoot, artifactContractSourcePaths);
     const shippedDocRecords = userDocRecords;
-    userDocsChecked = shippedDocRecords.length;
+    userDocsChecked = shippedDocRecords.length + catalogDemoOnlyRecords.length;
     artifactContractSourcesChecked = artifactContractSourceRecords.length;
     issues.push(...scanRetiredDocReferences(shippedDocRecords));
+    issues.push(...scanRetiredDocReferences(catalogDemoOnlyRecords, retiredDemoDocReferences));
     issues.push(...await scanRetiredDemoRepositorySurfaces(repoRoot));
     issues.push(...scanDeprecatedMemoryRecallAliases(shippedDocRecords, repoRoot));
     issues.push(...scanMisleadingArtifactDurabilityClaims([
@@ -430,10 +441,10 @@ export function compareCodeUnits(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function scanRetiredDocReferences(records) {
+function scanRetiredDocReferences(records, references = retiredDocReferences) {
   const issues = [];
   for (const record of records) {
-    for (const retiredReference of retiredDocReferences) {
+    for (const retiredReference of references) {
       for (const match of findPatternMatches(retiredReference.pattern, record.text)) {
         const location = lineAndColumn(record.text, match.index);
         issues.push(
@@ -682,9 +693,9 @@ function usage() {
     "Usage:",
     `  node ${bin} [--consumer <path> ...]`,
     "",
-    "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, relevant package READMEs,",
-    "and mono-agent-composer references)",
-    "for retired pre-v1 surfaces; also rejects the exact retired demo roots and root commands",
+    "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, selected package READMEs,",
+    "and mono-agent-composer references) for retired pre-v1 surfaces; applies the demo retirement",
+    "guards to every catalog package/extras README; and rejects the exact retired demo roots and root commands",
     "and scans those docs plus TUI source text for absolute artifact/replay claims",
     "that contradict wire truncation, best-effort export, recorder redaction, or terminal persistence.",
     "Each optional consumer folder should contain README.md and mono-agent.config.json.",

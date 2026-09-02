@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import {
-  accessSync,
-  constants,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -112,16 +112,19 @@ export function migrateRetiredSearxng({
   destination,
   envFile,
   log = console.log,
+  beforePublish,
 } = {}) {
   if (typeof destination !== "string" || destination.trim().length === 0) {
     throw new Error("destination is required.");
   }
   const absoluteRepoRoot = path.resolve(repoRoot);
   const absoluteDestination = path.resolve(destination);
-  if (isWithin(absoluteRepoRoot, absoluteDestination)) {
+  const canonicalRepoRoot = realpathSync(absoluteRepoRoot);
+  const canonicalDestination = resolveProspectivePath(absoluteDestination);
+  if (isWithin(canonicalRepoRoot, canonicalDestination)) {
     throw new Error("Destination must be outside the mono-agent repository.");
   }
-  if (exists(absoluteDestination)) {
+  if (entryExists(absoluteDestination)) {
     throw new Error(`Destination already exists: ${absoluteDestination}`);
   }
 
@@ -134,23 +137,51 @@ export function migrateRetiredSearxng({
       "Legacy SearXNG .env not found. Pass its path with --env-file; no files were written.",
     );
   }
-  const secret = envText.match(/^SEARXNG_SECRET=(.+)$/mu)?.[1]?.trim();
-  if (secret === undefined || secret.length === 0 || secret === "replace-with-a-random-64-character-hex-value") {
-    throw new Error("Legacy SearXNG .env does not contain a configured SEARXNG_SECRET; no files were written.");
+  const secretAssignments = envText
+    .split(/\r?\n/u)
+    .filter((line) => /^SEARXNG_SECRET=/u.test(line));
+  const secret = secretAssignments.length === 1
+    ? secretAssignments[0].match(/^SEARXNG_SECRET=([0-9a-f]{64})$/iu)?.[1]
+    : undefined;
+  if (secret === undefined) {
+    throw new Error(
+      "Legacy SearXNG .env must contain exactly one 64-hex SEARXNG_SECRET; no files were written.",
+    );
   }
 
   const parent = path.dirname(absoluteDestination);
   const staging = path.join(parent, `.${path.basename(absoluteDestination)}.migrating-${randomUUID()}`);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const canonicalDestinationAfterMkdir = path.join(realpathSync(parent), path.basename(absoluteDestination));
+  if (canonicalDestinationAfterMkdir !== canonicalDestination
+    || isWithin(canonicalRepoRoot, canonicalDestinationAfterMkdir)) {
+    throw new Error("Destination path changed or resolves inside the mono-agent repository.");
+  }
   let stagingCreated = false;
+  let destinationCreated = false;
   try {
     mkdirSync(staging, { mode: 0o700 });
     stagingCreated = true;
     writeFileSync(path.join(staging, "compose.yaml"), COMPOSE_YAML, { mode: 0o644 });
     writeFileSync(path.join(staging, "settings.yml"), SETTINGS_YAML, { mode: 0o644 });
-    writeFileSync(path.join(staging, ".env"), envText, { mode: 0o600 });
-    renameSync(staging, absoluteDestination);
+    writeFileSync(path.join(staging, ".env"), `SEARXNG_SECRET=${secret}\n`, { mode: 0o600 });
+    beforePublish?.();
+    try {
+      mkdirSync(absoluteDestination, { mode: 0o700 });
+      destinationCreated = true;
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "EEXIST") {
+        throw new Error(`Destination already exists: ${absoluteDestination}`);
+      }
+      throw error;
+    }
+    for (const filename of ["compose.yaml", "settings.yml", ".env"]) {
+      renameSync(path.join(staging, filename), path.join(absoluteDestination, filename));
+    }
+    rmSync(staging, { recursive: true, force: true });
+    stagingCreated = false;
   } catch (error) {
+    if (destinationCreated) rmSync(absoluteDestination, { recursive: true, force: true });
     if (stagingCreated) rmSync(staging, { recursive: true, force: true });
     throw error;
   }
@@ -169,9 +200,23 @@ function isWithin(parent, candidate) {
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
-function exists(candidate) {
+function resolveProspectivePath(candidate) {
+  let existingAncestor = candidate;
+  const missingComponents = [];
+  while (!entryExists(existingAncestor)) {
+    const parent = path.dirname(existingAncestor);
+    if (parent === existingAncestor) {
+      throw new Error(`Could not resolve destination ancestor for ${candidate}.`);
+    }
+    missingComponents.unshift(path.basename(existingAncestor));
+    existingAncestor = parent;
+  }
+  return path.join(realpathSync(existingAncestor), ...missingComponents);
+}
+
+function entryExists(candidate) {
   try {
-    accessSync(candidate, constants.F_OK);
+    lstatSync(candidate);
     return true;
   } catch {
     return false;
@@ -184,8 +229,9 @@ function usage() {
     "Usage:",
     `  node ${bin} --destination <operator-directory> [--env-file <legacy-env>]`,
     "",
-    "Copies the retired SearXNG Compose contract and existing secret into a new operator-owned",
-    "directory. The destination must be outside this repository and must not already exist.",
+    "Copies the retired SearXNG Compose contract and one validated 64-hex secret into a new",
+    "operator-owned directory. The destination must resolve outside this repository and must",
+    "not already exist; the emitted .env contains no other legacy or Compose control variables.",
     "This command never invokes Docker, stops a service, or removes a volume.",
   ].join("\n");
 }

@@ -23,7 +23,7 @@ describe("check-consumer-docs-consistency", () => {
       "# Quickstart",
       "",
       "Install @mono-agent/agent-evals for the old evaluation path.",
-      "Install @mono-agent/demos or use packages/demos for the old demo package.",
+      "Install @mono-agent/demos/cli or use packages/demos/README.md for the old demo package.",
       "The memory-bujo package owns durable memory.",
       "WhatsApp and A2A are bundled core channels.",
       "Built-in WhatsApp/A2A channels are available.",
@@ -67,7 +67,7 @@ describe("check-consumer-docs-consistency", () => {
   it("flags documentation for the exact retired demo paths and root commands", async () => {
     const repoRoot = await tempRepo();
     await writeRepoDoc(repoRoot, "docs/operations/legacy.md", [
-      "Run code from demos/final-agent or configure demos/searxng.",
+      "Run code from demos/final-agent/dist or configure demos/searxng/settings.yml.",
       "Use build:demo, typecheck:demo, test:demo, demo:final, or deploy:final.",
       "",
     ].join("\n"));
@@ -78,6 +78,52 @@ describe("check-consumer-docs-consistency", () => {
     expect(result.issues.filter((issue) => issue.includes('"demos/final-agent path"'))).toHaveLength(1);
     expect(result.issues.filter((issue) => issue.includes('"demos/searxng path"'))).toHaveLength(1);
     expect(result.issues.filter((issue) => issue.includes('"retired root demo command"'))).toHaveLength(5);
+  });
+
+  it("scans every catalog package README for retired demo references", async () => {
+    const repoRoot = await tempRepo();
+    await writeRepoDoc(
+      repoRoot,
+      "packages/webhook-adapter/README.md",
+      "Run demo:final from demos/final-agent/dist.\n",
+    );
+    await writeRepoDoc(
+      repoRoot,
+      "extras/a2a-adapter/README.md",
+      "Run deploy:final from demos/searxng/settings.yml.\n",
+    );
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+
+    expect(result.userDocsChecked).toBe(2);
+    expect(result.issues).toHaveLength(4);
+    expect(result.issues.join("\n")).toContain("packages/webhook-adapter/README.md");
+    expect(result.issues.join("\n")).toContain("extras/a2a-adapter/README.md");
+  });
+
+  it("allows near-miss package, path, and root-command names", async () => {
+    const repoRoot = await tempRepo();
+    await writeRepoDoc(repoRoot, "docs/operations/current.md", [
+      "Use @mono-agent/demos-tools.",
+      "Use @mono-agent/demos.tools.",
+      "See demos/final-agent-v2 and demos/searxng-snapshot.",
+      "See demos/final-agent.v2 and demos/searxng.snapshot.",
+      "Run test:demo-extra or team-build:demo-tools.",
+      "Run test:demo.extra or team-build:demo.tools.",
+      "",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "package.json", JSON.stringify({
+      scripts: {
+        "test:demo-extra": "node fixture.js",
+        "team-build:demo-tools": "pnpm run test:demo-extra",
+        "test:demo.extra": "node fixture.js",
+        "team-build:demo.tools": "pnpm run test:demo.extra",
+      },
+    }));
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+
+    expect(result.issues).toEqual([]);
   });
 
   it("flags reintroduced retired demo roots and root package commands but permits the legacy secret", async () => {

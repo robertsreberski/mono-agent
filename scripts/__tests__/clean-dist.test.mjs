@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -58,5 +58,22 @@ describe("clean-dist", () => {
 
     expect(cleanBuildOutputs({ repoRoot, log: () => {} })).toEqual(["packages/config/dist"]);
     expect(cleanBuildOutputs({ repoRoot, log: () => {} })).toEqual([]);
+  });
+
+  it("does not follow a symlinked retired-demo parent outside the repository", async () => {
+    const repoRoot = await fixtureRepo(["demos"]);
+    const externalRoot = await mkdtemp(join(tmpdir(), "mono-agent-external-demo-"));
+    tempDirs.push(externalRoot);
+    await mkdir(join(externalRoot, "dist"));
+    await writeFile(join(externalRoot, "dist/cli.js"), "external data");
+    await symlink(externalRoot, join(repoRoot, "demos/final-agent"), "dir");
+    const logs = [];
+
+    expect(cleanBuildOutputs({ repoRoot, log: (line) => logs.push(line) })).toEqual([]);
+
+    expect(existsSync(join(externalRoot, "dist/cli.js"))).toBe(true);
+    expect(logs).toContain(
+      "skipped demos/final-agent/dist: a parent path is a symbolic link",
+    );
   });
 });

@@ -57,9 +57,10 @@ Review the downloaded template as upstream recommends, configure at least one
 engine that works from the operator network, then validate and start it:
 
 ```bash
-docker compose config --quiet
-docker compose up -d
-test "$(docker compose port core 8088)" = "127.0.0.1:8088"
+docker compose --project-name mono-agent-searxng config --quiet
+docker compose --project-name mono-agent-searxng up -d
+test "$(docker compose --project-name mono-agent-searxng port core 8088)" = \
+  "127.0.0.1:8088"
 ```
 
 The exact port assertion proves Docker published only IPv4 loopback. Verify the
@@ -71,7 +72,17 @@ curl --fail --silent --show-error \
   --header 'Accept: application/json' \
   --data 'q=mono-agent&format=json&categories=general' \
   http://127.0.0.1:8088/search \
-  | node -e 'let body=""; process.stdin.on("data", chunk => body += chunk).on("end", () => { const value = JSON.parse(body); if (!Array.isArray(value.results)) process.exit(1); console.log(`JSON API OK: ${value.results.length} result(s)`); });'
+  | node --input-type=module -e '
+let body = "";
+for await (const chunk of process.stdin) body += chunk;
+const value = JSON.parse(body);
+if (!Array.isArray(value.results)) throw new Error("missing results array");
+const blocked = Array.isArray(value.unresponsive_engines) ? value.unresponsive_engines : [];
+if (value.results.length === 0 && blocked.length > 0) {
+  throw new Error(`empty results with unresponsive engines: ${JSON.stringify(blocked)}`);
+}
+console.log(`JSON API OK: ${value.results.length} result(s)`);
+'
 ```
 
 The examples below assume the independently managed service listens at
@@ -87,18 +98,23 @@ last compatible Compose contract into a new operator-owned directory:
 ```bash
 legacy_searxng_dir="${XDG_CONFIG_HOME:-$HOME/.config}/mono-agent/searxng-retired"
 node scripts/migrate-retired-searxng.mjs --destination "$legacy_searxng_dir"
-docker compose --file "$legacy_searxng_dir/compose.yaml" \
+docker compose --project-name mono-agent-searxng \
+  --file "$legacy_searxng_dir/compose.yaml" \
   --project-directory "$legacy_searxng_dir" config --quiet
-docker compose --file "$legacy_searxng_dir/compose.yaml" \
+docker compose --project-name mono-agent-searxng \
+  --file "$legacy_searxng_dir/compose.yaml" \
   --project-directory "$legacy_searxng_dir" ps
 ```
 
-Pass `--env-file <path>` if the old `.env` is elsewhere. The migration fails
-closed when the secret is missing, the destination is inside this repository,
-or the destination already exists. It writes through a private staging
-directory, preserves the project name `mono-agent-searxng` and cache volume
-`mono-agent-searxng_cache`, and makes **no Docker calls**: it does not start,
-stop, restart, or recreate a container and does not remove a volume.
+Pass `--env-file <path>` if the old `.env` is elsewhere. The migration accepts
+exactly one 64-hex `SEARXNG_SECRET` and writes a fresh `.env` containing only
+that assignment, so legacy Compose control variables cannot change the project.
+It fails closed when the secret is invalid or missing, the canonical destination
+is inside this repository, or the destination is claimed before publication.
+It writes through a private staging directory, preserves the project name
+`mono-agent-searxng` and cache volume `mono-agent-searxng_cache`, and makes
+**no Docker calls**: it does not start, stop, restart, or recreate a container
+and does not remove a volume.
 The source `.env` remains in place until the operator removes it after a
 verified cutover.
 
@@ -107,9 +123,11 @@ chosen maintenance window, cut it over to the new path, then verify the
 migrated service's distinct Compose service and container port:
 
 ```bash
-docker compose --file "$legacy_searxng_dir/compose.yaml" \
+docker compose --project-name mono-agent-searxng \
+  --file "$legacy_searxng_dir/compose.yaml" \
   --project-directory "$legacy_searxng_dir" up -d --no-deps searxng
-test "$(docker compose --file "$legacy_searxng_dir/compose.yaml" \
+test "$(docker compose --project-name mono-agent-searxng \
+  --file "$legacy_searxng_dir/compose.yaml" \
   --project-directory "$legacy_searxng_dir" port searxng 8080)" = \
   "127.0.0.1:8088"
 curl --fail --silent --show-error \
@@ -117,7 +135,17 @@ curl --fail --silent --show-error \
   --header 'Accept: application/json' \
   --data 'q=mono-agent&format=json&categories=general' \
   http://127.0.0.1:8088/search \
-  | node -e 'let body=""; process.stdin.on("data", chunk => body += chunk).on("end", () => { const value = JSON.parse(body); if (!Array.isArray(value.results)) process.exit(1); console.log(`JSON API OK: ${value.results.length} result(s)`); });'
+  | node --input-type=module -e '
+let body = "";
+for await (const chunk of process.stdin) body += chunk;
+const value = JSON.parse(body);
+if (!Array.isArray(value.results)) throw new Error("missing results array");
+const blocked = Array.isArray(value.unresponsive_engines) ? value.unresponsive_engines : [];
+if (value.results.length === 0 && blocked.length > 0) {
+  throw new Error(`empty results with unresponsive engines: ${JSON.stringify(blocked)}`);
+}
+console.log(`JSON API OK: ${value.results.length} result(s)`);
+'
 ```
 
 That explicit command may recreate the container; the migration command never
@@ -125,11 +153,13 @@ runs it. If the service is later retired permanently, choose one cleanup:
 
 ```bash
 # Stop/remove the container and network, but retain the named cache volume.
-docker compose --file "$legacy_searxng_dir/compose.yaml" \
+docker compose --project-name mono-agent-searxng \
+  --file "$legacy_searxng_dir/compose.yaml" \
   --project-directory "$legacy_searxng_dir" down
 
 # Destructive opt-in: also delete the named cache volume.
-docker compose --file "$legacy_searxng_dir/compose.yaml" \
+docker compose --project-name mono-agent-searxng \
+  --file "$legacy_searxng_dir/compose.yaml" \
   --project-directory "$legacy_searxng_dir" down --volumes
 ```
 

@@ -48,12 +48,26 @@ export function cleanBuildOutputs({ repoRoot = REPO_ROOT, log = console.log } = 
   for (const relativeDir of RETIRED_OUTPUT_DIRECTORIES) {
     const outputDir = path.join(repoRoot, relativeDir);
     if (!fs.existsSync(outputDir)) continue;
+    if (hasSymlinkedParent(repoRoot, relativeDir)) {
+      log(`skipped ${relativeDir}: a parent path is a symbolic link`);
+      continue;
+    }
     fs.rmSync(outputDir, { recursive: true, force: true });
     removed.push(relativeDir);
     log(`removed ${relativeDir}`);
   }
   log(`clean: removed ${removed.length} build output ${removed.length === 1 ? "directory" : "directories"}`);
   return removed;
+}
+
+function hasSymlinkedParent(repoRoot, relativeDir) {
+  let candidate = repoRoot;
+  for (const component of path.dirname(relativeDir).split(path.sep)) {
+    candidate = path.join(candidate, component);
+    if (!fs.existsSync(candidate)) return false;
+    if (fs.lstatSync(candidate).isSymbolicLink()) return true;
+  }
+  return false;
 }
 
 // argv[1] is absent when this module is imported rather than executed (`node -e`, test runners).

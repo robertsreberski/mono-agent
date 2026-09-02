@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -9,13 +9,14 @@ import { parse as parseYaml } from "yaml";
 import { migrateRetiredSearxng, parseArgs } from "../migrate-retired-searxng.mjs";
 
 const tempDirs = [];
+const VALID_SECRET = "a".repeat(64);
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
 describe("migrate-retired-searxng", () => {
-  it("atomically creates a restart-compatible operator bundle without a Docker side effect", async () => {
+  it("safely publishes a restart-compatible operator bundle without a Docker side effect", async () => {
     const { root, repoRoot, destination } = await fixture();
     const logs = [];
 
@@ -37,7 +38,7 @@ describe("migrate-retired-searxng", () => {
     expect(parsedCompose.services.searxng.ports).toEqual(["127.0.0.1:8088:8080"]);
     expect(parsedCompose.services.searxng.volumes).toContain("cache:/var/cache/searxng");
     expect(parsedSettings.search.formats).toContain("json");
-    expect(env).toBe("SEARXNG_SECRET=configured-secret\n");
+    expect(env).toBe(`SEARXNG_SECRET=${VALID_SECRET}\n`);
     expect(await readFile(join(repoRoot, "demos/searxng/.env"), "utf8")).toBe(env);
     expect((await stat(join(destination, ".env"))).mode & 0o777).toBe(0o600);
     expect(logs.at(-1)).toBe("No container was started or stopped, and no Docker volume was removed.");
@@ -61,7 +62,7 @@ describe("migrate-retired-searxng", () => {
       repoRoot: placeholder.repoRoot,
       destination: placeholder.destination,
       log: () => {},
-    })).toThrow("does not contain a configured SEARXNG_SECRET");
+    })).toThrow("exactly one 64-hex SEARXNG_SECRET");
     expect(existsSync(placeholder.destination)).toBe(false);
 
     const nested = await fixture();
@@ -79,6 +80,65 @@ describe("migrate-retired-searxng", () => {
     })).toThrow("already exists");
   });
 
+  it("rejects a destination whose existing symlink parent resolves into the repository", async () => {
+    const migration = await fixture();
+    const target = join(migration.repoRoot, "operator-target");
+    const linkedParent = join(migration.root, "operator-link");
+    await mkdir(target);
+    await symlink(target, linkedParent, "dir");
+    const destination = join(linkedParent, "bundle");
+
+    expect(() => migrateRetiredSearxng({
+      repoRoot: migration.repoRoot,
+      destination,
+      log: () => {},
+    })).toThrow("must be outside");
+    expect(existsSync(join(target, "bundle"))).toBe(false);
+  });
+
+  it("publishes only the validated secret so Compose control variables cannot fork the project", async () => {
+    const migration = await fixture({
+      env: [
+        `SEARXNG_SECRET=${VALID_SECRET}`,
+        "COMPOSE_PROJECT_NAME=parallel-project",
+        "COMPOSE_FILE=parallel.yaml",
+        "UNRELATED=value",
+        "",
+      ].join("\n"),
+    });
+
+    migrateRetiredSearxng({
+      repoRoot: migration.repoRoot,
+      destination: migration.destination,
+      log: () => {},
+    });
+
+    expect(await readFile(join(migration.destination, ".env"), "utf8")).toBe(
+      `SEARXNG_SECRET=${VALID_SECRET}\n`,
+    );
+    expect(parseYaml(await readFile(join(migration.destination, "compose.yaml"), "utf8")).name)
+      .toBe("mono-agent-searxng");
+  });
+
+  it("does not replace a destination claimed between staging and publication", async () => {
+    const migration = await fixture();
+
+    expect(() => migrateRetiredSearxng({
+      repoRoot: migration.repoRoot,
+      destination: migration.destination,
+      log: () => {},
+      beforePublish: () => {
+        mkdirSync(migration.destination, { mode: 0o700 });
+        writeFileSync(join(migration.destination, "claimant.txt"), "owned by claimant");
+      },
+    })).toThrow("Destination already exists");
+
+    expect(await readFile(join(migration.destination, "claimant.txt"), "utf8"))
+      .toBe("owned by claimant");
+    expect((await readdir(migration.root)).filter((entry) => entry.startsWith(".operator.migrating-")))
+      .toEqual([]);
+  });
+
   it("requires an explicit destination and accepts an explicit legacy env path", async () => {
     expect(() => parseArgs([])).toThrow("--destination is required");
     expect(parseArgs(["--destination", "/operator", "--env-file", "/secrets/searxng.env"])).toEqual({
@@ -89,7 +149,7 @@ describe("migrate-retired-searxng", () => {
   });
 });
 
-async function fixture({ env = "SEARXNG_SECRET=configured-secret\n", writeEnv = true } = {}) {
+async function fixture({ env = `SEARXNG_SECRET=${VALID_SECRET}\n`, writeEnv = true } = {}) {
   const root = await mkdtemp(join(tmpdir(), "mono-agent-searxng-migration-"));
   tempDirs.push(root);
   const repoRoot = join(root, "repo");
