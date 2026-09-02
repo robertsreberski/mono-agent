@@ -1172,6 +1172,34 @@ describe("SlackAdapter", () => {
     expect(verbatim).toEqual([["slack:C1:171.5", "All clear today."]]);
   });
 
+  it("forwards configured unfurl flags on verbatim native notifications", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { unfurlLinks: false, unfurlMedia: false },
+      responder: {
+        respond: async () => ({ text: "unused" }),
+        deliverVerbatim: async () => undefined,
+      },
+    });
+
+    await adapter.notify("C1", "171.5", "Digest: https://example.test/daily", {
+      verbatim: true,
+    });
+
+    expect(api.postMessageCalls).toEqual([
+      {
+        channel: "C1",
+        text: "Digest: https://example.test/daily",
+        thread_ts: "171.5",
+        mrkdwn: true,
+        unfurl_links: false,
+        unfurl_media: false,
+      },
+    ]);
+  });
+
   it("notify(..., { silent: true }) documents Slack's limitation without inventing a Web API field", async () => {
     const api = new FakeSlackApi();
     const warn = vi.fn();
@@ -2256,6 +2284,31 @@ describe("SlackAdapter", () => {
     // A 👀 "seen" reaction was added once to the triggering message while working.
     expect(api.reactionsAddCalls).toEqual([
       { channel: "D123", timestamp: "171.000001", name: "eyes" },
+    ]);
+  });
+
+  it("forwards configured unfurl flags on interactive native replies", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { unfurlLinks: false, unfurlMedia: false },
+      responder: responderFrom(async () => ({
+        text: "See https://example.test/report",
+      })),
+    });
+
+    await adapter.handleEventCallback(directMessage("share the report"));
+
+    expect(api.postMessageCalls).toEqual([
+      {
+        channel: "D123",
+        text: "See https://example.test/report",
+        thread_ts: "171.000001",
+        mrkdwn: true,
+        unfurl_links: false,
+        unfurl_media: false,
+      },
     ]);
   });
 

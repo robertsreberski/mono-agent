@@ -337,6 +337,10 @@ export interface SlackAdapterMessages {
 }
 
 export interface SlackAdapterStreamOptions {
+  /** Native `chat.postMessage` link-preview behavior; omitted leaves Slack's default unchanged. */
+  unfurlLinks?: boolean;
+  /** Native `chat.postMessage` media-preview behavior; omitted leaves Slack's default unchanged. */
+  unfurlMedia?: boolean;
   initialStatusText?: string;
   editDebounceMs?: number;
   maxMessageChars?: number;
@@ -2829,6 +2833,12 @@ export class SlackAdapter {
       abortSignal: controller.signal,
       ...(deliveryKey === undefined ? {} : { clientMsgId: slackClientMessageId(deliveryKey) }),
       ...(silent === true ? { silent: true } : {}),
+      ...(this.streamOptions.unfurlLinks === undefined
+        ? {}
+        : { unfurlLinks: this.streamOptions.unfurlLinks }),
+      ...(this.streamOptions.unfurlMedia === undefined
+        ? {}
+        : { unfurlMedia: this.streamOptions.unfurlMedia }),
     };
     if (threadTs !== undefined) {
       streamOptions.threadTs = threadTs;
@@ -3395,6 +3405,12 @@ export class SlackAdapter {
       // interim edits); a tuning override can restore interim streaming.
       finalOnly: this.streamOptions.finalOnly ?? true,
       abortSignal: controller.signal,
+      ...(this.streamOptions.unfurlLinks === undefined
+        ? {}
+        : { unfurlLinks: this.streamOptions.unfurlLinks }),
+      ...(this.streamOptions.unfurlMedia === undefined
+        ? {}
+        : { unfurlMedia: this.streamOptions.unfurlMedia }),
     };
     if (this.streamOptions.initialStatusText !== undefined) {
       streamOptions.initialStatusText = this.streamOptions.initialStatusText;

@@ -1455,6 +1455,8 @@ function exampleFor(id: string): SettingsJsonValue {
     "slack.botToken": "env:MONO_AGENT_SLACK_BOT_TOKEN",
     "slack.appToken": "env:MONO_AGENT_SLACK_APP_TOKEN",
     "slack.stripMentionText": false,
+    "slack.unfurlLinks": false,
+    "slack.unfurlMedia": false,
     "slack.resolveUserNames": true,
     "slack.resolveChannelNames": true,
     "slack.threadContext.enabled": true,
@@ -1501,6 +1503,12 @@ function descriptionFor(id: string): string {
   }
   if (id === "slack.stripMentionText") {
     return "When unset, preserves one readable authenticated self-mention marker; `true` restores legacy full stripping and `false` keeps raw mention forms.";
+  }
+  if (id === "slack.unfurlLinks") {
+    return "Controls link previews on native Slack agent `chat.postMessage` requests. When unset, the request field is omitted and Slack's current default behavior is preserved.";
+  }
+  if (id === "slack.unfurlMedia") {
+    return "Controls media previews on native Slack agent `chat.postMessage` requests. When unset, the request field is omitted and Slack's current default behavior is preserved.";
   }
   if (id === "slack.resolveUserNames") {
     return "Resolves the speaker's display name and handle via `users.info` so the agent knows who is talking. Requires the `users:read` scope; a missing scope degrades to an unnamed speaker rather than failing turns.";

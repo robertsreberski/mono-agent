@@ -358,6 +358,15 @@ describe("config reference", () => {
       description: expect.stringContaining("preserves one readable authenticated self-mention marker"),
     });
     expect(slackMentionText).not.toHaveProperty("default");
+    for (const key of ["unfurlLinks", "unfurlMedia"] as const) {
+      const unfurl = schemaNode(schema, "slack", key);
+      expect(unfurl).toMatchObject({
+        type: "boolean",
+        examples: [false],
+        description: expect.stringContaining("chat.postMessage"),
+      });
+      expect(unfurl).not.toHaveProperty("default");
+    }
   });
 
   it("models durable continuations as a strict fixed-port host-owned block", () => {

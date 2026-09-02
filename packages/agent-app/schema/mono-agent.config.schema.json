@@ -2444,6 +2444,20 @@
           ],
           "type": "boolean"
         },
+        "unfurlLinks": {
+          "description": "Controls link previews on native Slack agent `chat.postMessage` requests. When unset, the request field is omitted and Slack's current default behavior is preserved.",
+          "examples": [
+            false
+          ],
+          "type": "boolean"
+        },
+        "unfurlMedia": {
+          "description": "Controls media previews on native Slack agent `chat.postMessage` requests. When unset, the request field is omitted and Slack's current default behavior is preserved.",
+          "examples": [
+            false
+          ],
+          "type": "boolean"
+        },
         "resolveUserNames": {
           "description": "Resolves the speaker's display name and handle via `users.info` so the agent knows who is talking. Requires the `users:read` scope; a missing scope degrades to an unnamed speaker rather than failing turns.",
           "examples": [

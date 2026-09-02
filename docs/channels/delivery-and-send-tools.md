@@ -106,6 +106,19 @@ Slack final replies and `SlackSendMessage` both chunk at the shared 3,800-charac
 
 Chunks break on a paragraph, line, or word boundary when one is available near the end of the budget, and a final answer's continuation chunks are posted **in the thread under the first message** rather than as sibling top-level messages — so one answer reads as one card plus its thread, and a reply anywhere in that thread resumes the conversation.
 
+### Slack native-message unfurls
+
+Unlike the code-only stream tuning above, `slack.unfurlLinks` and
+`slack.unfurlMedia` are optional operator config. When defined, they map to
+Slack's `unfurl_links` and `unfurl_media` fields on every native agent
+`chat.postMessage` request in the normal stream, including interactive replies
+and native cron notifications. Omitted values remain omitted, preserving the
+existing Slack behavior independently for each field.
+
+`SlackSendMessage` remains an explicit tool path: its own `unfurl_links` and
+`unfurl_media` arguments are per-call values and are not inherited from or
+overridden by the native-message config.
+
 ## App-owned send tools
 
 mono-agent derives MCP **send tools** from already-enabled chat adapters so the agent can push a message back into a chat from inside a turn:

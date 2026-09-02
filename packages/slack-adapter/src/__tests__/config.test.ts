@@ -354,6 +354,43 @@ describe("loadSlackAdapterConfig", () => {
     })).resolves.toMatchObject({ stripMentionText: false });
   });
 
+  it("loads optional Slack unfurl settings from JSON and lets env override them", async () => {
+    const config = await loadSlackAdapterConfig({
+      env: { MONO_AGENT_SLACK_UNFURL_MEDIA: "false" },
+      json: {
+        slack: {
+          enabled: false,
+          unfurlLinks: false,
+          unfurlMedia: true,
+        },
+      },
+    });
+
+    expect(config).toMatchObject({ unfurlLinks: false, unfurlMedia: false });
+  });
+
+  it("preserves absent Slack unfurl settings and rejects malformed values", async () => {
+    const omitted = await loadSlackAdapterConfig({ env: {} });
+    expect(Object.hasOwn(omitted, "unfurlLinks")).toBe(false);
+    expect(Object.hasOwn(omitted, "unfurlMedia")).toBe(false);
+
+    const blank = await loadSlackAdapterConfig({
+      env: {
+        MONO_AGENT_SLACK_UNFURL_LINKS: " ",
+        MONO_AGENT_SLACK_UNFURL_MEDIA: "  ",
+      },
+    });
+    expect(Object.hasOwn(blank, "unfurlLinks")).toBe(false);
+    expect(Object.hasOwn(blank, "unfurlMedia")).toBe(false);
+
+    await expect(loadSlackAdapterConfig({
+      env: { MONO_AGENT_SLACK_UNFURL_LINKS: "sometimes" },
+    })).rejects.toMatchObject({
+      code: "invalid_config",
+      details: { env: "MONO_AGENT_SLACK_UNFURL_LINKS" },
+    });
+  });
+
   it("ignores malformed shortcuts config while disabled", async () => {
     const config = await loadSlackAdapterConfig({
       env: {},

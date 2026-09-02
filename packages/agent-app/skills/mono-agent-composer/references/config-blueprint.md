@@ -329,6 +329,8 @@ new agent.
     "botUserIds": ["U0BOT"],               // optional supplemental ID; own ID is auto-discovered
     "mentionTextAliases": ["@agent"],
     "stripMentionText": true,
+    "unfurlLinks": false,                   // optional native chat.postMessage override
+    "unfurlMedia": false,                   // omitted preserves Slack's default
     "shortcuts": [                         // slack.shortcuts: JSON-only; callbackId matches the Slack app
       {
         "callbackId": "triage_request",

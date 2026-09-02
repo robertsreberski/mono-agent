@@ -35,7 +35,9 @@ MONO_AGENT_SLACK_APP_TOKEN=xapp-replace-me
   "slack": {
     "enabled": true,
     "allowedChannelIds": ["C0123"],
-    "allowAllChannels": false
+    "allowAllChannels": false,
+    "unfurlLinks": false,
+    "unfurlMedia": false
   }
 }
 ```
@@ -326,6 +328,17 @@ and the platform user id all remain host-only. Note the interaction with
 `SlackSendMessage`: that tool takes a raw channel id, so a deployment running it
 with `allowAllChannels` can post to any channel id the model has seen. An
 explicit channel allowlist still bounds delivery.
+
+### Link and media unfurls
+
+Set `slack.unfurlLinks` and/or `slack.unfurlMedia` to control previews on native
+agent `chat.postMessage` calls, including interactive replies and cron
+notifications delivered through the normal Slack message stream. Each setting
+is optional and maps to Slack's `unfurl_links` / `unfurl_media` request field.
+When a setting is omitted, the adapter omits that request field and preserves
+Slack's existing default behavior. The `SlackSendMessage` tool keeps its own
+per-call flags; these adapter-level settings do not override explicit send-tool
+calls.
 
 ### Bare mentions
 
