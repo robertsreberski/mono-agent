@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 import {
+  chmodSync,
+  closeSync,
+  fchmodSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -113,6 +118,8 @@ export function migrateRetiredSearxng({
   envFile,
   log = console.log,
   beforePublish,
+  beforeAtomicPublish,
+  afterAtomicPublish,
 } = {}) {
   if (typeof destination !== "string" || destination.trim().length === 0) {
     throw new Error("destination is required.");
@@ -124,10 +131,6 @@ export function migrateRetiredSearxng({
   if (isWithin(canonicalRepoRoot, canonicalDestination)) {
     throw new Error("Destination must be outside the mono-agent repository.");
   }
-  if (entryExists(absoluteDestination)) {
-    throw new Error(`Destination already exists: ${absoluteDestination}`);
-  }
-
   const absoluteEnvFile = path.resolve(envFile ?? path.join(absoluteRepoRoot, LEGACY_ENV));
   let envText;
   try {
@@ -149,47 +152,200 @@ export function migrateRetiredSearxng({
     );
   }
 
-  const parent = path.dirname(absoluteDestination);
-  const staging = path.join(parent, `.${path.basename(absoluteDestination)}.migrating-${randomUUID()}`);
-  mkdirSync(parent, { recursive: true, mode: 0o700 });
-  const canonicalDestinationAfterMkdir = path.join(realpathSync(parent), path.basename(absoluteDestination));
-  if (canonicalDestinationAfterMkdir !== canonicalDestination
-    || isWithin(canonicalRepoRoot, canonicalDestinationAfterMkdir)) {
+  const lexicalParent = path.dirname(absoluteDestination);
+  mkdirSync(lexicalParent, { recursive: true, mode: 0o700 });
+  const canonicalParent = realpathSync(lexicalParent);
+  const destinationName = path.basename(absoluteDestination);
+  const stableDestination = path.join(canonicalParent, destinationName);
+  if (stableDestination !== canonicalDestination
+    || isWithin(canonicalRepoRoot, stableDestination)) {
     throw new Error("Destination path changed or resolves inside the mono-agent repository.");
   }
+  const parentIdentity = secureDirectoryIdentity(canonicalParent, "destination parent");
+  const assertStableCanonicalParent = () => assertSecureDirectoryIdentity(
+    canonicalParent,
+    parentIdentity,
+    "Destination parent changed after validation; no bundle was published.",
+    canonicalParent,
+  );
+  const assertDestinationBoundary = () => {
+    assertStableCanonicalParent();
+    const currentDestination = resolveProspectivePath(absoluteDestination);
+    if (currentDestination !== stableDestination
+      || isWithin(canonicalRepoRoot, currentDestination)) {
+      throw new Error("Destination path changed or resolves inside the mono-agent repository.");
+    }
+  };
+
+  assertDestinationBoundary();
+  if (entryExists(stableDestination)) {
+    if (isCompletedBundle(stableDestination, secret)) {
+      return completedResult(absoluteDestination, log, "Verified the already completed");
+    }
+    throw new Error(`Destination already exists: ${absoluteDestination}`);
+  }
+
+  const staging = path.join(
+    canonicalParent,
+    `.${destinationName}.migrating-${randomUUID()}`,
+  );
   let stagingCreated = false;
-  let destinationCreated = false;
+  let stagingIdentity;
+  let published = false;
+  let wonPublication = false;
   try {
+    assertDestinationBoundary();
     mkdirSync(staging, { mode: 0o700 });
     stagingCreated = true;
-    writeFileSync(path.join(staging, "compose.yaml"), COMPOSE_YAML, { mode: 0o644 });
-    writeFileSync(path.join(staging, "settings.yml"), SETTINGS_YAML, { mode: 0o644 });
-    writeFileSync(path.join(staging, ".env"), `SEARXNG_SECRET=${secret}\n`, { mode: 0o600 });
+    chmodSync(staging, 0o700);
+    stagingIdentity = secureDirectoryIdentity(staging, "private staging directory");
+    const assertPrivateStaging = () => {
+      assertDestinationBoundary();
+      assertSecureDirectoryIdentity(
+        staging,
+        stagingIdentity,
+        "Private migration bundle changed before publication.",
+        staging,
+      );
+    };
+
+    // This seam runs while the private directory is still empty. A parent-path
+    // swap therefore fails before the secret or any runnable bundle is written.
     beforePublish?.();
-    try {
-      mkdirSync(absoluteDestination, { mode: 0o700 });
-      destinationCreated = true;
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "EEXIST") {
+    assertPrivateStaging();
+    if (readdirSync(staging).length !== 0) {
+      throw new Error("Private migration staging directory is no longer empty.");
+    }
+    writeStagedFile(staging, "compose.yaml", COMPOSE_YAML, 0o644, assertPrivateStaging);
+    writeStagedFile(staging, "settings.yml", SETTINGS_YAML, 0o644, assertPrivateStaging);
+    writeStagedFile(
+      staging,
+      ".env",
+      `SEARXNG_SECRET=${secret}\n`,
+      0o600,
+      assertPrivateStaging,
+    );
+    assertPrivateStaging();
+    assertCompleteBundle(staging, secret);
+
+    beforeAtomicPublish?.();
+    assertPrivateStaging();
+    assertCompleteBundle(staging, secret);
+    if (entryExists(stableDestination)) {
+      if (!isCompletedBundle(stableDestination, secret)) {
         throw new Error(`Destination already exists: ${absoluteDestination}`);
       }
-      throw error;
+      cleanupPrivateStaging(staging, stagingIdentity, assertStableCanonicalParent);
+      stagingCreated = false;
+      return completedResult(absoluteDestination, log, "Accepted the concurrently completed");
     }
-    for (const filename of ["compose.yaml", "settings.yml", ".env"]) {
-      renameSync(path.join(staging, filename), path.join(absoluteDestination, filename));
+
+    try {
+      // The destination is published exactly once. A whole-directory rename
+      // does not follow a raced destination symlink and never exposes a partial
+      // bundle; a normal concurrent loser validates the non-empty winner below.
+      renameSync(staging, stableDestination);
+      stagingCreated = false;
+      published = true;
+      wonPublication = true;
+    } catch (error) {
+      if (!isCompletedBundle(stableDestination, secret)) throw error;
+      cleanupPrivateStaging(staging, stagingIdentity, assertStableCanonicalParent);
+      stagingCreated = false;
+      published = true;
     }
-    rmSync(staging, { recursive: true, force: true });
-    stagingCreated = false;
+
+    afterAtomicPublish?.();
+    assertDestinationBoundary();
+    if (wonPublication) {
+      assertSecureDirectoryIdentity(
+        stableDestination,
+        stagingIdentity,
+        "Published migration bundle changed identity.",
+        stableDestination,
+      );
+    }
+    assertCompleteBundle(stableDestination, secret);
   } catch (error) {
-    if (destinationCreated) rmSync(absoluteDestination, { recursive: true, force: true });
-    if (stagingCreated) rmSync(staging, { recursive: true, force: true });
+    if (!published && stagingCreated && stagingIdentity !== undefined) {
+      cleanupPrivateStaging(staging, stagingIdentity, assertStableCanonicalParent);
+    }
     throw error;
   }
 
-  log(`Migrated the retired SearXNG Compose files to ${absoluteDestination}.`);
+  return completedResult(absoluteDestination, log, "Migrated the retired");
+}
+
+function writeStagedFile(directory, filename, content, mode, assertPrivateStaging) {
+  assertPrivateStaging();
+  const file = path.join(directory, filename);
+  const descriptor = openSync(file, "wx", mode);
+  try {
+    fchmodSync(descriptor, mode);
+    writeFileSync(descriptor, content);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function cleanupPrivateStaging(staging, stagingIdentity, assertStableCanonicalParent) {
+  try {
+    assertStableCanonicalParent();
+    assertSecureDirectoryIdentity(
+      staging,
+      stagingIdentity,
+      "Private staging directory changed before cleanup.",
+      staging,
+    );
+    rmSync(staging, { recursive: true, force: true });
+  } catch {
+    // Never redirect cleanup through a changed canonical parent or staging path.
+  }
+}
+
+function assertCompleteBundle(directory, secret) {
+  const expected = new Map([
+    [".env", { content: `SEARXNG_SECRET=${secret}\n`, mode: 0o600 }],
+    ["compose.yaml", { content: COMPOSE_YAML, mode: 0o644 }],
+    ["settings.yml", { content: SETTINGS_YAML, mode: 0o644 }],
+  ]);
+  const directoryDetails = lstatSync(directory);
+  if (!directoryDetails.isDirectory()
+    || directoryDetails.isSymbolicLink()
+    || (directoryDetails.mode & 0o777) !== 0o700) {
+    throw new Error("Migration bundle directory permissions or type changed.");
+  }
+  const entries = readdirSync(directory).sort();
+  if (entries.join("\0") !== [...expected.keys()].sort().join("\0")) {
+    throw new Error("Private migration bundle is incomplete or contains unexpected entries.");
+  }
+  for (const [filename, { content, mode }] of expected) {
+    const file = path.join(directory, filename);
+    const details = lstatSync(file);
+    if (!details.isFile()
+      || details.isSymbolicLink()
+      || (details.mode & 0o777) !== mode
+      || readFileSync(file, "utf8") !== content) {
+      throw new Error(`Migration bundle file changed: ${filename}`);
+    }
+  }
+}
+
+function isCompletedBundle(destination, secret) {
+  try {
+    secureDirectoryIdentity(destination, "completed migration destination");
+    assertCompleteBundle(destination, secret);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function completedResult(destination, log, action) {
+  log(`${action} SearXNG Compose files at ${destination}.`);
   log("No container was started or stopped, and no Docker volume was removed.");
   return {
-    destination: absoluteDestination,
+    destination,
     projectName: "mono-agent-searxng",
     volumeName: "mono-agent-searxng_cache",
   };
@@ -198,6 +354,45 @@ export function migrateRetiredSearxng({
 function isWithin(parent, candidate) {
   const relative = path.relative(parent, candidate);
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function secureDirectoryIdentity(candidate, label) {
+  let details;
+  try {
+    details = lstatSync(candidate);
+  } catch {
+    throw new Error(`Could not inspect ${label}: ${candidate}`);
+  }
+  if (details.isSymbolicLink() || !details.isDirectory()) {
+    throw new Error(`${label} must be a real directory: ${candidate}`);
+  }
+  if (typeof process.getuid === "function" && details.uid !== process.getuid()) {
+    throw new Error(`${label} must be owned by the current user: ${candidate}`);
+  }
+  if ((details.mode & 0o022) !== 0) {
+    throw new Error(`${label} must not be group- or world-writable: ${candidate}`);
+  }
+  return { dev: details.dev, ino: details.ino };
+}
+
+function assertSecureDirectoryIdentity(candidate, expected, message, expectedCanonicalPath) {
+  let details;
+  let canonical;
+  try {
+    details = lstatSync(candidate);
+    canonical = realpathSync(candidate);
+  } catch {
+    throw new Error(message);
+  }
+  if (details.isSymbolicLink()
+    || !details.isDirectory()
+    || details.dev !== expected.dev
+    || details.ino !== expected.ino
+    || canonical !== expectedCanonicalPath
+    || (details.mode & 0o022) !== 0
+    || (typeof process.getuid === "function" && details.uid !== process.getuid())) {
+    throw new Error(message);
+  }
 }
 
 function resolveProspectivePath(candidate) {
@@ -218,8 +413,10 @@ function entryExists(candidate) {
   try {
     lstatSync(candidate);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (error instanceof Error && "code" in error
+      && (error.code === "ENOENT" || error.code === "ENOTDIR")) return false;
+    throw error;
   }
 }
 
@@ -230,8 +427,11 @@ function usage() {
     `  node ${bin} --destination <operator-directory> [--env-file <legacy-env>]`,
     "",
     "Copies the retired SearXNG Compose contract and one validated 64-hex secret into a new",
-    "operator-owned directory. The destination must resolve outside this repository and must",
-    "not already exist; the emitted .env contains no other legacy or Compose control variables.",
+    "operator-owned directory outside this repository. An existing destination is accepted only",
+    "when it is the exact completed bundle from an earlier run. The emitted .env contains no",
+    "other legacy or Compose control variables.",
+    "The canonical parent must be current-user owned and not group/world writable.",
+    "A complete private sibling is renamed once; an exact completed destination is idempotent.",
     "This command never invokes Docker, stops a service, or removes a volume.",
   ].join("\n");
 }

@@ -110,13 +110,23 @@ Pass `--env-file <path>` if the old `.env` is elsewhere. The migration accepts
 exactly one 64-hex `SEARXNG_SECRET` and writes a fresh `.env` containing only
 that assignment, so legacy Compose control variables cannot change the project.
 It fails closed when the secret is invalid or missing, the canonical destination
-is inside this repository, or the destination is claimed before publication.
-It writes through a private staging directory, preserves the project name
-`mono-agent-searxng` and cache volume `mono-agent-searxng_cache`, and makes
-**no Docker calls**: it does not start, stop, restart, or recreate a container
-and does not remove a volume.
+is inside this repository, another path owns the destination, or the canonical
+parent is not owned by the current user or is group/world writable. It builds
+and verifies one complete random sibling directory, then exposes that directory
+with one rename. A crash before the rename leaves the destination absent; a
+retry uses a new staging directory. A crash after the rename leaves the exact
+complete bundle, which a retry accepts idempotently. The bundle preserves the
+project name `mono-agent-searxng` and cache volume
+`mono-agent-searxng_cache`, and the command makes **no Docker calls**: it does
+not start, stop, restart, or recreate a container and does not remove a volume.
 The source `.env` remains in place until the operator removes it after a
 verified cutover.
+
+This portable Node implementation assumes a private local filesystem parent and
+does not claim protection from an actively hostile same-UID process in the final
+check-to-rename syscall window, power loss without filesystem durability, or
+non-local/NFS rename semantics. Do not use a shared or adversarially writable
+parent for this migration.
 
 The existing container still has its old bind-mount source. During an operator-
 chosen maintenance window, cut it over to the new path, then verify the
