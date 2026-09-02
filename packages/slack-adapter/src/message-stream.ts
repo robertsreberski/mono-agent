@@ -46,6 +46,10 @@ export interface SlackMessageStreamOptions {
   threadTs?: SlackMessageTs;
   /** Stable UUID forwarded to chat.postMessage for duplicate suppression. */
   clientMsgId?: string;
+  /** Forwarded to native `chat.postMessage` calls when explicitly configured. */
+  unfurlLinks?: boolean;
+  /** Forwarded to native `chat.postMessage` calls when explicitly configured. */
+  unfurlMedia?: boolean;
   /**
    * Compatibility request for notification-suppressed delivery. Slack's
    * `chat.postMessage` API has no bot-controlled suppression field, so this
@@ -180,6 +184,8 @@ class SlackChannelTransport implements ChannelTransport {
   private readonly channelId: SlackChannelId;
   private readonly threadTs: SlackMessageTs | undefined;
   private readonly clientMsgId: string | undefined;
+  private readonly unfurlLinks: boolean | undefined;
+  private readonly unfurlMedia: boolean | undefined;
   private readonly silentRequested: boolean;
   private readonly reactToTs: SlackMessageTs | undefined;
   private readonly assistantStatusText: string;
@@ -204,6 +210,8 @@ class SlackChannelTransport implements ChannelTransport {
     channelId: SlackChannelId;
     threadTs?: SlackMessageTs;
     clientMsgId?: string;
+    unfurlLinks?: boolean;
+    unfurlMedia?: boolean;
     silent: boolean;
     reactToTs?: SlackMessageTs;
     assistantStatusText: string;
@@ -217,6 +225,8 @@ class SlackChannelTransport implements ChannelTransport {
     this.channelId = options.channelId;
     this.threadTs = options.threadTs;
     this.clientMsgId = options.clientMsgId;
+    this.unfurlLinks = options.unfurlLinks;
+    this.unfurlMedia = options.unfurlMedia;
     this.silentRequested = options.silent;
     this.reactToTs = options.reactToTs;
     this.assistantStatusText = options.assistantStatusText;
@@ -283,6 +293,8 @@ class SlackChannelTransport implements ChannelTransport {
           text,
           mrkdwn: options.markdown,
           ...(clientMsgId === undefined ? {} : { client_msg_id: clientMsgId }),
+          ...(this.unfurlLinks === undefined ? {} : { unfurl_links: this.unfurlLinks }),
+          ...(this.unfurlMedia === undefined ? {} : { unfurl_media: this.unfurlMedia }),
         },
         options.continuesMessage,
       ),
@@ -496,6 +508,8 @@ export class SlackMessageStream implements AgentMessageStream {
       channelId: options.channelId,
       ...(options.threadTs === undefined ? {} : { threadTs: options.threadTs }),
       ...(options.clientMsgId === undefined ? {} : { clientMsgId: options.clientMsgId }),
+      ...(options.unfurlLinks === undefined ? {} : { unfurlLinks: options.unfurlLinks }),
+      ...(options.unfurlMedia === undefined ? {} : { unfurlMedia: options.unfurlMedia }),
       silent: options.silent ?? false,
       ...(options.reactToTs === undefined ? {} : { reactToTs: options.reactToTs }),
       assistantStatusText: options.assistantStatusText ?? DEFAULT_ASSISTANT_STATUS_TEXT,

@@ -118,6 +118,62 @@ describe("SlackMessageStream", () => {
     ]);
   });
 
+  it("forwards configured unfurl flags on native message posts", async () => {
+    const api = new FakeSlackApi();
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C1",
+      finalOnly: true,
+      unfurlLinks: false,
+      unfurlMedia: false,
+    });
+
+    await stream.finish("See https://example.test/report");
+
+    expect(api.postMessageCalls).toEqual([
+      {
+        channel: "C1",
+        text: "See https://example.test/report",
+        mrkdwn: true,
+        unfurl_links: false,
+        unfurl_media: false,
+      },
+    ]);
+  });
+
+  it("omits native unfurl request fields when stream settings are unset", async () => {
+    const api = new FakeSlackApi();
+    const stream = new SlackMessageStream({ api, channelId: "C1", finalOnly: true });
+
+    await stream.finish("See https://example.test/report");
+
+    expect(Object.hasOwn(api.postMessageCalls[0] ?? {}, "unfurl_links")).toBe(false);
+    expect(Object.hasOwn(api.postMessageCalls[0] ?? {}, "unfurl_media")).toBe(false);
+  });
+
+  it("keeps native unfurl request fields independent when only one is set", async () => {
+    const linksApi = new FakeSlackApi();
+    const mediaApi = new FakeSlackApi();
+
+    await new SlackMessageStream({
+      api: linksApi,
+      channelId: "C1",
+      finalOnly: true,
+      unfurlLinks: false,
+    }).finish("link only");
+    await new SlackMessageStream({
+      api: mediaApi,
+      channelId: "C1",
+      finalOnly: true,
+      unfurlMedia: false,
+    }).finish("media only");
+
+    expect(linksApi.postMessageCalls[0]).toMatchObject({ unfurl_links: false });
+    expect(Object.hasOwn(linksApi.postMessageCalls[0] ?? {}, "unfurl_media")).toBe(false);
+    expect(mediaApi.postMessageCalls[0]).toMatchObject({ unfurl_media: false });
+    expect(Object.hasOwn(mediaApi.postMessageCalls[0] ?? {}, "unfurl_links")).toBe(false);
+  });
+
   it("warns before the first silent-requested post and only once across overflow posts", async () => {
     const api = new FakeSlackApi();
     const postCountsAtWarning: number[] = [];

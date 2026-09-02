@@ -38,7 +38,9 @@ Enable the destination adapter and add the cron job. `conversationId` is the cro
   },
   "slack": {
     "enabled": true,
-    "allowedChannelIds": ["C012345"]
+    "allowedChannelIds": ["C012345"],
+    "unfurlLinks": false,
+    "unfurlMedia": false
   },
   "cron": {
     "jobs": [
@@ -87,6 +89,10 @@ File jobs merge with `cron.jobs`; duplicate ids error.
 Channel allowlists still apply. A Slack destination must be in `allowedChannelIds` unless `allowAllChannels` is enabled; a Telegram destination must be in `allowedChatIds` unless `allowAllChats` is enabled.
 :::
 
+The optional Slack unfurl settings above apply to the native cron notification
+because it uses the adapter's normal message stream. Omit either key to preserve
+Slack's current default for that preview type.
+
 ## Steps
 
 1. `mono-agent init --model claude:claude-sonnet-4-6`
@@ -98,7 +104,7 @@ Channel allowlists still apply. A Slack destination must be in `allowedChannelId
 ## Smoke test
 
 :::tip
-Run a one-off cron tick; verify the agent's final answer is the digest and it lands verbatim in the destination — no tool call involved. To check the silent path, have the prompt reply `NOTHING_TO_REPORT` and confirm nothing is posted. Delivery is best-effort: skipped or failed notification attempts are logged without changing the cron job result.
+Run a one-off cron tick; verify the agent's final answer is the digest and it lands verbatim in the destination — no tool call involved. With the example Slack config, also verify the post has no link or media preview. To check the silent path, have the prompt reply `NOTHING_TO_REPORT` and confirm nothing is posted. Delivery is best-effort: skipped or failed notification attempts are logged without changing the cron job result.
 :::
 
 ## Related

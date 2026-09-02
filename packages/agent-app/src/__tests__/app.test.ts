@@ -2705,6 +2705,52 @@ describe("startMonoAgentApp", () => {
     await running.stop();
   });
 
+  it("forwards Slack unfurl config into native stream options without materializing defaults", async () => {
+    const captured: SlackAdapterStartOptions[] = [];
+    const driver = createSlackChannelDriver({
+      startAdapter: async (options: SlackAdapterStartOptions) => {
+        captured.push(options);
+        return {
+          stop: async () => undefined,
+          adapter: { notify: async () => ({ delivered: true }) },
+        } as never;
+      },
+    });
+    const baseSlackConfig = {
+      enabled: true,
+      botToken: "xoxb",
+      appToken: "xapp",
+      allowedChannelIds: ["D1"],
+      allowAllChannels: false,
+      botUserIds: [],
+      mentionTextAliases: [],
+    } as const;
+
+    const configured = await driver.start({
+      config: {
+        ...baseSlackConfig,
+        unfurlLinks: false,
+        unfurlMedia: false,
+      } as never,
+      coreConfig: parsedCoreConfig(),
+      responder: { async respond() { return { text: "ok" }; } },
+      cwd: dir,
+      onFailure: vi.fn(),
+    });
+    expect(captured[0]?.stream).toEqual({ unfurlLinks: false, unfurlMedia: false });
+    await configured.stop();
+
+    const omitted = await driver.start({
+      config: baseSlackConfig as never,
+      coreConfig: parsedCoreConfig(),
+      responder: { async respond() { return { text: "ok" }; } },
+      cwd: dir,
+      onFailure: vi.fn(),
+    });
+    expect(Object.hasOwn(captured[1] ?? {}, "stream")).toBe(false);
+    await omitted.stop();
+  });
+
   it("forwards Slack Socket Mode tuning config into the adapter's reconnect/heartbeat options", async () => {
     let captured: SlackAdapterStartOptions | undefined;
     const driver = createSlackChannelDriver({

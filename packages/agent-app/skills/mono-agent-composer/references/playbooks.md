@@ -114,12 +114,12 @@ Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the
 ```json
 {
   "runtime": { "model": "claude:claude-sonnet-4-6" },
-  "slack": { "enabled": true, "allowedChannelIds": ["C012345"] },
+  "slack": { "enabled": true, "allowedChannelIds": ["C012345"], "unfurlLinks": false, "unfurlMedia": false },
   "cron": { "jobs": [{ "id": "morning-digest", "enabled": true, "expression": "0 9 * * *", "timezone": "America/New_York", "prompt": "Build the morning digest. Your final answer is the digest to notify.", "conversationId": "daily-digest", "notify": true, "notifyConversationId": "slack:C012345" }] }
 }
 ```
 **Steps:** `mono-agent init` → add the destination adapter and allowlist → add the cron job (or `cron/morning-digest.md`) with `conversationId`, IANA timezone, `notify: true`, and optional `notifyConversationId` → `validate` → `start`.
-**Smoke:** trigger a one-off tick; confirm the final answer lands verbatim in the allowed destination with no tool call and `conversationId` shares context across ticks. Return `NOTHING_TO_REPORT` to test the silent path.
+**Smoke:** trigger a one-off tick; confirm the final answer lands verbatim in the allowed destination with no tool call, no Slack link/media preview under the example config, and `conversationId` shares context across ticks. Return `NOTHING_TO_REPORT` to test the silent path.
 
 ## 7. A2A provider + consumer pair
 **For:** a platform integrator connecting two agents over A2A.

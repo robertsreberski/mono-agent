@@ -79,6 +79,10 @@ export interface SlackAdapterConfig {
   readonly botUserIds: readonly string[];
   readonly mentionTextAliases: readonly string[];
   readonly stripMentionText?: boolean;
+  /** Native `chat.postMessage` link-preview behavior; omitted leaves Slack's default unchanged. */
+  readonly unfurlLinks?: boolean;
+  /** Native `chat.postMessage` media-preview behavior; omitted leaves Slack's default unchanged. */
+  readonly unfurlMedia?: boolean;
   /** Shortcut bindings, read from the `slack.shortcuts` JSON array. */
   readonly shortcuts: readonly SlackShortcutConfig[];
   /** App Home tab config, read from the `slack.homeTab` JSON object. */
@@ -178,6 +182,24 @@ export async function loadSlackAdapterConfig(
         false,
         invalidConfig,
       );
+  const unfurlLinksRaw = env.MONO_AGENT_SLACK_UNFURL_LINKS;
+  const unfurlLinks = normalizeOptionalString(unfurlLinksRaw) === undefined
+    ? undefined
+    : readBoolean(
+        unfurlLinksRaw,
+        "MONO_AGENT_SLACK_UNFURL_LINKS",
+        false,
+        invalidConfig,
+      );
+  const unfurlMediaRaw = env.MONO_AGENT_SLACK_UNFURL_MEDIA;
+  const unfurlMedia = normalizeOptionalString(unfurlMediaRaw) === undefined
+    ? undefined
+    : readBoolean(
+        unfurlMediaRaw,
+        "MONO_AGENT_SLACK_UNFURL_MEDIA",
+        false,
+        invalidConfig,
+      );
   const resolveUserNames = readBoolean(
     env.MONO_AGENT_SLACK_RESOLVE_USER_NAMES,
     "MONO_AGENT_SLACK_RESOLVE_USER_NAMES",
@@ -204,6 +226,8 @@ export async function loadSlackAdapterConfig(
       botUserIds,
       mentionTextAliases,
       ...(stripMentionText === undefined ? {} : { stripMentionText }),
+      ...(unfurlLinks === undefined ? {} : { unfurlLinks }),
+      ...(unfurlMedia === undefined ? {} : { unfurlMedia }),
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames,
@@ -236,6 +260,8 @@ export async function loadSlackAdapterConfig(
     botUserIds,
     mentionTextAliases,
     ...(stripMentionText === undefined ? {} : { stripMentionText }),
+    ...(unfurlLinks === undefined ? {} : { unfurlLinks }),
+    ...(unfurlMedia === undefined ? {} : { unfurlMedia }),
     shortcuts,
     homeTab,
     resolveUserNames,
@@ -516,6 +542,8 @@ export const SLACK_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "slack.botUserIds", env: "MONO_AGENT_SLACK_BOT_USER_IDS", kind: "csv", fromJson: (s) => s.botUserIds },
   { id: "slack.mentionTextAliases", env: "MONO_AGENT_SLACK_MENTION_TEXT_ALIASES", kind: "csv", fromJson: (s) => s.mentionTextAliases },
   { id: "slack.stripMentionText", env: "MONO_AGENT_SLACK_STRIP_MENTION_TEXT", kind: "boolean", fromJson: (s) => s.stripMentionText },
+  { id: "slack.unfurlLinks", env: "MONO_AGENT_SLACK_UNFURL_LINKS", kind: "boolean", fromJson: (s) => s.unfurlLinks },
+  { id: "slack.unfurlMedia", env: "MONO_AGENT_SLACK_UNFURL_MEDIA", kind: "boolean", fromJson: (s) => s.unfurlMedia },
   { id: "slack.resolveUserNames", env: "MONO_AGENT_SLACK_RESOLVE_USER_NAMES", kind: "boolean", fromJson: (s) => s.resolveUserNames },
   { id: "slack.resolveChannelNames", env: "MONO_AGENT_SLACK_RESOLVE_CHANNEL_NAMES", kind: "boolean", fromJson: (s) => s.resolveChannelNames },
   { id: "slack.threadContext.enabled", env: "MONO_AGENT_SLACK_THREAD_CONTEXT_ENABLED", kind: "boolean", fromJson: (s) => readRecord(s.threadContext).enabled },

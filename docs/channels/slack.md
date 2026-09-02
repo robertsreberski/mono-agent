@@ -54,6 +54,8 @@ Put the Socket Mode credentials in `.env` as `MONO_AGENT_SLACK_BOT_TOKEN` and `M
 | `botUserIds` | string[] | — | Optional supplemental bot user IDs for self-filtering and mention cleanup. The authenticated bot's own user ID is discovered automatically with `auth.test`. |
 | `mentionTextAliases` | string[] | — | Plain-text self identities (e.g. `@agent`) recognized after admission; they do not admit shared-channel traffic without an `app_mention` event. |
 | `stripMentionText` | boolean | preserve | When unset, preserves one readable authenticated self-mention marker; `true` restores legacy full stripping and `false` keeps raw mention forms. |
+| `unfurlLinks` | boolean | Slack default | Forward link-preview behavior to native agent `chat.postMessage` calls. Omitted means no request override. |
+| `unfurlMedia` | boolean | Slack default | Forward media-preview behavior to native agent `chat.postMessage` calls. Omitted means no request override. |
 | `resolveUserNames` | boolean | `true` | Resolve the speaker's display name and handle so the agent knows who is talking. Requires the `users:read` scope. See [Speaker names](#speaker-names). |
 | `resolveChannelNames` | boolean | `true` | Resolve the channel's name so the agent knows which channel it is talking in. Requires `channels:read` / `groups:read`. See [Channel names](#channel-names). |
 | `threadContext` | object | see below | Send what was said in the conversation before the agent was triggered. Requires a `*:history` scope. See [Thread and channel context](#thread-and-channel-context). |
@@ -81,6 +83,8 @@ interaction fields are structured and JSON-only: configure them in
 | `slack.botUserIds` | `MONO_AGENT_SLACK_BOT_USER_IDS` (CSV) |
 | `slack.mentionTextAliases` | `MONO_AGENT_SLACK_MENTION_TEXT_ALIASES` (CSV) |
 | `slack.stripMentionText` | `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` |
+| `slack.unfurlLinks` | `MONO_AGENT_SLACK_UNFURL_LINKS` |
+| `slack.unfurlMedia` | `MONO_AGENT_SLACK_UNFURL_MEDIA` |
 | `slack.resolveUserNames` | `MONO_AGENT_SLACK_RESOLVE_USER_NAMES` |
 | `slack.resolveChannelNames` | `MONO_AGENT_SLACK_RESOLVE_CHANNEL_NAMES` |
 | `slack.threadContext.enabled` | `MONO_AGENT_SLACK_THREAD_CONTEXT_ENABLED` |
@@ -322,6 +326,18 @@ entries use the placeholder `custom answer`, and Slack never echoes the custom
 reply text. A single custom-only or otherwise unresolved answer remains the
 generic `Answer recorded.` confirmation.
 
+### Link and media unfurls
+
+Set `slack.unfurlLinks: false` and/or `slack.unfurlMedia: false` to disable
+previews on native agent messages. These options apply to the normal Slack
+message stream, including interactive replies and native cron notifications.
+Each option is independent: an omitted value is not converted to `true` or
+`false`; its Slack request field is absent, preserving current behavior.
+
+`SlackSendMessage` is a separate explicit-send path. Its `unfurl_links` and
+`unfurl_media` tool arguments remain per-call controls and are not replaced by
+the adapter-level native-message settings.
+
 ### Silent delivery and quiet hours
 
 Slack does not expose a bot-controlled notification-suppression field on
@@ -518,7 +534,7 @@ When the Slack adapter is enabled, the app can expose an MCP send tool, `SlackSe
 }
 ```
 
-The existing Slack adapter config (tokens + channel allowlist) provides the credentials and remains the destination boundary — the tool cannot post outside your allowed channels. `SlackSendMessage` text is standard Markdown by default and is converted to Slack `mrkdwn` before posting; set the tool's `mrkdwn` argument to `false` only when you need to send plain text unchanged. Long tool output is split at the 3,800-character budget on a paragraph, line, or word boundary, and every posted chunk preserves the requested `thread_ts` when you send into a thread. See [Delivery and send tools](/channels/delivery-and-send-tools/) and [Tool policy](/tools/policy/).
+The existing Slack adapter config (tokens + channel allowlist) provides the credentials and remains the destination boundary — the tool cannot post outside your allowed channels. `SlackSendMessage` text is standard Markdown by default and is converted to Slack `mrkdwn` before posting; set the tool's `mrkdwn` argument to `false` only when you need to send plain text unchanged. Its optional `unfurl_links` and `unfurl_media` arguments control that tool call directly; the native-message `slack.unfurlLinks` / `slack.unfurlMedia` settings do not override them. Long tool output is split at the 3,800-character budget on a paragraph, line, or word boundary, and every posted chunk preserves the requested `thread_ts` when you send into a thread. See [Delivery and send tools](/channels/delivery-and-send-tools/) and [Tool policy](/tools/policy/).
 
 ## Related
 
