@@ -10,6 +10,8 @@ const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
 const WORKSPACE_PARENTS = ["packages", "extras"];
 const OUTPUT_DIRECTORIES = ["dist", path.join("webapp", "dist")];
 const RETIRED_OUTPUT_DIRECTORIES = [path.join("demos", "final-agent", "dist")];
+const RETIRED_PENDING_OUTPUT_NAME_PATTERN =
+  /^\.dist\.cleaning-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const RETIRED_REMOVAL_REFUSED = 73;
 const RETIRED_REMOVAL_FAILED = 74;
 const RETIRED_REMOVAL_RESULT_PREFIX = "mono-agent-retired-removal:";
@@ -159,11 +161,37 @@ export function cleanBuildOutputs({
   // Do not broaden this to demos/**: ordinary fixtures using that name are not retired output.
   for (const relativeDir of RETIRED_OUTPUT_DIRECTORIES) {
     const inspected = inspectRetiredOutput(repoRoot, relativeDir);
-    if (inspected.status === "absent") continue;
+    const parentInspection = inspected.status === "ready"
+      ? {
+        status: "ready",
+        outputDir: path.dirname(inspected.outputDir),
+        identities: inspected.identities.slice(0, -1),
+      }
+      : inspectRetiredOutput(repoRoot, path.dirname(relativeDir));
+    if (parentInspection.status === "unsafe") {
+      log(`skipped ${relativeDir}: ${inspected.status === "unsafe"
+        ? inspected.reason
+        : parentInspection.reason}`);
+      continue;
+    }
+    if (parentInspection.status === "ready") {
+      const pendingInspection = inspectPendingRetiredOutputs(parentInspection);
+      if (pendingInspection.status === "unsafe") {
+        log(`skipped ${relativeDir}: ${pendingInspection.reason}`);
+        continue;
+      }
+      if (pendingInspection.paths.length > 0) {
+        for (const pendingPath of pendingInspection.paths) {
+          log(`skipped ${relativeDir}: retained pending deletion requires inspection at ${pendingPath}`);
+        }
+        continue;
+      }
+    }
     if (inspected.status === "unsafe") {
       log(`skipped ${relativeDir}: ${inspected.reason}`);
       continue;
     }
+    if (inspected.status === "absent") continue;
     if (!retiredOutputIdentityIsStable(inspected)) {
       log(`skipped ${relativeDir}: path identity changed before deletion`);
       continue;
@@ -185,10 +213,11 @@ function removeRetiredOutputFromBoundParent(inspected, childEnvironment) {
   const parent = inspected.identities.at(-2);
   const target = inspected.identities.at(-1);
   const quarantine = `.${path.basename(inspected.outputDir)}.cleaning-${randomUUID()}`;
-  // The child binds its cwd to the checked parent inode and rechecks its canonical location, so
-  // moving that inode outside the repository and linking the old path back cannot redirect the
-  // operation. It first renames the final entry to this random sibling, then deletes only when
-  // that renamed entry still has the originally inspected identity.
+  // The child binds its cwd to the checked parent inode, rechecks that canonical location, then
+  // renames the final entry to a random sibling and verifies that sibling's identity. Concurrent
+  // same-UID mutation after that final identity check and before rmSync is unsupported: pure Node
+  // has no descriptor-relative recursive deletion, and a process with such write access already
+  // controls this repository parent. The relative operation cannot escape the validated parent.
   const result = spawnSync(process.execPath, [
     "--input-type=commonjs",
     "-e",
@@ -279,6 +308,38 @@ function parseRetiredRemovalResult(stdout) {
     }
   }
   return undefined;
+}
+
+function inspectPendingRetiredOutputs(parentInspection) {
+  if (!retiredOutputIdentityIsStable(parentInspection)) {
+    return {
+      status: "unsafe",
+      reason: "parent identity changed before pending-deletion inspection",
+    };
+  }
+  let entries;
+  try {
+    entries = fs.readdirSync(parentInspection.outputDir, { withFileTypes: true });
+  } catch {
+    return {
+      status: "unsafe",
+      reason: "pending-deletion entries could not be inspected safely",
+    };
+  }
+  if (!retiredOutputIdentityIsStable(parentInspection)) {
+    return {
+      status: "unsafe",
+      reason: "parent identity changed during pending-deletion inspection",
+    };
+  }
+  return {
+    status: "ready",
+    paths: entries
+      .map((entry) => entry.name)
+      .filter((name) => RETIRED_PENDING_OUTPUT_NAME_PATTERN.test(name))
+      .sort()
+      .map((name) => path.join(parentInspection.outputDir, name)),
+  };
 }
 
 function inspectRetiredOutput(repoRoot, relativeDir) {

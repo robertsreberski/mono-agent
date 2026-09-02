@@ -1,5 +1,5 @@
 import { existsSync, renameSync, symlinkSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -260,7 +260,7 @@ fs.rmSync = function patchedRmSync(candidate, options) {
     expect(existsSync(join(parent, "dist"))).toBe(false);
   });
 
-  it("reports no successful removal when quarantine cleanup returns without deleting", async () => {
+  it("detects a retained pending deletion on the next cleanup invocation", async () => {
     const repoRoot = await fixtureRepo(["demos/final-agent/dist"]);
     const parent = join(repoRoot, "demos/final-agent");
     await writeFile(join(parent, "dist/cli.js"), "original runnable demo");
@@ -272,23 +272,65 @@ fs.rmSync = function patchedRmSync(candidate, options) {
   return nativeRmSync.call(this, candidate, options);
 };
 `);
-    const logs = [];
+    const firstLogs = [];
 
-    const removed = cleanBuildOutputs({
+    const firstRemoved = cleanBuildOutputs({
       repoRoot,
-      log: (line) => logs.push(line),
+      log: (line) => firstLogs.push(line),
       retiredOutputChildEnv: childEnvironment(preloadPath),
     });
 
-    expect(removed).toEqual([]);
+    expect(firstRemoved).toEqual([]);
     const pending = (await readdir(parent)).filter((entry) => entry.startsWith(".dist.cleaning-"));
     expect(pending).toHaveLength(1);
     expect(await readFile(join(parent, pending[0], "cli.js"), "utf8")).toBe(
       "original runnable demo",
     );
-    expect(logs.some((line) => line.includes("quarantine cleanup incomplete")
+    expect(firstLogs.some((line) => line.includes("quarantine cleanup incomplete")
       && line.includes("remains at")
       && line.includes(pending[0]))).toBe(true);
+    expect(firstLogs).not.toContain("removed demos/final-agent/dist");
+
+    const secondLogs = [];
+    const secondRemoved = cleanBuildOutputs({
+      repoRoot,
+      log: (line) => secondLogs.push(line),
+    });
+
+    expect(secondRemoved).toEqual([]);
+    expect(await readFile(join(parent, pending[0], "cli.js"), "utf8")).toBe(
+      "original runnable demo",
+    );
+    const canonicalPending = join(await realpath(parent), pending[0]);
+    expect(secondLogs).toContain(
+      `skipped demos/final-agent/dist: retained pending deletion requires inspection at ${canonicalPending}`,
+    );
+    expect(secondLogs).not.toContain("removed demos/final-agent/dist");
+  });
+
+  it("does not start a new retired-output cleanup while a prior pending entry exists", async () => {
+    const repoRoot = await fixtureRepo([
+      "demos/final-agent/dist",
+      "demos/final-agent/.dist.cleaning-11111111-2222-3333-4444-555555555555",
+    ]);
+    const parent = join(repoRoot, "demos/final-agent");
+    const pending = join(parent, ".dist.cleaning-11111111-2222-3333-4444-555555555555");
+    await writeFile(join(parent, "dist/cli.js"), "new runnable demo");
+    await writeFile(join(pending, "cli.js"), "retained runnable demo");
+    const logs = [];
+
+    const removed = cleanBuildOutputs({ repoRoot, log: (line) => logs.push(line) });
+
+    expect(removed).toEqual([]);
+    expect(await readFile(join(parent, "dist/cli.js"), "utf8")).toBe("new runnable demo");
+    expect(await readFile(join(pending, "cli.js"), "utf8")).toBe("retained runnable demo");
+    const canonicalPending = join(
+      await realpath(parent),
+      ".dist.cleaning-11111111-2222-3333-4444-555555555555",
+    );
+    expect(logs).toContain(
+      `skipped demos/final-agent/dist: retained pending deletion requires inspection at ${canonicalPending}`,
+    );
     expect(logs).not.toContain("removed demos/final-agent/dist");
   });
 });
