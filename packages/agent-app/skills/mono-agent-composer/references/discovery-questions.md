@@ -238,7 +238,7 @@ CLI was removed.
 Question:
 
 ```text
-Should Pi-owned runtime commands run inside the native mono-agent sandbox? Direct Codex uses its own native sandbox and rejects this block; Claude and direct OpenCode reject it because their provider-owned tools cannot enforce the exact `srt` scopes.
+Should Pi-owned runtime commands run inside the native mono-agent sandbox? Every route is Pi-native, so one answer covers the primary, every fallback, and every per-trigger override.
 
 1. No sandbox for the first pass
 2. Native sandbox, no network (fail closed)

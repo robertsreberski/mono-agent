@@ -16,7 +16,7 @@ Catalog responsibility: Wraps @mono-agent/agent-runtime behind runtime contracts
 
 ## Responsibility
 
-Typed runtime facade over `@mono-agent/agent-runtime`. It parses runtime model references, selects or validates execution mode, exposes the available backend matrix, owns sandbox policy/process wrapping, bridges the kernel's structural process-job controller to a typed neutral host interface, creates a runtime wrapper, and exposes a small structural runtime contract to the harness.
+Typed runtime facade over `@mono-agent/agent-runtime`. It parses and validates canonical `<provider>:<model>` runtime model references, describes the single Pi backend and its capabilities, owns sandbox policy/process wrapping, bridges the kernel's structural process-job controller to a typed neutral host interface, creates a runtime wrapper, and exposes a small structural runtime contract to the harness.
 
 ## Install / Usage
 
@@ -55,29 +55,28 @@ only independent read-only built-ins. Stateful, mutating, and MCP tools remain
 sequential in the default mode.
 
 Provider-owned project discovery no longer applies: the Pi runtime does not read
-another tool's filesystem settings, hooks, or project documents.
-`RuntimeRunOptions.codexSandboxNetworkAccess` is also code-only: strict `true`
-enables Codex's native network access for plan/read-only and
-default/acceptEdits/workspace-write turns, including retained threads. Omitted
-or any other runtime value keeps network access disabled. The dedicated
-no-tools probe always remains read-only with network disabled, while
-bypassPermissions remains danger-full-access regardless of this field.
-This provider-native control is unrelated to `RuntimeRunOptions.sandboxPolicy`,
-which governs mono-agent's own sandbox and is not consumed by Codex's tool loop.
-Workspace-write plus network access grants repository read and network egress
-in the same turn; prefer plan for read-only browsing.
-Codex owns its native collaboration agents and their profiles: the facade
-normalizes their activity but does not inject `nativeSubagents` definitions.
-`RuntimeRunOptions.nativeSubagents` is the typed Claude-native `Task` profile
-contract; a non-empty list on a direct Codex attempt returns a capability
-mismatch so a fallback router can continue. Use `codexLoadProjectDocs` to let
-Codex and its own agents load repository instructions.
+another tool's filesystem settings, hooks, or project documents. The five
+options that carried that behaviour on the deleted bridges —
+`settingSources`, `codexLoadProjectDocs`, `codexSandboxNetworkAccess`,
+`fastMode`, and `nativeSubagents` — are declared `?: never` on
+`RuntimeRunOptions`, so passing one is a compile error rather than a silently
+ignored field. There is no replacement for project-document loading; put
+repository instructions in the system prompt the host builds.
 
-For heterogeneous fallback chains, `resolveAttempt().policyOptions` may project
-only `allowedTools`, `disallowedTools`, and `permissionMode` for the runtime
-actually being attempted. Other logical request fields, including
-`codexSandboxNetworkAccess`, remain protected and cannot be replaced through
-`resolveAttempt().options`.
+The supported equivalents are:
+
+- Filesystem and network containment: `RuntimeRunOptions.sandboxPolicy`
+  (with `sandboxEngine`). `sandboxPolicy.network.mode` is `none`, `localhost`,
+  `allowlist`, or `all`, and a request-scoped policy can only tighten the
+  configured one.
+- Delegation: the in-process `Agent` tool, which the host configures through
+  the kernel's `subagents` run option that the facade forwards, rather than
+  caller-defined native teammate profiles.
+
+For fallback chains, `resolveAttempt().policyOptions` may project only
+`allowedTools`, `disallowedTools`, and `permissionMode` for the route actually
+being attempted. Every other logical request field remains protected and cannot
+be replaced through `resolveAttempt().options`.
 
 `RuntimeRunOptions.toolLifecycleSink` is the typed incremental persistence seam
 for managed tools. It receives an invocation with stable call id/name,
@@ -97,7 +96,8 @@ provider kernel:
 
 ### Data flow
 
-1. Model helpers parse and validate a canonical reference and execution mode.
+1. Model helpers parse a `<provider>:<model>` reference and assert its parsed
+   shape and canonical spelling.
 2. `createMonoRuntime()` injects the mono-agent sandbox implementation exactly
    once, then constructs either one runtime or an ordered fallback router.
 3. `MonoRuntimeLike` exposes `run()`, acknowledged live-input messages, an

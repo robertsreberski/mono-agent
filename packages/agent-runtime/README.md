@@ -24,10 +24,8 @@ Implements the Pi runtime. This is the runtime layer that `@mono-agent/runtime-a
 pnpm add @mono-agent/agent-runtime
 ```
 
-Node.js 22.19 or newer is required. The Claude Code, Codex, and direct
-OpenCode bridges also require their matching CLI on `PATH`; direct OpenCode
-requires stable OpenCode 1.15.0 or newer. SDK-only Claude and Pi runs do not
-spawn those CLIs.
+Node.js 22.19 or newer is required. Pi is the only runtime, and it talks to
+providers over their SDKs, so no provider CLI has to be on `PATH`.
 
 Create one runtime for a host, parse a model reference, and run a turn:
 
@@ -60,8 +58,7 @@ capability. The host then explicitly intersects the two reviewed protocol
 revisions, reads only the originating tool's declared `ui://` resource, and
 receives one exact connection capability. Successful registration retains that
 existing MCP client instead of creating a client per UI call; host LRU/idle
-eviction closes the client, transport, and sandbox cleanup. Other runtime
-backends do not advertise or receive this extension.
+eviction closes the client, transport, and sandbox cleanup.
 See [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
 
 ## Architecture
@@ -524,8 +521,9 @@ Honest summary: if the agent runs **without a human watching the screen** for mi
 
 ### Model references
 
-There is one runtime. A `model` is a parsed `{ provider, model }` object;
-convert canonical `<provider>:<model>` strings with
+There is one runtime. A `model` is a parsed
+`{ provider, model, reference }` object whose `reference` must be the canonical
+`<provider>:<model>` spelling; convert reference strings with
 `parseRuntimeModelReference()` before calling `run()` — `run()` does not parse
 strings.
 
@@ -536,17 +534,13 @@ The ACP *client* runtime backend was removed in 0.21.0. `mono-agent bridge acp`
 
 ### `createRuntime(host)`
 
-Pass host-level integration once at boot. Keys are optional unless the selected
-backend contract requires them.
+Pass host-level integration once at boot. Every key is optional.
 
 ```js
 createRuntime({
   // -- host callbacks --
   resolveCustomPricing,    // (parsed) => NormalizedPricing | null
   resolvePiApiKey,         // async (provider) => string | undefined
-  resolveAcpProfile,       // async (profileId, context) => AcpProfileDescriptor
-  onAcpInteractionRequest, // async permission/elicitation fallback callback
-  acpSessionTokenKey,      // Uint8Array(32), required for ACP task/session-handle operations
   persistArtifact,         // ({ filename, buffer, toolName, toolUseId }) => path | null
   onCompactionRecorded,    // (compactionRow) => void — fired when the pi bridge
                            // runs an automatic compaction (proactive or reactive
@@ -645,34 +639,30 @@ Per-call options (a non-exhaustive selection):
 | `cwd` | `string` | Working directory for the agent's tools. |
 | `allowedTools` | `string[]` | Built-in tool allowlist. Default: all. |
 | `disallowedTools` | `string[]` | Block list. |
-| `nativeSubagents` | `object` | Caller-defined Claude native `Task` profiles. Direct Codex rejects configured teammate definitions because Codex owns its collaboration agents. |
-| `settingSources` | `("user" \| "project" \| "local")[]` | Claude Agent SDK filesystem settings opt-in. Omitted/empty disables those three sources; Anthropic managed settings still apply. |
-| `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http); on direct Codex, each forwarded server authorizes its own tool calls. |
+| `subagents` | `RuntimeSubagentsOptions` | In-process `Agent` delegation: profiles, caps, and the nested-run callback. This replaced the withdrawn caller-defined native teammate profiles. |
+| `skills` / `skillsRoot` | `{name, description}[]` / `string` | Skills disclosed to the run and the directory holding `<name>/SKILL.md`. |
+| `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http). |
 | `sandboxPolicy` | `SandboxPolicy` | Optional fail-closed sandbox policy for built-in tools and stdio MCP process startup. |
 | `webSearchConfig` | `{ backend?, endpoint?, codex?: { model? } }` | Run-scoped local SearXNG, ChatGPT-subscription Codex, and keyless WebSearch backend selection. |
 | `webFetchConfig` | `{ render?, browserCommand? }` | Run-scoped static extraction and optional isolated browser-render policy. |
 | `piToolExecutionMode` | `"safe-parallel" \| "sequential"` | Pi built-in scheduling. Safe parallelism is the default; stateful/mutating and MCP tools stay sequential. |
 | `maxTurns` | `number` | Hard cap on agent turns. |
-| `outputSchema` | `JSONSchema` | Requests structured JSON on capable bridges; see “Structured output” below for bridge-specific return behavior. |
+| `outputSchema` | `JSONSchema` | Requests structured JSON; see “Structured output” below. |
 | `abortSignal` | `AbortSignal` | Cancel the run. |
-| `liveInput` | `AsyncIterable<{ body: string; id?: string; receivedAt?: string; acknowledge?: () => void; reject?: (error?: unknown) => void }>` | Stream of in-flight user messages for steering on capable bridges. A bridge acknowledges only after its native steering boundary accepts the message; per-attempt rejection permits router replay. Acknowledgement emits metadata-only `live_input_applied` telemetry. |
+| `liveInput` | `AsyncIterable<{ body: string; id?: string; receivedAt?: string; acknowledge?: () => void; reject?: (error?: unknown) => void }>` | Stream of in-flight user messages for steering the active run. The bridge acknowledges only after its native steering boundary accepts the message; per-attempt rejection permits router replay. Acknowledgement emits metadata-only `live_input_applied` telemetry. |
 | `onEvent` | `(event) => void` | Fired for every runtime event (assistant text, tool calls/results, applied live input, runtime warnings, structured output). |
 | `runId` | `string` | Tag this run for downstream callbacks (e.g. `onCompactionRecorded`). |
 | `providerSessionId` | `string` | Resume a prior provider session. |
-| `acpSessionTokenKey` | `Uint8Array(32)` | Required for ACP task runs when not bound at `createRuntime()`; keep it secret and stable across restarts. |
-| `runArtifactDir` | `string` | Used by some providers as the Playwright MCP filename target. |
-| `codexAppServerCommand` | `string` | Override the Codex CLI binary. |
-| `codexAppServerArgs` | `string[]` | Override the Codex CLI arguments. |
+| `runArtifactDir` | `string` | Used as the Playwright MCP filename target. |
 
 `runtimeCapabilities()` and each descriptor returned by
-`listRuntimeBridges()` expose `tool_policy`. `"projected"` means the bridge can
-project restrictive `allowedTools` / `disallowedTools`; `"allow_all_only"`
-means it accepts only an effective unrestricted policy—`allowedTools` omitted
-or containing `"*"`, with no denied tools. A wildcard dominates named entries,
-so `["*", "Read"]` is allow-all. Named-only lists, `[]`, and any denylist remain
-unsupported on the direct Codex and direct OpenCode bridges and fail before
-provider startup. Built-in bridges always report this field; omission by a
-custom structural bridge means the capability is unknown.
+`listRuntimeBridges()` expose `tool_policy`. The Pi bridge reports
+`"projected"`, meaning it projects restrictive `allowedTools` /
+`disallowedTools` as written, so named-only lists, `[]`, and denylists are all
+supported. A wildcard dominates named entries, so `["*", "Read"]` is allow-all.
+The `"allow_all_only"` value survives for custom structural bridges that accept
+only an effective unrestricted policy; omission by such a bridge means the
+capability is unknown.
 
 Live input is native on the Pi bridge.
 After the bridge invokes `acknowledge()`, the runtime emits exactly one
@@ -735,17 +725,11 @@ truncation is explicitly desired; omitting it is not a separate hidden limit.
 The standard 256 KiB tool-payload guard still applies to oversized tool results.
 
 Override or extend the tool surface by passing `mcpServers` for MCP-backed tools.
-On direct Codex normal runs, each valid server that survives translation into
-the app-server config is the authorization boundary for the tools it exposes.
-The bridge accepts Codex's synthesized `mcp_tool_call` elicitation for that exact
-server without persisting an approval. Inherited or otherwise unconfigured
-server names, genuine downstream MCP elicitations, and other app-server requests
-remain fail-closed.
-
-This also applies under direct Codex `permissionMode: "plan"`: the read-only
-sandbox constrains Codex-owned filesystem and command execution, but a declared
-MCP tool can still change state managed by its server. Do not declare a server
-whose complete tool surface is not authorized for the run.
+Declaring a server is the authorization boundary: it exposes that server's whole
+tool surface to the run, and `sandboxPolicy` does not reach state the server
+owns on the other side of the connection. Do not declare a server whose complete
+tool surface is not authorized for the run. Per-call gating is the host's
+`onToolApprovalRequest` callback, not the server declaration.
 
 ### Structured output
 
@@ -757,16 +741,19 @@ JSON as `result.structuredResult`.
 `createRouterRuntime({ host, chain, resolveAttempt })` wraps the standard runtime with an ordered chain of model references. On a retryable provider/auth failure it retries the logical run against the next entry with one bounded transcript-tail snapshot. A chain is stateless across provider sessions. Entry `effort` is tri-state: a string fixes that route, `null` asks for provider default, and omission inherits the legacy per-run effort.
 
 ```js
-import { createRouterRuntime } from "@mono-agent/agent-runtime";
+import { createRouterRuntime, parseRuntimeModelReference } from "@mono-agent/agent-runtime";
 
+// A RuntimeModelRef is { provider, model, reference }; `reference` is required
+// and must be the canonical `<provider>:<model>` spelling, so build refs with
+// parseRuntimeModelReference rather than writing the object literal by hand.
 const router = createRouterRuntime({
   host: { /* same shape as createRuntime */ },
   // Backoff shape for same-model retries; per-route counts live on `attempts`.
   retry: { backoffMs: 1000, maxBackoffMs: 15000 },
   chain: [
-    { model: { provider: "anthropic", model: "claude-sonnet-5" }, effort: "high", attempts: 2 },
-    { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, effort: "xhigh" },
-    { model: { provider: "ollama", model: "gemma4:31b" }, effort: null },
+    { model: parseRuntimeModelReference("anthropic:claude-sonnet-5"), effort: "high", attempts: 2 },
+    { model: parseRuntimeModelReference("openai-codex:gpt-5.6-sol"), effort: "xhigh" },
+    { model: parseRuntimeModelReference("ollama:gemma4:31b"), effort: null },
   ],
 });
 
@@ -817,12 +804,16 @@ The runtime emits structured events for everything that happens during a run —
 A built-in aggregator covers the common metrics:
 
 ```js
-import { createRuntime, createMetricsObserver } from "@mono-agent/agent-runtime";
+import {
+  createMetricsObserver,
+  createRuntime,
+  parseRuntimeModelReference,
+} from "@mono-agent/agent-runtime";
 
 const metrics = createMetricsObserver();
 const runtime = createRuntime({ observers: [metrics] });
 
-await runtime.run("...", { model: { sdk: "claude", model: "claude-sonnet-4-6" } });
+await runtime.run("...", { model: parseRuntimeModelReference("anthropic:claude-sonnet-4-6") });
 
 console.log(metrics.snapshot());
 // {

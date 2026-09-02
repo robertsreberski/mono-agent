@@ -72,11 +72,13 @@ Escalated `max` degrades to the same per-model ceiling as configured effort: nat
 
 ## Permission mode
 
-`runtime.permissionMode` is validated config with the `MONO_AGENT_PERMISSION_MODE` override. With the Pi-only runtime there are no vendor CLI processes to project permission flags onto, so the key is forwarded through run options for host-level consumers (e.g. code-defined hosts reading it in their approval callback).
+`runtime.permissionMode` is validated config with the `MONO_AGENT_PERMISSION_MODE` override. With the Pi-only runtime there are no vendor CLI processes to project permission flags onto, so the key is **validated and forwarded, never enforced**: it rides through run options and the fallback router's per-attempt policy options, and nothing inside the runtime reads it. The built-in tools do not consult it, the sandbox does not consult it, and the approval manager does not take it — `createApprovalManager` is configured by `onToolApprovalRequest`, `toolRiskTiers`, and `approvalAlwaysAllowTools` alone.
 
-| Value | Meaning |
-|-------|---------|
-| `default` | Normal posture — tool calls that need approval pause for the host approval callback |
+The values below therefore describe an *intent a host can implement*, not a posture mono-agent applies on its own:
+
+| Value | Intent for a host that reads it |
+|-------|---------------------------------|
+| `default` | Normal posture — the host pauses tool calls that need approval for its approval callback |
 | `plan` | Read-only posture used by guided/planning flows |
 | `acceptEdits` | Auto-accept file edits |
 | `bypassPermissions` | Remove interactive guardrails |
@@ -88,7 +90,7 @@ Escalated `max` degrades to the same per-model ceiling as configured effort: nat
 The enforced tool posture for Pi-executed tools comes from the [sandbox](/tools/sandbox/) filesystem scopes and the programmatic human-in-the-loop approval gates on `createMonoRuntime` (`onToolApprovalRequest`, `toolRiskTiers`, `approvalDefaultRiskTier`, `approvalTimeoutMs`, `approvalAlwaysAllowTools`), which require a host UI to answer prompts — see [programmatic approval & structured output](/programmatic/approval-and-structured-output/). For limiting *which* tools exist at all, use the tool policy in [Tools & guards](/runtime/tools-and-guards/) and [Tool policy](/tools/policy/).
 
 :::caution
-`permissionMode: "bypassPermissions"` removes interactive guardrails. Pair a powerful tool surface with the [sandbox](/tools/sandbox/) filesystem scopes — `sandbox.readableRoots` / `sandbox.writableRoots` relative entries resolve against the workspace, and `.env*`, `.git/config`, and `.git/hooks/**` are denied for writes by default.
+`permissionMode: "bypassPermissions"` asks a host to drop its interactive guardrails; it does not by itself loosen anything mono-agent enforces, and setting `default` does not by itself add a gate. Do not treat this key as a safety control. The enforced boundary is the [sandbox](/tools/sandbox/) filesystem scopes — `sandbox.readableRoots` / `sandbox.writableRoots` relative entries resolve against the workspace, and `.env*`, `.git/config`, and `.git/hooks/**` are denied for writes by default — together with the tool policy and the programmatic approval gates.
 :::
 
 ## Max turns

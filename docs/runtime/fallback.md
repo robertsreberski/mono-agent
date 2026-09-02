@@ -28,6 +28,8 @@ mono-agent never silently swaps providers.
 }
 ```
 
+A local fallback such as `ollama:gemma4:31b` still needs its provider declared — `"providers": { "ollama": {} }` — or the route loads and then fails at turn time; see [Providers](/runtime/providers/#zero-config-local-autodiscovery).
+
 The primary uses `runtime.effort`. Every canonical fallback owns its effort:
 
 - An explicit `effort` is forwarded only to that route and must be supported by

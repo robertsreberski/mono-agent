@@ -17,7 +17,7 @@ If you set no `tools` block, or omit `allowedTools`, the agent can call **every*
 | `["*"]` | all tools (explicit allow-all) |
 | `["*", "Read"]` | all tools (`"*"` dominates named entries) |
 | `["Read", "Bash"]` | just those tools |
-| `[]` | **no tools** — a deliberate chat-only agent |
+| `[]` | **no policy-gated tools** — a deliberate chat-only agent |
 
 ```json
 {
@@ -27,7 +27,7 @@ If you set no `tools` block, or omit `allowedTools`, the agent can call **every*
 }
 ```
 
-An explicit empty list is still expressible and still meaningful: `"allowedTools": []` means the agent can hold a conversation but cannot read files, run commands, or send proactively. [`validate` / `doctor`](/observability/cli-reference/#validate) reports that as `waiting` (never a silent `ok`) so an accidental empty list surfaces, while allow-all reports `All tools allowed.`
+An explicit empty list is still expressible and still meaningful: `"allowedTools": []` means the agent can hold a conversation but cannot read files, run commands, or send proactively. It does not remove tools this policy never gated — see the caution below. [`validate` / `doctor`](/observability/cli-reference/#validate) reports that as `waiting` (never a silent `ok`) so an accidental empty list surfaces, while allow-all reports `All tools allowed.`
 
 In guided init, **Allow all tools** remains the default product choice. The flow explicitly names the resulting code-execution, file, web, and enabled channel-send surface before accepting it. If no enforceable sandbox constrains the runtime, a second confirmation is required before continuing; the review never presents allow-all as a risk-free default.
 
@@ -37,11 +37,18 @@ Allow-all is the **config** default, not a programmatic one. For code-defined ag
 
 :::caution
 **Enforcement is uniform.** Every route runs the Pi runtime, which projects the
-policy directly instead of silently widening the tool surface. `[]` is a true
-chat-only agent, a specific list is the agent's complete tool surface, and any
-`disallowedTools` entry is honored for built-ins and app-owned tools. There is
-no route that downgrades a restrictive policy to allow-all — a combination the
-runtime cannot enforce fails before provider startup.
+policy directly instead of silently widening the tool surface. A specific list is
+the agent's complete surface of policy-gated tools, and any `disallowedTools`
+entry is honored for built-ins and app-owned tools. There is no route that
+downgrades a restrictive policy to allow-all — a combination the runtime cannot
+enforce fails before provider startup.
+
+**`[]` is chat-only for the tools this policy gates.** It does not switch off the
+two families listed under [Tools not gated by allowedTools](#tools-not-gated-by-allowedtools):
+an external server declared in `tools.mcpServers` / `tools.mcpConfigPath` still
+contributes its tools, and `MemoryRecall` still comes from
+`memory.recallTool.enabled`. A genuinely tool-free agent needs `[]` *and* no
+declared MCP server *and* recall left off.
 :::
 
 Runtime discovery still exposes this distinction as
