@@ -29,8 +29,13 @@
   instead of living in one browser's localStorage. The console selector groups
   and filters by provider.
 - **New `mono-agent migrate-config [--check] [--write]`** codemod. It edits
-  config text in place so untouched bytes stay byte-identical, refuses to guess
-  non-Pi model prefixes, and skips `configVersion: 1` files. See
+  text in place so untouched bytes stay byte-identical, refuses to guess
+  non-Pi model prefixes, and skips `configVersion: 1` files. Beyond
+  `mono-agent.config.json` it migrates the `model:` frontmatter of cron and
+  webhook trigger markdown, and it leaves `memory.llm.model` alone unless
+  `memory.llm.provider` is `agent-host` — the only provider under which that
+  field is a runtime reference. It re-reads each file immediately before
+  writing and stops rather than clobber a concurrent edit. See
   `packages/agent-runtime/MIGRATION.md` for the deployment order.
 
 - Upgrade the exact-pinned Pi AI catalog and TUI to 0.84.3, including GitHub

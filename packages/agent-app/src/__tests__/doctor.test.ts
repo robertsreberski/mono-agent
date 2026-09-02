@@ -2275,7 +2275,7 @@ describe("validateMonoAgentFolder", () => {
     expect(report.ok).toBe(true);
     const sandbox = sectionById(report, "sandbox");
     expect(sandbox.status).toBe("waiting");
-    expect(sandbox.details.join("\n")).toContain("commands fail closed with sandbox_unavailable");
+    expect(sandbox.details.join("\n")).toContain("commands fail closed with sandbox_prepare_failed");
   });
 
   it("does not warn about a channel secret supplied via env", async () => {

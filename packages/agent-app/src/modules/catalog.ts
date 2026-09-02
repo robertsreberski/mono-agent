@@ -44,7 +44,7 @@ function a2aProviderPluginSection(): Partial<MonoAgentConfigJson> & Record<strin
 }
 
 const SANDBOX_FAIL_CLOSED_ENGINE_NOTE =
-  "Install `srt` and keep it on PATH; without it, fail-closed sandboxed commands stop with `sandbox_unavailable` instead of running unsandboxed.";
+  "Install `srt` and keep it on PATH; without it, validate reports the engine as `sandbox_unavailable` and fail-closed sandboxed commands stop with a `sandbox_prepare_failed` tool result instead of running unsandboxed.";
 
 // ---------------------------------------------------------------------------
 // Channels

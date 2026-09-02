@@ -564,9 +564,10 @@ createRuntime({
   observers: [],
 
   // -- approval gates (HITL) --
-  // Optional. When set, the runtime asks the host before every tool call
-  // whose risk tier is "medium" or "high" (and not session-allowlisted).
-  // See the "Approval gates" section below for the request/response shape.
+  // Optional. When set, the runtime asks the host before every BUILT-IN tool
+  // call whose risk tier is "medium" or "high" (and not session-allowlisted).
+  // MCP-backed tools are not gated. See the "Approval gates" section below
+  // for the request/response shape.
   onToolApprovalRequest,           // async (req) => { decision, reason? }
   toolRiskTiers: { Bash: "high" }, // per-tool tier override (low|medium|high)
   approvalDefaultRiskTier: "medium",
@@ -670,8 +671,9 @@ After the bridge invokes `acknowledge()`, the runtime emits exactly one
 run. It deliberately omits the guidance body. A fallback router reuses the same
 instrumented input stream, so replay or duplicate acknowledgement cannot emit a
 second applied event. A throwing host `acknowledge` or `reject` callback cannot
-change the native steering outcome; it is reported as a bounded
-`live_input_callback_failed` runtime warning.
+undo the steer that already reached the harness; it surfaces as a bounded
+`live_input_failed` runtime warning and ends that run's live-input consumer, so
+later guidance for the same run is no longer steered.
 
 ### Project instructions
 
@@ -728,8 +730,10 @@ Override or extend the tool surface by passing `mcpServers` for MCP-backed tools
 Declaring a server is the authorization boundary: it exposes that server's whole
 tool surface to the run, and `sandboxPolicy` does not reach state the server
 owns on the other side of the connection. Do not declare a server whose complete
-tool surface is not authorized for the run. Per-call gating is the host's
-`onToolApprovalRequest` callback, not the server declaration.
+tool surface is not authorized for the run: there is no per-call gate behind it.
+`onToolApprovalRequest` wraps the built-in tool set only (`getPiBuiltinTools`);
+`initPiMcpTools` is initialized without an approval manager, so an MCP call runs
+without asking the host, whatever risk tier is configured.
 
 ### Structured output
 
@@ -766,7 +770,7 @@ Behaviour:
 - Successful run on entry N → returns the result with `failoverHistory` set to attempts 0..N-1.
 - Retryable provider failure → retries the SAME entry while it has `attempts` left (emitting `provider_retry_started` after a doubling backoff), then emits `provider_failover_started`, builds a transcript snapshot, and advances to the next entry. `attempts` defaults to `1` per entry, so the kernel is single-shot unless a host opts in — `@mono-agent/config` supplies the product default of 2 on the primary.
 - Same-model retries fire only for transient subkinds (`overloaded`, `rate_limited`, `timeout`, `network`, `server_error`, `retryable_request`, terminated streams). A retry drops the route's provider session, since the failed attempt already appended to it, and appends its own `failoverHistory` entry carrying `retryIndex`.
-- A retry is *not* a failover: `provider_route_safety` and `provider_failover_started` are emitted once per entry, and `provider_failover_completed` only fires when a genuinely different model answered.
+- A retry is *not* a failover: `provider_failover_started` is emitted once per entry, and `provider_failover_completed` only fires when a genuinely different model answered.
 - This is a whole-logical-turn retry sitting strictly outside the provider bridges' own transport retries. On a `pi` route, `attempts: 2` combined with pi's default `maxRetries: 2` means up to six provider stream starts.
 - Context-window failure after bridge compaction recovery → never retries the same entry (a second identical request against the same window is a guaranteed second failure); preserves `failureKind: "context_limit"` in `failoverHistory` and tries the next entry; quota/output/max-turn `usage_limit` remains terminal.
 - Provider auth failure → retries the next chain entry and preserves `failureKind: "provider_auth"` in `failoverHistory` for the failed attempt.
@@ -774,19 +778,22 @@ Behaviour:
 - Cancellation → returns immediately.
 - Chain exhausted → `failureKind: "provider_unavailable_exhausted"`, `failoverHistory` lists every attempt.
 - Every route is Pi-native, so the whole chain shares one monotonic runtime
-  contract and each attempt records its bounded safety status. Pi routes retain
-  the sandbox policy, including routes reached through `Agent` children.
-- Pi route telemetry distinguishes `disabled`, fail-closed `mono-agent-srt`,
-  and `mono-agent-srt-unsafe-host-fallback`; the last describes a configured
-  policy that prefers SRT but permits host execution, not which branch ran.
+  contract. There is no per-route safety negotiation and no
+  `provider_route_safety` event: with a single contract there is nothing to
+  reconcile between routes. Pi routes retain the sandbox policy, including
+  routes reached through `Agent` children.
 - A resolver-supplied Pi runtime may own provider credentials and lifecycle,
   but must expose `configureTools()`: before every attempt the router replaces
   its mutable tool context with the router's effective host/configured safety
   inputs, while request-scoped overrides remain on that exact run. A runtime
-  that cannot accept this projection fails closed as `safety_unavailable`.
-- Attempt-resolver failures are sanitized to `safety_unavailable`; resolver
-  credentials/options never enter result telemetry, and they advance to the next
-  entry rather than consuming the route's remaining `attempts`.
+  that cannot accept this projection fails the attempt before it runs.
+- Attempt-resolver failures — that missing `configureTools()` included — surface
+  as `failureKind: "provider_unavailable"`, with the error text fixed to
+  `The route attempt could not be resolved before execution.` (only a
+  `ResolverProtectedOptionError`, built from a repository-owned allowlist key,
+  reports its own message). Resolver credentials/options never enter result
+  telemetry, and such a failure advances to the next entry rather than consuming
+  the route's remaining `attempts`.
 - `resolveAttempt` runs once per attempt — including every same-model retry — and
   receives `{ attemptIndex, retryIndex }`, where `attemptIndex` stays the chain
   index. Its `cleanup` runs after each attempt.
@@ -838,7 +845,7 @@ Notable new events emitted by the bridges:
 
 ### Approval gates (human-in-the-loop)
 
-Pass `onToolApprovalRequest` to gate tool calls behind a runtime approval. The runtime calls your callback once per tool invocation whose risk tier requires it, and pauses the agent until you respond.
+Pass `onToolApprovalRequest` to gate built-in tool calls behind a runtime approval. The runtime calls your callback once per built-in tool invocation whose risk tier requires it, and pauses the agent until you respond.
 
 ```js
 const runtime = createRuntime({
@@ -867,7 +874,10 @@ Responses:
 - `{ decision: "deny", reason? }` — block; the agent receives a tool error.
 - `{ decision: "always" }` — allow + session-allowlist for the run.
 
-Coverage is the Pi runtime, via tool dispatch wrapping.
+Coverage is the Pi runtime's built-in tool set, via tool dispatch wrapping.
+MCP-backed tools are outside the gate — the MCP bridge is built without an
+approval manager — so for those, declaring the server is the authorization
+boundary, not approving the call.
 
 ### Tool-result bloat handling
 

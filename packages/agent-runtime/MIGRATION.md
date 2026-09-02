@@ -131,11 +131,29 @@ mono-agent migrate-config --write              # applies, writing <config>.bak
 ```
 
 It deletes the retired keys, converts `fallbackModels` to `fallbacks`, and
-strips `pi:` from `runtime.model`, `runtime.fallbacks[].model` and
-`memory.llm.model`. It edits the source text in place, so untouched bytes stay
-byte-identical and the `.bak` diff shows only real changes. It refuses to guess
-non-Pi prefixes, and skips `configVersion: 1` files untouched. Re-running it is
-a no-op.
+strips `pi:` from `runtime.model` and `runtime.fallbacks[].model`. It strips it
+from `memory.llm.model` too, but only under `provider: "agent-host"` — the one
+provider for which that field is a runtime reference. Under the default
+`ollama` provider it is a raw service model string, where the colon in
+`qwen3:8b` is a tag separator and rewriting it would repoint memory at a model
+that does not exist. Retired `memory.llm.*` keys are deleted either way.
+
+It is not JSON-only. It also migrates the `model:` frontmatter of every `*.md`
+in the cron and webhook trigger folders — honouring a renamed `cron.dir` /
+`webhook.dir`, resolved relative to the config — and backs each rewritten file
+up beside itself as `<name>.md.bak`.
+
+It edits the source text in place, so untouched bytes stay byte-identical and
+the `.bak` diff shows only real changes. It refuses to guess non-Pi prefixes,
+and skips `configVersion: 1` files untouched. Re-running it is a no-op.
+
+Because a live agent may be writing the same files, every file is re-read and
+compared immediately before it is replaced; if the bytes moved meanwhile the
+run stops non-zero having replaced nothing, rather than overwriting the other
+writer (`--json` reports this as `config-changed-on-disk`). Backups inherit the
+source file's permissions instead of the umask default, and a symlinked config
+is resolved and written through to its target instead of being replaced by a
+regular file.
 
 ### Deployment order
 

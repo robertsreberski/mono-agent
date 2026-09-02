@@ -147,7 +147,10 @@ The runtime result includes `failoverHistory`. An
 exhausted chain reports `provider_unavailable_exhausted` with per-attempt models,
 failure kinds/subkinds. Run summaries and Phoenix failover
 attributes preserve normalized failover details; the events JSONL preserves the
-separate bounded `provider_route_safety` records.
+per-attempt `provider_retry_started`, `provider_failover_started`, and
+`provider_failover_completed` events. There is no separate per-route safety
+record: every route is Pi-native, so there is no cross-route contract to
+reconcile.
 
 ## Who sees a failover
 

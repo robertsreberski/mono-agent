@@ -52,10 +52,11 @@ longer read by any code; its only reader was the removed `sessions` command.
 0.21.0 and are now rejected at load with the replacement named; the CLI CSV flag
 `--fallback-models` was already removed. Convert the JSON key with
 `mono-agent migrate-config --write`, which rewrites it as
-`runtime.fallbacks: [{ "model": "..." }]`. The codemod edits
-`mono-agent.config.json` text only — it never reads or rewrites the environment,
-so a value that lives solely in `MONO_AGENT_FALLBACK_MODELS` (or a `.env` file)
-has to be removed by hand and re-expressed as `MONO_AGENT_FALLBACKS_JSON`. The retired
+`runtime.fallbacks: [{ "model": "..." }]`. The codemod edits files on disk —
+`mono-agent.config.json` and the `model:` frontmatter of cron/webhook trigger
+markdown — but never reads or rewrites the environment, so a value that lives
+solely in `MONO_AGENT_FALLBACK_MODELS` (or a `.env` file) has to be removed by
+hand and re-expressed as `MONO_AGENT_FALLBACKS_JSON`. The retired
 recipe → preset mapping is recorded as static documentation in
 [Presets & capability modules](/reference/presets/#deprecations). The
 `memory-bujo` bin entry and its error-deflector were removed; use
