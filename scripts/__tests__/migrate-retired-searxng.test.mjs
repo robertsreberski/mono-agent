@@ -1,7 +1,9 @@
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   renameSync,
+  rmSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -197,7 +199,7 @@ describe("migrate-retired-searxng", () => {
     const movedParent = join(migration.repoRoot, "moved-outside-parent");
     const destination = join(outsideParent, "operator");
     await mkdir(outsideParent);
-    let retainedError;
+    let cleanupError;
 
     try {
       migrateRetiredSearxng({
@@ -210,19 +212,22 @@ describe("migrate-retired-searxng", () => {
         },
       });
     } catch (error) {
-      retainedError = error;
+      cleanupError = error;
     }
 
-    expect(retainedError).toMatchObject({
+    expect(cleanupError).toMatchObject({
       name: "RetiredSearxngUnpublishedStagingCleanupError",
       code: "SEARXNG_UNPUBLISHED_STAGING_CLEANUP_FAILED",
       published: false,
       destination,
       stagingPath: expect.stringContaining(".operator.migrating-"),
+      stagingState: "indeterminate",
     });
-    expect(retainedError.operationCause.message)
+    expect(cleanupError.message).toContain("post-error staging state is indeterminate");
+    expect(cleanupError.message).toContain("Do not assume the path is absent, unchanged, or protected");
+    expect(cleanupError.operationCause.message)
       .toContain("Destination parent changed after validation");
-    expect(retainedError.cleanupCause.message)
+    expect(cleanupError.cleanupCause.message)
       .toContain("Destination parent changed after validation");
 
     expect(existsSync(join(movedParent, "operator"))).toBe(false);
@@ -396,6 +401,8 @@ describe("migrate-retired-searxng", () => {
   it("fails explicitly and retains protected staging when concurrent-winner cleanup fails", async () => {
     const migration = await fixture();
     const logs = [];
+    const cleanupCause = new Error("injected private staging cleanup failure");
+    cleanupCause.code = "EIO";
     let concurrentResult;
     let cleanupError;
 
@@ -412,9 +419,7 @@ describe("migrate-retired-searxng", () => {
           });
         },
         removeStaging: () => {
-          const error = new Error("injected private staging cleanup failure");
-          error.code = "EIO";
-          throw error;
+          throw cleanupCause;
         },
       });
     } catch (error) {
@@ -424,11 +429,17 @@ describe("migrate-retired-searxng", () => {
     expect(cleanupError).toMatchObject({
       name: "RetiredSearxngStagingCleanupError",
       code: "SEARXNG_STAGING_CLEANUP_FAILED",
+      published: true,
       destination: migration.destination,
       stagingPath: expect.stringContaining(".operator.migrating-"),
+      stagingState: "retained",
+      cleanupCause,
+      cause: cleanupCause,
     });
     expect(cleanupError.message).toContain("valid SearXNG bundle is published");
-    expect(cleanupError.message).toContain(cleanupError.stagingPath);
+    expect(cleanupError.message).toContain("same staging directory was observed");
+    expect(cleanupError.message).toContain("expected owner and mode 0700");
+    expect(cleanupError.message).toContain("contents may be partial or changed");
     expect(logs).toEqual([]);
     expect(concurrentResult.destination).toBe(migration.destination);
     expect((await readdir(migration.destination)).sort())
@@ -441,6 +452,123 @@ describe("migrate-retired-searxng", () => {
       .toBe(`SEARXNG_SECRET=${VALID_SECRET}\n`);
     expect((await stat(join(cleanupError.stagingPath, ".env"))).mode & 0o777)
       .toBe(0o600);
+  });
+
+  it("reports a remove-then-throw anomaly without claiming staging was retained", async () => {
+    const migration = await fixture();
+    const cleanupCause = new Error("injected error after private staging removal");
+    cleanupCause.code = "EIO";
+    let concurrentResult;
+    let cleanupError;
+    let removedPath;
+
+    try {
+      migrateRetiredSearxng({
+        repoRoot: migration.repoRoot,
+        destination: migration.destination,
+        log: () => {},
+        beforeAtomicPublish: () => {
+          concurrentResult = publishConcurrentBundle(migration);
+        },
+        removeStaging: (stagingPath, options) => {
+          removedPath = stagingPath;
+          rmSync(stagingPath, options);
+          throw cleanupCause;
+        },
+      });
+    } catch (error) {
+      cleanupError = error;
+    }
+
+    expect(cleanupError).toMatchObject({
+      name: "RetiredSearxngStagingCleanupError",
+      code: "SEARXNG_STAGING_CLEANUP_FAILED",
+      published: true,
+      destination: migration.destination,
+      stagingPath: removedPath,
+      stagingState: "removed",
+      cleanupCause,
+      cause: cleanupCause,
+    });
+    expect(cleanupError.message).toContain("staging path was confirmed absent");
+    expect(cleanupError.message).toContain("No retained staging directory is claimed");
+    expect(cleanupError.message).not.toContain("protected staging path");
+    expect(existsSync(cleanupError.stagingPath)).toBe(false);
+    expect(concurrentResult.destination).toBe(migration.destination);
+    expect((await readdir(migration.destination)).sort())
+      .toEqual([".env", "compose.yaml", "settings.yml"]);
+  });
+
+  it("classifies a partially removed same private directory as retained", async () => {
+    const migration = await fixture();
+    const cleanupCause = new Error("injected error after partial private staging removal");
+    cleanupCause.code = "EIO";
+    let cleanupError;
+
+    try {
+      migrateRetiredSearxng({
+        repoRoot: migration.repoRoot,
+        destination: migration.destination,
+        log: () => {},
+        beforeAtomicPublish: () => {
+          publishConcurrentBundle(migration);
+        },
+        removeStaging: (stagingPath) => {
+          unlinkSync(join(stagingPath, "compose.yaml"));
+          throw cleanupCause;
+        },
+      });
+    } catch (error) {
+      cleanupError = error;
+    }
+
+    expect(cleanupError).toMatchObject({
+      code: "SEARXNG_STAGING_CLEANUP_FAILED",
+      published: true,
+      stagingState: "retained",
+      cleanupCause,
+    });
+    expect(cleanupError.message).toContain("contents may be partial or changed");
+    expect((await readdir(cleanupError.stagingPath)).sort()).toEqual([".env", "settings.yml"]);
+    expect((await stat(cleanupError.stagingPath)).mode & 0o777).toBe(0o700);
+    expect((await readdir(migration.destination)).sort())
+      .toEqual([".env", "compose.yaml", "settings.yml"]);
+  });
+
+  it("classifies a changed non-private staging directory as indeterminate", async () => {
+    const migration = await fixture();
+    const cleanupCause = new Error("injected error after staging mode changed");
+    cleanupCause.code = "EIO";
+    let cleanupError;
+
+    try {
+      migrateRetiredSearxng({
+        repoRoot: migration.repoRoot,
+        destination: migration.destination,
+        log: () => {},
+        beforeAtomicPublish: () => {
+          publishConcurrentBundle(migration);
+        },
+        removeStaging: (stagingPath) => {
+          chmodSync(stagingPath, 0o755);
+          throw cleanupCause;
+        },
+      });
+    } catch (error) {
+      cleanupError = error;
+    }
+
+    expect(cleanupError).toMatchObject({
+      code: "SEARXNG_STAGING_CLEANUP_FAILED",
+      published: true,
+      stagingState: "indeterminate",
+      cleanupCause,
+    });
+    expect(cleanupError.message).toContain("post-error staging state is indeterminate");
+    expect(cleanupError.message).toContain("Do not assume the path is absent, unchanged, or protected");
+    expect((await stat(cleanupError.stagingPath)).mode & 0o777).toBe(0o755);
+    expect((await readdir(migration.destination)).sort())
+      .toEqual([".env", "compose.yaml", "settings.yml"]);
   });
 
   it("preserves both causes when unpublished staging cleanup fails", async () => {
@@ -476,13 +604,16 @@ describe("migrate-retired-searxng", () => {
       published: false,
       destination: migration.destination,
       stagingPath: expect.stringContaining(".operator.migrating-"),
+      stagingState: "retained",
       operationCause,
       cleanupCause,
       cause: operationCause,
       errors: [operationCause, cleanupCause],
     });
     expect(retainedError.message).toContain("did not publish a bundle");
-    expect(retainedError.message).toContain(retainedError.stagingPath);
+    expect(retainedError.message).toContain("same staging directory was observed");
+    expect(retainedError.message).toContain("expected owner and mode 0700");
+    expect(retainedError.message).toContain("contents may be partial or changed");
     expect(cleanupPath).toBe(retainedError.stagingPath);
     expect(logs).toEqual([]);
     expect(existsSync(migration.destination)).toBe(false);
@@ -514,6 +645,14 @@ async function fixture({ env = `SEARXNG_SECRET=${VALID_SECRET}\n`, writeEnv = tr
   await mkdir(dirname(envFile), { recursive: true });
   if (writeEnv) await writeFile(envFile, env, { mode: 0o600 });
   return { root, repoRoot, destination: join(root, "operator") };
+}
+
+function publishConcurrentBundle(migration) {
+  return migrateRetiredSearxng({
+    repoRoot: migration.repoRoot,
+    destination: migration.destination,
+    log: () => {},
+  });
 }
 
 async function waitForOutput(child, expected) {

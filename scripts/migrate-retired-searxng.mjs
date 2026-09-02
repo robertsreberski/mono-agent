@@ -25,26 +25,31 @@ const DEFAULT_GET_CURRENT_UID = typeof process.getuid === "function"
   : undefined;
 
 class RetiredSearxngStagingCleanupError extends Error {
-  constructor({ destination, stagingPath, cause }) {
+  constructor({ destination, stagingPath, cleanup }) {
     super(
-      `A valid SearXNG bundle is published at ${destination}, but private staging cleanup failed. `
-      + `Treat the protected staging path as retained and inspect it manually: ${stagingPath}.`,
-      { cause },
+      `A valid SearXNG bundle is published at ${destination}, but private staging cleanup `
+      + `reported an anomaly. ${describeStagingState(cleanup.status, stagingPath)}`,
+      { cause: cleanup.cause },
     );
     this.name = "RetiredSearxngStagingCleanupError";
     this.code = "SEARXNG_STAGING_CLEANUP_FAILED";
+    this.published = true;
     this.destination = destination;
     this.stagingPath = stagingPath;
+    this.stagingState = cleanup.status;
+    this.cleanupCause = cleanup.cause;
+    this.inspectionCause = cleanup.inspectionCause;
   }
 }
 
 class RetiredSearxngUnpublishedStagingCleanupError extends AggregateError {
-  constructor({ destination, stagingPath, operationCause, cleanupCause }) {
+  constructor({ destination, stagingPath, operationCause, cleanup }) {
+    const causes = [operationCause, cleanup.cause];
+    if (cleanup.inspectionCause !== undefined) causes.push(cleanup.inspectionCause);
     super(
-      [operationCause, cleanupCause],
+      causes,
       `The SearXNG migration did not publish a bundle at ${destination}, and private staging `
-      + `cleanup failed. Treat the protected staging path as retained and inspect it manually: `
-      + `${stagingPath}.`,
+      + `cleanup reported an anomaly. ${describeStagingState(cleanup.status, stagingPath)}`,
       { cause: operationCause },
     );
     this.name = "RetiredSearxngUnpublishedStagingCleanupError";
@@ -52,8 +57,10 @@ class RetiredSearxngUnpublishedStagingCleanupError extends AggregateError {
     this.published = false;
     this.destination = destination;
     this.stagingPath = stagingPath;
+    this.stagingState = cleanup.status;
     this.operationCause = operationCause;
-    this.cleanupCause = cleanupCause;
+    this.cleanupCause = cleanup.cause;
+    this.inspectionCause = cleanup.inspectionCause;
   }
 }
 
@@ -340,12 +347,12 @@ export function migrateRetiredSearxng({
         currentUid,
         removeStaging,
       );
-      if (cleanup.status === "retained") {
+      if (cleanup.status !== "removed" || cleanup.cause !== undefined) {
         throw new RetiredSearxngUnpublishedStagingCleanupError({
           destination: absoluteDestination,
           stagingPath: staging,
           operationCause,
-          cleanupCause: cleanup.cause,
+          cleanup,
         });
       }
     }
@@ -374,8 +381,11 @@ function cleanupPrivateStaging(
   currentUid,
   removeStaging,
 ) {
+  let cleanupCause;
+  let canonicalParentValidated = false;
   try {
     assertStableCanonicalParent();
+    canonicalParentValidated = true;
     assertSecureDirectoryIdentity(
       staging,
       stagingIdentity,
@@ -384,23 +394,69 @@ function cleanupPrivateStaging(
       currentUid,
     );
     removeStaging(staging, { recursive: true, force: true });
-    if (entryExists(staging)) {
-      throw new Error("Private staging remover returned without removing the directory.");
-    }
-    return { status: "removed" };
   } catch (error) {
-    // Never redirect cleanup through a changed canonical parent or staging path.
-    return { status: "retained", cause: error };
+    cleanupCause = error;
   }
+
+  const state = canonicalParentValidated
+    ? inspectPrivateStagingAfterCleanup(staging, stagingIdentity, currentUid)
+    : { status: "indeterminate" };
+  if (cleanupCause !== undefined) return { ...state, cause: cleanupCause };
+  if (state.status === "removed") return state;
+  return {
+    ...state,
+    cause: new Error("Private staging remover returned without removing the directory."),
+  };
 }
 
 function throwIfStagingCleanupFailed(cleanup, destination, stagingPath) {
-  if (cleanup.status === "removed") return;
+  if (cleanup.status === "removed" && cleanup.cause === undefined) return;
   throw new RetiredSearxngStagingCleanupError({
     destination,
     stagingPath,
-    cause: cleanup.cause,
+    cleanup,
   });
+}
+
+function inspectPrivateStagingAfterCleanup(staging, expectedIdentity, currentUid) {
+  let details;
+  try {
+    details = lstatSync(staging);
+  } catch (inspectionCause) {
+    if (isMissingPathError(inspectionCause)) return { status: "removed" };
+    return { status: "indeterminate", inspectionCause };
+  }
+
+  let canonical;
+  try {
+    canonical = realpathSync(staging);
+  } catch (inspectionCause) {
+    return { status: "indeterminate", inspectionCause };
+  }
+
+  if (!details.isSymbolicLink()
+    && details.isDirectory()
+    && details.dev === expectedIdentity.dev
+    && details.ino === expectedIdentity.ino
+    && details.uid === currentUid
+    && (details.mode & 0o777) === 0o700
+    && canonical === staging) {
+    return { status: "retained" };
+  }
+  return { status: "indeterminate" };
+}
+
+function describeStagingState(state, stagingPath) {
+  if (state === "removed") {
+    return `The staging path was confirmed absent after the cleanup anomaly: ${stagingPath}. `
+      + "No retained staging directory is claimed.";
+  }
+  if (state === "retained") {
+    return `The same staging directory was observed at ${stagingPath} with the expected owner `
+      + "and mode 0700; its contents may be partial or changed.";
+  }
+  return `The post-error staging state is indeterminate. Do not assume the path is absent, `
+    + `unchanged, or protected: ${stagingPath}.`;
 }
 
 function assertCompleteBundle(directory, secret) {
@@ -546,6 +602,10 @@ function entryExists(candidate) {
       && (error.code === "ENOENT" || error.code === "ENOTDIR")) return false;
     throw error;
   }
+}
+
+function isMissingPathError(error) {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 function usage() {
