@@ -12,6 +12,7 @@ export type {
   LoadMonoAgentConfigInput,
   MonoAgentConfigErrorCode,
   MonoAgentConfigErrorDetails,
+  ProviderCoverageRoute,
 } from "./config.js";
 export type {
   ArtifactRetentionConfig,

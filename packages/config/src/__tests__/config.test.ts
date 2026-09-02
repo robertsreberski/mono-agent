@@ -592,6 +592,29 @@ describe("loadMonoAgentConfig", () => {
       }));
   });
 
+  it.each([
+    "MONO_AGENT_EXECUTION_MODE",
+    "MONO_AGENT_ROUTE_SAFETY",
+    "MONO_AGENT_FALLBACK_MODELS",
+    "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
+  ] as const)("treats an empty retired env key %s as unset", (env) => {
+    // Every reader here treats an empty env var as unset, and the layered
+    // loader drops empty values before layering, so `KEY=` in a deployed .env
+    // never configured anything even before the field was retired. Failing the
+    // whole load on an inert leftover line is a startup regression, not a
+    // migration signal.
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [env]: "" } });
+
+    expect(config.runtime.fallbacks).toBeUndefined();
+  });
+
+  it("still rejects a whitespace-padded retired env value", () => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_FALLBACK_MODELS: "  ollama:gemma4:31b  " },
+    })).toThrow(/runtime\.fallbackModels/u);
+  });
+
   it("loads the Pi OAuth auth path from env", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
@@ -1021,6 +1044,77 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_MODEL: "private-provider:model-one" },
     })).toThrow('Provider "private-provider" used by runtime.model is not available; add "providers": { "private-provider": { "type": "openai_compat", "baseUrl": "https://..." } }');
+  });
+
+  it("rejects an unlisted provider named only by a subagent profile model", () => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({
+          definitions: [
+            { name: "researcher", description: "digs", prompt: "go", model: "openai-codex:gpt-5.5" },
+            { name: "reviewer", description: "checks", prompt: "go", model: "private-provider:model-one" },
+          ],
+        }),
+      },
+    })).toThrow('Provider "private-provider" used by subagents.definitions[1].model is not available');
+  });
+
+  it("accepts a subagent profile model whose provider is declared in the map", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_PROVIDERS_JSON: JSON.stringify({
+          "my-gateway": { type: "openai_compat", baseUrl: "http://127.0.0.1:9000/v1" },
+        }),
+        MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({
+          definitions: [{ name: "reviewer", description: "checks", prompt: "go", model: "my-gateway:model-one" }],
+        }),
+      },
+    });
+
+    expect(config.subagents?.definitions?.[0]?.model).toMatchObject({ provider: "my-gateway" });
+  });
+
+  it("admits a bare autodiscoverable route without fabricating a provider endpoint", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MODEL: "ollama:gemma4:31b",
+        MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "lmstudio:qwen3" }]),
+      },
+    });
+
+    // Deliberate split of duties: load admits the route (an undeclared local id
+    // is not a config error), and NOTHING here invents an endpoint the operator
+    // never declared. `doctor`/`validate` owns the diagnosis -- see
+    // `piModelResolutionIssue` in agent-app, which reports
+    // `pi model not found: ollama:gemma4:31b` with the exact repair. Synthesizing
+    // `http://localhost:11434` here would turn that honest error into a false
+    // "ok" and move the failure to a connection error on the first turn.
+    expect(config.providers?.local).toBeUndefined();
+    expect(config.providers?.entries).toBeUndefined();
+  });
+
+  it("fills the default endpoint for an autodiscoverable provider declared as an empty entry", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MODEL: "ollama:gemma4:31b",
+        MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ ollama: {} }),
+      },
+    });
+
+    // `"providers": { "ollama": {} }` is the whole repair: the id implies the
+    // type, and the type implies the localhost endpoint.
+    expect(config.providers?.local).toEqual([
+      expect.objectContaining({ id: "ollama", type: "ollama", baseUrl: "http://localhost:11434", enabled: true }),
+    ]);
+    expect(resolveConfiguredProviders(config).entries.map((entry) => entry.id)).toEqual(["ollama"]);
   });
 
   it("rejects invalid local-provider JSON and URLs", () => {
