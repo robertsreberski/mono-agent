@@ -651,9 +651,19 @@ function runtimeRouteEffortWarning(
   // recommend xhigh. The resolver reports [minimal, low, medium, high, xhigh,
   // max] for that model, and it is the same one the catalog and pickers use --
   // doctor disagreeing with what the selector offers is its own bug.
-  const advertised = resolveAdvertisedModelEffort(route.model, {
+  const resolved = resolveAdvertisedModelEffort(route.model, {
     ...(config.providers?.local === undefined ? {} : { localProviders: config.providers.local }),
-  }).effortLevels?.filter((level) => (EFFORT_LEVELS as readonly string[]).includes(level));
+  });
+  // A NON-REASONING route has no advertised ladder at all, so the level-list
+  // check below returns clean and `effort: high` was reported ready. Keep this
+  // ahead of that check: a local model can declare `reasoning_mode: "none"`
+  // WITH `reasoning_levels`, and "this route does not reason" is the accurate
+  // diagnosis there, not "pick another level".
+  if (resolved.reasoning === false && route.effort !== "none") {
+    return `[WARN] ${route.configPath}=${route.effort} is unsupported because known model metadata marks ${referenceOf(route.model)} as non-reasoning; use none, or omit it for the provider default. The runtime remains permissive and will forward the configured value.`;
+  }
+  const advertised = resolved.effortLevels
+    ?.filter((level) => (EFFORT_LEVELS as readonly string[]).includes(level));
   if (advertised === undefined || advertised.length === 0 || advertised.includes(route.effort)) return undefined;
   const configuredIndex = EFFORT_LEVELS.indexOf(route.effort as (typeof EFFORT_LEVELS)[number]);
   const nearest = advertised.reduce((best, candidate) => {

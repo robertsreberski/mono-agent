@@ -88,10 +88,22 @@ export function buildChannelRuntimeControls(coreConfig: MonoAgentConfig): Channe
       if (seen.has(value)) continue;
       seen.add(value);
       additional += 1;
+      // Catalog rows for a custom/local provider carry NO capability metadata:
+      // the allowlist branch has no Pi snapshot to resolve against, so
+      // `reasoning` is absent and `channelEffortOptions` returned [] — a
+      // provider-widened local model that declares graded reasoning offered no
+      // effort choices at all in the Slack/Telegram menu. `describe` is the
+      // capability-aware path (it consults `providers.local`), and it agrees
+      // with the row for built-ins, so resolve through it for every row.
+      const described = catalog.describe([{
+        provider: model.provider,
+        model: model.id,
+        reference: value,
+      }])[value];
       models.push({
         value,
         label: model.name,
-        efforts: channelEffortOptions(model),
+        efforts: channelEffortOptions(described ?? model),
       });
       if (additional >= SLACK_TELEGRAM_MAX_MODELS) break;
     }

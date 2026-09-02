@@ -217,19 +217,35 @@ export function buildProviderModelCatalog(
     const rawLabel = providerLabelById.get(id) ?? id;
     const providerLabel = withinBytes(rawLabel, MAX_CATALOG_LABEL_BYTES) ? rawLabel : id;
     const configured = configuredById.get(id);
-    const source: TuiProviderInfo["source"] = builtinIds.has(id)
+    // A configured provider that declares a local `type` OWNS the id, even when
+    // Pi ships a built-in under the same name. `runtimeOptionsForLocalProvider`
+    // matches on provider id ALONE, so every selection for this id executes
+    // against the local endpoint; advertising Pi's built-in list would offer
+    // models that endpoint does not serve — selectable in the picker, dead at
+    // turn time. The local definition therefore wins the `source` decision and
+    // every model-building branch below.
+    const localTyped = configured?.type !== undefined;
+    const treatAsBuiltin = builtinIds.has(id) && !localTyped;
+    const source: TuiProviderInfo["source"] = treatAsBuiltin
       ? "builtin"
       : configured !== undefined
         ? "custom"
         : "discovered";
 
-    const allowlist = configured?.models;
+    // `enabled: false` on an allowlist entry withdraws the model, not just its
+    // endpoint wiring: doctor reports a route to it as unresolvable, so
+    // advertising it offers a selection whose next turn fails. Branch on the
+    // DECLARED list, filter for the advertised one — an operator who disabled
+    // every entry narrowed the provider to nothing, and must not fall through
+    // to the un-narrowed built-in catalog.
+    const declaredModels = configured?.models;
+    const allowlist = declaredModels?.filter((model) => model.enabled !== false) ?? [];
     const maxAdvertised = configured?.maxAdvertisedModels ?? DEFAULT_MAX_ADVERTISED_PER_PROVIDER;
 
     let models: TuiCatalogModel[] = [];
     let totalModelCount: number | undefined;
 
-    if (allowlist !== undefined && allowlist.length > 0) {
+    if (declaredModels !== undefined && declaredModels.length > 0) {
       // An explicit `models` allowlist bypasses the cap and preserves its
       // declared order — the operator narrowed the provider on purpose.
       //
@@ -240,7 +256,7 @@ export function buildProviderModelCatalog(
       // right. Resolve against the snapshot, keep the operator's ordering and
       // display overrides, and drop names the provider does not have.
       const builtinByName = new Map<string, PiBuiltinModelSnapshot>();
-      if (builtinIds.has(id)) {
+      if (treatAsBuiltin) {
         try {
           for (const snapshot of listBuiltin(id)) builtinByName.set(snapshot.id, snapshot);
         } catch {
@@ -249,7 +265,16 @@ export function buildProviderModelCatalog(
       }
       models = allowlist.flatMap((model) => {
         const snapshot = builtinByName.get(model.name);
-        if (snapshot === undefined && builtinIds.has(id) && builtinByName.size > 0) return [];
+        // Fail closed on the SNAPSHOT, not on its size. Keying the drop off
+        // `builtinByName.size > 0` meant a throwing or empty built-in listing
+        // advertised every authored name unvalidated — precisely the `pi model
+        // not found` outcome this branch exists to prevent. Pi's catalog is a
+        // synchronous, version-pinned in-process constant, so "unavailable" is
+        // never a transient network blip: an empty listing for a provider Pi
+        // claims to own is a real answer, and a throw makes every name
+        // unverifiable. The provider still appears with `modelCount: 0` rather
+        // than vanishing from the picker.
+        if (treatAsBuiltin && snapshot === undefined) return [];
         const contextWindow = positiveContextWindow(model.capabilities?.context_window)
           ?? positiveContextWindow(model.capabilities?.num_ctx)
           ?? (snapshot === undefined ? undefined : positiveContextWindow(snapshot.contextWindow));
@@ -270,7 +295,7 @@ export function buildProviderModelCatalog(
         }];
       });
       totalModelCount = undefined;
-    } else if (builtinIds.has(id)) {
+    } else if (treatAsBuiltin) {
       let snapshots: PiBuiltinModelSnapshot[] = [];
       try {
         snapshots = [...listBuiltin(id)];
@@ -287,17 +312,18 @@ export function buildProviderModelCatalog(
       // live /v1/models response cannot double-list a model.
       const discovered = [...new Map(
         (discoveredByProvider.get(id) ?? []).map((model) => [model.ref, model]),
-      ).values()];
-      models = discovered
-        .sort((left, right) => compareModelId(left.ref, right.ref))
-        .slice(0, DEFAULT_MAX_ADVERTISED_PER_PROVIDER)
-        .map((discoveredModel) => ({
-          id: discoveredModel.ref.slice(discoveredModel.providerId.length + 1),
-          name: discoveredModel.label,
-          provider: discoveredModel.providerId,
-          providerLabel,
-        }));
-      totalModelCount = undefined;
+      ).values()].sort((left, right) => compareModelId(left.ref, right.ref));
+      // The provider's own `maxAdvertisedModels`, not the default: a provider
+      // that narrowed its contribution to 10 was still handed 100 live-discovered
+      // rows, because only the built-in branch honoured the configured cap.
+      const capped = discovered.slice(0, maxAdvertised);
+      models = capped.map((discoveredModel) => ({
+        id: discoveredModel.ref.slice(discoveredModel.providerId.length + 1),
+        name: discoveredModel.label,
+        provider: discoveredModel.providerId,
+        providerLabel,
+      }));
+      totalModelCount = discovered.length > capped.length ? discovered.length : undefined;
     }
 
     // Ids must be unique per provider: the pagination cursor IS the last row's
