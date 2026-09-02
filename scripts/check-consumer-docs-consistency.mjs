@@ -35,6 +35,17 @@ const artifactContractSourcePaths = [
 
 const monoPackage = (...nameParts) => `@mono-agent/${nameParts.join("-")}`;
 const packageDir = (...nameParts) => `packages/${nameParts.join("-")}`;
+const retiredDemoRootCommands = [
+  "build:demo",
+  "typecheck:demo",
+  "test:demo",
+  "demo:final",
+  "deploy:final",
+];
+const retiredDemoRootCommandPattern = new RegExp(
+  `\\b(?:${retiredDemoRootCommands.map(escapedPattern).join("|")})\\b`,
+  "iu",
+);
 
 function escapedPattern(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -62,6 +73,22 @@ const retiredDocReferences = [
   {
     label: "@mono-agent/agent-evals",
     pattern: /@mono-agent\/agent-evals|\bpackages\/agent-evals\b|\bagent-evals\b/iu,
+  },
+  {
+    label: "demos package",
+    pattern: /@mono-agent\/demos|\bpackages\/demos\b|\bdemos\s+(?:package|workspace|surface)\b/iu,
+  },
+  {
+    label: "demos/final-agent path",
+    pattern: /\bdemos\/final-agent\b/iu,
+  },
+  {
+    label: "demos/searxng path",
+    pattern: /\bdemos\/searxng\b/iu,
+  },
+  {
+    label: "retired root demo command",
+    pattern: retiredDemoRootCommandPattern,
   },
   {
     label: "WhatsApp/A2A in core",
@@ -247,6 +274,7 @@ export async function checkConsumerDocsConsistency(consumerPaths, options = {}) 
     userDocsChecked = shippedDocRecords.length;
     artifactContractSourcesChecked = artifactContractSourceRecords.length;
     issues.push(...scanRetiredDocReferences(shippedDocRecords));
+    issues.push(...await scanRetiredDemoRepositorySurfaces(repoRoot));
     issues.push(...scanDeprecatedMemoryRecallAliases(shippedDocRecords, repoRoot));
     issues.push(...scanMisleadingArtifactDurabilityClaims([
       ...shippedDocRecords,
@@ -413,6 +441,51 @@ function scanRetiredDocReferences(records) {
             `"${retiredReference.label}". Update the user docs to the current v1 package map.`,
         );
       }
+    }
+  }
+  return issues;
+}
+
+async function scanRetiredDemoRepositorySurfaces(repoRoot) {
+  const issues = [];
+  const retiredRoots = [
+    { relativePath: "demos/final-agent", allowedEntries: new Set() },
+    // An ignored legacy secret may remain just long enough for the explicit retirement migration.
+    { relativePath: "demos/searxng", allowedEntries: new Set([".env"]) },
+  ];
+  for (const root of retiredRoots) {
+    const absolutePath = join(repoRoot, root.relativePath);
+    if (!(await pathExists(absolutePath))) continue;
+    const entries = await readdir(absolutePath);
+    const prohibited = entries.filter((entry) => !root.allowedEntries.has(entry)).sort(compareCodeUnits);
+    if (prohibited.length > 0) {
+      issues.push(
+        `${absolutePath}: contains retired repository demo surface(s): ${prohibited.join(", ")}.`,
+      );
+    }
+  }
+
+  const packageJsonPath = join(repoRoot, "package.json");
+  if (!(await pathExists(packageJsonPath))) return issues;
+  let packageJson;
+  try {
+    packageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
+  } catch (error) {
+    issues.push(`${packageJsonPath}: could not inspect root scripts (${reasonOf(error)}).`);
+    return issues;
+  }
+  const scripts = packageJson?.scripts;
+  if (scripts === null || typeof scripts !== "object" || Array.isArray(scripts)) return issues;
+  for (const [name, command] of Object.entries(scripts)) {
+    if (retiredDemoRootCommands.includes(name)) {
+      issues.push(`${packageJsonPath}: root script "${name}" is a retired demo command.`);
+    }
+    if (typeof command !== "string") continue;
+    const match = retiredDemoRootCommandPattern.exec(command);
+    if (match !== null) {
+      issues.push(
+        `${packageJsonPath}: root script "${name}" invokes retired demo command "${match[0]}".`,
+      );
     }
   }
   return issues;
@@ -611,7 +684,7 @@ function usage() {
     "",
     "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, relevant package READMEs,",
     "and mono-agent-composer references)",
-    "for retired pre-v1 surfaces",
+    "for retired pre-v1 surfaces; also rejects the exact retired demo roots and root commands",
     "and scans those docs plus TUI source text for absolute artifact/replay claims",
     "that contradict wire truncation, best-effort export, recorder redaction, or terminal persistence.",
     "Each optional consumer folder should contain README.md and mono-agent.config.json.",

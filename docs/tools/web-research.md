@@ -125,8 +125,9 @@ keyless chain still run after it.
 
 The stock SearXNG engine set may not be usable from an ordinary residential IP:
 engines can answer with a CAPTCHA or require an API key. Configure at least one
-engine that works from the operator network and check it directly with
-`curl -sS -X POST http://127.0.0.1:8088/search -d 'q=test&format=json'`.
+engine that works from the operator network and use the copyable loopback,
+JSON-shape, and engine-health checks in the
+[local-first web research playbook](/playbooks/local-web-research/#1-provision-an-optional-searxng-instance).
 
 ### Keyless rate limiting
 
@@ -174,9 +175,11 @@ matter how politely it is throttled. Point such an agent at a local SearXNG:
 { "tools": { "web": { "search": { "backend": "searxng", "endpoint": "http://127.0.0.1:8088" } } } }
 ```
 
-Provision the instance independently using the upstream
-[container installation guide](https://docs.searxng.org/admin/installation-docker),
-bind it to loopback, and enable SearXNG's JSON format.
+Provision the instance independently with the exact
+[loopback-only, JSON-capable operator recipe](/playbooks/local-web-research/#1-provision-an-optional-searxng-instance).
+It sets the current upstream Compose host binding and `search.formats`
+explicitly, verifies both contracts, and covers migration of the retired
+repository-managed Compose project without touching a live service.
 
 ## WebFetch
 

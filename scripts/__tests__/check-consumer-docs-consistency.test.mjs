@@ -23,6 +23,7 @@ describe("check-consumer-docs-consistency", () => {
       "# Quickstart",
       "",
       "Install @mono-agent/agent-evals for the old evaluation path.",
+      "Install @mono-agent/demos or use packages/demos for the old demo package.",
       "The memory-bujo package owns durable memory.",
       "WhatsApp and A2A are bundled core channels.",
       "Built-in WhatsApp/A2A channels are available.",
@@ -33,8 +34,9 @@ describe("check-consumer-docs-consistency", () => {
 
     expect(result.checked).toBe(0);
     expect(result.userDocsChecked).toBe(1);
-    expect(result.issues).toHaveLength(4);
+    expect(result.issues).toHaveLength(6);
     expect(result.issues.join("\n")).toContain("@mono-agent/agent-evals");
+    expect(result.issues.filter((issue) => issue.includes('"demos package"'))).toHaveLength(2);
     expect(result.issues.join("\n")).toContain("memory-bujo package");
     expect(result.issues.join("\n")).toContain("WhatsApp/A2A in core");
   });
@@ -52,6 +54,7 @@ describe("check-consumer-docs-consistency", () => {
       "JSONL artifacts are not a source of truth for in-flight runs.",
       "Replay shows only redacted, bounded events that reached terminal persistence.",
       "A separate tool-output artifact may retain a block when best-effort persistence succeeds.",
+      "A generic packages/demo test fixture is allowed.",
       "",
     ].join("\n"));
 
@@ -59,6 +62,44 @@ describe("check-consumer-docs-consistency", () => {
 
     expect(result.userDocsChecked).toBe(1);
     expect(result.issues).toEqual([]);
+  });
+
+  it("flags documentation for the exact retired demo paths and root commands", async () => {
+    const repoRoot = await tempRepo();
+    await writeRepoDoc(repoRoot, "docs/operations/legacy.md", [
+      "Run code from demos/final-agent or configure demos/searxng.",
+      "Use build:demo, typecheck:demo, test:demo, demo:final, or deploy:final.",
+      "",
+    ].join("\n"));
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+
+    expect(result.issues).toHaveLength(7);
+    expect(result.issues.filter((issue) => issue.includes('"demos/final-agent path"'))).toHaveLength(1);
+    expect(result.issues.filter((issue) => issue.includes('"demos/searxng path"'))).toHaveLength(1);
+    expect(result.issues.filter((issue) => issue.includes('"retired root demo command"'))).toHaveLength(5);
+  });
+
+  it("flags reintroduced retired demo roots and root package commands but permits the legacy secret", async () => {
+    const repoRoot = await tempRepo();
+    await writeRepoDoc(repoRoot, "demos/final-agent/dist/cli.js", "runnable\n");
+    await writeRepoDoc(repoRoot, "demos/searxng/.env", "SEARXNG_SECRET=preserved\n");
+    await writeRepoDoc(repoRoot, "demos/searxng/compose.yaml", "services: {}\n");
+    await writeRepoDoc(repoRoot, "package.json", JSON.stringify({
+      scripts: {
+        "demo:final": "node removed.js",
+        test: "pnpm run test:demo",
+      },
+    }));
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+
+    expect(result.issues).toHaveLength(4);
+    expect(result.issues[0]).toContain("demos/final-agent");
+    expect(result.issues[1]).toContain("demos/searxng");
+    expect(result.issues[2]).toContain('root script "demo:final" is a retired demo command');
+    expect(result.issues[3]).toContain('root script "test" invokes retired demo command "test:demo"');
+    expect(result.issues.join("\n")).not.toContain("SEARXNG_SECRET");
   });
 
   it("orders recursive documentation by locale-independent UTF-16 code units", async () => {

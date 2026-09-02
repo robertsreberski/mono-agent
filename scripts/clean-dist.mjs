@@ -7,6 +7,7 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
 const WORKSPACE_PARENTS = ["packages", "extras"];
 const OUTPUT_DIRECTORIES = ["dist", path.join("webapp", "dist")];
+const RETIRED_OUTPUT_DIRECTORIES = [path.join("demos", "final-agent", "dist")];
 
 /**
  * Remove every build output directory so the next build cannot inherit compiled files whose
@@ -40,6 +41,16 @@ export function cleanBuildOutputs({ repoRoot = REPO_ROOT, log = console.log } = 
         log(`removed ${relativeDir}`);
       }
     }
+  }
+  // Keep this exact transitional cleanup after the demo sources are removed. Long-lived
+  // checkouts can still contain the ignored compiled CLI and must not retain a runnable demo.
+  // Do not broaden this to demos/**: ordinary fixtures using that name are not retired output.
+  for (const relativeDir of RETIRED_OUTPUT_DIRECTORIES) {
+    const outputDir = path.join(repoRoot, relativeDir);
+    if (!fs.existsSync(outputDir)) continue;
+    fs.rmSync(outputDir, { recursive: true, force: true });
+    removed.push(relativeDir);
+    log(`removed ${relativeDir}`);
   }
   log(`clean: removed ${removed.length} build output ${removed.length === 1 ? "directory" : "directories"}`);
   return removed;
