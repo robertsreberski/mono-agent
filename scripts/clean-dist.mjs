@@ -213,6 +213,12 @@ function removeRetiredOutputFromBoundParent(inspected, childEnvironment) {
   const parent = inspected.identities.at(-2);
   const target = inspected.identities.at(-1);
   const quarantine = `.${path.basename(inspected.outputDir)}.cleaning-${randomUUID()}`;
+  const quarantinePath = path.join(parent.candidate, quarantine);
+  const parentInspection = {
+    status: "ready",
+    outputDir: parent.candidate,
+    identities: inspected.identities.slice(0, -1),
+  };
   // The child binds its cwd to the checked parent inode, rechecks that canonical location, then
   // renames the final entry to a random sibling and verifies that sibling's identity. Concurrent
   // same-UID mutation after that final identity check and before rmSync is unsupported: pure Node
@@ -238,13 +244,10 @@ function removeRetiredOutputFromBoundParent(inspected, childEnvironment) {
     env: childEnvironment,
     stdio: ["ignore", "pipe", "pipe"],
   });
-  if (result.error instanceof Error && "code" in result.error
-    && (result.error.code === "ENOENT" || result.error.code === "ENOTDIR")) {
-    return { removed: false, reason: "path identity changed during deletion" };
+  if (result.error !== undefined) {
+    throw retiredRemovalProtocolError(result, parentInspection, target, quarantinePath);
   }
-  if (result.error !== undefined) throw result.error;
   const childResult = parseRetiredRemovalResult(result.stdout);
-  const quarantinePath = path.join(parent.candidate, quarantine);
   if (result.status === 0 && childResult?.status === "removed") {
     return { removed: true };
   }
@@ -284,10 +287,7 @@ function removeRetiredOutputFromBoundParent(inspected, childEnvironment) {
     cleanupError.quarantineState = quarantineState;
     throw cleanupError;
   }
-  throw new Error(
-    `Could not safely remove retired output (${result.signal ?? `exit ${result.status}`}): `
-    + result.stderr.trim(),
-  );
+  throw retiredRemovalProtocolError(result, parentInspection, target, quarantinePath);
 }
 
 function formatRetiredRemovalStatus(result) {
@@ -308,6 +308,50 @@ function parseRetiredRemovalResult(stdout) {
     }
   }
   return undefined;
+}
+
+function retiredRemovalProtocolError(result, parentInspection, target, quarantinePath) {
+  const quarantineState = classifyRetiredRemovalQuarantine(
+    parentInspection,
+    target,
+    quarantinePath,
+  );
+  const outcome = result.error instanceof Error
+    ? `failed to start (${"code" in result.error ? result.error.code : result.error.message})`
+    : typeof result.signal === "string"
+      ? `terminated by signal ${result.signal}`
+      : `exited with code ${result.status}`;
+  const error = new Error(
+    `Retired output remover ${outcome} without a valid protocol result; `
+      + `quarantine state is ${quarantineState} at ${quarantinePath}`,
+    result.error instanceof Error ? { cause: result.error } : undefined,
+  );
+  error.code = "RETIRED_OUTPUT_REMOVAL_PROTOCOL_FAILED";
+  error.quarantinePath = quarantinePath;
+  error.quarantineState = quarantineState;
+  error.signal = result.signal;
+  error.exitCode = result.status;
+  return error;
+}
+
+function classifyRetiredRemovalQuarantine(parentInspection, target, quarantinePath) {
+  if (!retiredOutputIdentityIsStable(parentInspection)) return "indeterminate";
+  let details;
+  try {
+    // lstat is deliberate: an untrusted pending symlink must never be followed.
+    details = fs.lstatSync(quarantinePath);
+  } catch (error) {
+    return isMissingPathError(error) && retiredOutputIdentityIsStable(parentInspection)
+      ? "absent"
+      : "indeterminate";
+  }
+  if (!retiredOutputIdentityIsStable(parentInspection)) return "indeterminate";
+  return !details.isSymbolicLink()
+    && details.isDirectory()
+    && details.dev === target.dev
+    && details.ino === target.ino
+    ? "retained"
+    : "indeterminate";
 }
 
 function inspectPendingRetiredOutputs(parentInspection) {

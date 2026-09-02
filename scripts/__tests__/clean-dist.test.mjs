@@ -308,6 +308,61 @@ fs.rmSync = function patchedRmSync(candidate, options) {
     expect(secondLogs).not.toContain("removed demos/final-agent/dist");
   });
 
+  it("classifies a signal-terminated remover after rename and detects its pending entry on retry", async () => {
+    const repoRoot = await fixtureRepo(["demos/final-agent/dist"]);
+    const parent = join(repoRoot, "demos/final-agent");
+    await writeFile(join(parent, "dist/cli.js"), "original runnable demo");
+    const preloadPath = await childPreload(`
+const fs = require("node:fs");
+const nativeRenameSync = fs.renameSync;
+fs.renameSync = function patchedRenameSync(source, destination) {
+  nativeRenameSync.call(this, source, destination);
+  if (source === "dist" && String(destination).startsWith(".dist.cleaning-")) {
+    process.kill(process.pid, "SIGTERM");
+  }
+};
+`);
+    const firstLogs = [];
+
+    let protocolError;
+    try {
+      cleanBuildOutputs({
+        repoRoot,
+        log: (line) => firstLogs.push(line),
+        retiredOutputChildEnv: childEnvironment(preloadPath),
+      });
+    } catch (error) {
+      protocolError = error;
+    }
+
+    expect(protocolError).toMatchObject({
+      code: "RETIRED_OUTPUT_REMOVAL_PROTOCOL_FAILED",
+      quarantineState: "retained",
+      signal: "SIGTERM",
+      exitCode: null,
+    });
+    expect(protocolError.message).toContain("terminated by signal SIGTERM");
+    expect(protocolError.message).toContain("quarantine state is retained");
+    expect(protocolError.quarantinePath).toMatch(/\.dist\.cleaning-/u);
+    expect(await readFile(join(protocolError.quarantinePath, "cli.js"), "utf8")).toBe(
+      "original runnable demo",
+    );
+    expect(firstLogs).not.toContain("removed demos/final-agent/dist");
+
+    const secondLogs = [];
+    expect(cleanBuildOutputs({
+      repoRoot,
+      log: (line) => secondLogs.push(line),
+    })).toEqual([]);
+    expect(secondLogs).toContain(
+      `skipped demos/final-agent/dist: retained pending deletion requires inspection at ${protocolError.quarantinePath}`,
+    );
+    expect(await readFile(join(protocolError.quarantinePath, "cli.js"), "utf8")).toBe(
+      "original runnable demo",
+    );
+    expect(secondLogs).not.toContain("removed demos/final-agent/dist");
+  });
+
   it("does not start a new retired-output cleanup while a prior pending entry exists", async () => {
     const repoRoot = await fixtureRepo([
       "demos/final-agent/dist",
