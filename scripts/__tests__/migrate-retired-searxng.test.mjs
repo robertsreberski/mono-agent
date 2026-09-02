@@ -376,6 +376,56 @@ describe("migrate-retired-searxng", () => {
     expect((await readdir(migration.root)).some((entry) => entry.includes(".migrating-"))).toBe(false);
   });
 
+  it("fails explicitly and retains protected staging when concurrent-winner cleanup fails", async () => {
+    const migration = await fixture();
+    const logs = [];
+    let concurrentResult;
+    let cleanupError;
+
+    try {
+      migrateRetiredSearxng({
+        repoRoot: migration.repoRoot,
+        destination: migration.destination,
+        log: (line) => logs.push(line),
+        beforeAtomicPublish: () => {
+          concurrentResult = migrateRetiredSearxng({
+            repoRoot: migration.repoRoot,
+            destination: migration.destination,
+            log: () => {},
+          });
+        },
+        removeStaging: () => {
+          const error = new Error("injected private staging cleanup failure");
+          error.code = "EIO";
+          throw error;
+        },
+      });
+    } catch (error) {
+      cleanupError = error;
+    }
+
+    expect(cleanupError).toMatchObject({
+      name: "RetiredSearxngStagingCleanupError",
+      code: "SEARXNG_STAGING_CLEANUP_FAILED",
+      destination: migration.destination,
+      stagingPath: expect.stringContaining(".operator.migrating-"),
+    });
+    expect(cleanupError.message).toContain("valid SearXNG bundle is published");
+    expect(cleanupError.message).toContain(cleanupError.stagingPath);
+    expect(logs).toEqual([]);
+    expect(concurrentResult.destination).toBe(migration.destination);
+    expect((await readdir(migration.destination)).sort())
+      .toEqual([".env", "compose.yaml", "settings.yml"]);
+    expect(await readFile(join(migration.destination, ".env"), "utf8"))
+      .toBe(`SEARXNG_SECRET=${VALID_SECRET}\n`);
+    expect(existsSync(cleanupError.stagingPath)).toBe(true);
+    expect((await stat(cleanupError.stagingPath)).mode & 0o777).toBe(0o700);
+    expect(await readFile(join(cleanupError.stagingPath, ".env"), "utf8"))
+      .toBe(`SEARXNG_SECRET=${VALID_SECRET}\n`);
+    expect((await stat(join(cleanupError.stagingPath, ".env"))).mode & 0o777)
+      .toBe(0o600);
+  });
+
   it("requires an explicit destination and accepts an explicit legacy env path", async () => {
     expect(() => parseArgs([])).toThrow("--destination is required");
     expect(parseArgs(["--destination", "/operator", "--env-file", "/secrets/searxng.env"])).toEqual({

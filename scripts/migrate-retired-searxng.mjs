@@ -24,6 +24,20 @@ const DEFAULT_GET_CURRENT_UID = typeof process.getuid === "function"
   ? process.getuid.bind(process)
   : undefined;
 
+class RetiredSearxngStagingCleanupError extends Error {
+  constructor({ destination, stagingPath, cause }) {
+    super(
+      `A valid SearXNG bundle is published at ${destination}, but private staging cleanup failed. `
+      + `Treat the protected staging path as retained and inspect it manually: ${stagingPath}.`,
+      { cause },
+    );
+    this.name = "RetiredSearxngStagingCleanupError";
+    this.code = "SEARXNG_STAGING_CLEANUP_FAILED";
+    this.destination = destination;
+    this.stagingPath = stagingPath;
+  }
+}
+
 // This is the last repository-owned Compose contract. The fixed project, service, and volume
 // names let an operator re-home an existing deployment without silently creating a parallel one.
 const COMPOSE_YAML = `name: mono-agent-searxng
@@ -124,6 +138,7 @@ export function migrateRetiredSearxng({
   beforeAtomicPublish,
   afterAtomicPublish,
   getCurrentUid = DEFAULT_GET_CURRENT_UID,
+  removeStaging = rmSync,
 } = {}) {
   if (typeof destination !== "string" || destination.trim().length === 0) {
     throw new Error("destination is required.");
@@ -250,12 +265,15 @@ export function migrateRetiredSearxng({
       if (!isCompletedBundle(stableDestination, secret, currentUid)) {
         throw new Error(`Destination already exists: ${absoluteDestination}`);
       }
-      cleanupPrivateStaging(
+      const cleanup = cleanupPrivateStaging(
         staging,
         stagingIdentity,
         assertStableCanonicalParent,
         currentUid,
+        removeStaging,
       );
+      published = true;
+      throwIfStagingCleanupFailed(cleanup, absoluteDestination, staging);
       stagingCreated = false;
       return completedResult(absoluteDestination, log, "Accepted the concurrently completed");
     }
@@ -270,14 +288,16 @@ export function migrateRetiredSearxng({
       wonPublication = true;
     } catch (error) {
       if (!isCompletedBundle(stableDestination, secret, currentUid)) throw error;
-      cleanupPrivateStaging(
+      published = true;
+      const cleanup = cleanupPrivateStaging(
         staging,
         stagingIdentity,
         assertStableCanonicalParent,
         currentUid,
+        removeStaging,
       );
+      throwIfStagingCleanupFailed(cleanup, absoluteDestination, staging);
       stagingCreated = false;
-      published = true;
     }
 
     afterAtomicPublish?.();
@@ -299,6 +319,7 @@ export function migrateRetiredSearxng({
         stagingIdentity,
         assertStableCanonicalParent,
         currentUid,
+        removeStaging,
       );
     }
     throw error;
@@ -324,6 +345,7 @@ function cleanupPrivateStaging(
   stagingIdentity,
   assertStableCanonicalParent,
   currentUid,
+  removeStaging,
 ) {
   try {
     assertStableCanonicalParent();
@@ -334,10 +356,24 @@ function cleanupPrivateStaging(
       staging,
       currentUid,
     );
-    rmSync(staging, { recursive: true, force: true });
-  } catch {
+    removeStaging(staging, { recursive: true, force: true });
+    if (entryExists(staging)) {
+      throw new Error("Private staging remover returned without removing the directory.");
+    }
+    return { status: "removed" };
+  } catch (error) {
     // Never redirect cleanup through a changed canonical parent or staging path.
+    return { status: "retained", cause: error };
   }
+}
+
+function throwIfStagingCleanupFailed(cleanup, destination, stagingPath) {
+  if (cleanup.status === "removed") return;
+  throw new RetiredSearxngStagingCleanupError({
+    destination,
+    stagingPath,
+    cause: cleanup.cause,
+  });
 }
 
 function assertCompleteBundle(directory, secret) {
