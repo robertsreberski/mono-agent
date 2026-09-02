@@ -359,6 +359,7 @@ PERMISSION_MODES
 PermissionMode
 PhoenixExporterConfig
 PiNativeProviderConfig
+ProviderCoverageRoute
 ProviderDefinition
 RETIRED_CONFIG_FIELDS
 ReadMonoAgentConfigJsonResult

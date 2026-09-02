@@ -165,6 +165,52 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_PI_SESSIONS_ROOT).toBe(".mono-agent/sessions");
   });
 
+  it("lets a legacy local-provider env var override the same JSON provider id", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        providers: {
+          piAuthPath: ".pi/auth.json",
+          ollama: { type: "ollama", baseUrl: "http://localhost:11434" },
+          "my-gateway": { type: "openai_compat", baseUrl: "http://127.0.0.1:9000/v1" },
+        },
+      },
+      {
+        MONO_AGENT_LOCAL_PROVIDER_ID: "ollama",
+        MONO_AGENT_LOCAL_PROVIDER_TYPE: "ollama",
+        MONO_AGENT_LOCAL_PROVIDER_BASE_URL: "http://localhost:11500",
+      },
+    );
+    const projected: unknown = JSON.parse(layered.MONO_AGENT_PROVIDERS_JSON ?? "{}");
+    // The overridden id is dropped so the reader takes the env definition
+    // instead of rejecting the pair as a duplicate; siblings and reserved keys
+    // survive untouched.
+    expect(projected).toEqual({
+      piAuthPath: ".pi/auth.json",
+      "my-gateway": { type: "openai_compat", baseUrl: "http://127.0.0.1:9000/v1" },
+    });
+  });
+
+  it("drops JSON provider ids named by MONO_AGENT_LOCAL_PROVIDERS_JSON", () => {
+    const layered = layerJsonOntoEnv(
+      { providers: { ollama: { type: "ollama" }, lmstudio: { type: "lmstudio" } } },
+      {
+        MONO_AGENT_LOCAL_PROVIDERS_JSON: JSON.stringify([
+          { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1235" },
+        ]),
+      },
+    );
+    expect(JSON.parse(layered.MONO_AGENT_PROVIDERS_JSON ?? "{}")).toEqual({ ollama: { type: "ollama" } });
+  });
+
+  it("keeps the whole JSON provider map when the legacy env registry is unparseable", () => {
+    const layered = layerJsonOntoEnv(
+      { providers: { ollama: { type: "ollama" } } },
+      { MONO_AGENT_LOCAL_PROVIDERS_JSON: "{not-json" },
+    );
+    // Silently dropping here would hide the reader's precise invalid_json error.
+    expect(JSON.parse(layered.MONO_AGENT_PROVIDERS_JSON ?? "{}")).toEqual({ ollama: { type: "ollama" } });
+  });
+
   it("translates JSON runtime permission mode to env keys", () => {
     const layered = layerJsonOntoEnv(
       { runtime: { permissionMode: "bypassPermissions" } },
@@ -1061,6 +1107,34 @@ describe("loadMonoAgentConfigWithSources", () => {
       jsonPath: path,
     });
     expect(config.providers?.local?.map((provider) => provider.id)).toEqual(["ollama"]);
+  });
+
+  it("env local-provider settings override the SAME id in the JSON provider map", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "ollama:qwen3:8b" },
+        context: { identityPath: "IDENTITY.md" },
+        providers: { ollama: { type: "ollama", baseUrl: "http://localhost:11434" } },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({
+      env: {
+        MONO_AGENT_LOCAL_PROVIDER_ID: "ollama",
+        MONO_AGENT_LOCAL_PROVIDER_TYPE: "ollama",
+        MONO_AGENT_LOCAL_PROVIDER_BASE_URL: "http://localhost:11500",
+      },
+      cwd: dir,
+      jsonPath: path,
+    });
+    // Previously both layers reached the reader and the duplicate-id guard made
+    // the agent fail to load rather than taking the env override.
+    expect(config.providers?.local).toEqual([
+      expect.objectContaining({ id: "ollama", baseUrl: "http://localhost:11500" }),
+    ]);
   });
 
   it("env beats JSON for overlapping fields", async () => {

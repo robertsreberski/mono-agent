@@ -187,6 +187,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const permissionMode = readPermissionMode(input.env.MONO_AGENT_PERMISSION_MODE);
   const concurrency = readConcurrencyConfig(input.env);
   const subagents = readSubagentsConfig(input.env, cwd);
+  const subagentRoutes = subagentProviderRoutes(subagents);
   const runtime: MonoAgentConfig["runtime"] = {
     model,
     ...(fallbacks.length === 0 ? {} : { fallbacks }),
@@ -269,7 +270,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     ...(localProviders.length === 0 ? {} : { local: localProviders }),
     ...(piNative === undefined ? {} : { piNative }),
   };
-  assertConfiguredProviderCoverage(model, fallbacks, resolveConfiguredProviders({ providers }));
+  assertConfiguredProviderCoverage(model, fallbacks, resolveConfiguredProviders({ providers }), subagentRoutes);
 
   const config: MonoAgentConfig = {
     ...(agentName === undefined ? {} : { agent: { name: agentName } }),
@@ -325,21 +326,48 @@ export function resolveConfiguredProviders(
   };
 }
 
+/** One authored model reference to validate, with the config path that owns it. */
+export interface ProviderCoverageRoute {
+  readonly model: RuntimeModelReference;
+  /** Config path used verbatim in the failure message, e.g. `runtime.model`. */
+  readonly path: string;
+}
+
+/**
+ * Every authored `subagents.definitions[].model` is a real route: the harness
+ * builds a runtime for it exactly like a fallback, so it must pass the same
+ * provider gate. Left unchecked, a typo'd provider id loaded fine and only blew
+ * up mid-turn, inside a subagent, where the failure is hardest to attribute.
+ */
+function subagentProviderRoutes(
+  subagents: MonoAgentConfig["subagents"] | undefined,
+): readonly ProviderCoverageRoute[] {
+  return (subagents?.definitions ?? []).flatMap((definition, index) =>
+    definition.model === undefined
+      ? []
+      : [{ model: definition.model, path: `subagents.definitions[${index}].model` }],
+  );
+}
+
 /**
  * Fail early when a route names neither Pi's builtin catalog, an explicitly
  * configured provider, nor one of the two zero-config local discovery ids.
+ * `additionalRoutes` carries model references authored outside
+ * `runtime.model`/`runtime.fallbacks[]` (today: subagent profiles).
  */
 export function assertConfiguredProviderCoverage(
   model: RuntimeModelReference,
   fallbacks: readonly RuntimeFallbackConfig[] | undefined,
   providers: ResolvedProviders,
+  additionalRoutes: readonly ProviderCoverageRoute[] = [],
 ): void {
-  const routes = [
+  const routes: readonly ProviderCoverageRoute[] = [
     { model, path: "runtime.model" },
     ...(fallbacks ?? []).map((fallback, index) => ({
       model: fallback.model,
       path: `runtime.fallbacks[${index}].model`,
     })),
+    ...additionalRoutes,
   ];
   for (const route of routes) {
     const providerId = route.model.provider;
@@ -369,8 +397,20 @@ export function assertConfiguredProviderCoverage(
   }
 }
 
+/**
+ * Reject a retired field only when it still carries a value. Every reader in
+ * this loader treats an empty env var as unset (`normalizeOptionalString`,
+ * `readCsv`) and the layered loader drops empty env values before layering, so
+ * `MONO_AGENT_FALLBACK_MODELS=` never configured anything even before the field
+ * was retired -- it loaded as "no fallbacks". Rejecting it would turn an inert
+ * leftover line in a deployed `.env` into a startup crash with no stale setting
+ * behind it. A non-empty value is still a real, silently-dropped setting and
+ * still fails closed.
+ */
 function assertNoRetiredConfigEnv(env: Record<string, string | undefined>): void {
-  const retired = RETIRED_CONFIG_FIELDS.find((field) => env[field.env] !== undefined);
+  const retired = RETIRED_CONFIG_FIELDS.find(
+    (field) => normalizeOptionalString(env[field.env]) !== undefined,
+  );
   if (retired === undefined) return;
   throw new MonoAgentConfigError("invalid_env", retired.message, {
     env: retired.env,

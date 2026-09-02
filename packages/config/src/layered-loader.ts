@@ -4,6 +4,7 @@ import type {
   MonoAgentMemoryConsolidationJson,
   MonoAgentMemoryEmbeddingsJson,
   MonoAgentMemoryLlmJson,
+  MonoAgentProvidersJson,
 } from "./json-source.js";
 import { loadMonoAgentConfig, MEMORY_LLM_ENV_KEYS, MonoAgentConfigError } from "./config.js";
 import type { MonoAgentConfig } from "./types.js";
@@ -938,7 +939,7 @@ export function layerJsonOntoEnv(
   // projector cannot enumerate them. Preserve the whole providers object in
   // one JSON env value; discrete legacy/reserved env values still layer later.
   if (json.providers !== undefined && !hasValue(env.MONO_AGENT_PROVIDERS_JSON)) {
-    fromJson.MONO_AGENT_PROVIDERS_JSON = JSON.stringify(json.providers);
+    fromJson.MONO_AGENT_PROVIDERS_JSON = JSON.stringify(withoutEnvOverriddenProviders(json.providers, env));
   }
   if (json.providers?.piAuthPath !== undefined) {
     fromJson.MONO_AGENT_PI_AUTH_PATH = json.providers.piAuthPath;
@@ -1014,6 +1015,75 @@ function csv(values: readonly string[]): string {
 
 function hasValue(value: string | undefined): boolean {
   return value !== undefined && value.trim().length > 0;
+}
+
+/** Reserved `providers` keys that configure Pi rather than name a provider. */
+const RESERVED_PROVIDERS_JSON_KEYS = new Set(["local", "piAuthPath", "piNative"]);
+
+/**
+ * Provider ids claimed by the legacy local-provider env vars, which the config
+ * reader loads *in addition to* the provider map. Best effort by design: an
+ * unparseable `MONO_AGENT_LOCAL_PROVIDERS_JSON` yields no ids here so the
+ * reader still raises its own precise `invalid_json` error.
+ */
+function legacyEnvProviderIds(env: Record<string, string | undefined>): ReadonlySet<string> {
+  const ids = new Set<string>();
+  const registryJson = env.MONO_AGENT_LOCAL_PROVIDERS_JSON;
+  if (hasValue(registryJson)) {
+    try {
+      const parsed: unknown = JSON.parse(registryJson as string);
+      const entries: unknown = Array.isArray(parsed)
+        ? parsed
+        : (parsed as { readonly local?: unknown } | null)?.local;
+      if (Array.isArray(entries)) {
+        for (const entry of entries) {
+          const id: unknown = (entry as { readonly id?: unknown } | null)?.id;
+          if (typeof id === "string" && id.trim().length > 0) ids.add(id.trim());
+        }
+      }
+    } catch {
+      return ids;
+    }
+    return ids;
+  }
+  // The discrete single-provider form: any one of these vars activates it, and
+  // an omitted id defaults to `ollama` exactly as the reader defaults it.
+  const singleProviderVars = [
+    env.MONO_AGENT_LOCAL_PROVIDER_ID,
+    env.MONO_AGENT_LOCAL_PROVIDER_TYPE,
+    env.MONO_AGENT_LOCAL_PROVIDER_BASE_URL,
+    env.MONO_AGENT_LOCAL_PROVIDER_ENABLED,
+    env.MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL,
+    env.MONO_AGENT_LOCAL_PROVIDER_API_KEY,
+  ];
+  if (singleProviderVars.some((value) => hasValue(value))) {
+    const id = env.MONO_AGENT_LOCAL_PROVIDER_ID;
+    ids.add(hasValue(id) ? (id as string).trim() : "ollama");
+  }
+  return ids;
+}
+
+/**
+ * Env wins over JSON everywhere else in this loader, so a provider id defined
+ * by both the JSON `providers` map and a legacy local-provider env var must
+ * resolve to the env definition. Both layers used to reach the reader intact,
+ * where `addConfiguredProvider()` rejected the collision and the agent failed
+ * to load instead of taking the override. Reserved keys and `providers.local[]`
+ * are untouched: the reader already drops the JSON `local` array whenever the
+ * legacy env form is present.
+ */
+function withoutEnvOverriddenProviders(
+  providers: MonoAgentProvidersJson,
+  env: Record<string, string | undefined>,
+): MonoAgentProvidersJson {
+  const overridden = legacyEnvProviderIds(env);
+  if (overridden.size === 0) return providers;
+  const kept = Object.entries(providers).filter(
+    ([key]) => RESERVED_PROVIDERS_JSON_KEYS.has(key) || !overridden.has(key),
+  );
+  return kept.length === Object.keys(providers).length
+    ? providers
+    : (Object.fromEntries(kept) as MonoAgentProvidersJson);
 }
 
 function hasObservabilityEnv(env: Record<string, string | undefined>): boolean {
