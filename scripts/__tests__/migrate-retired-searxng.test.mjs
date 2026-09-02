@@ -197,16 +197,33 @@ describe("migrate-retired-searxng", () => {
     const movedParent = join(migration.repoRoot, "moved-outside-parent");
     const destination = join(outsideParent, "operator");
     await mkdir(outsideParent);
+    let retainedError;
 
-    expect(() => migrateRetiredSearxng({
-      repoRoot: migration.repoRoot,
+    try {
+      migrateRetiredSearxng({
+        repoRoot: migration.repoRoot,
+        destination,
+        log: () => {},
+        beforePublish: () => {
+          renameSync(outsideParent, movedParent);
+          symlinkSync(movedParent, outsideParent, "dir");
+        },
+      });
+    } catch (error) {
+      retainedError = error;
+    }
+
+    expect(retainedError).toMatchObject({
+      name: "RetiredSearxngUnpublishedStagingCleanupError",
+      code: "SEARXNG_UNPUBLISHED_STAGING_CLEANUP_FAILED",
+      published: false,
       destination,
-      log: () => {},
-      beforePublish: () => {
-        renameSync(outsideParent, movedParent);
-        symlinkSync(movedParent, outsideParent, "dir");
-      },
-    })).toThrow("Destination parent changed after validation");
+      stagingPath: expect.stringContaining(".operator.migrating-"),
+    });
+    expect(retainedError.operationCause.message)
+      .toContain("Destination parent changed after validation");
+    expect(retainedError.cleanupCause.message)
+      .toContain("Destination parent changed after validation");
 
     expect(existsSync(join(movedParent, "operator"))).toBe(false);
     const movedEntries = await readdir(movedParent);
@@ -423,6 +440,59 @@ describe("migrate-retired-searxng", () => {
     expect(await readFile(join(cleanupError.stagingPath, ".env"), "utf8"))
       .toBe(`SEARXNG_SECRET=${VALID_SECRET}\n`);
     expect((await stat(join(cleanupError.stagingPath, ".env"))).mode & 0o777)
+      .toBe(0o600);
+  });
+
+  it("preserves both causes when unpublished staging cleanup fails", async () => {
+    const migration = await fixture();
+    const logs = [];
+    const operationCause = new Error("injected pre-publication operation failure");
+    operationCause.code = "EOPERATION";
+    const cleanupCause = new Error("injected private staging cleanup failure");
+    cleanupCause.code = "EIO";
+    let retainedError;
+    let cleanupPath;
+
+    try {
+      migrateRetiredSearxng({
+        repoRoot: migration.repoRoot,
+        destination: migration.destination,
+        log: (line) => logs.push(line),
+        beforeAtomicPublish: () => {
+          throw operationCause;
+        },
+        removeStaging: (stagingPath) => {
+          cleanupPath = stagingPath;
+          throw cleanupCause;
+        },
+      });
+    } catch (error) {
+      retainedError = error;
+    }
+
+    expect(retainedError).toMatchObject({
+      name: "RetiredSearxngUnpublishedStagingCleanupError",
+      code: "SEARXNG_UNPUBLISHED_STAGING_CLEANUP_FAILED",
+      published: false,
+      destination: migration.destination,
+      stagingPath: expect.stringContaining(".operator.migrating-"),
+      operationCause,
+      cleanupCause,
+      cause: operationCause,
+      errors: [operationCause, cleanupCause],
+    });
+    expect(retainedError.message).toContain("did not publish a bundle");
+    expect(retainedError.message).toContain(retainedError.stagingPath);
+    expect(cleanupPath).toBe(retainedError.stagingPath);
+    expect(logs).toEqual([]);
+    expect(existsSync(migration.destination)).toBe(false);
+    expect(existsSync(retainedError.stagingPath)).toBe(true);
+    expect((await readdir(retainedError.stagingPath)).sort())
+      .toEqual([".env", "compose.yaml", "settings.yml"]);
+    expect((await stat(retainedError.stagingPath)).mode & 0o777).toBe(0o700);
+    expect(await readFile(join(retainedError.stagingPath, ".env"), "utf8"))
+      .toBe(`SEARXNG_SECRET=${VALID_SECRET}\n`);
+    expect((await stat(join(retainedError.stagingPath, ".env"))).mode & 0o777)
       .toBe(0o600);
   });
 

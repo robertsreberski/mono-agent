@@ -38,6 +38,25 @@ class RetiredSearxngStagingCleanupError extends Error {
   }
 }
 
+class RetiredSearxngUnpublishedStagingCleanupError extends AggregateError {
+  constructor({ destination, stagingPath, operationCause, cleanupCause }) {
+    super(
+      [operationCause, cleanupCause],
+      `The SearXNG migration did not publish a bundle at ${destination}, and private staging `
+      + `cleanup failed. Treat the protected staging path as retained and inspect it manually: `
+      + `${stagingPath}.`,
+      { cause: operationCause },
+    );
+    this.name = "RetiredSearxngUnpublishedStagingCleanupError";
+    this.code = "SEARXNG_UNPUBLISHED_STAGING_CLEANUP_FAILED";
+    this.published = false;
+    this.destination = destination;
+    this.stagingPath = stagingPath;
+    this.operationCause = operationCause;
+    this.cleanupCause = cleanupCause;
+  }
+}
+
 // This is the last repository-owned Compose contract. The fixed project, service, and volume
 // names let an operator re-home an existing deployment without silently creating a parallel one.
 const COMPOSE_YAML = `name: mono-agent-searxng
@@ -312,17 +331,25 @@ export function migrateRetiredSearxng({
       );
     }
     assertCompleteBundle(stableDestination, secret);
-  } catch (error) {
+  } catch (operationCause) {
     if (!published && stagingCreated && stagingIdentity !== undefined) {
-      cleanupPrivateStaging(
+      const cleanup = cleanupPrivateStaging(
         staging,
         stagingIdentity,
         assertStableCanonicalParent,
         currentUid,
         removeStaging,
       );
+      if (cleanup.status === "retained") {
+        throw new RetiredSearxngUnpublishedStagingCleanupError({
+          destination: absoluteDestination,
+          stagingPath: staging,
+          operationCause,
+          cleanupCause: cleanup.cause,
+        });
+      }
     }
-    throw error;
+    throw operationCause;
   }
 
   return completedResult(absoluteDestination, log, "Migrated the retired");
