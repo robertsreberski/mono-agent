@@ -7,6 +7,7 @@ import {
   defaultEffortName,
   effortLevelsForAgentModel,
   effortName,
+  GLOBAL_EFFORT_LEVELS,
   groupSelectorModels,
   providerOfModel,
 } from "./model-catalog";
@@ -93,6 +94,35 @@ describe("effort helpers", () => {
       { reasoningMode: "toggle" },
     ))).toEqual(["high", "none"]);
   });
+
+  it("ranks a catalog row's own metadata above the legacy global ladder", () => {
+    // An agent without `modelOptions` describes ONE ladder for everything, so
+    // catalog rows used to inherit it: a non-reasoning model rendered Thinking
+    // controls and grades its page never advertised were selectable.
+    const legacy = agent("legacy", {
+      models: ["legacy/model"],
+      efforts: [...GLOBAL_EFFORT_LEVELS],
+    });
+    expect(effortLevelsForAgentModel(legacy, "anthropic:opus-5", catalogModel(
+      "opus-5",
+      "anthropic",
+      "Anthropic",
+      { reasoning: true, effortLevels: ["low", "max"] },
+    ))).toEqual(["low", "max"]);
+    expect(effortLevelsForAgentModel(legacy, "anthropic:instant", catalogModel(
+      "instant",
+      "anthropic",
+      "Anthropic",
+      { reasoning: false },
+    ))).toEqual([]);
+    // Silence is not a claim that the model has no grades; the legacy ladder
+    // still applies, or the row loses effort control it actually supports.
+    expect(effortLevelsForAgentModel(legacy, "anthropic:quiet", catalogModel(
+      "quiet",
+      "anthropic",
+      "Anthropic",
+    ))).toEqual([...GLOBAL_EFFORT_LEVELS]);
+  });
 });
 
 describe("buildSelectorModels", () => {
@@ -139,6 +169,29 @@ describe("buildSelectorModels", () => {
     const rows = buildSelectorModels({ agent: source, modelOptions: shortlist, defaultEffort: "high" });
     expect(rows[0]).toMatchObject({ id: AUTOMATIC_MODEL_ID, name: "Default · Claude Sonnet 4.5" });
     expect(rows[0].efforts.map((option) => option.id)).toEqual(["", "medium", "high"]);
+  });
+
+  it("offers each catalog row only the grades its own page advertised", () => {
+    const rows = buildSelectorModels({
+      agent: source,
+      modelOptions: shortlist,
+      defaultEffort: "high",
+      catalogByProvider: {
+        anthropic: [
+          catalogModel("opus-5", "anthropic", "Anthropic", {
+            reasoning: true,
+            effortLevels: ["low", "max"],
+          }),
+          catalogModel("instant", "anthropic", "Anthropic", { reasoning: false }),
+        ],
+      },
+    });
+
+    expect(rows.find((row) => row.id === "anthropic:opus-5")?.efforts.map((option) => option.id))
+      .toEqual(["", "low", "max"]);
+    // A non-reasoning row must not render Thinking controls at all: the effort
+    // it offered was discarded by the store and rejected by the agent.
+    expect(rows.find((row) => row.id === "anthropic:instant")?.efforts).toEqual([]);
   });
 
   it("returns an empty list when no agent is selected", () => {

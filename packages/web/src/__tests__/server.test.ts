@@ -1048,6 +1048,20 @@ describe("web HTTP server", () => {
     expect(page.truncated).toBe(false);
   });
 
+  it("rejects a model-catalog request that mixes the two mutually exclusive modes", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+
+    // The agent services `provider` and ignores `query`, so a request carrying
+    // both would answer a search it never ran. Proxying that rejection turns
+    // the caller's mistake into a 502 `agent_http_error` against the agent.
+    const both = await fetch(`${baseUrl}/api/v1/agents/agent-one/models?provider=anthropic&q=opus`);
+    expect(both.status).toBe(400);
+    expect(await json(both)).toMatchObject({ error: { code: "invalid_page" } });
+
+    const providerOnly = await fetch(`${baseUrl}/api/v1/agents/agent-one/models?provider=provider`);
+    expect(providerOnly.status).toBe(200);
+  });
+
   it("validates the search query string and bounds its page size", async () => {
     const { baseUrl } = await start({ host: "127.0.0.1" });
 

@@ -2086,6 +2086,73 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("judges a catalog model's effort against the ladder its own page advertised", async () => {
+    // The page carries reasoning metadata that tier-2 admission threw away --
+    // it kept only the reference -- so effort validation had nothing to judge
+    // against and forwarded a grade the model does not support in the turn.
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "provider/default",
+        models: ["provider/default"],
+        modelOptions: { "provider/default": { effortLevels: ["low"], reasoning: true } },
+        capabilities: { attachments: true },
+      });
+      if (/\/v1\/models(?:\?|$)/u.test(url)) {
+        return Response.json({
+          models: [
+            {
+              id: "graded",
+              name: "Graded",
+              provider: "anthropic",
+              providerLabel: "Anthropic",
+              reasoning: true,
+              effortLevels: ["low", "high"],
+            },
+            {
+              id: "instant",
+              name: "Instant",
+              provider: "anthropic",
+              providerLabel: "Anthropic",
+              reasoning: false,
+            },
+            { id: "quiet", name: "Quiet", provider: "anthropic", providerLabel: "Anthropic" },
+          ],
+          truncated: false,
+        });
+      }
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    await service.agentModels("agent-one", { provider: "anthropic", limit: 50 });
+
+    // An advertised grade still starts, addressed by the canonical reference
+    // every selection surface speaks.
+    const graded = service.createThread("agent-one");
+    await expect(service.startTurn(graded.id, { text: "graded", model: "anthropic:graded", effort: "high" }))
+      .resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+
+    // A grade the page did not list is rejected instead of forwarded.
+    const ungraded = service.createThread("agent-one");
+    await expect(service.startTurn(ungraded.id, { text: "ungraded", model: "anthropic:graded", effort: "ultra" }))
+      .rejects.toMatchObject({ code: "invalid_effort" });
+
+    // A non-reasoning catalog model takes no effort at all.
+    const instant = service.createThread("agent-one");
+    await expect(service.startTurn(instant.id, { text: "instant", model: "anthropic:instant", effort: "low" }))
+      .rejects.toMatchObject({ code: "invalid_effort" });
+
+    // A page that advertised no reasoning metadata keeps the permissive floor:
+    // silence is not a claim that the model rejects every grade.
+    const quiet = service.createThread("agent-one");
+    await expect(service.startTurn(quiet.id, { text: "quiet", model: "anthropic:quiet", effort: "ultra" }))
+      .resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+
   it("applies the thread's persisted override to a turn that omits model and effort", async () => {
     // The override is server state, so a turn this server starts -- a
     // process-job follow-up, any assistant-owned wake -- must honour the

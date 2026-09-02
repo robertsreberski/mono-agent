@@ -21,7 +21,11 @@ import type {
   ThreadSummary,
   WebEvent,
 } from "./types";
-import { effortLevelsForAgentModel, providerOfModel } from "./components/model-catalog";
+import {
+  effortLevelsForAgentModel,
+  findCatalogModel,
+  providerOfModel,
+} from "./components/model-catalog";
 
 export type ConnectionState = "connecting" | "live" | "reconnecting" | "offline";
 
@@ -265,6 +269,10 @@ export const validateRunPreference = (
   agent: AgentSummary | null,
   preference: StoredRunPreference,
   advertisedProviders: readonly string[] = [],
+  // The fetched catalog pages. A model reached only through `/v1/models` has no
+  // `modelOptions` entry, so without this the effort it advertises is judged
+  // against nothing and the selection the picker just offered is erased.
+  catalogByProvider: Readonly<Record<string, readonly CatalogModel[]>> = {},
 ): StoredRunPreference => {
   // With no agent context there is nothing to judge the preference against.
   if (!agent) return preference;
@@ -285,7 +293,11 @@ export const validateRunPreference = (
     ? preference.model
     : "";
   const effectiveModel = model || agent.defaultModel || advertisedModels[0] || "";
-  const efforts = effortLevelsForAgentModel(agent, effectiveModel);
+  const efforts = effortLevelsForAgentModel(
+    agent,
+    effectiveModel,
+    findCatalogModel(catalogByProvider, effectiveModel),
+  );
   return {
     model,
     effort: preference.effort && efforts.includes(preference.effort)
@@ -333,6 +345,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const [catalogByProvider, setCatalogByProvider] = useState<Record<string, ProviderCatalogState>>({});
   const catalogInFlightRef = useRef<Set<string>>(new Set());
   const migratedKeysRef = useRef<Set<string>>(new Set());
+  // Bumped by every operator-initiated override write. The legacy-preference
+  // migration reads the thread and then patches it; a selection made inside
+  // that window is newer than the browser-local value being adopted, so the
+  // migration abandons rather than restoring the stale value over it.
+  const overrideWriteRef = useRef(0);
+  // The migration PATCH still in flight per thread. An operator write that
+  // starts after it was sent waits for it, so the operator's choice is the
+  // last one the server sees instead of racing the adoption.
+  const migrationInFlightRef = useRef<Map<string, Promise<void>>>(new Map());
   const selectedThreadRef = useRef<string | null>(null);
   const selectedAgentRef = useRef<string | null>(selectedAgentId);
   const skillRequestGenerationRef = useRef(0);
@@ -1109,6 +1130,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [catalogByProvider, selectedAgentId]);
 
+  // The fetched catalog pages flattened to what the effort helpers consume.
+  // Every effort decision below reads this same projection, so the picker rows,
+  // the validated stored preference, and the ladder a model switch re-checks
+  // against cannot disagree about what a catalog-only model supports.
+  const catalogModels = useMemo<Readonly<Record<string, readonly CatalogModel[]>>>(
+    () => Object.fromEntries(
+      Object.entries(catalogByProvider).map(([provider, state]) => [provider, state.models]),
+    ),
+    [catalogByProvider],
+  );
+
   const modelOptions = selectedAgent?.models ?? [];
   const preferenceKey = selectedAgentId
     ? preferenceKeyForThread(selectedAgentId, selectedThreadId)
@@ -1131,12 +1163,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     selectedAgent,
     storedPreference,
     advertisedProviders,
+    catalogModels,
   );
   const model = validatedPreference.model;
   const effectiveModel = selectedAgent
     ? model || selectedAgent.defaultModel || modelOptions[0] || ""
     : "";
-  const effortOptions = effortLevelsForAgentModel(selectedAgent, effectiveModel);
+  const effortOptions = effortLevelsForAgentModel(
+    selectedAgent,
+    effectiveModel,
+    findCatalogModel(catalogModels, effectiveModel),
+  );
   const effort = validatedPreference.effort;
   const effectiveEffort = effort || selectedAgent?.defaultEffort || "";
   // An override is what the operator chose for THIS conversation, as opposed to
@@ -1170,14 +1207,22 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // fields. A server value always wins, and a reset can never resurrect a
   // migrated key because the local copy is dropped once patched.
   //
-  // The `selectedThread` projection can be stale -- another tab or device may
-  // have set an override that this tab has not observed yet -- so the decision
-  // is re-checked against a fresh read immediately before patching. That
-  // narrows the window to the round-trip rather than the lifetime of a stale
-  // projection. Closing it completely needs a revision-conditional PATCH, which
-  // the thread API does not expose today.
+  // Two windows have to stay closed here:
+  //
+  // 1. `selectedThread` falls back to `detail?.thread` when the selected id
+  //    resolves to nothing, so right after switching to an agent that has no
+  //    conversation it still points at the PREVIOUS agent's thread while
+  //    `preferenceKey` already names the new one. Patching then wrote one
+  //    agent's local override onto another agent's thread. The projection must
+  //    therefore be the thread `preferenceKey` was built from.
+  // 2. The projection can also be stale -- another tab or device may have set
+  //    an override this tab has not observed -- so the decision is re-checked
+  //    against a fresh read immediately before patching, and abandoned if the
+  //    operator changed model or effort inside that round trip. Their choice
+  //    already went to the server and is newer than the value being adopted.
   useEffect(() => {
     if (!selectedThread || !preferenceKey) return;
+    if (selectedThread.id !== selectedThreadId || selectedThread.sourceId !== selectedAgentId) return;
     if (migratedKeysRef.current.has(preferenceKey)) return;
     if (
       (selectedThread.runModel ?? null) !== null ||
@@ -1188,10 +1233,24 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       effort: effortByContext[preferenceKey] ?? "",
     };
     if (local.model === "" && local.effort === "") return;
+    const threadId = selectedThread.id;
+    const writeGeneration = overrideWriteRef.current;
     migratedKeysRef.current.add(preferenceKey);
-    void (async () => {
+    const dropLocal = () => {
+      setModelByContext((current) => {
+        const nextMap = { ...current };
+        delete nextMap[preferenceKey];
+        return nextMap;
+      });
+      setEffortByContext((current) => {
+        const nextMap = { ...current };
+        delete nextMap[preferenceKey];
+        return nextMap;
+      });
+    };
+    const migration = (async () => {
       try {
-        const fresh = await api.thread(selectedThread.id);
+        const fresh = await api.thread(threadId);
         if (
           (fresh.thread.runModel ?? null) !== null
           || (fresh.thread.runEffort ?? null) !== null
@@ -1199,46 +1258,53 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           // Someone set an override while this tab held a stale projection.
           // Adopt theirs and drop the local copy rather than overwriting it.
           applyThreadUpdate(fresh.thread);
-          setModelByContext((current) => {
-            const nextMap = { ...current };
-            delete nextMap[preferenceKey];
-            return nextMap;
-          });
-          setEffortByContext((current) => {
-            const nextMap = { ...current };
-            delete nextMap[preferenceKey];
-            return nextMap;
-          });
+          dropLocal();
           return;
         }
-        const next = await api.patchThread(selectedThread.id, {
+        if (overrideWriteRef.current !== writeGeneration) {
+          // The operator picked a model or effort during the read. That write
+          // is already on its way to the server; adopting the browser-local
+          // value now would land last and restore what they just replaced.
+          dropLocal();
+          return;
+        }
+        const next = await api.patchThread(threadId, {
           model: local.model || null,
           effort: local.effort || null,
         });
         applyThreadUpdate(next);
-        setModelByContext((current) => {
-          const nextMap = { ...current };
-          delete nextMap[preferenceKey];
-          return nextMap;
-        });
-        setEffortByContext((current) => {
-          const nextMap = { ...current };
-          delete nextMap[preferenceKey];
-          return nextMap;
-        });
+        dropLocal();
         setActionError(null);
       } catch (migrationError) {
         migratedKeysRef.current.delete(preferenceKey);
         setActionError(errorMessage(migrationError));
       }
     })();
-  }, [applyThreadUpdate, effortByContext, modelByContext, preferenceKey, selectedThread]);
+    migrationInFlightRef.current.set(threadId, migration);
+    void migration.finally(() => {
+      if (migrationInFlightRef.current.get(threadId) === migration) {
+        migrationInFlightRef.current.delete(threadId);
+      }
+    });
+  }, [
+    applyThreadUpdate,
+    effortByContext,
+    modelByContext,
+    preferenceKey,
+    selectedAgentId,
+    selectedThread,
+    selectedThreadId,
+  ]);
 
   const patchThreadOverride = useCallback(async (
     patch: { model?: string | null; effort?: string | null },
   ) => {
     const thread = selectedThread;
     if (!thread) return;
+    // Tell any in-flight legacy-preference migration that the operator has
+    // spoken since it read the thread, then let it finish before writing: the
+    // operator's value has to be the last one the server sees.
+    overrideWriteRef.current += 1;
     const previous = { model: thread.runModel ?? null, effort: thread.runEffort ?? null };
     try {
       applyThreadUpdate({
@@ -1246,6 +1312,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         runModel: "model" in patch ? patch.model ?? null : previous.model,
         runEffort: "effort" in patch ? patch.effort ?? null : previous.effort,
       });
+      await migrationInFlightRef.current.get(thread.id)?.catch(() => undefined);
       const next = await api.patchThread(thread.id, patch);
       applyThreadUpdate(next);
       setActionError(null);
@@ -1261,7 +1328,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       if (selectedThread) {
         const nextEffectiveModel =
           next || selectedAgent?.defaultModel || selectedAgent?.models?.[0] || "";
-        const nextEfforts = effortLevelsForAgentModel(selectedAgent, nextEffectiveModel);
+        const nextEfforts = effortLevelsForAgentModel(
+          selectedAgent,
+          nextEffectiveModel,
+          findCatalogModel(catalogModels, nextEffectiveModel),
+        );
         const currentEffort = selectedThread.runEffort ?? "";
         void patchThreadOverride({
           model: next === "" ? null : next,
@@ -1274,7 +1345,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setModelByContext((current) => ({ ...current, [preferenceKey]: next }));
       const nextEffectiveModel =
         next || selectedAgent?.defaultModel || selectedAgent?.models?.[0] || "";
-      const nextEfforts = effortLevelsForAgentModel(selectedAgent, nextEffectiveModel);
+      const nextEfforts = effortLevelsForAgentModel(
+        selectedAgent,
+        nextEffectiveModel,
+        findCatalogModel(catalogModels, nextEffectiveModel),
+      );
       setEffortByContext((current) => ({
         ...current,
         [preferenceKey]: nextEfforts.includes(current[preferenceKey] ?? "")
@@ -1282,7 +1357,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           : "",
       }));
     },
-    [patchThreadOverride, preferenceKey, selectedAgent, selectedAgentId, selectedThread],
+    [
+      catalogModels,
+      patchThreadOverride,
+      preferenceKey,
+      selectedAgent,
+      selectedAgentId,
+      selectedThread,
+    ],
   );
 
   const resetRunOverride = useCallback(() => {

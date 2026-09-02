@@ -217,6 +217,44 @@ describe("run setting isolation", () => {
     ).toEqual({ model: "anthropic:claude-sonnet-4.5", effort: "" });
   });
 
+  it("judges a catalog-only model's effort against the ladder its page advertised", () => {
+    // The picker offers a catalog row the grades its `/v1/models` page named,
+    // but validation never received that metadata: `modelOptions` covers only
+    // the shortlist, so the grade the operator had just picked was erased the
+    // moment it was stored.
+    const source = agent("agent", {
+      models: ["provider/default"],
+      defaultModel: "provider/default",
+      modelOptions: { "provider/default": { reasoning: true, effortLevels: ["low"] } },
+    });
+    const catalogByProvider = {
+      anthropic: [
+        {
+          id: "opus-5",
+          name: "Opus 5",
+          provider: "anthropic",
+          providerLabel: "Anthropic",
+          reasoning: true,
+          effortLevels: ["low", "max"],
+        },
+      ],
+    };
+
+    expect(validateRunPreference(
+      source,
+      { model: "anthropic:opus-5", effort: "max" },
+      ["anthropic"],
+      catalogByProvider,
+    )).toEqual({ model: "anthropic:opus-5", effort: "max" });
+    // ...and a grade the page did not advertise is still cleared.
+    expect(validateRunPreference(
+      source,
+      { model: "anthropic:opus-5", effort: "ultra" },
+      ["anthropic"],
+      catalogByProvider,
+    )).toEqual({ model: "anthropic:opus-5", effort: "" });
+  });
+
   it("keeps the stored selection through a discovery blip with an empty shortlist", () => {
     expect(
       validateRunPreference(
