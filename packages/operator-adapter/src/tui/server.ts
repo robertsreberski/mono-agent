@@ -1856,6 +1856,13 @@ function normalizeModelCatalogRequest(req: Request): TuiModelCatalogRequest {
   if (provider === undefined && query === undefined) {
     throw new TuiAdapterError("invalid_request", "provider or q is required.");
   }
+  // `TuiModelCatalogRequest` documents the two modes as mutually exclusive and
+  // suppliers honour that by servicing `provider` and ignoring `query`. Sending
+  // both must therefore be a client error, not a silently provider-scoped page
+  // that looks like it answered the search.
+  if (provider !== undefined && query !== undefined) {
+    throw new TuiAdapterError("invalid_request", "provider and q are mutually exclusive.");
+  }
   const rawLimit = typeof req.query.limit === "string"
     ? Number(req.query.limit)
     : DEFAULT_MODEL_CATALOG_PAGE_SIZE;

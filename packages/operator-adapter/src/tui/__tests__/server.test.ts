@@ -834,6 +834,17 @@ describe("startTuiAdapter", () => {
     const search = await fetch(`${running.baseUrl}/v1/models?q=claude&limit=5`, { headers });
     expect(search.status).toBe(200);
     expect(requests).toContainEqual({ query: "claude", limit: 5 });
+
+    // The two listing modes are mutually exclusive: suppliers service
+    // `provider` and ignore `q`, so accepting both would answer a search with a
+    // provider-scoped page. Reject it instead of silently answering the wrong
+    // question, and never reach the supplier.
+    const both = await fetch(`${running.baseUrl}/v1/models?provider=anthropic&q=claude&limit=10`, { headers });
+    expect(both.status).toBe(400);
+    await expect(both.json()).resolves.toMatchObject({
+      error: { code: "invalid_request", message: "provider and q are mutually exclusive." },
+    });
+    expect(requests).not.toContainEqual({ provider: "anthropic", query: "claude", limit: 10 });
   });
 
   it("404s /v1/models when no catalog service is supplied", async () => {

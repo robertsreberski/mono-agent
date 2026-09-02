@@ -421,7 +421,7 @@ export interface RuntimeRunOptions {
   readonly prompts?: RuntimePromptOverrides;
   /** In-flight user guidance consumed by a provider's native steering API. */
   readonly liveInput?: AsyncIterable<RuntimeLiveInputMessage>;
-  // Pi-native provider knobs (optional; ignored by other bridges).
+  // Pi-native provider knobs (all optional; Pi is the only bridge).
   readonly piTransport?: PiTransport;
   readonly piMaxRetries?: number;
   readonly maxRetryDelayMs?: number;

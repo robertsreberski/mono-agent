@@ -166,6 +166,28 @@ describe("createRuntime", () => {
     });
   });
 
+  it("run() does not bind host keys the RuntimeRequest shape no longer declares", async () => {
+    executeMock.mockResolvedValue({ text: "ok" });
+    // These three belonged to the deleted ACP *client* backend (the ACP server
+    // bridge never used them). HOST_KEYS must stay identical to the
+    // `Pick<AgentRuntimeHostOptions, ...>` clause of RuntimeRequest, so a host
+    // that still passes them gets them dropped rather than smuggled onto a
+    // request shape that does not admit them.
+    const runtime = createRuntime({
+      resolveAcpProfile: () => ({}),
+      onAcpInteractionRequest: () => undefined,
+      acpSessionTokenKey: "legacy-acp-token",
+      resolveCustomPricing: () => null,
+    });
+    await runtime.run("sys", { model: modelRef("anthropic", "x") });
+
+    const [, options] = executeMock.mock.calls[0];
+    expect(options).not.toHaveProperty("resolveAcpProfile");
+    expect(options).not.toHaveProperty("onAcpInteractionRequest");
+    expect(options).not.toHaveProperty("acpSessionTokenKey");
+    expect(options.resolveCustomPricing).toBeTypeOf("function");
+  });
+
   it("run() lets per-call options override host defaults", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const hostResolver = () => "host";

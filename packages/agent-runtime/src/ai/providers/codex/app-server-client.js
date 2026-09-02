@@ -415,21 +415,34 @@ export function createCodexAppServerClient({
   }
 
   const rl = createInterface({ input: child.stdout });
+  function warnMalformedLine(line) {
+    onNotification({
+      method: "warning",
+      params: {
+        message: sanitizeCodexDiagnostic(
+          `Malformed Codex app-server output: ${line}`,
+          sensitiveValues,
+        ),
+      },
+    });
+  }
+
   function onLine(line) {
     if (!line.trim()) return;
     let message;
     try {
       message = JSON.parse(line);
     } catch {
-      onNotification({
-        method: "warning",
-        params: {
-          message: sanitizeCodexDiagnostic(
-            `Malformed Codex app-server output: ${line}`,
-            sensitiveValues,
-          ),
-        },
-      });
+      warnMalformedLine(line);
+      return;
+    }
+    // A JSON-RPC frame is always a non-null object. Syntactically valid JSON
+    // that is not one (`null`, a scalar, an array) must be rejected here: this
+    // listener runs on readline's `line` event, so `hasOwnProperty.call(null,
+    // ...)` would throw an uncaught TypeError and take the host process down
+    // rather than degrading to a warning.
+    if (message === null || typeof message !== "object" || Array.isArray(message)) {
+      warnMalformedLine(line);
       return;
     }
     if (Object.prototype.hasOwnProperty.call(message, "id") && (message.result !== undefined || message.error !== undefined)) {

@@ -389,6 +389,51 @@ describe("/model picker provider grouping (Layer 4)", () => {
     }
   });
 
+  it("keeps the overlay open when enter lands on a provider heading, then selects the model below it", async () => {
+    const adapter = await startTuiAdapter({
+      responder: okResponder(),
+      info: {
+        model: "ollama:qwen3:8b",
+        models: ["anthropic:claude-fable-5", "anthropic:claude-fable-mini", "ollama:qwen3:8b"],
+        providers: PROVIDERS,
+      },
+    });
+    const terminal = new TestTerminal(120, 30);
+    const handle = startMonoAgentTui({
+      terminal,
+      connection: { baseUrl: adapter.baseUrl },
+      flushIntervalMs: 0,
+    });
+    try {
+      await frame();
+      await frame(); // info() resolves
+
+      type(terminal, "/model");
+      terminal.feed("\r");
+      await frame();
+
+      // Row 0 is the "Anthropic" heading. Enter on it is inert: no override is
+      // set and, critically, the picker does not close -- a heading Enter that
+      // dismissed the overlay would read as a silently rejected selection.
+      terminal.feed("\r");
+      await frame();
+      expect(lastStatusBar(terminal)).not.toContain("(override)");
+
+      // The overlay still owns the keys, so the very next down+enter selects the
+      // first model under that heading. Had the heading Enter closed the picker,
+      // these two keys would land in the chat editor and set no override.
+      terminal.feed(DOWN);
+      await frame();
+      terminal.feed("\r");
+      await frame();
+      expect(lastStatusBar(terminal)).toContain("anthropic:claude-fable-5");
+      expect(lastStatusBar(terminal)).toContain("(override)");
+    } finally {
+      await handle.stop();
+      await adapter.stop();
+    }
+  });
+
   it("falls back to the flat shortlist (no grouping) when an agent advertises no providers", async () => {
     const adapter = await startTuiAdapter({
       responder: okResponder(),

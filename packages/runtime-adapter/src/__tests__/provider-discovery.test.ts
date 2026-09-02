@@ -117,6 +117,70 @@ describe("discoverLocalProviders", () => {
     expect(providers).toEqual([]);
   });
 
+  it("re-applies the current provider definition to a warm cache entry without re-probing", async () => {
+    const fetchImpl = vi.fn(() => Promise.resolve(response({
+      data: [{ id: "live-a" }, { id: "live-b" }],
+    }))) as unknown as typeof fetch;
+    const disabledLmStudio = { id: "lmstudio", enabled: false } as const;
+
+    const first = await discoverLocalProviders({
+      fetch: fetchImpl,
+      configured: [{ id: "ollama" }, disabledLmStudio],
+    });
+    expect(first.find((provider) => provider.id === "ollama")?.models)
+      .toEqual([{ name: "live-a" }, { name: "live-b" }]);
+
+    // The operator edits the provider (allowlist + cap) and the channel
+    // restarts inside the 60 s TTL. The cache holds only the probe's live
+    // model ids, so the new definition applies immediately.
+    const second = await discoverLocalProviders({
+      fetch: fetchImpl,
+      configured: [
+        { id: "ollama", models: [{ name: "pinned" }, { name: "also-pinned" }], maxAdvertisedModels: 1 },
+        disabledLmStudio,
+      ],
+    });
+    expect(second.find((provider) => provider.id === "ollama")?.models)
+      .toEqual([expect.objectContaining({ name: "pinned" })]);
+
+    // A widened cap re-reads the same cached live list rather than the stale
+    // advertised projection.
+    const third = await discoverLocalProviders({
+      fetch: fetchImpl,
+      configured: [{ id: "ollama", maxAdvertisedModels: 1 }, disabledLmStudio],
+    });
+    expect(third.find((provider) => provider.id === "ollama")?.models).toEqual([{ name: "live-a" }]);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("keys the cache by the probed endpoint, so a type change re-probes", async () => {
+    const fetchImpl = vi.fn((input: FetchInput) => Promise.resolve(response({
+      data: [{ id: urlString(input) }],
+    }))) as unknown as typeof fetch;
+    const disabledLmStudio = { id: "lmstudio", enabled: false } as const;
+
+    await discoverLocalProviders({
+      fetch: fetchImpl,
+      configured: [{ id: "ollama", baseUrl: "http://localhost:11434/api" }, disabledLmStudio],
+    });
+    const retyped = await discoverLocalProviders({
+      fetch: fetchImpl,
+      configured: [
+        { id: "ollama", type: "openai_compat", baseUrl: "http://localhost:11434/api" },
+        disabledLmStudio,
+      ],
+    });
+
+    // ollama rewrites `/api` to its OpenAI-compat `/v1` root; openai_compat
+    // appends `/v1` to the path as given. Different endpoints for the same
+    // id+baseUrl, so the second definition must probe rather than read the
+    // first one's cache entry.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(retyped.find((provider) => provider.id === "ollama")?.models)
+      .toEqual([{ name: "http://localhost:11434/api/v1/models" }]);
+  });
+
   it("probes a declared provider for liveness but advertises only its listed models", async () => {
     const fetchImpl = vi.fn(() => Promise.resolve(response({ data: [{ id: "live-but-hidden" }] }))) as unknown as typeof fetch;
     const providers = await discoverLocalProviders({
