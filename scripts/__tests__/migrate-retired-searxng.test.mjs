@@ -77,6 +77,21 @@ describe("migrate-retired-searxng", () => {
     expect(existsSync(destination)).toBe(false);
   });
 
+  it("fails before staging when POSIX ownership proof is unavailable", async () => {
+    const migration = await fixture();
+    const unsupportedParent = join(migration.root, "unsupported-parent");
+
+    expect(() => migrateRetiredSearxng({
+      repoRoot: migration.repoRoot,
+      destination: join(unsupportedParent, "operator"),
+      log: () => {},
+      getCurrentUid: null,
+    })).toThrow("requires POSIX ownership and mode checks; unsupported platform");
+
+    expect(existsSync(unsupportedParent)).toBe(false);
+    expect(await readdir(migration.root)).toEqual(["repo"]);
+  });
+
   it("rejects placeholder secrets, in-repository destinations, and existing destinations", async () => {
     const placeholder = await fixture({
       env: "SEARXNG_SECRET=replace-with-a-random-64-character-hex-value\n",

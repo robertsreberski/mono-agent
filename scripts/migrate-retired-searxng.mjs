@@ -20,6 +20,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
 const LEGACY_ENV = path.join("demos", "searxng", ".env");
+const DEFAULT_GET_CURRENT_UID = typeof process.getuid === "function"
+  ? process.getuid.bind(process)
+  : undefined;
 
 // This is the last repository-owned Compose contract. The fixed project, service, and volume
 // names let an operator re-home an existing deployment without silently creating a parallel one.
@@ -120,10 +123,12 @@ export function migrateRetiredSearxng({
   beforePublish,
   beforeAtomicPublish,
   afterAtomicPublish,
+  getCurrentUid = DEFAULT_GET_CURRENT_UID,
 } = {}) {
   if (typeof destination !== "string" || destination.trim().length === 0) {
     throw new Error("destination is required.");
   }
+  const currentUid = requirePosixCurrentUid(getCurrentUid);
   const absoluteRepoRoot = path.resolve(repoRoot);
   const absoluteDestination = path.resolve(destination);
   const canonicalRepoRoot = realpathSync(absoluteRepoRoot);
@@ -161,12 +166,17 @@ export function migrateRetiredSearxng({
     || isWithin(canonicalRepoRoot, stableDestination)) {
     throw new Error("Destination path changed or resolves inside the mono-agent repository.");
   }
-  const parentIdentity = secureDirectoryIdentity(canonicalParent, "destination parent");
+  const parentIdentity = secureDirectoryIdentity(
+    canonicalParent,
+    "destination parent",
+    currentUid,
+  );
   const assertStableCanonicalParent = () => assertSecureDirectoryIdentity(
     canonicalParent,
     parentIdentity,
     "Destination parent changed after validation; no bundle was published.",
     canonicalParent,
+    currentUid,
   );
   const assertDestinationBoundary = () => {
     assertStableCanonicalParent();
@@ -179,7 +189,7 @@ export function migrateRetiredSearxng({
 
   assertDestinationBoundary();
   if (entryExists(stableDestination)) {
-    if (isCompletedBundle(stableDestination, secret)) {
+    if (isCompletedBundle(stableDestination, secret, currentUid)) {
       return completedResult(absoluteDestination, log, "Verified the already completed");
     }
     throw new Error(`Destination already exists: ${absoluteDestination}`);
@@ -198,7 +208,11 @@ export function migrateRetiredSearxng({
     mkdirSync(staging, { mode: 0o700 });
     stagingCreated = true;
     chmodSync(staging, 0o700);
-    stagingIdentity = secureDirectoryIdentity(staging, "private staging directory");
+    stagingIdentity = secureDirectoryIdentity(
+      staging,
+      "private staging directory",
+      currentUid,
+    );
     const assertPrivateStaging = () => {
       assertDestinationBoundary();
       assertSecureDirectoryIdentity(
@@ -206,6 +220,7 @@ export function migrateRetiredSearxng({
         stagingIdentity,
         "Private migration bundle changed before publication.",
         staging,
+        currentUid,
       );
     };
 
@@ -232,10 +247,15 @@ export function migrateRetiredSearxng({
     assertPrivateStaging();
     assertCompleteBundle(staging, secret);
     if (entryExists(stableDestination)) {
-      if (!isCompletedBundle(stableDestination, secret)) {
+      if (!isCompletedBundle(stableDestination, secret, currentUid)) {
         throw new Error(`Destination already exists: ${absoluteDestination}`);
       }
-      cleanupPrivateStaging(staging, stagingIdentity, assertStableCanonicalParent);
+      cleanupPrivateStaging(
+        staging,
+        stagingIdentity,
+        assertStableCanonicalParent,
+        currentUid,
+      );
       stagingCreated = false;
       return completedResult(absoluteDestination, log, "Accepted the concurrently completed");
     }
@@ -249,8 +269,13 @@ export function migrateRetiredSearxng({
       published = true;
       wonPublication = true;
     } catch (error) {
-      if (!isCompletedBundle(stableDestination, secret)) throw error;
-      cleanupPrivateStaging(staging, stagingIdentity, assertStableCanonicalParent);
+      if (!isCompletedBundle(stableDestination, secret, currentUid)) throw error;
+      cleanupPrivateStaging(
+        staging,
+        stagingIdentity,
+        assertStableCanonicalParent,
+        currentUid,
+      );
       stagingCreated = false;
       published = true;
     }
@@ -263,12 +288,18 @@ export function migrateRetiredSearxng({
         stagingIdentity,
         "Published migration bundle changed identity.",
         stableDestination,
+        currentUid,
       );
     }
     assertCompleteBundle(stableDestination, secret);
   } catch (error) {
     if (!published && stagingCreated && stagingIdentity !== undefined) {
-      cleanupPrivateStaging(staging, stagingIdentity, assertStableCanonicalParent);
+      cleanupPrivateStaging(
+        staging,
+        stagingIdentity,
+        assertStableCanonicalParent,
+        currentUid,
+      );
     }
     throw error;
   }
@@ -288,7 +319,12 @@ function writeStagedFile(directory, filename, content, mode, assertPrivateStagin
   }
 }
 
-function cleanupPrivateStaging(staging, stagingIdentity, assertStableCanonicalParent) {
+function cleanupPrivateStaging(
+  staging,
+  stagingIdentity,
+  assertStableCanonicalParent,
+  currentUid,
+) {
   try {
     assertStableCanonicalParent();
     assertSecureDirectoryIdentity(
@@ -296,6 +332,7 @@ function cleanupPrivateStaging(staging, stagingIdentity, assertStableCanonicalPa
       stagingIdentity,
       "Private staging directory changed before cleanup.",
       staging,
+      currentUid,
     );
     rmSync(staging, { recursive: true, force: true });
   } catch {
@@ -331,9 +368,9 @@ function assertCompleteBundle(directory, secret) {
   }
 }
 
-function isCompletedBundle(destination, secret) {
+function isCompletedBundle(destination, secret, currentUid) {
   try {
-    secureDirectoryIdentity(destination, "completed migration destination");
+    secureDirectoryIdentity(destination, "completed migration destination", currentUid);
     assertCompleteBundle(destination, secret);
     return true;
   } catch {
@@ -356,7 +393,29 @@ function isWithin(parent, candidate) {
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
-function secureDirectoryIdentity(candidate, label) {
+function requirePosixCurrentUid(getCurrentUid) {
+  if (typeof getCurrentUid !== "function") {
+    throw new Error(
+      "SearXNG migration requires POSIX ownership and mode checks; unsupported platform; no files were written.",
+    );
+  }
+  let currentUid;
+  try {
+    currentUid = getCurrentUid();
+  } catch {
+    throw new Error(
+      "SearXNG migration could not determine the current POSIX user; no files were written.",
+    );
+  }
+  if (!Number.isSafeInteger(currentUid) || currentUid < 0) {
+    throw new Error(
+      "SearXNG migration could not determine the current POSIX user; no files were written.",
+    );
+  }
+  return currentUid;
+}
+
+function secureDirectoryIdentity(candidate, label, currentUid) {
   let details;
   try {
     details = lstatSync(candidate);
@@ -366,7 +425,7 @@ function secureDirectoryIdentity(candidate, label) {
   if (details.isSymbolicLink() || !details.isDirectory()) {
     throw new Error(`${label} must be a real directory: ${candidate}`);
   }
-  if (typeof process.getuid === "function" && details.uid !== process.getuid()) {
+  if (details.uid !== currentUid) {
     throw new Error(`${label} must be owned by the current user: ${candidate}`);
   }
   if ((details.mode & 0o022) !== 0) {
@@ -375,7 +434,13 @@ function secureDirectoryIdentity(candidate, label) {
   return { dev: details.dev, ino: details.ino };
 }
 
-function assertSecureDirectoryIdentity(candidate, expected, message, expectedCanonicalPath) {
+function assertSecureDirectoryIdentity(
+  candidate,
+  expected,
+  message,
+  expectedCanonicalPath,
+  currentUid,
+) {
   let details;
   let canonical;
   try {
@@ -390,7 +455,7 @@ function assertSecureDirectoryIdentity(candidate, expected, message, expectedCan
     || details.ino !== expected.ino
     || canonical !== expectedCanonicalPath
     || (details.mode & 0o022) !== 0
-    || (typeof process.getuid === "function" && details.uid !== process.getuid())) {
+    || details.uid !== currentUid) {
     throw new Error(message);
   }
 }
@@ -431,6 +496,7 @@ function usage() {
     "when it is the exact completed bundle from an earlier run. The emitted .env contains no",
     "other legacy or Compose control variables.",
     "The canonical parent must be current-user owned and not group/world writable.",
+    "Requires a POSIX local filesystem; unsupported platforms fail before any file is written.",
     "A complete private sibling is renamed once; an exact completed destination is idempotent.",
     "This command never invokes Docker, stops a service, or removes a volume.",
   ].join("\n");

@@ -122,11 +122,14 @@ not start, stop, restart, or recreate a container and does not remove a volume.
 The source `.env` remains in place until the operator removes it after a
 verified cutover.
 
-This portable Node implementation assumes a private local filesystem parent and
-does not claim protection from an actively hostile same-UID process in the final
-check-to-rename syscall window, power loss without filesystem durability, or
-non-local/NFS rename semantics. Do not use a shared or adversarially writable
-parent for this migration.
+This migration is supported only on POSIX local filesystems where Node exposes
+`process.getuid()` and Unix ownership and mode metadata are authoritative. It
+fails closed before creating staging on unsupported platforms, including
+Windows; native Windows ACL ownership validation is not implemented. The
+implementation does not claim protection from an actively hostile same-UID
+process in the final check-to-rename syscall window, power loss without
+filesystem durability, or non-local/NFS rename semantics. Do not use a shared
+or adversarially writable parent for this migration.
 
 The existing container still has its old bind-mount source. During an operator-
 chosen maintenance window, cut it over to the new path, then verify the
