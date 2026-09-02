@@ -21,13 +21,17 @@ function matches(details, identity) {
 }
 let parent;
 let target;
+let canonicalParent;
 try {
   parent = fs.lstatSync(".");
   target = fs.lstatSync(expected.entry);
+  canonicalParent = fs.realpathSync(".");
 } catch {
   process.exit(${RETIRED_REMOVAL_REFUSED});
 }
-if (!matches(parent, expected.parent) || !matches(target, expected.target)) {
+if (!matches(parent, expected.parent)
+  || !matches(target, expected.target)
+  || canonicalParent !== expected.parent.canonical) {
   process.exit(${RETIRED_REMOVAL_REFUSED});
 }
 fs.rmSync(expected.entry, { recursive: true, force: true });
@@ -99,17 +103,22 @@ export function cleanBuildOutputs({
 function removeRetiredOutputFromBoundParent(inspected) {
   const parent = inspected.identities.at(-2);
   const target = inspected.identities.at(-1);
-  // The child binds its cwd to the checked parent inode, so replacing the lexical parent with a
-  // symlink cannot redirect rmSync. A hostile same-UID replacement of the final directory entry
-  // after the child's identity check remains outside pure Node's descriptor-relative abilities;
-  // replacing it with a symlink is still safe because rmSync removes, rather than follows, it.
+  // The child binds its cwd to the checked parent inode and rechecks its canonical location, so
+  // moving that inode outside the repository and linking the old path back cannot redirect rmSync.
+  // A hostile same-UID replacement of the final directory entry after the child's identity check
+  // remains outside pure Node's descriptor-relative abilities; replacing it with a symlink is
+  // still safe because rmSync removes, rather than follows, it.
   const result = spawnSync(process.execPath, [
     "--input-type=commonjs",
     "-e",
     RETIRED_OUTPUT_REMOVER_SOURCE,
     JSON.stringify({
       entry: path.basename(inspected.outputDir),
-      parent: { dev: String(parent.dev), ino: String(parent.ino) },
+      parent: {
+        canonical: parent.candidate,
+        dev: String(parent.dev),
+        ino: String(parent.ino),
+      },
       target: { dev: String(target.dev), ino: String(target.ino) },
     }),
   ], {

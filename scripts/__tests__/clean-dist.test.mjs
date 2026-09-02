@@ -103,4 +103,29 @@ describe("clean-dist", () => {
       "skipped demos/final-agent/dist: path identity changed during deletion",
     );
   });
+
+  it("fails closed when the validated parent inode is moved outside and linked back", async () => {
+    const repoRoot = await fixtureRepo(["demos/final-agent/dist"]);
+    const outsideRoot = await mkdtemp(join(tmpdir(), "mono-agent-moved-demo-parent-"));
+    tempDirs.push(outsideRoot);
+    const originalParent = join(repoRoot, "demos/final-agent");
+    const movedParent = join(outsideRoot, "moved-final-agent");
+    await writeFile(join(originalParent, "dist/cli.js"), "moved outside data");
+    const logs = [];
+
+    const removed = cleanBuildOutputs({
+      repoRoot,
+      log: (line) => logs.push(line),
+      beforeRetiredOutputRemoval: () => {
+        renameSync(originalParent, movedParent);
+        symlinkSync(movedParent, originalParent, "dir");
+      },
+    });
+
+    expect(removed).toEqual([]);
+    expect(existsSync(join(movedParent, "dist/cli.js"))).toBe(true);
+    expect(logs).toContain(
+      "skipped demos/final-agent/dist: path identity changed during deletion",
+    );
+  });
 });
