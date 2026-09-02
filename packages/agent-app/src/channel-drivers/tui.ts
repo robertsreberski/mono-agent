@@ -203,6 +203,17 @@ export function createTuiChannelDriver(
       const discoveredRefs: RuntimeModelReference[] = [];
       for (const model of discoveredModels) {
         if (configModelKeys.includes(model.ref)) continue;
+        // Publish only what the BOUNDED catalog kept. This legacy projection is
+        // not itself bounded, so a local provider returning an oversized id or
+        // label produced a ref the catalog skipped but `models`/`modelOptions`
+        // still advertised: a model no picker can resolve, and — since
+        // `/v1/info` shares ONE 1 MiB body cap — a large enough value fails
+        // `info()` wholesale and shows the agent OFFLINE rather than degraded.
+        // Membership, not a second copy of the bounds, so the two projections
+        // cannot drift. Refs that survive are still all published, in discovery
+        // order: narrowing `models` further would be a subtractive wire change
+        // at an unchanged TUI_WIRE_SCHEMA.
+        if (catalog.resolve(model.ref) === undefined) continue;
         try {
           discoveredRefs.push(parseMonoRuntimeModelReference(model.ref));
         } catch {

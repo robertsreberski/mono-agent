@@ -279,6 +279,28 @@ describe("tui channel driver — info composition", () => {
     expect(discoverModels).toHaveBeenCalledWith(localProviders);
   });
 
+  it("keeps an oversized discovered ref out of info.models, not just out of the catalog", async () => {
+    const localProviders: readonly LocalProviderDefinition[] = [
+      { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
+    ];
+    // Local providers are not length-bounded by config validation. The bounded
+    // catalog already skips this row; `models`/`modelOptions` must not publish
+    // it either, or the client is offered a model no picker can resolve and the
+    // shared 1 MiB /v1/info body budget absorbs the whole value.
+    const oversized = "z".repeat(400);
+    const discoverModels = vi.fn().mockResolvedValue([
+      { ref: `lmstudio:${oversized}`, label: "huge", providerId: "lmstudio" },
+      { ref: "lmstudio:llama-3.1", label: "llama-3.1", providerId: "lmstudio" },
+    ] satisfies DiscoveredLocalModel[]);
+
+    const captured = await startCapturingTui({ localProviders, discoverModels });
+    const info = await resolveInfo(captured);
+
+    expect(info.models).toEqual(["anthropic:claude-fable-5", "lmstudio:llama-3.1"]);
+    expect(Object.keys(info.modelOptions ?? {})).not.toContain(`lmstudio:${oversized}`);
+    expect(JSON.stringify(info)).not.toContain(oversized);
+  });
+
   it("resolves toggle reasoning for a configured Ollama route through describe", async () => {
     const localProviders: readonly LocalProviderDefinition[] = [
       { id: "ollama", type: "ollama", baseUrl: "http://localhost:11434", enabled: true },

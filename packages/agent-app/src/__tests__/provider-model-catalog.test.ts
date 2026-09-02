@@ -199,6 +199,111 @@ describe("provider-model-catalog", () => {
     expect(catalog.listModels("anthropic").models).toEqual([]);
   });
 
+  it("lets a typed local provider own a Pi built-in id instead of advertising Pi's catalog", () => {
+    // `runtimeOptionsForLocalProvider` routes on provider id alone, so every
+    // selection under this id executes against the local endpoint. Advertising
+    // Pi's built-in `openai` models here made every advertised row unselectable
+    // in practice.
+    const catalog = buildProviderModelCatalog({
+      providers: [{ id: "openai", type: "openai_compat", baseUrl: "http://localhost:9000" }],
+      discoveredModels: [
+        { ref: "openai:local-b", label: "Local B", providerId: "openai" },
+        { ref: "openai:local-a", label: "Local A", providerId: "openai" },
+      ],
+    });
+
+    const openai = catalog.listProviders().find((provider) => provider.id === "openai");
+    expect(openai?.source).toBe("custom");
+    expect(catalog.listModels("openai").models.map((model) => model.id))
+      .toEqual(["local-a", "local-b"]);
+    expect(catalog.resolve("openai:gpt-4.1")).toBeUndefined();
+  });
+
+  it("keeps a typed local provider's allowlist off Pi's built-in catalog", () => {
+    const catalog = buildProviderModelCatalog({
+      providers: [{
+        id: "openai",
+        type: "openai_compat",
+        baseUrl: "http://localhost:9000",
+        models: [{ name: "local-only" }],
+      }],
+    });
+
+    // The name is not in Pi's `openai` catalog, but the local endpoint owns the
+    // id, so it must not be validated against — or dropped by — Pi's snapshot.
+    expect(catalog.listModels("openai").models.map((model) => model.id)).toEqual(["local-only"]);
+  });
+
+  it("does not advertise an allowlist model withdrawn with `enabled: false`", () => {
+    const real = listPiBuiltinModels("anthropic").slice(0, 2).map((model) => model.id);
+    const catalog = buildProviderModelCatalog({
+      providers: [{
+        id: "anthropic",
+        models: [{ name: real[0]! }, { name: real[1]!, enabled: false }],
+      }],
+    });
+
+    expect(catalog.listModels("anthropic").models.map((model) => model.id)).toEqual([real[0]]);
+    expect(catalog.listProviders().find((provider) => provider.id === "anthropic")?.modelCount)
+      .toBe(1);
+  });
+
+  it("does not fall back to the full built-in catalog when every allowlist entry is disabled", () => {
+    // Branching on the FILTERED list would make "narrowed to two, both
+    // withdrawn" advertise all 13 Pi anthropic models instead of none.
+    const real = listPiBuiltinModels("anthropic").slice(0, 2).map((model) => model.id);
+    const catalog = buildProviderModelCatalog({
+      providers: [{
+        id: "anthropic",
+        models: real.map((name) => ({ name, enabled: false })),
+      }],
+    });
+
+    expect(catalog.listModels("anthropic").models).toEqual([]);
+    expect(catalog.listProviders().find((provider) => provider.id === "anthropic")?.modelCount)
+      .toBe(0);
+  });
+
+  it("drops authored allowlist names when the built-in snapshot is unavailable", () => {
+    // Fail CLOSED on the snapshot itself, not on its size: an empty/throwing
+    // listing left every authored name unverified and advertised it anyway.
+    for (const listBuiltinModels of [
+      () => { throw new Error("catalog unavailable"); },
+      () => [],
+    ] as const) {
+      const catalog = buildProviderModelCatalog({
+        providers: [{ id: "anthropic", models: [{ name: "claude-opus-4-7" }] }],
+        listBuiltinModels,
+      });
+      expect(catalog.listModels("anthropic").models).toEqual([]);
+      const anthropic = catalog.listProviders().find((provider) => provider.id === "anthropic");
+      expect(anthropic?.modelCount).toBe(0);
+      // The provider stays in the picker rather than disappearing entirely.
+      expect(anthropic?.source).toBe("builtin");
+    }
+  });
+
+  it("applies the provider's maxAdvertisedModels to live-discovered models", () => {
+    const catalog = buildProviderModelCatalog({
+      providers: [{
+        id: "ollama",
+        type: "ollama",
+        baseUrl: "http://localhost:11434",
+        maxAdvertisedModels: 2,
+      }],
+      discoveredModels: Array.from({ length: 5 }, (_unused, index) => ({
+        ref: `ollama:m${index}`,
+        label: `M${index}`,
+        providerId: "ollama",
+      })),
+    });
+
+    expect(catalog.listModels("ollama").models.map((model) => model.id)).toEqual(["m0", "m1"]);
+    const ollama = catalog.listProviders().find((provider) => provider.id === "ollama");
+    expect(ollama?.modelCount).toBe(2);
+    expect(ollama?.totalModelCount).toBe(5);
+  });
+
   it("skips oversized provider and model identifiers instead of emitting them", () => {
     // Config validation does not length-bound these. `/v1/info` shares one
     // 1 MiB body cap with every other field, so an oversized entry takes the

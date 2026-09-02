@@ -2112,6 +2112,56 @@ describe("validateMonoAgentFolder", () => {
     expect(sectionById(report, "runtime").details.join("\n")).not.toContain("advertised effort levels");
   });
 
+  it("warns when a non-reasoning route configures an effort other than none", async () => {
+    // A non-reasoning model advertises NO effort ladder, so the
+    // outside-the-ladder check returns clean and `effort: high` was reported
+    // ready instead of warned.
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "local-compat:plain", effort: "high" },
+      context: { identityPath: "./IDENTITY.md" },
+      providers: {
+        local: [{
+          id: "local-compat",
+          type: "openai_compat",
+          baseUrl: "http://127.0.0.1:11434",
+          models: [{ name: "plain", capabilities: { reasoning: false, reasoning_mode: "none" } }],
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(true);
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.status).toBe("waiting");
+    expect(runtime.details.join("\n")).toContain(
+      "[WARN] runtime.effort=high is unsupported because known model metadata marks "
+      + "local-compat:plain as non-reasoning; use none, or omit it for the provider default.",
+    );
+  });
+
+  it("stays quiet when a non-reasoning route configures effort none", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "local-compat:plain", effort: "none" },
+      context: { identityPath: "./IDENTITY.md" },
+      providers: {
+        local: [{
+          id: "local-compat",
+          type: "openai_compat",
+          baseUrl: "http://127.0.0.1:11434",
+          models: [{ name: "plain", capabilities: { reasoning: false, reasoning_mode: "none" } }],
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(true);
+    expect(sectionById(report, "runtime").details.join("\n")).not.toContain("non-reasoning");
+  });
+
   it("warns when configured effort is outside the Pi catalog ladder without rejecting the route", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
