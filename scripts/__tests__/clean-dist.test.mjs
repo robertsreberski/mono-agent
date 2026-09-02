@@ -1,5 +1,5 @@
 import { existsSync, renameSync, symlinkSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,6 +16,21 @@ async function fixtureRepo(directories) {
     await mkdir(join(repoRoot, directory), { recursive: true });
   }
   return repoRoot;
+}
+
+async function childPreload(source) {
+  const preloadRoot = await mkdtemp(join(tmpdir(), "mono-agent-clean-dist-preload-"));
+  tempDirs.push(preloadRoot);
+  const preloadPath = join(preloadRoot, "preload.cjs");
+  await writeFile(preloadPath, source);
+  return preloadPath;
+}
+
+function childEnvironment(preloadPath) {
+  return {
+    ...process.env,
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --require=${preloadPath}`.trim(),
+  };
 }
 
 afterEach(async () => {
@@ -47,6 +62,9 @@ describe("clean-dist", () => {
     ]);
     expect(existsSync(join(repoRoot, "packages/telegram-adapter/dist"))).toBe(false);
     expect(existsSync(join(repoRoot, "demos/final-agent/dist/cli.js"))).toBe(false);
+    expect((await readdir(join(repoRoot, "demos/final-agent"))).some(
+      (entry) => entry.startsWith(".dist.cleaning-"),
+    )).toBe(false);
     // Sources are never touched — only generated output is removed.
     expect(existsSync(join(repoRoot, "packages/telegram-adapter/src/index.ts"))).toBe(true);
     // Generic demo-named fixtures are outside the exact retired output contract.
@@ -127,5 +145,150 @@ describe("clean-dist", () => {
     expect(logs).toContain(
       "skipped demos/final-agent/dist: path identity changed during deletion",
     );
+  });
+
+  it("does not report success when the named entry is replaced after inspection", async () => {
+    const repoRoot = await fixtureRepo([
+      "demos/final-agent/dist",
+      "demos/final-agent/replacement",
+    ]);
+    const parent = join(repoRoot, "demos/final-agent");
+    await writeFile(join(parent, "dist/cli.js"), "original runnable demo");
+    await writeFile(join(parent, "replacement/keep.txt"), "replacement data");
+    const logs = [];
+
+    const removed = cleanBuildOutputs({
+      repoRoot,
+      log: (line) => logs.push(line),
+      beforeRetiredOutputRemoval: () => {
+        renameSync(join(parent, "dist"), join(parent, "dist.original"));
+        renameSync(join(parent, "replacement"), join(parent, "dist"));
+      },
+    });
+
+    expect(removed).toEqual([]);
+    expect(await readFile(join(parent, "dist/keep.txt"), "utf8")).toBe("replacement data");
+    expect(await readFile(join(parent, "dist.original/cli.js"), "utf8")).toBe(
+      "original runnable demo",
+    );
+    expect(logs).toContain(
+      "skipped demos/final-agent/dist: path identity changed during deletion",
+    );
+    expect(logs).not.toContain("removed demos/final-agent/dist");
+  });
+
+  it("quarantines but does not delete an entry replaced immediately after the child inspection", async () => {
+    const repoRoot = await fixtureRepo([
+      "demos/final-agent/dist",
+      "demos/final-agent/replacement",
+    ]);
+    const parent = join(repoRoot, "demos/final-agent");
+    await writeFile(join(parent, "dist/cli.js"), "original runnable demo");
+    await writeFile(join(parent, "replacement/keep.txt"), "replacement data");
+    const preloadPath = await childPreload(`
+const fs = require("node:fs");
+const nativeLstatSync = fs.lstatSync;
+let swapped = false;
+fs.lstatSync = function patchedLstatSync(candidate, ...args) {
+  const details = nativeLstatSync.call(this, candidate, ...args);
+  if (!swapped && candidate === "dist") {
+    swapped = true;
+    fs.renameSync("dist", "dist.original");
+    fs.renameSync("replacement", "dist");
+  }
+  return details;
+};
+`);
+    const logs = [];
+
+    const removed = cleanBuildOutputs({
+      repoRoot,
+      log: (line) => logs.push(line),
+      retiredOutputChildEnv: childEnvironment(preloadPath),
+    });
+
+    expect(removed).toEqual([]);
+    const pending = (await readdir(parent)).filter((entry) => entry.startsWith(".dist.cleaning-"));
+    expect(pending).toHaveLength(1);
+    expect(await readFile(join(parent, pending[0], "keep.txt"), "utf8")).toBe("replacement data");
+    expect(await readFile(join(parent, "dist.original/cli.js"), "utf8")).toBe(
+      "original runnable demo",
+    );
+    expect(logs.some((line) => line.includes("quarantine identity mismatch")
+      && line.includes(`inspect`)
+      && line.includes(pending[0]))).toBe(true);
+    expect(logs).not.toContain("removed demos/final-agent/dist");
+  });
+
+  it("reports a quarantine cleanup failure and preserves the inspected entry", async () => {
+    const repoRoot = await fixtureRepo(["demos/final-agent/dist"]);
+    const parent = join(repoRoot, "demos/final-agent");
+    await writeFile(join(parent, "dist/cli.js"), "original runnable demo");
+    const preloadPath = await childPreload(`
+const fs = require("node:fs");
+const nativeRmSync = fs.rmSync;
+fs.rmSync = function patchedRmSync(candidate, options) {
+  if (typeof candidate === "string" && candidate.startsWith(".dist.cleaning-")) {
+    const error = new Error("injected quarantine cleanup failure");
+    error.code = "EIO";
+    throw error;
+  }
+  return nativeRmSync.call(this, candidate, options);
+};
+`);
+
+    let cleanupError;
+    try {
+      cleanBuildOutputs({
+        repoRoot,
+        log: () => {},
+        retiredOutputChildEnv: childEnvironment(preloadPath),
+      });
+    } catch (error) {
+      cleanupError = error;
+    }
+
+    expect(cleanupError).toMatchObject({
+      code: "RETIRED_OUTPUT_QUARANTINE_CLEANUP_FAILED",
+      quarantineState: "retained",
+    });
+    expect(cleanupError.message).toContain("quarantine cleanup failed (EIO)");
+    expect(cleanupError.quarantinePath).toMatch(/\.dist\.cleaning-/u);
+    expect(await readFile(join(cleanupError.quarantinePath, "cli.js"), "utf8")).toBe(
+      "original runnable demo",
+    );
+    expect(existsSync(join(parent, "dist"))).toBe(false);
+  });
+
+  it("reports no successful removal when quarantine cleanup returns without deleting", async () => {
+    const repoRoot = await fixtureRepo(["demos/final-agent/dist"]);
+    const parent = join(repoRoot, "demos/final-agent");
+    await writeFile(join(parent, "dist/cli.js"), "original runnable demo");
+    const preloadPath = await childPreload(`
+const fs = require("node:fs");
+const nativeRmSync = fs.rmSync;
+fs.rmSync = function patchedRmSync(candidate, options) {
+  if (typeof candidate === "string" && candidate.startsWith(".dist.cleaning-")) return;
+  return nativeRmSync.call(this, candidate, options);
+};
+`);
+    const logs = [];
+
+    const removed = cleanBuildOutputs({
+      repoRoot,
+      log: (line) => logs.push(line),
+      retiredOutputChildEnv: childEnvironment(preloadPath),
+    });
+
+    expect(removed).toEqual([]);
+    const pending = (await readdir(parent)).filter((entry) => entry.startsWith(".dist.cleaning-"));
+    expect(pending).toHaveLength(1);
+    expect(await readFile(join(parent, pending[0], "cli.js"), "utf8")).toBe(
+      "original runnable demo",
+    );
+    expect(logs.some((line) => line.includes("quarantine cleanup incomplete")
+      && line.includes("remains at")
+      && line.includes(pending[0]))).toBe(true);
+    expect(logs).not.toContain("removed demos/final-agent/dist");
   });
 });

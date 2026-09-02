@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -111,6 +111,7 @@ describe("check-consumer-docs-consistency", () => {
       "Run test:demo-extra or team-build:demo-tools.",
       "Run test:demo.extra or team-build:demo.tools.",
       "Run test:demo/extra as a distinct namespaced task.",
+      "Run scope/test:demo as a distinct scoped task.",
       "",
     ].join("\n"));
     await writeRepoDoc(repoRoot, "package.json", JSON.stringify({
@@ -121,6 +122,8 @@ describe("check-consumer-docs-consistency", () => {
         "team-build:demo.tools": "pnpm run test:demo.extra",
         "test:demo/extra": "node fixture.js",
         test: "pnpm run test:demo/extra",
+        "scope/test:demo": "node fixture.js",
+        scoped: "pnpm run scope/test:demo",
       },
     }));
 
@@ -178,9 +181,28 @@ describe("check-consumer-docs-consistency", () => {
     const result = await checkConsumerDocsConsistency([], { repoRoot });
 
     expect(result.issues).toHaveLength(2);
-    expect(result.issues.every((issue) => issue.includes("must be a real directory"))).toBe(true);
+    expect(result.issues.every((issue) => issue.includes("must contain only real directories"))).toBe(true);
     expect(result.issues.some((issue) => issue.includes("demos/final-agent"))).toBe(true);
     expect(result.issues.some((issue) => issue.includes("demos/searxng"))).toBe(true);
+  });
+
+  it("rejects a symlinked demos ancestor without touching its destination", async () => {
+    const repoRoot = await tempRepo();
+    const externalRoot = await mkdtemp(join(tmpdir(), "mono-agent-external-demos-"));
+    tempDirs.push(externalRoot);
+    await mkdir(join(externalRoot, "final-agent"), { recursive: true });
+    await mkdir(join(externalRoot, "searxng"), { recursive: true });
+    await writeFile(join(externalRoot, "searxng/.env"), "SEARXNG_SECRET=fixture\n");
+    await symlink(externalRoot, join(repoRoot, "demos"), "dir");
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+
+    expect(result.issues).toHaveLength(2);
+    expect(result.issues.every((issue) => issue.includes("demos"))).toBe(true);
+    expect(result.issues.every((issue) => issue.includes("is not a real directory"))).toBe(true);
+    expect(await readFile(join(externalRoot, "searxng/.env"), "utf8")).toBe(
+      "SEARXNG_SECRET=fixture\n",
+    );
   });
 
   it("orders recursive documentation by locale-independent UTF-16 code units", async () => {

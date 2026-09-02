@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -10,9 +11,31 @@ const WORKSPACE_PARENTS = ["packages", "extras"];
 const OUTPUT_DIRECTORIES = ["dist", path.join("webapp", "dist")];
 const RETIRED_OUTPUT_DIRECTORIES = [path.join("demos", "final-agent", "dist")];
 const RETIRED_REMOVAL_REFUSED = 73;
+const RETIRED_REMOVAL_FAILED = 74;
+const RETIRED_REMOVAL_RESULT_PREFIX = "mono-agent-retired-removal:";
 const RETIRED_OUTPUT_REMOVER_SOURCE = `
 const fs = require("node:fs");
 const expected = JSON.parse(process.argv[1]);
+const resultPrefix = ${JSON.stringify(RETIRED_REMOVAL_RESULT_PREFIX)};
+function finish(exitCode, status, details = {}) {
+  fs.writeSync(1, resultPrefix + JSON.stringify({ status, ...details }) + "\\n");
+  process.exit(exitCode);
+}
+function errorCode(error) {
+  return error && typeof error.code === "string" ? error.code : "UNKNOWN";
+}
+function quarantineState() {
+  try {
+    const details = fs.lstatSync(expected.quarantine);
+    return matches(details, expected.target)
+      ? { quarantineState: "retained" }
+      : { quarantineState: "indeterminate" };
+  } catch (error) {
+    return errorCode(error) === "ENOENT"
+      ? { quarantineState: "absent" }
+      : { quarantineState: "indeterminate" };
+  }
+}
 function matches(details, identity) {
   return !details.isSymbolicLink()
     && details.isDirectory()
@@ -26,15 +49,71 @@ try {
   parent = fs.lstatSync(".");
   target = fs.lstatSync(expected.entry);
   canonicalParent = fs.realpathSync(".");
-} catch {
-  process.exit(${RETIRED_REMOVAL_REFUSED});
+} catch (error) {
+  finish(${RETIRED_REMOVAL_REFUSED}, "initial-check-failed", { code: errorCode(error) });
 }
 if (!matches(parent, expected.parent)
   || !matches(target, expected.target)
   || canonicalParent !== expected.parent.canonical) {
-  process.exit(${RETIRED_REMOVAL_REFUSED});
+  finish(${RETIRED_REMOVAL_REFUSED}, "initial-identity-mismatch");
 }
-fs.rmSync(expected.entry, { recursive: true, force: true });
+try {
+  fs.lstatSync(expected.quarantine);
+  finish(${RETIRED_REMOVAL_REFUSED}, "quarantine-exists", {
+    quarantineState: "indeterminate",
+  });
+} catch (error) {
+  if (errorCode(error) !== "ENOENT") {
+    finish(${RETIRED_REMOVAL_REFUSED}, "quarantine-check-failed", {
+      code: errorCode(error),
+      quarantineState: "indeterminate",
+    });
+  }
+}
+try {
+  fs.renameSync(expected.entry, expected.quarantine);
+} catch (error) {
+  finish(${RETIRED_REMOVAL_REFUSED}, "quarantine-rename-failed", {
+    code: errorCode(error),
+    ...quarantineState(),
+  });
+}
+let quarantined;
+try {
+  quarantined = fs.lstatSync(expected.quarantine);
+} catch (error) {
+  finish(${RETIRED_REMOVAL_REFUSED}, "quarantine-check-failed", {
+    code: errorCode(error),
+    ...quarantineState(),
+  });
+}
+if (!matches(quarantined, expected.target)) {
+  finish(${RETIRED_REMOVAL_REFUSED}, "quarantine-identity-mismatch", {
+    quarantineState: "indeterminate",
+  });
+}
+try {
+  fs.rmSync(expected.quarantine, { recursive: true, force: true });
+} catch (error) {
+  finish(${RETIRED_REMOVAL_FAILED}, "quarantine-cleanup-failed", {
+    code: errorCode(error),
+    ...quarantineState(),
+  });
+}
+try {
+  fs.lstatSync(expected.quarantine);
+  finish(${RETIRED_REMOVAL_REFUSED}, "quarantine-cleanup-incomplete", {
+    ...quarantineState(),
+  });
+} catch (error) {
+  if (errorCode(error) !== "ENOENT") {
+    finish(${RETIRED_REMOVAL_REFUSED}, "quarantine-post-cleanup-check-failed", {
+      code: errorCode(error),
+      ...quarantineState(),
+    });
+  }
+}
+finish(0, "removed");
 `;
 
 /**
@@ -53,6 +132,7 @@ export function cleanBuildOutputs({
   repoRoot = REPO_ROOT,
   log = console.log,
   beforeRetiredOutputRemoval,
+  retiredOutputChildEnv = process.env,
 } = {}) {
   const removed = [];
   for (const parent of WORKSPACE_PARENTS) {
@@ -89,8 +169,9 @@ export function cleanBuildOutputs({
       continue;
     }
     beforeRetiredOutputRemoval?.({ relativeDir, outputDir: inspected.outputDir });
-    if (!removeRetiredOutputFromBoundParent(inspected)) {
-      log(`skipped ${relativeDir}: path identity changed during deletion`);
+    const cleanup = removeRetiredOutputFromBoundParent(inspected, retiredOutputChildEnv);
+    if (!cleanup.removed) {
+      log(`skipped ${relativeDir}: ${cleanup.reason}`);
       continue;
     }
     removed.push(relativeDir);
@@ -100,20 +181,21 @@ export function cleanBuildOutputs({
   return removed;
 }
 
-function removeRetiredOutputFromBoundParent(inspected) {
+function removeRetiredOutputFromBoundParent(inspected, childEnvironment) {
   const parent = inspected.identities.at(-2);
   const target = inspected.identities.at(-1);
+  const quarantine = `.${path.basename(inspected.outputDir)}.cleaning-${randomUUID()}`;
   // The child binds its cwd to the checked parent inode and rechecks its canonical location, so
-  // moving that inode outside the repository and linking the old path back cannot redirect rmSync.
-  // A hostile same-UID replacement of the final directory entry after the child's identity check
-  // remains outside pure Node's descriptor-relative abilities; replacing it with a symlink is
-  // still safe because rmSync removes, rather than follows, it.
+  // moving that inode outside the repository and linking the old path back cannot redirect the
+  // operation. It first renames the final entry to this random sibling, then deletes only when
+  // that renamed entry still has the originally inspected identity.
   const result = spawnSync(process.execPath, [
     "--input-type=commonjs",
     "-e",
     RETIRED_OUTPUT_REMOVER_SOURCE,
     JSON.stringify({
       entry: path.basename(inspected.outputDir),
+      quarantine,
       parent: {
         canonical: parent.candidate,
         dev: String(parent.dev),
@@ -124,21 +206,79 @@ function removeRetiredOutputFromBoundParent(inspected) {
   ], {
     cwd: parent.candidate,
     encoding: "utf8",
-    stdio: ["ignore", "ignore", "pipe"],
+    env: childEnvironment,
+    stdio: ["ignore", "pipe", "pipe"],
   });
-  if (result.status === RETIRED_REMOVAL_REFUSED
-    || (result.error instanceof Error && "code" in result.error
-      && (result.error.code === "ENOENT" || result.error.code === "ENOTDIR"))) {
-    return false;
+  if (result.error instanceof Error && "code" in result.error
+    && (result.error.code === "ENOENT" || result.error.code === "ENOTDIR")) {
+    return { removed: false, reason: "path identity changed during deletion" };
   }
   if (result.error !== undefined) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(
-      `Could not safely remove retired output (${result.signal ?? `exit ${result.status}`}): `
-      + result.stderr.trim(),
-    );
+  const childResult = parseRetiredRemovalResult(result.stdout);
+  const quarantinePath = path.join(parent.candidate, quarantine);
+  if (result.status === 0 && childResult?.status === "removed") {
+    return { removed: true };
   }
-  return true;
+  if (result.status === RETIRED_REMOVAL_REFUSED && childResult !== undefined) {
+    if (childResult.status === "initial-check-failed"
+      || childResult.status === "initial-identity-mismatch") {
+      return { removed: false, reason: "path identity changed during deletion" };
+    }
+    const refusal = formatRetiredRemovalStatus(childResult);
+    if (childResult.quarantineState === "retained") {
+      return {
+        removed: false,
+        reason: `pending deletion was refused (${refusal}) and remains at ${quarantinePath}`,
+      };
+    }
+    if (childResult.quarantineState === "indeterminate") {
+      return {
+        removed: false,
+        reason: `pending deletion was refused (${refusal}); inspect ${quarantinePath} before retrying`,
+      };
+    }
+    return { removed: false, reason: `pending deletion was refused (${refusal})` };
+  }
+  if (result.status === RETIRED_REMOVAL_FAILED
+    && childResult?.status === "quarantine-cleanup-failed") {
+    const quarantineState = childResult.quarantineState ?? "indeterminate";
+    const stateMessage = quarantineState === "retained"
+      ? `the pending deletion remains at ${quarantinePath}`
+      : quarantineState === "absent"
+        ? `the pending deletion is absent after the remover anomaly at ${quarantinePath}`
+        : `the pending deletion state is indeterminate; inspect ${quarantinePath}`;
+    const cleanupError = new Error(
+      `Retired output quarantine cleanup failed (${childResult.code ?? "UNKNOWN"}); ${stateMessage}`,
+    );
+    cleanupError.code = "RETIRED_OUTPUT_QUARANTINE_CLEANUP_FAILED";
+    cleanupError.quarantinePath = quarantinePath;
+    cleanupError.quarantineState = quarantineState;
+    throw cleanupError;
+  }
+  throw new Error(
+    `Could not safely remove retired output (${result.signal ?? `exit ${result.status}`}): `
+    + result.stderr.trim(),
+  );
+}
+
+function formatRetiredRemovalStatus(result) {
+  const status = typeof result.status === "string"
+    ? result.status.replaceAll("-", " ")
+    : "unknown refusal";
+  return typeof result.code === "string" ? `${status}: ${result.code}` : status;
+}
+
+function parseRetiredRemovalResult(stdout) {
+  for (const line of stdout.trim().split("\n").reverse()) {
+    if (!line.startsWith(RETIRED_REMOVAL_RESULT_PREFIX)) continue;
+    try {
+      const parsed = JSON.parse(line.slice(RETIRED_REMOVAL_RESULT_PREFIX.length));
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 function inspectRetiredOutput(repoRoot, relativeDir) {

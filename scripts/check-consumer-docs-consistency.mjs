@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { access, lstat, readFile, readdir, stat } from "node:fs/promises";
+import { access, lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { constants } from "node:fs";
-import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { packageCatalog } from "./package-catalog.mjs";
 
@@ -47,7 +47,7 @@ const retiredDemoRootCommands = [
   "deploy:final",
 ];
 const retiredDemoRootCommandPattern = new RegExp(
-  `(?<![A-Za-z0-9:._-])(?:${retiredDemoRootCommands.map(escapedPattern).join("|")})(?![A-Za-z0-9:_/-]|\\.[A-Za-z0-9:_/-])`,
+  `(?<![A-Za-z0-9:._/-])(?:${retiredDemoRootCommands.map(escapedPattern).join("|")})(?![A-Za-z0-9:_/-]|\\.[A-Za-z0-9:_/-])`,
   "iu",
 );
 
@@ -464,21 +464,28 @@ async function scanRetiredDemoRepositorySurfaces(repoRoot) {
     // An ignored legacy secret may remain just long enough for the explicit retirement migration.
     { relativePath: "demos/searxng", allowedEntries: new Set([".env"]) },
   ];
-  for (const root of retiredRoots) {
-    const absolutePath = join(repoRoot, root.relativePath);
-    let rootDetails;
-    try {
-      rootDetails = await lstat(absolutePath);
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
-      issues.push(
-        `${absolutePath}: could not inspect retired repository demo root (${reasonOf(error)}).`,
-      );
-      continue;
-    }
+  let canonicalRepoRoot;
+  try {
+    canonicalRepoRoot = await realpath(resolve(repoRoot));
+    const rootDetails = await lstat(canonicalRepoRoot);
     if (rootDetails.isSymbolicLink() || !rootDetails.isDirectory()) {
+      throw new Error("canonical repository root is not a real directory");
+    }
+  } catch (error) {
+    canonicalRepoRoot = undefined;
+    issues.push(
+      `${resolve(repoRoot)}: could not resolve repository root while checking retired demo surfaces (${reasonOf(error)}).`,
+    );
+  }
+  for (const root of retiredRoots) {
+    if (canonicalRepoRoot === undefined) continue;
+    const inspected = await inspectRetiredDemoRoot(canonicalRepoRoot, root.relativePath);
+    const absolutePath = join(canonicalRepoRoot, root.relativePath);
+    if (inspected.status === "absent") continue;
+    if (inspected.status === "unsafe") {
       issues.push(
-        `${absolutePath}: retired repository demo root must be a real directory when present.`,
+        `${absolutePath}: retired repository demo root must contain only real directories `
+          + `inside the canonical repository root (${inspected.reason}).`,
       );
       continue;
     }
@@ -529,6 +536,58 @@ async function scanRetiredDemoRepositorySurfaces(repoRoot) {
     }
   }
   return issues;
+}
+
+async function inspectRetiredDemoRoot(canonicalRepoRoot, relativePath) {
+  let candidate = canonicalRepoRoot;
+  for (const component of relativePath.split("/")) {
+    candidate = join(candidate, component);
+    let details;
+    try {
+      details = await lstat(candidate);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        return { status: "absent", absolutePath: candidate };
+      }
+      return {
+        status: "unsafe",
+        absolutePath: candidate,
+        reason: `could not inspect ${candidate}: ${reasonOf(error)}`,
+      };
+    }
+    if (details.isSymbolicLink() || !details.isDirectory()) {
+      return {
+        status: "unsafe",
+        absolutePath: candidate,
+        reason: `${candidate} is not a real directory`,
+      };
+    }
+    let canonicalCandidate;
+    try {
+      canonicalCandidate = await realpath(candidate);
+    } catch (error) {
+      return {
+        status: "unsafe",
+        absolutePath: candidate,
+        reason: `could not resolve ${candidate}: ${reasonOf(error)}`,
+      };
+    }
+    if (canonicalCandidate !== candidate
+      || !isWithinCanonicalRoot(canonicalRepoRoot, canonicalCandidate)) {
+      return {
+        status: "unsafe",
+        absolutePath: candidate,
+        reason: `${candidate} does not resolve inside the canonical repository root`,
+      };
+    }
+  }
+  return { status: "ready", absolutePath: candidate };
+}
+
+function isWithinCanonicalRoot(canonicalRoot, candidate) {
+  const relativePath = relative(canonicalRoot, candidate);
+  return relativePath === ""
+    || (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath));
 }
 
 function scanMisleadingArtifactDurabilityClaims(records) {
