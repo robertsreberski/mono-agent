@@ -228,6 +228,20 @@ describe("ModelControls", () => {
     await waitFor(() => expect(within(dialog).getByRole("combobox", { name: "Search models" })).toHaveFocus());
   });
 
+  it("preloads the provider catalog when the slash action opens the picker", async () => {
+    // Opening by setting state directly bypasses `onOpenChange`, which is
+    // where the header's preload lives. With a single provider the chip row is
+    // hidden too, so nothing else would ever fetch a page and the operator was
+    // stuck on the shortlist until they reopened the picker from the header.
+    const store = storeMock.current as { ensureProviderCatalog: ReturnType<typeof vi.fn> };
+    render(<ModelControls />);
+    expect(store.ensureProviderCatalog).not.toHaveBeenCalled();
+
+    fireEvent(window, new Event("mono-agent:run-settings"));
+    await screen.findByRole("dialog", { name: "Model and reasoning effort" });
+    expect(store.ensureProviderCatalog).toHaveBeenCalledWith("pi");
+  });
+
   it("renders exact current context separately from cumulative conversation cost", async () => {
     storeMock.current = {
       ...storeMock.current,

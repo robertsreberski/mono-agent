@@ -5,6 +5,8 @@ import { api } from "./api";
 import {
   ConsoleStoreProvider,
   cronChannelPath,
+  preferenceKeyForThread,
+  RUN_PREFERENCES_STORAGE_KEY,
   useConsoleStore,
 } from "./console-store";
 import { agent, bootstrap, thread } from "./test/fixtures";
@@ -484,5 +486,105 @@ describe("ConsoleStoreProvider integration", () => {
     expect(store.current.cronOverview).toBeNull();
     expect(api.cronOverview).not.toHaveBeenCalled();
     expect(store.current.selectedThread?.canSend).toBe(false);
+  });
+
+  describe("legacy run-preference migration", () => {
+    const alphaThread = thread("alpha-thread", "alpha");
+
+    const seedLocalOverride = (sourceId: string, threadId: string | null) => {
+      localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify({
+        [preferenceKeyForThread(sourceId, threadId)]: {
+          model: "anthropic:opus-5",
+          effort: "high",
+        },
+      }));
+    };
+
+    const seedTwoAgentsOneThread = () => {
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [alphaThread],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alphaThread] });
+      vi.mocked(api.thread).mockResolvedValue(detail(alphaThread, "hello"));
+    };
+
+    const settle = async () => {
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    };
+
+    it("adopts a browser-local override into the thread it was recorded for", async () => {
+      seedTwoAgentsOneThread();
+      seedLocalOverride("alpha", "alpha-thread");
+      vi.mocked(api.patchThread).mockResolvedValue({
+        ...alphaThread,
+        runModel: "anthropic:opus-5",
+        runEffort: "high",
+      });
+
+      const store = await renderStore();
+
+      await waitFor(() => expect(api.patchThread).toHaveBeenCalledWith(
+        "alpha-thread",
+        { model: "anthropic:opus-5", effort: "high" },
+      ));
+      await waitFor(() => expect(store.current.selectedThread?.runModel).toBe("anthropic:opus-5"));
+      expect(localStorage.getItem(RUN_PREFERENCES_STORAGE_KEY)).toBe("{}");
+    });
+
+    it("never adopts one agent's override onto the previous agent's thread", async () => {
+      // `selectedThread` falls back to `detail?.thread` when the selection
+      // resolves to nothing, so switching to an agent with no conversation
+      // still pointed at the PREVIOUS agent's thread while `preferenceKey`
+      // already named the new one -- and the adoption PATCH landed there.
+      seedTwoAgentsOneThread();
+      seedLocalOverride("beta", null);
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThread?.id).toBe("alpha-thread"));
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectedAgentId).toBe("beta"));
+      await settle();
+
+      expect(api.patchThread).not.toHaveBeenCalled();
+    });
+
+    it("abandons the adoption when the operator changes effort inside its read", async () => {
+      // The migration re-reads the thread before patching. A selection made in
+      // that window is already on its way to the server, so restoring the
+      // browser-local value afterwards would silently undo it.
+      seedTwoAgentsOneThread();
+      seedLocalOverride("alpha", "alpha-thread");
+      let releaseFreshRead: (() => void) | undefined;
+      const freshRead = new Promise<void>((resolve) => { releaseFreshRead = resolve; });
+      let threadReads = 0;
+      vi.mocked(api.thread).mockImplementation(async () => {
+        threadReads += 1;
+        // Read 1 is the detail load; read 2 is the migration's re-check.
+        if (threadReads > 1) await freshRead;
+        return detail(alphaThread, "hello");
+      });
+      vi.mocked(api.patchThread).mockResolvedValue({
+        ...alphaThread,
+        runModel: null,
+        runEffort: "low",
+      });
+
+      const store = await renderStore();
+      await waitFor(() => expect(threadReads).toBeGreaterThan(1));
+
+      act(() => { store.current.setEffort("low"); });
+      releaseFreshRead?.();
+      await waitFor(() => expect(api.patchThread).toHaveBeenCalledWith(
+        "alpha-thread",
+        { effort: "low" },
+      ));
+      await settle();
+
+      // Exactly one write reached the server, and it is the operator's.
+      expect(api.patchThread).toHaveBeenCalledTimes(1);
+      expect(store.current.selectedThread?.runEffort).toBe("low");
+    });
   });
 });

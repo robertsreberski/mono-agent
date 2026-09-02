@@ -37,6 +37,7 @@ import {
   type WebAgentSummary,
   type WebAttachment,
   type WebBootstrap,
+  type WebCatalogModel,
   type WebChannelConfigView,
   type WebCronMutationResult,
   type WebCronOverview,
@@ -233,9 +234,11 @@ export class WebService {
   private readonly askWatches = new Map<string, AskWatch>();
   private connections = new Map<string, AgentConnection>();
   /** Bounded catalog-admitted model refs per agent, seeded from `modelOptions`
-   *  and appended to by every proxied `/v1/models` page. Set preserves
+   *  and appended to by every proxied `/v1/models` page. The value is the
+   *  effort ladder the page advertised for that ref, or `undefined` when it
+   *  advertised none -- admission is `has`, metadata is `get`. Map preserves
    *  insertion order, so evicting the oldest entry is deleting the head. */
-  private readonly modelCatalogCache = new Map<string, Set<string>>();
+  private readonly modelCatalogCache = new Map<string, Map<string, readonly string[] | undefined>>();
   /** Parts whose durable copy is being fetched, so concurrent reads fetch once. */
   private persistingReplyImages = new Set<string>();
   private discoveryTimer: ReturnType<typeof setInterval> | undefined;
@@ -743,9 +746,21 @@ export class WebService {
       signal: AbortSignal.timeout(INFO_TIMEOUT_MS),
     });
     // Every proxied page widens the per-agent catalog cache, the only feed
-    // (besides `modelOptions` keys) that makes tier-2 model admission possible.
-    const set = this.catalogSet(sourceId);
-    for (const model of page.models) this.admitModelRef(set, model.id);
+    // (besides `modelOptions` keys) that makes tier-2 model admission possible,
+    // and the only place the effort ladder a catalog model advertises is ever
+    // seen -- `modelOptions` never describes it, so dropping it here is what
+    // left effort validation with nothing to judge against.
+    const entries = this.catalogEntries(sourceId);
+    for (const model of page.models) {
+      const efforts = catalogEffortLevels(model);
+      // The wire carries provider-local ids while every selection surface
+      // speaks the canonical `<provider>:<model>` reference. Admit both, or a
+      // turn is judged against metadata the page did advertise but under a
+      // name nothing ever asks for.
+      this.admitModelRef(entries, model.id, efforts);
+      const reference = model.provider ? `${model.provider}:${model.id}` : model.id;
+      if (reference !== model.id) this.admitModelRef(entries, reference, efforts);
+    }
     return page;
   }
 
@@ -1765,13 +1780,13 @@ export class WebService {
 
   /** Tier-2 admission: the catalog cache, seeded from `modelOptions` keys and
    *  appended to by every proxied `/v1/models` page. */
-  private catalogSet(sourceId: string): Set<string> {
-    let set = this.modelCatalogCache.get(sourceId);
-    if (set === undefined) {
-      set = new Set();
-      this.modelCatalogCache.set(sourceId, set);
+  private catalogEntries(sourceId: string): Map<string, readonly string[] | undefined> {
+    let entries = this.modelCatalogCache.get(sourceId);
+    if (entries === undefined) {
+      entries = new Map();
+      this.modelCatalogCache.set(sourceId, entries);
     }
-    return set;
+    return entries;
   }
 
   private seedModelCatalogFromOptions(
@@ -1779,16 +1794,28 @@ export class WebService {
     modelOptions: Readonly<Record<string, WebModelOption>> | undefined,
   ): void {
     if (modelOptions === undefined) return;
-    const set = this.catalogSet(sourceId);
-    for (const key of Object.keys(modelOptions)) this.admitModelRef(set, key);
+    const entries = this.catalogEntries(sourceId);
+    // `modelOptions` stays the authority for the refs it names, so the seed
+    // only records admission; recording a ladder here would shadow it.
+    for (const key of Object.keys(modelOptions)) this.admitModelRef(entries, key, undefined);
   }
 
-  private admitModelRef(set: Set<string>, ref: string): void {
-    if (set.has(ref)) return;
-    set.add(ref);
-    if (set.size > MODEL_CATALOG_CACHE_CAP) {
-      const oldest = set.values().next().value;
-      if (oldest !== undefined) set.delete(oldest);
+  private admitModelRef(
+    entries: Map<string, readonly string[] | undefined>,
+    ref: string,
+    efforts: readonly string[] | undefined,
+  ): void {
+    if (entries.has(ref)) {
+      // A later page can describe a ref an earlier one (or the shortlist seed)
+      // only named. Never downgrade known metadata back to unknown, and never
+      // reorder: re-setting an existing key leaves its eviction position alone.
+      if (efforts !== undefined) entries.set(ref, efforts);
+      return;
+    }
+    entries.set(ref, efforts);
+    if (entries.size > MODEL_CATALOG_CACHE_CAP) {
+      const oldest = entries.keys().next().value;
+      if (oldest !== undefined) entries.delete(oldest);
     }
   }
 
@@ -1803,14 +1830,23 @@ export class WebService {
     }
     const effectiveModel = model ?? agent.defaultModel;
     const option = effectiveModel === undefined ? undefined : agent.modelOptions?.[effectiveModel];
-    // `modelOptions` only ever covers the configured shortlist. A model reached
-    // through the provider catalog has no entry, so deriving [] from its absence
-    // rejected every effort the selector had just offered for it. Advertised
-    // options stay authoritative; an unadvertised model falls back to the global
-    // ladder and lets the agent -- which is permissive at turn time -- decide.
-    const allowedEfforts = agent.modelOptions === undefined
-      ? agent.efforts
-      : option === undefined ? EFFORT_LEVELS : effortLevelsForOption(option);
+    // `modelOptions` only ever covers the configured shortlist, so a model
+    // reached through the provider catalog has no entry there. Three tiers, in
+    // order: the advertised option is authoritative; then the ladder the
+    // catalog page advertised for that very model; then the global ladder.
+    //
+    // Both neighbouring failures are live risks. Deriving [] from the missing
+    // option rejected every effort the selector had just offered. Falling
+    // straight through to the global ladder accepted -- and forwarded in the
+    // turn metadata -- grades the page said the model does not support. Only
+    // an absent-metadata catalog model reaches the permissive floor, where the
+    // agent itself is the real gate.
+    const catalogEfforts = effectiveModel === undefined
+      ? undefined
+      : this.modelCatalogCache.get(sourceId)?.get(effectiveModel);
+    const allowedEfforts = option !== undefined
+      ? effortLevelsForOption(option)
+      : catalogEfforts ?? (agent.modelOptions === undefined ? agent.efforts : EFFORT_LEVELS);
     if (effort !== undefined && (allowedEfforts === undefined || !allowedEfforts.includes(effort))) {
       throw new WebConsoleError("invalid_effort", "This agent did not advertise the selected effort for this model.", 400);
     }
@@ -2288,6 +2324,20 @@ function modelPassesSyntacticFloor(model: string): boolean {
   // Provider ids are lowercase kebab/alphanumeric; the model half may carry
   // further colons and slashes but must not be blank or padded.
   return /^[a-z0-9][a-z0-9-]*$/u.test(provider) && rest.trim() === rest && rest.trim().length > 0;
+}
+
+/**
+ * The effort ladder a `/v1/models` page advertised for one catalog model, or
+ * `undefined` when it advertised none. Silence has to stay permissive: an
+ * absent signal is not an empty ladder, and reading it as one is exactly how
+ * every effort for a catalog-reached model came back 400 once already. Only an
+ * explicit `reasoning:false`, a `reasoningMode`, or an `effortLevels` list
+ * (including an empty one) narrows what a turn may carry.
+ */
+function catalogEffortLevels(model: WebCatalogModel): readonly string[] | undefined {
+  if (model.reasoning === false || model.reasoningMode === "none") return [];
+  if (model.reasoningMode === "toggle") return ["high", "none"];
+  return model.effortLevels;
 }
 
 function effortLevelsForOption(option: WebModelOption | undefined): readonly string[] {

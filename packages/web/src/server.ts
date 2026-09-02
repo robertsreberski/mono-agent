@@ -190,6 +190,19 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       const limit = boundedQueryLimit(req.query.limit, 200, 50);
       const provider = optionalSearchQuery(req.query.provider, 256);
       const q = optionalSearchQuery(req.query.q, 512);
+      // The agent's `/v1/models` contract treats the two modes as mutually
+      // exclusive: a supplier services `provider` and ignores the query, so a
+      // request carrying both comes back looking like an answered search. The
+      // agent rejects it, but the operator client re-reports any agent 4xx as
+      // a 502 `agent_http_error` -- which blames the agent for the caller's
+      // mistake. Keep this one local and legible.
+      if (provider.length > 0 && q.length > 0) {
+        throw new WebConsoleError(
+          "invalid_page",
+          "provider and q are mutually exclusive for the model catalog.",
+          400,
+        );
+      }
       const cursor = optionalQueryString(req.query.cursor, 4_096);
       void trackOperation(service.agentModels(
         pathParam(req.params.id),

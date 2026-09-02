@@ -1,4 +1,4 @@
-import type { AgentProvider, AgentSummary, CatalogModel } from "../types";
+import type { AgentProvider, AgentSummary, CatalogModel, ModelOption } from "../types";
 
 /**
  * Pure model-catalog derivation. No React, no singletons: everything in this
@@ -60,26 +60,8 @@ export const defaultEffortName = (effort: string | undefined, toggle: boolean): 
   return effortName(effort);
 };
 
-export const effortLevelsForAgentModel = (
-  agent: AgentSummary | null,
-  model: string,
-  catalogModel?: CatalogModel | undefined,
-): readonly string[] => {
-  if (!agent) return [];
-  if (agent.modelOptions === undefined) return agent.efforts ?? GLOBAL_EFFORT_LEVELS;
-  const option = agent.modelOptions[model];
-  if (!option) {
-    if (catalogModel === undefined) return [];
-    if (
-      catalogModel.reasoning === false ||
-      catalogModel.reasoningMode === "none" ||
-      catalogModel.effortLevels?.length === 0
-    ) {
-      return [];
-    }
-    if (catalogModel.reasoningMode === "toggle") return ["high", "none"];
-    return catalogModel.effortLevels ?? [];
-  }
+/** The ladder a configured shortlist route advertises. Authoritative when present. */
+const effortLevelsForOption = (option: ModelOption): readonly string[] => {
   if (
     option.reasoning === false ||
     option.reasoningMode === "none" ||
@@ -89,6 +71,43 @@ export const effortLevelsForAgentModel = (
   }
   if (option.reasoningMode === "toggle") return ["high", "none"];
   return option.effortLevels ?? [];
+};
+
+/**
+ * The effort ladder a catalog row advertises for itself, or `undefined` when
+ * the `/v1/models` page said nothing about reasoning at all.
+ *
+ * Silence is not "no efforts": narrowing on it would hide every grade the agent
+ * would in fact accept, which is the failure this whole path already had once.
+ * Only an explicit signal -- `reasoning:false`, `reasoningMode`, or an
+ * `effortLevels` list (including an empty one) -- narrows.
+ */
+export const effortLevelsForCatalogModel = (
+  catalogModel: CatalogModel | undefined,
+): readonly string[] | undefined => {
+  if (catalogModel === undefined) return undefined;
+  if (catalogModel.reasoning === false || catalogModel.reasoningMode === "none") return [];
+  if (catalogModel.reasoningMode === "toggle") return ["high", "none"];
+  return catalogModel.effortLevels;
+};
+
+export const effortLevelsForAgentModel = (
+  agent: AgentSummary | null,
+  model: string,
+  catalogModel?: CatalogModel | undefined,
+): readonly string[] => {
+  if (!agent) return [];
+  // The configured shortlist stays authoritative for the routes it names.
+  const option = agent.modelOptions?.[model];
+  if (option !== undefined) return effortLevelsForOption(option);
+  // A catalog row's own metadata outranks the legacy global ladder. Without
+  // this a non-reasoning catalog model rendered Thinking controls and let an
+  // unsupported grade be picked, which the server then rejected (or dropped).
+  const catalogLevels = effortLevelsForCatalogModel(catalogModel);
+  if (catalogLevels !== undefined) return catalogLevels;
+  // Agents that predate per-model metadata describe one ladder for everything.
+  if (agent.modelOptions === undefined) return agent.efforts ?? GLOBAL_EFFORT_LEVELS;
+  return [];
 };
 
 /**
@@ -115,7 +134,14 @@ export const providerOfModel = (model: string): string => {
 export const catalogModelReference = (model: CatalogModel): string =>
   model.provider ? `${model.provider}:${model.id}` : model.id;
 
-const findCatalogModel = (
+/**
+ * The catalog row a reference names, by canonical `<provider>:<model>` or by
+ * the bare provider-local id the wire uses. Exported because every effort
+ * decision in the console -- the picker rows, the stored-preference validator,
+ * the ladder a model switch re-checks against -- has to consult the same
+ * metadata, and a decision made without it silently discards the selection.
+ */
+export const findCatalogModel = (
   catalogByProvider: Readonly<Record<string, readonly CatalogModel[]>> | undefined,
   modelId: string,
 ): CatalogModel | undefined => {
