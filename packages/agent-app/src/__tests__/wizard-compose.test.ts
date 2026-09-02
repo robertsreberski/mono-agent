@@ -247,6 +247,18 @@ describe("wizard composer — per-preset invariants", () => {
     expect(plan.configJson.providers?.local).toBeDefined();
   });
 
+  it("misses the local provider block when a legacy pi: ref is stored raw", () => {
+    // Fence for the wizard-side canonicalization: module selection and the
+    // credential review match the LITERAL ref text, so a stored
+    // `pi:ollama:...` (which the parser accepts) silently skipped the local
+    // provider block and was reviewed as a credentialed cloud route.
+    const raw = composeWizardPlan(defaultAnswers({ model: "pi:ollama:llama3.1:8b" }), CTX);
+    expect(raw.configJson.providers?.local).toBeUndefined();
+
+    const canonical = composeWizardPlan(defaultAnswers({ model: "ollama:llama3.1:8b" }), CTX);
+    expect(canonical.configJson.providers?.local).toBeDefined();
+  });
+
   it("auto-derives local provider blocks from fallback models too", () => {
     const plan = composeWizardPlan(defaultAnswers({
       model: "anthropic:claude-sonnet-4-6",

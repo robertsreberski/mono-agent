@@ -196,6 +196,19 @@ describe("answersFromCli", () => {
     expect(answers.memory).toBe("memory:lite");
   });
 
+  it("canonicalizes a legacy pi: ref so local-provider detection still fires", () => {
+    // The parser accepts `pi:<provider>:<model>`, but every downstream check
+    // matches the literal ref text — storing it raw skipped `provider:ollama`
+    // and billed the route as a credentialed cloud model.
+    const answers = answersFromCli({
+      model: "pi:ollama:gemma4:31b",
+      fallbacks: [{ model: "pi:openai-codex:gpt-5.6-terra" }],
+    });
+
+    expect(answers.model).toBe("ollama:gemma4:31b");
+    expect(answers.fallbacks?.map((fallback) => fallback.model)).toEqual(["openai-codex:gpt-5.6-terra"]);
+  });
+
   it("preserves exact --model and canonical --fallback refs from non-interactive flags", () => {
     const answers = answersFromCli({
       model: "ollama:gemma4:31b",

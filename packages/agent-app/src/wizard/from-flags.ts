@@ -2,7 +2,11 @@ import type { EffortLevel } from "@mono-agent/config";
 
 import { defaultAnswers, type WizardAnswers, type WizardFallback } from "./answers.js";
 import { findPreset } from "./presets.js";
-import { assertConcreteWizardModelRef, validateWizardAgentName } from "./prompts.js";
+import {
+  assertConcreteWizardModelRef,
+  canonicalWizardModelRef,
+  validateWizardAgentName,
+} from "./prompts.js";
 
 /** Channels `mono-agent init --with <csv>` can switch on, by their short flag name. */
 export const WITH_CHANNELS = ["telegram", "slack", "webhook", "openaiApi", "cron"] as const;
@@ -88,7 +92,13 @@ export function answersFromCli(args: AnswersFromCliArgs): WizardAnswers {
   });
 }
 
+/**
+ * `--model`/`--fallback` take the same canonicalization as the interactive
+ * picker: a legacy `pi:<provider>:<model>` passes validation but must not reach
+ * the plan as raw text, or the literal-prefix checks downstream (local-provider
+ * module selection, credential review) misclassify the route.
+ */
 function concreteCliModelRef(value: string): string {
   assertConcreteWizardModelRef(value);
-  return value;
+  return canonicalWizardModelRef(value);
 }

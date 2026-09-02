@@ -1,5 +1,6 @@
 import * as p from "@clack/prompts";
 import { MAX_AGENT_NAME_LENGTH } from "@mono-agent/config";
+import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 import type { EffortLevel } from "@mono-agent/config";
 
@@ -245,6 +246,26 @@ export function piModelSelectOptions(
 export function assertConcreteWizardModelRef(value: string): void {
   if (WIZARD_MODEL_SENTINELS.has(value)) {
     throw new Error(`Wizard model sentinel cannot be used as a model reference: ${value}`);
+  }
+}
+
+/**
+ * Store the CANONICAL form of an accepted model reference. Validation accepts a
+ * legacy `pi:<provider>:<model>` (the parser canonicalizes the prefix away), but
+ * the raw string was what got written to `runtime.model` — and every downstream
+ * consumer matches on the literal text: `selectedModuleIds` tests `/^ollama:/`
+ * to auto-add the local provider module, and `modelRefNeedsCredentials` tests
+ * the same prefixes to decide whether setup needs an API key. A stored `pi:`
+ * ref therefore skipped the local-provider module and was reviewed as a
+ * credentialed cloud route. Falls back to the input when it does not parse, so
+ * an unparseable ref still surfaces at its normal validation boundary rather
+ * than being silently swallowed here.
+ */
+export function canonicalWizardModelRef(value: string): string {
+  try {
+    return parseMonoRuntimeModelReference(value).reference;
+  } catch {
+    return value;
   }
 }
 

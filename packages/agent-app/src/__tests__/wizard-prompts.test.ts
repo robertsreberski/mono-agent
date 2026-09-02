@@ -17,6 +17,7 @@ vi.mock("@clack/prompts", async (importOriginal) => {
 import { APP_TOOL_NAMES, BUILTIN_TOOL_NAMES } from "../modules/known-tools.js";
 import {
   assertConcreteWizardModelRef,
+  canonicalWizardModelRef,
   channelSelectOptions,
   creationReviewOptions,
   CUSTOM_PI_MODEL_OPTION,
@@ -190,6 +191,18 @@ describe("wizard prompt builders", () => {
       expect(() => assertConcreteWizardModelRef(sentinel)).toThrow("Wizard model sentinel");
     }
     expect(() => assertConcreteWizardModelRef("ollama:llama3.1:8b")).not.toThrow();
+  });
+
+  it("canonicalWizardModelRef strips a legacy pi: prefix and passes anything else through", () => {
+    // Validation ACCEPTS `pi:<provider>:<model>` (the parser canonicalizes it),
+    // so the wizard must store the canonical text: downstream module selection
+    // and the credential review match the literal ref.
+    expect(canonicalWizardModelRef("pi:ollama:llama3.1:8b")).toBe("ollama:llama3.1:8b");
+    expect(canonicalWizardModelRef("ollama:llama3.1:8b")).toBe("ollama:llama3.1:8b");
+    expect(canonicalWizardModelRef("openai-codex:gpt-5.6-terra")).toBe("openai-codex:gpt-5.6-terra");
+    // An unparseable value is returned untouched so it still fails at its own
+    // validation boundary rather than being silently swallowed here.
+    expect(canonicalWizardModelRef("not-a-ref")).toBe("not-a-ref");
   });
 
   it("preserves an authored unknown model with provider-default effort guidance", () => {
