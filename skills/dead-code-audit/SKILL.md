@@ -119,6 +119,7 @@ a deprecated surface "removable":
 ```bash
 S=<symbol>
 grep -rln "$S" packages/*/src extras/*/src --include="*.ts" | grep -v __tests__   # 1
+# Append every task-specific top-level executable path found during inventory.
 grep -rln "$S" scripts/                                                            # 2
 grep -rln "$S" ~/personal-agent ~/agents ~/personal ~/Library/LaunchAgents/com.mono-agent.*.plist  # 3
 grep -rln "$S" docs/                                                               # 4
