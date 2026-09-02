@@ -1060,6 +1060,10 @@ function parsePatchThread(value: unknown): PatchWebThreadInput {
   const effort = optionalNullableString(body.effort, "effort", 120);
   const archived = body.archived;
   if (archived !== undefined && typeof archived !== "boolean") throw invalidBody("archived must be boolean.");
+  const ifRunConfigUnset = body.ifRunConfigUnset;
+  if (ifRunConfigUnset !== undefined && typeof ifRunConfigUnset !== "boolean") {
+    throw invalidBody("ifRunConfigUnset must be boolean.");
+  }
   if (title === undefined && archived === undefined && model === undefined && effort === undefined) {
     throw invalidBody("Provide title, archived, model, or effort.");
   }
@@ -1068,6 +1072,7 @@ function parsePatchThread(value: unknown): PatchWebThreadInput {
     ...(archived === undefined ? {} : { archived }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
+    ...(ifRunConfigUnset === undefined ? {} : { ifRunConfigUnset }),
   };
 }
 

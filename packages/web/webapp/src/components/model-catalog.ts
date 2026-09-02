@@ -1,21 +1,23 @@
-import type { AgentProvider, AgentSummary, CatalogModel, ModelOption } from "../types";
+import {
+  advertisedEffortLevels,
+  effortLevelsForModel,
+  GLOBAL_EFFORT_LEVELS,
+} from "../../../src/effort-ladder.js";
+import type { AgentProvider, AgentSummary, CatalogModel } from "../types";
 
 /**
  * Pure model-catalog derivation. No React, no singletons: everything in this
  * module is a function of its arguments so the ordering, grouping, and effort
  * rules are unit-testable without a DOM.
+ *
+ * The effort rule itself is NOT derived here. `@mono-agent/web`'s server side
+ * decides the same question for the same models when it validates a turn, and
+ * the two answers were written separately and drifted: the picker hid grades
+ * `WebService.startTurn` accepts. Both ends now call `effort-ladder.ts`, the
+ * one dependency-free module they can share across the workspace boundary.
  */
 
-export const GLOBAL_EFFORT_LEVELS = [
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-  "ultra",
-] as const;
+export { GLOBAL_EFFORT_LEVELS };
 
 export type ModelSelectorEffortOption = {
   readonly id: string;
@@ -60,54 +62,18 @@ export const defaultEffortName = (effort: string | undefined, toggle: boolean): 
   return effortName(effort);
 };
 
-/** The ladder a configured shortlist route advertises. Authoritative when present. */
-const effortLevelsForOption = (option: ModelOption): readonly string[] => {
-  if (
-    option.reasoning === false ||
-    option.reasoningMode === "none" ||
-    option.effortLevels?.length === 0
-  ) {
-    return [];
-  }
-  if (option.reasoningMode === "toggle") return ["high", "none"];
-  return option.effortLevels ?? [];
-};
-
 /**
- * The effort ladder a catalog row advertises for itself, or `undefined` when
- * the `/v1/models` page said nothing about reasoning at all.
- *
- * Silence is not "no efforts": narrowing on it would hide every grade the agent
- * would in fact accept, which is the failure this whole path already had once.
- * Only an explicit signal -- `reasoning:false`, `reasoningMode`, or an
- * `effortLevels` list (including an empty one) -- narrows.
+ * The efforts this agent accepts for this model. Thin by design: the decision
+ * belongs to the shared rule, so the picker offers exactly what
+ * `WebService.validateModelAndEffort` will accept for the same inputs.
  */
-export const effortLevelsForCatalogModel = (
-  catalogModel: CatalogModel | undefined,
-): readonly string[] | undefined => {
-  if (catalogModel === undefined) return undefined;
-  if (catalogModel.reasoning === false || catalogModel.reasoningMode === "none") return [];
-  if (catalogModel.reasoningMode === "toggle") return ["high", "none"];
-  return catalogModel.effortLevels;
-};
-
 export const effortLevelsForAgentModel = (
   agent: AgentSummary | null,
   model: string,
   catalogModel?: CatalogModel | undefined,
 ): readonly string[] => {
   if (!agent) return [];
-  // The configured shortlist stays authoritative for the routes it names.
-  const option = agent.modelOptions?.[model];
-  if (option !== undefined) return effortLevelsForOption(option);
-  // A catalog row's own metadata outranks the legacy global ladder. Without
-  // this a non-reasoning catalog model rendered Thinking controls and let an
-  // unsupported grade be picked, which the server then rejected (or dropped).
-  const catalogLevels = effortLevelsForCatalogModel(catalogModel);
-  if (catalogLevels !== undefined) return catalogLevels;
-  // Agents that predate per-model metadata describe one ladder for everything.
-  if (agent.modelOptions === undefined) return agent.efforts ?? GLOBAL_EFFORT_LEVELS;
-  return [];
+  return effortLevelsForModel(agent, model, advertisedEffortLevels(catalogModel));
 };
 
 /**

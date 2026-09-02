@@ -2153,6 +2153,174 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("applies a conditional run-config patch only while the conversation has no override", async () => {
+    // The console adopts a browser-local override into the thread exactly once,
+    // and it decides to on a projection it read a round trip earlier. Another
+    // tab (or another device) can set a real override in that window, and an
+    // unconditional write then makes the adopting tab's stale value final.
+    // Only the server can rule on it, so the write carries the precondition.
+    const service = await createService({});
+    const thread = service.createThread("agent-one");
+
+    expect(service.patchThread(thread.id, { model: "anthropic:opus-5", ifRunConfigUnset: true }))
+      .toMatchObject({ runModel: "anthropic:opus-5", runEffort: null });
+
+    // A second adopter finds the conversation already configured: nothing is
+    // written, and it is handed the value that won so it can adopt it.
+    const contested = service.patchThread(thread.id, {
+      model: "anthropic:sonnet-5",
+      effort: "high",
+      ifRunConfigUnset: true,
+    });
+    expect(contested).toMatchObject({ runModel: "anthropic:opus-5", runEffort: null });
+    expect(service.thread(thread.id)?.thread)
+      .toMatchObject({ runModel: "anthropic:opus-5", runEffort: null });
+
+    // The operator's own writes are unconditional and still replace it.
+    expect(service.patchThread(thread.id, { model: "anthropic:sonnet-5" }))
+      .toMatchObject({ runModel: "anthropic:sonnet-5" });
+
+    // A cleared conversation is adoptable again, so the precondition cannot
+    // permanently lock the legacy path out.
+    service.patchThread(thread.id, { model: null, effort: null });
+    expect(service.patchThread(thread.id, { effort: "low", ifRunConfigUnset: true }))
+      .toMatchObject({ runModel: null, runEffort: "low" });
+
+    expect(() => service.patchThread("missing-thread", { model: "x", ifRunConfigUnset: true }))
+      .toThrowError(/not found/iu);
+    await service.stop();
+  });
+
+  it("drops catalog metadata that belonged to a replaced generation of the agent", async () => {
+    // A source id is stable across restarts by design, so it cannot scope what
+    // the running process told us. Reconfigure an agent and restart it and the
+    // NEW process advertises a different catalog under the SAME id -- and the
+    // old generation's ladder went on rejecting grades the running agent
+    // accepts, with no way to clear it short of restarting the console.
+    let generation = 1;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "provider/default",
+        models: ["provider/default"],
+        modelOptions: { "provider/default": { effortLevels: ["low"], reasoning: true } },
+        capabilities: { attachments: true },
+      });
+      if (/\/v1\/models(?:\?|$)/u.test(url)) {
+        return Response.json({
+          models: generation === 1
+            ? [
+                {
+                  id: "evolving",
+                  name: "Evolving",
+                  provider: "localx",
+                  providerLabel: "Local X",
+                  reasoning: true,
+                  effortLevels: ["low"],
+                },
+                { id: "retired", name: "Retired", provider: "localx", providerLabel: "Local X" },
+              ]
+            : [{ id: "evolving", name: "Evolving", provider: "localx", providerLabel: "Local X" }],
+          truncated: false,
+        });
+      }
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+
+    const first = fakeDiscoveredAgent();
+    const second = fakeDiscoveredAgent({
+      baseUrl: "http://127.0.0.1:45124/gui",
+      source: { ...first.source, pid: 456, startedAt: "2026-07-18T08:00:00.000Z" },
+    });
+    let discovered = [first];
+    const service = await createService({
+      fetchImpl,
+      discoverImpl: async () => discovered,
+    });
+    await service.agentModels("agent-one", { provider: "localx", limit: 50 });
+
+    const stale = service.createThread("agent-one");
+    await expect(service.startTurn(stale.id, { text: "gen1", model: "localx:evolving", effort: "high" }))
+      .rejects.toMatchObject({ code: "invalid_effort" });
+
+    generation = 2;
+    discovered = [second];
+    await service.refreshAgents();
+
+    // Generation 1's admissions are gone with it: a bare id the new page never
+    // served fails the syntactic floor and is no longer selectable.
+    const retired = service.createThread("agent-one");
+    await expect(service.startTurn(retired.id, { text: "retired", model: "retired" }))
+      .rejects.toMatchObject({ code: "invalid_model" });
+
+    // And generation 2's silence about `evolving` restores the permissive
+    // floor rather than inheriting generation 1's low-only ladder.
+    await service.agentModels("agent-one", { provider: "localx", limit: 50 });
+    const fresh = service.createThread("agent-one");
+    await expect(service.startTurn(fresh.id, { text: "gen2", model: "localx:evolving", effort: "high" }))
+      .resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+
+    // A source discovery stops reporting takes its refs with it, so a retired
+    // agent cannot hold them for the life of the console process. The bare id
+    // proves it: nothing but the cache ever admitted that one.
+    const bare = service.createThread("agent-one");
+    await expect(service.startTurn(bare.id, { text: "bare", model: "evolving" })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    discovered = [];
+    await service.refreshAgents();
+    discovered = [second];
+    await service.refreshAgents();
+    const readmitted = service.createThread("agent-one");
+    await expect(service.startTurn(readmitted.id, { text: "bare", model: "evolving" }))
+      .rejects.toMatchObject({ code: "invalid_model" });
+    await service.stop();
+  });
+
+  it("lets a re-fetched page replace the ladder an earlier page advertised", async () => {
+    // Within one generation the newest page is the live word on what it
+    // serves. Refusing to replace known metadata with later silence pinned the
+    // first page's ladder for the life of the process.
+    let graded = true;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "provider/default",
+        models: ["provider/default"],
+        modelOptions: { "provider/default": { effortLevels: ["low"], reasoning: true } },
+        capabilities: { attachments: true },
+      });
+      if (/\/v1\/models(?:\?|$)/u.test(url)) {
+        return Response.json({
+          models: [{
+            id: "shifting",
+            name: "Shifting",
+            provider: "localx",
+            providerLabel: "Local X",
+            ...(graded ? { reasoning: true, effortLevels: ["low"] } : {}),
+          }],
+          truncated: false,
+        });
+      }
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    await service.agentModels("agent-one", { provider: "localx", limit: 50 });
+    const narrow = service.createThread("agent-one");
+    await expect(service.startTurn(narrow.id, { text: "narrow", model: "localx:shifting", effort: "high" }))
+      .rejects.toMatchObject({ code: "invalid_effort" });
+
+    graded = false;
+    await service.agentModels("agent-one", { provider: "localx", limit: 50 });
+    const widened = service.createThread("agent-one");
+    await expect(service.startTurn(widened.id, { text: "widened", model: "localx:shifting", effort: "high" }))
+      .resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+
   it("applies the thread's persisted override to a turn that omits model and effort", async () => {
     // The override is server state, so a turn this server starts -- a
     // process-job follow-up, any assistant-owned wake -- must honour the

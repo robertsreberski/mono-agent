@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { advertisedEffortLevels, effortLevelsForModel } from "../../../src/effort-ladder.js";
 import type { CatalogModel } from "../types";
 import { agent } from "../test/fixtures";
 import {
@@ -69,6 +70,70 @@ describe("providerOfModel", () => {
   it("reads the provider from a slash reference and leaves bare ids alone", () => {
     expect(providerOfModel("provider/catalog-widened")).toBe("provider");
     expect(providerOfModel("onlycatalog")).toBe("onlycatalog");
+  });
+});
+
+/**
+ * The same table `packages/web/src/__tests__/effort-ladder.test.ts` pins on the
+ * server. The webapp is its own pnpm workspace, so the table itself cannot be
+ * imported across the boundary -- but the rule can be, and is. Each end asserts
+ * its own public helper against `effort-ladder.ts`, so re-deriving the rule on
+ * either end turns that end red. That is the drift this pair exists to catch:
+ * the server fell through to the global ladder on silence while this helper
+ * returned nothing, so the picker hid grades `startTurn` was accepting.
+ */
+const EFFORT_RULE_CASES = [
+  {
+    name: "levels the page enumerated",
+    advertisement: { reasoning: true, reasoningMode: "effort", effortLevels: ["low", "high"] },
+    ladder: ["low", "high"],
+  },
+  {
+    // A real Ollama provider with `reasoning_mode: "effort"` and no
+    // `reasoning_levels` produces exactly this.
+    name: "graded effort with no levels enumerated",
+    advertisement: { reasoning: true, reasoningMode: "effort" },
+    ladder: [...GLOBAL_EFFORT_LEVELS],
+  },
+  {
+    name: "binary thinking",
+    advertisement: { reasoning: true, reasoningMode: "toggle" },
+    ladder: ["high", "none"],
+  },
+  { name: "no reasoning at all", advertisement: { reasoning: false }, ladder: [] },
+  { name: "reasoning mode none", advertisement: { reasoning: true, reasoningMode: "none" }, ladder: [] },
+  { name: "an explicitly empty list", advertisement: { reasoning: true, effortLevels: [] }, ladder: [] },
+  { name: "reasoning with unknown grades", advertisement: { reasoning: true }, ladder: [] },
+  { name: "said nothing at all", advertisement: {}, ladder: [...GLOBAL_EFFORT_LEVELS] },
+] as const;
+
+describe("the shared effort rule, as this end applies it", () => {
+  it.each(EFFORT_RULE_CASES)("resolves $name from a shortlist entry", ({ advertisement, ladder }) => {
+    const configured = agent("agent", {
+      models: ["route"],
+      defaultModel: "route",
+      modelOptions: { route: advertisement },
+    });
+    expect(effortLevelsForAgentModel(configured, "route")).toEqual(ladder);
+    expect(effortLevelsForAgentModel(configured, "route"))
+      .toEqual(effortLevelsForModel(configured, "route", undefined));
+  });
+
+  it.each(EFFORT_RULE_CASES)("resolves $name from a catalog row", ({ advertisement, ladder }) => {
+    const row = catalogModel("row", "localx", "Local X", advertisement);
+    expect(effortLevelsForAgentModel(source, "localx:row", row)).toEqual(ladder);
+    expect(effortLevelsForAgentModel(source, "localx:row", row))
+      .toEqual(effortLevelsForModel(source, "localx:row", advertisedEffortLevels(row)));
+  });
+
+  it("offers the same permissive floor the server validates against", () => {
+    // A modern agent (it has `modelOptions`) says nothing about a model reached
+    // only through the catalog. Returning [] here hid every grade while
+    // `WebService.startTurn` accepted them: the picker cleared a selection the
+    // server would have run.
+    expect(effortLevelsForAgentModel(source, "localx:reasoner")).toEqual([...GLOBAL_EFFORT_LEVELS]);
+    expect(effortLevelsForAgentModel(source, "localx:reasoner", catalogModel("reasoner", "localx", "Local X")))
+      .toEqual([...GLOBAL_EFFORT_LEVELS]);
   });
 });
 

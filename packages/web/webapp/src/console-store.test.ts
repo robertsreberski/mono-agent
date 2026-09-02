@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   agentVisibility,
+  boundedRequest,
   preferenceKeyForThread,
   readStoredRunPreferences,
   resolveBootstrapSelection,
@@ -185,6 +186,7 @@ describe("run setting isolation", () => {
       validateRunPreference(
         agent("agent", {
           models: ["current"],
+          defaultModel: "current",
           modelOptions: { current: { reasoningMode: "none" } },
         }),
         { model: "removed", effort: "ultra" },
@@ -268,5 +270,25 @@ describe("run setting isolation", () => {
     expect(
       validateRunPreference(null, { model: "graded", effort: "xhigh" }),
     ).toEqual({ model: "graded", effort: "xhigh" });
+  });
+});
+
+describe("boundedRequest", () => {
+  it("settles on its deadline even when the transport ignores the abort", async () => {
+    // Writes to one conversation are serialized, so an unbounded request does
+    // not merely hang itself: it wedges every later write to that thread while
+    // the optimistic UI keeps showing a selection that never reached the
+    // server. `signal` is what a healthy fetch needs; the deadline is what
+    // makes the guarantee hold when the transport does not honour it.
+    let aborted = false;
+    await expect(boundedRequest<never>((signal) => {
+      signal.addEventListener("abort", () => { aborted = true; });
+      return new Promise<never>(() => undefined);
+    }, 10)).rejects.toThrow(/timed out/u);
+    expect(aborted).toBe(true);
+  });
+
+  it("passes a live signal through and returns the result untouched", async () => {
+    await expect(boundedRequest(async (signal) => signal.aborted, 1_000)).resolves.toBe(false);
   });
 });

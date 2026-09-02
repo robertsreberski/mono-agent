@@ -993,6 +993,35 @@ describe("web HTTP server", () => {
       body: JSON.stringify({ effort: "x".repeat(121) }),
     });
     expect(overlongEffort.status).toBe(400);
+
+    // The compare-and-set flag is a boolean or nothing: a truthy string would
+    // otherwise silently arm a precondition the caller never asked for.
+    const badCondition = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "anthropic:opus-5", ifRunConfigUnset: "yes" }),
+    });
+    expect(badCondition.status).toBe(400);
+    expect(await json(badCondition)).toMatchObject({
+      error: { code: "invalid_request", message: "ifRunConfigUnset must be boolean." },
+    });
+  });
+
+  it("serves the conditional run-config patch end to end", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const created = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    const thread = (await json(created)).thread as { id: string };
+    const patch = async (body: Record<string, unknown>) => json(await fetch(
+      `${baseUrl}/api/v1/threads/${thread.id}`,
+      { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+    ));
+
+    expect((await patch({ model: "anthropic:opus-5", ifRunConfigUnset: true })).thread)
+      .toMatchObject({ runModel: "anthropic:opus-5" });
+    // The second adopter loses and is handed the winner to adopt.
+    expect((await patch({ model: "anthropic:sonnet-5", effort: "low", ifRunConfigUnset: true })).thread)
+      .toMatchObject({ runModel: "anthropic:opus-5", runEffort: null });
   });
 
   it("keeps legacy title and archive patches serving unchanged alongside override clearing", async () => {
