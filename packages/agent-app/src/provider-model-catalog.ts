@@ -25,12 +25,21 @@ import {
 export const DEFAULT_PAGE_SIZE = 100;
 export const MAX_PAGE_SIZE = 200;
 /**
- * Producer-side length bounds. Provider ids, model ids and display names are
- * not length-bounded by config validation, and `/v1/info` shares a single 1 MiB
- * body cap with every other field: exceeding it fails `info()` wholesale and
- * shows the agent OFFLINE rather than degraded. A page that exceeds the
- * catalog body cap 500s instead of serving. Oversized entries are skipped
- * rather than truncated, because a truncated id would not resolve anyway.
+ * Producer-side length bounds for the CATALOG's own projections
+ * (`listProviders`/`listModels`/`searchModels`/`resolve`). Provider ids, model
+ * ids and display names are not length-bounded by config validation, and both
+ * `/v1/info` and a `/v1/models` page have a body cap to respect: exceeding
+ * `/v1/info`'s single 1 MiB cap fails `info()` wholesale and shows the agent
+ * OFFLINE rather than degraded, and an over-cap page 500s instead of serving.
+ * Oversized entries are skipped rather than truncated, because a truncated id
+ * would not resolve anyway.
+ *
+ * These are display/paging bounds, NOT validity bounds: the runtime reference
+ * parser imposes no length limit, so a 257-byte model id is genuinely runnable
+ * and merely unpageable. `/v1/info.models` deliberately does not inherit them
+ * (see `MAX_DISCOVERED_INFO_MODEL_BYTES` in `channel-drivers/tui.ts`) — reusing
+ * them there deleted runnable models from schema-1 clients at a wire schema
+ * that cannot be bumped.
  */
 export const MAX_CATALOG_ID_BYTES = 256;
 export const MAX_CATALOG_LABEL_BYTES = 256;

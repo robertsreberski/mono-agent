@@ -38,11 +38,24 @@ interface DiscoveryCacheEntry {
   readonly expiresAt: number;
   readonly liveModels?: readonly LocalProviderModelDefinition[];
   readonly forcedRefreshUsed: boolean;
+  /**
+   * Start ordinal of the probe that produced this entry. Concurrent probes are
+   * deliberately NOT coalesced — each caller brings its own `fetch`, `timeoutMs`
+   * and `signal`, so sharing one in-flight promise would let one caller's abort
+   * cancel another caller's probe. Completion order is therefore not start
+   * order, and this ordinal is what stops an older probe's answer from landing
+   * on top of a newer one.
+   */
+  readonly probeSeq: number;
 }
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 1_500;
 const DISCOVERY_CACHE_TTL_MS = 60_000;
 const discoveryCache = new Map<string, DiscoveryCacheEntry>();
+/** Monotonic across every key; only per-key ordering is ever compared. */
+let probeSequence = 0;
+/** Bumped by `clearLocalProviderDiscoveryCache`; retires in-flight probes. */
+let cacheGeneration = 0;
 const DEFAULT_LOCAL_PROVIDERS: readonly {
   readonly id: string;
   readonly type: LocalProviderType;
@@ -58,6 +71,11 @@ const DEFAULT_LOCAL_PROVIDERS: readonly {
 /** Clear process-local probe state, primarily for deterministic host tests. */
 export function clearLocalProviderDiscoveryCache(): void {
   discoveryCache.clear();
+  // Retire every probe already in flight along with the entries. Without this a
+  // probe started before the clear still lands afterwards and repopulates the
+  // map the caller just emptied — the cross-test bleed this function exists to
+  // prevent, arriving one tick late.
+  cacheGeneration += 1;
 }
 
 /**
@@ -109,11 +127,32 @@ async function discoverCachedProvider(
     return advertisedProvider(normalized, cached.liveModels);
   }
 
+  // Claim the ordinal BEFORE awaiting: it records when this probe started, and
+  // the whole point is that it can finish out of that order.
+  const probeSeq = (probeSequence += 1);
+  const generation = cacheGeneration;
   const liveModels = await probeProvider(normalized, input);
+
+  if (cacheGeneration !== generation) {
+    // The cache was cleared underneath us. This answer belongs to a retired
+    // generation: serve it to our own caller, never store it.
+    return advertisedProvider(normalized, liveModels);
+  }
+  const current = discoveryCache.get(key);
+  if (current !== undefined && current.probeSeq > probeSeq) {
+    // A probe that STARTED after ours already answered. Two concurrent forced
+    // refreshes both probe, and the slower-but-earlier one used to overwrite the
+    // newer result — negative-caching a failure over a live model, so every warm
+    // read for the rest of the 60 s TTL returned `[]` without re-probing. Its
+    // observation is the newer one, so keep it and report it rather than
+    // handing this caller something staler than the cache already holds.
+    return advertisedProvider(normalized, current.liveModels);
+  }
   discoveryCache.set(key, {
     expiresAt: cacheIsWarm ? cached.expiresAt : now + DISCOVERY_CACHE_TTL_MS,
     ...(liveModels === undefined ? {} : { liveModels }),
     forcedRefreshUsed: cacheIsWarm && input.forceRefresh === true,
+    probeSeq,
   });
   return advertisedProvider(normalized, liveModels);
 }
