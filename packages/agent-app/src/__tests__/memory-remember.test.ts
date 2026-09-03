@@ -205,17 +205,37 @@ describe("Remember tool — credential rejection", () => {
   });
 
   it("does not treat an operational setting that merely reads like a credential as one", async () => {
-    // `*_TOKENS` is a budget, not a token: an ordinary fact mentioning the same
-    // number must still be storable.
+    // `*_TOKENS` is a budget and `*_ENV` names a variable; neither holds a
+    // secret. The values here are non-numeric and well over the minimum length,
+    // so ONLY the name-based exclusion can let this through — a regression in
+    // that rule fails this test instead of hiding behind a value-shape filter.
     const { dir, store } = writableStore();
     const { result } = await callRemember(
       store,
-      "The compaction budget is 8000 tokens for this agent.",
-      { MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS: "8000", OPENAI_API_KEY_ENV: "OPENAI_API_KEY" },
+      "The compaction budget is profile-8000-wide and the key env is OPENAI_API_KEY.",
+      {
+        MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS: "profile-8000-wide",
+        MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "OPENAI_API_KEY",
+      },
     );
 
     expect(result.isError).not.toBe(true);
-    expect(dailyContent(dir)).toContain("The compaction budget is 8000 tokens");
+    expect(dailyContent(dir)).toContain("profile-8000-wide");
+  });
+
+  it("still rejects a short or numeric configured credential", async () => {
+    // Raising the length floor or skipping numeric values to quiet false
+    // positives would also widen what the SELF-CONFIG proposal guard accepts,
+    // since both read this same helper.
+    const { dir, store } = writableStore();
+    const { result } = await callRemember(
+      store,
+      "The vault PIN is 90210 by the way.",
+      { VAULT_PASSWORD: "90210" },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(dailyContent(dir)).toBe("");
   });
 });
 

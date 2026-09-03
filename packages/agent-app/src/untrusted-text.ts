@@ -33,14 +33,15 @@ const CREDENTIAL_ENV_NAME = /(?:api.?key|credential|password|secret|token)/iu;
  */
 const NON_CREDENTIAL_ENV_NAME = /(?:_ENV|_ENV_VAR|_PATH|_FILE|_DIR|_URL|_TOKENS|_NAME)$/iu;
 
-/** A bare number is a budget or a limit, never a credential. */
-const NUMERIC_VALUE = /^\d+$/u;
-
 /**
- * Shortest environment value worth matching. Real credentials are long; a short
- * value collides with ordinary prose far more often than it protects anything.
+ * Shortest environment value worth matching.
+ *
+ * Deliberately low: a short PIN or numeric key is still a credential, and this
+ * guard also backs the SELF-CONFIG proposal check, so raising it to reduce
+ * false positives would quietly widen what both surfaces let through. The
+ * name-based exclusion above is the targeted fix for operational settings.
  */
-const MIN_KNOWN_SECRET_LENGTH = 8;
+const MIN_KNOWN_SECRET_LENGTH = 4;
 
 /**
  * Reject terminal and bidi control characters. Ordinary Unicode text and LF
@@ -77,8 +78,7 @@ export function knownEnvironmentSecretValues(env: Record<string, string | undefi
     .filter(([name, value]) =>
       CREDENTIAL_ENV_NAME.test(name)
       && !NON_CREDENTIAL_ENV_NAME.test(name)
-      && (value?.length ?? 0) >= MIN_KNOWN_SECRET_LENGTH
-      && !NUMERIC_VALUE.test(value!))
+      && (value?.length ?? 0) >= MIN_KNOWN_SECRET_LENGTH)
     .map(([, value]) => value!);
 }
 
