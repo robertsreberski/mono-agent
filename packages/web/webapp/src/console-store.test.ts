@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { ApiError } from "./api";
 import {
   agentVisibility,
   boundedRequest,
+  classifyDeleteFailure,
   createRemovedThreadRegistry,
   createThreadWriteChain,
   preferenceKeyForThread,
@@ -448,6 +450,29 @@ describe("createThreadWriteChain", () => {
   });
 });
 
+describe("classifyDeleteFailure", () => {
+  it("separates what the server refused from what it may already have applied", () => {
+    // The whole point: a rejection is not evidence the request was not applied.
+    // Only an answer the server can produce ONLY before it commits is.
+    expect(classifyDeleteFailure(
+      new ApiError("Cancel the active turn before deleting this conversation.", 409, "turn_active"),
+    )).toBe("refused");
+    expect(classifyDeleteFailure(
+      new ApiError("Archive the conversation before deleting it.", 409, "thread_not_archived"),
+    )).toBe("refused");
+    expect(classifyDeleteFailure(new ApiError("Forbidden", 403))).toBe("refused");
+    // Not there, however it got that way -- restoring it is the one wrong move.
+    expect(classifyDeleteFailure(
+      new ApiError("Conversation not found.", 404, "thread_not_found"),
+    )).toBe("applied");
+    // A gateway, a proxy or a crash can all sit on the far side of a delete
+    // that landed, and so can a transport that never answered at all.
+    expect(classifyDeleteFailure(new ApiError("Bad gateway", 502))).toBe("unknown");
+    expect(classifyDeleteFailure(new Error("The web console request timed out."))).toBe("unknown");
+    expect(classifyDeleteFailure("not an error at all")).toBe("unknown");
+  });
+});
+
 describe("createRemovedThreadRegistry", () => {
   const summary = (id: string) => thread(id, "alpha");
 
@@ -508,13 +533,28 @@ describe("createRemovedThreadRegistry", () => {
     registry.remember("thread-a", original);
     expect(registry.has("thread-a")).toBe(true);
 
-    const newer = { ...original, title: "Renamed while the delete was pending" };
+    const newer = { ...original, title: "Renamed while the delete was pending", revision: 2 };
     registry.suppress("thread-a", newer);
     expect(registry.forget("thread-a")).toEqual(newer);
     expect(registry.has("thread-a")).toBe(false);
     // Nothing to hand back once it is gone, and no entry recreated by asking.
     expect(registry.forget("thread-a")).toBeUndefined();
     expect(registry.size()).toBe(0);
+  });
+
+  it("keeps the newest suppressed projection by revision, not by arrival", () => {
+    // "Newest" meant "the last one to arrive". Responses do not arrive in the
+    // order the server produced them, so a delayed older projection became what
+    // a failed delete restored -- rolling a title, an archive state or a run
+    // override back over state the server had already accepted.
+    const registry = createRemovedThreadRegistry();
+    const original = summary("thread-a");
+    registry.remember("thread-a", original);
+
+    registry.suppress("thread-a", { ...original, title: "Third", revision: 3 });
+    registry.suppress("thread-a", { ...original, title: "Second", revision: 2 });
+
+    expect(registry.forget("thread-a")?.title).toBe("Third");
   });
 
   it("never records a suppression against an expired or absent tombstone", () => {

@@ -86,6 +86,26 @@ describe("agentGeneration", () => {
     expect(agentGeneration(left)).not.toBe(agentGeneration(right));
   });
 
+  it("does not collide two fields that differ only where UTF-8 cannot say so", () => {
+    // The length prefix fixed the delimiter, but the DIGEST still read the
+    // joined string as UTF-8, and UTF-8 has no encoding for an unpaired
+    // surrogate: a lone high surrogate and a lone low surrogate both become the
+    // replacement character, so two distinct one-character fields hashed alike.
+    // Same failure as the delimiter, one layer down -- the digest defended by
+    // what its inputs happen to look like rather than by what it reads. No
+    // first-party ISO timestamp can trigger it; a digest that is only correct
+    // for well-formed input is not a digest of the input.
+    const base = fakeDiscoveredAgent().source;
+    const high = fakeDiscoveredAgent({ source: { ...base, startedAt: "\uD800" } });
+    const low = fakeDiscoveredAgent({ source: { ...base, startedAt: "\uDC00" } });
+    // Both are one UTF-16 code unit, so the length prefix cannot separate them,
+    // and both UTF-8-encode to the very same three bytes.
+    expect(high.source.startedAt.length).toBe(low.source.startedAt.length);
+    expect([...Buffer.from(high.source.startedAt, "utf8")])
+      .toEqual([...Buffer.from(low.source.startedAt, "utf8")]);
+    expect(agentGeneration(high)).not.toBe(agentGeneration(low));
+  });
+
   it("is stable for one process and different once it is replaced", () => {
     const base = fakeDiscoveredAgent();
     expect(agentGeneration(base)).toBe(agentGeneration(fakeDiscoveredAgent()));

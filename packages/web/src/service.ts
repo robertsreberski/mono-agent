@@ -2403,6 +2403,13 @@ export class WeightedTurnBudget {
  * today, which is why this is robustness rather than a live defect --- but a
  * digest whose only defence is what its inputs happen to look like is one
  * unrelated change away from being wrong.
+ *
+ * Hashed as UTF-16 code units for the same reason the prefix replaced the
+ * delimiter. UTF-8 has no encoding for an unpaired surrogate, so a lone high
+ * surrogate and a lone low surrogate both became the replacement character and
+ * two different one-character fields -- identically length-prefixed -- hashed
+ * alike. `utf16le` is a lossless transcription of exactly the code units the
+ * length prefix counts, so what is hashed is what was measured.
  */
 export function agentGeneration(agent: DiscoveredOperatorAgent): string {
   const parts = [
@@ -2411,7 +2418,7 @@ export function agentGeneration(agent: DiscoveredOperatorAgent): string {
     agent.source.startedAt,
   ];
   return createHash("sha256")
-    .update(parts.map((part) => `${String(part.length)}:${part}`).join(""))
+    .update(parts.map((part) => `${String(part.length)}:${part}`).join(""), "utf16le")
     .digest("hex")
     .slice(0, 16);
 }
