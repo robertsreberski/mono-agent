@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import { MAX_INFO_BODY_BYTES } from "@mono-agent/agent-contracts";
-import { MAX_MODEL_REFERENCE_BYTES } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { TuiAdapterConfig } from "@mono-agent/operator-adapter";
 import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
@@ -36,24 +35,32 @@ interface WireOptions {
 }
 
 /**
- * The longest reference that can exist, built from the parser's own ceiling.
+ * A realistically long canonical reference — a SIZE, not a bound.
  *
- * Every size fixture in this file scales by COUNT off this, not by length. The cases here used
- * to carry 70,000- and 2,097,152-byte model ids, which `parseRuntimeModelReference` cannot
- * produce and no config loader can hand the producer — a fixture that fabricates state the
- * system cannot reach proves nothing about the producer's behaviour on state it can. Reference
- * LENGTH is bounded (`MAX_MODEL_REFERENCE_BYTES`); the NUMBER of configured routes is not —
- * `runtime.fallbacks` is validated for uniqueness, not for count — so that is the axis a
- * producer-side budget could still be pushed along, and the axis these fixtures use.
+ * The parser imposes no length rule (`requireQuotableReference`, agent-runtime's
+ * `model-refs.js`): what a model may be called is decided by providers. So the fixtures here
+ * sit at a length real references reach — `ollama:<model>:<tag>`, whose two halves Ollama
+ * validates at 80 bytes each — written as a literal rather than derived from any constant the
+ * producer enforces, because a fixture computed from the bound under test survives changing it.
+ *
+ * Every size fixture in this file scales by COUNT off this. The cases here once carried
+ * 70,000- and 2,097,152-byte model ids in a config the loader could not have produced, which
+ * proved nothing about the producer's behaviour on state it can reach. The number of configured
+ * routes is the axis that is genuinely unbounded — `runtime.fallbacks` is validated for
+ * uniqueness, not for count — so that is the axis the sweep uses. A single ENORMOUS reference
+ * is reachable again now that the ceiling is gone, and it gets its own case at the end, where
+ * what it proves is about the fence rather than about the sweep.
  */
-function routeReferenceAtCeiling(index: number): string {
+const LONG_REFERENCE_BYTES = 168;
+
+function longRouteReference(index: number): string {
   const head = `openrouter:route-${String(index).padStart(6, "0")}-`;
   const headBytes = Buffer.byteLength(head, "utf8");
-  return `${head}${"m".repeat(MAX_MODEL_REFERENCE_BYTES - headBytes)}`;
+  return `${head}${"m".repeat(LONG_REFERENCE_BYTES - headBytes)}`;
 }
 
-function routeReferencesAtCeiling(count: number): readonly string[] {
-  return Array.from({ length: count }, (_unused, index) => routeReferenceAtCeiling(index));
+function longRouteReferences(count: number): readonly string[] {
+  return Array.from({ length: count }, (_unused, index) => longRouteReference(index));
 }
 
 /**
@@ -143,7 +150,7 @@ describe("/v1/info over the real producer -> consumer wire", () => {
     // `openrouter:` reference, at the parse ceiling, through the same parser the
     // config loader uses. The complete body lands far under the 1 MiB wire cap,
     // so no producer budget has any business dropping one.
-    const routes = routeReferencesAtCeiling(400);
+    const routes = longRouteReferences(400);
     const { info, bodyBytes } = await readInfoOverTheWire({ fallbackModels: routes });
 
     const published = new Set(info.models ?? []);
@@ -193,7 +200,7 @@ describe("/v1/info over the real producer -> consumer wire", () => {
 
   /** One `/v1/info` read with `routeCount` configured OpenRouter fallbacks, each at the ceiling. */
   async function probeConfiguredRoutes(routeCount: number) {
-    const routes = routeReferencesAtCeiling(routeCount);
+    const routes = longRouteReferences(routeCount);
     const { info, bodyBytes } = await readInfoOverTheWire({ fallbackModels: routes });
     const published = new Set(info.models ?? []);
     return {
@@ -219,11 +226,11 @@ describe("/v1/info over the real producer -> consumer wire", () => {
     // test it shipped with — one 70,000-byte ref — went green while the next
     // size along still lost the route. So no size here is a fixture.
     //
-    // The sweep now runs along the axis that is still unbounded. One reference
-    // cannot exceed MAX_MODEL_REFERENCE_BYTES, so a body large enough to test a
-    // producer budget has to be reached by COUNT, and a chain of valid distinct
-    // routes is precisely what the operator authored and what no budget may
-    // adjudicate away.
+    // The sweep runs along the axis a producer budget can actually be pushed
+    // along without any single item being pathological: COUNT. A chain of valid
+    // distinct routes is precisely what the operator authored and what no budget
+    // may adjudicate away, and it is the shape that distinguishes "the slice is
+    // too small" from "one entry is too big".
     //
     // Two small probes measure what the REAL producer charges per route, and the
     // largest chain whose COMPLETE body still fits the one bound both halves
@@ -239,7 +246,7 @@ describe("/v1/info over the real producer -> consumer wire", () => {
     expect([near.present, far.present]).toEqual([true, true]);
     const bytesPerRoute = (far.bodyBytes - near.bodyBytes) / (far.routeCount - near.routeCount);
     // A ref rides the wire twice: once in `models`, once as a `modelOptions` key.
-    expect(bytesPerRoute).toBeGreaterThanOrEqual(2 * MAX_MODEL_REFERENCE_BYTES);
+    expect(bytesPerRoute).toBeGreaterThanOrEqual(2 * LONG_REFERENCE_BYTES);
 
     const largestFittingChain = far.routeCount + Math.floor(
       (MAX_INFO_BODY_BYTES - far.bodyBytes - PROBE_HEADROOM_BYTES) / bytesPerRoute,
@@ -256,7 +263,7 @@ describe("/v1/info over the real producer -> consumer wire", () => {
     // And carried them on the wire, not merely in a body the fence had emptied:
     // each response is at least as large as the two copies of each ref it holds.
     expect(probes.filter((probe) =>
-      probe.bodyBytes <= probe.routeCount * MAX_MODEL_REFERENCE_BYTES * 2)).toEqual([]);
+      probe.bodyBytes <= probe.routeCount * LONG_REFERENCE_BYTES * 2)).toEqual([]);
     // The sweep really did reach the edge of the shared cap, so there is no room
     // left under it for a producer-side slice to have been the deciding bound.
     const edge = probes.at(-1);
@@ -265,12 +272,12 @@ describe("/v1/info over the real producer -> consumer wire", () => {
   });
 
   it("leaves what genuinely cannot ship to the fence, not to a producer budget", async () => {
-    // A chain whose serialized projections are several times the shared cap. No
-    // single reference can be that big any more, but nothing bounds how many an
-    // operator may declare, so this body truly cannot go out whole — and it is
-    // still made of nothing but valid, runnable routes.
-    const routes = routeReferencesAtCeiling(
-      Math.ceil((MAX_INFO_BODY_BYTES * 2) / (MAX_MODEL_REFERENCE_BYTES * 2)),
+    // A chain whose serialized projections are several times the shared cap.
+    // Nothing bounds how many routes an operator may declare, so this body truly
+    // cannot go out whole — and it is still made of nothing but valid, runnable
+    // routes, which is what makes shedding the only honest answer.
+    const routes = longRouteReferences(
+      Math.ceil((MAX_INFO_BODY_BYTES * 2) / (LONG_REFERENCE_BYTES * 2)),
     );
     const { info, bodyBytes } = await readInfoOverTheWire({ fallbackModels: routes });
 
@@ -281,5 +288,48 @@ describe("/v1/info over the real producer -> consumer wire", () => {
     expect(bodyBytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
     // Degraded, not offline: the liveness half of the body still answers.
     expect(info.schema).toBe(1);
+  });
+
+  it("bounds the wire body when ONE configured route is larger than the whole cap", async () => {
+    // The property the retired parse ceiling was standing in for, asserted at the layer that
+    // actually owns it. While the ceiling existed this state was unreachable and nothing here
+    // had to hold; the ceiling is gone — a grammar layer does not get to decide what a provider
+    // calls a model — so an operator can now configure a route whose reference alone dwarfs the
+    // `/v1/info` cap, and the producer must still not put an over-cap body on the wire.
+    //
+    // Over the cap the console does not degrade, it shows the agent OFFLINE, so "the fence
+    // catches it" is the difference between a lossy picker and an agent that looks dead.
+    // Configured routes deliberately get NO producer-side slice — a slice would be an opinion
+    // about which authored route deserves to ship — so the fence is the only thing between this
+    // body and the wire, and this is the case that proves the fence is really total.
+    const enormous = `openrouter:${"m".repeat(2 * 1024 * 1024)}`;
+    expect(parseMonoRuntimeModelReference(enormous).reference).toBe(enormous);
+    // Guard against the case going vacuous. The reference ALONE is twice the whole
+    // cap, so no body carrying it could ever have fitted: `models` is absent below
+    // because the fence fired, not because the producer had nothing to publish. The
+    // case after this one shows the same producer publishing an ordinary chain.
+    expect(Buffer.byteLength(enormous, "utf8")).toBeGreaterThan(MAX_INFO_BODY_BYTES);
+
+    const { info, bodyBytes } = await readInfoOverTheWire({ fallbackModels: [enormous] });
+
+    expect(bodyBytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
+    // Shed whole, never a `models` list quietly truncated in the middle of a reference.
+    expect(info.models).toBeUndefined();
+    expect(info.modelOptions).toBeUndefined();
+    // And the agent is still reachable and still negotiating capabilities honestly.
+    expect(info.schema).toBe(1);
+  });
+
+  it("still delivers ordinary routes configured alongside an oversized one", async () => {
+    // The other half: a fence that answered an oversized route by emptying the picker for
+    // everyone would be bounded and useless. `models` is shed as a whole field only when it
+    // genuinely cannot fit, so a chain that fits WITH the oversized route removed from the
+    // config must arrive complete.
+    const routes = longRouteReferences(50);
+    const { info, bodyBytes } = await readInfoOverTheWire({ fallbackModels: routes });
+
+    expect(bodyBytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
+    const published = new Set(info.models ?? []);
+    expect(routes.filter((route) => !published.has(route))).toEqual([]);
   });
 });

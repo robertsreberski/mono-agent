@@ -4,7 +4,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AgentMessageStream, AgentReplyPart, AgentRequestBase, AgentResponder, ProcessJobOperator, ProcessJobProjection, RunningChannel } from "@mono-agent/agent-contracts";
 import { MAX_INFO_BODY_BYTES, MAX_INFO_PROVIDER_ITEMS } from "@mono-agent/agent-contracts";
-import { MAX_MODEL_REFERENCE_BYTES } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
 import type { EffortLevel, MonoAgentConfig } from "@mono-agent/config";
 import type { DiscoveredLocalModel, DiscoveredProvider, LocalProviderDefinition } from "@mono-agent/runtime-adapter";
 import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
@@ -15,7 +14,7 @@ import { WebConsoleError } from "@mono-agent/web";
 import type { ChannelDriver, ChannelStartInput } from "../channels.js";
 import { createTuiChannelDriver } from "../channels.js";
 import { MAX_DISCOVERED_INFO_MODEL_BYTES, startAppOwnedTuiChannel } from "../channel-drivers/tui.js";
-import { DEFAULT_MAX_ADVERTISED_PER_PROVIDER, MAX_PAGE_SIZE } from "../provider-model-catalog.js";
+import { DEFAULT_MAX_ADVERTISED_PER_PROVIDER, MAX_CATALOG_ID_BYTES, MAX_PAGE_SIZE } from "../provider-model-catalog.js";
 
 const noopResponder: AgentResponder = {
   async respond() {
@@ -155,46 +154,45 @@ async function resolveInfo(captured: TuiAdapterOptions): Promise<TuiAdapterInfo>
 }
 
 /**
- * A canonical reference of exactly {@link MAX_MODEL_REFERENCE_BYTES} bytes —
- * the longest one that can exist anywhere in the system.
+ * A realistically long canonical reference — a SIZE, not a bound.
  *
- * `requireQuotableReference` (agent-runtime's `model-refs.js`) rejects any
- * longer reference at parse, which is what the `/v1/info` budget fixtures below
- * are built on. That ceiling is a CONTAINMENT bound derived from what model ids
- * really are — notably the `ollama:hf.co/<org>/<repo>:<quant>` form, whose real
- * distribution runs past 100 bytes — and it is deliberately NOT the diagnostic
- * echo budget in @mono-agent/runtime-adapter, which is smaller and is honoured
- * by truncating rather than by refusing.
+ * The parser has no length rule at all: `requireQuotableReference` (agent-runtime's
+ * `model-refs.js`) refuses control and formatting code points and nothing else, because what a
+ * model may be called is decided by providers, not by a grammar layer. Two rounds tried a byte
+ * ceiling here and both numbers refused a model that really exists.
  *
- * LENGTH is therefore not the axis a payload budget can be pushed along: every
- * fixture that used to reach for a 70,000-, 400,000- or 257-byte id now sits at
- * this ceiling and scales by COUNT instead, which nothing bounds — a local
- * `/v1/models` answer is arbitrarily long, and `runtime.fallbacks` is validated
+ * So these fixtures cannot sit "at the ceiling"; there is none. They sit at a size real
+ * references really reach — `ollama:<model>:<tag>`, whose two halves Ollama validates at 80
+ * bytes each — and they push on the producer's budgets by COUNT, which is the axis nothing
+ * bounds: a local `/v1/models` answer is arbitrarily long, and `runtime.fallbacks` is validated
  * for uniqueness, not for length.
  *
- * Derived from the constant rather than written as a literal, so that if the
- * parser's ceiling moves these fixtures move with it instead of quietly testing
- * a reference the grammar no longer accepts.
+ * Written as a literal on purpose. The previous round's fixtures derived their sizes from the
+ * very bound they were checking, which is exactly why they survived changing it. What this
+ * producer does when a SINGLE reference is enormous — now possible at any size — is a separate
+ * question, and it has its own cases below, driven at sizes no bound here could have produced.
  */
-function refAtCeiling(head: string, filler = "x"): string {
+const LONG_REFERENCE_BYTES = 168;
+
+function longRef(head: string, filler = "x"): string {
   const headBytes = Buffer.byteLength(head, "utf8");
-  if (headBytes > MAX_MODEL_REFERENCE_BYTES) {
-    throw new Error(`fixture head is already past the reference ceiling: ${head}`);
+  if (headBytes > LONG_REFERENCE_BYTES) {
+    throw new Error(`fixture head is already longer than the fixture size: ${head}`);
   }
   if (Buffer.byteLength(filler, "utf8") !== 1) {
-    throw new Error("fixture filler must be one UTF-8 byte so the ceiling is exact");
+    throw new Error("fixture filler must be one UTF-8 byte so the size is exact");
   }
-  return `${head}${filler.repeat(MAX_MODEL_REFERENCE_BYTES - headBytes)}`;
+  return `${head}${filler.repeat(LONG_REFERENCE_BYTES - headBytes)}`;
 }
 
-/** An `openrouter:` route whose canonical reference sits exactly at the ceiling. */
-function routeReferenceAtCeiling(index: number): string {
-  return refAtCeiling(`openrouter:route-${String(index).padStart(6, "0")}-`, "m");
+/** An `openrouter:` route whose canonical reference is `LONG_REFERENCE_BYTES` long. */
+function longRouteRef(index: number): string {
+  return longRef(`openrouter:route-${String(index).padStart(6, "0")}-`, "m");
 }
 
-/** An `lmstudio:` discovered ref sitting exactly at the ceiling. */
-function discoveredRefAtCeiling(index: number, filler = "x"): string {
-  return refAtCeiling(`lmstudio:model-${String(index).padStart(6, "0")}-`, filler);
+/** An `lmstudio:` discovered ref of the same length. */
+function longDiscoveredRef(index: number, filler = "x"): string {
+  return longRef(`lmstudio:model-${String(index).padStart(6, "0")}-`, filler);
 }
 
 const LMSTUDIO: readonly LocalProviderDefinition[] = [
@@ -378,37 +376,22 @@ describe("tui channel driver — info composition", () => {
   });
 
   it("withholds from /v1/info every discovered ref the reference grammar rejects", async () => {
-    // A local endpoint's `/v1/models` answer is arbitrary text that no operator
-    // authored and nothing upstream of `parseMonoRuntimeModelReference` bounds.
-    // Two shapes can no longer BE a reference, and neither may reach a surface
-    // that quotes what it is handed:
-    //  - one byte past MAX_MODEL_REFERENCE_BYTES, which is the containment bound
-    //    on an identifier that flows into logs, cache keys and wire payloads;
-    //  - a raw control character, which restyles or extends the line quoting it.
+    // A local endpoint's `/v1/models` answer is arbitrary text that no operator authored and
+    // nothing upstream of `parseMonoRuntimeModelReference` bounds. Exactly one shape can no
+    // longer BE a reference — one carrying a control or formatting code point, which restyles
+    // or extends the line quoting it — and it must not reach a surface that quotes what it is
+    // handed.
     //
-    // The two are refused for different reasons and only the second is about
-    // rendering. A legitimate reference too wide for a given diagnostic is
-    // TRUNCATED there (`sanitizeModelReferenceText`, on runtime-adapter's
-    // smaller echo budget); nothing is refused for a renderer's convenience.
+    // This case used to carry a second shape, "one byte past the parse ceiling". There is no
+    // parse ceiling any more: a grammar layer does not get to decide how long a provider may
+    // name a model, and both numbers tried refused a model that really exists. An oversized
+    // ref is now a BUDGET question rather than a validity one, and the two cases below own it.
     //
-    // What this case used to be: a 257-byte id -- one past the catalog's paging
-    // bound -- kept in `models` while the catalog page dropped it, on the
-    // premise that "a 257-byte model id parses, routes and runs exactly like a
-    // 20-byte one". That premise is now false by construction: the ceiling caps
-    // the WHOLE reference below the catalog's 256-byte id bound, so that bound
-    // is unreachable for anything that reaches `models` at all and the split it
-    // described cannot occur. The claim it was bought for -- `/v1/info.models`
-    // is not gated on catalog membership -- is now carried by the 600-model case
-    // below, on the divergence that IS still reachable: the per-provider
-    // advertised cap.
-    const overCeiling = `lmstudio:${"z".repeat(MAX_MODEL_REFERENCE_BYTES - "lmstudio:".length + 1)}`;
-    // ESC: the exact code point that lets a model id repaint the line a daemon
-    // log, `doctor` or the console prints it on.
+    // ESC: the exact code point that lets a model id repaint the line a daemon log, `doctor`
+    // or the console prints it on.
     const controlCharacter = `lmstudio:qwen${String.fromCharCode(27)}[31m-3-8b`;
-    expect(Buffer.byteLength(overCeiling, "utf8")).toBe(MAX_MODEL_REFERENCE_BYTES + 1);
 
     const discoverModels = vi.fn().mockResolvedValue([
-      { ref: overCeiling, label: "over-ceiling", providerId: "lmstudio" },
       { ref: controlCharacter, label: "control", providerId: "lmstudio" },
       { ref: "lmstudio:llama-3.1", label: "llama-3.1", providerId: "lmstudio" },
     ] satisfies DiscoveredLocalModel[]);
@@ -419,13 +402,79 @@ describe("tui channel driver — info composition", () => {
     expect(info.models).toEqual(["anthropic:claude-fable-5", "lmstudio:llama-3.1"]);
     expect(Object.keys(info.modelOptions ?? {}))
       .toEqual(["anthropic:claude-fable-5", "lmstudio:llama-3.1"]);
-    // Asserted against the SERIALIZED body, not against `models` alone: a ref
-    // that cannot be quoted must not appear in any field of the payload every
-    // console renders, whichever one a future projection puts it in.
-    const body = JSON.stringify(info);
-    for (const rejected of [overCeiling, controlCharacter]) {
-      expect(body).not.toContain(JSON.stringify(rejected).slice(1, -1));
-    }
+    // Asserted against the SERIALIZED body, not against `models` alone: a ref that cannot be
+    // quoted must not appear in any field of the payload every console renders, whichever one a
+    // future projection puts it in.
+    expect(JSON.stringify(info)).not.toContain(JSON.stringify(controlCharacter).slice(1, -1));
+  });
+
+  it("keeps an oversized discovered ref out of the /v1/info body, and charges it to nobody else", async () => {
+    // The state the retired parse ceiling made unreachable, and which is reachable again: a
+    // local endpoint reporting a model id of half a megabyte. It parses now — there is nothing
+    // in the grammar to stop it — so the guarantee has to hold HERE, at the layer that owns the
+    // `/v1/info` budget, which is where it always actually belonged.
+    //
+    // Two things must be true at once, and only measurement of the real payload gives both:
+    // the body must stay under the shared cap (over it the console shows the agent OFFLINE, not
+    // degraded), and the oversized row must cost only ITSELF — `admitInfoModels` uses
+    // `continue`, not `break`, because the TUI builds its picker from `/v1/info.models` alone
+    // and a withheld ref is unselectable rather than merely un-paginated.
+    const oversized = `lmstudio:${"z".repeat(500_000)}`;
+    expect(parseMonoRuntimeModelReference(oversized).reference).toBe(oversized);
+
+    const discoverModels = vi.fn().mockResolvedValue([
+      { ref: oversized, label: "oversized", providerId: "lmstudio" },
+      { ref: "lmstudio:llama-3.1", label: "llama-3.1", providerId: "lmstudio" },
+      { ref: "lmstudio:qwen3-8b", label: "qwen3-8b", providerId: "lmstudio" },
+    ] satisfies DiscoveredLocalModel[]);
+
+    const captured = await startCapturingTui({ localProviders: LMSTUDIO, discoverModels });
+    const info = await resolveInfo(captured);
+
+    // Refused a place by the budget, not by the grammar...
+    expect(info.models).not.toContain(oversized);
+    expect(JSON.stringify(info)).not.toContain(oversized);
+    // ...and everything queued behind it still ships.
+    expect(info.models).toEqual([
+      "anthropic:claude-fable-5",
+      "lmstudio:llama-3.1",
+      "lmstudio:qwen3-8b",
+    ]);
+    expect(Buffer.byteLength(JSON.stringify(info), "utf8")).toBeLessThan(MAX_INFO_BODY_BYTES);
+  });
+
+  it("publishes a discovered ref the catalog's own id bound drops, because the picker reads /v1/info", async () => {
+    // Restored coverage. A 257-byte model id is past `MAX_CATALOG_ID_BYTES`, so `/v1/models`
+    // pages cannot carry it — and while the parser had a 160-byte ceiling this state was
+    // unreachable and the case was deleted as vacuous. Removing the ceiling makes it real
+    // again, and the divergence matters: `/v1/info.models` deliberately does NOT inherit the
+    // catalog's display bounds, because the TUI has no `/v1/models` call site at all and
+    // rebuilds its model picker from `/v1/info.models`. Gating one on the other would make this
+    // model unselectable in the operator's own console.
+    //
+    // Derived from `MAX_CATALOG_ID_BYTES` on purpose, and unlike the retired ceiling fixtures
+    // that is the right call here: what is pinned is the RELATIONSHIP between the two layers,
+    // not the number. Wherever the catalog moves its display bound, the ref this builds is one
+    // byte past it and must still be published.
+    const longModelId = "q".repeat(MAX_CATALOG_ID_BYTES + 1);
+    const ref = `lmstudio:${longModelId}`;
+    expect(Buffer.byteLength(ref, "utf8")).toBeGreaterThan(MAX_CATALOG_ID_BYTES);
+
+    const captured = await startCapturingTui({
+      localProviders: LMSTUDIO,
+      discoverModels: async () => [
+        { ref, label: "long-id", providerId: "lmstudio" },
+        { ref: "lmstudio:llama-3.1", label: "llama-3.1", providerId: "lmstudio" },
+      ] satisfies DiscoveredLocalModel[],
+    });
+    const info = await resolveInfo(captured);
+
+    expect(info.models).toContain(ref);
+    expect(Object.keys(info.modelOptions ?? {})).toContain(ref);
+    // The catalog page drops it on its own display bound, and keeps the rest.
+    const page = captured.modelCatalog?.({ provider: "lmstudio", limit: MAX_PAGE_SIZE });
+    expect(page?.models.map((model) => model.id)).toEqual(["llama-3.1"]);
+    expect(Buffer.byteLength(JSON.stringify(info), "utf8")).toBeLessThan(MAX_INFO_BODY_BYTES);
   });
 
   it("stops publishing discovered refs at the /v1/info discovery budget", async () => {
@@ -437,11 +486,11 @@ describe("tui channel driver — info composition", () => {
     // capabilities -- and an over-cap body does not degrade, it sheds a whole
     // field at `sendBoundedInfo`'s fence.
     const flood = Array.from({ length: 5_000 }, (_unused, index) => ({
-      ref: discoveredRefAtCeiling(index),
+      ref: longDiscoveredRef(index),
       label: "flood",
       providerId: "lmstudio",
     })) satisfies DiscoveredLocalModel[];
-    expect(Buffer.byteLength(flood[0]!.ref, "utf8")).toBe(MAX_MODEL_REFERENCE_BYTES);
+    expect(Buffer.byteLength(flood[0]!.ref, "utf8")).toBe(LONG_REFERENCE_BYTES);
 
     const captured = await startCapturingTui({
       localProviders: LMSTUDIO,
@@ -481,11 +530,11 @@ describe("tui channel driver — info composition", () => {
     const catalog = Array.from({ length: 600 }, (_unused, index) => ({
       // Shaped like the longest form local discovery really returns: a Hugging
       // Face GGUF path carrying a quant tag.
-      ref: refAtCeiling(`lmstudio:hf.co/bartowski/Qwen3-${String(index).padStart(3, "0")}B-Instruct-`, "G"),
+      ref: longRef(`lmstudio:hf.co/bartowski/Qwen3-${String(index).padStart(3, "0")}B-Instruct-`, "G"),
       label: "local",
       providerId: "lmstudio",
     })) satisfies DiscoveredLocalModel[];
-    expect(Buffer.byteLength(catalog[0]!.ref, "utf8")).toBe(MAX_MODEL_REFERENCE_BYTES);
+    expect(Buffer.byteLength(catalog[0]!.ref, "utf8")).toBe(LONG_REFERENCE_BYTES);
 
     const captured = await startCapturingTui({
       localProviders: LMSTUDIO,
@@ -501,9 +550,10 @@ describe("tui channel driver — info composition", () => {
     // And published INDEPENDENTLY of catalog membership. The catalog advertises
     // at most DEFAULT_MAX_ADVERTISED_PER_PROVIDER of a provider's discovered
     // rows, so gating `models` on `catalog.resolve()` would strand 500 refs
-    // whose only reader is the picker. This is the reachable half of the claim
-    // the 257-byte case used to carry: a discovered ref can no longer exceed
-    // the catalog's 256-byte id bound, but it can still fall outside the page.
+    // whose only reader is the picker. The per-provider cap is one of the two
+    // ways a published ref can fall outside the catalog page; the other -- an id
+    // past `MAX_CATALOG_ID_BYTES` -- is reachable again now that the parser has
+    // no length rule, and has its own case above.
     const page = captured.modelCatalog?.({ provider: "lmstudio", limit: MAX_PAGE_SIZE });
     expect(page?.models).toHaveLength(DEFAULT_MAX_ADVERTISED_PER_PROVIDER);
     expect(Buffer.byteLength(JSON.stringify(info), "utf8")).toBeLessThan(MAX_INFO_BODY_BYTES);
@@ -603,7 +653,7 @@ describe("tui channel driver — info composition", () => {
 
     const uniformRows = (count: number): DiscoveredLocalModel[] =>
       Array.from({ length: count }, (_unused, index) => ({
-        ref: discoveredRefAtCeiling(index),
+        ref: longDiscoveredRef(index),
         label: "uniform",
         providerId: "lmstudio",
       }));
@@ -776,7 +826,7 @@ describe("tui channel driver — info composition", () => {
     // fallbacks` is validated for uniqueness, not for length.
     const routes = [
       "openrouter:gpt-5.6-sol",
-      ...Array.from({ length: 2_000 }, (_unused, index) => routeReferenceAtCeiling(index)),
+      ...Array.from({ length: 2_000 }, (_unused, index) => longRouteRef(index)),
     ];
     const captured = await startCapturingTui({ fallbackModels: routes });
     const info = await resolveInfo(captured);
@@ -796,20 +846,21 @@ describe("tui channel driver — info composition", () => {
     // configured-only slice it cost ~140 KB and was dropped, while the complete
     // body it belonged to measured 140,731 bytes -- a seventh of the cap.
     //
-    // `requireQuotableReference` caps a reference at MAX_MODEL_REFERENCE_BYTES,
-    // so no single route can weigh that much any more and the original vehicle
-    // is gone. The guarantee it bought is not: a configured route is authored,
-    // so no producer-side slice may drop one. With per-item size bounded, the
-    // only way configured routes can press on a budget is by COUNT -- so that is
-    // what this drives. 800 routes at the ceiling spend well past the 128 KiB
+    // A single reference of that size is possible again -- the parse ceiling
+    // that briefly made it unreachable is gone -- but it is the wrong vehicle
+    // for THIS guarantee, because one huge route cannot show that a slice is
+    // adjudicating between authored routes. A configured route is authored, so
+    // no producer-side slice may drop one, and the way to press on a slice
+    // without any single item being pathological is COUNT. 800 ordinary-sized
+    // routes spend well past the 128 KiB
     // slice the old rule charged configured routes against, and past any
     // per-contributor ceiling short of the wire cap. Every one must still ship.
     const configured = Array.from(
       { length: 800 },
-      (_unused, index) => routeReferenceAtCeiling(index),
+      (_unused, index) => longRouteRef(index),
     );
     const flood = Array.from({ length: 5_000 }, (_unused, index) => ({
-      ref: discoveredRefAtCeiling(index),
+      ref: longDiscoveredRef(index),
       label: "flood",
       providerId: "lmstudio",
     })) satisfies DiscoveredLocalModel[];

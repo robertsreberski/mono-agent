@@ -38,19 +38,20 @@ export const MAX_PAGE_SIZE = 200;
  * entries are skipped rather than truncated, because a truncated id would not
  * resolve anyway.
  *
- * These are display/paging bounds, NOT validity bounds, and the distinction
- * survives the runtime reference parser having acquired a ceiling of its own.
- * That ceiling (`MAX_MODEL_REFERENCE_BYTES`, agent-runtime's `model-refs.js`) is
- * a containment bound on the WHOLE `<provider>:<model>` reference, derived from
- * what model ids really are; it currently sits below `MAX_CATALOG_ID_BYTES`, so
- * these numbers no longer cut anything a discovered or configured ref can reach
- * and are kept as the standing bound on the catalog's own projections, whose
- * inputs (`displayName`, an allowlist `name`) are not references and are not
- * length-validated by config.
+ * These are display/paging bounds, NOT validity bounds, and that distinction is
+ * the whole reason they are safe to keep. The runtime reference parser bounds a
+ * reference's CONTENT (no control or formatting code points) and deliberately
+ * not its length — what a model may be called is decided by providers, and two
+ * attempts at a ceiling each refused a model that really exists. So an id past
+ * `MAX_CATALOG_ID_BYTES` is something a local `/v1/models` can genuinely report
+ * and this filter genuinely cuts. Cutting it HERE costs a page one row; cutting
+ * it at the parser would have cost an operator a route that runs.
  *
  * `/v1/info.models` deliberately does not inherit them (see the `/v1/info`
  * budget note in `channel-drivers/tui.ts`) — reusing them there deleted runnable
- * models from schema-1 clients at a wire schema that cannot be bumped.
+ * models from schema-1 clients at a wire schema that cannot be bumped. The TUI
+ * has no `/v1/models` call site at all, so a model this filter drops is still
+ * selectable in the picker; `tui-channel.test.ts` pins that divergence.
  *
  * PROVIDER ids and labels are bounded by the shared wire contract instead
  * (`MAX_INFO_PROVIDER_ID_BYTES`/`..._LABEL_BYTES` in `@mono-agent/agent-contracts`),

@@ -175,7 +175,6 @@ BINARY_BLOAT_TOOLS
 BridgeSpec
 DEFAULT_RUNTIME_BRAND
 DEFAULT_TOOL_BLOAT_CONFIG
-MAX_MODEL_REFERENCE_BYTES
 MAX_TOOL_RESULT_BYTES
 PiBuiltinModelSnapshot
 PiBuiltinProviderSnapshot
@@ -363,7 +362,6 @@ renderResumeSnapshot
 
 ```text
 BridgeSpec
-MAX_MODEL_REFERENCE_BYTES
 PiBuiltinModelSnapshot
 PiBuiltinProviderSnapshot
 PiOAuthCredentialsSnapshot
@@ -469,7 +467,6 @@ utf8Head
 **`@mono-agent/agent-runtime/ai/runtime/model-refs.js`**
 
 ```text
-MAX_MODEL_REFERENCE_BYTES
 RuntimeModelRef
 normalizeRuntimeModelReference
 parseRuntimeModelReference

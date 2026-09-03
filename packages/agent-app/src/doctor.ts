@@ -41,8 +41,10 @@ import {
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
   describeSandboxEffectiveState,
+  MODEL_REFERENCE_ECHO_MAX_BYTES,
   resolveSandboxEffectiveState,
   sandboxEffectiveStateWarning,
+  sanitizeModelReferenceText,
 } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
@@ -476,7 +478,13 @@ async function applyRequestModelOverrideCompatibilityChecks(
         const model = parseMonoRuntimeModelReference(entry.model as string);
         const resolutionIssue = piModelResolutionIssue(config, model);
         if (resolutionIssue !== undefined) {
-          piModelResolutionFailures.push(`${entryPath}.model=${entry.model as string}: ${resolutionIssue}.`);
+          // The parser accepted this value, but acceptance is no longer a length
+          // guarantee: the byte ceiling was removed because no constant could
+          // hold for every provider, so a legitimately long id parses. This is a
+          // diagnostic, not the protocol string, so it is bounded here rather
+          // than at the grammar.
+          const echoed = sanitizeModelReferenceText(entry.model as string, MODEL_REFERENCE_ECHO_MAX_BYTES);
+          piModelResolutionFailures.push(`${entryPath}.model=${echoed}: ${resolutionIssue}.`);
         }
       } catch {
         // Adapter configIssues owns syntax diagnostics.
@@ -705,8 +713,18 @@ function piModelResolutionIssue(
     return undefined;
   }
 
+  // This is doctor's own validate-time diagnostic, not the runtime failure
+  // string. The one that must stay byte-identical for `NON_RETRYABLE_PROVIDER_RE`
+  // is built in agent-runtime's `ai/providers/pi-models.js`; nothing matches
+  // against this text. So the reference is bounded here, which matters now that
+  // the parser imposes no length ceiling and a legitimately long id reaches this
+  // line whole.
+  const reference = sanitizeModelReferenceText(
+    `${model.provider}:${model.model}`,
+    MODEL_REFERENCE_ECHO_MAX_BYTES,
+  );
   return (
-    `pi model not found: ${model.provider}:${model.model}; no matching providers.local entry exists and Pi's built-in catalog has no exact model. ` +
+    `pi model not found: ${reference}; no matching providers.local entry exists and Pi's built-in catalog has no exact model. ` +
     "The sibling Pi CLI models.json is not a mono-agent runtime source; add providers.local for a self-hosted provider or choose a built-in Pi model"
   );
 }

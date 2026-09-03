@@ -96,13 +96,19 @@ export interface TuiChannelOverrides {
  * and rebuilds its picker from `info.models` alone, so a withheld route is an
  * unselectable primary or fallback in the operator's own console.
  *
- * A single reference is now bounded — `MAX_MODEL_REFERENCE_BYTES`, a containment
- * ceiling derived from what model ids really are (Pi's catalog tops out at 77
- * bytes; the `ollama:hf.co/<org>/<repo>:<quant>` long tail runs past 100). That
- * retires the 270,000-byte vehicle, not the rule: nothing bounds how MANY routes
- * an operator may declare or how many rows a local `/v1/models` may report, so a
- * per-contributor slice would still be an opinion about authored content, and
- * configured routes still get none.
+ * Nor is a single reference bounded. Two rounds put a byte ceiling in the
+ * reference parser so that no ONE item could be pathological, and both numbers
+ * refused a model that really exists — 96 bytes a Hugging Face GGUF repo Ollama
+ * serves, 160 bytes an `ollama:<model>:<tag>` reference whose two halves Ollama
+ * itself validates at 80 bytes each. A grammar layer does not get to decide what
+ * a provider calls a model, so the ceiling is gone and a single reference can be
+ * any size again. That changes nothing here, because the rule was never about
+ * item size: nothing bounds how MANY routes an operator may declare or how many
+ * rows a local `/v1/models` may report either, so a per-contributor slice would
+ * still be an opinion about authored content, and configured routes still get
+ * none. What it does mean is that the fence below is load-bearing for a case it
+ * briefly was not — one authored route larger than the whole cap — which
+ * `tui-info-wire.test.ts` drives over a real socket.
  *
  * So every configured route is admitted, and a result that cannot fit is the
  * fence's call, made loudly. Advisory discovery then spends its own aggregate
@@ -412,10 +418,12 @@ export function createTuiChannelDriver(
       // reference that clears the parser is runnable whether or not any page
       // would show it, so gating `models` on `catalog.resolve()` deleted a
       // runnable model from every schema-1 client — subtractive at a schema that
-      // cannot be bumped (`TUI_WIRE_SCHEMA` is compared with `!==`). The
-      // reachable divergence today is the per-provider advertised cap, which
-      // strands hundreds of live rows outside the page while every one of them
-      // stays selectable here.
+      // cannot be bumped (`TUI_WIRE_SCHEMA` is compared with `!==`).
+      // Both divergences are reachable: the per-provider advertised cap, which
+      // strands hundreds of live rows outside the page, and an id past
+      // `MAX_CATALOG_ID_BYTES`, which a local endpoint can report now that the
+      // reference parser has no length rule to refuse it first. Every one of
+      // those refs stays selectable here.
       // What genuinely must stay bounded is the ONE 1 MiB body `/v1/info` shares
       // across every field, and `sendBoundedInfo` is what enforces it. So the
       // only reasons a DISCOVERED ref is withheld here are that it names nothing

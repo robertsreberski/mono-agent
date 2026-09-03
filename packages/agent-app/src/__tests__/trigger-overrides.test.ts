@@ -40,13 +40,37 @@ describe("findTriggerOverrideIssues bounds every value it quotes back", () => {
   });
 
   it("clamps an oversized model override to the shared echo budget", () => {
-    const model = `${"x".repeat(1_000_000)}:y`;
+    // The vehicle changed and the property did not. This used to be a megabyte of `x` as the
+    // PROVIDER half, rejected because the reference parser had a byte ceiling. That ceiling is
+    // gone -- what a model may be called is decided by providers, and both numbers tried refused
+    // a model that really exists -- so an oversized value is no longer rejected for its size and
+    // that fixture would now produce no issue at all to bound.
+    //
+    // The guarantee it was bought for is untouched and is what matters: when an oversized value
+    // IS rejected, none of it reaches the diagnostic unclamped. `codex:` is the strongest form,
+    // because the kernel parser interpolates the operator's whole model half into the repair it
+    // names, so an unbounded value would produce an unbounded reason if this layer did not clamp.
+    const model = `codex:${"x".repeat(1_000_000)}`;
 
     const issues = findTriggerOverrideIssues([{ name: 'cron job "digest"', model }]);
 
-    expect(issues[0]).toContain(`"${echo(model)}"`);
+    expect(issues).toHaveLength(1);
+    // The actionable half survives the clamp...
+    expect(issues[0]).toContain("use openai-codex:");
+    // ...and the megabyte does not.
+    expect(issues[0]).not.toContain("x".repeat(1_000));
     expect(byteLength(issues[0]!)).toBeLessThanOrEqual(ENVELOPE_MAX_BYTES);
     expect(byteLength(issues[0]!)).toBeLessThan(1_000);
+  });
+
+  it("raises no issue at all for an oversized override that is nonetheless a valid reference", () => {
+    // The other side of removing the ceiling, pinned so it is not quietly restored as a "fix".
+    // A long `<provider>:<model>` is a reference like any other; length is not this layer's
+    // business, and refusing one here would cost an operator a route that runs. It is bounded
+    // where it is RENDERED, which is what the case above asserts.
+    const model = `${"x".repeat(1_000_000)}:y`;
+
+    expect(findTriggerOverrideIssues([{ name: 'cron job "digest"', model }])).toEqual([]);
   });
 
   it("escapes a newline in an effort override", () => {
