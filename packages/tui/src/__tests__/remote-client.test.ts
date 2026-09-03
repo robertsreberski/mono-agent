@@ -9,9 +9,38 @@ import {
   type AgentStreamEvent,
   type AgentStreamWireFrame,
 } from "@mono-agent/agent-contracts";
+import {
+  MAX_INFO_BODY_BYTES,
+  MAX_INFO_PROVIDER_ID_BYTES,
+  MAX_INFO_PROVIDER_ITEMS,
+  MAX_INFO_PROVIDER_LABEL_BYTES,
+} from "@mono-agent/agent-contracts";
 import { startTuiAdapter, type TuiAdapterStartResult } from "@mono-agent/operator-adapter";
 
 import { RemoteAgentResponder, RemoteAgentResponderError } from "../remote/client.js";
+
+/**
+ * Serve one fixed `/v1/info` body from a raw loopback server, so a payload the
+ * real adapter would never produce can still be put in front of the client.
+ */
+async function withRawInfoBody(
+  body: string,
+  run: (client: RemoteAgentResponder) => Promise<void>,
+): Promise<void> {
+  const { createServer } = await import("node:http");
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(body);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : 0;
+  try {
+    await run(new RemoteAgentResponder({ baseUrl: `http://127.0.0.1:${port}` }));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
 
 /**
  * Round-trip tests against the real operator-adapter TUI server: the client half of the
@@ -230,6 +259,68 @@ describe("RemoteAgentResponder", () => {
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }
+  });
+
+  /**
+   * `/v1/info` has two consumers -- this client and the web console's
+   * `OperatorClient` -- and exactly one producer, which places the providers its
+   * own routes use inside the shared parse window precisely because it knows
+   * both consumers cut there. A client that reads a wider window than the other
+   * is not being generous; it is a second opinion about one wire, and the
+   * operator sees two different provider lists for one agent.
+   */
+  it("reads the same bounded provider window the console reads", async () => {
+    const providers = Array.from({ length: MAX_INFO_PROVIDER_ITEMS + 7 }, (_unused, index) => ({
+      id: `vendor-${String(index).padStart(5, "0")}`,
+      label: `Vendor ${String(index)}`,
+      modelCount: 1,
+      source: "builtin" as const,
+    }));
+
+    await withRawInfoBody(JSON.stringify({ schema: 1, model: "x", providers }), async (client) => {
+      const info = await client.info();
+      expect(info.providers?.length).toBe(MAX_INFO_PROVIDER_ITEMS);
+      expect(info.providers?.map((provider) => provider.id))
+        .toEqual(providers.slice(0, MAX_INFO_PROVIDER_ITEMS).map((provider) => provider.id));
+    });
+  });
+
+  it("agrees with the console on how long a provider id and label may be", async () => {
+    const atBound = `p${"i".repeat(MAX_INFO_PROVIDER_ID_BYTES - 1)}`;
+    const overBound = `p${"i".repeat(MAX_INFO_PROVIDER_ID_BYTES)}`;
+    const longLabel = "L".repeat(MAX_INFO_PROVIDER_LABEL_BYTES + 1);
+
+    await withRawInfoBody(
+      JSON.stringify({
+        schema: 1,
+        model: "x",
+        providers: [
+          { id: atBound, label: "At bound", modelCount: 1, source: "builtin" },
+          { id: overBound, label: "Over bound", modelCount: 1, source: "builtin" },
+          { id: "labelled", label: longLabel, modelCount: 1, source: "builtin" },
+        ],
+      }),
+      async (client) => {
+        const info = await client.info();
+        expect(info.providers?.map((provider) => provider.id)).toEqual([atBound, "labelled"]);
+        // An over-long label degrades to the id rather than costing the entry.
+        expect(info.providers?.at(-1)?.label).toBe("labelled");
+      },
+    );
+  });
+
+  it("refuses an oversized /v1/info body rather than parsing it whole", async () => {
+    // The producer's fence keeps a real body under this cap; a body over it is
+    // an agent this client cannot trust to be bounded anywhere else either, and
+    // reading it whole is how one 5 s poll turns into an unbounded allocation.
+    const body = JSON.stringify({ schema: 1, model: "x", label: "L".repeat(MAX_INFO_BODY_BYTES) });
+    expect(Buffer.byteLength(body, "utf8")).toBeGreaterThan(MAX_INFO_BODY_BYTES);
+
+    await withRawInfoBody(body, async (client) => {
+      const error = await client.info().then(() => undefined, (caught: unknown) => caught);
+      expect(error).toBeInstanceOf(RemoteAgentResponderError);
+      expect((error as RemoteAgentResponderError).code).toBe("info_too_large");
+    });
   });
 
   it("surfaces modelOptions from /v1/info when configured", async () => {

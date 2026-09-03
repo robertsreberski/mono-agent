@@ -32,6 +32,30 @@ function nextAnswer(queue: unknown[], name: string): unknown {
   return queue.shift();
 }
 
+/**
+ * A queued select answer has to be one the prompt actually OFFERED.
+ *
+ * A mock that returns whatever it is handed cannot fail on an answer no
+ * recovery menu contains, so a queued `"browser"` -- a value no `p.select` in
+ * this CLI has ever offered -- sat in this file for months looking like
+ * coverage while the run took the menu's default path instead. Validating the
+ * answer against `options[].value` is what makes a dead answer a failing test
+ * rather than a silent no-op.
+ */
+function nextSelectAnswer(prompt: Record<string, unknown>): unknown {
+  const answer = nextAnswer(mocks.selectAnswers, "select");
+  const offered = (prompt.options as readonly { readonly value?: unknown }[] | undefined ?? [])
+    .map((option) => option.value);
+  if (!offered.includes(answer)) {
+    throw new Error(
+      `Queued select answer ${JSON.stringify(answer)} is not offered by `
+      + `${JSON.stringify(prompt.message)}; it offers `
+      + `${offered.map((value) => JSON.stringify(value)).join(", ")}.`,
+    );
+  }
+  return answer;
+}
+
 vi.mock("@clack/prompts", () => ({
   cancel: vi.fn(),
   confirm: vi.fn(async () => nextAnswer(mocks.confirmAnswers, "confirm")),
@@ -47,7 +71,7 @@ vi.mock("@clack/prompts", () => ({
   password: vi.fn(async () => nextAnswer(mocks.passwordAnswers, "password")),
   select: vi.fn(async (options: Record<string, unknown>) => {
     mocks.selectCalls.push(options);
-    return nextAnswer(mocks.selectAnswers, "select");
+    return nextSelectAnswer(options);
   }),
   spinner: vi.fn(() => ({
     cancel: vi.fn(),
@@ -244,6 +268,14 @@ afterEach(async () => {
   if (originalPiAuthPath === undefined) delete process.env.MONO_AGENT_PI_AUTH_PATH;
   else process.env.MONO_AGENT_PI_AUTH_PATH = originalPiAuthPath;
   await Promise.all(temporaryDirectories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  // Every queued answer has to have been ASKED FOR. An answer left over is a
+  // prompt the run never reached, so the test proved a path it never took --
+  // the other half of how a dead `"browser"` answer survived here unnoticed.
+  expect({
+    confirm: mocks.confirmAnswers,
+    password: mocks.passwordAnswers,
+    select: mocks.selectAnswers,
+  }).toEqual({ confirm: [], password: [], select: [] });
 });
 
 describe("guided init state transitions", () => {
@@ -255,7 +287,6 @@ describe("guided init state transitions", () => {
       providerSetupSecrets: {},
       runProviderSetup: false,
     });
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -287,7 +318,6 @@ describe("guided init state transitions", () => {
       providerSetupSecrets: {},
       runProviderSetup: false,
     });
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -333,7 +363,6 @@ describe("guided init state transitions", () => {
       providerSetupSecrets: {},
       runProviderSetup: false,
     });
-    mocks.confirmAnswers.push(false);
     mocks.ensureBackgroundReady.mockResolvedValue({ ok: false, action: "start", reason: "timeout" });
 
     await expect(runCli(["init"])).resolves.toBe(1);
@@ -353,7 +382,6 @@ describe("guided init state transitions", () => {
       providerSetupSecrets: {},
       runProviderSetup: false,
     });
-    mocks.confirmAnswers.push(false);
     mocks.resolveInstanceTarget.mockRejectedValue(new Error("trace registry resolution failed"));
 
     await expect(runCli(["init"])).resolves.toBe(1);
@@ -381,7 +409,6 @@ describe("guided init state transitions", () => {
       providerSetupSecrets: {},
       runProviderSetup: false,
     });
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -410,7 +437,6 @@ describe("guided init state transitions", () => {
       providerSetupSecrets: {},
       runProviderSetup: false,
     });
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -430,7 +456,6 @@ describe("guided init state transitions", () => {
       credentialStates: { codex: "credential_detected" },
       runProviderSetup: false,
     });
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -462,7 +487,6 @@ describe("guided init state transitions", () => {
     if (successfulSetup === undefined) throw new Error("expected default managed-SRT setup mock");
     mocks.setupManagedSrt.mockImplementationOnce(successfulSetup);
     mocks.selectAnswers.push("resume");
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -491,7 +515,6 @@ describe("guided init state transitions", () => {
     if (successfulSetup === undefined) throw new Error("expected default managed-SRT setup mock");
     mocks.setupManagedSrt.mockImplementationOnce(successfulSetup);
     mocks.selectAnswers.push("retry");
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -516,7 +539,6 @@ describe("guided init state transitions", () => {
     await expect(runCli(["init"])).resolves.toBe(1);
 
     await expect(access(join(process.cwd(), "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
-    expect(mocks.confirmAnswers).toEqual([]);
   });
 
   it("returns to recovery after failed auth setup and reruns the affected live probe", async () => {
@@ -638,7 +660,6 @@ describe("guided init state transitions", () => {
 
     expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledOnce();
     await expect(access(join(process.cwd(), "mono-agent.config.json"))).resolves.toBeUndefined();
-    expect(mocks.confirmAnswers).toEqual([]);
   });
 
   it("atomically refuses a config created after the wizard started", async () => {
@@ -658,7 +679,6 @@ describe("guided init state transitions", () => {
     await expect(runCli(["init"])).resolves.toBe(1);
 
     expect(await readFile(configPath, "utf8")).toBe(concurrent);
-    expect(mocks.confirmAnswers).toEqual([]);
   });
 
   it("withdraws readiness when the committed config changes during full validation", async () => {
@@ -679,7 +699,6 @@ describe("guided init state transitions", () => {
 
     await expect(runCli(["init"])).resolves.toBe(1);
 
-    expect(mocks.confirmAnswers).toEqual([]);
     expect(await readFile(configPath, "utf8")).toContain("ollama:changed");
   });
 
@@ -703,7 +722,6 @@ describe("guided init state transitions", () => {
 
     await expect(runCli(["init"])).resolves.toBe(1);
 
-    expect(mocks.confirmAnswers).toEqual([]);
     await expect(execFilePromise("git", ["ls-files", "--error-unmatch", ".env"], process.cwd()))
       .resolves.toBeUndefined();
   });
@@ -732,7 +750,6 @@ describe("guided init state transitions", () => {
       setupApiKeys = options.apiKeys;
       return plan.actions.map((action) => ({ action, status: "ok", detail: "stored" }));
     });
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -765,7 +782,6 @@ describe("guided init state transitions", () => {
       setupApiKeys = options.apiKeys;
       return plan.actions.map((action) => ({ action, status: "ok", detail: "environment verified" }));
     });
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -852,7 +868,6 @@ describe("guided init state transitions", () => {
         ],
       });
     mocks.selectAnswers.push("resume");
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -894,7 +909,6 @@ describe("guided init state transitions", () => {
       return plan.actions.map((action) => ({ action, status: "ok", detail: "stored" }));
     });
     mocks.selectAnswers.push("resume");
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -930,7 +944,6 @@ describe("guided init state transitions", () => {
       }));
     });
     mocks.selectAnswers.push("retry");
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -982,7 +995,6 @@ describe("guided init state transitions", () => {
         return { ok: true };
       });
       mocks.selectAnswers.push(recovery);
-      mocks.confirmAnswers.push(false);
 
       await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -1015,7 +1027,6 @@ describe("guided init state transitions", () => {
         routes: [{ key: "primary-key", index: 0, model: "openai-codex:gpt-5.6-terra", status: "verified" }],
       });
     mocks.selectAnswers.push("restart");
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -1055,10 +1066,9 @@ describe("guided init state transitions", () => {
           { key: "fallback-key", index: 1, model: "anthropic:claude-sonnet-5", status: "verified" },
         ],
       });
-    mocks.selectAnswers.push("auth", "browser");
+    mocks.selectAnswers.push("auth");
     mocks.executeProviderSetupPlan.mockImplementation(async (plan: { actions: readonly Record<string, unknown>[] }) =>
       plan.actions.map((action) => ({ action, status: "ok", detail: "repaired" })));
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -1087,7 +1097,6 @@ describe("guided init state transitions", () => {
       order.push("route");
       return { ok: true };
     });
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -1413,7 +1422,6 @@ describe("guided init state transitions", () => {
         ],
       });
     mocks.selectAnswers.push("edit");
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -1455,7 +1463,6 @@ describe("guided init state transitions", () => {
       })
       .mockResolvedValueOnce({ ok: true, planFingerprint: "new-route-plan" });
     mocks.selectAnswers.push("model");
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 

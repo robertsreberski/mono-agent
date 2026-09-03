@@ -107,12 +107,14 @@ export const DEFAULT_AGENT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
 /**
  * Maximum serialized size of an agent's `/v1/info` body.
  *
- * Load-bearing in both directions, which is why it lives here rather than beside
- * either user. The operator adapter sheds optional fields to stay under it; the
- * console's operator client reads at most this many bytes and rejects a larger
- * body wholesale. A producer that exceeded a consumer that had drifted smaller
- * would not degrade the agent — it would show it OFFLINE, on a 5 s poll, behind
- * a debug-level log. One export removes the possibility.
+ * Load-bearing in every direction, which is why it lives here rather than beside
+ * any one user. The operator adapter sheds optional fields to stay under it; BOTH
+ * consumers — the console's operator client and the TUI's `RemoteAgentResponder`
+ * — read at most this many bytes and reject a larger body wholesale. A producer
+ * that exceeded a consumer that had drifted smaller would not degrade the agent
+ * — it would show it OFFLINE, on a 5 s poll, behind a debug-level log, and a
+ * consumer with no bound at all would buffer whatever it was handed on every one
+ * of those polls. One export removes both possibilities.
  */
 export const MAX_INFO_BODY_BYTES = 1024 * 1024;
 
