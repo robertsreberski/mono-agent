@@ -140,6 +140,19 @@ export interface AskSubmissionResult {
 
 export interface AgentSummary {
   readonly sourceId: string;
+  /**
+   * Opaque token for the agent PROCESS this summary describes, mirrored from
+   * `WebAgentSummary`: stable while that process lives, different once it is
+   * replaced.
+   *
+   * A source id outlives the process behind it, so everything this console
+   * caches per agent -- above all the `/v1/models` pages the model picker walks
+   * -- outlives the catalog that filled it. Nothing else on this summary is
+   * generation-shaped: there is no pid, no start time, and `updatedAt` is a
+   * discovery heartbeat that changes while nothing has. Absent on any summary
+   * an older server built.
+   */
+  readonly generation?: string;
   readonly label: string;
   readonly status: AgentStatus;
   readonly pinned: boolean;

@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   agentVisibility,
   boundedRequest,
+  createRemovedThreadRegistry,
+  createThreadWriteChain,
   preferenceKeyForThread,
   readStoredRunPreferences,
   resolveBootstrapSelection,
   RUN_PREFERENCES_STORAGE_KEY,
   sortAgentsPinnedFirst,
+  startBoundedRequest,
   validateRunPreference,
 } from "./console-store";
 import { effortLevelsForAgentModel, GLOBAL_EFFORT_LEVELS } from "./components/model-catalog";
@@ -290,5 +293,207 @@ describe("boundedRequest", () => {
 
   it("passes a live signal through and returns the result untouched", async () => {
     await expect(boundedRequest(async (signal) => signal.aborted, 1_000)).resolves.toBe(false);
+  });
+});
+
+describe("startBoundedRequest", () => {
+  it("settles the caller on the deadline but the QUEUE only on the real request", async () => {
+    // The invariant: a deadline aborts a request, it does not un-send it. If
+    // `settled` tracked the deadline, the queue would release the next write to
+    // the same conversation while the abandoned one was still on the wire --
+    // which is exactly how the older mutation came to land last.
+    let release!: () => void;
+    let aborted = false;
+    const started = startBoundedRequest<string>((signal) => {
+      signal.addEventListener("abort", () => { aborted = true; });
+      return new Promise<string>((resolve) => { release = () => resolve("late"); });
+    }, 10);
+
+    await expect(started.result).rejects.toThrow(/timed out/u);
+    expect(aborted).toBe(true);
+
+    // The deadline has fired and the caller has already been told. The queue
+    // must still be holding, because the request is still alive.
+    let settled = false;
+    void started.settled.then(() => { settled = true; });
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    expect(settled).toBe(false);
+
+    release();
+    await started.settled;
+    expect(settled).toBe(true);
+  });
+
+  it("resolves both together for a transport that honours the deadline", async () => {
+    const started = startBoundedRequest(async (signal) => signal.aborted, 1_000);
+    await expect(started.result).resolves.toBe(false);
+    await expect(started.settled).resolves.toBeUndefined();
+  });
+});
+
+describe("createThreadWriteChain", () => {
+  /**
+   * Ordering is asserted from the ORDER OF THE CALLS ALONE. Nothing here reads
+   * a request body or a marker: an earlier chain that serialized only the
+   * conditional migration write still passed the suite's named ordering test
+   * once its mock recognised the old request shape.
+   */
+  const recorder = () => {
+    const order: string[] = [];
+    const gates = new Map<string, () => void>();
+    const run = (name: string) => (): Promise<string> => {
+      order.push(`start:${name}`);
+      return new Promise<string>((resolve) => {
+        gates.set(name, () => {
+          order.push(`end:${name}`);
+          resolve(name);
+        });
+      });
+    };
+    return { order, run, release: (name: string) => gates.get(name)?.() };
+  };
+
+  it("starts a write only after the previous one on the same conversation has ended", async () => {
+    const { order, run, release } = recorder();
+    const chain = createThreadWriteChain();
+
+    const first = chain.enqueue("thread-a", run("first"));
+    const second = chain.enqueue("thread-a", run("second"));
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    expect(order).toEqual(["start:first"]);
+
+    release("first");
+    await first;
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    release("second");
+    await second;
+
+    expect(order).toEqual(["start:first", "end:first", "start:second", "end:second"]);
+  });
+
+  it("holds the queue for a request that outlived its own deadline", async () => {
+    // The caller is told the write timed out; the queue is not, because the
+    // request it abandoned can still land.
+    const { order, run, release } = recorder();
+    const chain = createThreadWriteChain();
+
+    const first = chain.enqueue("thread-a", run("first"), 10);
+    await expect(first).rejects.toThrow(/timed out/u);
+    const second = chain.enqueue("thread-a", run("second"), 10);
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    expect(order).toEqual(["start:first"]);
+
+    release("first");
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    expect(order).toEqual(["start:first", "end:first", "start:second"]);
+    release("second");
+    await second;
+  });
+
+  it("hands the queue on after a failure and keeps conversations independent", async () => {
+    const chain = createThreadWriteChain();
+    await expect(chain.enqueue("thread-a", () => Promise.reject(new Error("write failed"))))
+      .rejects.toThrow("write failed");
+    await expect(chain.enqueue("thread-a", () => Promise.resolve("after"))).resolves.toBe("after");
+
+    const { order, run, release } = recorder();
+    const blocked = chain.enqueue("thread-a", run("a"));
+    const other = chain.enqueue("thread-b", run("b"));
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    expect(order).toEqual(["start:a", "start:b"]);
+    release("a");
+    release("b");
+    await Promise.all([blocked, other]);
+  });
+
+  it("settles only once every write issued before the call has left the queue", async () => {
+    const { order, run, release } = recorder();
+    const chain = createThreadWriteChain();
+    const first = chain.enqueue("thread-a", run("first"));
+    const second = chain.enqueue("thread-a", run("second"));
+
+    let settled = false;
+    void chain.settle("thread-a").then(() => { settled = true; });
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    expect(settled).toBe(false);
+
+    release("first");
+    await first;
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    expect(settled).toBe(false);
+    release("second");
+    await second;
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    expect(settled).toBe(true);
+    expect(order).toEqual(["start:first", "end:first", "start:second", "end:second"]);
+  });
+
+  it("reports a conversation as drained exactly once its queue empties", async () => {
+    const drained: string[] = [];
+    const { run, release } = recorder();
+    const chain = createThreadWriteChain((threadId) => drained.push(threadId));
+
+    const write = chain.enqueue("thread-a", run("only"));
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    expect(chain.pending()).toEqual(["thread-a"]);
+    expect(drained).toEqual([]);
+    release("only");
+    await write;
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    expect(chain.pending()).toEqual([]);
+    expect(drained).toEqual(["thread-a"]);
+  });
+});
+
+describe("createRemovedThreadRegistry", () => {
+  it("keeps every tombstone that is younger than its lifetime, however many there are", async () => {
+    // The invariant: a tombstone outlives any request that could have been
+    // issued before its delete. A 256-entry ring broke that at the 257th
+    // delete -- the oldest protection was dropped while it was still needed,
+    // and a response held across that delete resurrected the conversation.
+    let clock = 0;
+    const registry = createRemovedThreadRegistry(() => clock, 10_000, 4_096);
+    for (let index = 0; index < 1_000; index += 1) {
+      clock += 1;
+      registry.remember(`thread-${String(index)}`);
+    }
+
+    expect(registry.size()).toBe(1_000);
+    for (const index of [0, 1, 255, 256, 257, 999]) {
+      expect([index, registry.has(`thread-${String(index)}`)]).toEqual([index, true]);
+    }
+  });
+
+  it("forgets a tombstone only once it is older than the lifetime", () => {
+    let clock = 1_000;
+    const registry = createRemovedThreadRegistry(() => clock, 10_000, 4_096);
+    registry.remember("old");
+    clock += 9_999;
+    expect(registry.has("old")).toBe(true);
+    clock += 1;
+    expect(registry.has("old")).toBe(false);
+  });
+
+  it("evicts expired entries on write and still honours the memory backstop", () => {
+    let clock = 0;
+    const registry = createRemovedThreadRegistry(() => clock, 100, 3);
+    registry.remember("expired");
+    clock += 200;
+    registry.remember("kept");
+    expect(registry.size()).toBe(1);
+    expect(registry.has("expired")).toBe(false);
+
+    for (const id of ["a", "b", "c"]) registry.remember(id);
+    expect(registry.size()).toBe(3);
+    expect(registry.has("kept")).toBe(false);
+    expect([registry.has("a"), registry.has("b"), registry.has("c")]).toEqual([true, true, true]);
+  });
+
+  it("reverses a tombstone whose delete failed", () => {
+    const registry = createRemovedThreadRegistry();
+    registry.remember("thread-a");
+    expect(registry.has("thread-a")).toBe(true);
+    registry.forget("thread-a");
+    expect(registry.has("thread-a")).toBe(false);
   });
 });

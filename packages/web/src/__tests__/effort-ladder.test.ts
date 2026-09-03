@@ -8,6 +8,7 @@ import {
   effortLevelsForModel,
   GLOBAL_EFFORT_LEVELS,
 } from "../effort-ladder.js";
+import { errorCode, errorMessage } from "../errors.js";
 import { WebService } from "../service.js";
 import { fakeDiscoveredAgent, operatorFetch, temporaryRoot } from "./helpers.js";
 
@@ -130,13 +131,18 @@ describe("WebService effort validation", () => {
     });
     await service.agentModels("agent-one", { provider: "localx", limit: 50 });
 
-    const probe = async (model: string, effort: string): Promise<"accepted" | "rejected"> => {
+    // The REASON matters, not just the refusal. Collapsing every exception to
+    // "rejected" made this suite pass with the fixture models failing admission
+    // outright: a model the console cannot select at all is not the same result
+    // as a grade the ladder excludes, and only one of them is what is under
+    // test here.
+    const probe = async (model: string, effort: string): Promise<string> => {
       const thread = service.createThread("agent-one");
       try {
         await service.startTurn(thread.id, { text: "probe", model, effort });
         return "accepted";
-      } catch {
-        return "rejected";
+      } catch (error) {
+        return errorCode(error) ?? `unexpected:${errorMessage(error)}`;
       }
     };
 
@@ -151,7 +157,7 @@ describe("WebService effort validation", () => {
         }
         if (denied !== undefined) {
           expect([reference, denied, await probe(reference, denied)])
-            .toEqual([reference, denied, "rejected"]);
+            .toEqual([reference, denied, "invalid_effort"]);
         }
       }
     }

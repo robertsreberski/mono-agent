@@ -110,6 +110,22 @@ export interface WebModelOption {
 
 export interface WebAgentSummary {
   readonly sourceId: string;
+  /**
+   * Opaque token for the agent PROCESS this summary describes: stable while
+   * that process lives, different once it is replaced. Additive, and additive
+   * only -- no client is required to read it.
+   *
+   * A source id outlives the process behind it, so anything a client caches
+   * per agent (the `/v1/models` pages the model picker fetches, above all)
+   * outlives the catalog that filled it. The console's server already scopes
+   * its own catalog cache this way; before this field the browser had nothing
+   * generation-shaped to observe at all -- no pid, no start time, and an
+   * `updatedAt` that is a discovery heartbeat -- so a tab kept offering a
+   * restarted agent's retired models until it was reloaded.
+   *
+   * Absent on any summary not built from a live discovery pass.
+   */
+  readonly generation?: string;
   readonly label: string;
   readonly status: WebAgentStatus;
   readonly pinned?: boolean;

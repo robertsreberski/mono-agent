@@ -22,6 +22,7 @@ import type {
   WebEvent,
 } from "./types";
 import {
+  effectiveModelForAgent,
   effortLevelsForAgentModel,
   findCatalogModel,
   providerOfModel,
@@ -137,6 +138,16 @@ export const SELECTED_AGENT_STORAGE_KEY = "mono-agent.web.selected-agent";
 export const SELECTED_THREADS_STORAGE_KEY = "mono-agent.web.selected-threads";
 /** Bounded catalog walk: 5 x 100 rows is well past any advertised cap. */
 const CATALOG_PAGE_LIMIT = 5;
+/**
+ * How long a fetched provider catalog is trusted before the next request for
+ * it refetches. Nothing pushes a catalog change, and a page is only a snapshot
+ * of what one agent process served at one moment: pulling an Ollama model or
+ * editing local-provider config changes it under a process that never
+ * restarts, so `AgentSummary.generation` cannot see it. Until this, a loaded
+ * provider was never re-read at all for the life of the tab, and one tab kept
+ * offering grades a second tab had already made the server reject.
+ */
+export const CATALOG_TTL_MS = 60_000;
 
 export const RUN_PREFERENCES_STORAGE_KEY = "mono-agent.web.run-preferences";
 export const preferenceKeyForThread = (sourceId: string, threadId: string | null): string =>
@@ -147,11 +158,19 @@ export interface StoredRunPreference {
   readonly effort: string;
 }
 
-/** One provider's lazily fetched `/v1/models` slice, cached per agent. */
+/**
+ * One provider's lazily fetched `/v1/models` slice, cached per agent process.
+ *
+ * There is no cursor here on purpose. One was stored and never resumed, which
+ * made the walk look continuable when it was not; a revalidation restarts from
+ * the first page and replaces the rows, which is both simpler and the only
+ * behaviour that can drop a model the provider no longer serves.
+ */
 export interface ProviderCatalogState {
   readonly models: readonly CatalogModel[];
   readonly status: "loading" | "loaded" | "error";
-  readonly nextCursor?: string;
+  /** `Date.now()` of the walk that produced `models`; absent until one has. */
+  readonly fetchedAt?: number;
 }
 
 const asciiNoCase = (value: string): string =>
@@ -274,37 +293,212 @@ const errorMessage = (error: unknown) =>
 export const THREAD_WRITE_TIMEOUT_MS = 15_000;
 
 /**
- * Run one request under a deadline. The signal is what a healthy `fetch`
- * needs, and the race is what makes the deadline hold anyway: a transport that
- * ignores abort (a proxy holding the socket, a service worker that never
- * answers) would otherwise leave the returned promise pending forever, and the
- * whole point here is that the caller always settles.
+ * Start one request under a deadline, and hand back the two different answers
+ * a CALLER and a QUEUE need from it.
+ *
+ * `result` is the caller's. The signal is what a healthy `fetch` needs, and the
+ * race is what makes the deadline hold anyway: a transport that ignores abort
+ * (a proxy holding the socket, a service worker that never answers) would
+ * otherwise leave it pending forever, and the whole point is that the caller
+ * always settles.
+ *
+ * `settled` is the write chain's, and it is deliberately NOT the deadline. A
+ * timeout aborts a request; it does not un-send it. Advancing the queue when
+ * the deadline fired released the next write to the same conversation while the
+ * abandoned one was still on the wire, and the older mutation landed last --
+ * precisely the reordering the chain exists to prevent. A healthy `fetch`
+ * rejects the moment it sees the abort, so the two settle together. A transport
+ * that ignores abort now stalls that one conversation's queue rather than
+ * silently reordering it, and the operator sees the timeout either way. Wedging
+ * one visible queue is the honest failure; reordering writes is a silent one.
  */
-export const boundedRequest = async <T,>(
+export const startBoundedRequest = <T,>(
   run: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number = THREAD_WRITE_TIMEOUT_MS,
-): Promise<T> => {
+): { readonly result: Promise<T>; readonly settled: Promise<void> } => {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const attempt = run(controller.signal);
-  // The race may settle on the deadline first; keep the loser handled so a
-  // late rejection is not reported as unhandled.
-  attempt.catch(() => undefined);
+  // Also keeps the loser of the race handled, so a late rejection is never
+  // reported as unhandled.
+  const settled = attempt.then(() => undefined, () => undefined);
   const deadline = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       controller.abort();
       reject(new Error("The web console request timed out."));
     }, timeoutMs);
   });
-  try {
-    return await Promise.race([attempt, deadline]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
+  const result = (async () => {
+    try {
+      return await Promise.race([attempt, deadline]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  })();
+  return { result, settled };
 };
 
-/** Deleted conversations remembered long enough to reject a late response. */
-const REMOVED_THREAD_MEMORY = 256;
+/** {@link startBoundedRequest} for callers with no queue to advance. */
+export const boundedRequest = <T,>(
+  run: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number = THREAD_WRITE_TIMEOUT_MS,
+): Promise<T> => startBoundedRequest(run, timeoutMs).result;
+
+/**
+ * How long a deleted conversation stays remembered. The tombstone exists to
+ * reject responses that were already in flight when the delete landed, so it
+ * has to outlive the longest request the console can have outstanding --
+ * `THREAD_WRITE_TIMEOUT_MS` bounds every write, and reads are bounded by the
+ * transport. Ten minutes is orders of magnitude past that and costs a string.
+ */
+export const REMOVED_THREAD_TTL_MS = 10 * 60_000;
+/** Memory backstop only. See {@link createRemovedThreadRegistry}. */
+export const REMOVED_THREAD_MEMORY = 4_096;
+
+export interface RemovedThreadRegistry {
+  readonly remember: (threadId: string) => void;
+  /** Undo a {@link RemovedThreadRegistry.remember} whose delete then failed. */
+  readonly forget: (threadId: string) => void;
+  readonly has: (threadId: string) => boolean;
+  readonly size: () => number;
+}
+
+/**
+ * Deleted conversations remembered long enough to reject a late response.
+ *
+ * Eviction is by AGE, not by count. A fixed 256-entry ring dropped the oldest
+ * tombstone on the 257th delete, and a response held across that delete then
+ * put the conversation back -- the one thing a tombstone is for. The cap
+ * survives only as a memory backstop, far enough above any plausible burst that
+ * reaching it means something else is wrong; it does still drop the oldest
+ * entry when reached, and that limit is real rather than argued away.
+ */
+export const createRemovedThreadRegistry = (
+  now: () => number = () => Date.now(),
+  ttlMs: number = REMOVED_THREAD_TTL_MS,
+  cap: number = REMOVED_THREAD_MEMORY,
+): RemovedThreadRegistry => {
+  const removedAt = new Map<string, number>();
+  const expired = (at: number): boolean => now() - at >= ttlMs;
+  return {
+    remember: (threadId) => {
+      removedAt.delete(threadId);
+      removedAt.set(threadId, now());
+      // Insertion order is chronological, so the live entries are a suffix.
+      for (const [candidate, at] of removedAt) {
+        if (!expired(at)) break;
+        removedAt.delete(candidate);
+      }
+      while (removedAt.size > cap) {
+        const oldest = removedAt.keys().next().value;
+        if (oldest === undefined) break;
+        removedAt.delete(oldest);
+      }
+    },
+    forget: (threadId) => { removedAt.delete(threadId); },
+    has: (threadId) => {
+      const at = removedAt.get(threadId);
+      if (at === undefined) return false;
+      if (expired(at)) {
+        removedAt.delete(threadId);
+        return false;
+      }
+      return true;
+    },
+    size: () => removedAt.size,
+  };
+};
+
+/**
+ * The threads a response may put into the projection.
+ *
+ * Every insertion path runs through this. The tombstone used to be consulted at
+ * three of eleven of them, so a bootstrap, a thread page, or a selection fetch
+ * held across a delete put the conversation straight back into the sidebar --
+ * and `refreshNow` fires on every SSE event behind a 300 ms debounce, which
+ * makes an in-flight bootstrap across a delete ordinary rather than exotic.
+ */
+const admitThreads = (
+  removed: RemovedThreadRegistry,
+  incoming: readonly ThreadSummary[],
+): readonly ThreadSummary[] => incoming.filter((thread) => !removed.has(thread.id));
+
+export interface ThreadWriteChain {
+  readonly enqueue: <T>(
+    threadId: string,
+    run: (signal: AbortSignal) => Promise<T>,
+    timeoutMs?: number,
+  ) => Promise<T>;
+  /** Resolve once every write ISSUED BEFORE THIS CALL has left the queue. */
+  readonly settle: (threadId: string) => Promise<void>;
+  /** Conversations with work in flight. */
+  readonly pending: () => readonly string[];
+}
+
+/**
+ * Serialize every write to one conversation. Ordering is the contract: two
+ * operator choices released together landed in transport order, so the older
+ * one could overwrite the newer, and the one-time migration could land after a
+ * selection the operator had already made. Rename, archive and unarchive belong
+ * here for the same reason -- they PATCH the same row and apply the whole
+ * thread the server hands back, so a held rename response reset an archive that
+ * had already completed.
+ *
+ * A module-level factory rather than a closure over refs so the ordering
+ * invariant can be tested for what it is -- ordering -- with no React, no
+ * fifteen-second deadline, and no knowledge of what any request looks like.
+ *
+ * `onDrain` fires when a conversation's queue empties.
+ */
+export const createThreadWriteChain = (
+  onDrain: (threadId: string) => void = () => undefined,
+): ThreadWriteChain => {
+  const tails = new Map<string, Promise<unknown>>();
+  return {
+    enqueue: <T,>(
+      threadId: string,
+      run: (signal: AbortSignal) => Promise<T>,
+      timeoutMs: number = THREAD_WRITE_TIMEOUT_MS,
+    ): Promise<T> => {
+      const previous = tails.get(threadId) ?? Promise.resolve();
+      // The link is claimed synchronously, so writes issued in one tick chain
+      // in issue order, and is resolved from inside the run with the request's
+      // REAL settlement -- see `startBoundedRequest` for why that is not the
+      // deadline. It is the link, never the caller's promise, so a failed write
+      // hands the queue on rather than stranding every write behind it.
+      let handOff!: (settled: Promise<void> | undefined) => void;
+      const link = new Promise<unknown>((resolve) => { handOff = resolve; });
+      tails.set(threadId, link);
+      const next = previous.then(() => {
+        let started: { readonly result: Promise<T>; readonly settled: Promise<void> };
+        try {
+          started = startBoundedRequest(run, timeoutMs);
+        } catch (error) {
+          // A synchronous throw still has to release the queue.
+          handOff(undefined);
+          throw error;
+        }
+        handOff(started.settled);
+        return started.result;
+      });
+      void link.then(() => {
+        if (tails.get(threadId) !== link) return;
+        tails.delete(threadId);
+        onDrain(threadId);
+      });
+      return next;
+    },
+    // One await is the whole guarantee: the tail read here already stands
+    // behind every earlier write, and anything enqueued after it is by
+    // definition not something this caller was waiting for.
+    settle: async (threadId) => {
+      const tail = tails.get(threadId);
+      if (tail === undefined) return;
+      await tail;
+    },
+    pending: () => [...tails.keys()],
+  };
+};
 
 export const validateRunPreference = (
   agent: AgentSummary | null,
@@ -333,7 +527,7 @@ export const validateRunPreference = (
   )
     ? preference.model
     : "";
-  const effectiveModel = model || agent.defaultModel || advertisedModels[0] || "";
+  const effectiveModel = effectiveModelForAgent(agent, model) ?? "";
   const efforts = effortLevelsForAgentModel(
     agent,
     effectiveModel,
@@ -395,17 +589,25 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // preference and send no PATCH, deleting it while A's server override stayed
   // null. The generation therefore has to be per conversation.
   const overrideWriteRef = useRef<Map<string, number>>(new Map());
-  // The tail of each thread's serialized write chain. Every write to one
-  // conversation -- the one-time migration and each operator choice alike --
-  // queues behind the previous one, so the server sees them in the order the
-  // operator made them. Two writes released concurrently landed out of order,
-  // making the OLDER selection final.
-  const threadWriteChainRef = useRef<Map<string, Promise<unknown>>>(new Map());
+  // Every write to one conversation -- the one-time migration, each operator
+  // choice, rename, archive, unarchive -- queues behind the previous one, so
+  // the server sees them in the order the operator made them. Two writes
+  // released concurrently landed out of order, making the OLDER selection
+  // final. See `createThreadWriteChain`.
+  const threadWriteChainRef = useRef<ThreadWriteChain>(createThreadWriteChain(
+    // The write generation only guards a migration, and a migration runs INSIDE
+    // this chain: with the queue empty there is none left to guard. Kept, the
+    // map grew one entry per conversation ever written to for the life of the
+    // tab and was pruned only by a permanent delete.
+    (threadId) => { overrideWriteRef.current.delete(threadId); },
+  ));
   // Conversations deleted in this session. A response already in flight when
   // one was deleted must not put it back into the projection.
-  const removedThreadsRef = useRef<Set<string>>(new Set());
+  const removedThreadsRef = useRef<RemovedThreadRegistry>(createRemovedThreadRegistry());
   const selectedThreadRef = useRef<string | null>(null);
   const selectedAgentRef = useRef<string | null>(selectedAgentId);
+  /** The catalog scope a page walk was started under. See `catalogScope`. */
+  const catalogScopeRef = useRef<string>("");
   const skillRequestGenerationRef = useRef(0);
   const skillRegistryStateRef = useRef(skillRegistryState);
   const refreshTimerRef = useRef<number | null>(null);
@@ -435,17 +637,19 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     selectedAgentRef.current = selectedAgentId;
   }, [selectedAgentId]);
 
-  // The catalog cache is per agent; a different agent must not inherit pages.
-  useEffect(() => {
-    setCatalogByProvider({});
-    catalogInFlightRef.current.clear();
-  }, [selectedAgentId]);
-
   useEffect(() => {
     skillRegistryStateRef.current = skillRegistryState;
   }, [skillRegistryState]);
 
-  const applyBootstrap = useCallback((next: Bootstrap) => {
+  const applyBootstrap = useCallback((rawNext: Bootstrap) => {
+    // A bootstrap is a wholesale replacement, so a deleted conversation it
+    // still lists is re-added, selected, and routed to. It is also the single
+    // most likely response to be in flight across a delete: `refreshNow` issues
+    // one on every SSE event, including the one the delete itself produced.
+    const next: Bootstrap = {
+      ...rawNext,
+      threads: admitThreads(removedThreadsRef.current, rawNext.threads),
+    };
     setBootstrap(next);
     setError(null);
     setLoading(false);
@@ -508,13 +712,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   ) => {
     const page = await api.threads(sourceId, archived, before);
     const key = threadBucketKey(sourceId, archived);
+    const admitted = admitThreads(removedThreadsRef.current, page.threads);
     setBootstrap((current) => {
       if (current === null) return current;
       const retained = before === undefined
         ? current.threads.filter((thread) =>
             thread.sourceId !== sourceId || Boolean(thread.archivedAt) !== archived)
         : current.threads;
-      return { ...current, threads: mergeThreads(retained, page.threads) };
+      return { ...current, threads: mergeThreads(retained, admitted) };
     });
     setThreadCursorByBucket((current) => ({
       ...current,
@@ -533,6 +738,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     setDetailLoading(true);
     try {
       const next = await api.thread(threadId, signal);
+      if (removedThreadsRef.current.has(threadId)) return;
       if (selectedThreadRef.current === threadId) setDetail(next);
     } catch (loadError) {
       if (!signal.aborted) setActionError(errorMessage(loadError));
@@ -565,7 +771,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         selectedThreadRef.current ? api.thread(selectedThreadRef.current) : Promise.resolve(null),
       ]);
       applyBootstrap(nextBootstrap);
-      if (nextDetail && selectedThreadRef.current === nextDetail.thread.id) setDetail(nextDetail);
+      if (
+        nextDetail
+        && !removedThreadsRef.current.has(nextDetail.thread.id)
+        && selectedThreadRef.current === nextDetail.thread.id
+      ) setDetail(nextDetail);
     } catch (refreshError) {
       setActionError(errorMessage(refreshError));
     } finally {
@@ -657,6 +867,21 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const threads = bootstrap?.threads ?? [];
   const selectedAgent =
     agents.find((agent) => agent.sourceId === selectedAgentId) ?? null;
+  // The catalog cache is per agent AND per agent PROCESS. A source id outlives
+  // the process behind it: reconfigure an agent and restart it and the next
+  // generation advertises a different catalog under the same id. Keyed on the
+  // id alone, a tab kept offering the retired generation's models until it was
+  // reloaded, and `startTurn` rejected every turn that used one. The browser
+  // had nothing generation-shaped to watch until `AgentSummary.generation`.
+  const catalogScope = `${selectedAgentId ?? ""}\u0000${selectedAgent?.generation ?? ""}`;
+  // Assigned during render, like `queueRefreshRef` below: an in-flight page
+  // walk has to compare against the CURRENT scope, and an effect would leave it
+  // comparing against the previous one for a whole commit.
+  catalogScopeRef.current = catalogScope;
+  useEffect(() => {
+    setCatalogByProvider({});
+    catalogInFlightRef.current.clear();
+  }, [catalogScope]);
   const skillRegistry = skillRegistryState.sourceId === selectedAgentId
     ? skillRegistryState.registry
     : { status: "loading" as const, items: [] as const };
@@ -930,6 +1155,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       if (thread === undefined) {
         void api.thread(threadId).then((next) => {
           const canonical = next.thread;
+          // Deleted while this fetch was outstanding: selecting it now would
+          // re-add it, route to it, and persist it as this agent's selection.
+          if (removedThreadsRef.current.has(canonical.id)) return;
           setBootstrap((current) => current === null
             ? current
             : { ...current, threads: mergeThreads(current.threads, [canonical]) });
@@ -997,48 +1225,66 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       (detail?.thread.id === threadId ? detail.thread : undefined);
     if (known !== undefined) return known;
     const fetched = await api.thread(threadId);
+    if (removedThreadsRef.current.has(fetched.thread.id)) {
+      throw new Error("This conversation was deleted.");
+    }
     setBootstrap((current) => current === null
       ? current
       : { ...current, threads: mergeThreads(current.threads, [fetched.thread]) });
     return fetched.thread;
   }, [detail, threads]);
 
+  const applyThreadUpdate = useCallback((nextThread: ThreadSummary) => {
+    // A response can outlive the conversation it describes: the migration's
+    // read, an optimistic rollback, any write already in flight when the
+    // operator deleted the thread. `mergeThreads` would re-add it, so the
+    // sidebar showed a conversation the server had already destroyed.
+    if (removedThreadsRef.current.has(nextThread.id)) return;
+    setBootstrap((current) =>
+      current ? { ...current, threads: mergeThreads(current.threads, [nextThread]) } : current,
+    );
+    setDetail((current) =>
+      current?.thread.id === nextThread.id ? { ...current, thread: nextThread } : current,
+    );
+  }, []);
+
+  const enqueueThreadWrite = useCallback(<T,>(
+    threadId: string,
+    run: (signal: AbortSignal) => Promise<T>,
+    timeoutMs?: number,
+  ): Promise<T> => threadWriteChainRef.current.enqueue(threadId, run, timeoutMs), []);
+
+  const settleThreadWrites = useCallback(
+    async (threadId: string): Promise<void> => threadWriteChainRef.current.settle(threadId),
+    [],
+  );
+
   const renameThread = useCallback(async (threadId: string, title: string) => {
     const trimmed = title.trim();
     if (!trimmed) return;
     try {
-      await fetchThreadSummary(threadId);
-      const thread = await api.patchThread(threadId, { title: trimmed });
-      setBootstrap((current) =>
-        current
-          ? {
-              ...current,
-              threads: current.threads.map((item) => (item.id === thread.id ? thread : item)),
-            }
-          : current,
-      );
-      setDetail((current) =>
-        current?.thread.id === thread.id ? { ...current, thread } : current,
-      );
+      const target = await fetchThreadSummary(threadId);
+      // Queued and bounded like every other write to this conversation. Rename,
+      // archive and the override writes all PATCH the same row and all apply
+      // the COMPLETE thread the server returns, so two in flight together let
+      // the older response overwrite the newer state: holding a rename until an
+      // archive had completed put `archivedAt` back to null.
+      const thread = await enqueueThreadWrite(target.id, (signal) =>
+        api.patchThread(target.id, { title: trimmed }, signal));
+      applyThreadUpdate(thread);
     } catch (renameError) {
       setActionError(errorMessage(renameError));
       throw renameError;
     }
-  }, [fetchThreadSummary]);
+  }, [applyThreadUpdate, enqueueThreadWrite, fetchThreadSummary]);
 
   const archiveThread = useCallback(
     async (threadId: string) => {
       try {
         const target = await fetchThreadSummary(threadId);
-        const thread = await api.patchThread(target.id, { archived: true });
-        setBootstrap((current) =>
-          current
-            ? {
-                ...current,
-                threads: current.threads.map((item) => (item.id === thread.id ? thread : item)),
-              }
-            : current,
-        );
+        const thread = await enqueueThreadWrite(target.id, (signal) =>
+          api.patchThread(target.id, { archived: true }, signal));
+        applyThreadUpdate(thread);
         if (selectedThreadRef.current === target.id || selectedThreadRef.current === threadId) {
           const replacement = visibleThreads.find((item) => item.id !== target.id);
           selectedThreadRef.current = replacement?.id ?? null;
@@ -1053,21 +1299,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         throw archiveError;
       }
     },
-    [fetchThreadSummary, visibleThreads],
+    [applyThreadUpdate, enqueueThreadWrite, fetchThreadSummary, visibleThreads],
   );
 
   const unarchiveThread = useCallback(async (threadId: string) => {
     try {
       const target = await fetchThreadSummary(threadId);
-      const thread = await api.patchThread(target.id, { archived: false });
-      setBootstrap((current) =>
-        current
-          ? {
-              ...current,
-              threads: current.threads.map((item) => (item.id === thread.id ? thread : item)),
-            }
-          : current,
-      );
+      const thread = await enqueueThreadWrite(target.id, (signal) =>
+        api.patchThread(target.id, { archived: false }, signal));
+      applyThreadUpdate(thread);
       selectedThreadRef.current = thread.id;
       setSelectedThreadId(thread.id);
       persistThreadId(thread.sourceId, thread.id);
@@ -1077,19 +1317,28 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setActionError(errorMessage(unarchiveError));
       throw unarchiveError;
     }
-  }, [fetchThreadSummary]);
+  }, [applyThreadUpdate, enqueueThreadWrite, fetchThreadSummary]);
 
   const deleteThread = useCallback(async (threadId: string) => {
     try {
       const thread = await fetchThreadSummary(threadId);
-      await api.deleteThread(thread.id);
-      // Bounded: only conversations deleted in this session, oldest evicted.
-      // Enough to outlast any request that was in flight when they went.
-      const removed = removedThreadsRef.current;
-      removed.add(thread.id);
-      if (removed.size > REMOVED_THREAD_MEMORY) {
-        const oldest = removed.values().next().value;
-        if (oldest !== undefined) removed.delete(oldest);
+      // Tombstoned BEFORE the round trip, and reversed if the round trip fails.
+      // Recorded afterwards, every response that arrived DURING the delete --
+      // the bootstrap `refreshNow` issues on the delete's own SSE event, a
+      // queued write's result -- was admitted, and the conversation came back.
+      //
+      // Deliberately NOT queued behind this conversation's other writes, unlike
+      // every other mutation. A delete produces no thread snapshot for a later
+      // response to overwrite, and the tombstone already makes every earlier
+      // response inert, so ordering buys nothing here -- while queueing would
+      // make the operator wait out a stalled write's full deadline before a
+      // conversation they asked to remove disappeared. It is still bounded.
+      removedThreadsRef.current.remember(thread.id);
+      try {
+        await boundedRequest((signal) => api.deleteThread(thread.id, signal));
+      } catch (deleteRequestError) {
+        removedThreadsRef.current.forget(thread.id);
+        throw deleteRequestError;
       }
       // Nothing can write to it again, so its write generation is dead weight.
       overrideWriteRef.current.delete(thread.id);
@@ -1124,53 +1373,21 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [fetchThreadSummary, visibleThreads]);
 
-  const applyThreadUpdate = useCallback((nextThread: ThreadSummary) => {
-    // A response can outlive the conversation it describes: the migration's
-    // read, an optimistic rollback, any write already in flight when the
-    // operator deleted the thread. `mergeThreads` would re-add it, so the
-    // sidebar showed a conversation the server had already destroyed.
-    if (removedThreadsRef.current.has(nextThread.id)) return;
-    setBootstrap((current) =>
-      current ? { ...current, threads: mergeThreads(current.threads, [nextThread]) } : current,
-    );
-    setDetail((current) =>
-      current?.thread.id === nextThread.id ? { ...current, thread: nextThread } : current,
-    );
-  }, []);
-
-  /**
-   * Serialize every write to one conversation. Ordering is the contract: two
-   * operator choices released together landed in transport order, so the older
-   * one could overwrite the newer, and the one-time migration could land after
-   * a selection the operator had already made.
-   *
-   * The tail kept is the SETTLED-either-way link, never the caller's promise:
-   * a failed write must hand the queue on rather than strand every write
-   * behind it. The entry is dropped once it is the tail again, so the map
-   * holds only conversations with work in flight.
-   */
-  const enqueueThreadWrite = useCallback(<T,>(
-    threadId: string,
-    run: () => Promise<T>,
-  ): Promise<T> => {
-    const previous = threadWriteChainRef.current.get(threadId) ?? Promise.resolve();
-    const next = previous.then(run);
-    const link: Promise<unknown> = next.catch(() => undefined);
-    threadWriteChainRef.current.set(threadId, link);
-    void link.then(() => {
-      if (threadWriteChainRef.current.get(threadId) === link) {
-        threadWriteChainRef.current.delete(threadId);
-      }
-    });
-    return next;
-  }, []);
-
   const ensureProviderCatalog = useCallback(async (provider: string) => {
     const sourceId = selectedAgentId;
+    const scope = catalogScope;
     if (!sourceId || !provider) return;
     if (catalogInFlightRef.current.has(provider)) return;
     const existing = catalogByProvider[provider];
-    if (existing !== undefined && existing.status !== "error") return;
+    // Revalidate rather than trust forever. An `"error"` entry always refetches;
+    // a `"loaded"` one refetches once it is older than `CATALOG_TTL_MS`, which
+    // is the only thing that can notice a catalog changing under a live
+    // process. A `"loading"` entry is already being fetched.
+    const fresh = existing !== undefined
+      && existing.status !== "error"
+      && (existing.status === "loading"
+        || Date.now() - (existing.fetchedAt ?? 0) < CATALOG_TTL_MS);
+    if (fresh) return;
     catalogInFlightRef.current.add(provider);
     setCatalogByProvider((current) => ({
       ...current,
@@ -1187,7 +1404,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       let lastCursor: string | undefined;
       for (let page = 0; page < CATALOG_PAGE_LIMIT; page += 1) {
         const result = await api.agentModels(sourceId, provider, cursor);
-        if (selectedAgentRef.current !== sourceId) return;
+        if (selectedAgentRef.current !== sourceId || catalogScopeRef.current !== scope) return;
         collected.push(...result.models);
         // A producer that repeats a cursor would loop forever; stop instead.
         if (result.nextCursor === undefined || result.nextCursor === lastCursor) {
@@ -1197,22 +1414,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         lastCursor = result.nextCursor;
         cursor = result.nextCursor;
       }
+      const fetchedAt = Date.now();
       setCatalogByProvider((current) => {
-        const merged = new Map(
-          (current[provider]?.models ?? []).map((catalog) => [catalog.id, catalog]),
-        );
-        for (const catalog of collected) merged.set(catalog.id, catalog);
+        // Replaced, not merged into what was already held: a revalidation that
+        // merged could never drop a model the provider had stopped serving.
+        const deduped = new Map(collected.map((catalog) => [catalog.id, catalog]));
         return {
           ...current,
-          [provider]: {
-            models: [...merged.values()],
-            status: "loaded",
-            ...(cursor === undefined ? {} : { nextCursor: cursor }),
-          },
+          [provider]: { models: [...deduped.values()], status: "loaded", fetchedAt },
         };
       });
     } catch {
-      if (selectedAgentRef.current !== sourceId) return;
+      if (selectedAgentRef.current !== sourceId || catalogScopeRef.current !== scope) return;
       setCatalogByProvider((current) => ({
         ...current,
         [provider]: { models: [...(current[provider]?.models ?? [])], status: "error" },
@@ -1220,7 +1433,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     } finally {
       catalogInFlightRef.current.delete(provider);
     }
-  }, [catalogByProvider, selectedAgentId]);
+  }, [catalogByProvider, catalogScope, selectedAgentId]);
 
   // The fetched catalog pages flattened to what the effort helpers consume.
   // Every effort decision below reads this same projection, so the picker rows,
@@ -1259,7 +1472,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   );
   const model = validatedPreference.model;
   const effectiveModel = selectedAgent
-    ? model || selectedAgent.defaultModel || modelOptions[0] || ""
+    ? effectiveModelForAgent(selectedAgent, model) ?? ""
     : "";
   const effortOptions = effortLevelsForAgentModel(
     selectedAgent,
@@ -1343,9 +1556,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // Queued like any other write to this conversation, so an operator choice
     // made while it runs is sent after it rather than racing it. The body
     // reports its own failures, so nothing here can reject.
-    void enqueueThreadWrite(threadId, async () => {
+    void enqueueThreadWrite(threadId, async (signal) => {
       try {
-        const fresh = await boundedRequest((signal) => api.thread(threadId, signal));
+        const fresh = await api.thread(threadId, signal);
         if (removedThreadsRef.current.has(threadId)) {
           dropLocal();
           return;
@@ -1370,11 +1583,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         // Conditional: the read above is a projection, and only the server can
         // rule on it. Another tab may have written between the two calls, and
         // an unconditional PATCH makes this tab's stale local value final.
-        const next = await boundedRequest((signal) => api.patchThread(threadId, {
+        const next = await api.patchThread(threadId, {
           model: local.model || null,
           effort: local.effort || null,
           ifRunConfigUnset: true,
-        }, signal));
+        }, signal);
         applyThreadUpdate(next);
         dropLocal();
         setActionError(null);
@@ -1413,8 +1626,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       runEffort: "effort" in patch ? patch.effort ?? null : previous.effort,
     });
     try {
-      const next = await enqueueThreadWrite(thread.id, () =>
-        boundedRequest((signal) => api.patchThread(thread.id, patch, signal)));
+      const next = await enqueueThreadWrite(thread.id, (signal) =>
+        api.patchThread(thread.id, patch, signal));
       applyThreadUpdate(next);
       setActionError(null);
     } catch (patchError) {
@@ -1427,8 +1640,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     (next: string) => {
       if (!selectedAgentId || !preferenceKey) return;
       if (selectedThread) {
-        const nextEffectiveModel =
-          next || selectedAgent?.defaultModel || selectedAgent?.models?.[0] || "";
+        const nextEffectiveModel = selectedAgent
+          ? effectiveModelForAgent(selectedAgent, next) ?? ""
+          : "";
         const nextEfforts = effortLevelsForAgentModel(
           selectedAgent,
           nextEffectiveModel,
@@ -1444,8 +1658,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         return;
       }
       setModelByContext((current) => ({ ...current, [preferenceKey]: next }));
-      const nextEffectiveModel =
-        next || selectedAgent?.defaultModel || selectedAgent?.models?.[0] || "";
+      const nextEffectiveModel = selectedAgent
+        ? effectiveModelForAgent(selectedAgent, next) ?? ""
+        : "";
       const nextEfforts = effortLevelsForAgentModel(
         selectedAgent,
         nextEffectiveModel,
@@ -1504,6 +1719,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       if (thread.archivedAt) throw new Error("Unarchive this conversation before sending.");
       onThreadResolved?.(thread.id);
       try {
+        // The override the operator just set -- or just CLEARED -- can still be
+        // in flight. A blank selection is omitted from this POST, and the
+        // server then falls back to the conversation's persisted override, so
+        // reset-then-send ran the very override the reset was clearing. Every
+        // write issued before this send must reach the server before the send
+        // asks the server what to run on.
+        await settleThreadWrites(thread.id);
         const result = await api.startTurn(thread.id, {
           ...input,
         });
@@ -1529,7 +1751,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         throw turnError;
       }
     },
-    [createThread, queueRefresh, selectedThread],
+    [createThread, queueRefresh, selectedThread, settleThreadWrites],
   );
 
   const cancelTurn = useCallback(async () => {

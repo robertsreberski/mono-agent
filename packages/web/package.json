@@ -27,9 +27,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "pnpm run build:webapp && pnpm run build:server",
-    "build:server": "tsc -p tsconfig.build.json",
-    "build:webapp": "pnpm --dir webapp install --frozen-lockfile && pnpm --dir webapp run build",
+    "build": "pnpm --dir webapp install --frozen-lockfile && pnpm --dir webapp run build && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run src/__tests__ && pnpm --dir webapp run test"
   },

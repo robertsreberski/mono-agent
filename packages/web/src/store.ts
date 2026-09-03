@@ -49,6 +49,14 @@ import { WebConsoleError } from "./errors.js";
 import { webPushPreview } from "./push-preview.js";
 import { prepareWebStatePaths, type WebStatePathOptions, type WebStatePaths } from "./state-paths.js";
 
+/** The mutable fields of one conversation. */
+interface ThreadPatch {
+  readonly title?: string;
+  readonly archived?: boolean;
+  readonly model?: string | null;
+  readonly effort?: string | null;
+}
+
 interface AgentRow {
   source_id: string;
   label: string;
@@ -550,6 +558,14 @@ export class WebStore {
   private readonly database: DatabaseSync;
   private readonly clock: () => Date;
   private closed = false;
+  /**
+   * The agent PROCESS generation each live summary was built from, by source
+   * id. Deliberately not a column: it describes the process behind a source id
+   * right now, so a value read back from disk after a console restart would be
+   * a claim about a process nobody probed. `replaceAgents` is the only writer,
+   * and it drops ids discovery no longer reports.
+   */
+  private readonly agentGenerations = new Map<string, string>();
 
   private constructor(database: DatabaseSync, paths: WebStatePaths, clock: () => Date) {
     this.database = database;
@@ -633,6 +649,13 @@ export class WebStore {
     };
     const changed = agents.some((agent) => differs(agent, false)) || departed;
     const notable = agents.some((agent) => differs(agent, true)) || departed;
+    // After `current` is read (it carries the PREVIOUS generations) and after
+    // both comparisons, so a restart behind an otherwise identical summary
+    // still reads as a change and still reaches the browser.
+    this.agentGenerations.clear();
+    for (const agent of agents) {
+      if (agent.generation !== undefined) this.agentGenerations.set(agent.sourceId, agent.generation);
+    }
     if (!changed) return false;
     this.transaction(() => {
       this.database.prepare("UPDATE agents SET status = 'offline'").run();
@@ -683,12 +706,18 @@ export class WebStore {
 
   listAgents(): WebAgentSummary[] {
     const rows = this.database.prepare(agentSelectSql("ORDER BY pinned DESC, a.label COLLATE NOCASE, a.source_id")).all() as unknown as AgentRow[];
-    return rows.map(mapAgent);
+    return rows.map((row) => this.withGeneration(mapAgent(row)));
   }
 
   getAgent(sourceId: string): WebAgentSummary | undefined {
     const row = this.database.prepare(agentSelectSql("WHERE a.source_id = ?")).get(sourceId) as unknown as AgentRow | undefined;
-    return row === undefined ? undefined : mapAgent(row);
+    return row === undefined ? undefined : this.withGeneration(mapAgent(row));
+  }
+
+  /** Stitch the live generation onto a row read back from disk. */
+  private withGeneration(agent: WebAgentSummary): WebAgentSummary {
+    const generation = this.agentGenerations.get(agent.sourceId);
+    return generation === undefined ? agent : { ...agent, generation };
   }
 
   setAgentPinned(sourceId: string, pinned: boolean): WebAgentSummary {
@@ -1949,12 +1978,40 @@ export class WebStore {
     this.setSetting("current_thread_id", resolved);
   }
 
-  patchThread(id: string, patch: {
-    readonly title?: string;
-    readonly archived?: boolean;
-    readonly model?: string | null;
-    readonly effort?: string | null;
-  }): WebThread {
+  patchThread(id: string, patch: ThreadPatch): WebThread {
+    return this.transaction(() => this.writeThreadPatch(id, patch));
+  }
+
+  /**
+   * Compare-and-set: apply `patch` only while the conversation still carries no
+   * run override, and report which way it went.
+   *
+   * The console's one-time adoption of a browser-local override is the caller.
+   * Read and write are ONE `BEGIN IMMEDIATE` here rather than two statements
+   * either side of a service-level check: the process lease
+   * (`state-paths.ts`) is held on a different database file for the service
+   * lifetime, so it makes this process the only *service* writing, not this
+   * statement the only writer of `web.sqlite`. Any other connection to the
+   * state DB -- a maintenance script, a second console pointed at the same
+   * state dir -- could land between a bare read and a bare write, and did in a
+   * probe.
+   */
+  patchThreadIfRunConfigUnset(id: string, patch: ThreadPatch): {
+    readonly applied: boolean;
+    readonly thread: WebThread;
+  } {
+    return this.transaction(() => {
+      const resolved = this.resolveThreadId(id);
+      const current = this.requireThread(resolved);
+      if (current.runModel !== null || current.runEffort !== null) {
+        return { applied: false, thread: { ...current, sourceId: current.sourceId } };
+      }
+      return { applied: true, thread: this.writeThreadPatch(resolved, patch) };
+    });
+  }
+
+  /** The body of {@link patchThread}. Assumes an open transaction. */
+  private writeThreadPatch(id: string, patch: ThreadPatch): WebThread {
     id = this.resolveThreadId(id);
     const current = this.requireThread(id);
     const now = this.now();
@@ -1962,7 +2019,7 @@ export class WebStore {
     const archivedAt = patch.archived === undefined ? undefined : patch.archived ? now : null;
     const runModel = patch.model === undefined ? undefined : patch.model;
     const runEffort = patch.effort === undefined ? undefined : patch.effort;
-    this.transaction(() => {
+    {
       const sets: string[] = [];
       const values: Array<string | null> = [];
       if (title !== undefined) {
@@ -2004,7 +2061,7 @@ export class WebStore {
       if (patch.archived === true && this.currentThreadId() === id) {
         this.database.prepare("DELETE FROM settings WHERE key = 'current_thread_id'").run();
       }
-    });
+    }
     return { ...this.requireThread(id), sourceId: current.sourceId };
   }
 

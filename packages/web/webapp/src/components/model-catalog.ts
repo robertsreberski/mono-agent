@@ -1,5 +1,6 @@
 import {
   advertisedEffortLevels,
+  effectiveModelForAgent,
   effortLevelsForModel,
   GLOBAL_EFFORT_LEVELS,
 } from "../../../src/effort-ladder.js";
@@ -17,7 +18,14 @@ import type { AgentProvider, AgentSummary, CatalogModel } from "../types";
  * one dependency-free module they can share across the workspace boundary.
  */
 
-export { GLOBAL_EFFORT_LEVELS };
+/**
+ * Re-exported, not re-derived. `model-catalog.test.ts` asserts these are the
+ * SAME bindings as `packages/web/src/effort-ladder.ts` exports, which is what
+ * makes "one implementation" checkable: replacing the import above with a local
+ * copy that returns identical values passed every value-level assertion in this
+ * suite, and would have shipped the drift this module pair exists to prevent.
+ */
+export { advertisedEffortLevels, effectiveModelForAgent, effortLevelsForModel, GLOBAL_EFFORT_LEVELS };
 
 export type ModelSelectorEffortOption = {
   readonly id: string;
@@ -127,7 +135,10 @@ const buildEffortOptions = (
   reference: string,
   catalogModel?: CatalogModel | undefined,
 ): readonly ModelSelectorEffortOption[] => {
-  const effectiveReference = reference || agent.defaultModel || modelOptions[0] || "";
+  const effectiveReference = effectiveModelForAgent(
+    { ...agent, models: agent.models ?? modelOptions },
+    reference,
+  ) ?? "";
   const toggle =
     agent.modelOptions?.[effectiveReference]?.reasoningMode === "toggle" ||
     catalogModel?.reasoningMode === "toggle";
