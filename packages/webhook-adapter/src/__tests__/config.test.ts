@@ -358,6 +358,53 @@ describe("loadWebhookAdapterConfig", () => {
         loadWebhookAdapterConfig({ env: {}, cwd: dir }),
       ).rejects.toThrow(/name is 1000000 bytes/u);
     });
+
+    /**
+     * One folder file reaches `mergeEndpoints`, whose identity assertion rejects it without
+     * quoting it. TWO files sharing an oversized name never get there: the directory loader
+     * has its own duplicate-name check that runs first and interpolates the whole name into
+     * both the message and `details.name` -- so a config error emitted megabytes on a path the
+     * single-file case looks like it covers. The identity bound has to be enforced where the
+     * endpoint is first built, ahead of every duplicate check.
+     */
+    it("rejects two folder endpoints that share an oversized name without quoting it", async () => {
+      const webhookDir = join(dir, "webhook");
+      await mkdir(webhookDir, { recursive: true });
+      const name = "n".repeat(1_000_000);
+      await writeFile(join(webhookDir, "a.md"), `---\npath: /a\nname: ${name}\n---\nbody\n`, "utf8");
+      await writeFile(join(webhookDir, "b.md"), `---\npath: /b\nname: ${name}\n---\nbody\n`, "utf8");
+
+      const error = await loadWebhookAdapterConfig({ env: {}, cwd: dir })
+        .then(() => undefined, (thrown: unknown) => thrown as Error & { details?: Record<string, unknown> });
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error!.message).toMatch(/name is 1000000 bytes/u);
+      expect(error!.message.length).toBeLessThan(300);
+      expect(error!.message).not.toContain("nnnn");
+      for (const value of Object.values(error!.details ?? {})) {
+        expect(typeof value === "string" ? value.length : 0).toBeLessThan(300);
+      }
+    });
+
+    /** Same ordering rule for the path: a shared oversized path must not be quoted either. */
+    it("rejects two folder endpoints that share an oversized path without quoting it", async () => {
+      const webhookDir = join(dir, "webhook");
+      await mkdir(webhookDir, { recursive: true });
+      const path = `/${"p".repeat(1_000_000)}`;
+      await writeFile(join(webhookDir, "a.md"), `---\npath: ${path}\nname: a\n---\nbody\n`, "utf8");
+      await writeFile(join(webhookDir, "b.md"), `---\npath: ${path}\nname: b\n---\nbody\n`, "utf8");
+
+      const error = await loadWebhookAdapterConfig({ env: {}, cwd: dir })
+        .then(() => undefined, (thrown: unknown) => thrown as Error & { details?: Record<string, unknown> });
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error!.message).toMatch(/path from webhook folder is 1000001 bytes/u);
+      expect(error!.message.length).toBeLessThan(300);
+      expect(error!.message).not.toContain("pppp");
+      for (const value of Object.values(error!.details ?? {})) {
+        expect(typeof value === "string" ? value.length : 0).toBeLessThan(300);
+      }
+    });
   });
 });
 

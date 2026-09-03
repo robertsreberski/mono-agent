@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { normalizeOptionalString, readBoolean } from "@mono-agent/agent-contracts";
 
 import type { WebhookEndpointConfig } from "./config.js";
+import { assertEndpointIdentity } from "./endpoint-identity.js";
 import { normalizePath, WebhookAdapterError, type WebhookInvocationMode } from "./server.js";
 
 // Matches a leading YAML-style frontmatter block (`---` … `---`). Mirrors the
@@ -50,6 +51,12 @@ export async function loadWebhookEndpointsFromDirectory(
       throw invalidConfig("Unable to read webhook endpoint file.", { file: name, reason: errorToMessage(error) });
     }
     const endpoint = parseWebhookEndpointMarkdown(name, content, defaultMode);
+    // Every file, as it is parsed, and before the duplicate check below can quote a name.
+    // Two files declaring the same oversized name are a duplicate AND an unprintable identity;
+    // without this the duplicate check won the race and interpolated the whole name into both
+    // its message and its details, so a config error emitted megabytes on a path the
+    // single-file case (rejected later, in `mergeEndpoints`) looks like it already covered.
+    assertEndpointIdentity(endpoint, "webhook folder");
     const prior = seenNames.get(endpoint.name);
     if (prior !== undefined) {
       throw invalidConfig(`Duplicate webhook endpoint name "${endpoint.name}" defined by ${prior} and ${name}.`, {
