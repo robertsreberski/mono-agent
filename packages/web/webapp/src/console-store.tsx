@@ -338,6 +338,26 @@ export const startBoundedRequest = <T,>(
   return { result, settled };
 };
 
+/**
+ * One signal that aborts when either of two does.
+ *
+ * `AbortSignal.any` is Safari 17.4+, and this console is installed as an iOS
+ * PWA on whatever iPhone the operator has; a static method the phone does not
+ * have is a blank screen, not a slow read.
+ */
+const anySignal = (first: AbortSignal, second: AbortSignal): AbortSignal => {
+  const controller = new AbortController();
+  const abort = () => { controller.abort(); };
+  for (const source of [first, second]) {
+    if (source.aborted) {
+      controller.abort();
+      break;
+    }
+    source.addEventListener("abort", abort, { once: true });
+  }
+  return controller.signal;
+};
+
 /** {@link startBoundedRequest} for callers with no queue to advance. */
 export const boundedRequest = <T,>(
   run: (signal: AbortSignal) => Promise<T>,
@@ -345,67 +365,108 @@ export const boundedRequest = <T,>(
 ): Promise<T> => startBoundedRequest(run, timeoutMs).result;
 
 /**
+ * How long any one READ may take before it is abandoned.
+ *
+ * Reads had no deadline at all, and the tombstone's whole argument for a
+ * ten-minute lifetime was that it outlives every request the console can have
+ * outstanding. That argument was false: a bootstrap, a thread page or a
+ * selection fetch on a wedged transport stays pending forever, so it could
+ * answer after its tombstone expired and re-admit a conversation the server had
+ * destroyed. Bounding the read is what makes the lifetime an upper bound;
+ * generous compared to a write because a slow phone on a metered link should
+ * see a slow sidebar, not an error.
+ */
+export const THREAD_READ_TIMEOUT_MS = 60_000;
+
+/**
  * How long a deleted conversation stays remembered. The tombstone exists to
  * reject responses that were already in flight when the delete landed, so it
- * has to outlive the longest request the console can have outstanding --
- * `THREAD_WRITE_TIMEOUT_MS` bounds every write, and reads are bounded by the
- * transport. Ten minutes is orders of magnitude past that and costs a string.
+ * has to outlive the longest request the console can have outstanding.
+ *
+ * DERIVED from those deadlines rather than asserted next to them: the previous
+ * ten minutes was a comment claiming a relationship the code did not enforce,
+ * and the read half of the claim was not even true. Written this way, raising
+ * either deadline raises the lifetime with it and the relationship cannot
+ * silently invert.
  */
-export const REMOVED_THREAD_TTL_MS = 10 * 60_000;
-/** Memory backstop only. See {@link createRemovedThreadRegistry}. */
-export const REMOVED_THREAD_MEMORY = 4_096;
+export const REMOVED_THREAD_TTL_MS =
+  10 * Math.max(THREAD_READ_TIMEOUT_MS, THREAD_WRITE_TIMEOUT_MS);
 
 export interface RemovedThreadRegistry {
-  readonly remember: (threadId: string) => void;
-  /** Undo a {@link RemovedThreadRegistry.remember} whose delete then failed. */
-  readonly forget: (threadId: string) => void;
+  readonly remember: (threadId: string, suppressed: ThreadSummary) => void;
+  /**
+   * Record a projection this tombstone kept out. A delete that then FAILS has
+   * to hand back what it hid: responses that arrived while it was pending had
+   * already filtered the conversation out, so forgetting the tombstone alone
+   * left the sidebar missing a conversation the server still has.
+   */
+  readonly suppress: (threadId: string, suppressed: ThreadSummary) => void;
+  /**
+   * Undo a {@link RemovedThreadRegistry.remember} whose delete then failed, and
+   * hand back the newest projection this tombstone suppressed so the caller can
+   * put it back.
+   */
+  readonly forget: (threadId: string) => ThreadSummary | undefined;
   readonly has: (threadId: string) => boolean;
   readonly size: () => number;
+}
+
+interface RemovedThread {
+  readonly at: number;
+  suppressed: ThreadSummary;
 }
 
 /**
  * Deleted conversations remembered long enough to reject a late response.
  *
- * Eviction is by AGE, not by count. A fixed 256-entry ring dropped the oldest
- * tombstone on the 257th delete, and a response held across that delete then
- * put the conversation back -- the one thing a tombstone is for. The cap
- * survives only as a memory backstop, far enough above any plausible burst that
- * reaching it means something else is wrong; it does still drop the oldest
- * entry when reached, and that limit is real rather than argued away.
+ * Eviction is by AGE ALONE. A fixed 256-entry ring dropped the oldest tombstone
+ * on the 257th delete, and a response held across that delete then put the
+ * conversation back -- the one thing a tombstone is for. A 4,096-entry backstop
+ * was kept after that and had exactly the same defect at a higher threshold:
+ * it, too, could drop a tombstone that was still protecting something. So there
+ * is no count limit. Age already bounds the map -- every entry is swept once it
+ * expires, so its size is the delete rate times the lifetime, and reaching even
+ * a few thousand live entries would take thousands of deletes inside ten
+ * minutes, which no operator produces and which would cost a few hundred
+ * kilobytes if it happened. Bounded memory is not worth resurrecting a
+ * conversation the operator deleted.
  */
 export const createRemovedThreadRegistry = (
   now: () => number = () => Date.now(),
   ttlMs: number = REMOVED_THREAD_TTL_MS,
-  cap: number = REMOVED_THREAD_MEMORY,
 ): RemovedThreadRegistry => {
-  const removedAt = new Map<string, number>();
-  const expired = (at: number): boolean => now() - at >= ttlMs;
+  const removed = new Map<string, RemovedThread>();
+  const expired = (entry: RemovedThread): boolean => now() - entry.at >= ttlMs;
+  const live = (threadId: string): RemovedThread | undefined => {
+    const entry = removed.get(threadId);
+    if (entry === undefined) return undefined;
+    if (expired(entry)) {
+      removed.delete(threadId);
+      return undefined;
+    }
+    return entry;
+  };
   return {
-    remember: (threadId) => {
-      removedAt.delete(threadId);
-      removedAt.set(threadId, now());
+    remember: (threadId, suppressed) => {
+      removed.delete(threadId);
+      removed.set(threadId, { at: now(), suppressed });
       // Insertion order is chronological, so the live entries are a suffix.
-      for (const [candidate, at] of removedAt) {
-        if (!expired(at)) break;
-        removedAt.delete(candidate);
-      }
-      while (removedAt.size > cap) {
-        const oldest = removedAt.keys().next().value;
-        if (oldest === undefined) break;
-        removedAt.delete(oldest);
+      for (const [candidate, entry] of removed) {
+        if (!expired(entry)) break;
+        removed.delete(candidate);
       }
     },
-    forget: (threadId) => { removedAt.delete(threadId); },
-    has: (threadId) => {
-      const at = removedAt.get(threadId);
-      if (at === undefined) return false;
-      if (expired(at)) {
-        removedAt.delete(threadId);
-        return false;
-      }
-      return true;
+    suppress: (threadId, suppressed) => {
+      const entry = live(threadId);
+      if (entry !== undefined) entry.suppressed = suppressed;
     },
-    size: () => removedAt.size,
+    forget: (threadId) => {
+      const entry = live(threadId);
+      removed.delete(threadId);
+      return entry?.suppressed;
+    },
+    has: (threadId) => live(threadId) !== undefined,
+    size: () => removed.size,
   };
 };
 
@@ -417,11 +478,18 @@ export const createRemovedThreadRegistry = (
  * held across a delete put the conversation straight back into the sidebar --
  * and `refreshNow` fires on every SSE event behind a 300 ms debounce, which
  * makes an in-flight bootstrap across a delete ordinary rather than exotic.
+ *
+ * What it filters out it also hands to the tombstone, because a delete that
+ * fails has to be able to put back everything its tombstone hid.
  */
 const admitThreads = (
   removed: RemovedThreadRegistry,
   incoming: readonly ThreadSummary[],
-): readonly ThreadSummary[] => incoming.filter((thread) => !removed.has(thread.id));
+): readonly ThreadSummary[] => incoming.filter((thread) => {
+  if (!removed.has(thread.id)) return true;
+  removed.suppress(thread.id, thread);
+  return false;
+});
 
 export interface ThreadWriteChain {
   readonly enqueue: <T>(
@@ -429,7 +497,20 @@ export interface ThreadWriteChain {
     run: (signal: AbortSignal) => Promise<T>,
     timeoutMs?: number,
   ) => Promise<T>;
-  /** Resolve once every write ISSUED BEFORE THIS CALL has left the queue. */
+  /**
+   * Resolve once every write ISSUED BEFORE THIS CALL has left the queue -- and
+   * REJECT if the last of them did not reach the server.
+   *
+   * Settlement used to collapse fulfilment and rejection to `void`, which made
+   * "everything I sent has landed" indistinguishable from "everything I sent
+   * has stopped". A send waits on this precisely so the server is not asked
+   * what to run on until the operator's newest run settings are there; after a
+   * failed reset the server still holds the OLD override and answers with it,
+   * so proceeding ran the very configuration the operator had just cleared.
+   *
+   * A later write that SUCCEEDS clears the failure: it is the operator's newest
+   * intent and the server has it, so it must not wedge the composer.
+   */
   readonly settle: (threadId: string) => Promise<void>;
   /** Conversations with work in flight. */
   readonly pending: () => readonly string[];
@@ -454,6 +535,11 @@ export const createThreadWriteChain = (
   onDrain: (threadId: string) => void = () => undefined,
 ): ThreadWriteChain => {
   const tails = new Map<string, Promise<unknown>>();
+  // The last write to this conversation that did not reach the server, still
+  // unobserved by a `settle`. Recorded from INSIDE the request rather than off
+  // the caller's promise, so it is already written by the time the queue link
+  // resolves and `settle` cannot read it a microtask too early.
+  const unlanded = new Map<string, unknown>();
   return {
     enqueue: <T,>(
       threadId: string,
@@ -461,6 +547,10 @@ export const createThreadWriteChain = (
       timeoutMs: number = THREAD_WRITE_TIMEOUT_MS,
     ): Promise<T> => {
       const previous = tails.get(threadId) ?? Promise.resolve();
+      const recorded = (signal: AbortSignal): Promise<T> => run(signal).then(
+        (value) => { unlanded.delete(threadId); return value; },
+        (error: unknown) => { unlanded.set(threadId, error); throw error; },
+      );
       // The link is claimed synchronously, so writes issued in one tick chain
       // in issue order, and is resolved from inside the run with the request's
       // REAL settlement -- see `startBoundedRequest` for why that is not the
@@ -472,7 +562,7 @@ export const createThreadWriteChain = (
       const next = previous.then(() => {
         let started: { readonly result: Promise<T>; readonly settled: Promise<void> };
         try {
-          started = startBoundedRequest(run, timeoutMs);
+          started = startBoundedRequest(recorded, timeoutMs);
         } catch (error) {
           // A synchronous throw still has to release the queue.
           handOff(undefined);
@@ -493,8 +583,20 @@ export const createThreadWriteChain = (
     // definition not something this caller was waiting for.
     settle: async (threadId) => {
       const tail = tails.get(threadId);
-      if (tail === undefined) return;
+      // Nothing outstanding: whatever failed earlier has already been reported
+      // to the operator and rolled back, so the projection they are looking at
+      // is the server's own state and there is nothing to hold back.
+      if (tail === undefined) {
+        unlanded.delete(threadId);
+        return;
+      }
       await tail;
+      if (!unlanded.has(threadId)) return;
+      const error = unlanded.get(threadId);
+      unlanded.delete(threadId);
+      throw new Error(
+        `An earlier change to this conversation did not reach the server: ${errorMessage(error)}`,
+      );
     },
     pending: () => [...tails.keys()],
   };
@@ -685,7 +787,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   const loadBootstrap = useCallback(async () => {
     try {
-      const next = await api.bootstrap();
+      // Bounded like every other read. See `THREAD_READ_TIMEOUT_MS`: the
+      // tombstone's lifetime is only an upper bound on late responses while
+      // the responses themselves have one.
+      const next = await boundedRequest((signal) => api.bootstrap(signal), THREAD_READ_TIMEOUT_MS);
       applyBootstrap(next);
       setConnection("live");
     } catch (loadError) {
@@ -710,7 +815,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     archived: boolean,
     before?: string,
   ) => {
-    const page = await api.threads(sourceId, archived, before);
+    const page = await boundedRequest(
+      (signal) => api.threads(sourceId, archived, before, signal),
+      THREAD_READ_TIMEOUT_MS,
+    );
     const key = threadBucketKey(sourceId, archived);
     const admitted = admitThreads(removedThreadsRef.current, page.threads);
     setBootstrap((current) => {
@@ -737,7 +845,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const loadThread = useCallback(async (threadId: string, signal: AbortSignal) => {
     setDetailLoading(true);
     try {
-      const next = await api.thread(threadId, signal);
+      const next = await boundedRequest(
+        (deadline) => api.thread(threadId, anySignal(signal, deadline)),
+        THREAD_READ_TIMEOUT_MS,
+      );
       if (removedThreadsRef.current.has(threadId)) return;
       if (selectedThreadRef.current === threadId) setDetail(next);
     } catch (loadError) {
@@ -766,9 +877,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
     refreshInFlightRef.current = true;
     try {
+      const selectedForRefresh = selectedThreadRef.current;
       const [nextBootstrap, nextDetail] = await Promise.all([
-        api.bootstrap(),
-        selectedThreadRef.current ? api.thread(selectedThreadRef.current) : Promise.resolve(null),
+        boundedRequest((signal) => api.bootstrap(signal), THREAD_READ_TIMEOUT_MS),
+        selectedForRefresh
+          ? boundedRequest(
+              (signal) => api.thread(selectedForRefresh, signal),
+              THREAD_READ_TIMEOUT_MS,
+            )
+          : Promise.resolve(null),
       ]);
       applyBootstrap(nextBootstrap);
       if (
@@ -993,8 +1110,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         setCronRunCursorByChannel((current) => Object.prototype.hasOwnProperty.call(current, channelKey)
           ? current
           : { ...current, [channelKey]: page.nextCursor ?? null });
-        const nextDetail = await api.thread(selectedCronThreadId!);
-        if (selectedThreadRef.current === nextDetail.thread.id) setDetail(nextDetail);
+        const nextDetail = await boundedRequest(
+          (signal) => api.thread(selectedCronThreadId!, signal),
+          THREAD_READ_TIMEOUT_MS,
+        );
+        if (
+          selectedThreadRef.current === nextDetail.thread.id
+          && !removedThreadsRef.current.has(nextDetail.thread.id)
+        ) setDetail(nextDetail);
       }
     } catch (cronError) {
       setCronError(errorMessage(cronError));
@@ -1153,7 +1276,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setSelectedThreadId(threadId);
       setActionError(null);
       if (thread === undefined) {
-        void api.thread(threadId).then((next) => {
+        void boundedRequest(
+          (signal) => api.thread(threadId, signal),
+          THREAD_READ_TIMEOUT_MS,
+        ).then((next) => {
           const canonical = next.thread;
           // Deleted while this fetch was outstanding: selecting it now would
           // re-add it, route to it, and persist it as this agent's selection.
@@ -1188,7 +1314,19 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const createThread = useCallback(async () => {
     if (!selectedAgentId) throw new Error("Select an agent before starting a conversation.");
     try {
-      const thread = await api.createThread(selectedAgentId);
+      const thread = await boundedRequest(
+        (signal) => api.createThread(selectedAgentId, signal),
+      );
+      // The server commits and emits `threads.changed` before this POST
+      // answers, so by the time it does the console may have admitted this
+      // conversation from an SSE refresh -- and the operator may have deleted
+      // it. Prepending the response blind therefore either listed it twice or
+      // undid the delete. Every other insertion path was routed through the
+      // tombstone and `mergeThreads`; this one was not.
+      if (removedThreadsRef.current.has(thread.id)) {
+        removedThreadsRef.current.suppress(thread.id, thread);
+        throw new Error("This conversation was deleted.");
+      }
       const draftPreferenceKey = preferenceKeyForThread(selectedAgentId, null);
       const threadPreferenceKey = preferenceKeyForThread(selectedAgentId, thread.id);
       setModelByContext((current) => {
@@ -1209,7 +1347,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setShowArchived(false);
       updateThreadRoute(thread);
       setBootstrap((current) =>
-        current ? { ...current, threads: [thread, ...current.threads] } : current,
+        current ? { ...current, threads: mergeThreads(current.threads, [thread]) } : current,
       );
       setDetail({ thread, messages: [] });
       setActionError(null);
@@ -1224,8 +1362,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const known = threads.find((candidate) => candidate.id === threadId) ??
       (detail?.thread.id === threadId ? detail.thread : undefined);
     if (known !== undefined) return known;
-    const fetched = await api.thread(threadId);
+    const fetched = await boundedRequest(
+      (signal) => api.thread(threadId, signal),
+      THREAD_READ_TIMEOUT_MS,
+    );
     if (removedThreadsRef.current.has(fetched.thread.id)) {
+      removedThreadsRef.current.suppress(fetched.thread.id, fetched.thread);
       throw new Error("This conversation was deleted.");
     }
     setBootstrap((current) => current === null
@@ -1239,7 +1381,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // read, an optimistic rollback, any write already in flight when the
     // operator deleted the thread. `mergeThreads` would re-add it, so the
     // sidebar showed a conversation the server had already destroyed.
-    if (removedThreadsRef.current.has(nextThread.id)) return;
+    if (removedThreadsRef.current.has(nextThread.id)) {
+      removedThreadsRef.current.suppress(nextThread.id, nextThread);
+      return;
+    }
     setBootstrap((current) =>
       current ? { ...current, threads: mergeThreads(current.threads, [nextThread]) } : current,
     );
@@ -1333,11 +1478,32 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // response inert, so ordering buys nothing here -- while queueing would
       // make the operator wait out a stalled write's full deadline before a
       // conversation they asked to remove disappeared. It is still bounded.
-      removedThreadsRef.current.remember(thread.id);
+      const wasSelected = selectedThreadRef.current === thread.id
+        || selectedThreadRef.current === threadId;
+      removedThreadsRef.current.remember(thread.id, thread);
       try {
         await boundedRequest((signal) => api.deleteThread(thread.id, signal));
       } catch (deleteRequestError) {
-        removedThreadsRef.current.forget(thread.id);
+        // Forgetting the tombstone is not undoing the delete. Every response
+        // that answered while it stood -- the bootstrap `refreshNow` issues on
+        // the delete's own SSE event above all -- has already filtered this
+        // conversation out of the projection, and nothing else puts it back:
+        // the shipped test only proved that a LATER refresh eventually would.
+        // The tombstone hands back the newest projection it suppressed, so the
+        // repair happens here, where the failure is.
+        const suppressed = removedThreadsRef.current.forget(thread.id);
+        applyThreadUpdate(suppressed ?? thread);
+        // A bootstrap that answered while it was tombstoned also re-resolved
+        // the selection over a sidebar this conversation was missing from, so
+        // restoring the row without the selection left the operator staring at
+        // an empty pane. Only when nothing else has been selected since: the
+        // operator's own later choice outranks this repair.
+        if (wasSelected && selectedThreadRef.current === null) {
+          selectedThreadRef.current = thread.id;
+          setSelectedThreadId(thread.id);
+          persistThreadId(thread.sourceId, thread.archivedAt ? null : thread.id);
+          updateThreadRoute(suppressed ?? thread, true);
+        }
         throw deleteRequestError;
       }
       // Nothing can write to it again, so its write generation is dead weight.
@@ -1371,7 +1537,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setActionError(errorMessage(deleteError));
       throw deleteError;
     }
-  }, [fetchThreadSummary, visibleThreads]);
+  }, [applyThreadUpdate, fetchThreadSummary, visibleThreads]);
 
   const ensureProviderCatalog = useCallback(async (provider: string) => {
     const sourceId = selectedAgentId;
@@ -1539,6 +1705,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     };
     if (local.model === "" && local.effort === "") return;
     const threadId = selectedThread.id;
+    // Already tombstoned: do not start, and above all do not MARK. The delete
+    // owns this conversation's preference key from here -- it removes it when
+    // it lands and leaves it alone when it fails -- and marking on the way past
+    // would spend the one-time adoption on a conversation that may be coming
+    // back.
+    if (removedThreadsRef.current.has(threadId)) return;
     const writeGeneration = overrideWriteRef.current.get(threadId) ?? 0;
     migratedKeysRef.current.add(preferenceKey);
     const dropLocal = () => {
@@ -1560,7 +1732,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       try {
         const fresh = await api.thread(threadId, signal);
         if (removedThreadsRef.current.has(threadId)) {
-          dropLocal();
+          // Tombstoned while this read was out. DEFER, do not complete: the
+          // adoption never happened, so dropping the operator's browser-local
+          // choice here destroyed the only remaining copy of it. The delete
+          // itself removes this conversation's preference key when it lands,
+          // and when it FAILS the conversation is still theirs and so is the
+          // preference -- which a completed migration had already erased,
+          // leaving the server override unset, the local copy gone and the key
+          // marked migrated, unrecoverable by reload.
+          migratedKeysRef.current.delete(preferenceKey);
           return;
         }
         if (

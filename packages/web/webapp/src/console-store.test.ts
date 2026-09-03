@@ -6,10 +6,13 @@ import {
   createThreadWriteChain,
   preferenceKeyForThread,
   readStoredRunPreferences,
+  REMOVED_THREAD_TTL_MS,
   resolveBootstrapSelection,
   RUN_PREFERENCES_STORAGE_KEY,
   sortAgentsPinnedFirst,
   startBoundedRequest,
+  THREAD_READ_TIMEOUT_MS,
+  THREAD_WRITE_TIMEOUT_MS,
   validateRunPreference,
 } from "./console-store";
 import { effortLevelsForAgentModel, GLOBAL_EFFORT_LEVELS } from "./components/model-catalog";
@@ -446,54 +449,88 @@ describe("createThreadWriteChain", () => {
 });
 
 describe("createRemovedThreadRegistry", () => {
-  it("keeps every tombstone that is younger than its lifetime, however many there are", async () => {
+  const summary = (id: string) => thread(id, "alpha");
+
+  it("keeps every tombstone that is younger than its lifetime, however many there are", () => {
     // The invariant: a tombstone outlives any request that could have been
     // issued before its delete. A 256-entry ring broke that at the 257th
     // delete -- the oldest protection was dropped while it was still needed,
-    // and a response held across that delete resurrected the conversation.
+    // and a response held across that delete resurrected the conversation. The
+    // 4,096-entry backstop that replaced it had the same defect at a higher
+    // threshold, so there is no count limit at all now: 8,192 live tombstones
+    // are 8,192 live tombstones.
     let clock = 0;
-    const registry = createRemovedThreadRegistry(() => clock, 10_000, 4_096);
-    for (let index = 0; index < 1_000; index += 1) {
+    const registry = createRemovedThreadRegistry(() => clock, 10_000);
+    for (let index = 0; index < 8_192; index += 1) {
       clock += 1;
-      registry.remember(`thread-${String(index)}`);
+      registry.remember(`thread-${String(index)}`, summary(`thread-${String(index)}`));
     }
 
-    expect(registry.size()).toBe(1_000);
-    for (const index of [0, 1, 255, 256, 257, 999]) {
+    expect(registry.size()).toBe(8_192);
+    for (const index of [0, 1, 255, 256, 257, 4_095, 4_096, 4_097, 8_191]) {
       expect([index, registry.has(`thread-${String(index)}`)]).toEqual([index, true]);
     }
   });
 
   it("forgets a tombstone only once it is older than the lifetime", () => {
     let clock = 1_000;
-    const registry = createRemovedThreadRegistry(() => clock, 10_000, 4_096);
-    registry.remember("old");
+    const registry = createRemovedThreadRegistry(() => clock, 10_000);
+    registry.remember("old", summary("old"));
     clock += 9_999;
     expect(registry.has("old")).toBe(true);
     clock += 1;
     expect(registry.has("old")).toBe(false);
   });
 
-  it("evicts expired entries on write and still honours the memory backstop", () => {
+  it("evicts expired entries on write, and only expired ones", () => {
     let clock = 0;
-    const registry = createRemovedThreadRegistry(() => clock, 100, 3);
-    registry.remember("expired");
+    const registry = createRemovedThreadRegistry(() => clock, 100);
+    registry.remember("expired", summary("expired"));
     clock += 200;
-    registry.remember("kept");
+    registry.remember("kept", summary("kept"));
     expect(registry.size()).toBe(1);
     expect(registry.has("expired")).toBe(false);
 
-    for (const id of ["a", "b", "c"]) registry.remember(id);
-    expect(registry.size()).toBe(3);
-    expect(registry.has("kept")).toBe(false);
+    for (const id of ["a", "b", "c"]) registry.remember(id, summary(id));
+    expect(registry.size()).toBe(4);
+    // "kept" is younger than its lifetime, so no number of later deletes may
+    // drop it: that is what a count-based backstop got wrong.
+    expect(registry.has("kept")).toBe(true);
     expect([registry.has("a"), registry.has("b"), registry.has("c")]).toEqual([true, true, true]);
   });
 
-  it("reverses a tombstone whose delete failed", () => {
+  it("hands back the newest projection it suppressed when its delete failed", () => {
+    // A failed delete has to restore what its tombstone hid, not merely stop
+    // hiding it: the responses that were filtered while it stood are the only
+    // reason the conversation left the sidebar.
     const registry = createRemovedThreadRegistry();
-    registry.remember("thread-a");
+    const original = summary("thread-a");
+    registry.remember("thread-a", original);
     expect(registry.has("thread-a")).toBe(true);
-    registry.forget("thread-a");
+
+    const newer = { ...original, title: "Renamed while the delete was pending" };
+    registry.suppress("thread-a", newer);
+    expect(registry.forget("thread-a")).toEqual(newer);
     expect(registry.has("thread-a")).toBe(false);
+    // Nothing to hand back once it is gone, and no entry recreated by asking.
+    expect(registry.forget("thread-a")).toBeUndefined();
+    expect(registry.size()).toBe(0);
+  });
+
+  it("never records a suppression against an expired or absent tombstone", () => {
+    let clock = 0;
+    const registry = createRemovedThreadRegistry(() => clock, 100);
+    registry.remember("gone", summary("gone"));
+    clock += 100;
+    registry.suppress("gone", { ...summary("gone"), title: "late" });
+    expect(registry.has("gone")).toBe(false);
+    expect(registry.size()).toBe(0);
+  });
+
+  it("derives its lifetime from the deadlines it has to outlive", () => {
+    // The old ten minutes was a comment asserting a relationship the code did
+    // not hold: reads had no deadline at all, so no lifetime bounded them.
+    expect(REMOVED_THREAD_TTL_MS).toBeGreaterThan(THREAD_READ_TIMEOUT_MS);
+    expect(REMOVED_THREAD_TTL_MS).toBeGreaterThan(THREAD_WRITE_TIMEOUT_MS);
   });
 });

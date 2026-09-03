@@ -2394,10 +2394,24 @@ export class WeightedTurnBudget {
  * operator endpoint and pid, and the console has no reason to hand those to a
  * page. The token only has to be stable while one process lives and different
  * once it is replaced, which a digest of those three fields is.
+ *
+ * Length-prefixed rather than `|`-joined. A separator that can occur inside a
+ * field is not a separator: two different accepted tuples whose parts happen to
+ * contain the delimiter flatten to the same string and hash to the same token,
+ * and two distinct processes sharing a generation is precisely the state the
+ * token exists to make impossible. Nothing first-party produces such a tuple
+ * today, which is why this is robustness rather than a live defect --- but a
+ * digest whose only defence is what its inputs happen to look like is one
+ * unrelated change away from being wrong.
  */
-function agentGeneration(agent: DiscoveredOperatorAgent): string {
+export function agentGeneration(agent: DiscoveredOperatorAgent): string {
+  const parts = [
+    agent.baseUrl ?? "",
+    String(agent.source.pid ?? ""),
+    agent.source.startedAt,
+  ];
   return createHash("sha256")
-    .update([agent.baseUrl ?? "", agent.source.pid ?? "", agent.source.startedAt].join("|"))
+    .update(parts.map((part) => `${String(part.length)}:${part}`).join(""))
     .digest("hex")
     .slice(0, 16);
 }
