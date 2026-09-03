@@ -14,9 +14,17 @@ import type { Bullet } from "./types.js";
  */
 export const REMEMBER_ID_PREFIX = "RM-";
 
-/** Whether this canonical id was minted by an explicit `Remember` write. */
+/**
+ * Whether this canonical id was minted by an explicit `Remember` write.
+ *
+ * The complete content-hash identity is validated, not just the prefix: a
+ * legacy or hand-authored bullet named `RM-anything` must not inherit the
+ * rebuild exemption that a real remembered fact gets.
+ */
+const REMEMBERED_MEMORY_ID = /^RM-[0-9a-f]{64}$/u;
+
 export function isRememberedMemoryId(id: string): boolean {
-  return id.startsWith(REMEMBER_ID_PREFIX);
+  return REMEMBERED_MEMORY_ID.test(id);
 }
 
 /**
@@ -77,15 +85,26 @@ export function findCanonicalMemoryBullet(
   const matches: CanonicalBulletLocation[] = [];
   let scannedBytes = 0;
   for (const file of files) {
-    const snapshot = readCanonicalFileSnapshot(root, file);
-    if (snapshot === undefined) throw new Error(`memory-bujo: canonical source "${file}" disappeared.`);
-    scannedBytes += Buffer.byteLength(snapshot.content, "utf8");
-    if (scannedBytes > MAX_SCANNED_CANONICAL_BYTES) {
+    // Bound the read itself: checking the total after loading would already
+    // have materialized an oversized file into memory under the write locks.
+    const remainingBytes = MAX_SCANNED_CANONICAL_BYTES - scannedBytes;
+    if (remainingBytes <= 0) {
       throw new Error(
         `memory-bujo: canonical source exceeds the ${MAX_SCANNED_CANONICAL_BYTES}-byte duplicate-scan `
         + "bound; consolidate or archive older files.",
       );
     }
+    let snapshot;
+    try {
+      snapshot = readCanonicalFileSnapshot(root, file, { maxBytes: remainingBytes });
+    } catch (error) {
+      throw new Error(
+        `memory-bujo: canonical source "${file}" exceeds the remaining duplicate-scan byte budget: `
+        + `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (snapshot === undefined) throw new Error(`memory-bujo: canonical source "${file}" disappeared.`);
+    scannedBytes += Buffer.byteLength(snapshot.content, "utf8");
     for (const bullet of parseDailyFile(snapshot.content).bullets) {
       if (bullet.id === id) matches.push({ file, bullet });
     }

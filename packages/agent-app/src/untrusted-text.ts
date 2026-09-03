@@ -28,14 +28,15 @@ const SECRET_LIKE_VALUE = new RegExp(
     // Slack bot/user/app-level tokens.
     String.raw`xox[baprs]-[A-Za-z0-9-]{12,}`,
     String.raw`xapp-[A-Za-z0-9-]{12,}`,
-    // AWS access key ids.
-    String.raw`AKIA[A-Z0-9]{16}`,
+    // AWS access key ids, long-term (AKIA) and temporary STS (ASIA).
+    String.raw`A(?:KIA|SIA)[A-Z0-9]{16}`,
     // Telegram bot tokens.
     String.raw`\d{6,12}:[A-Za-z0-9_-]{20,}`,
   ].map((shape) => String.raw`\b${shape}\b`).join("|")
     // Bearer/Basic carry their own delimiter, so they are matched separately
-    // from the word-bounded shapes above.
-    + String.raw`|\b(?:Bearer|Basic)\s+\S{12,}`,
+    // from the word-bounded shapes above. The payload must look like a token:
+    // `\S{12,}` also matched ordinary prose such as "Basic authentication".
+    + String.raw`|\b(?:Bearer|Basic)\s+[A-Za-z0-9+/._~-]{16,}={0,2}`,
   // Case-insensitive: a lowercase `bearer ` or `akia…` is the same credential.
   "iu",
 );

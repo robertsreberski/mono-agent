@@ -221,7 +221,11 @@ export class MemoryRetrievalService implements MemoryStore {
     // returning its stale empty result for the rest of the run — contradicting
     // the immediate-recall guarantee the tool reports. Drop the caches rather
     // than try to predict which queries this fact should now match.
-    this.releaseAllTurns();
+    //
+    // An already-stored fact changed nothing durable, so leave the caches
+    // alone: clearing them there would make concurrent turns repeat identical
+    // backend searches and re-record access telemetry.
+    if (!result.duplicate) this.releaseAllTurns();
     return result;
   }
 

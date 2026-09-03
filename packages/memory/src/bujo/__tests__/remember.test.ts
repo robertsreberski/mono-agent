@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fakeEmbeddings } from "./helpers.js";
 import { createBujoMemoryStore } from "../store.js";
 import { appendBullet, dailyFilePath, normalizeMemoryText, normalizedContentHash } from "../daily.js";
-import { parseDailyFile } from "../grammar.js";
+import { parseDailyFile, serializeBullet } from "../grammar.js";
 import { safeRebuildMemoryIndex } from "../rebuild.js";
 import type { BujoTier } from "../types.js";
 
@@ -226,6 +226,40 @@ describe("BujoMemoryStore.remember — data-safety guards", () => {
     }
   });
 
+  it("recovers a bullet that already lives in a root-legacy file", async () => {
+    // The shadowing guard must only block CREATING daily/<day>.md. Running it
+    // before the canonical lookup made an ordinary recovery impossible.
+    const dir = root("legacy-recover");
+    const text = "Robert keeps this fact in the legacy layout.";
+    const store = storeFor(dir, "lite", () => FIXED);
+    try {
+      const bullet = {
+        id: `RM-${normalizedContentHash(text)}`,
+        type: "note" as const,
+        status: "open" as const,
+        text,
+        salience: 0.8,
+        isInsight: false,
+        createdAt: FIXED.toISOString(),
+        refs: [`sha256:${normalizedContentHash(text)}`],
+      };
+      // Same bullet, but in the root-level legacy file and absent from the index.
+      writeFileSync(
+        join(dir, "2026-09-03.md"),
+        `# 2026-09-03\n\n${serializeBullet(bullet)}\n`,
+        "utf8",
+      );
+
+      const recovered = await store.remember("conv-1", text);
+      expect(recovered.recovered).toBe(true);
+      expect(recovered.source).toBe("2026-09-03.md");
+      // Recovery indexes without creating the shadowing modern file.
+      expect(existsSync(dailyFilePath(dir, FIXED))).toBe(false);
+    } finally {
+      await store.close();
+    }
+  });
+
   it("refuses to re-store an explicitly forgotten fact instead of calling it a duplicate", async () => {
     const dir = root("forgotten");
     const store = storeFor(dir, "lite", () => FIXED);
@@ -242,6 +276,33 @@ describe("BujoMemoryStore.remember — data-safety guards", () => {
 
       // Recall filters it, so "already remembered" would be an unreadable success.
       await expect(store.remember("conv-1", text)).rejects.toThrow(/explicitly forgotten/u);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("does not exempt a hand-authored RM- bullet from the legacy audit filter", async () => {
+    // Only a real content-hash identity earns the rebuild exemption; otherwise
+    // any bullet named `RM-anything` could smuggle legacy audit prose through.
+    const dir = root("fake-identity");
+    const text = "Host-observed completed turn. Not a real remembered fact.";
+    const bullet = {
+      id: "RM-not-a-hash",
+      type: "note" as const,
+      status: "open" as const,
+      text,
+      salience: 0.5,
+      isInsight: false,
+      createdAt: FIXED.toISOString(),
+      refs: [],
+    };
+    appendBullet(dir, bullet, FIXED);
+
+    await safeRebuildMemoryIndex({ root: dir, tier: "bujo", embeddings: fakeEmbeddings(8), dim: 8 });
+
+    const store = storeFor(dir, "bujo", () => FIXED);
+    try {
+      expect(store["db"].get("RM-not-a-hash")).toBeUndefined();
     } finally {
       await store.close();
     }

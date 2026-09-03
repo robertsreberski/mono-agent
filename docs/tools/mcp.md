@@ -237,8 +237,9 @@ written in a compatibility form does not slip past.
 
 The configured-value scan reads the environment the **host** resolved, not
 `process.env`, so a secret supplied only through `startMonoAgentApp({ env })` is
-still recognized. Only `*_ENV`, `*_PATH`, `*_FILE`, and `*_DIR` names are
-skipped, because those hold a variable name or a location rather than a secret.
+still recognized. Only `*_ENV`, `*_ENV_VAR`, `*_PATH`, `*_FILE`, and `*_DIR`
+names are skipped, because those hold a variable name or a location rather than
+a secret.
 Names such as `SERVICE_API_TOKENS` are deliberately **not** skipped: the same
 helper backs the SELF-CONFIG proposal guard, so a broader carve-out would weaken
 two surfaces at once. The accepted cost is a false rejection — a

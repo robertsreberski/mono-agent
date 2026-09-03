@@ -486,4 +486,28 @@ describe("MemoryRetrievalService.remember cache coherence", () => {
 
     expect(after.map((hit) => hit.record.text)).toContain("Robert prefers squash merges.");
   });
+
+  it("keeps the cache when the fact was already stored", async () => {
+    // A duplicate changes nothing durable, so dropping every turn cache would
+    // make concurrent turns repeat identical backend searches.
+    let recallCalls = 0;
+    const store = {
+      async load() { return undefined; },
+      async appendHostSummary() { return { conversationId: "c", source: "s", bytesWritten: 0 }; },
+      async recall() { recallCalls += 1; return []; },
+      supportsRemember: () => true,
+      async remember(_conversationId: string, text: string) {
+        return { id: "RM-1", source: "daily/x.md", text, duplicate: true };
+      },
+      async close() {},
+    };
+    const service = new MemoryRetrievalService(store as never, {});
+
+    await service.recallForTurn("turn-1", "squash merges");
+    expect(recallCalls).toBe(1);
+    await service.remember("conv-1", "Robert prefers squash merges.");
+    await service.recallForTurn("turn-1", "squash merges");
+
+    expect(recallCalls).toBe(1);
+  });
 });

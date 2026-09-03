@@ -564,10 +564,6 @@ export class BujoMemoryStore implements MemoryStore {
               recovered: false,
             };
           }
-          // Rebuild lets daily/<date>.md win over a root-legacy <date>.md for the
-          // same date, so creating the modern file here would drop every fact in
-          // the legacy one. Refuse instead of silently shadowing operator data.
-          assertNoShadowedLegacyDailyFile(this.root, now);
           const located = findCanonicalMemoryBullet(this.root, bulletId, "remembered memory");
           if (located !== undefined && located.bullet.text !== stored) {
             throw new Error(`memory-bujo: remembered memory ${bulletId} conflicts with its canonical text.`);
@@ -588,11 +584,18 @@ export class BujoMemoryStore implements MemoryStore {
           // Recovery adopts the existing bullet verbatim: its createdAt and file
           // are authoritative, so markdown and SQLite cannot disagree about when
           // or where the fact was recorded.
+          if (located === undefined) {
+            // Only an append can create daily/<day>.md, and rebuild lets that
+            // file win over a root-legacy <day>.md for the same date — which
+            // would drop every fact in the legacy one. Recovery of a bullet
+            // that already lives in the legacy file is unaffected, so this is
+            // checked here rather than before the lookup.
+            assertNoShadowedLegacyDailyFile(this.root, now);
+          }
           const bytesWritten = located === undefined
             ? (appendBullet(this.root, bullet, now),
                Buffer.byteLength(`${serializeBullet(bullet)}\n`, "utf8"))
             : 0;
-          abortSignal.throwIfAborted();
           const record: MemoryRecord = {
             id: recordId,
             type: bullet.type,
@@ -615,6 +618,9 @@ export class BujoMemoryStore implements MemoryStore {
           // to tell those apart: retrying the identical text completes it,
           // while rephrasing would create a second memory for the same fact.
           try {
+            // Includes the abort check: once the bullet is durable, a
+            // cancellation here is a partial write, not a failed one.
+            abortSignal.throwIfAborted();
             if (this._tier === "journal") {
               const outcome = this.db.insertJournalLexical(record, hash);
               if (outcome.inserted || !this.db.hasVector(record.id)) this.enqueueIndex(record);
@@ -625,6 +631,11 @@ export class BujoMemoryStore implements MemoryStore {
               this.db.upsertLexical(record);
             }
           } catch (error) {
+            if (located !== undefined && bytesWritten === 0 && this.db.get(recordId) === undefined) {
+              // Nothing new became durable in this call and the projection did
+              // not land, so the caller may still treat it as a plain failure.
+              throw error;
+            }
             throw new MemoryRememberPartialWriteError(relativePath, error);
           }
           return {

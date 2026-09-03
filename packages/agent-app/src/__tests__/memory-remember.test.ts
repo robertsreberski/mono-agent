@@ -292,6 +292,26 @@ describe("Remember tool — widened credential coverage", () => {
   });
 });
 
+describe("Remember tool — credential-shape precision", () => {
+  it("refuses an AWS temporary (STS) access key id", async () => {
+    const { dir, store } = writableStore();
+    const { result } = await callRemember(store, `The id is ASIA${"C".repeat(16)}`);
+    expect(result.isError).toBe(true);
+    expect(dailyContent(dir)).toBe("");
+  });
+
+  it.each([
+    ["Basic authentication", "We use Basic authentication for that endpoint."],
+    ["Bearer authentication", "Bearer authentication is required there."],
+  ])("stores prose that merely names the %s scheme", async (_label, text) => {
+    // `\S{12,}` treated the word "authentication" as a credential payload.
+    const { dir, store } = writableStore();
+    const { result } = await callRemember(store, text);
+    expect(result.isError).not.toBe(true);
+    expect(dailyContent(dir)).toContain("authentication");
+  });
+});
+
 describe("Remember runtime extension — production wiring", () => {
   it("uses the environment supplied by the host, not process.env", async () => {
     // The host resolves `options.env` as authoritative and SELF-CONFIG honours
