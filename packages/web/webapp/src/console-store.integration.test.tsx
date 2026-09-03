@@ -7,12 +7,14 @@ import {
   ConsoleStoreProvider,
   cronChannelPath,
   preferenceKeyForThread,
+  reconcileFailedDelete,
   REMOVED_THREAD_TTL_MS,
   RUN_PREFERENCES_STORAGE_KEY,
   THREAD_READ_TIMEOUT_MS,
   THREAD_WRITE_TIMEOUT_MS,
   useConsoleStore,
 } from "./console-store";
+import type { RequestLanding } from "./console-store";
 import { agent, bootstrap, thread } from "./test/fixtures";
 import type { AgentSkillRegistry, AgentSummary, CronOverview, ThreadDetail } from "./types";
 
@@ -1737,6 +1739,77 @@ describe("ConsoleStoreProvider integration", () => {
    * conversation as it stands now, which another client may have removed while
    * the answer was in flight.
    */
+  describe("reconcileFailedDelete", () => {
+    const alphaThread = thread("alpha-thread", "alpha");
+    const landed = (landing: RequestLanding) => Promise.resolve(landing);
+
+    it("withholds a refusal when the failure was not an ANSWER, and reports the row", async () => {
+      // A `fetch` rejection that is not an answer says this client lost the
+      // exchange, not that the server is done with the request -- so the read
+      // below is not a linearization point and the row it saw may be removed a
+      // millisecond later. The row is still worth reporting: it is the freshest
+      // thing the server has said and the caller repairs its projection from
+      // it. The VERDICT is what may not be claimed.
+      vi.mocked(api.thread).mockResolvedValue(detail(alphaThread, "hello"));
+
+      const outcome = await reconcileFailedDelete(
+        "alpha-thread",
+        landed({ outcome: "failed", error: new TypeError("Failed to fetch") }),
+      );
+
+      expect(outcome.verdict).toBe("unknown");
+      expect(outcome.thread?.id).toBe("alpha-thread");
+    });
+
+    it("withholds it for a gateway that answered for a server it never reached", async () => {
+      // A 502 is an answer from the wrong machine. `classifyDeleteFailure`
+      // already refuses to read it as the server's, and reconciliation must not
+      // put it back by treating a sighting as the missing proof.
+      vi.mocked(api.thread).mockResolvedValue(detail(alphaThread, "hello"));
+
+      const outcome = await reconcileFailedDelete(
+        "alpha-thread",
+        landed({ outcome: "failed", error: new ApiError("Bad gateway", 502) }),
+      );
+
+      expect(outcome.verdict).toBe("unknown");
+      expect(outcome.thread?.id).toBe("alpha-thread");
+    });
+
+    it("calls it a refusal when the server answered with a code it publishes", async () => {
+      // The two-sided test, both sides satisfied: the server ANSWERED that it
+      // refused, and a read issued after that still found the row.
+      vi.mocked(api.thread).mockResolvedValue(detail(alphaThread, "hello"));
+
+      const outcome = await reconcileFailedDelete(
+        "alpha-thread",
+        landed({
+          outcome: "failed",
+          error: new ApiError("Cancel the active turn first.", 409, "turn_active"),
+        }),
+      );
+
+      expect(outcome.verdict).toBe("refused");
+      expect(outcome.thread?.id).toBe("alpha-thread");
+    });
+
+    it("still reads an affirmative not-found as applied, however the request failed", async () => {
+      // The one thing a read CAN settle on its own: the row is gone, so the
+      // postcondition the operator asked for holds however it got there.
+      vi.mocked(api.thread).mockRejectedValue(
+        new ApiError("Conversation not found.", 404, "thread_not_found"),
+      );
+
+      const outcome = await reconcileFailedDelete(
+        "alpha-thread",
+        landed({ outcome: "failed", error: new TypeError("Failed to fetch") }),
+      );
+
+      expect(outcome.verdict).toBe("applied");
+      expect(outcome.thread).toBeUndefined();
+    });
+  });
+
   describe("delete reconciliation ordered against what is still outstanding", () => {
     const alphaThread = thread("alpha-thread", "alpha");
     const gammaThread = thread("gamma-thread", "alpha", { updatedAt: "2026-07-17T09:00:00.000Z" });
@@ -2031,6 +2104,77 @@ describe("ConsoleStoreProvider integration", () => {
         [agent("alpha", { label: "Alpha" })],
         [selected],
       ));
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 400); }); });
+      expect(store.current.threads.map((item) => item.id)).toEqual(["selected-thread"]);
+
+      await act(async () => {
+        releasePage?.();
+        await olderPage;
+      });
+
+      expect(store.current.threads.map((item) => item.id)).toEqual(["selected-thread"]);
+    });
+
+    it("keeps the fence when the row outlived a delete the server never answered", async () => {
+      // The abandoned case, one door along. `fetch` also rejects on a reset
+      // connection or a proxy that dropped the socket, and neither of those is
+      // an ANSWER: the DELETE this console transmitted may still be running.
+      // The reconciling read then sees the row -- proving only that it existed
+      // at that instant -- and calling that a REFUSAL dropped the fence. The
+      // delete commits, the refresh removes the row, and the page issued before
+      // the delete walks the conversation straight back into the sidebar.
+      const selected = thread("selected-thread", "alpha");
+      const stale = thread("stale-thread", "alpha", {
+        archivedAt: "2026-07-17T09:30:00.000Z",
+        updatedAt: "2026-07-17T09:30:00.000Z",
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [selected, stale],
+      ));
+      // The row is STILL THERE when the reconciliation asks -- which is the
+      // whole point: the sighting is true, and it is not a promise.
+      vi.mocked(api.thread).mockImplementation(async (id: string) =>
+        detail(id === "stale-thread" ? stale : selected, "hello"));
+      vi.mocked(api.threads).mockImplementation(async (_sourceId, archived) => archived
+        ? { threads: [stale], nextCursor: "cursor-1" }
+        : { threads: [selected] });
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("selected-thread"));
+      act(() => { store.current.setShowArchived(true); });
+      await waitFor(() => expect(store.current.hasMoreThreads).toBe(true));
+
+      // An older archived page goes out, and is still on the wire when the
+      // delete is issued.
+      let releasePage: (() => void) | undefined;
+      const heldPage = new Promise<void>((resolve) => { releasePage = resolve; });
+      vi.mocked(api.threads).mockImplementation(async () => {
+        await heldPage;
+        return { threads: [stale] };
+      });
+      const olderPage = store.current.loadMoreThreads();
+      await settle();
+
+      // A transport rejection, NOT an ApiError: no server ever answered this.
+      vi.mocked(api.deleteThread).mockRejectedValue(new TypeError("Failed to fetch"));
+      await act(async () => {
+        await expect(store.current.deleteThread("stale-thread")).rejects.toThrow(/failed to fetch/iu);
+      });
+      await settle();
+
+      // The DELETE was running all along and has now committed server-side, so
+      // the authoritative refresh removes the row.
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [selected],
+      ));
+      vi.mocked(api.thread).mockImplementation(async (id: string) => {
+        if (id !== "selected-thread") {
+          throw new ApiError("Conversation not found.", 404, "thread_not_found");
+        }
+        return detail(selected, "hello");
+      });
       await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 400); }); });
       expect(store.current.threads.map((item) => item.id)).toEqual(["selected-thread"]);
 
