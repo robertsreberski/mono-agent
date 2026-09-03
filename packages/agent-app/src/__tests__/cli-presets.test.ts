@@ -11,6 +11,20 @@ import { initMonoAgentFolder } from "../init.js";
 import { answersFromCli } from "../wizard/from-flags.js";
 import { findPreset, presetAnswers, presetIds } from "../wizard/presets.js";
 
+/**
+ * A pi auth store path that is guaranteed to hold nothing. Provider credential
+ * detection falls back to `~/.pi/agent/auth.json` when no path is supplied, so
+ * without this a populated developer store — not the value under test — decides
+ * the outcome, and the test passes locally while failing on a clean runner.
+ */
+async function emptyPiAuthStore(): Promise<{ readonly piAuthPath: string; readonly cleanup: () => Promise<void> }> {
+  const dir = await mkdtemp(join(tmpdir(), "cli-presets-pi-auth-"));
+  return {
+    piAuthPath: join(dir, "auth.json"),
+    cleanup: () => rm(dir, { recursive: true, force: true }),
+  };
+}
+
 describe("parseCliArgs preset flags & alias normalization", () => {
   it("collects positionals for `presets show <id>`", () => {
     expect(parseCliArgs(["presets", "show", "code-sandbox"])).toMatchObject({
@@ -125,20 +139,53 @@ describe("init provider setup gate", () => {
 
   it("skips direct provider login when durable dotenv credentials are detected", async () => {
     const execute = vi.fn(async () => []);
-    const status = await runProviderSetupBeforeInit({
-      modelRefs: ["openai-codex:gpt-5.6-sol", "anthropic:claude-sonnet-5"],
-      cwd: "/agent",
-      auth: true,
-      dryRun: false,
-      persistedEnv: {
-        OPENAI_API_KEY: "durable-openai-key",
-        CLAUDE_CODE_OAUTH_TOKEN: "durable-claude-token",
-      },
-      execute,
-    });
+    // An empty store keeps this machine's ~/.pi/agent/auth.json out of the
+    // decision, so only the durable dotenv value can suppress the login.
+    const { piAuthPath, cleanup } = await emptyPiAuthStore();
+    try {
+      const status = await runProviderSetupBeforeInit({
+        modelRefs: ["opencode-go:kimi-k2.6"],
+        cwd: "/agent",
+        auth: true,
+        dryRun: false,
+        piAuthPath,
+        persistedEnv: { OPENCODE_API_KEY: "durable-opencode-key" },
+        execute,
+      });
 
-    expect(status).toBe("skipped");
-    expect(execute).not.toHaveBeenCalled();
+      expect(status).toBe("skipped");
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("still runs the provider login when the durable dotenv credential is absent", async () => {
+    // The negative half of the pair above: without it, a detector that reported
+    // every provider as credentialed would pass the suppression test silently.
+    const plannedActionIds: string[][] = [];
+    const execute = vi.fn(async (plan: { readonly actions: readonly { readonly id: string }[] }) => {
+      plannedActionIds.push(plan.actions.map((action) => action.id));
+      return [];
+    });
+    const { piAuthPath, cleanup } = await emptyPiAuthStore();
+    try {
+      const status = await runProviderSetupBeforeInit({
+        modelRefs: ["opencode-go:kimi-k2.6"],
+        cwd: "/agent",
+        auth: true,
+        dryRun: false,
+        piAuthPath,
+        persistedEnv: { OPENCODE_API_KEY: "   " },
+        execute,
+      });
+
+      expect(status).toBe("ok");
+      expect(execute).toHaveBeenCalledOnce();
+      expect(plannedActionIds).toEqual([["pi-api-key:opencode-go"]]);
+    } finally {
+      await cleanup();
+    }
   });
 
   it("does not fail non-interactive setup when an API-key action is skipped", async () => {

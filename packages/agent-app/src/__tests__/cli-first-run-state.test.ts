@@ -138,7 +138,11 @@ vi.mock("../init.js", async (importOriginal) => {
 });
 
 import { runCli } from "../cli.js";
+import { DEFAULT_MODEL } from "../modules/index.js";
 import { defaultAnswers } from "../wizard/answers.js";
+
+/** Provider id of the route `defaultAnswers()` selects, e.g. `openai-codex`. */
+const DEFAULT_ROUTE_PROVIDER = DEFAULT_MODEL.slice(0, DEFAULT_MODEL.indexOf(":"));
 
 const originalCwd = process.cwd();
 const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
@@ -528,7 +532,13 @@ describe("guided init state transitions", () => {
       kind: "provider_failed",
       message: "Authentication failed.",
     });
-    mocks.selectAnswers.push("auth", "browser", "cancel");
+    // The retried setup is a no-op only because the route's provider now holds a
+    // credential. Pin that observation: reading it from the real store makes the
+    // outcome depend on whichever provider logins the machine happens to hold.
+    mocks.detectProviderCredentialStatesOverride = async () => ({
+      [DEFAULT_ROUTE_PROVIDER]: "credential_detected",
+    });
+    mocks.selectAnswers.push("auth", "retry", "cancel");
     mocks.executeProviderSetupPlan.mockImplementation(async (plan: { actions: readonly Record<string, unknown>[] }) =>
       plan.actions.map((action) => ({ action, status: "failed", detail: "login failed" })));
 
@@ -536,6 +546,11 @@ describe("guided init state transitions", () => {
 
     expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledTimes(2);
     expect(mocks.executeProviderSetupPlan).toHaveBeenCalledOnce();
+    expect(mocks.selectCalls.map((call) => call.message)).toEqual([
+      "Runtime readiness did not pass. What would you like to do?",
+      "Provider setup did not pass. What would you like to do?",
+      "Runtime readiness did not pass. What would you like to do?",
+    ]);
     const providerRecovery = mocks.selectCalls.find(
       (call) => call.message === "Runtime readiness did not pass. What would you like to do?",
     );
@@ -545,6 +560,40 @@ describe("guided init state transitions", () => {
       "Edit model routes",
       "Save incomplete",
       "Cancel without writing",
+    ]);
+    await expect(access(join(process.cwd(), "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("retries provider setup instead of the live probe while the credential is still missing", async () => {
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers(),
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      runProviderSetup: false,
+    });
+    mocks.runAllRouteReadinessProbe.mockResolvedValue({
+      ok: false,
+      kind: "provider_failed",
+      message: "Authentication failed.",
+    });
+    mocks.detectProviderCredentialStatesOverride = async () => ({
+      [DEFAULT_ROUTE_PROVIDER]: "auth_required",
+    });
+    mocks.selectAnswers.push("auth", "retry", "cancel");
+    mocks.executeProviderSetupPlan.mockImplementation(async (plan: { actions: readonly Record<string, unknown>[] }) =>
+      plan.actions.map((action) => ({ action, status: "failed", detail: "login failed" })));
+
+    await expect(runCli(["init"])).resolves.toBe(1);
+
+    // Retrying must not fall through to a model turn that is guaranteed to fail
+    // on the same missing credential.
+    expect(mocks.executeProviderSetupPlan).toHaveBeenCalledTimes(2);
+    expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledOnce();
+    expect(mocks.selectCalls.map((call) => call.message)).toEqual([
+      "Runtime readiness did not pass. What would you like to do?",
+      "Provider setup did not pass. What would you like to do?",
+      "Provider setup did not pass. What would you like to do?",
     ]);
     await expect(access(join(process.cwd(), "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
