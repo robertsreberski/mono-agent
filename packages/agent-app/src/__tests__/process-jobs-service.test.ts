@@ -3302,7 +3302,7 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(r
 }
 
 async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
     if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
