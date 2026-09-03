@@ -5200,3 +5200,125 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(report.ok).toBe(true);
   });
 });
+
+describe("validate diagnostics are bounded whatever the operator configured", () => {
+  // The parser deliberately has no length ceiling any more: what a model may be
+  // called is decided by providers, and a reference cannot be truncated into
+  // validity. Acceptance therefore stopped being a length guarantee, so EVERY
+  // render site that quotes an operator-supplied reference has to bound it.
+  // A 500,000-byte reference parses, and each unclamped echo was a half-megabyte
+  // line in `mono-agent validate` output, the daemon log, and launchd's stdout.
+  const HUGE = "m".repeat(500_000);
+  // Generous headroom: each detail may carry a bounded reference (96 bytes) plus
+  // a bounded reason (224) plus its fixed sentence, and nothing here is longer.
+  const MAX_DETAIL_BYTES = 2_000;
+
+  function expectBoundedReport(report: Awaited<ReturnType<typeof validateMonoAgentFolder>>): void {
+    for (const section of report.sections) {
+      for (const detail of section.details) {
+        const bytes = Buffer.byteLength(detail, "utf8");
+        expect(
+          bytes,
+          `section ${section.id} emitted a ${bytes}-byte detail: ${detail.slice(0, 160)}`,
+        ).toBeLessThanOrEqual(MAX_DETAIL_BYTES);
+        expect(detail, `section ${section.id} echoed the raw value`).not.toContain("m".repeat(200));
+      }
+    }
+  }
+
+  it("bounds primary, fallback and agent-host memory routes that Pi cannot resolve", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const authPath = join(dir, "auth.json");
+    await writeFile(authPath, JSON.stringify({ "opencode-go": { type: "api_key", key: "sk-o" } }), { mode: 0o600 });
+    const configPath = await writeConfig({
+      context: { identityPath: "./IDENTITY.md" },
+      providers: { piAuthPath: authPath },
+      runtime: {
+        model: `opencode-go:p${HUGE}`,
+        fallbacks: [{ model: `opencode-go:f${HUGE}` }],
+      },
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "test-only" },
+        llm: { provider: "agent-host", model: `opencode-go:x${HUGE}` },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.status).toBe("error");
+    expect(runtime.details.join("\n")).toContain("pi model not found");
+    expect(sectionById(report, "memory").status).toBe("error");
+    // The credentials section quotes the same reference once per route.
+    expect(sectionById(report, "credentials").details.length).toBeGreaterThan(0);
+    expectBoundedReport(report);
+  });
+
+  it("bounds the disabled providers.local provider and model diagnostics", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      context: { identityPath: "./IDENTITY.md" },
+      runtime: {
+        model: `off-${HUGE}:only-model`,
+        fallbacks: [{ model: `on-local:d${HUGE}` }],
+      },
+      providers: {
+        local: [
+          {
+            id: `off-${HUGE}`,
+            type: "openai_compat",
+            baseUrl: "http://127.0.0.1:11434",
+            enabled: false,
+            models: [{ name: "only-model" }],
+          },
+          {
+            id: "on-local",
+            type: "openai_compat",
+            baseUrl: "http://127.0.0.1:11435",
+            models: [{ name: `d${HUGE}`, enabled: false }],
+          },
+        ],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.status).toBe("error");
+    expect(runtime.details.join("\n")).toContain("is disabled in providers.local");
+    expectBoundedReport(report);
+  });
+
+  it("bounds the effort warnings a long local model reference reaches", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      context: { identityPath: "./IDENTITY.md" },
+      runtime: {
+        model: `on-local:n${HUGE}`,
+        effort: "high",
+        fallbacks: [{ model: `on-local:l${HUGE}`, effort: "medium" }],
+      },
+      providers: {
+        local: [{
+          id: "on-local",
+          type: "openai_compat",
+          baseUrl: "http://127.0.0.1:11434",
+          models: [
+            { name: `n${HUGE}`, capabilities: { reasoning: false, reasoning_mode: "none" } },
+            { name: `l${HUGE}`, capabilities: { reasoning: true, reasoning_levels: ["low", "high"] } },
+          ],
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.details.join("\n")).toContain("[WARN] runtime.effort=high");
+    expect(runtime.details.join("\n")).toContain("[WARN] runtime.fallbacks[0].effort=medium");
+    expectBoundedReport(report);
+  });
+});

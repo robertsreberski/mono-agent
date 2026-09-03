@@ -5,6 +5,7 @@ import {
   MODEL_REFERENCE_REASON_MAX_BYTES,
   modelReferenceKey,
   parseMonoRuntimeModelReference,
+  RuntimeAdapterError,
   runtimeOptionsForLocalProvider,
   sanitizeModelReferenceText,
 } from "@mono-agent/runtime-adapter";
@@ -112,15 +113,27 @@ function echoValue(value: string): string {
 }
 
 /**
- * Reasons come from the runtime adapter (already bounded, so this pass is a no-op -- the
- * sanitizer is idempotent) and from arbitrary throws below it, which are not. Bounding here
- * covers both without the call sites having to know which is which.
+ * Reasons come from the runtime adapter (already bounded, so the clamp below is a no-op --
+ * the sanitizer is idempotent) and from arbitrary throws under it, which are not. Bounding
+ * here covers both without the call sites having to know which is which.
+ *
+ * Unwrap one layer first, exactly as `reasonOf` in trigger-overrides and
+ * `modelReferenceReason` in @mono-agent/config already do for the same error. The adapter's
+ * `message` is a fixed 32-byte prefix wrapped around a reason ALREADY bounded to the whole
+ * reason budget, so the wrapped message necessarily overshoots and this second clamp cuts 32
+ * bytes off the END -- which is where the kernel parser puts the concrete repair whenever it
+ * quotes the operator's value first (`vercel:<provider>:<model> is no longer supported; use
+ * openai:<model> directly` loses ` directly` and part of the corrected reference). Bounding
+ * the UNWRAPPED reason keeps the actionable half, and drops a generic prefix the warning's
+ * own message already conveys.
  */
 function echoReason(error: unknown): string {
-  return sanitizeModelReferenceText(
-    error instanceof Error ? error.message : String(error),
-    MODEL_REFERENCE_REASON_MAX_BYTES,
-  );
+  const reason = error instanceof RuntimeAdapterError && typeof error.details.reason === "string"
+    ? error.details.reason
+    : error instanceof Error
+      ? error.message
+      : String(error);
+  return sanitizeModelReferenceText(reason, MODEL_REFERENCE_REASON_MAX_BYTES);
 }
 
 export function createRequestModelOverrideRuntimeExtension(

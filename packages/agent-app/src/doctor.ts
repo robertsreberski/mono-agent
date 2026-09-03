@@ -42,7 +42,9 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import {
   describeSandboxEffectiveState,
   MODEL_REFERENCE_ECHO_MAX_BYTES,
+  MODEL_REFERENCE_REASON_MAX_BYTES,
   resolveSandboxEffectiveState,
+  RuntimeAdapterError,
   sandboxEffectiveStateWarning,
   sanitizeModelReferenceText,
 } from "@mono-agent/runtime-adapter";
@@ -602,12 +604,12 @@ function runtimeSection(config: MonoAgentConfig): ValidationSection {
       const effortWarning = runtimeRouteEffortWarning(config, route);
       if (resolutionIssue === undefined) {
         details.push(
-          `${route.label} ${referenceOf(route.model)} runs on ${support.backend.label} ` +
+          `${route.label} ${displayReferenceOf(route.model)} runs on ${support.backend.label} ` +
           `(effort: ${route.effort ?? "provider default"}).`,
         );
       } else {
         status = "error";
-        details.push(`${route.label} ${referenceOf(route.model)}: ${resolutionIssue}.`);
+        details.push(`${route.label} ${displayReferenceOf(route.model)}: ${resolutionIssue}.`);
       }
       if (effortWarning !== undefined) {
         if (status !== "error") status = "waiting";
@@ -615,7 +617,7 @@ function runtimeSection(config: MonoAgentConfig): ValidationSection {
       }
     } catch (error) {
       status = "error";
-      details.push(`${route.label} ${referenceOf(route.model)}: ${error instanceof Error ? error.message : String(error)}.`);
+      details.push(`${route.label} ${displayReferenceOf(route.model)}: ${displayReason(error)}.`);
     }
   }
 
@@ -668,7 +670,7 @@ function runtimeRouteEffortWarning(
   // WITH `reasoning_levels`, and "this route does not reason" is the accurate
   // diagnosis there, not "pick another level".
   if (resolved.reasoning === false && route.effort !== "none") {
-    return `[WARN] ${route.configPath}=${route.effort} is unsupported because known model metadata marks ${referenceOf(route.model)} as non-reasoning; use none, or omit it for the provider default. The runtime remains permissive and will forward the configured value.`;
+    return `[WARN] ${route.configPath}=${route.effort} is unsupported because known model metadata marks ${displayReferenceOf(route.model)} as non-reasoning; use none, or omit it for the provider default. The runtime remains permissive and will forward the configured value.`;
   }
   const advertised = resolved.effortLevels
     ?.filter((level) => (EFFORT_LEVELS as readonly string[]).includes(level));
@@ -679,7 +681,7 @@ function runtimeRouteEffortWarning(
     const bestIndex = EFFORT_LEVELS.indexOf(best as (typeof EFFORT_LEVELS)[number]);
     return Math.abs(candidateIndex - configuredIndex) < Math.abs(bestIndex - configuredIndex) ? candidate : best;
   });
-  return `[WARN] ${route.configPath}=${route.effort} is outside ${referenceOf(route.model)}'s advertised effort levels (${advertised.join(", ")}); nearest advertised level: ${nearest}. The runtime remains permissive and will forward the configured value.`;
+  return `[WARN] ${route.configPath}=${route.effort} is outside ${displayReferenceOf(route.model)}'s advertised effort levels (${advertised.join(", ")}); nearest advertised level: ${nearest}. The runtime remains permissive and will forward the configured value.`;
 }
 
 /**
@@ -695,13 +697,13 @@ function piModelResolutionIssue(
   const localProvider = config.providers?.local?.find((provider) => provider.id === model.provider);
   if (localProvider !== undefined) {
     if (localProvider.enabled === false) {
-      return `provider \`${model.provider}\` is disabled in providers.local`;
+      return `provider \`${displayText(model.provider)}\` is disabled in providers.local`;
     }
     const localModel = localProvider.models?.find(
       (candidate) => candidate.name === model.model || candidate.alias === model.model,
     );
     if (localModel?.enabled === false) {
-      return `model \`${model.model}\` is disabled in providers.local for provider \`${model.provider}\``;
+      return `model \`${displayText(model.model)}\` is disabled in providers.local for provider \`${displayText(model.provider)}\``;
     }
     return undefined;
   }
@@ -719,10 +721,7 @@ function piModelResolutionIssue(
   // against this text. So the reference is bounded here, which matters now that
   // the parser imposes no length ceiling and a legitimately long id reaches this
   // line whole.
-  const reference = sanitizeModelReferenceText(
-    `${model.provider}:${model.model}`,
-    MODEL_REFERENCE_ECHO_MAX_BYTES,
-  );
+  const reference = displayText(`${model.provider}:${model.model}`);
   return (
     `pi model not found: ${reference}; no matching providers.local entry exists and Pi's built-in catalog has no exact model. ` +
     "The sibling Pi CLI models.json is not a mono-agent runtime source; add providers.local for a self-hosted provider or choose a built-in Pi model"
@@ -805,9 +804,10 @@ async function credentialsSection(
   let status: ValidationStatus = "ok";
   const verified = new Set(verifiedCredentialModelRefs);
   for (const { label, ref } of authenticatedRefs) {
-    const refStr = referenceOf(ref);
-    if (verified.has(refStr)) {
-      details.push(`${label} ${refStr}: credentials verified by a successful live model check.`);
+    // The set holds whole canonical references, so the LOOKUP key stays whole;
+    // only the printed form is bounded.
+    if (verified.has(referenceOf(ref))) {
+      details.push(`${label} ${displayReferenceOf(ref)}: credentials verified by a successful live model check.`);
     }
   }
   const unverifiedRefs = authenticatedRefs.filter(({ ref }) => !verified.has(referenceOf(ref)));
@@ -850,33 +850,37 @@ async function appendPiCredentialDetails(
 
   for (const { label, ref } of piRefs) {
     const provider = ref.provider as string;
-    const refStr = referenceOf(ref);
-    const loginCommand = piAuthRecoveryCommand(provider, authPath);
+    // Display-only from here down: `provider` is still the lookup key into the
+    // auth store and providers.local, `providerLabel` and `refStr` are what the
+    // detail lines quote back at the operator.
+    const providerLabel = displayText(provider);
+    const refStr = displayReferenceOf(ref);
+    const loginCommand = piAuthRecoveryCommand(providerLabel, authPath);
     const localProvider = localProviders.get(provider);
     if (localProvider !== undefined) {
       if (localProvider.enabled === false) {
         status = "waiting";
         details.push(
-          `[WARN] ${label} ${refStr}: provider \`${provider}\` is configured in providers.local but disabled (\`enabled: false\`); the runtime will throw \`provider disabled: ${provider}\` on the first turn. Set \`enabled: true\` on that providers.local entry.`,
+          `[WARN] ${label} ${refStr}: provider \`${providerLabel}\` is configured in providers.local but disabled (\`enabled: false\`); the runtime will throw \`provider disabled: ${providerLabel}\` on the first turn. Set \`enabled: true\` on that providers.local entry.`,
         );
       } else if (localProvider.apiKey !== undefined) {
         details.push(
-          `${label} ${refStr}: provider \`${provider}\` configured via config providers.local (API key configured); credential detected, live model verification is still pending.`,
+          `${label} ${refStr}: provider \`${providerLabel}\` configured via config providers.local (API key configured); credential detected, live model verification is still pending.`,
         );
       } else if (localProvider.apiKeyEnv !== undefined) {
         if (hasNonEmptyCredentialValue(env[localProvider.apiKeyEnv])) {
           details.push(
-            `${label} ${refStr}: provider \`${provider}\` configured via config providers.local with ${localProvider.apiKeyEnv} present in the resolved environment; credential detected, live model verification is still pending.`,
+            `${label} ${refStr}: provider \`${providerLabel}\` configured via config providers.local with ${localProvider.apiKeyEnv} present in the resolved environment; credential detected, live model verification is still pending.`,
           );
         } else {
           status = "waiting";
           details.push(
-            `[WARN] ${label} ${refStr}: provider \`${provider}\` declares apiKeyEnv \`${localProvider.apiKeyEnv}\`, but the resolved environment has no non-empty value and no inline apiKey fallback. Set ${localProvider.apiKeyEnv} before starting.`,
+            `[WARN] ${label} ${refStr}: provider \`${providerLabel}\` declares apiKeyEnv \`${localProvider.apiKeyEnv}\`, but the resolved environment has no non-empty value and no inline apiKey fallback. Set ${localProvider.apiKeyEnv} before starting.`,
           );
         }
       } else {
         details.push(
-          `${label} ${refStr}: provider \`${provider}\` configured via config providers.local (keyless local provider; no API key declared).`,
+          `${label} ${refStr}: provider \`${providerLabel}\` configured via config providers.local (keyless local provider; no API key declared).`,
         );
       }
       continue;
@@ -884,7 +888,7 @@ async function appendPiCredentialDetails(
     const apiKeyEnv = PI_API_KEY_ENV_BY_PROVIDER[provider];
     if (apiKeyEnv !== undefined && hasNonEmptyCredentialValue(env[apiKeyEnv])) {
       details.push(
-        `${label} ${refStr}: Pi API-key credential for \`${provider}\` present in the resolved environment (${apiKeyEnv}); credential detected, live model verification is still pending.`,
+        `${label} ${refStr}: Pi API-key credential for \`${providerLabel}\` present in the resolved environment (${apiKeyEnv}); credential detected, live model verification is still pending.`,
       );
       continue;
     }
@@ -902,8 +906,8 @@ async function appendPiCredentialDetails(
     if (entry === undefined) {
       status = "waiting";
       details.push(apiKeyEnv === undefined
-        ? `[WARN] ${label} ${refStr}: no Pi credentials found for provider \`${provider}\` in the auth store. Authenticate it with \`${loginCommand}\`, or set providers.piAuthPath.`
-        : `[WARN] ${label} ${refStr}: no Pi API key credentials found for provider \`${provider}\` in the auth store or resolved environment. Run \`${loginCommand}\`, or set ${apiKeyEnv}.`);
+        ? `[WARN] ${label} ${refStr}: no Pi credentials found for provider \`${providerLabel}\` in the auth store. Authenticate it with \`${loginCommand}\`, or set providers.piAuthPath.`
+        : `[WARN] ${label} ${refStr}: no Pi API key credentials found for provider \`${providerLabel}\` in the auth store or resolved environment. Run \`${loginCommand}\`, or set ${apiKeyEnv}.`);
       continue;
     }
     const isOAuth = entry.type === "oauth";
@@ -911,21 +915,21 @@ async function appendPiCredentialDetails(
     if (isApiKey && !hasNonEmptyCredentialValue(entry.key)) {
       status = "waiting";
       details.push(
-        `[WARN] ${label} ${refStr}: stored API-key credential for \`${provider}\` has no usable key. Run \`${loginCommand}\`; no secret value was displayed.`,
+        `[WARN] ${label} ${refStr}: stored API-key credential for \`${providerLabel}\` has no usable key. Run \`${loginCommand}\`; no secret value was displayed.`,
       );
       continue;
     }
     if (isOAuth && !hasNonEmptyCredentialValue(entry.access) && !hasNonEmptyCredentialValue(entry.refresh)) {
       status = "waiting";
       details.push(
-        `[WARN] ${label} ${refStr}: stored OAuth credential for \`${provider}\` has no usable access or refresh token. Re-authenticate with \`${loginCommand}\`; no secret value was displayed.`,
+        `[WARN] ${label} ${refStr}: stored OAuth credential for \`${providerLabel}\` has no usable access or refresh token. Re-authenticate with \`${loginCommand}\`; no secret value was displayed.`,
       );
       continue;
     }
     if (!isOAuth && !isApiKey) {
       status = "waiting";
       details.push(
-        `[WARN] ${label} ${refStr}: stored credential for \`${provider}\` has an unsupported or missing type. Re-authenticate with \`${loginCommand}\`; no secret value was displayed.`,
+        `[WARN] ${label} ${refStr}: stored credential for \`${providerLabel}\` has an unsupported or missing type. Re-authenticate with \`${loginCommand}\`; no secret value was displayed.`,
       );
       continue;
     }
@@ -934,14 +938,14 @@ async function appendPiCredentialDetails(
     if (isOAuth && expired) {
       status = "waiting";
       details.push(
-        `[WARN] ${label} ${refStr}: OAuth token for \`${provider}\` expired${whenNote} — the runtime may auto-refresh, but this credential is not ready until a request succeeds; if runs fail with "No API key for provider: ${provider}" re-authenticate with \`${loginCommand}\`.`,
+        `[WARN] ${label} ${refStr}: OAuth token for \`${providerLabel}\` expired${whenNote} — the runtime may auto-refresh, but this credential is not ready until a request succeeds; if runs fail with "No API key for provider: ${providerLabel}" re-authenticate with \`${loginCommand}\`.`,
       );
       continue;
     }
     details.push(
       isOAuth
-        ? `${label} ${refStr}: OAuth credentials for \`${provider}\` present (token valid${whenNote}); credential detected, live model verification is still pending.`
-        : `${label} ${refStr}: API key credentials for \`${provider}\` present; credential detected, live model verification is still pending.`,
+        ? `${label} ${refStr}: OAuth credentials for \`${providerLabel}\` present (token valid${whenNote}); credential detected, live model verification is still pending.`
+        : `${label} ${refStr}: API key credentials for \`${providerLabel}\` present; credential detected, live model verification is still pending.`,
     );
   }
 
@@ -1124,12 +1128,12 @@ async function memorySection(
         const resolutionIssue = piModelResolutionIssue(config, model);
         if (resolutionIssue !== undefined) {
           status = "error";
-          details.push(`Agent-host memory LLM ${referenceOf(model)}: ${resolutionIssue}.`);
+          details.push(`Agent-host memory LLM ${displayReferenceOf(model)}: ${resolutionIssue}.`);
         }
       } catch (error) {
         status = "error";
         details.push(
-          `Agent-host memory LLM ${config.memory.llm.model}: ${error instanceof Error ? error.message : String(error)}.`,
+          `Agent-host memory LLM ${displayText(config.memory.llm.model)}: ${displayReason(error)}.`,
         );
       }
     }
@@ -1481,12 +1485,12 @@ async function localEmbeddingLivenessWarnings(
     }
     if (provider === "ollama" && /HTTP 404/u.test(reason)) {
       return [
-        `[WARN] Ollama embedding model ${embeddings.model} could not be proved at ${endpoint} (${reason}); ` +
-        `run \`ollama pull ${embeddings.model}\` and verify its embedding capability.`,
+        `[WARN] Ollama embedding model ${displayText(embeddings.model)} could not be proved at ${endpoint} (${reason}); ` +
+        `run \`ollama pull ${displayText(embeddings.model)}\` and verify its embedding capability.`,
       ];
     }
     return [
-      `[WARN] ${label} embedding readiness failed for ${embeddings.model} at ${endpoint} (${reason}). ` +
+      `[WARN] ${label} embedding readiness failed for ${displayText(embeddings.model)} at ${endpoint} (${reason}). ` +
       "Verify the selected model, authentication, and configured dimension.",
     ];
   }
@@ -1533,8 +1537,8 @@ function memoryLlmLabel(llm: NonNullable<MonoAgentConfig["memory"]>["llm"]): str
     return "none";
   }
   return llm.provider === "ollama"
-    ? `ollama:${llm.model}`
-    : `agent-host:${llm.model}`;
+    ? `ollama:${displayText(llm.model)}`
+    : `agent-host:${displayText(llm.model)}`;
 }
 
 async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFolderOptions): Promise<ValidationSection> {
@@ -2109,7 +2113,7 @@ async function processJobsSection(
     `Owner-only local state: ${settings.stateDir}.`,
     `Concurrency: ${String(settings.maxConcurrent)} global, ${String(settings.maxActivePerConversation)} per conversation, ${String(settings.maxQueued)} queued.`,
     `Caps: runtime=${String(settings.maxRuntimeMs)}ms, queue-age=${String(settings.maxQueueAgeMs)}ms, output=${String(settings.maxOutputBytes)} bytes, chain-depth=${String(settings.maxChainDepth)}.`,
-    `Runtime availability: Pi-native Exec/Bash only; configured primary provider is ${config.runtime.model.provider}.`,
+    `Runtime availability: Pi-native Exec/Bash only; configured primary provider is ${displayText(config.runtime.model.provider)}.`,
   ];
   const inspection = await inspectProcessJobState(input.cwd, settings.stateDir);
   return {
@@ -3426,6 +3430,47 @@ async function channelSection(
 
 function referenceOf(model: RuntimeModelReference): string {
   return modelReferenceKey(model);
+}
+
+/**
+ * Bounded, single-line rendering of operator-supplied text for a diagnostic.
+ *
+ * `referenceOf` is the canonical KEY -- it is compared against
+ * `verifiedCredentialModelRefs`, which carries whole references -- so it must
+ * stay unbounded. What gets PRINTED must not be. The parser deliberately has no
+ * length ceiling any more (a reference cannot be truncated into validity, so a
+ * ceiling there could only refuse a model that runs), which means acceptance
+ * stopped being a length guarantee: a 500,000-byte reference parses today and
+ * every one of these lines is echoed by `mono-agent validate`, the daemon log
+ * and launchd's captured stdout. Escaping comes with the clamp, so a reference
+ * carrying a newline also cannot forge a detail line that reads as doctor's own.
+ */
+function displayText(value: string): string {
+  return sanitizeModelReferenceText(value, MODEL_REFERENCE_ECHO_MAX_BYTES);
+}
+
+/** Bounded display form of a model reference. Never use it as a map or set key. */
+function displayReferenceOf(model: RuntimeModelReference): string {
+  return displayText(referenceOf(model));
+}
+
+/**
+ * Bounded display form of a thrown reason. A reason gets the larger budget because it is one
+ * fixed repair sentence plus at most one echo of the value.
+ *
+ * Unwrap one layer first, as `modelReferenceReason` in @mono-agent/config and `reasonOf` in
+ * trigger-overrides already do: the adapter's `message` wraps a 32-byte generic prefix around
+ * a reason ALREADY at the full reason budget, so clamping the wrapped form spends the budget
+ * on the prefix and pays for it out of the tail -- which is where the kernel parser puts the
+ * concrete repair whenever it quotes the operator's value first.
+ */
+function displayReason(error: unknown): string {
+  const reason = error instanceof RuntimeAdapterError && typeof error.details.reason === "string"
+    ? error.details.reason
+    : error instanceof Error
+      ? error.message
+      : String(error);
+  return sanitizeModelReferenceText(reason, MODEL_REFERENCE_REASON_MAX_BYTES);
 }
 
 async function pathExists(path: string): Promise<boolean> {

@@ -2,6 +2,7 @@ import {
   MODEL_REFERENCE_ECHO_MAX_BYTES,
   MODEL_REFERENCE_REASON_MAX_BYTES,
   parseMonoRuntimeModelReference,
+  RuntimeAdapterError,
   sanitizeModelReferenceText,
 } from "@mono-agent/runtime-adapter";
 import type { LocalProviderDefinition, RuntimeModelReference } from "@mono-agent/runtime-adapter";
@@ -505,8 +506,10 @@ describe("per-request override warnings bound the value they echo", () => {
     await run({ webhook: { model } }, { logger });
     const logged = logger.warn.mock.calls[0]?.[1] as { model: string; reason: string };
     expect(logged.model).toBe(echo(model));
-    expect(byteLength(logged.model)).toBeLessThan(1_000);
-    expect(byteLength(logged.reason)).toBeLessThan(1_000);
+    // Against the exported budgets, not a round number that happens to sit above them:
+    // a regression that emitted 900 bytes here would satisfy `< 1_000` and be wrong.
+    expect(byteLength(logged.model)).toBeLessThanOrEqual(MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(byteLength(logged.reason)).toBeLessThanOrEqual(MODEL_REFERENCE_REASON_MAX_BYTES);
   });
 
   it("escapes a newline in a rejected effort override", async () => {
@@ -565,28 +568,62 @@ describe("per-request override warnings bound the value they echo", () => {
     expect(logged.to).toBe("high");
   });
 
+  /** The error the parser actually throws for `model`, for asserting against its two layers. */
+  const rejectionOf = (model: string): RuntimeAdapterError => {
+    try {
+      parseMonoRuntimeModelReference(model);
+    } catch (error) {
+      if (error instanceof RuntimeAdapterError) return error;
+      throw error;
+    }
+    throw new Error("Expected the model reference to be rejected.");
+  };
+
   /**
    * `echoReason` covers the arbitrary throws BELOW the adapter, but the adapter's own error is
    * already an over-budget carrier: its message is a fixed prefix PLUS a reason bounded to the
    * whole reason budget, so the wrapped message necessarily exceeds it. Asserting on a short
-   * reason (which the previous round did) passes with or without the sanitizer.
+   * reason (which an earlier round did) passes with or without the sanitizer.
    */
   it("bounds a reason whose wrapped message exceeds the reason budget", async () => {
     const model = `codex:${"m".repeat(MODEL_REFERENCE_REASON_MAX_BYTES)}`;
     const logger = { warn: vi.fn() };
     await run({ webhook: { model } }, { logger });
     const logged = logger.warn.mock.calls[0]?.[1] as { reason: string };
-    const raw = (() => {
-      try {
-        parseMonoRuntimeModelReference(model);
-      } catch (error) {
-        return error instanceof Error ? error.message : String(error);
-      }
-      throw new Error("Expected the model reference to be rejected.");
-    })();
-    expect(byteLength(raw)).toBeGreaterThan(MODEL_REFERENCE_REASON_MAX_BYTES);
+    const error = rejectionOf(model);
+    expect(byteLength(error.message)).toBeGreaterThan(MODEL_REFERENCE_REASON_MAX_BYTES);
     expect(byteLength(logged.reason)).toBeLessThanOrEqual(MODEL_REFERENCE_REASON_MAX_BYTES);
-    expect(logged.reason).toBe(sanitizeModelReferenceText(raw, MODEL_REFERENCE_REASON_MAX_BYTES));
+    // The INNER reason is the contract, not the adapter's wrapped message: the message adds a
+    // 32-byte generic prefix around a reason already at budget, so clamping the wrapped form
+    // spends the budget on a prefix and pays for it out of the repair (asserted below).
+    expect(logged.reason).toBe(
+      sanitizeModelReferenceText(error.details.reason as string, MODEL_REFERENCE_REASON_MAX_BYTES),
+    );
+  });
+
+  /**
+   * The kernel parser is the only layer that knows the concrete repair, and for the retired
+   * `vercel:<provider>:<model>` form it puts that repair AFTER the operator's own value. The
+   * adapter's reason holds it whole; clamping the WRAPPED message instead cut the corrected
+   * reference short and dropped the closing word entirely -- the actionable half, lost to a
+   * prefix the warning's own message already carries.
+   */
+  it("keeps the trailing repair a wrapped-message clamp would have cut", async () => {
+    const model = `vercel:openai:${"m".repeat(140)}`;
+    const logger = { warn: vi.fn() };
+    await run({ webhook: { model } }, { logger });
+    const logged = logger.warn.mock.calls[0]?.[1] as { reason: string };
+    const error = rejectionOf(model);
+
+    // Precondition: this is a case where the two layers genuinely disagree.
+    const wrapped = sanitizeModelReferenceText(error.message, MODEL_REFERENCE_REASON_MAX_BYTES);
+    expect(wrapped.endsWith("…")).toBe(true);
+
+    expect(logged.reason).toBe(error.details.reason);
+    expect(logged.reason.endsWith("…")).toBe(false);
+    expect(logged.reason).toContain("directly");
+    expect(logged.reason).not.toContain("Invalid runtime model reference:");
+    expect(byteLength(logged.reason)).toBeLessThanOrEqual(MODEL_REFERENCE_REASON_MAX_BYTES);
   });
 
   it("bounds the local-provider endpoint warning's echo too", async () => {
@@ -601,5 +638,33 @@ describe("per-request override warnings bound the value they echo", () => {
     const logged = logger.warn.mock.calls[0]?.[1] as { model: string; reason: string };
     expect(logged.model).toBe("gateway:gpt-oss");
     expect(logged.reason).toBe(sanitizeModelReferenceText(logged.reason, MODEL_REFERENCE_REASON_MAX_BYTES));
+  });
+
+  /**
+   * This warning fires on a reference that PARSED, which the previous case exercised with a
+   * 15-byte one -- so it proved nothing about the echo budget. The parser has no length rule
+   * any more, so a valid reference can be any size, and this is the one warning path where an
+   * oversized value is not a typo but a working model id the operator will see quoted back.
+   */
+  it("bounds an oversized VALID reference in the local-provider endpoint warning", async () => {
+    const model = `gateway:${"g".repeat(500_000)}`;
+    const logger = { warn: vi.fn() };
+    await run(
+      { tui: { model } },
+      {
+        logger,
+        localProviders: [{ id: "gateway", type: "openai_compat", baseUrl: "http://api.example.com", enabled: true }],
+      },
+    );
+    const logged = logger.warn.mock.calls[0]?.[1] as { model: string; reason: string };
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("local-provider endpoint"),
+      expect.anything(),
+    );
+    expect(logged.model).toBe(echo(model));
+    expect(byteLength(logged.model)).toBeLessThanOrEqual(MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(byteLength(logged.reason)).toBeLessThanOrEqual(MODEL_REFERENCE_REASON_MAX_BYTES);
+    expect(logged.model).not.toContain("g".repeat(200));
+    expect(logged.reason).not.toContain("g".repeat(200));
   });
 });
