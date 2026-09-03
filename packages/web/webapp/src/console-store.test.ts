@@ -460,7 +460,9 @@ describe("classifyDeleteFailure", () => {
     expect(classifyDeleteFailure(
       new ApiError("Archive the conversation before deleting it.", 409, "thread_not_archived"),
     )).toBe("refused");
-    expect(classifyDeleteFailure(new ApiError("Forbidden", 403))).toBe("refused");
+    expect(classifyDeleteFailure(
+      new ApiError("Cross-site mutations are not allowed.", 403, "cross_site_request"),
+    )).toBe("refused");
     // Not there, however it got that way -- restoring it is the one wrong move.
     expect(classifyDeleteFailure(
       new ApiError("Conversation not found.", 404, "thread_not_found"),
@@ -470,6 +472,39 @@ describe("classifyDeleteFailure", () => {
     expect(classifyDeleteFailure(new ApiError("Bad gateway", 502))).toBe("unknown");
     expect(classifyDeleteFailure(new Error("The web console request timed out."))).toBe("unknown");
     expect(classifyDeleteFailure("not an error at all")).toBe("unknown");
+  });
+
+  it("classifies on the contract the server publishes, not on the status class", () => {
+    // P2. Any 404 was "applied" and every other 4xx was "refused", which reads
+    // a status line as if only this server could have produced it. A proxy, a
+    // captive portal or a load balancer produces 4xx too, and none of them
+    // knows whether the delete was applied.
+    //
+    // Only the console's own `thread_not_found` is proof the row is gone: it
+    // is answered by the handler that would have deleted it.
+    expect(classifyDeleteFailure(new ApiError("Not Found", 404))).toBe("unknown");
+    expect(classifyDeleteFailure(new ApiError("Not Found", 404, "not_found"))).toBe("unknown");
+    // A deadline the far side imposed says nothing about what it did first.
+    expect(classifyDeleteFailure(new ApiError("Request Timeout", 408))).toBe("unknown");
+    expect(classifyDeleteFailure(new ApiError("Too Many Requests", 429))).toBe("unknown");
+    expect(classifyDeleteFailure(new ApiError("Forbidden", 403))).toBe("unknown");
+    expect(classifyDeleteFailure(new ApiError("Bad Request", 400))).toBe("unknown");
+
+    // Every refusal the DELETE route can actually publish, and the guards that
+    // reject a mutation before any handler runs.
+    for (const [status, code] of [
+      [409, "turn_active"],
+      [409, "thread_not_archived"],
+      [409, "cron_channel_configured"],
+      [421, "untrusted_host"],
+      [403, "cross_site_request"],
+      [403, "invalid_origin"],
+      [403, "origin_mismatch"],
+      [400, "invalid_host"],
+    ] as const) {
+      expect([code, classifyDeleteFailure(new ApiError("refused", status, code))])
+        .toEqual([code, "refused"]);
+    }
   });
 });
 
