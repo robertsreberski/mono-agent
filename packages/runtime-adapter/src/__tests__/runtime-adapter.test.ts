@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { MAX_MODEL_REFERENCE_BYTES } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
+
 import {
   createPiOAuthApiKeyResolver,
   createMonoRuntime,
@@ -8,10 +10,13 @@ import {
   monoRuntimeSupportsLiveInput,
   monoRuntimeSupportsMcpApps,
   monoRuntimeSupportsSessionResume,
+  MODEL_REFERENCE_ECHO_MAX_BYTES,
+  MODEL_REFERENCE_REASON_MAX_BYTES,
   parseMonoRuntimeModelReference,
   runtimeOptionsForLocalProvider,
   runtimeBackendForModel,
   RuntimeAdapterError,
+  sanitizeModelReferenceText,
 } from "../index.js";
 
 describe("runtime adapter model references", () => {
@@ -408,5 +413,212 @@ describe("createMonoRuntime same-model retry options", () => {
       fallbackChain: [{ model }],
       retry: { [key]: value } as Record<string, number>,
     })).toThrow(/must be a non-negative finite number/u);
+  });
+});
+
+/**
+ * A model reference is operator-supplied, unbounded and uninspected, and every diagnostic that
+ * quotes one lands somewhere durable and operator-shared: the terminal, `doctor`, the daemon
+ * log, launchd's captured stdout. So the parser's derived reason -- which interpolates the
+ * operator's own model id into the repair -- is bounded and de-controlled where it is derived,
+ * once, rather than at each of the five surfaces that render it.
+ */
+describe("sanitizeModelReferenceText", () => {
+  const utf8 = (value: string): number => new TextEncoder().encode(value).length;
+
+  it("escapes newlines so a value cannot forge an extra diagnostic line", () => {
+    const forged = sanitizeModelReferenceText("codex:gpt\n[ok]    Core config", MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(forged).toBe("codex:gpt\\n[ok]    Core config");
+    expect(forged).not.toContain("\n");
+  });
+
+  it.each([
+    ["carriage return", "a\rb", "a\\rb"],
+    ["tab", "a\tb", "a\\tb"],
+    ["NUL", "a\u0000b", "a\\u0000b"],
+    ["line separator", "a\u2028b", "a\\u2028b"],
+    ["paragraph separator", "a\u2029b", "a\\u2029b"],
+    ["right-to-left override", "a\u202Eb", "a\\u202Eb"],
+    ["zero-width space", "a\u200Bb", "a\\u200Bb"],
+  ])("escapes a %s", (_label, raw, expected) => {
+    expect(sanitizeModelReferenceText(raw, MODEL_REFERENCE_ECHO_MAX_BYTES)).toBe(expected);
+  });
+
+  it("clamps to the byte budget and marks the cut", () => {
+    const clamped = sanitizeModelReferenceText("x".repeat(500), MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(utf8(clamped)).toBeLessThanOrEqual(MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(clamped.endsWith("…")).toBe(true);
+  });
+
+  it("bounds by bytes, not characters, and never splits a code point", () => {
+    const clamped = sanitizeModelReferenceText("🧠".repeat(200), MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(utf8(clamped)).toBeLessThanOrEqual(MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(clamped).not.toContain("\uFFFD");
+    expect([...clamped].every((character) => character === "🧠" || character === "…")).toBe(true);
+  });
+
+  it("counts the escaped form against the budget, so escaping cannot blow the bound", () => {
+    const clamped = sanitizeModelReferenceText("\n".repeat(200), MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(utf8(clamped)).toBeLessThanOrEqual(MODEL_REFERENCE_ECHO_MAX_BYTES);
+    // Clamping first would satisfy the byte bound and still emit raw newlines, so the order
+    // -- escape, then clamp -- is what is asserted here, not only the resulting length.
+    expect(clamped).not.toContain("\n");
+    expect(clamped.startsWith("\\n\\n")).toBe(true);
+  });
+
+  it("leaves every legitimate reference in Pi's built-in catalog untouched", () => {
+    const longest = "cloudflare-ai-gateway:workers-ai/@cf/mistralai/mistral-small-3.1-24b-instruct";
+    expect(utf8(longest)).toBe(77);
+    expect(sanitizeModelReferenceText(longest, MODEL_REFERENCE_ECHO_MAX_BYTES)).toBe(longest);
+  });
+
+  it("is idempotent, so re-bounding an already bounded reason is a no-op", () => {
+    const once = sanitizeModelReferenceText("a\nb".repeat(80), MODEL_REFERENCE_REASON_MAX_BYTES);
+    expect(sanitizeModelReferenceText(once, MODEL_REFERENCE_REASON_MAX_BYTES)).toBe(once);
+  });
+
+  it("honours a budget too small to hold the truncation marker", () => {
+    // The marker is 3 bytes. Emitting it unconditionally would overrun exactly the bound the
+    // function exists to enforce, so it is dropped rather than the bound.
+    for (const maxBytes of [1, 2, 3]) {
+      for (const value of ["x".repeat(40), "🧠".repeat(40), "\n".repeat(40)]) {
+        expect(utf8(sanitizeModelReferenceText(value, maxBytes))).toBeLessThanOrEqual(maxBytes);
+      }
+    }
+  });
+
+  it("rejects a non-positive-integer budget rather than silently disabling the bound", () => {
+    for (const maxBytes of [0, -1, 1.5, Number.NaN]) {
+      expect(() => sanitizeModelReferenceText("codex:gpt", maxBytes)).toThrow(RangeError);
+    }
+  });
+});
+
+describe("parseMonoRuntimeModelReference bounds the reason it derives", () => {
+  it("keeps the whole repair for every retired form", () => {
+    // The reason budget exists to bound the operator's value, never to clamp the repair --
+    // the ACP one is the longest fixed sentence the kernel parser emits.
+    expect(() => parseMonoRuntimeModelReference("acp:some-agent")).toThrow(/mono-agent bridge acp to serve mono-agent over ACP/u);
+    expect(() => parseMonoRuntimeModelReference("codex:gpt-5.6-sol")).toThrow(/use openai-codex:gpt-5\.6-sol/u);
+  });
+
+  it("bounds a reason built from an oversized model id", () => {
+    let thrown: unknown;
+    try {
+      parseMonoRuntimeModelReference(`codex:${"sk-live-AAAA".repeat(60)}`);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(RuntimeAdapterError);
+    const { message, details } = thrown as RuntimeAdapterError;
+    expect(new TextEncoder().encode(details.reason as string).length)
+      .toBeLessThanOrEqual(MODEL_REFERENCE_REASON_MAX_BYTES);
+    expect(message).toContain("use openai-codex:sk-live-AAAA");
+    expect(message.endsWith("…")).toBe(true);
+  });
+
+  it("escapes a newline the kernel parser interpolated into the repair", () => {
+    let thrown: unknown;
+    try {
+      parseMonoRuntimeModelReference("codex:gpt\n[ok]    Core config");
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(RuntimeAdapterError);
+    expect((thrown as RuntimeAdapterError).message).not.toContain("\n");
+    expect((thrown as RuntimeAdapterError).details.reason).toBe(
+      "codex is no longer a runtime backend; use openai-codex:gpt\\n[ok]    Core config",
+    );
+  });
+});
+
+/**
+ * The rendering bound and the parse bound are two halves of one guarantee, and neither is worth
+ * much without the other: the parser refuses what a renderer could not quote whole, and the
+ * renderer clamps what the parser refused. What follows asserts the seam between them -- that
+ * they are the same bound, drawn at the same set of code points -- rather than either half on
+ * its own.
+ */
+describe("the parse ceiling and the diagnostic echo budget are one bound", () => {
+  const utf8 = (value: string): number => new TextEncoder().encode(value).length;
+
+  it("is literally the same constant on both sides, so the two cannot drift apart", () => {
+    expect(MODEL_REFERENCE_ECHO_MAX_BYTES).toBe(MAX_MODEL_REFERENCE_BYTES);
+  });
+
+  it.each([
+    ["a newline", "openai:foo\nbar"],
+    ["400 bytes", `openai:${"a".repeat(400)}`],
+  ])("no longer hands a reference carrying %s to a renderer as an accepted value", (_label, value) => {
+    let thrown: unknown;
+    try {
+      parseMonoRuntimeModelReference(value);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(RuntimeAdapterError);
+    const error = thrown as RuntimeAdapterError;
+    expect(error.code).toBe("invalid_model_reference");
+    expect(error.message).not.toContain("\n");
+    expect(utf8(error.message)).toBeLessThanOrEqual(
+      "Invalid runtime model reference: ".length + MODEL_REFERENCE_REASON_MAX_BYTES,
+    );
+  });
+
+  it("echoes a reference it accepted whole, never clamped", () => {
+    // The equality of the two constants only pays off if it holds at the boundary: a
+    // reference sitting exactly on the parse ceiling must still survive the echo untouched.
+    const filler = "a".repeat(MODEL_REFERENCE_ECHO_MAX_BYTES - "openai:".length);
+    const accepted = parseMonoRuntimeModelReference(`openai:${filler}`);
+    expect(utf8(accepted.reference)).toBe(MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(sanitizeModelReferenceText(accepted.reference, MODEL_REFERENCE_ECHO_MAX_BYTES))
+      .toBe(accepted.reference);
+  });
+
+  it("never accepts a reference the echo would then have to clamp", () => {
+    // The whole invariant in one line: for any candidate, either the parser refuses it or the
+    // renderer hands it back untouched. Stated this way it also pins the *unit* -- a ceiling
+    // measured in UTF-16 code units rather than UTF-8 bytes still looks like a bound and still
+    // passes an ASCII boundary case, but lets these multibyte references through to be
+    // clamped, which is the exact half-fix this seam exists to prevent.
+    const candidates = [
+      `openai:${"a".repeat(MODEL_REFERENCE_ECHO_MAX_BYTES - "openai:".length)}`,
+      "cloudflare-ai-gateway:workers-ai/@cf/mistralai/mistral-small-3.1-24b-instruct",
+      `openai:${"\u{1F9E0}".repeat(40)}`,
+      `openai:${"é".repeat(60)}`,
+      `openai:${"中".repeat(50)}`,
+    ];
+    const violations = candidates.filter((candidate) => {
+      let reference: string;
+      try {
+        reference = parseMonoRuntimeModelReference(candidate).reference;
+      } catch {
+        return false;
+      }
+      return sanitizeModelReferenceText(reference, MODEL_REFERENCE_ECHO_MAX_BYTES) !== reference;
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("refuses exactly the code points the sanitizer would otherwise have to escape", () => {
+    // The kernel parser and this module each name the unsafe set with their own regex, in
+    // different packages and different languages. Asserting the two agree code point by code
+    // point is what keeps that duplication honest; a comment would not.
+    const disagreements: string[] = [];
+    for (let codePoint = 0; codePoint <= 0xffff; codePoint += 1) {
+      if (codePoint >= 0xd800 && codePoint <= 0xdfff) continue;
+      const value = `openai:a${String.fromCodePoint(codePoint)}b`;
+      const escapedByRenderer = sanitizeModelReferenceText(value, MODEL_REFERENCE_ECHO_MAX_BYTES) !== value;
+      let refusedByParser = false;
+      try {
+        parseMonoRuntimeModelReference(value);
+      } catch {
+        refusedByParser = true;
+      }
+      if (escapedByRenderer !== refusedByParser) {
+        disagreements.push(`U+${codePoint.toString(16).toUpperCase().padStart(4, "0")}`);
+      }
+    }
+    expect(disagreements).toEqual([]);
   });
 });

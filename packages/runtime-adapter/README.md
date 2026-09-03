@@ -161,6 +161,8 @@ LocalProviderPricing
 LocalProviderRuntimeOptions
 LocalProviderType
 MANAGED_SRT_TREE_SHA256
+MODEL_REFERENCE_ECHO_MAX_BYTES
+MODEL_REFERENCE_REASON_MAX_BYTES
 ModelEffortLevels
 MonoRuntimeApprovalDecision
 MonoRuntimeApprovalRequest
@@ -280,6 +282,7 @@ runtimeOptionsForLocalProvider
 sandboxEffectiveStateWarning
 sandboxPolicyToRuntimeOptions
 sandboxRequired
+sanitizeModelReferenceText
 srtSettingsForPolicy
 validateLocalProviderDefinition
 validateProviderBaseUrl

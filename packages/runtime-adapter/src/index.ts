@@ -4,6 +4,8 @@ export {
   createPiOAuthApiKeyResolver,
   describeMonoRuntimeSupport,
   listMonoRuntimeBackends,
+  MODEL_REFERENCE_ECHO_MAX_BYTES,
+  MODEL_REFERENCE_REASON_MAX_BYTES,
   modelReferenceKey,
   monoRuntimeSupportsLiveInput,
   monoRuntimeSupportsMcpApps,
@@ -11,6 +13,7 @@ export {
   parseMonoRuntimeModelReference,
   runtimeBackendForModel,
   RuntimeAdapterError,
+  sanitizeModelReferenceText,
 } from "./runtime-adapter.js";
 export type {
   CreateMonoRuntimeOptions,
