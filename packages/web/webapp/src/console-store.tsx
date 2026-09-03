@@ -504,6 +504,16 @@ interface RemovedThread {
   readonly fencedAt: number;
   /** False once a failed delete has taken the assertion back. */
   tombstoned: boolean;
+  /**
+   * True when an EARLIER delete of this same row ended without proving it was
+   * not applied, and so is still relying on a fence.
+   *
+   * A second delete REPLACES the entry the first left behind, which is the only
+   * record that the fence is still protecting something. Without carrying this
+   * across, a later delete the server refused would `release` -- and take with
+   * it a fence the earlier delete deliberately kept.
+   */
+  readonly unreconciled: boolean;
   suppressed: ThreadSummary;
 }
 
@@ -551,15 +561,32 @@ export const createRemovedThreadRegistry = (
   ): ThreadSummary | undefined => {
     const entry = tombstone(threadId);
     if (entry === undefined) return undefined;
-    if (keepFence) entry.tombstoned = false;
+    // The fence may not be dropped while an EARLIER delete of this row is still
+    // unreconciled. `release` is the server saying THIS delete applied nothing;
+    // it says nothing whatever about the one before it, which may yet commit,
+    // so a response issued before either of them is still not evidence the row
+    // survived. Keeping the fence costs the caller nothing -- the repair a
+    // refusal makes quotes the CURRENT epoch and is admitted -- while dropping
+    // it is what let a response held across the first delete resurrect a
+    // conversation the server had destroyed.
+    if (keepFence || entry.unreconciled) entry.tombstoned = false;
     else removed.delete(threadId);
     return entry.suppressed;
   };
   return {
     remember: (threadId, suppressed) => {
+      // A live entry here is an earlier delete of the SAME row that never
+      // proved it was not applied: `release` -- the one outcome that proves
+      // that -- takes its entry away, so anything still standing is unresolved.
+      // Carried forward because this delete replaces that entry, and with it
+      // the only record that its fence is still protecting something.
+      const unreconciled = live(threadId) !== undefined;
       removed.delete(threadId);
       epoch += 1;
-      removed.set(threadId, { at: now(), fencedAt: epoch, tombstoned: true, suppressed });
+      removed.set(
+        threadId,
+        { at: now(), fencedAt: epoch, tombstoned: true, unreconciled, suppressed },
+      );
       // Insertion order is chronological, so the live entries are a suffix.
       for (const [candidate, entry] of removed) {
         if (!expired(entry)) break;
@@ -655,7 +682,12 @@ export const classifyDeleteFailure = (error: unknown): DeleteFailureVerdict => {
 
 export interface FailedDeleteOutcome {
   readonly verdict: DeleteFailureVerdict;
-  /** What the server says the conversation is now, when it was asked. */
+  /**
+   * What the server said the conversation is, when it was asked -- present
+   * whenever a read answered, including on `unknown`. A verdict is a claim
+   * about the REQUEST; this is an observation of the ROW, and the two come
+   * apart exactly when the request ended without an answer.
+   */
   readonly thread?: ThreadSummary;
 }
 
@@ -712,6 +744,17 @@ const landingWithin = async (
  * is confirmed by a read like anything else. This costs one round trip on a
  * refused delete and is the only thing that can notice the row is already gone.
  *
+ * Which makes `refused` a two-sided test, and the read only one side of it. The
+ * server has to have ANSWERED that it refused, AND a read issued after that has
+ * to still find the row. Taking the read alone made a sighting a refusal even
+ * for a failure that was never an answer, and a request that was never answered
+ * is a request that may still be running: the row was there when the read ran,
+ * and the DELETE committed just after it. That is the abandoned case
+ * with a different first move, and it is answered the same honest way -- the
+ * row is reported so the caller can repair its projection from it, and the
+ * verdict stays `unknown` so nothing downstream may act as though the server
+ * had promised the conversation survived.
+ *
  * Bounded by the WRITE deadline, not the more generous read one: the operator
  * is already waiting on a delete that failed, and a reconciliation that has not
  * answered inside that budget has told us what it can -- nothing.
@@ -733,12 +776,24 @@ export const reconcileFailedDelete = async (
   // It answered after the caller gave up, which is exactly what an abandoned
   // request is always allowed to do.
   if (landing.outcome === "answered") return { verdict: "applied" };
-  if (classifyDeleteFailure(landing.error) === "applied") return { verdict: "applied" };
+  const answer = classifyDeleteFailure(landing.error);
+  if (answer === "applied") return { verdict: "applied" };
   try {
     const current = await boundedRequest((signal) => api.thread(threadId, signal));
-    // The DELETE has settled and the conversation outlived it, so it was not
-    // applied -- whatever the answer said.
-    return { verdict: "refused", thread: current.thread };
+    // The conversation outlived the request. That is proof NOTHING WAS APPLIED
+    // only when the server ANSWERED, because an answer is what ends a request
+    // and only an ended request makes this read a linearization point.
+    //
+    // A rejection that is not an answer is the abandoned case one door along.
+    // `fetch` rejects on a reset connection, a proxy that dropped the socket, a
+    // gateway that replied for a server it could not reach -- and in every one
+    // of those the DELETE this console transmitted may still be running and may
+    // commit immediately after this read. So the row is REPORTED, because it is
+    // the freshest thing the server has said and the caller needs it, and the
+    // verdict is WITHHELD, because a point-in-time sighting is not a refusal.
+    return answer === "refused"
+      ? { verdict: "refused", thread: current.thread }
+      : { verdict: "unknown", thread: current.thread };
   } catch (reconcileError) {
     // A second failure is not a second chance to guess: only an affirmative
     // "not found" moves this off `unknown`.
@@ -1895,13 +1950,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           completeThreadRemoval(thread, threadId);
           return;
         }
-        if (outcome.verdict === "unknown") {
-          // Genuinely unknown, and neither assumption is available: restoring
-          // may resurrect a deleted conversation, and keeping the tombstone
-          // hides a live one for the rest of its lifetime. So stop asserting
-          // anything -- drop the tombstone, keep the local projection as the
-          // last thing the server actually said, and ask it again. Nothing that
-          // a confirmed delete cleans up is touched.
+        if (outcome.thread === undefined) {
+          // Nothing was even OBSERVED: the reconciling read failed too, or
+          // there was never a point to read from. Neither assumption is
+          // available -- restoring may resurrect a deleted conversation, and
+          // keeping the tombstone hides a live one for the rest of its
+          // lifetime. So stop asserting anything -- drop the tombstone, keep
+          // the local projection as the last thing the server actually said,
+          // and ask it again. Nothing that a confirmed delete cleans up is
+          // touched.
           //
           // FORGOTTEN, not released: the delete may well have been applied, so
           // the fence stays and a response issued before it still cannot put
@@ -1910,26 +1967,45 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           queueRefresh();
           throw deleteRequestError;
         }
-        // Refused before the server touched anything, AND a read issued after
-        // the request had settled still saw the conversation, so the rollback
-        // is safe.
+        // A read issued once the DELETE had settled still found the
+        // conversation, so whatever happened to the request there is a row to
+        // put back, and the server's own answer is the thing to put back.
         //
-        // Released rather than forgotten: the server told us it applied
-        // nothing, so a response issued before the delete is no longer stale
-        // about whether the conversation exists and must not be fenced out. A
-        // pre-delete bootstrap answering after this repair would otherwise drop
-        // the row straight back out of a sidebar with no refresh coming.
+        // The FENCE is the entire difference between the two ways of arriving
+        // here, and it turns on whether the server ANSWERED.
         //
-        // Releasing is not undoing the delete. Every response that answered
-        // while the tombstone stood -- the bootstrap `refreshNow` issues on the
-        // delete's own SSE event above all -- has already filtered this
-        // conversation out of the projection, and nothing else puts it back:
-        // the shipped test only proved that a LATER refresh eventually would.
-        // The tombstone hands back the newest projection it suppressed, so the
-        // repair happens here, where the failure is.
-        const suppressed = removedThreadsRef.current.release(thread.id);
+        // RELEASED on a refusal: the server told us it applied nothing, so a
+        // response issued before the delete is no longer stale about whether
+        // the conversation exists and must not be fenced out. A pre-delete
+        // bootstrap answering after this repair would otherwise drop the row
+        // straight back out of a sidebar with no refresh coming.
+        //
+        // FORGOTTEN on anything else: a rejection that was not an answer leaves
+        // the DELETE possibly still running, so the sighting above is a
+        // sighting and not a promise. The row is restored -- it is the freshest
+        // thing the server has said -- while the fence stays, because a
+        // response ISSUED BEFORE the delete is still no evidence the row
+        // survived, and dropping the fence on a delete that then commits let
+        // exactly such a response walk the conversation back into the sidebar
+        // over the refresh that had just removed it.
+        //
+        // Either way this is not undoing the delete. Every response that
+        // answered while the tombstone stood -- the bootstrap `refreshNow`
+        // issues on the delete's own SSE event above all -- has already
+        // filtered this conversation out of the projection, and nothing else
+        // puts it back: the shipped test only proved that a LATER refresh
+        // eventually would. The tombstone hands back the newest projection it
+        // suppressed, so the repair happens here, where the failure is.
+        const suppressed = outcome.verdict === "refused"
+          ? removedThreadsRef.current.release(thread.id)
+          : removedThreadsRef.current.forget(thread.id);
         const restored = newerProjection(suppressed ?? thread, outcome.thread);
         applyThreadUpdate(restored, removedThreadsRef.current.epoch());
+        // A sighting is not a settlement, so an unknown verdict still ASKS. The
+        // row above is the best projection this tab has and the operator gets
+        // it back immediately; the refresh is what converges if the delete this
+        // console could not account for turns out to have committed after all.
+        if (outcome.verdict !== "refused") queueRefresh();
         // A bootstrap that answered while it was tombstoned also re-resolved
         // the selection over a sidebar this conversation was missing from, so
         // restoring the row without the selection left the operator staring at

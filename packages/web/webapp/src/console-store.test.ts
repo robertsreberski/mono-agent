@@ -602,6 +602,48 @@ describe("createRemovedThreadRegistry", () => {
     expect(registry.size()).toBe(0);
   });
 
+  it("keeps a fence an unreconciled delete left when a LATER delete is refused", () => {
+    // A second delete replaces the entry the first left behind, and with it the
+    // only record that the first delete's fence is still protecting something.
+    // The later delete is then refused -- true about ITS request and silent
+    // about the earlier one, which may yet commit -- and `release` took the
+    // fence away, so a response held across the first delete could resurrect a
+    // conversation the server had destroyed.
+    const registry = createRemovedThreadRegistry();
+    const original = summary("thread-a");
+    const issuedBeforeAnyDelete = registry.epoch();
+
+    // Delete 1 ends UNRECONCILED: the console could not tell whether it was
+    // applied, so it stopped asserting the row is gone and kept the fence.
+    registry.remember("thread-a", original);
+    expect(registry.forget("thread-a")).toEqual(original);
+    expect(registry.predatesDelete("thread-a", issuedBeforeAnyDelete)).toBe(true);
+
+    // Delete 2 is REFUSED. Nothing about that answer speaks for delete 1.
+    registry.remember("thread-a", original);
+    expect(registry.release("thread-a")).toEqual(original);
+
+    expect(registry.has("thread-a")).toBe(false);
+    expect(registry.predatesDelete("thread-a", issuedBeforeAnyDelete)).toBe(true);
+    // And the repair the refusal makes is still admitted: it quotes the current
+    // epoch, which is the fence itself, not something older than it.
+    expect(registry.predatesDelete("thread-a", registry.epoch())).toBe(false);
+  });
+
+  it("still drops the fence for a refused delete that is the only one", () => {
+    // The carry-over must be a carry-over and not a blanket refusal to release:
+    // with nothing unreconciled behind it, a delete the server refused DID
+    // apply nothing, and a response issued before it is no longer stale about
+    // whether the conversation exists.
+    const registry = createRemovedThreadRegistry();
+    const issuedBeforeTheDelete = registry.epoch();
+    registry.remember("thread-a", summary("thread-a"));
+    expect(registry.predatesDelete("thread-a", issuedBeforeTheDelete)).toBe(true);
+
+    expect(registry.release("thread-a")).toEqual(summary("thread-a"));
+    expect(registry.predatesDelete("thread-a", issuedBeforeTheDelete)).toBe(false);
+  });
+
   it("derives its lifetime from the deadlines it has to outlive", () => {
     // The old ten minutes was a comment asserting a relationship the code did
     // not hold: reads had no deadline at all, so no lifetime bounded them.
