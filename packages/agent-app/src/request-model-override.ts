@@ -1,9 +1,12 @@
 import { detectEffortKeyword, EFFORT_LEVELS, effortRank } from "@mono-agent/config";
 import {
   assertParsedRuntimeModelReference,
+  MODEL_REFERENCE_ECHO_MAX_BYTES,
+  MODEL_REFERENCE_REASON_MAX_BYTES,
   modelReferenceKey,
   parseMonoRuntimeModelReference,
   runtimeOptionsForLocalProvider,
+  sanitizeModelReferenceText,
 } from "@mono-agent/runtime-adapter";
 import type {
   LocalProviderDefinition,
@@ -96,6 +99,30 @@ interface RequestModelOverrideResult {
 
 const EFFORT_SET: ReadonlySet<string> = new Set(EFFORT_LEVELS);
 
+/**
+ * Bound and neutralize one operator-supplied fragment before a diagnostic quotes it. The
+ * values that reach these warnings are exactly the ones that FAILED to parse, so none of them
+ * carries a parsed reference's printable/single-line/bounded guarantee. A structured logger
+ * escapes a newline for its own encoding, but nothing bounds the record: a 1 MB webhook
+ * `model` wrote a 1 MB log line every turn it was replayed. Same escape-then-clamp helper and
+ * same budget as every other operator surface, so an operator sees one rendering of a value.
+ */
+function echoValue(value: string): string {
+  return sanitizeModelReferenceText(value, MODEL_REFERENCE_ECHO_MAX_BYTES);
+}
+
+/**
+ * Reasons come from the runtime adapter (already bounded, so this pass is a no-op -- the
+ * sanitizer is idempotent) and from arbitrary throws below it, which are not. Bounding here
+ * covers both without the call sites having to know which is which.
+ */
+function echoReason(error: unknown): string {
+  return sanitizeModelReferenceText(
+    error instanceof Error ? error.message : String(error),
+    MODEL_REFERENCE_REASON_MAX_BYTES,
+  );
+}
+
 export function createRequestModelOverrideRuntimeExtension(
   options?: RequestModelOverrideOptions,
 ): (input: RequestModelOverrideInput) => Promise<RequestModelOverrideResult> {
@@ -118,7 +145,7 @@ export function createRequestModelOverrideRuntimeExtension(
         runtimeOptions.effort = rawEffort;
       } else {
         logger?.warn?.("Ignoring invalid per-request effort override.", {
-          effort: rawEffort,
+          effort: echoValue(rawEffort),
           valid: [...EFFORT_SET],
         });
       }
@@ -226,7 +253,7 @@ export function requestModelOverrideRoutesOnlyPiNative(
     // cause is what made mono-agent#664 undiagnosable from outside.
     options?.logger?.warn?.(
       "Treating this request's route chain as non-Pi-native because it could not be resolved.",
-      { reason: error instanceof Error ? error.message : String(error) },
+      { reason: echoReason(error) },
     );
     return false;
   }
@@ -253,8 +280,8 @@ function resolveAcceptedModelOverride(
     parsed = parseMonoRuntimeModelReference(rawModel);
   } catch (error) {
     logger?.warn?.("Ignoring invalid per-request model override.", {
-      model: rawModel,
-      reason: error instanceof Error ? error.message : String(error),
+      model: echoValue(rawModel),
+      reason: echoReason(error),
     });
     return { rawModel, ...(rawEffort === undefined ? {} : { rawEffort }) };
   }
@@ -289,8 +316,8 @@ function applyLocalProviderBlock(
     local = runtimeOptionsForLocalProvider(model, localProviders);
   } catch (error) {
     logger?.warn?.("Ignoring local-provider endpoint for per-request model override.", {
-      model: rawModel,
-      reason: error instanceof Error ? error.message : String(error),
+      model: echoValue(rawModel),
+      reason: echoReason(error),
     });
     local = {};
   }

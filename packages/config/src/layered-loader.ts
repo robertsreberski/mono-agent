@@ -134,7 +134,7 @@ function remapJsonMemoryError(
     ? `memory.mode "${mode}" requires an explicit memory.embeddings block.`
     : source === "MONO_AGENT_MEMORY_LLM_MODEL"
       ? `memory.mode "${mode}" requires an explicit memory.llm block.`
-      : error.message.replaceAll("MONO_AGENT_MEMORY_MODE", "memory.mode");
+      : attributeMessageToJsonPath(error, "MONO_AGENT_MEMORY_MODE", "memory.mode");
   return new MonoAgentConfigError("invalid_json", message, { path, reason: message });
 }
 
@@ -349,13 +349,60 @@ function jsonEmbeddingsCredentialPath(
   return undefined;
 }
 
+/**
+ * Re-attribute a diagnostic from the env variable it was raised against to the JSON path the
+ * operator actually edits -- without rewriting anything the operator wrote.
+ *
+ * Two spans of a config diagnostic are operator text rather than config prose:
+ *   - the value it quotes back, which config always renders inside BACKTICKS; and
+ *   - the parser-derived `reason` it ends with, which is built FROM that value and carries
+ *     the concrete repair the operator is meant to copy.
+ * Everything outside those two spans is config's own fixed sentence, and that is the only
+ * part re-attribution may touch.
+ *
+ * `error.message.replaceAll(source, path)` touched all three. A model reference is an
+ * arbitrary operator string, so `"runtime": { "model": "codex:MONO_AGENT_MODEL" }` was quoted
+ * back as `codex:runtime.model` and repaired to `openai-codex:runtime.model` -- a model that
+ * does not exist. The same held for a fallback, a subagent and the agent-host memory LLM.
+ *
+ * The other operator-supplied fragments a config message interpolates cannot collide: a
+ * subagent name is `^[a-z0-9][a-z0-9-]*$` and a memory mode is an enum, so neither can spell
+ * an upper-case variable name.
+ */
+function attributeMessageToJsonPath(
+  error: MonoAgentConfigError,
+  source: string,
+  path: string,
+): string {
+  const message = error.message;
+  const reason = error.details.reason;
+  // A `reason` equal to the whole message is a self-reference (the message IS the reason), not
+  // a nested parser reason, so there is no operator-derived tail to protect.
+  const frameLength = typeof reason === "string" && reason.length < message.length && message.endsWith(reason)
+    ? message.length - reason.length
+    : message.length;
+  const attributed = replaceSourceOutsideQuotedValue(message.slice(0, frameLength), source, path)
+    + message.slice(frameLength);
+  return attributed.includes(path) ? attributed : `${path}: ${attributed}`;
+}
+
+/**
+ * Config uses backticks for exactly one thing -- quoting an operator value back -- so the odd
+ * segments of a backtick split are the operator's text and the even ones are config's prose.
+ */
+function replaceSourceOutsideQuotedValue(frame: string, source: string, path: string): string {
+  return frame
+    .split("`")
+    .map((segment, index) => (index % 2 === 0 ? segment.replaceAll(source, path) : segment))
+    .join("`");
+}
+
 function remapConfigErrorToJson(
   error: MonoAgentConfigError,
   source: string,
   path: string,
 ): MonoAgentConfigError {
-  const replaced = error.message.replaceAll(source, path);
-  const message = replaced.includes(path) ? replaced : `${path}: ${replaced}`;
+  const message = attributeMessageToJsonPath(error, source, path);
   const { code: _code, env: _env, ...details } = error.details;
   return new MonoAgentConfigError("invalid_json", message, {
     ...details,
