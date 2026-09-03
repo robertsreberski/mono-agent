@@ -5,7 +5,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentMessageStream, AgentReplyPart, AgentRequestBase, AgentResponder, ProcessJobOperator, ProcessJobProjection, RunningChannel } from "@mono-agent/agent-contracts";
 import { MAX_INFO_BODY_BYTES, MAX_INFO_PROVIDER_ITEMS } from "@mono-agent/agent-contracts";
 import { MAX_MODEL_REFERENCE_BYTES } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
+import type { EffortLevel, MonoAgentConfig } from "@mono-agent/config";
 import type { DiscoveredLocalModel, DiscoveredProvider, LocalProviderDefinition } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { TuiAdapterConfig, TuiAdapterInfo, TuiAdapterOptions, TuiAdapterStartResult } from "@mono-agent/operator-adapter";
 import type { DeliverWebNotificationInput } from "@mono-agent/web";
 import { WebConsoleError } from "@mono-agent/web";
@@ -30,34 +32,60 @@ const baseConfig: TuiAdapterConfig = {
 };
 
 interface BuildInputOptions {
-  readonly effort?: string;
-  readonly fallbackModels?: readonly { provider: string; model: string }[];
+  readonly effort?: EffortLevel;
+  /** AUTHORED reference strings. Parsed here, never hand-built — see `baseInput`. */
+  readonly fallbackModels?: readonly string[];
   readonly localProviders?: readonly LocalProviderDefinition[];
   /** Canonical `providers.entries` list, for the provider-summary budget. */
   readonly providerEntries?: readonly { id: string }[];
 }
 
+/**
+ * A COMPLETE, fully typed `MonoAgentConfig`. No cast.
+ *
+ * This fixture used to be `{...} as never`, and that cast was not innocent: it waived checking
+ * on the fields the fixture DOES supply, which is how references like `{ provider, model,
+ * reference }` carrying a 200,009- or 400,007-byte model half — values
+ * `parseRuntimeModelReference` cannot produce and no loader could ever hand this driver — got
+ * in and left two of these cases asserting nothing. Supplying the handful of fields the driver
+ * never reads (`artifacts`, `traceability`, `runtime.session`) costs five lines and buys the
+ * compiler back.
+ */
+function baseCoreConfig(options: BuildInputOptions): MonoAgentConfig {
+  return {
+    runtime: {
+      model: parseMonoRuntimeModelReference("anthropic:claude-fable-5"),
+      workspace: "/tmp",
+      session: { mode: "continuous", idleTimeoutMs: 300_000 },
+      ...(options.effort === undefined ? {} : { effort: options.effort }),
+      ...(options.fallbackModels === undefined ? {} : {
+        // Through the REAL parser, exactly as the config loader builds these. A fixture
+        // naming something the parser refuses now fails at construction instead of quietly
+        // testing a route no operator could ever have configured.
+        fallbacks: options.fallbackModels.map((reference) => ({
+          model: parseMonoRuntimeModelReference(reference),
+        })),
+      }),
+    },
+    context: { identityPath: "/tmp/IDENTITY.md", selectedSkills: [] },
+    tools: { allowedTools: ["*"], disallowedTools: [] },
+    artifacts: {
+      dir: "/tmp/artifacts",
+      retention: { maxAgeDays: 7, maxCount: 100, dryRun: false },
+      memoryRetention: { maxAgeDays: 7, maxCount: 100, dryRun: false },
+    },
+    traceability: { registryDir: "/tmp/trace-sources" },
+    ...(options.providerEntries !== undefined
+      ? { providers: { entries: options.providerEntries } }
+      : options.localProviders === undefined
+        ? {}
+        : { providers: { local: options.localProviders } }),
+  };
+}
+
 function baseInput(options: BuildInputOptions = {}): ChannelStartInput<TuiAdapterConfig> {
   return {
-    coreConfig: {
-      runtime: {
-        model: { provider: "anthropic", model: "claude-fable-5", reference: "anthropic:claude-fable-5" },
-        workspace: "/tmp",
-        ...(options.effort === undefined ? {} : { effort: options.effort }),
-        ...(options.fallbackModels === undefined ? {} : {
-          fallbacks: options.fallbackModels.map((model) => ({
-            model: { ...model, reference: `${model.provider}:${model.model}` },
-          })),
-        }),
-      },
-      context: { identityPath: "/tmp/IDENTITY.md", selectedSkills: [] },
-      tools: { disallowedTools: [] },
-      ...(options.providerEntries !== undefined
-        ? { providers: { entries: options.providerEntries } }
-        : options.localProviders === undefined
-          ? {}
-          : { providers: { local: options.localProviders } }),
-    } as never,
+    coreConfig: baseCoreConfig(options),
     responder: noopResponder,
     cwd: "/tmp",
     onFailure: () => {},
@@ -128,19 +156,25 @@ async function resolveInfo(captured: TuiAdapterOptions): Promise<TuiAdapterInfo>
 
 /**
  * A canonical reference of exactly {@link MAX_MODEL_REFERENCE_BYTES} bytes —
- * the longest one that can now exist anywhere in the system.
+ * the longest one that can exist anywhere in the system.
  *
  * `requireQuotableReference` (agent-runtime's `model-refs.js`) rejects any
  * longer reference at parse, which is what the `/v1/info` budget fixtures below
- * are built on. LENGTH is no longer the axis a payload budget can be pushed
- * along: every fixture that used to reach for a 70,000- or 257-byte id now sits
- * at this ceiling and scales by COUNT instead, which nothing bounds — a local
+ * are built on. That ceiling is a CONTAINMENT bound derived from what model ids
+ * really are — notably the `ollama:hf.co/<org>/<repo>:<quant>` form, whose real
+ * distribution runs past 100 bytes — and it is deliberately NOT the diagnostic
+ * echo budget in @mono-agent/runtime-adapter, which is smaller and is honoured
+ * by truncating rather than by refusing.
+ *
+ * LENGTH is therefore not the axis a payload budget can be pushed along: every
+ * fixture that used to reach for a 70,000-, 400,000- or 257-byte id now sits at
+ * this ceiling and scales by COUNT instead, which nothing bounds — a local
  * `/v1/models` answer is arbitrarily long, and `runtime.fallbacks` is validated
  * for uniqueness, not for length.
  *
- * Derived from the constant rather than written as 96, so that if the parser's
- * ceiling moves these fixtures move with it instead of quietly testing a
- * reference the grammar no longer accepts.
+ * Derived from the constant rather than written as a literal, so that if the
+ * parser's ceiling moves these fixtures move with it instead of quietly testing
+ * a reference the grammar no longer accepts.
  */
 function refAtCeiling(head: string, filler = "x"): string {
   const headBytes = Buffer.byteLength(head, "utf8");
@@ -154,9 +188,8 @@ function refAtCeiling(head: string, filler = "x"): string {
 }
 
 /** An `openrouter:` route whose canonical reference sits exactly at the ceiling. */
-function routeModelAtCeiling(index: number): string {
-  const prefix = "openrouter:";
-  return refAtCeiling(`${prefix}route-${String(index).padStart(6, "0")}-`, "m").slice(prefix.length);
+function routeReferenceAtCeiling(index: number): string {
+  return refAtCeiling(`openrouter:route-${String(index).padStart(6, "0")}-`, "m");
 }
 
 /** An `lmstudio:` discovered ref sitting exactly at the ceiling. */
@@ -244,8 +277,8 @@ describe("tui channel driver — info composition", () => {
   it("lists the primary then fallback models as candidate models, de-duplicated", async () => {
     const captured = await startCapturingTui({
       fallbackModels: [
-        { provider: "openai-codex", model: "gpt-5.5" },
-        { provider: "anthropic", model: "claude-fable-5" },
+        "openai-codex:gpt-5.5",
+        "anthropic:claude-fable-5",
       ],
     });
     const info = await resolveInfo(captured);
@@ -256,12 +289,12 @@ describe("tui channel driver — info composition", () => {
   it("publishes known provider context windows, preferring configured local capabilities", async () => {
     const captured = await startCapturingTui({
       fallbackModels: [
-        { provider: "openai-codex", model: "gpt-5.6-sol" },
-        { provider: "openai-codex", model: "gpt-5.5" },
-        { provider: "openai-codex", model: "gpt-5.6-terra" },
-        { provider: "openai-codex", model: "gpt-5.4" },
-        { provider: "anthropic", model: "claude-sonnet-4-6" },
-        { provider: "unknown-provider", model: "unknown-model" },
+        "openai-codex:gpt-5.6-sol",
+        "openai-codex:gpt-5.5",
+        "openai-codex:gpt-5.6-terra",
+        "openai-codex:gpt-5.4",
+        "anthropic:claude-sonnet-4-6",
+        "unknown-provider:unknown-model",
       ],
       localProviders: [{
         id: "openai-codex",
@@ -349,19 +382,25 @@ describe("tui channel driver — info composition", () => {
     // authored and nothing upstream of `parseMonoRuntimeModelReference` bounds.
     // Two shapes can no longer BE a reference, and neither may reach a surface
     // that quotes what it is handed:
-    //  - one byte past MAX_MODEL_REFERENCE_BYTES, so no operator surface could
-    //    echo it whole (the ceiling IS the diagnostics echo budget);
+    //  - one byte past MAX_MODEL_REFERENCE_BYTES, which is the containment bound
+    //    on an identifier that flows into logs, cache keys and wire payloads;
     //  - a raw control character, which restyles or extends the line quoting it.
+    //
+    // The two are refused for different reasons and only the second is about
+    // rendering. A legitimate reference too wide for a given diagnostic is
+    // TRUNCATED there (`sanitizeModelReferenceText`, on runtime-adapter's
+    // smaller echo budget); nothing is refused for a renderer's convenience.
     //
     // What this case used to be: a 257-byte id -- one past the catalog's paging
     // bound -- kept in `models` while the catalog page dropped it, on the
     // premise that "a 257-byte model id parses, routes and runs exactly like a
-    // 20-byte one". That premise is now false by construction: 96 bytes cap the
-    // WHOLE reference, so the catalog's 256-byte id bound is unreachable for
-    // anything that reaches `models` at all and the split it described cannot
-    // occur. The claim it was bought for -- `/v1/info.models` is not gated on
-    // catalog membership -- is now carried by the 600-model case below, on the
-    // divergence that IS still reachable: the per-provider advertised cap.
+    // 20-byte one". That premise is now false by construction: the ceiling caps
+    // the WHOLE reference below the catalog's 256-byte id bound, so that bound
+    // is unreachable for anything that reaches `models` at all and the split it
+    // described cannot occur. The claim it was bought for -- `/v1/info.models`
+    // is not gated on catalog membership -- is now carried by the 600-model case
+    // below, on the divergence that IS still reachable: the per-provider
+    // advertised cap.
     const overCeiling = `lmstudio:${"z".repeat(MAX_MODEL_REFERENCE_BYTES - "lmstudio:".length + 1)}`;
     // ESC: the exact code point that lets a model id repaint the line a daemon
     // log, `doctor` or the console prints it on.
@@ -429,8 +468,9 @@ describe("tui channel driver — info composition", () => {
 
   it("publishes every ref of a realistic 600-model local catalog the catalog itself cannot page", async () => {
     // 600 refs, each at the reference ceiling: the shape a large but entirely
-    // ordinary local install has, with every id as long as one can now be. They
-    // serialize to ~174 KB across both /v1/info projections, well inside the
+    // ordinary local install has, with every id as long as one can now be —
+    // `lmstudio:hf.co/<org>/<repo>-<quant>` is the real long-tail form, and the
+    // ceiling is derived from exactly that. They serialize to well under the
     // discovery slice. The old per-ref ESTIMATE (`bytes * 4 + 512` against a
     // 256 KiB slice) charged 1,472 bytes each and admitted only 178.
     //
@@ -512,37 +552,105 @@ describe("tui channel driver — info composition", () => {
     }
   });
 
-  it("skips only the oversized discovered row and keeps every ref behind it", async () => {
-    const localProviders: readonly LocalProviderDefinition[] = [
-      { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
-    ];
-    // Heterogeneous costs on purpose. One pathological id must cost only
-    // itself: `break` here would delete four runnable, selectable models
-    // because a fifth one was too big, and /v1/info.models is the only list
-    // the TUI's picker reads.
-    const rows = [
-      { ref: "lmstudio:small-0", label: "s0", providerId: "lmstudio" },
-      { ref: "lmstudio:small-1", label: "s1", providerId: "lmstudio" },
-      { ref: `lmstudio:${"x".repeat(200_000)}`, label: "huge", providerId: "lmstudio" },
-      { ref: "lmstudio:small-2", label: "s2", providerId: "lmstudio" },
-      { ref: "lmstudio:small-3", label: "s3", providerId: "lmstudio" },
-    ] satisfies DiscoveredLocalModel[];
+  it("skips only the row the discovery budget cannot take and keeps every ref behind it", async () => {
+    // `admitInfoModels` uses `continue`, not `break`, where a budget applies:
+    // one expensive entry must cost only itself, because /v1/info.models is the
+    // only list the TUI's picker reads and a withheld ref is UNSELECTABLE, not
+    // merely un-paginated.
+    //
+    // The version of this case that shipped last round could no longer tell the
+    // two apart. Its "huge" row was a 200,009-byte id, which the parser refuses
+    // BEFORE admission runs, so the rows behind it were never behind a budget
+    // rejection at all and `break` would have passed the test just as happily.
+    // A fixture that fabricates state the system cannot reach proves nothing.
+    //
+    // Reaching the distinction now means a row whose COST is heterogeneous
+    // while its length stays legal. Two things vary: the reference (short vs at
+    // the ceiling) and the materialized option — `effortLevels` comes from a
+    // local provider's declared `capabilities.reasoning_levels`, bounded to
+    // 32 x 64 bytes but no smaller. The expensive row below costs about 2 KB
+    // against a short row's ~110 bytes, and both parse.
+    //
+    // Where the budget edge falls is MEASURED off the real producer rather than
+    // recomputed here: a probe floods discovery with identically priced ceiling
+    // refs, and the number the producer publishes IS the edge for that row
+    // cost. Filling to one row short of it leaves a gap of at least one uniform
+    // row and strictly less than two — far too small for the expensive row,
+    // comfortably larger than the two short rows behind it. The skip and the
+    // admissions behind it are both forced, and this test keeps no copy of the
+    // producer's accounting.
+    const expensiveModelName = "expensive-effort-ladder";
+    const localProviders = [{
+      id: "lmstudio",
+      type: "lmstudio",
+      baseUrl: "http://localhost:1234",
+      enabled: true,
+      models: [{
+        name: expensiveModelName,
+        capabilities: {
+          reasoning: true,
+          // 32 levels of 58 bytes: the largest ladder `boundedEffortLevels`
+          // will pass through whole (MAX_ADVERTISED_EFFORT_LEVELS x
+          // MAX_ADVERTISED_EFFORT_LEVEL_BYTES), so this row is expensive by the
+          // producer's own published bound rather than by an oversize value.
+          reasoning_levels: Array.from(
+            { length: 32 },
+            (_unused, index) => `level-${String(index).padStart(2, "0")}-${"e".repeat(48)}`,
+          ),
+        },
+      }],
+    }] satisfies readonly LocalProviderDefinition[];
 
-    const captured = await startCapturingTui({
+    const uniformRows = (count: number): DiscoveredLocalModel[] =>
+      Array.from({ length: count }, (_unused, index) => ({
+        ref: discoveredRefAtCeiling(index),
+        label: "uniform",
+        providerId: "lmstudio",
+      }));
+
+    const probe = await resolveInfo(await startCapturingTui({
+      localProviders,
+      discoverModels: async () => uniformRows(5_000),
+    }));
+    // Minus the configured primary, which is admitted unbudgeted ahead of them.
+    const edge = (probe.models?.length ?? 0) - 1;
+    // Guard against the probe going vacuous at either end: the budget must
+    // really have cut the flood, and must have left room for more than the rows
+    // this case then places behind the skip.
+    expect(edge).toBeGreaterThan(2);
+    expect(edge).toBeLessThan(5_000);
+
+    const expensive: DiscoveredLocalModel = {
+      ref: `lmstudio:${expensiveModelName}`,
+      label: "expensive",
+      providerId: "lmstudio",
+    };
+    // It is a perfectly legal reference. It is refused for its COST, which is
+    // the only way this case can distinguish `continue` from `break` at all.
+    expect(() => parseMonoRuntimeModelReference(expensive.ref)).not.toThrow();
+    const behind: DiscoveredLocalModel[] = [
+      { ref: "lmstudio:s0", label: "s0", providerId: "lmstudio" },
+      { ref: "lmstudio:s1", label: "s1", providerId: "lmstudio" },
+    ];
+    const rows = [...uniformRows(edge - 1), expensive, ...behind];
+
+    const info = await resolveInfo(await startCapturingTui({
       localProviders,
       discoverModels: async () => rows,
-    });
-    const info = await resolveInfo(captured);
+    }));
 
-    const expected = [
+    expect(info.models).toEqual([
       "anthropic:claude-fable-5",
-      "lmstudio:small-0",
-      "lmstudio:small-1",
-      "lmstudio:small-2",
-      "lmstudio:small-3",
-    ];
-    expect(info.models).toEqual(expected);
-    expect(Object.keys(info.modelOptions ?? {}).sort()).toEqual([...expected].sort());
+      ...uniformRows(edge - 1).map((row) => row.ref),
+      ...behind.map((row) => row.ref),
+    ]);
+    // The distinction in one line: what shipped is NOT a prefix of what
+    // discovery reported, and a `break` can only ever produce a prefix.
+    const reported = rows.map((row) => row.ref);
+    const shipped = (info.models ?? []).slice(1);
+    expect(shipped).not.toEqual(reported.slice(0, shipped.length));
+    expect(shipped).not.toContain(expensive.ref);
+    expect(Object.keys(info.modelOptions ?? {})).not.toContain(expensive.ref);
   });
 
   it("bounds an unbounded local effort ladder instead of dropping the model", async () => {
@@ -559,7 +667,7 @@ describe("tui channel driver — info composition", () => {
         name: "big-effort",
         capabilities: { reasoning: true, reasoning_levels: ["z".repeat(1_100_000)] },
       }],
-    }] as unknown as readonly LocalProviderDefinition[];
+    }] satisfies readonly LocalProviderDefinition[];
 
     const captured = await startCapturingTui({
       localProviders,
@@ -593,7 +701,7 @@ describe("tui channel driver — info composition", () => {
         name: "many-levels",
         capabilities: { reasoning: true, reasoning_levels: levels },
       }],
-    }] as unknown as readonly LocalProviderDefinition[];
+    }] satisfies readonly LocalProviderDefinition[];
 
     const captured = await startCapturingTui({
       localProviders,
@@ -654,26 +762,29 @@ describe("tui channel driver — info composition", () => {
       .toEqual([...providerEntries.map((entry) => entry.id), "anthropic"]);
   });
 
-  it("publishes a configured route no producer-side slice could have held", async () => {
+  it("publishes a configured chain no producer-side slice could have held", async () => {
     // ~800 KB across the two projections: more than any slice that also leaves
-    // room for providers and skills, and yet a route a turn really would run
-    // inside a body that still fits the shared 1 MiB cap. Round 3 dropped it at
-    // a 128 KiB slice and round 4 dropped it again at 512 KiB; a slice bounds a
-    // total, it does not rule on which authored content deserves to ship.
-    const long = "m".repeat(400_000);
-    const captured = await startCapturingTui({
-      fallbackModels: [
-        { provider: "openrouter", model: "gpt-5.6-sol" },
-        { provider: "openrouter", model: long },
-      ],
-    });
+    // room for providers and skills, and yet every entry is a route a turn
+    // really would run, inside a body that still fits the shared 1 MiB cap.
+    // Round 3 dropped an authored route at a 128 KiB slice and round 4 dropped
+    // it again at 512 KiB; a slice bounds a total, it does not rule on which
+    // authored content deserves to ship.
+    //
+    // The old vehicle was a single 400,007-byte reference, which the parser can
+    // no longer produce — a fixture the system cannot reach tests nothing. The
+    // pressure is applied by COUNT instead, which nothing bounds: `runtime.
+    // fallbacks` is validated for uniqueness, not for length.
+    const routes = [
+      "openrouter:gpt-5.6-sol",
+      ...Array.from({ length: 2_000 }, (_unused, index) => routeReferenceAtCeiling(index)),
+    ];
+    const captured = await startCapturingTui({ fallbackModels: routes });
     const info = await resolveInfo(captured);
 
-    expect(info.models).toEqual([
-      "anthropic:claude-fable-5",
-      "openrouter:gpt-5.6-sol",
-      `openrouter:${long}`,
-    ]);
+    expect(info.models).toEqual(["anthropic:claude-fable-5", ...routes]);
+    // Past every per-contributor slice this file has seen proposed, and still
+    // inside the one cap that is real.
+    expect(modelProjectionBytes(info)).toBeGreaterThan(512 * 1024);
     expect(Buffer.byteLength(JSON.stringify(info), "utf8")).toBeLessThan(1024 * 1024);
   });
 
@@ -685,22 +796,20 @@ describe("tui channel driver — info composition", () => {
     // configured-only slice it cost ~140 KB and was dropped, while the complete
     // body it belonged to measured 140,731 bytes -- a seventh of the cap.
     //
-    // `requireQuotableReference` caps a reference at 96 bytes, so no single
-    // route can weigh that much any more and the original vehicle is gone. The
-    // guarantee it bought is not: a configured route is authored, so no
-    // producer-side slice may drop one. With per-item size bounded, the only
-    // way configured routes can press on a budget is by COUNT -- so that is what
-    // this drives. Each route costs ~220 bytes across the two projections (the
-    // ref twice, plus its option object), so 800 of them spend ~176 KB: past
-    // the 128 KiB slice the old rule charged configured routes against, and
-    // past any per-contributor ceiling short of the wire cap. Every one must
-    // still ship.
-    const configured = Array.from({ length: 800 }, (_unused, index) => ({
-      provider: "openrouter",
-      model: `route-${String(index).padStart(4, "0")}-${"m".repeat(60)}`,
-    }));
+    // `requireQuotableReference` caps a reference at MAX_MODEL_REFERENCE_BYTES,
+    // so no single route can weigh that much any more and the original vehicle
+    // is gone. The guarantee it bought is not: a configured route is authored,
+    // so no producer-side slice may drop one. With per-item size bounded, the
+    // only way configured routes can press on a budget is by COUNT -- so that is
+    // what this drives. 800 routes at the ceiling spend well past the 128 KiB
+    // slice the old rule charged configured routes against, and past any
+    // per-contributor ceiling short of the wire cap. Every one must still ship.
+    const configured = Array.from(
+      { length: 800 },
+      (_unused, index) => routeReferenceAtCeiling(index),
+    );
     const flood = Array.from({ length: 5_000 }, (_unused, index) => ({
-      ref: `lmstudio:model-${String(index).padStart(6, "0")}-${"x".repeat(60)}`,
+      ref: discoveredRefAtCeiling(index),
       label: "flood",
       providerId: "lmstudio",
     })) satisfies DiscoveredLocalModel[];
@@ -715,9 +824,8 @@ describe("tui channel driver — info composition", () => {
     // Every authored route ships. Not "most", not "the ones that fit": all of
     // them, plus the primary. This is the assertion a per-item or aggregate
     // configured ceiling cannot satisfy.
-    for (const route of configured) {
-      expect(info.models).toContain(`${route.provider}:${route.model}`);
-    }
+    const published = new Set(info.models ?? []);
+    expect(configured.filter((route) => !published.has(route))).toEqual([]);
     expect(info.models?.length).toBeGreaterThan(configured.length);
     // Discovery still fills in behind them, and still cannot spend more than
     // its own aggregate budget on top of whatever the authored routes took.
@@ -743,7 +851,7 @@ describe("tui channel driver — info composition", () => {
     ];
 
     const captured = await startCapturingTui({
-      fallbackModels: [{ provider: "ollama", model: "qwen3.6:latest" }],
+      fallbackModels: ["ollama:qwen3.6:latest"],
       localProviders,
       discoverModels: async () => [],
     });
@@ -810,7 +918,7 @@ describe("tui channel driver — info composition", () => {
 
   it("resolves /v1/info from memory: repeated polls do not re-read the Pi catalog", async () => {
     const captured = await startCapturingTui({
-      fallbackModels: [{ provider: "openrouter", model: "gpt-5.6-sol" }],
+      fallbackModels: ["openrouter:gpt-5.6-sol"],
     });
 
     const first = await resolveInfo(captured);
@@ -839,7 +947,7 @@ describe("tui channel driver — info composition", () => {
         baseUrl: "http://localhost:11434",
         enabled: true,
         models: [{ name: "gemma4:31b" }],
-      }] as unknown as readonly DiscoveredProvider[],
+      }] satisfies readonly DiscoveredProvider[],
     });
     const info = await resolveInfo(captured);
 
@@ -850,7 +958,7 @@ describe("tui channel driver — info composition", () => {
 
   it("keeps the serialized /v1/info payload under the byte budget with openrouter configured", async () => {
     const captured = await startCapturingTui({
-      fallbackModels: [{ provider: "openrouter", model: "gpt-5.6-sol" }],
+      fallbackModels: ["openrouter:gpt-5.6-sol"],
     });
     const info = await resolveInfo(captured);
 
@@ -867,9 +975,9 @@ describe("tui channel driver — info composition", () => {
   it("advertises exact Pi effort levels while unknown provider refs fail closed", async () => {
     const captured = await startCapturingTui({
       fallbackModels: [
-        { provider: "openai-codex", model: "gpt-5.6-terra" },
-        { provider: "anthropic", model: "claude-sonnet-4-6" },
-        { provider: "unknown-provider", model: "gemini" },
+        "openai-codex:gpt-5.6-terra",
+        "anthropic:claude-sonnet-4-6",
+        "unknown-provider:gemini",
       ],
     });
     const info = await resolveInfo(captured);
@@ -892,7 +1000,7 @@ describe("tui channel driver — info composition", () => {
       throw new Error("local catalog unavailable");
     });
     const captured = await startCapturingTui({
-      fallbackModels: [{ provider: "openai-codex", model: "gpt-5.6-terra" }],
+      fallbackModels: ["openai-codex:gpt-5.6-terra"],
       discoverModels,
     });
 

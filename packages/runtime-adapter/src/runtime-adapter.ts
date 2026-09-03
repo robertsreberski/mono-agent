@@ -3,10 +3,7 @@ import {
   createRouterRuntime,
   createRuntime,
 } from "@mono-agent/agent-runtime";
-import {
-  MAX_MODEL_REFERENCE_BYTES,
-  parseRuntimeModelReference,
-} from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
+import { parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
 import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
 import { bridgeProcessJobsController } from "./process-jobs.js";
 import { monoSandboxImpl } from "./sandbox-impl.js";
@@ -63,14 +60,24 @@ export class RuntimeAdapterError extends Error {
  * The rule, therefore, is not "trim model ids": it is that no operator-supplied text reaches a
  * diagnostic without being reduced to printable single-line text AND bounded.
  *
- * This budget is the kernel parser's own acceptance ceiling, not a second number chosen here:
- * `MAX_MODEL_REFERENCE_BYTES` is what `parseRuntimeModelReference` refuses to exceed (see its
- * derivation from the 1312-entry built-in catalog and from live local-provider discovery). The
- * two being one constant is what makes the guarantee total rather than per-renderer: a
- * *parsed* reference is by construction printable, single-line and short enough to echo whole,
- * so this function only ever clamps text that failed to parse.
+ * This is a DISPLAY budget, and it is deliberately its own number rather than the parser's
+ * acceptance ceiling. A previous round defined it as `MAX_MODEL_REFERENCE_BYTES` on the rule
+ * "a reference is accepted exactly when every operator surface can quote it whole" -- elegant,
+ * and wrong in the one direction that costs an operator something: it made a print width
+ * decide what a model may be called, and duly refused a real Hugging Face GGUF repo Ollama
+ * serves today at 100 bytes. The concerns are not one. An echo is bounded by TRUNCATING it,
+ * which `sanitizeModelReferenceText` does, marking the cut; a reference cannot be truncated
+ * into validity, so its ceiling has to be justified by what model ids are (see
+ * `MAX_MODEL_REFERENCE_BYTES`, now 160 and derived from the real distribution).
+ *
+ * Keeping this at 96 costs nothing real. It bounds the value quoted back at an operator when
+ * that value FAILED to parse -- `modelReferenceEcho` in @mono-agent/config, the only consumer,
+ * is on the rejection path -- so it never truncates a working reference. It stays large enough
+ * to show a mistyped one in full: 96 bytes covers every reference in Pi's 1312-entry built-in
+ * catalog (longest 77) and every ref this machine's Ollama and LM Studio discovery returns
+ * (longest 52), and a longer value is shown as much of itself as fits, plus the marker.
  */
-export const MODEL_REFERENCE_ECHO_MAX_BYTES = MAX_MODEL_REFERENCE_BYTES;
+export const MODEL_REFERENCE_ECHO_MAX_BYTES = 96;
 
 /** Longest fixed repair sentence the kernel parser emits, 127 bytes (the ACP one), rounded up. */
 const MODEL_REFERENCE_REPAIR_MAX_BYTES = 128;

@@ -533,17 +533,58 @@ describe("parseMonoRuntimeModelReference bounds the reason it derives", () => {
 });
 
 /**
- * The rendering bound and the parse bound are two halves of one guarantee, and neither is worth
- * much without the other: the parser refuses what a renderer could not quote whole, and the
- * renderer clamps what the parser refused. What follows asserts the seam between them -- that
- * they are the same bound, drawn at the same set of code points -- rather than either half on
- * its own.
+ * The rendering bound and the parse bound are two SEPARATE guarantees that compose, and the
+ * seam between them is what this asserts.
+ *
+ * A previous round made them one 96-byte constant on the rule "a reference is accepted exactly
+ * when every operator surface can quote it whole". That rule is wrong in one direction: an echo
+ * too long to print can be TRUNCATED, but a model that a provider really serves cannot be
+ * truncated into existence, and the collapsed rule duly refused a Hugging Face GGUF repo Ollama
+ * serves today at 100 bytes. So:
+ *
+ *  - CONTENT stays coupled, exactly. Neither layer may see a code point the other would have to
+ *    handle: the parser refuses control/formatting characters at the source, the renderer
+ *    escapes them in text that never parsed. The final case below proves the two sets agree
+ *    code point by code point.
+ *  - LENGTH is deliberately decoupled. The parser's ceiling is about containment
+ *    (`MAX_MODEL_REFERENCE_BYTES`, derived from what model ids really are); the echo budget is
+ *    about a diagnostic line. Where they disagree the renderer clamps and marks the cut, which
+ *    costs a message some characters instead of costing an operator a working model.
  */
-describe("the parse ceiling and the diagnostic echo budget are one bound", () => {
+describe("the parse ceiling and the diagnostic echo budget are separate bounds that compose", () => {
   const utf8 = (value: string): number => new TextEncoder().encode(value).length;
 
-  it("is literally the same constant on both sides, so the two cannot drift apart", () => {
-    expect(MODEL_REFERENCE_ECHO_MAX_BYTES).toBe(MAX_MODEL_REFERENCE_BYTES);
+  /** A real Hugging Face GGUF repo served by Ollama, at 100 bytes: longer than the echo budget. */
+  const HF_GGUF_REFERENCE =
+    "ollama:hf.co/mradermacher/Qwen3.5-27B-HERETIC-Polaris-Advanced-Thinking-Alpha-uncensored-GGUF:Q4_K_M";
+
+  it("lets the parse ceiling exceed the echo budget rather than the reverse", () => {
+    // The ORDER is the invariant, not either number. Were the echo budget the larger one, the
+    // clamp could never fire and the equality would have quietly returned; were the ceiling
+    // pinned to the echo budget again, this file's own 100-byte case below would stop parsing.
+    expect(MODEL_REFERENCE_ECHO_MAX_BYTES).toBeLessThan(MAX_MODEL_REFERENCE_BYTES);
+    // And the echo budget is still wide enough to be useful on the path that uses it: every
+    // reference in Pi's 1312-entry built-in catalog is quoted whole (the longest is 77).
+    expect(MODEL_REFERENCE_ECHO_MAX_BYTES).toBeGreaterThanOrEqual(77);
+  });
+
+  it("accepts a 100-byte Hugging Face GGUF reference the collapsed rule refused", () => {
+    expect(utf8(HF_GGUF_REFERENCE)).toBe(100);
+    expect(utf8(HF_GGUF_REFERENCE)).toBeGreaterThan(MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(parseMonoRuntimeModelReference(HF_GGUF_REFERENCE)).toEqual({
+      provider: "ollama",
+      model: HF_GGUF_REFERENCE.slice("ollama:".length),
+      reference: HF_GGUF_REFERENCE,
+    });
+  });
+
+  it("bounds that reference for a diagnostic by truncating it, not by refusing it", () => {
+    // This is the whole point of the split. The renderer's answer to "too long to print" is a
+    // shorter string with the cut marked -- a lossy diagnostic, not a lost route.
+    const echoed = sanitizeModelReferenceText(HF_GGUF_REFERENCE, MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(utf8(echoed)).toBeLessThanOrEqual(MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(echoed.endsWith("\u2026")).toBe(true);
+    expect(HF_GGUF_REFERENCE.startsWith(echoed.slice(0, -1))).toBe(true);
   });
 
   it.each([
@@ -565,25 +606,15 @@ describe("the parse ceiling and the diagnostic echo budget are one bound", () =>
     );
   });
 
-  it("echoes a reference it accepted whole, never clamped", () => {
-    // The equality of the two constants only pays off if it holds at the boundary: a
-    // reference sitting exactly on the parse ceiling must still survive the echo untouched.
-    const filler = "a".repeat(MODEL_REFERENCE_ECHO_MAX_BYTES - "openai:".length);
-    const accepted = parseMonoRuntimeModelReference(`openai:${filler}`);
-    expect(utf8(accepted.reference)).toBe(MODEL_REFERENCE_ECHO_MAX_BYTES);
-    expect(sanitizeModelReferenceText(accepted.reference, MODEL_REFERENCE_ECHO_MAX_BYTES))
-      .toBe(accepted.reference);
-  });
-
-  it("never accepts a reference the echo would then have to clamp", () => {
-    // The whole invariant in one line: for any candidate, either the parser refuses it or the
-    // renderer hands it back untouched. Stated this way it also pins the *unit* -- a ceiling
-    // measured in UTF-16 code units rather than UTF-8 bytes still looks like a bound and still
-    // passes an ASCII boundary case, but lets these multibyte references through to be
-    // clamped, which is the exact half-fix this seam exists to prevent.
+  it("holds the composed property: refused, or rendered printable inside the echo budget", () => {
+    // The seam in one line, now that the two numbers differ. It also pins the UNIT on both
+    // sides: a ceiling counted in UTF-16 code units rather than UTF-8 bytes still looks like a
+    // bound and still passes an ASCII boundary case, while letting these multibyte references
+    // through at more than double the intended byte cost.
     const candidates = [
-      `openai:${"a".repeat(MODEL_REFERENCE_ECHO_MAX_BYTES - "openai:".length)}`,
+      `openai:${"a".repeat(MAX_MODEL_REFERENCE_BYTES - "openai:".length)}`,
       "cloudflare-ai-gateway:workers-ai/@cf/mistralai/mistral-small-3.1-24b-instruct",
+      HF_GGUF_REFERENCE,
       `openai:${"\u{1F9E0}".repeat(40)}`,
       `openai:${"é".repeat(60)}`,
       `openai:${"中".repeat(50)}`,
@@ -595,15 +626,18 @@ describe("the parse ceiling and the diagnostic echo budget are one bound", () =>
       } catch {
         return false;
       }
-      return sanitizeModelReferenceText(reference, MODEL_REFERENCE_ECHO_MAX_BYTES) !== reference;
+      if (utf8(reference) > MAX_MODEL_REFERENCE_BYTES) return true;
+      const echoed = sanitizeModelReferenceText(reference, MODEL_REFERENCE_ECHO_MAX_BYTES);
+      return utf8(echoed) > MODEL_REFERENCE_ECHO_MAX_BYTES || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(echoed);
     });
     expect(violations).toEqual([]);
   });
 
   it("refuses exactly the code points the sanitizer would otherwise have to escape", () => {
-    // The kernel parser and this module each name the unsafe set with their own regex, in
-    // different packages and different languages. Asserting the two agree code point by code
-    // point is what keeps that duplication honest; a comment would not.
+    // The CHARACTER half of the seam stays coupled where the LENGTH half no longer is. The
+    // kernel parser and this module each name the unsafe set with their own regex, in different
+    // packages and different languages; asserting the two agree code point by code point is
+    // what keeps that duplication honest, and a comment would not.
     const disagreements: string[] = [];
     for (let codePoint = 0; codePoint <= 0xffff; codePoint += 1) {
       if (codePoint >= 0xd800 && codePoint <= 0xdfff) continue;
