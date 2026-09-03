@@ -58,8 +58,8 @@ identity. `MONO_AGENT_NAME` overrides the JSON value.
 Use `runtime.fallbacks` for fallback chains. It is an ordered, uncapped array of
 `{ model, effort? }` entries; omitted route effort means the provider default.
 The legacy `runtime.fallbackModels` / `MONO_AGENT_FALLBACK_MODELS` surfaces were
-retired in 0.21.0 and now fail at load with the replacement named — run
-`mono-agent migrate-config` to convert them.
+retired in 0.21.0 and now fail at load with the replacement named; convert them
+by hand.
 
 ```json
 {

@@ -66,8 +66,8 @@ carrying one does not start. The CLI CSV flag `--fallback-models` was removed
 earlier; repeat `--fallback <ref>` instead. See the canonical
 [deprecation tracker](/reference/deprecations/).
 
-Convert with `mono-agent migrate-config --write` — run `--check` with the new
-CLI **before** restarting a live agent:
+Convert by hand, with the agent stopped, then run `mono-agent validate` before
+restarting it:
 
 ```json
 {

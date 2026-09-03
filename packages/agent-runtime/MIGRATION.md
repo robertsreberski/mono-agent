@@ -20,7 +20,7 @@ the configuration schema.
 
 **This is the largest breaking change since `0.3.x`.** mono-agent shipped six
 runtime bridges behind a dispatch table; it now runs only its Pi implementation.
-Read the whole section before upgrading a live agent, and run the codemod below
+Read the whole section before upgrading a live agent, and migrate its config
 before restarting one.
 
 ### Deleted runtime bridges
@@ -59,7 +59,7 @@ first colon only.
 | `codex:gpt-5.6-terra` | **rejected**; no mechanical replacement |
 
 A leading `pi:` is canonicalized away automatically, so those refs keep working
-and the codemod rewrites them for you. `codex:`, `claude:`, `claude-code:`,
+and you strip the prefix by hand. `codex:`, `claude:`, `claude-code:`,
 `codex-cli:`, `acp:` and `vercel:` are rejected at load with the replacement
 named. They are **not** migrated automatically: `codex:gpt-5.6-terra` →
 `openai-codex:gpt-5.6-terra` looks mechanical but changes which auth store the
@@ -119,51 +119,51 @@ re-runnable, and adds columns only — no rows are rewritten. Per-conversation
 model and effort overrides now persist server-side, so they roam between devices
 instead of living in one browser's localStorage.
 
-### The codemod
+### Migrating a config
 
-`mono-agent migrate-config` ships as a CLI subcommand, not a repo script:
-deployed agents run immutable managed runtime snapshots under
-`~/.mono-agent/runtimes/`, where a `scripts/` file is unreachable.
+There is no codemod. `mono-agent migrate-config` was written for this release and
+then removed before it shipped: it rewrote a live agent's config while the agent
+itself could be writing the same file, and that race could not be closed — only
+narrowed. Migrating by hand is a few minutes per agent and cannot lose data.
 
-```bash
-mono-agent migrate-config --check              # exit 1 while work remains
-mono-agent migrate-config --write              # applies, writing <config>.bak
+The loader does the finding for you. Every retired key fails at load with the
+exact repair, so an unmigrated agent refuses to start and names what to fix:
+
+```text
+MonoAgentConfigError: invalid_json
+`runtime.executionMode` was removed; mono-agent runs only the Pi runtime (SDK).
+Delete the key.
 ```
 
-It deletes the retired keys, converts `fallbackModels` to `fallbacks`, and
-strips `pi:` from `runtime.model` and `runtime.fallbacks[].model`. It strips it
-from `memory.llm.model` too, but only under `provider: "agent-host"` — the one
-provider for which that field is a runtime reference. Under the default
-`ollama` provider it is a raw service model string, where the colon in
-`qwen3:8b` is a tag separator and rewriting it would repoint memory at a model
-that does not exist. Retired `memory.llm.*` keys are deleted either way.
+Per config, in `mono-agent.config.json`:
 
-It is not JSON-only. It also migrates the `model:` frontmatter of every `*.md`
-in the cron and webhook trigger folders — honouring a renamed `cron.dir` /
-`webhook.dir`, resolved relative to the config — and backs each rewritten file
-up beside itself as `<name>.md.bak`.
+1. Delete `runtime.executionMode`, `memory.llm.executionMode` and
+   `runtime.routeSafety`.
+2. Convert `runtime.fallbackModels: ["a", "b"]` to
+   `runtime.fallbacks: [{ "model": "a" }, { "model": "b" }]`.
+3. Strip a leading `pi:` from `runtime.model` and `runtime.fallbacks[].model`.
+4. Strip it from `memory.llm.model` **only** when `memory.llm.provider` is
+   `agent-host`. Under the default `ollama` provider that field is a raw service
+   model string, where the colon in `qwen3:8b` is a tag separator — rewriting it
+   would repoint memory at a model that does not exist.
+5. Replace any `codex:`, `claude:`, `claude-code:`, `codex-cli:`, `acp:` or
+   nested `opencode:<provider>:<model>` reference. These have no mechanical
+   equivalent: `codex:gpt-5.6-terra` becomes `openai-codex:gpt-5.6-terra`, which
+   is a different auth store, so the substitution is a decision, not a rename.
 
-It edits the source text in place, so untouched bytes stay byte-identical and
-the `.bak` diff shows only real changes. It refuses to guess non-Pi prefixes,
-and skips `configVersion: 1` files untouched. Re-running it is a no-op.
-
-Because a live agent may be writing the same files, every file is re-read and
-compared immediately before it is replaced; if the bytes moved meanwhile the
-run stops non-zero having replaced nothing, rather than overwriting the other
-writer (`--json` reports this as `config-changed-on-disk`). Backups inherit the
-source file's permissions instead of the umask default, and a symlinked config
-is resolved and written through to its target instead of being replaced by a
-regular file.
+Then the same `model:` frontmatter fix in every `*.md` under the cron and webhook
+trigger folders (`cron.dir` / `webhook.dir` if renamed, resolved from the agent
+root). A `configVersion: 1` file needs none of this.
 
 ### Deployment order
 
-Run the check with the **new** CLI, **before** restarting — running it with the
-old CLI does nothing useful:
-
 ```text
-merge → release 0.21.0 → per consumer: mono-agent migrate-config --check
-      → migrate → mono-agent restart
+merge → release 0.21.0 → per agent: stop it, edit the config, mono-agent validate
+      → mono-agent start
 ```
+
+Edit with the agent stopped. `mono-agent validate` reports every remaining
+problem without starting a turn or spending a model call.
 
 ---
 

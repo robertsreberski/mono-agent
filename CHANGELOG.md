@@ -28,15 +28,10 @@
   `agents.providers_json`), so a choice made on the desktop shows up on the phone
   instead of living in one browser's localStorage. The console selector groups
   and filters by provider.
-- **New `mono-agent migrate-config [--check] [--write]`** codemod. It edits
-  text in place so untouched bytes stay byte-identical, refuses to guess
-  non-Pi model prefixes, and skips `configVersion: 1` files. Beyond
-  `mono-agent.config.json` it migrates the `model:` frontmatter of cron and
-  webhook trigger markdown, and it leaves `memory.llm.model` alone unless
-  `memory.llm.provider` is `agent-host` — the only provider under which that
-  field is a runtime reference. It re-reads each file immediately before
-  writing and stops rather than clobber a concurrent edit. See
-  `packages/agent-runtime/MIGRATION.md` for the deployment order.
+- **Retired config keys and non-Pi model references are migrated by hand.** Each
+  fails at load with its exact repair, so an unmigrated agent refuses to start
+  and names what to fix. See `packages/agent-runtime/MIGRATION.md` for the
+  per-config checklist and the deployment order.
 
 - Upgrade the exact-pinned Pi AI catalog and TUI to 0.84.3, including GitHub
   Copilot support for Gemini 3.7 Flash and Grok 4.6, provider-required OAuth

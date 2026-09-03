@@ -13,7 +13,7 @@ import {
 } from "./launchd.js";
 import { parseWebLogMaintenanceArguments } from "./web-log-maintenance-command.js";
 
-export const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "bridge", "install-skill", "backfill", "runs", "memory", "continuations", "jobs", "migrate-config"] as const;
+export const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "bridge", "install-skill", "backfill", "runs", "memory", "continuations", "jobs"] as const;
 const KNOWN_COMMANDS = [
   ...PUBLIC_COMMANDS,
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
@@ -34,13 +34,12 @@ export const JSON_CAPABLE_COMMANDS = [
   "memory",
   "continuations",
   "jobs",
-  "migrate-config",
 ] as const;
 
 // Human-facing list for the rejection message: the two subcommand-gated surfaces
 // are qualified so the error points at the exact invocation that accepts `--json`.
 const JSON_CAPABLE_COMMANDS_DISPLAY =
-  "validate, config, presets, status, sandbox status, install-skill --project --check, runs, memory, continuations, jobs, migrate-config";
+  "validate, config, presets, status, sandbox status, install-skill --project --check, runs, memory, continuations, jobs";
 
 // Commands removed outright before the KNOWN_COMMANDS gate. Parsing throws with the
 // replacement, and runCli maps that parse error to exit code 2 (usage-error).
@@ -134,12 +133,10 @@ export interface ParsedCliArgs {
   readonly configure?: boolean;
   /** install-skill: operate on the current agent's managed project skills. */
   readonly project?: boolean;
-  /** install-skill --project: report drift without writing. migrate-config: report only, exit 1 when work remains. */
+  /** install-skill --project: report drift without writing. */
   readonly check?: boolean;
   /** install-skill --project: safely update unchanged managed copies. */
   readonly update?: boolean;
-  /** migrate-config: apply the safe transforms after writing <config>.bak. */
-  readonly write?: boolean;
   /** install-skill: copy the skill without pairing the version-matched documentation MCP. */
   readonly noDocsMcp?: boolean;
   /** runs audit: override the stale-running cutoff interval. */
@@ -284,7 +281,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let project = false;
   let check = false;
   let update = false;
-  let write = false;
   let noDocsMcp = false;
   let staleAfterMs: number | undefined;
   let json = false;
@@ -367,9 +363,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--check":
         check = true;
-        break;
-      case "--write":
-        write = true;
         break;
       case "--update":
         update = true;
@@ -642,20 +635,14 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (update && cmd !== "install-skill") {
     throw new Error("--update is only supported for `mono-agent install-skill`.");
   }
-  if (check && cmd !== "install-skill" && cmd !== "migrate-config") {
-    throw new Error("--check is only supported for `mono-agent install-skill --project` and `mono-agent migrate-config`.");
+  if (check && cmd !== "install-skill") {
+    throw new Error("--check is only supported for `mono-agent install-skill --project`.");
   }
   if ((check || update) && cmd === "install-skill" && !project) {
     throw new Error("--check and --update require `mono-agent install-skill --project`.");
   }
   if (check && update) {
     throw new Error("Choose either --check or --update for project skills.");
-  }
-  if (write && cmd !== "migrate-config") {
-    throw new Error("--write is only supported for `mono-agent migrate-config`.");
-  }
-  if (check && write) {
-    throw new Error("Choose either --check or --write for `mono-agent migrate-config`.");
   }
   if (noDocsMcp && cmd !== "install-skill") {
     throw new Error("--no-docs-mcp is only supported for `mono-agent install-skill`.");
@@ -753,11 +740,11 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   }
   assertFlagCommand(configPath !== undefined, "--config", cmd, [
     "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs", "tui",
-    "runs", "backfill", "memory", "continuations", "jobs", "migrate-config", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+    "runs", "backfill", "memory", "continuations", "jobs", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   ]);
   assertFlagCommand(envFile !== undefined, "--env-file", cmd, [
     "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs", "tui",
-    "runs", "backfill", "memory", "continuations", "jobs", "migrate-config", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+    "runs", "backfill", "memory", "continuations", "jobs", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   ]);
   assertFlagCommand(name !== undefined, "--name", cmd, ["init"]);
   assertFlagCommand(model !== undefined, "--model", cmd, ["init"]);
@@ -865,7 +852,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(project ? { project } : {}),
     ...(check ? { check } : {}),
     ...(update ? { update } : {}),
-    ...(write ? { write } : {}),
     ...(noDocsMcp ? { noDocsMcp } : {}),
     ...(host === undefined ? {} : { host }),
     ...(port === undefined ? {} : { port }),

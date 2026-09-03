@@ -64,7 +64,6 @@ import { sanitizeManagedWebLogMaintenanceEnvironment } from "./managed-web-maint
 import { runSandboxCommand } from "./cli-sandbox-command.js";
 export { runSandboxCommand } from "./cli-sandbox-command.js";
 export type { SandboxCommandDependencies } from "./cli-sandbox-command.js";
-import { runMigrateConfig } from "./cli-migrate-config-command.js";
 import * as ui from "./ui.js";
 
 interface ValidateContext {
@@ -313,8 +312,6 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.json === true ? { json: true } : {}),
       });
     }
-    case "migrate-config":
-      return await runMigrateConfig(args);
     case "backfill":
       return await runBackfill({
         ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
