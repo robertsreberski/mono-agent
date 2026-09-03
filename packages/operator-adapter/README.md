@@ -238,7 +238,7 @@ startTuiAdapter
 
 This adapter depends on Express plus shared `@mono-agent/agent-contracts`
 primitives. It must not depend on the agent harness, runtime adapter, operator
-surfaces, memory, observability, other communication adapters, or host/demo
+surfaces, memory, observability, other communication adapters, or host composition
 code. Hosts compose it with structural responders.
 
 ## What This Package Does Not Own

@@ -619,7 +619,7 @@ startSlackAdapter
 
 ## Dependency Boundary
 
-This package may depend on `@mono-agent/agent-contracts` plus Slack transport dependencies. It must not depend on the agent harness, runtime adapter, operator surfaces, other communication adapters, or host/demo code.
+This package may depend on `@mono-agent/agent-contracts` plus Slack transport dependencies. It must not depend on the agent harness, runtime adapter, operator surfaces, other communication adapters, or host composition code.
 
 ## What This Package Does Not Own
 

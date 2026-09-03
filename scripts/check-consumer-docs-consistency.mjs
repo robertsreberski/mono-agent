@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-import { access, readFile, readdir, stat } from "node:fs/promises";
+import { access, lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { constants } from "node:fs";
-import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { packageCatalog } from "./package-catalog.mjs";
 
 const userDocRoots = [
   "AGENTS.md",
@@ -18,7 +19,9 @@ const userDocRoots = [
   "packages/tui/README.md",
   "packages/agent-app/skills/mono-agent-composer/references",
 ];
-const demoMarkdownRoot = "demos";
+const catalogDemoOnlyReadmes = packageCatalog
+  .map((entry) => `${entry.path ?? `packages/${entry.dir}`}/README.md`)
+  .filter((path) => !userDocRoots.includes(path));
 
 const artifactContractSourcePaths = [
   "packages/agent-app/src/cli-background-command.ts",
@@ -36,6 +39,17 @@ const artifactContractSourcePaths = [
 
 const monoPackage = (...nameParts) => `@mono-agent/${nameParts.join("-")}`;
 const packageDir = (...nameParts) => `packages/${nameParts.join("-")}`;
+const retiredDemoRootCommands = [
+  "build:demo",
+  "typecheck:demo",
+  "test:demo",
+  "demo:final",
+  "deploy:final",
+];
+const retiredDemoRootCommandPattern = new RegExp(
+  `(?<![A-Za-z0-9:._/-])(?:${retiredDemoRootCommands.map(escapedPattern).join("|")})(?![A-Za-z0-9:_/-]|\\.[A-Za-z0-9:_/-])`,
+  "iu",
+);
 
 function escapedPattern(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -59,15 +73,31 @@ function packageSurfacePattern(...nameParts) {
   ].join("|"), "iu");
 }
 
+const retiredDemoDocReferences = [
+  {
+    label: "demos package",
+    pattern: /@mono-agent\/demos(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])|(?<![A-Za-z0-9._-])packages\/demos(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])|(?<![A-Za-z0-9._-])demos\s+(?:package|workspace|surface)\b/iu,
+  },
+  {
+    label: "demos/final-agent path",
+    pattern: /(?<![A-Za-z0-9._-])demos\/final-agent(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])/iu,
+  },
+  {
+    label: "demos/searxng path",
+    pattern: /(?<![A-Za-z0-9._-])demos\/searxng(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])/iu,
+  },
+  {
+    label: "retired root demo command",
+    pattern: retiredDemoRootCommandPattern,
+  },
+];
+
 const retiredDocReferences = [
   {
     label: "@mono-agent/agent-evals",
     pattern: /@mono-agent\/agent-evals|\bpackages\/agent-evals\b|\bagent-evals\b/iu,
   },
-  {
-    label: "demos package",
-    pattern: /@mono-agent\/demos|\bpackages\/demos\b|\bdemos\s+(?:package|workspace|surface)\b/iu,
-  },
+  ...retiredDemoDocReferences,
   {
     label: "WhatsApp/A2A in core",
     pattern:
@@ -110,14 +140,6 @@ const retiredDocReferences = [
     label: "NotifyConversation",
     pattern: /\bNotifyConversation\b|\bnotify_conversation\b/iu,
   },
-];
-
-const retiredDemoToolReferences = [
-  { label: "journal_append", pattern: /\bjournal_append\b/iu },
-  { label: "memory_search", pattern: /\bmemory_search\b/iu },
-  { label: "entity_get", pattern: /\bentity_get\b/iu },
-  { label: "memory_read_day", pattern: /\bmemory_read_day\b/iu },
-  { label: "memory_list_days", pattern: /\bmemory_list_days\b/iu },
 ];
 
 const deprecatedMemoryRecallAlias = "memory_recall";
@@ -254,15 +276,16 @@ export async function checkConsumerDocsConsistency(consumerPaths, options = {}) 
   if (options.scanUserDocs !== false) {
     const repoRoot = resolve(options.repoRoot ?? process.cwd());
     const userDocRecords = options.userDocRecords ?? await readUserDocRecords(repoRoot);
-    const demoMarkdownRecords = options.demoMarkdownRecords
-      ?? await readMarkdownRecordsIfPresent(join(repoRoot, demoMarkdownRoot));
+    const catalogDemoOnlyRecords = options.catalogDemoOnlyRecords
+      ?? await readExplicitTextRecords(repoRoot, catalogDemoOnlyReadmes);
     const artifactContractSourceRecords = options.artifactContractSourceRecords
       ?? await readExplicitTextRecords(repoRoot, artifactContractSourcePaths);
-    const shippedDocRecords = [...userDocRecords, ...demoMarkdownRecords];
-    userDocsChecked = shippedDocRecords.length;
+    const shippedDocRecords = userDocRecords;
+    userDocsChecked = shippedDocRecords.length + catalogDemoOnlyRecords.length;
     artifactContractSourcesChecked = artifactContractSourceRecords.length;
     issues.push(...scanRetiredDocReferences(shippedDocRecords));
-    issues.push(...scanRetiredDemoTools(demoMarkdownRecords));
+    issues.push(...scanRetiredDocReferences(catalogDemoOnlyRecords, retiredDemoDocReferences));
+    issues.push(...await scanRetiredDemoRepositorySurfaces(repoRoot));
     issues.push(...scanDeprecatedMemoryRecallAliases(shippedDocRecords, repoRoot));
     issues.push(...scanMisleadingArtifactDurabilityClaims([
       ...shippedDocRecords,
@@ -418,17 +441,10 @@ export function compareCodeUnits(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-async function readMarkdownRecordsIfPresent(dir) {
-  if (!(await pathExists(dir))) {
-    return [];
-  }
-  return await readMarkdownRecords(dir);
-}
-
-function scanRetiredDocReferences(records) {
+function scanRetiredDocReferences(records, references = retiredDocReferences) {
   const issues = [];
   for (const record of records) {
-    for (const retiredReference of retiredDocReferences) {
+    for (const retiredReference of references) {
       for (const match of findPatternMatches(retiredReference.pattern, record.text)) {
         const location = lineAndColumn(record.text, match.index);
         issues.push(
@@ -441,21 +457,137 @@ function scanRetiredDocReferences(records) {
   return issues;
 }
 
-function scanRetiredDemoTools(records) {
+async function scanRetiredDemoRepositorySurfaces(repoRoot) {
   const issues = [];
-  for (const record of records) {
-    for (const retiredReference of retiredDemoToolReferences) {
-      for (const match of findPatternMatches(retiredReference.pattern, record.text)) {
-        const location = lineAndColumn(record.text, match.index);
-        issues.push(
-          `${record.path}:${location.line}:${location.column}: references retired memory tool ` +
-            `"${retiredReference.label}". Use the current read-only MemoryRecall surface or ` +
-            "describe host-driven capture instead.",
-        );
+  const retiredRoots = [
+    { relativePath: "demos/final-agent", allowedEntries: new Set() },
+    // An ignored legacy secret may remain just long enough for the explicit retirement migration.
+    { relativePath: "demos/searxng", allowedEntries: new Set([".env"]) },
+  ];
+  let canonicalRepoRoot;
+  try {
+    canonicalRepoRoot = await realpath(resolve(repoRoot));
+    const rootDetails = await lstat(canonicalRepoRoot);
+    if (rootDetails.isSymbolicLink() || !rootDetails.isDirectory()) {
+      throw new Error("canonical repository root is not a real directory");
+    }
+  } catch (error) {
+    canonicalRepoRoot = undefined;
+    issues.push(
+      `${resolve(repoRoot)}: could not resolve repository root while checking retired demo surfaces (${reasonOf(error)}).`,
+    );
+  }
+  for (const root of retiredRoots) {
+    if (canonicalRepoRoot === undefined) continue;
+    const inspected = await inspectRetiredDemoRoot(canonicalRepoRoot, root.relativePath);
+    const absolutePath = join(canonicalRepoRoot, root.relativePath);
+    if (inspected.status === "absent") continue;
+    if (inspected.status === "unsafe") {
+      issues.push(
+        `${absolutePath}: retired repository demo root must contain only real directories `
+          + `inside the canonical repository root (${inspected.reason}).`,
+      );
+      continue;
+    }
+    const entries = await readdir(absolutePath);
+    const prohibited = [];
+    for (const entry of entries) {
+      if (!root.allowedEntries.has(entry)) {
+        prohibited.push(entry);
+        continue;
       }
+      try {
+        const details = await lstat(join(absolutePath, entry));
+        if (details.isSymbolicLink() || !details.isFile()) prohibited.push(entry);
+      } catch {
+        // A disappearing or uninspectable exception path is not an allowed legacy secret file.
+        prohibited.push(entry);
+      }
+    }
+    prohibited.sort(compareCodeUnits);
+    if (prohibited.length > 0) {
+      issues.push(
+        `${absolutePath}: contains retired repository demo surface(s): ${prohibited.join(", ")}.`,
+      );
+    }
+  }
+
+  const packageJsonPath = join(repoRoot, "package.json");
+  if (!(await pathExists(packageJsonPath))) return issues;
+  let packageJson;
+  try {
+    packageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
+  } catch (error) {
+    issues.push(`${packageJsonPath}: could not inspect root scripts (${reasonOf(error)}).`);
+    return issues;
+  }
+  const scripts = packageJson?.scripts;
+  if (scripts === null || typeof scripts !== "object" || Array.isArray(scripts)) return issues;
+  for (const [name, command] of Object.entries(scripts)) {
+    if (retiredDemoRootCommands.includes(name)) {
+      issues.push(`${packageJsonPath}: root script "${name}" is a retired demo command.`);
+    }
+    if (typeof command !== "string") continue;
+    const match = retiredDemoRootCommandPattern.exec(command);
+    if (match !== null) {
+      issues.push(
+        `${packageJsonPath}: root script "${name}" invokes retired demo command "${match[0]}".`,
+      );
     }
   }
   return issues;
+}
+
+async function inspectRetiredDemoRoot(canonicalRepoRoot, relativePath) {
+  let candidate = canonicalRepoRoot;
+  for (const component of relativePath.split("/")) {
+    candidate = join(candidate, component);
+    let details;
+    try {
+      details = await lstat(candidate);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        return { status: "absent", absolutePath: candidate };
+      }
+      return {
+        status: "unsafe",
+        absolutePath: candidate,
+        reason: `could not inspect ${candidate}: ${reasonOf(error)}`,
+      };
+    }
+    if (details.isSymbolicLink() || !details.isDirectory()) {
+      return {
+        status: "unsafe",
+        absolutePath: candidate,
+        reason: `${candidate} is not a real directory`,
+      };
+    }
+    let canonicalCandidate;
+    try {
+      canonicalCandidate = await realpath(candidate);
+    } catch (error) {
+      return {
+        status: "unsafe",
+        absolutePath: candidate,
+        reason: `could not resolve ${candidate}: ${reasonOf(error)}`,
+      };
+    }
+    if (canonicalCandidate !== candidate
+      || !isWithinCanonicalRoot(canonicalRepoRoot, canonicalCandidate)) {
+      return {
+        status: "unsafe",
+        absolutePath: candidate,
+        reason: `${candidate} does not resolve inside the canonical repository root`,
+      };
+    }
+  }
+  return { status: "ready", absolutePath: candidate };
+}
+
+function isWithinCanonicalRoot(canonicalRoot, candidate) {
+  const relativePath = relative(canonicalRoot, candidate);
+  return relativePath === ""
+    || (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath));
 }
 
 function scanMisleadingArtifactDurabilityClaims(records) {
@@ -649,9 +781,9 @@ function usage() {
     "Usage:",
     `  node ${bin} [--consumer <path> ...]`,
     "",
-    "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, relevant package READMEs,",
-    "mono-agent-composer references, and demos/**/*.md)",
-    "for retired pre-v1 surfaces",
+    "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, selected package READMEs,",
+    "and mono-agent-composer references) for retired pre-v1 surfaces; applies the demo retirement",
+    "guards to every catalog package/extras README; and rejects the exact retired demo roots and root commands",
     "and scans those docs plus TUI source text for absolute artifact/replay claims",
     "that contradict wire truncation, best-effort export, recorder redaction, or terminal persistence.",
     "Each optional consumer folder should contain README.md and mono-agent.config.json.",

@@ -307,6 +307,6 @@ per-route form for a new agent.
 }
 ```
 
-**Steps:** start the pinned loopback companion from `demos/searxng` → keep strict `searxng` or choose `auto` for ChatGPT-subscription Codex then keyless fallback → keep render `never`, or install `agent-browser >=0.33.1` and opt into `auto` for SPA pages → `validate` → `start`.
+**Steps:** provision an operator-owned loopback SearXNG instance with JSON responses enabled → keep strict `searxng` or choose `auto` for ChatGPT-subscription Codex then keyless fallback → keep render `never`, or install `agent-browser >=0.33.1` and opt into `auto` for SPA pages → `validate` → `start`.
 **Boundary:** local SearXNG is private infrastructure, not an offline index; it contacts public engines and WebFetch contacts result sites. `localhost` permits the companion but blocks public fetches.
 **Smoke:** ask for two query variants and one official-page fetch; require canonical ranked URLs, untrusted-content boundaries, bounded timing metadata without query/URL leakage, and no duplicate network work for an identical call in the run.

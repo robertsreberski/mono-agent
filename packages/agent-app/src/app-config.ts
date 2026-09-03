@@ -38,8 +38,8 @@ const DEFAULT_TRACE_SOURCE_ID_PREFIX = "mono-agent";
 const DEFAULT_TRACE_SOURCE_LABEL = "Mono Agent";
 
 /**
- * Trace defaults a host can override without touching the user's config file
- * (e.g. the final demo labels its source "Final Agent Demo").
+ * Trace defaults a host can override without touching the user's config file,
+ * such as a host-specific source label.
  */
 export interface AppTraceDefaults {
   readonly sourceIdPrefix?: string;

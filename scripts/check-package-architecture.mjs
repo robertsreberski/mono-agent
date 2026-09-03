@@ -132,7 +132,7 @@ for (const catalogEntry of packageCatalog) {
       );
     }
     if (depEntry.category === "communication" && catalogEntry.category !== "app") {
-      errors.push(`${packagePath} may not depend on communication adapter ${depName}; compose adapters only in app hosts/demos.`);
+      errors.push(`${packagePath} may not depend on communication adapter ${depName}; compose adapters only in app hosts.`);
     }
   }
 }

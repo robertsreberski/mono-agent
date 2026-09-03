@@ -90,7 +90,7 @@ jobs:
       - name: Check package architecture
         run: pnpm run check:architecture
 
-      - name: Build packages and demos
+      - name: Build packages
         run: pnpm run build
 
       - name: Typecheck marked documentation snippets
@@ -109,7 +109,7 @@ jobs:
         if: ${{ matrix.node-version == '22.19.0' }}
         run: pnpm run release:consumer -- --tag "${{ steps.release-smoke.outputs.tag }}" --require-minimum
 
-      - name: Typecheck packages and demos
+      - name: Typecheck packages
         run: pnpm run typecheck
 
       - name: Run tests

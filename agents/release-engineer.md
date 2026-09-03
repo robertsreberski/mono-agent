@@ -10,7 +10,7 @@ non-negotiables below are your contract.
 ## Non-negotiables
 
 - **Lockstep**: every `packages/*/package.json` version equals the tag version;
-  every internal dep (including root devDependencies and demo/consumer manifests)
+  every internal dep (including root devDependencies and consumer manifests)
   is `workspace:<version>`. `pnpm install` after bumping to refresh the lockfile.
 - **No tag before green.** The full preflight must pass locally, in CI order:
 

@@ -391,7 +391,7 @@ synthesize an unusable parent-link id.
 
 ## Dependency Boundary
 
-The harness may depend on core building blocks: agent-contracts, observability, and runtime-adapter. It owns prompt context assembly, selected skill loading, and fail-closed tool/MCP policy normalization. Sandbox policy/types are owned by runtime-adapter. It accepts the `MemoryStore` contract from `@mono-agent/agent-contracts` without depending on a concrete memory backend. It must not depend on communication adapters or host/demo code.
+The harness may depend on core building blocks: agent-contracts, observability, and runtime-adapter. It owns prompt context assembly, selected skill loading, and fail-closed tool/MCP policy normalization. Sandbox policy/types are owned by runtime-adapter. It accepts the `MemoryStore` contract from `@mono-agent/agent-contracts` without depending on a concrete memory backend. It must not depend on communication adapters or host composition code.
 
 ## What This Package Does Not Own
 

@@ -179,46 +179,8 @@ Rules for future packages:
 - Communication packages use `*-adapter` naming and must not depend on other adapters, the harness, or operator surfaces.
 - Core config stays adapter-neutral; adapter credentials and allowlists live with the adapter package.
 - Operator surfaces register field groups from other packages; they do not hardcode adapter settings.
-- The final demo composes packages but is not a publishable package.
 
-## Final Demo
-
-The final demo lives at `demos/final-agent/`. It starts Telegram, A2A, webhook, OpenAI API, and/or cron independently when their own adapter config plus core runtime config are valid. Config edits are made directly in `mono-agent.config.json` and take effect on the next restart.
-
-The preferred local deployment path generates an ignored config under `.mono-agent/deploy/`, verifies Ollama has Gemma 4 installed, then starts the traceability source and loopback A2A provider:
-
-```bash
-pnpm install --frozen-lockfile
-pnpm run deploy:final
-```
-
-By default this uses `pi:ollama:gemma4:31b`. Check readiness with:
-
-```bash
-ollama list
-ollama pull gemma4:31b
-curl http://localhost:11434/api/tags
-```
-
-The trace-source registry should show source `final-agent-gemma4` (visible via `mono-agent status` or a configured Phoenix exporter). After a loopback A2A request to the printed Agent Card URL, the recorded run from that source appears in the local JSONL artifacts (and Phoenix, if configured).
-
-The generic manual demo command remains available when you want to provide your own config:
-
-```bash
-pnpm install --frozen-lockfile
-pnpm run build
-pnpm run demo:final
-```
-
-The demo is a thin facade over `@mono-agent/agent-app`: it selects the five demo channels (Telegram, A2A, webhook, OpenAI API, cron), wires its test seams into channel driver overrides, and keeps its historical status shapes. The composition path it exercises is the same one the `mono-agent` CLI uses:
-
-```ts
-import { startMonoAgentApp } from "@mono-agent/agent-app";
-
-const app = await startMonoAgentApp({ cwd, configPath });
-```
-
-### Host Traceability
+## Host Traceability
 
 The workspace now has a local host traceability path. Each running host registers an `agent-runtime.trace-source.v1` manifest in a registry directory such as `~/.mono-agent/trace-sources`; each manifest points at that source's artifact directory, where run summaries and event JSONL files remain. `mono-agent status` reads the registry, marks stale sources when their heartbeat ages out, and aggregates recent runs across sources by `(sourceId, runId)` so duplicate run ids do not collide.
 
@@ -229,8 +191,6 @@ Phoenix is the recommended trace viewer for local development. When an `observab
 Local JSONL artifacts are the completed-run fallback only after the terminal write succeeds; before then the on-disk record is only the start snapshot. At `start()`, the recorder independently replaces an empty events file and a `running` summary, then buffers later events in RAM after sensitive-key redaction, a closed high-confidence credential-shape scan, and a 4,096-byte default cap per string. Terminal `finish()`/`fail()` independently replaces that bounded events snapshot first and the summary second. A crash before terminal persistence can lose buffered events, and stale reconciliation can report only the data already on disk; the artifacts are not an in-flight, full-payload, or crash-safe source of truth.
 
 `mono-agent start`, `mono-agent status`, and `mono-agent validate` report the configured exporter endpoint (validate POSTs an empty protobuf to confirm Phoenix will accept exports, not just that the port is open). Use `mono-agent backfill --all` to retroactively export already-recorded runs with their historical timestamps; deterministic per-run ids make re-exports idempotent.
-
-See [`demos/final-agent/README.md`](./demos/final-agent/README.md) for config shape and CLI options.
 
 ## A2A Inter-Agent Discovery
 
@@ -326,9 +286,6 @@ pnpm run check:architecture
 pnpm run build
 pnpm run typecheck
 pnpm test
-pnpm run build:demo
-pnpm run typecheck:demo
-pnpm run test:demo
 git diff --check
 ```
 
@@ -359,7 +316,7 @@ Replace `@mono-agent/agent-runtime` with the package under test.
 
 ```mermaid
 flowchart TB
-  Host["Host composition layer<br/>demos/final-agent"]
+  Host["Config-first app host<br/>mono-agent CLI or custom host"]
 
   subgraph Surfaces["Operator-surface choices"]
     Tui["@mono-agent/tui<br/>Terminal chat + read-only config"]

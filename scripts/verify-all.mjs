@@ -45,17 +45,7 @@ export const VERIFY_GATE_DELTA = Object.freeze({
     }),
   ]),
   ciOnly: Object.freeze([]),
-  verifyAllOnly: Object.freeze([
-    Object.freeze({
-      gate: Object.freeze({
-        label: "test:demo",
-        command: "pnpm",
-        args: Object.freeze(["run", "test:demo"]),
-      }),
-      after: "test",
-      reason: "verify:all retains the explicit demo-test rerun while CI relies on the demo tests already chained into the root test command.",
-    }),
-  ]),
+  verifyAllOnly: Object.freeze([]),
   commandDifferences: Object.freeze([
     Object.freeze({
       label: "check:secrets",
@@ -203,7 +193,6 @@ export function createRepoGate({ releaseTag, nodeVersion = process.versions.node
     { label: "release:consumer", command: "pnpm", args: packedConsumerArgs },
     { label: "typecheck", command: "pnpm", args: ["run", "typecheck"] },
     { label: "test", command: "pnpm", args: ["run", "test"] },
-    { label: "test:demo", command: "pnpm", args: ["run", "test:demo"] },
     { label: "git diff --check", command: "git", args: ["diff", "--check"] },
   ];
 }

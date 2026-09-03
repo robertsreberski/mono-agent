@@ -382,10 +382,7 @@ function outputRoots(repo) {
     }
   }
 
-  for (const required of [
-    join(repo, "packages", "web", "webapp", "dist"),
-    join(repo, "demos", "final-agent", "dist"),
-  ]) {
+  for (const required of [join(repo, "packages", "web", "webapp", "dist")]) {
     assertDirectory(required);
     roots.add(required);
   }
