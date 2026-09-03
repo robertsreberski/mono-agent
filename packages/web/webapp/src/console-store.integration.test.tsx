@@ -1780,6 +1780,32 @@ describe("ConsoleStoreProvider integration", () => {
       });
     };
 
+    /**
+     * A DELETE that behaves the way `fetch` does under a deadline: the abort
+     * rejects THIS CALLER at once, and the request it already transmitted goes
+     * on running through the proxy and the server.
+     *
+     * A mock that ignores the signal and stays pending until it is resolved by
+     * hand asserts a state production `fetch` cannot be in after an abort, so
+     * it cannot test what an abort does -- it tests a transport that has none.
+     */
+    const deleteStillRunningAfterAbort = () => {
+      let finish: (() => void) | undefined;
+      const onServer = new Promise<void>((resolve) => { finish = resolve; });
+      vi.mocked(api.deleteThread).mockImplementation(async (_threadId, signal) =>
+        new Promise<void>((resolve, reject) => {
+          // The server keeps going whatever this caller does about it.
+          void onServer.then(resolve);
+          if (signal === undefined) return;
+          const abort = () => {
+            reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+          };
+          if (signal.aborted) abort();
+          else signal.addEventListener("abort", abort, { once: true });
+        }));
+      return { finishOnServer: () => { finish?.(); } };
+    };
+
     it("does not restore a conversation another client deleted while the refusal was in flight", async () => {
       // P1-1a. A 4xx short-circuits reconciliation entirely, so a DELAYED
       // refusal is applied to a projection that has moved underneath it. The
@@ -1820,17 +1846,19 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.actionError).toBeNull();
     });
 
-    it("does not read around its own delete while that delete is still on the wire", async () => {
-      // P1-1b. The console's deadline aborts a request; it does not un-send
-      // one. `boundedRequest` discards the request's real settlement, so the
-      // reconciling GET was issued while the DELETE was still outstanding and
-      // unobservable: it saw the row, answered "refused", and the DELETE then
-      // landed and removed it.
+    it("asserts nothing about a delete its own deadline abandoned", async () => {
+      // P1-1. Waiting for the request to settle was the right shape, but the
+      // thing waited on was the BROWSER promise, and the deadline's signal goes
+      // straight to `fetch`: an abort rejects it the instant it is seen, while
+      // the DELETE it already transmitted is still running server-side. So the
+      // promise settling said "finished" when all that happened was that this
+      // caller stopped listening. The reconciling read went out anyway, saw the
+      // row, called the delete refused -- and the DELETE then removed it.
+      //
+      // Abandoning a request destroys the only evidence there was. `unknown`,
+      // and a refresh, is the whole of what is left to say.
       seedTwoThreads();
-      let landDelete: (() => void) | undefined;
-      vi.mocked(api.deleteThread).mockImplementation(async () => {
-        await new Promise<void>((ok) => { landDelete = ok; });
-      });
+      const server = deleteStillRunningAfterAbort();
 
       const store = await renderStore();
       await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
@@ -1843,25 +1871,82 @@ describe("ConsoleStoreProvider integration", () => {
           .then(() => "resolved" as const, () => "rejected" as const);
         await act(async () => { await vi.advanceTimersByTimeAsync(THREAD_WRITE_TIMEOUT_MS + 1); });
 
-        // Nothing may be read ABOUT this conversation yet: such a read cannot
-        // order itself against a delete that has not settled.
+        // The abort has rejected the browser promise and the DELETE is still on
+        // the wire. Nothing may be read ABOUT this conversation on the strength
+        // of that: such a read cannot order itself against the delete.
         expect(vi.mocked(api.thread).mock.calls.map(([id]) => id)).not.toContain("gamma-thread");
 
-        // The DELETE lands, late -- which is exactly what the abandoned
-        // request was always allowed to do.
+        // The server finishes the delete it was already doing.
+        serverHasOnlyAlpha();
         let settledWith: "resolved" | "rejected" | undefined;
         await act(async () => {
-          landDelete?.();
-          await vi.advanceTimersByTimeAsync(0);
+          server.finishOnServer();
+          await vi.advanceTimersByTimeAsync(400);
           settledWith = await deleted;
         });
 
+        // Reported as the failure it was, and the row left the sidebar because
+        // the queued refresh asked the server -- not because the console
+        // guessed which way an abandoned request had gone.
+        expect(settledWith).toBe("rejected");
         expect(store.current.threads.map((item) => item.id)).toEqual(["alpha-thread"]);
-        expect(settledWith).toBe("resolved");
-        expect(store.current.actionError).toBeNull();
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("asks the server once however many times the operator asks for one delete", async () => {
+      // P2. The delete button stays enabled while its request is outstanding --
+      // which is exactly when an operator clicks it again -- and every re-entry
+      // took out a SECOND tombstone for the same row. `remember` replaces the
+      // entry it finds, so the second ask discarded the newest projection the
+      // first had recorded, and whichever ask reconciled first then released or
+      // forgot a tombstone the other was still relying on, with its DELETE
+      // still on the wire.
+      seedTwoThreads();
+      const refusals: ((error: unknown) => void)[] = [];
+      vi.mocked(api.deleteThread).mockImplementation(async () => {
+        await new Promise<void>((_ok, no) => { refusals.push(no); });
+      });
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      const first = store.current.deleteThread("gamma-thread");
+      await settle();
+      const second = store.current.deleteThread("gamma-thread");
+      await settle();
+
+      // One conversation, one delete. Asking twice is one intent.
+      expect(refusals).toHaveLength(1);
+
+      const refusal = new ApiError(
+        "Cancel the active turn before deleting this conversation.",
+        409,
+        "turn_active",
+      );
+      await act(async () => {
+        for (const refuse of refusals) refuse(refusal);
+        await expect(first).rejects.toBe(refusal);
+        // The second ask is answered by the delete it joined, not by one of
+        // its own.
+        await expect(second).rejects.toBe(refusal);
+      });
+      await settle();
+
+      expect(store.current.threads.map((item) => item.id).sort())
+        .toEqual(["alpha-thread", "gamma-thread"]);
+
+      // Refused, not applied -- so the conversation is still there and still
+      // deletable. Nothing may outlive the request it stood for.
+      const again = store.current.deleteThread("gamma-thread");
+      await settle();
+      expect(refusals).toHaveLength(2);
+      await act(async () => {
+        refusals[1]?.(refusal);
+        await expect(again).rejects.toBe(refusal);
+      });
+      await settle();
     });
 
     it("calls a delete that never settles unknown rather than reading past it", async () => {

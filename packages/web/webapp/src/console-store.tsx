@@ -299,10 +299,26 @@ export const THREAD_WRITE_TIMEOUT_MS = 15_000;
  * ignores abort can go on to deliver the mutation long after the caller has
  * given up. Anything that has to reason about ordering needs this rather than
  * the caller's promise.
+ *
+ * THREE answers, not two, because the browser promise only has two and one of
+ * them is a lie. `fetch` rejects the moment it sees an abort -- the request it
+ * has already transmitted keeps running through the proxy and the server -- so
+ * a rejection AFTER WE ABORTED says only that this caller stopped listening.
+ * Collapsing that into "the request failed" is what let a reconciliation read
+ * around a DELETE that was still on the wire.
+ *
+ * - `answered`: the request reached the server and the server replied. True
+ *   even after an abort: a transport that finished anyway has still landed, and
+ *   that is evidence.
+ * - `failed`: the request itself failed, on its own, and the error is the
+ *   server's or the transport's. Something is known.
+ * - `abandoned`: WE stopped listening. Nothing is known -- not that it failed,
+ *   not that it was applied, not that it stopped.
  */
 export type RequestLanding =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly error: unknown };
+  | { readonly outcome: "answered" }
+  | { readonly outcome: "failed"; readonly error: unknown }
+  | { readonly outcome: "abandoned" };
 
 /**
  * Start one request under a deadline, and hand back the three different answers
@@ -330,6 +346,12 @@ export type RequestLanding =
  * read saw the row, the abandoned DELETE then removed it, and the console had
  * already called that a refusal. Waiting on this first is what makes the read
  * mean anything.
+ *
+ * Which is why it reports `abandoned` rather than the rejection the deadline
+ * itself provoked. Waiting on the browser promise was still reading around the
+ * request: `fetch` rejects on the abort while the DELETE runs on, so the wait
+ * ended at the one moment that proves nothing. A caller ordering against this
+ * needs to be told that, not handed the abort dressed as settlement.
  */
 export const startBoundedRequest = <T,>(
   run: (signal: AbortSignal) => Promise<T>,
@@ -341,16 +363,26 @@ export const startBoundedRequest = <T,>(
 } => {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // Set BEFORE the abort, so no rejection the abort causes can be read as the
+  // request's own. A rejection that arrives first -- a real failure a
+  // microtask ahead of the deadline's macrotask -- still finds it false.
+  let abandoned = false;
   const attempt = run(controller.signal);
   // Also keeps the loser of the race handled, so a late rejection is never
   // reported as unhandled.
   const landed: Promise<RequestLanding> = attempt.then(
-    () => ({ ok: true }) as const,
-    (error: unknown) => ({ ok: false, error }) as const,
+    // Fulfilment is proof of landing however late it is, so this is NOT
+    // conditioned on the abort: a transport that finished the request anyway
+    // has told us the one thing an abandoned request usually cannot.
+    () => ({ outcome: "answered" }) as const,
+    (error: unknown) => (abandoned
+      ? ({ outcome: "abandoned" }) as const
+      : ({ outcome: "failed", error }) as const),
   );
   const settled = landed.then(() => undefined);
   const deadline = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
+      abandoned = true;
       controller.abort();
       reject(new Error("The web console request timed out."));
     }, timeoutMs);
@@ -664,9 +696,15 @@ const landingWithin = async (
  * issued while the DELETE is still on the wire cannot order itself against it:
  * the read saw the row, the DELETE then landed and removed it, and the console
  * had already called that a refusal. `landed` is what makes the read a
- * linearization point with respect to this client. If the request never settles
- * there is nothing to linearize against, and the verdict is `unknown` -- said
- * plainly rather than papered over with a read that cannot mean anything.
+ * linearization point with respect to this client.
+ *
+ * Which is why an ABANDONED request is `unknown` and not a rejection to
+ * classify. `fetch` rejects on the abort while the request it transmitted goes
+ * on running, so waiting for the browser promise still ended the wait at the
+ * one moment that proves nothing -- the same defect one level in. The two ways
+ * to have no linearization point, a request that never settles and a request
+ * this console stopped listening to, are now told apart and answered the same
+ * honest way: nothing is claimed, and nothing is read.
  *
  * Second, a refusal is about the REQUEST, never about the conversation as it
  * stands. "Cancel the active turn first" is a true statement about a row
@@ -689,11 +727,12 @@ export const reconcileFailedDelete = async (
   landed: Promise<RequestLanding>,
 ): Promise<FailedDeleteOutcome> => {
   const landing = await landingWithin(landed, DELETE_LANDING_GRACE_MS);
-  // Still on the wire. Any read now races it, so no verdict is available.
-  if (landing === undefined) return { verdict: "unknown" };
-  // It landed after the caller gave up, which is exactly what an abandoned
+  // Still on the wire, or abandoned by this console's own deadline. Either way
+  // there is nothing to order a read against, so no verdict is available.
+  if (landing === undefined || landing.outcome === "abandoned") return { verdict: "unknown" };
+  // It answered after the caller gave up, which is exactly what an abandoned
   // request is always allowed to do.
-  if (landing.ok) return { verdict: "applied" };
+  if (landing.outcome === "answered") return { verdict: "applied" };
   if (classifyDeleteFailure(landing.error) === "applied") return { verdict: "applied" };
   try {
     const current = await boundedRequest((signal) => api.thread(threadId, signal));
@@ -1803,7 +1842,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     setActionError(null);
   }, [visibleThreads]);
 
-  const deleteThread = useCallback(async (threadId: string) => {
+  /**
+   * The deletes this tab has on the wire, by the conversation they remove.
+   *
+   * KEYED BY THE ID THE CALLER ASKED FOR, which is the conversation:
+   * `fetchThreadSummary` resolves a summary BY id, so the row it hands back is
+   * always the row that was asked for.
+   */
+  const deletesInFlightRef = useRef(new Map<string, Promise<void>>());
+
+  /** Everything one delete of one conversation does -- see {@link deleteThread}. */
+  const runThreadDelete = useCallback(async (threadId: string) => {
     try {
       const thread = await fetchThreadSummary(threadId);
       // Tombstoned BEFORE the round trip, and reversed if the round trip proves
@@ -1907,6 +1956,47 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       throw deleteError;
     }
   }, [applyThreadUpdate, completeThreadRemoval, fetchThreadSummary, queueRefresh]);
+
+  /**
+   * One conversation, one delete.
+   *
+   * The delete button stays enabled while its request is outstanding -- which
+   * is precisely when an operator clicks it again -- and every re-entry took
+   * out a SECOND tombstone for the same row. `remember` REPLACES the entry it
+   * finds, so the second ask threw away the newest projection the first had
+   * recorded, and whichever ask reconciled first then released or forgot a
+   * tombstone the other was still relying on: a response arriving in that
+   * window walked the conversation back into the sidebar with its delete still
+   * on the wire. Two requests also give the server two different questions to
+   * answer about one row, and the console no way to say which answer was about
+   * which.
+   *
+   * Asking twice is one intent, so it gets one request and one answer. Not a
+   * disabled button: a button is one caller of several, and the invariant is
+   * about the conversation, not about the widget the operator used.
+   *
+   * The entry is released once the delete SETTLES, never before and never
+   * later. A delete the server refused leaves a conversation that is still
+   * there and still deletable, and an entry that outlived its request would
+   * answer that next ask with a promise for a request that is over.
+   */
+  const deleteThread = useCallback((threadId: string): Promise<void> => {
+    const inFlight = deletesInFlightRef.current;
+    const running = inFlight.get(threadId);
+    if (running !== undefined) return running;
+    const attempt = runThreadDelete(threadId);
+    inFlight.set(threadId, attempt);
+    const release = () => {
+      // Only its own entry: a later delete of the same conversation owns the
+      // slot by then.
+      if (inFlight.get(threadId) === attempt) inFlight.delete(threadId);
+    };
+    // `then(release, release)` rather than `finally`, whose promise rejects in
+    // turn: nothing is listening to it, so a failed delete no caller awaited
+    // would surface as an unhandled rejection.
+    void attempt.then(release, release);
+    return attempt;
+  }, [runThreadDelete]);
 
   const ensureProviderCatalog = useCallback(async (provider: string) => {
     const sourceId = selectedAgentId;
