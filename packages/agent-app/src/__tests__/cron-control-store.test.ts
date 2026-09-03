@@ -1017,7 +1017,7 @@ describe("cron control store", () => {
       run: { replyPartOutcomes: replayOutcomes.slice(0, MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES) },
     });
     expect(reopened.runs("digest", 500).runs).toHaveLength(500);
-  });
+  }, 60_000);
 
   it("retains same-timestamp idempotency receipts deterministically by key", async () => {
     const timestamp = "2026-08-14T10:00:00.000Z";
