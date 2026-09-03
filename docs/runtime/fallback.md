@@ -61,8 +61,10 @@ mono-agent init \
 ## Retired: `fallbackModels`
 
 `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were **retired** in
-0.21.0. They are rejected at load with the replacement named, so an agent still
-carrying one does not start. The CLI CSV flag `--fallback-models` was removed
+0.21.0. They are rejected at load with the replacement named for the surface each
+was set on — the JSON key points at `runtime.fallbacks`, the environment variable
+points at `MONO_AGENT_FALLBACKS_JSON` — so an agent still carrying one does not
+start. The CLI CSV flag `--fallback-models` was removed
 earlier; repeat `--fallback <ref>` instead. See the canonical
 [deprecation tracker](/reference/deprecations/).
 

@@ -562,26 +562,28 @@ describe("loadMonoAgentConfig", () => {
     })).toThrow(/unknown field: efffort/u);
   });
 
+  // The repair names the environment variable, not the JSON key: an operator whose `.env`
+  // still carries the variable has no JSON key to rewrite.
   it.each([
     [
       "MONO_AGENT_EXECUTION_MODE",
       "runtime.executionMode",
-      "`runtime.executionMode` was removed; mono-agent runs only the Pi runtime (SDK). Delete the key.",
+      "`MONO_AGENT_EXECUTION_MODE` was removed; mono-agent runs only the Pi runtime (SDK). Remove the variable from your environment and `.env`.",
     ],
     [
       "MONO_AGENT_ROUTE_SAFETY",
       "runtime.routeSafety",
-      "`runtime.routeSafety` was removed; every route is Pi-native, so `per-route-native` has no meaning. Delete the key.",
+      "`MONO_AGENT_ROUTE_SAFETY` was removed; every route is Pi-native, so `per-route-native` has no meaning. Remove the variable from your environment and `.env`.",
     ],
     [
       "MONO_AGENT_FALLBACK_MODELS",
       "runtime.fallbackModels",
-      "`runtime.fallbackModels` was replaced by `runtime.fallbacks: [{ \"model\": \"...\" }]`. Replace the key with that shape.",
+      "`MONO_AGENT_FALLBACK_MODELS` was replaced by `MONO_AGENT_FALLBACKS_JSON`, a JSON array of `{ \"model\": \"...\" }` objects. Remove the variable and re-express the chain there, or drop it into `runtime.fallbacks` in mono-agent.config.json.",
     ],
     [
       "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
       "memory.llm.executionMode",
-      "`memory.llm.executionMode` was removed for the same reason as `runtime.executionMode`: mono-agent runs only the Pi runtime (SDK). Delete the key.",
+      "`MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` was removed for the same reason as `MONO_AGENT_EXECUTION_MODE`: mono-agent runs only the Pi runtime (SDK). Remove the variable from your environment and `.env`.",
     ],
   ] as const)("rejects retired env key %s with migration guidance", (env, path, message) => {
     expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [env]: "retired" } }))
@@ -612,7 +614,7 @@ describe("loadMonoAgentConfig", () => {
     expect(() => loadMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_FALLBACK_MODELS: "  ollama:gemma4:31b  " },
-    })).toThrow(/runtime\.fallbackModels/u);
+    })).toThrow(/MONO_AGENT_FALLBACK_MODELS/u);
   });
 
   it("loads the Pi OAuth auth path from env", () => {
@@ -2556,5 +2558,164 @@ describe("loadMonoAgentConfig tools.allowedTools default", () => {
   it("resolves an explicit tool list unchanged", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_ALLOWED_TOOLS: "Read,Bash" } });
     expect(config.tools.allowedTools).toEqual(["Read", "Bash"]);
+  });
+});
+
+/**
+ * `mono-agent migrate-config` was removed on the argument that hand-migration is safe
+ * because the loader names the exact repair for every rejected value. For model
+ * references that was false: the parser builds the replacement, the runtime adapter nests
+ * it in `details.reason`, and config threw it away. Every operator surface — `doctor`,
+ * `mono-agent validate`, `config --json`, startup — renders only `error.message`, so the
+ * message is the only place a repair can actually reach a human.
+ */
+describe("rejected model references name their replacement in the message", () => {
+  it("names openai-codex for a retired codex: primary", () => {
+    try {
+      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "codex:gpt-5.6-sol" } });
+      throw new Error("Expected codex:gpt-5.6-sol to be rejected.");
+    } catch (error) {
+      expect(error).toBeInstanceOf(MonoAgentConfigError);
+      expect((error as MonoAgentConfigError).code).toBe("invalid_model_reference");
+      expect((error as MonoAgentConfigError).message).toContain("openai-codex:gpt-5.6-sol");
+      expect((error as MonoAgentConfigError).message).toContain("codex:gpt-5.6-sol");
+      // One framing sentence, not two: config unwraps the adapter's own generic wrapper
+      // rather than nesting it inside its own.
+      expect((error as MonoAgentConfigError).message).not.toContain("Invalid runtime model reference");
+      expect((error as MonoAgentConfigError).details.reason).toBe(
+        "codex is no longer a runtime backend; use openai-codex:gpt-5.6-sol",
+      );
+    }
+  });
+
+  it("names anthropic for a retired claude: primary", () => {
+    expect(() =>
+      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "claude:claude-sonnet-4-6" } }),
+    ).toThrow(/anthropic:claude-sonnet-4-6/u);
+  });
+
+  it("names the direct replacement for a retired vercel: primary", () => {
+    expect(() =>
+      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "vercel:openai:gpt-5.5" } }),
+    ).toThrow(/use openai:gpt-5\.5 directly/u);
+  });
+
+  it("names the surviving ACP bridge for a retired acp: primary", () => {
+    expect(() =>
+      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "acp:some-agent" } }),
+    ).toThrow(/mono-agent bridge acp/u);
+  });
+
+  it("names openai-codex for a retired codex: fallback route", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "codex:gpt-5.6-sol" }]),
+        },
+      }),
+    ).toThrow(/openai-codex:gpt-5\.6-sol/u);
+  });
+
+  it("names openai-codex for a retired codex: subagent model", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({
+            enabled: true,
+            definitions: [
+              { name: "helper", description: "d", prompt: "p", model: "codex:gpt-5.6-sol" },
+            ],
+          }),
+        },
+      }),
+    ).toThrow(/openai-codex:gpt-5\.6-sol/u);
+  });
+
+  it("names openai-codex for a retired codex: agent-host memory LLM", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory-root",
+          MONO_AGENT_MEMORY_MODE: "bujo",
+          MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
+          MONO_AGENT_MEMORY_LLM_MODEL: "codex:gpt-5.6-sol",
+        },
+      }),
+    ).toThrow(/openai-codex:gpt-5\.6-sol/u);
+  });
+
+  it("still names the grammar for a reference with no structural separator", () => {
+    expect(() =>
+      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "gpt-5.5" } }),
+    ).toThrow(/expected <provider>:<model>/u);
+  });
+
+  it("still names the tier-alias repair", () => {
+    expect(() =>
+      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: "anthropic:opus" } }),
+    ).toThrow(/tier aliases are not valid model ids/u);
+  });
+});
+
+/**
+ * Hand-migration is only safe if one load names everything that still has to change.
+ * Retired settings are the bulk of a 0.21.0 migration, so the loader reports all of them
+ * at once rather than making the operator re-run the loader per key — and an env var's
+ * repair has to be an env repair, not a pointer at a JSON key the operator does not have.
+ */
+describe("retired settings are reported completely and in the operator's own surface", () => {
+  it("reports every retired env var in one load, not just the first", () => {
+    try {
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_EXECUTION_MODE: "sdk",
+          MONO_AGENT_ROUTE_SAFETY: "per-route-native",
+          MONO_AGENT_FALLBACK_MODELS: "ollama:gemma4:31b",
+          MONO_AGENT_MEMORY_LLM_EXECUTION_MODE: "sdk",
+        },
+      });
+      throw new Error("Expected the retired env vars to be rejected.");
+    } catch (error) {
+      const message = (error as MonoAgentConfigError).message;
+      expect(message).toContain("MONO_AGENT_EXECUTION_MODE");
+      expect(message).toContain("MONO_AGENT_ROUTE_SAFETY");
+      expect(message).toContain("MONO_AGENT_FALLBACK_MODELS");
+      expect(message).toContain("MONO_AGENT_MEMORY_LLM_EXECUTION_MODE");
+      expect((error as MonoAgentConfigError).details.envs).toEqual([
+        "MONO_AGENT_EXECUTION_MODE",
+        "MONO_AGENT_ROUTE_SAFETY",
+        "MONO_AGENT_FALLBACK_MODELS",
+        "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
+      ]);
+    }
+  });
+
+  it("names MONO_AGENT_FALLBACKS_JSON as the env re-expression of MONO_AGENT_FALLBACK_MODELS", () => {
+    expect(() =>
+      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_FALLBACK_MODELS: "ollama:gemma4:31b" } }),
+    ).toThrow(/MONO_AGENT_FALLBACKS_JSON/u);
+  });
+
+  it.each([
+    "MONO_AGENT_EXECUTION_MODE",
+    "MONO_AGENT_ROUTE_SAFETY",
+    "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
+  ] as const)("tells the operator to remove the variable %s, not a JSON key", (env) => {
+    try {
+      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [env]: "sdk" } });
+      throw new Error(`Expected ${env} to be rejected.`);
+    } catch (error) {
+      const message = (error as MonoAgentConfigError).message;
+      expect(message).toContain(env);
+      expect(message).toMatch(/Remove the variable/u);
+    }
   });
 });

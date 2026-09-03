@@ -335,6 +335,55 @@ describe("validateMonoAgentFolder", () => {
     expect(sectionById(report, "channel:telegram").status).toBe("disabled");
   });
 
+  // The manual-migration story for PR #693 rests on doctor naming the exact repair for a
+  // retired runtime backend. Doctor renders only `error.message` from the core config load,
+  // so a replacement that survives only in `details.reason` never reaches the operator whose
+  // agent will not start.
+  it("names the concrete replacement for a retired codex: primary in the core config section", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "codex:gpt-5.6-sol" },
+      context: { identityPath: "./IDENTITY.md" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      drivers: [],
+      liveness: false,
+      allowFilesystemWrites: false,
+    });
+
+    const core = sectionById(report, "core");
+    expect(core.status).toBe("error");
+    expect(core.details.join("\n")).toContain("openai-codex:gpt-5.6-sol");
+  });
+
+  it("names the concrete replacement for a retired vercel: fallback route in the core config section", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: {
+        model: "anthropic:claude-sonnet-4-6",
+        fallbacks: [{ model: "vercel:openai:gpt-5.5" }],
+      },
+      context: { identityPath: "./IDENTITY.md" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      drivers: [],
+      liveness: false,
+      allowFilesystemWrites: false,
+    });
+
+    const core = sectionById(report, "core");
+    expect(core.status).toBe("error");
+    expect(core.details.join("\n")).toContain("use openai:gpt-5.5 directly");
+  });
+
   it("reports runtime provenance even when core config cannot load", async () => {
     const configPath = join(dir, "missing.config.json");
 

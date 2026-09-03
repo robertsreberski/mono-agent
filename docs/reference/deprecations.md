@@ -51,10 +51,12 @@ longer read by any code; its only reader was the removed `sessions` command.
 `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were **retired** in
 0.21.0 and are now rejected at load with the replacement named; the CLI CSV flag
 `--fallback-models` was already removed. Convert the JSON key by hand to
-`runtime.fallbacks: [{ "model": "..." }]`; the load error names the replacement.
+`runtime.fallbacks: [{ "model": "..." }]`; the load error names that replacement.
 A value that lives solely in `MONO_AGENT_FALLBACK_MODELS` (or a `.env` file) is
-not covered by any config edit and has to be removed by
-hand and re-expressed as `MONO_AGENT_FALLBACKS_JSON`. The retired
+not covered by any config edit and has to be removed by hand and re-expressed as
+`MONO_AGENT_FALLBACKS_JSON`; the load error for the variable names *that* repair,
+not the JSON key, because an operator whose chain lives only in `.env` has no
+`runtime.fallbackModels` key to rewrite. The retired
 recipe → preset mapping is recorded as static documentation in
 [Presets & capability modules](/reference/presets/#deprecations). The
 `memory-bujo` bin entry and its error-deflector were removed; use
@@ -63,8 +65,24 @@ recipe → preset mapping is recorded as static documentation in
 Every retired environment variable (`MONO_AGENT_EXECUTION_MODE`,
 `MONO_AGENT_ROUTE_SAFETY`, `MONO_AGENT_FALLBACK_MODELS`,
 `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`) fails config load when it carries a
-value, naming the exact repair. An empty assignment (`KEY=`) is still treated as
-unset — an inert leftover line in a deployed `.env` does not break startup.
+value, naming the exact repair in environment terms. All of them that are set are
+reported in a single load, not one per run. An empty assignment (`KEY=`) is still
+treated as unset — an inert leftover line in a deployed `.env` does not break
+startup.
+
+Retired JSON keys behave the same way: a config carrying several of them reports
+all of them in one message. The load still stops at the first failing *class*
+(retired JSON keys, then unknown JSON keys, then retired environment variables,
+then model references, then the remaining shape checks), so a migration is
+usually a few `mono-agent validate` passes rather than one.
+
+A rejected model reference names its concrete replacement in the message
+`doctor`, `mono-agent validate`, `mono-agent config` and the startup error all
+print — for example `` MONO_AGENT_MODEL `codex:gpt-5.6-terra` is not a valid
+runtime model reference: codex is no longer a runtime backend; use
+openai-codex:gpt-5.6-terra ``. See
+[the runtime migration guide](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/MIGRATION.md)
+for the full per-agent checklist.
 
 ## Permanent compatibility
 

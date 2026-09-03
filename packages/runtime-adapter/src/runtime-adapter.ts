@@ -57,8 +57,13 @@ export function parseMonoRuntimeModelReference(value: string): RuntimeModelRefer
   try {
     return normalizeRuntimeModelReference(parseRuntimeModelReference(value));
   } catch (error) {
-    throw new RuntimeAdapterError("invalid_model_reference", "Invalid runtime model reference.", {
-      reason: error instanceof Error ? error.message : String(error),
+    // The kernel parser is the only layer that knows the concrete repair for a retired
+    // backend (`codex:x` -> `openai-codex:x`, `vercel:p:m` -> `p:m`, ...). Every operator
+    // surface renders `message` and nothing else, so the repair has to travel in the
+    // message; `details.reason` keeps the unprefixed text for programmatic callers.
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new RuntimeAdapterError("invalid_model_reference", `Invalid runtime model reference: ${reason}`, {
+      reason,
     });
   }
 }

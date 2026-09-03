@@ -87,6 +87,42 @@ describe("readMonoAgentConfigJson", () => {
       details: { path: retiredPath, code: "invalid_json" },
     });
   });
+
+  /**
+   * `mono-agent migrate-config` was removed on the argument that one load names
+   * everything left to fix. A `.find` reported one retired key per run, so a config with
+   * four of them took four edit/re-run cycles to discover them all.
+   */
+  it("reports every retired JSON key in one read, not just the first", async () => {
+    const path = join(dir, "retired-many.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: {
+          executionMode: "sdk",
+          routeSafety: "per-route-native",
+          fallbackModels: ["openai-codex:gpt-5.6-sol"],
+        },
+        memory: { llm: { executionMode: "sdk" } },
+      }),
+      "utf8",
+    );
+
+    await expect(readMonoAgentConfigJson(path)).rejects.toMatchObject({
+      code: "invalid_json",
+      details: {
+        path: "runtime.executionMode",
+        paths: [
+          "runtime.executionMode",
+          "runtime.routeSafety",
+          "runtime.fallbackModels",
+          "memory.llm.executionMode",
+        ],
+      },
+    });
+    await expect(readMonoAgentConfigJson(path)).rejects.toThrow(/runtime\.routeSafety/u);
+    await expect(readMonoAgentConfigJson(path)).rejects.toThrow(/memory\.llm\.executionMode/u);
+  });
 });
 
 describe("writeMonoAgentConfigJson", () => {

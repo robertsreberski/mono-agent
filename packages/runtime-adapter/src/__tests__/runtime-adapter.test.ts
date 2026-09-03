@@ -44,6 +44,45 @@ describe("runtime adapter model references", () => {
     }
   });
 
+  // Every operator surface (doctor, `mono-agent validate`, `config --json`, cron/webhook
+  // override issues) renders `error.message` and nothing else. A replacement that lives
+  // only in `details` is a replacement nobody is ever shown, so the message itself must
+  // name it for each retired runtime backend.
+  it.each([
+    ["codex:gpt-5.6-sol", "openai-codex:gpt-5.6-sol"],
+    ["claude:claude-sonnet-4-6", "anthropic:claude-sonnet-4-6"],
+    ["claude-code:claude-sonnet-4-6", "anthropic:claude-sonnet-4-6"],
+    ["codex-cli:gpt-5.6-sol", "openai-codex:gpt-5.6-sol"],
+    ["vercel:openai:gpt-5.5", "openai:gpt-5.5"],
+    ["opencode:openai:gpt-5.5", "openai:gpt-5.5"],
+  ])("names the replacement for %s in the message operators see", (reference, replacement) => {
+    try {
+      parseMonoRuntimeModelReference(reference);
+      throw new Error(`Expected ${reference} to be rejected.`);
+    } catch (error) {
+      expect(error).toBeInstanceOf(RuntimeAdapterError);
+      expect((error as RuntimeAdapterError).message).toContain(replacement);
+    }
+  });
+
+  it("names the surviving ACP bridge in the message for an acp: reference", () => {
+    try {
+      parseMonoRuntimeModelReference("acp:some-agent");
+      throw new Error("Expected acp:some-agent to be rejected.");
+    } catch (error) {
+      expect((error as RuntimeAdapterError).message).toContain("mono-agent bridge acp");
+    }
+  });
+
+  it("names the tier-alias repair in the message, not only in details", () => {
+    try {
+      parseMonoRuntimeModelReference("anthropic:opus");
+      throw new Error("Expected a tier alias to be rejected.");
+    } catch (error) {
+      expect((error as RuntimeAdapterError).message).toContain("tier aliases are not valid model ids");
+    }
+  });
+
   it("exposes one frozen Pi backend descriptor", () => {
     const model = parseMonoRuntimeModelReference("github-copilot:gpt-4.1");
     const backends = listMonoRuntimeBackends();

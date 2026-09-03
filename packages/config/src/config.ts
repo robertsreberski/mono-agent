@@ -85,27 +85,37 @@ export interface LoadMonoAgentConfigInput {
  * Retired settings stay explicit here so every loader entry point gives the
  * same repair instead of silently dropping a fallback chain or surfacing an
  * unactionable unknown-key error from a host-owned schema.
+ *
+ * `message` repairs the JSON key; `envMessage` repairs the environment variable.
+ * They are separate on purpose: an operator whose `.env` still sets
+ * `MONO_AGENT_FALLBACK_MODELS` has no `runtime.fallbackModels` key to rewrite, so
+ * pointing at the JSON shape is not a repair they can carry out. Hand-migration is
+ * only safe if the repair names the surface the operator is actually holding.
  */
 export const RETIRED_CONFIG_FIELDS = [
   {
     path: "runtime.executionMode",
     env: "MONO_AGENT_EXECUTION_MODE",
     message: "`runtime.executionMode` was removed; mono-agent runs only the Pi runtime (SDK). Delete the key.",
+    envMessage: "`MONO_AGENT_EXECUTION_MODE` was removed; mono-agent runs only the Pi runtime (SDK). Remove the variable from your environment and `.env`.",
   },
   {
     path: "runtime.routeSafety",
     env: "MONO_AGENT_ROUTE_SAFETY",
     message: "`runtime.routeSafety` was removed; every route is Pi-native, so `per-route-native` has no meaning. Delete the key.",
+    envMessage: "`MONO_AGENT_ROUTE_SAFETY` was removed; every route is Pi-native, so `per-route-native` has no meaning. Remove the variable from your environment and `.env`.",
   },
   {
     path: "runtime.fallbackModels",
     env: "MONO_AGENT_FALLBACK_MODELS",
     message: "`runtime.fallbackModels` was replaced by `runtime.fallbacks: [{ \"model\": \"...\" }]`. Replace the key with that shape.",
+    envMessage: "`MONO_AGENT_FALLBACK_MODELS` was replaced by `MONO_AGENT_FALLBACKS_JSON`, a JSON array of `{ \"model\": \"...\" }` objects. Remove the variable and re-express the chain there, or drop it into `runtime.fallbacks` in mono-agent.config.json.",
   },
   {
     path: "memory.llm.executionMode",
     env: "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
     message: "`memory.llm.executionMode` was removed for the same reason as `runtime.executionMode`: mono-agent runs only the Pi runtime (SDK). Delete the key.",
+    envMessage: "`MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` was removed for the same reason as `MONO_AGENT_EXECUTION_MODE`: mono-agent runs only the Pi runtime (SDK). Remove the variable from your environment and `.env`.",
   },
 ] as const;
 
@@ -408,13 +418,18 @@ export function assertConfiguredProviderCoverage(
  * still fails closed.
  */
 function assertNoRetiredConfigEnv(env: Record<string, string | undefined>): void {
-  const retired = RETIRED_CONFIG_FIELDS.find(
+  const retired = RETIRED_CONFIG_FIELDS.filter(
     (field) => normalizeOptionalString(env[field.env]) !== undefined,
   );
-  if (retired === undefined) return;
-  throw new MonoAgentConfigError("invalid_env", retired.message, {
-    env: retired.env,
-    path: retired.path,
+  if (retired.length === 0) return;
+  // Report all of them, not just the first: a hand-migration is a single edit pass, and
+  // one-at-a-time discovery turns a four-variable `.env` into four stop/edit/re-run cycles.
+  // `env`/`path` stay the first entry so existing single-key consumers are unchanged.
+  throw new MonoAgentConfigError("invalid_env", retired.map((field) => field.envMessage).join(" "), {
+    env: retired[0]!.env,
+    path: retired[0]!.path,
+    envs: retired.map((field) => field.env),
+    paths: retired.map((field) => field.path),
   });
 }
 
@@ -485,15 +500,31 @@ function redactApiKeyBlock<T extends { readonly apiKey?: string }>(
   };
 }
 
+/**
+ * The concrete repair for a rejected model reference (`codex:x` -> `openai-codex:x`, a tier
+ * alias, the `<provider>:<model>` grammar) is built by the kernel parser and nested by the
+ * runtime adapter in `details.reason`. Config used to keep only the adapter's generic outer
+ * sentence, which is the one string every operator surface prints — so the repair the code
+ * already knew was thrown away before anyone saw it. Unwrap one layer so the message carries
+ * the innermost, actionable text.
+ */
+function modelReferenceReason(error: unknown): string {
+  if (error instanceof RuntimeAdapterError && typeof error.details.reason === "string") {
+    return error.details.reason;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 function parseModel(raw: string): MonoAgentConfig["runtime"]["model"] {
   try {
     return parseMonoRuntimeModelReference(raw);
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new MonoAgentConfigError("invalid_model_reference", "MONO_AGENT_MODEL is not a valid runtime model reference.", {
-      env: "MONO_AGENT_MODEL",
-      reason,
-    });
+    const reason = modelReferenceReason(error);
+    throw new MonoAgentConfigError(
+      "invalid_model_reference",
+      `MONO_AGENT_MODEL \`${raw}\` is not a valid runtime model reference: ${reason}`,
+      { env: "MONO_AGENT_MODEL", reason },
+    );
   }
 }
 
@@ -715,10 +746,11 @@ function parseSubagentModel(value: unknown, name: string): MonoAgentConfig["runt
   try {
     return parseMonoRuntimeModelReference(value);
   } catch (error) {
+    const reason = modelReferenceReason(error);
     throw new MonoAgentConfigError(
       "invalid_model_reference",
-      `MONO_AGENT_SUBAGENTS_JSON definition "${name}" model is not a valid runtime model reference.`,
-      { env: "MONO_AGENT_SUBAGENTS_JSON", reason: error instanceof Error ? error.message : String(error) },
+      `MONO_AGENT_SUBAGENTS_JSON definition "${name}" model \`${value}\` is not a valid runtime model reference: ${reason}`,
+      { env: "MONO_AGENT_SUBAGENTS_JSON", reason },
     );
   }
 }
@@ -788,10 +820,11 @@ function parseFallbackModel(raw: string, env: string, index: number): MonoAgentC
   try {
     return parseMonoRuntimeModelReference(raw.trim());
   } catch (error) {
+    const reason = modelReferenceReason(error);
     throw new MonoAgentConfigError(
       "invalid_model_reference",
-      `${env} entry ${index + 1} model \`${raw}\` is not a valid runtime model reference.`,
-      { env, index, reason: error instanceof Error ? error.message : String(error) },
+      `${env} entry ${index + 1} model \`${raw}\` is not a valid runtime model reference: ${reason}`,
+      { env, index, reason },
     );
   }
 }
@@ -1504,10 +1537,10 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
     try {
       parseMonoRuntimeModelReference(rawModel);
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
+      const reason = modelReferenceReason(error);
       throw new MonoAgentConfigError(
         "invalid_model_reference",
-        "MONO_AGENT_MEMORY_LLM_MODEL is not a valid runtime model reference for agent-host memory LLM.",
+        `MONO_AGENT_MEMORY_LLM_MODEL \`${rawModel}\` is not a valid runtime model reference for agent-host memory LLM: ${reason}`,
         { env: "MONO_AGENT_MEMORY_LLM_MODEL", reason },
       );
     }
