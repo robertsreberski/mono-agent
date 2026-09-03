@@ -320,16 +320,31 @@ describe("/v1/info over the real producer -> consumer wire", () => {
     expect(info.schema).toBe(1);
   });
 
-  it("still delivers ordinary routes configured alongside an oversized one", async () => {
-    // The other half: a fence that answered an oversized route by emptying the picker for
-    // everyone would be bounded and useless. `models` is shed as a whole field only when it
-    // genuinely cannot fit, so a chain that fits WITH the oversized route removed from the
-    // config must arrive complete.
-    const routes = longRouteReferences(50);
-    const { info, bodyBytes } = await readInfoOverTheWire({ fallbackModels: routes });
+  it("sheds every model when an oversized route joins a chain, and publishes them once it goes", async () => {
+    // What an oversized route COSTS, and that the cost is not permanent. The fence sheds whole
+    // fields, so an oversized route does not coexist with ordinary ones -- it takes `models`
+    // down with it, including the 50 routes that would have fitted on their own. That is the
+    // honest answer (a `models` list quietly missing the routes the producer could not fit
+    // would be worse), but it is only tolerable because it is confined to the configuration
+    // that causes it: with the oversized route out of the config, the same producer publishes
+    // the same 50 routes complete.
+    //
+    // Both reads are load-bearing. The first alone cannot tell a fence from a producer that
+    // never publishes `models` at all; the second alone -- which is all this case used to do,
+    // under a title claiming the first -- cannot show what the oversized route costs.
+    const ordinary = longRouteReferences(50);
+    const enormous = `openrouter:${"m".repeat(2 * 1024 * 1024)}`;
 
-    expect(bodyBytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
-    const published = new Set(info.models ?? []);
-    expect(routes.filter((route) => !published.has(route))).toEqual([]);
+    const alongside = await readInfoOverTheWire({ fallbackModels: [...ordinary, enormous] });
+    expect(alongside.bodyBytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
+    expect(alongside.info.models).toBeUndefined();
+    expect(alongside.info.modelOptions).toBeUndefined();
+    // Shed, not offline: the console still gets a body it can parse.
+    expect(alongside.info.schema).toBe(1);
+
+    const alone = await readInfoOverTheWire({ fallbackModels: ordinary });
+    expect(alone.bodyBytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
+    const published = new Set(alone.info.models ?? []);
+    expect(ordinary.filter((route) => !published.has(route))).toEqual([]);
   });
 });

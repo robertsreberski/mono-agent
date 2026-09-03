@@ -13,7 +13,7 @@ import {
   listPiBuiltinProviders,
   type PiBuiltinModelSnapshot,
 } from "@mono-agent/agent-runtime";
-import { modelReferenceKey } from "@mono-agent/runtime-adapter";
+import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type {
   DiscoveredLocalModel,
   LocalProviderDefinition,
@@ -30,7 +30,7 @@ export const DEFAULT_PAGE_SIZE = 100;
 export const MAX_PAGE_SIZE = 200;
 /**
  * Producer-side length bounds for the CATALOG's own projections
- * (`listProviders`/`listModels`/`searchModels`/`resolve`). Provider ids, model
+ * (`listProviders`/`listModels`/`searchModels`). Provider ids, model
  * ids and display names are not length-bounded by config validation, and both
  * `/v1/info` and a `/v1/models` page have a body cap to respect: an over-cap
  * `/v1/models` page 500s instead of serving, and an over-cap `/v1/info` body
@@ -62,6 +62,23 @@ export const MAX_PAGE_SIZE = 200;
  */
 export const MAX_CATALOG_ID_BYTES = 256;
 export const MAX_CATALOG_LABEL_BYTES = 256;
+
+/**
+ * The catalog must not advertise a model a turn cannot route to. Byte bounds are
+ * a paging concern; they say nothing about content, so a local endpoint reporting
+ * an id with a control character passed the length filter, reached `/v1/models`,
+ * and was admitted by the console — the operator only discovered it at turn time,
+ * when the parser refused the reference. `/v1/info` already guards this by
+ * parsing each discovered ref; the paged catalog did not.
+ */
+const isSelectableReference = (providerId: string, modelId: string): boolean => {
+  try {
+    parseMonoRuntimeModelReference(`${providerId}:${modelId}`);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 const withinBytes = (value: string, max: number): boolean =>
   Buffer.byteLength(value, "utf8") <= max;
@@ -122,8 +139,6 @@ export interface ProviderModelCatalog {
     readonly truncated: boolean;
   };
   searchModels(query: string, limit?: number): readonly TuiCatalogModel[];
-  /** O(1) map read; never populates the per-provider page cache. */
-  resolve(ref: string): TuiCatalogModel | undefined;
   /** Effort/context/provider metadata for the configured-route shortlist. */
   describe(refs: readonly RuntimeModelReference[]): Record<string, TuiModelOption>;
 }
@@ -250,7 +265,6 @@ export function buildProviderModelCatalog(
   orderedIds.push(...boundedIds);
 
   const byProviderId = new Map<string, ProviderModelEntry>();
-  const byRef = new Map<string, TuiCatalogModel>();
 
   const builtinCatalogModel = (
     snapshot: PiBuiltinModelSnapshot,
@@ -395,7 +409,8 @@ export function buildProviderModelCatalog(
     const frozenModels = Object.freeze(
       [...byId.values()].filter((model) =>
         withinBytes(model.id, MAX_CATALOG_ID_BYTES)
-        && withinBytes(model.name, MAX_CATALOG_LABEL_BYTES)),
+        && withinBytes(model.name, MAX_CATALOG_LABEL_BYTES)
+        && isSelectableReference(id, model.id)),
     );
     const info: TuiProviderInfo = Object.freeze({
       id,
@@ -406,9 +421,6 @@ export function buildProviderModelCatalog(
       ...(supportedProviderIds.has(id) ? { configured: true } : {}),
     });
     byProviderId.set(id, { info, models: frozenModels });
-    for (const model of frozenModels) {
-      byRef.set(`${model.provider}:${model.id}`, model);
-    }
   }
 
   const frozenProviders = Object.freeze(
@@ -483,10 +495,6 @@ export function buildProviderModelCatalog(
         }
       }
       return results;
-    },
-
-    resolve(ref) {
-      return byRef.get(ref);
     },
 
     describe(refs) {

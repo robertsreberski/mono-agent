@@ -72,8 +72,12 @@ at all. A human has to choose.
 
 Each has an environment twin, and both now fail at load with the repair for the
 surface they were set on, instead of a generic unknown-key error. A single load
-reports every retired key present, and every retired variable set — not one per
-run. An empty assignment (`KEY=`) is treated as unset and does not fail.
+is exhaustive *within one class*: every retired key present is named in one
+message, and every retired variable set is named in one message — not one per
+run. It is not exhaustive *across* classes. A config carrying both a retired key
+and a retired variable stops at the key, and names the variable only on the next
+run; see [Migrating a config](#migrating-a-config) for the order the classes are
+checked in. An empty assignment (`KEY=`) is treated as unset and does not fail.
 
 | key | environment twin | replacement |
 | --- | --- | --- |
