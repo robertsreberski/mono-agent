@@ -11,6 +11,9 @@ export const SET_CONVERSATION_TITLE_MAX_CHARACTERS = 80;
 
 const SET_CONVERSATION_TITLE_INPUT = z.object({
   title: z.string()
+    .describe(
+      `A 3–8 word noun phrase naming the subject of the whole conversation, not the current step.`,
+    )
     .trim()
     .min(1)
     .max(SET_CONVERSATION_TITLE_MAX_CHARACTERS)
@@ -49,13 +52,16 @@ export function createSetConversationTitleServer(): McpServer {
     SET_CONVERSATION_TITLE_TOOL_NAME,
     {
       title: "Set conversation title",
-      description: "Set a short semantic title for the current web-console conversation. Call this after you understand the initial topic, then call it again only when the conversation materially changes topic. Prefer a stable 3–8 word topic label over copying the user's message, progress text, or a generic label. The user can permanently lock a title by renaming it manually.",
+      description: "Name the conversation as a whole. This title is how the user will recognise and find this thread in their conversation list, so it must say what the conversation is about overall — never what you are doing at this moment. Set it as soon as the subject is clear, then keep improving it: whenever the conversation develops so that a better name for the whole thread becomes apparent — its real subject emerges, broadens, or materially changes topic — replace it with that better name. Never use it as a status line: do not retitle to track your current step, task, or progress, and never let the title describe only the most recent part of the conversation. A good title still makes sense to someone scanning their list weeks later. Use a stable 3–8 word noun phrase naming the subject; never a progress report, a verb phrase about your current activity, a copy of the user's message, or a generic label. The user can permanently lock the title by renaming it manually.",
       inputSchema: SET_CONVERSATION_TITLE_INPUT,
     },
     async (input: SetConversationTitleInput) => {
       const title = normalizeConversationTitle(input.title);
       return {
-        content: [{ type: "text" as const, text: `Conversation title proposed: ${title}` }],
+        content: [{
+          type: "text" as const,
+          text: `Conversation title proposed: "${title}". Update it later only if a better name for the whole conversation emerges.`,
+        }],
         structuredContent: { schema: 1, title },
       };
     },

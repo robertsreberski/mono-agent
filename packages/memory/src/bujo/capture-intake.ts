@@ -17,6 +17,7 @@ import type {
   MemoryCompletedTurnAdmissionStatus,
 } from "@mono-agent/agent-contracts";
 
+import { assertBoundedMemoryText } from "./text-safety.js";
 import { acquireMemoryWriterLease } from "./generations.js";
 import { findRetainedCaptureIntent } from "./capture-outbox.js";
 import {
@@ -1896,14 +1897,7 @@ function validatePayload(value: MemoryCompletedTurn): IntakePayload {
 }
 
 function boundedText(value: unknown, label: string, maxBytes: number, allowLayoutWhitespace: boolean): string {
-  if (typeof value !== "string" || value.length === 0 || value.trim().length === 0
-    || Buffer.byteLength(value, "utf8") > maxBytes
-    || /[\p{Cs}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(value)
-    || /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(value)
-    || (!allowLayoutWhitespace && /[\r\n\t]/u.test(value))) {
-    throw new Error(`memory-bujo: completed-turn ${label} is invalid or exceeds its bound.`);
-  }
-  return value;
+  return assertBoundedMemoryText(value, "completed-turn", label, maxBytes, allowLayoutWhitespace);
 }
 
 function payloadOf(record: PendingRecord | DeadRecord): MemoryCompletedTurn {

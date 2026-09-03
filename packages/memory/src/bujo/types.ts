@@ -50,3 +50,19 @@ export interface BujoOptions {
   /** Programmatic shutdown bound for background queues. Default 10000ms. */
   readonly backgroundDrainTimeoutMs?: number;
 }
+
+/** Outcome of one explicit {@link BujoMemoryStore.remember} write. */
+export interface MemoryRememberResult {
+  readonly id: string;
+  readonly conversationId: string;
+  /** Canonical file relative to the memory root — the durable provenance. */
+  readonly source: string;
+  /** The exact normalized text stored, which may differ from the input. */
+  readonly text: string;
+  /** Zero when nothing was appended (an already-stored or recovered fact). */
+  readonly bytesWritten: number;
+  /** The fact was already stored and indexed; nothing was written. */
+  readonly duplicate: boolean;
+  /** A canonical bullet existed without an index row; only the index was completed. */
+  readonly recovered: boolean;
+}

@@ -30,6 +30,19 @@ import {
 export interface SharedRecallStore extends MemoryStore, RecallCapableStore {
   /** Optional local-store telemetry hook; it must not alter relevance. */
   recordAccess?(ids: readonly string[]): void;
+  /**
+   * Deterministic durable write for an explicitly remembered fact. Present only
+   * on the bujo backend; external backends implement the shared MemoryStore
+   * contract without one, so they never advertise the capability below.
+   */
+  remember?(conversationId: string, text: string): Promise<{
+    readonly id: string;
+    readonly source: string;
+    readonly text: string;
+    readonly duplicate: boolean;
+  }>;
+  /** Affirmative capability signal; false on a read-only store. */
+  supportsRemember?(): boolean;
 }
 
 export interface MemoryRetrievalServiceOptions {
@@ -177,6 +190,23 @@ export class MemoryRetrievalService implements MemoryStore {
 
   appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
     return this.store.appendHostSummary(conversationId, summary);
+  }
+
+  supportsRemember(): boolean {
+    return this.store.supportsRemember?.() === true;
+  }
+
+  async remember(conversationId: string, text: string): Promise<{
+    readonly id: string;
+    readonly source: string;
+    readonly text: string;
+    readonly duplicate: boolean;
+  }> {
+    const remember = this.store.remember;
+    if (remember === undefined) {
+      throw new Error("memory: the configured store has no durable remember surface.");
+    }
+    return await remember.call(this.store, conversationId, text);
   }
 
   scheduleCapture(conversationId: string, text: string): void {

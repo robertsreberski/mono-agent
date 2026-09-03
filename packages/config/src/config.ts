@@ -1276,6 +1276,17 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     invalidEnv,
   );
 
+  // The explicit write surface is bujo-backend only: an external backend
+  // implements the shared MemoryStore contract but no deterministic remember
+  // path, so it never advertises the capability and defaults off here.
+  const rememberToolDefault = backend !== "supermemory";
+  const rememberToolEnabled = readBoolean(
+    env.MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED,
+    "MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED",
+    rememberToolDefault,
+    invalidEnv,
+  );
+
   return {
     backend,
     mode,
@@ -1288,6 +1299,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     ...(embeddingsWithDim === undefined ? {} : { embeddings: embeddingsWithDim }),
     ...(llm === undefined ? {} : { llm }),
     recallTool: { enabled: recallToolEnabled },
+    rememberTool: { enabled: rememberToolEnabled },
     ...(consolidation === undefined ? {} : { consolidation }),
   };
 }

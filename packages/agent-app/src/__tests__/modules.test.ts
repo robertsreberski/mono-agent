@@ -118,12 +118,13 @@ describe("known-tools", () => {
     expect(isKnownToolName("NodeRepl")).toBe(true);
     expect(isKnownToolName("read")).toBe(false);
     expect(isKnownToolName("AskUser")).toBe(true);
-    expect(APP_TOOL_NAMES).toEqual(["RunHistory", "SessionHistory", "SetConversationTitle"]);
+    expect(APP_TOOL_NAMES).toEqual(["RunHistory", "SessionHistory", "SetConversationTitle", "Remember"]);
     expect(isKnownToolName("RunHistory")).toBe(true);
     expect(isKnownToolName("run_history")).toBe(true);
     expect(isKnownToolName("SessionHistory")).toBe(true);
     expect(isKnownToolName("session_history")).toBe(true);
     expect(isKnownToolName("SetConversationTitle")).toBe(true);
+    expect(isKnownToolName("Remember")).toBe(true);
     expect(isKnownToolName("nope")).toBe(false);
   });
 

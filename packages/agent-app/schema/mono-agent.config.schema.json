@@ -801,6 +801,20 @@
             }
           }
         },
+        "rememberTool": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "description": "Enables the memory capability.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": true
+            }
+          }
+        },
         "consolidation": {
           "type": "object",
           "additionalProperties": false,

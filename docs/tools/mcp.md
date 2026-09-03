@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-This page covers how mono-agent attaches [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers to your agent through `tools.mcpConfigPath`, how the path is resolved and forwarded to the runtime, and the one rule that surprises people: **external MCP-server tools are not gated by `tools.allowedTools`**. App-owned MCP tools can define a narrower policy boundary; `RunHistory`, `SessionHistory`, `SetConversationTitle`, and the adapter send tools do. Coverage type: `config`.
+This page covers how mono-agent attaches [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers to your agent through `tools.mcpConfigPath`, how the path is resolved and forwarded to the runtime, and the one rule that surprises people: **external MCP-server tools are not gated by `tools.allowedTools`**. App-owned MCP tools can define a narrower policy boundary; `RunHistory`, `SessionHistory`, `SetConversationTitle`, `Remember`, and the adapter send tools do. Coverage type: `config`.
 
 ## What `tools.mcpConfigPath` does
 
@@ -26,8 +26,8 @@ Point `tools.mcpConfigPath` at an `mcp.json` file describing one or more MCP ser
 | `tools.mcpConfigPath` | string | Path to an `mcp.json`. Resolved against the workspace, not the config file. |
 | `tools.mcpRequestContextServers` | string[] | Opt-in stdio server names that receive trusted per-run producing-conversation, run-id, output-directory, current-request attachment, and scoped progress context. HTTP/SSE and unlisted servers are unchanged. |
 | `tools.continuationServers` | string[] | Opt-in stdio or loopback-HTTP server names that receive a host-bound claim capability for durable asynchronous results. Remote HTTP, SSE, and unlisted servers fail closed or remain unchanged. |
-| `tools.allowedTools` | string[] | Allowlist for **built-in** runtime tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`) and policy-gated app-owned tools such as `RunHistory`, `SessionHistory`, `SetConversationTitle`, and adapter send tools. Omit (or `["*"]`) for allow-all; a specific list narrows to those names. Does not affect external MCP-server tools. |
-| `tools.disallowedTools` | string[] | Denylist; deny always wins, even under allow-all. Filters built-ins, `ReadSkill`, `RunHistory`, `SessionHistory`, `SetConversationTitle`, and adapter send tools. On the pi-native runtime it does **not** filter external MCP-server tools (see below). |
+| `tools.allowedTools` | string[] | Allowlist for **built-in** runtime tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`) and policy-gated app-owned tools such as `RunHistory`, `SessionHistory`, `SetConversationTitle`, `Remember`, and adapter send tools. Omit (or `["*"]`) for allow-all; a specific list narrows to those names. Does not affect external MCP-server tools. |
+| `tools.disallowedTools` | string[] | Denylist; deny always wins, even under allow-all. Filters built-ins, `ReadSkill`, `RunHistory`, `SessionHistory`, `SetConversationTitle`, `Remember`, and adapter send tools. On the pi-native runtime it does **not** filter external MCP-server tools (see below). |
 
 Environment overrides: `MONO_AGENT_MCP_CONFIG_PATH` sets `tools.mcpConfigPath`, `MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS` selects request-context stdio servers, and `MONO_AGENT_CONTINUATION_SERVERS` selects continuation-capable stdio/loopback-HTTP servers.
 
@@ -179,8 +179,11 @@ The `MemoryRecall` description is written to direct **proactive** recall: the ag
 request whose web service still considers the title writable. Its strict input
 is `{ "title": "..." }`: surrounding/internal whitespace is normalized, control
 characters are rejected, and the result is capped at 80 characters. The tool
-description asks the model to choose a concise semantic title after the topic is
-clear and call again only after a material topic shift.
+description asks the model to name the conversation as a whole and to keep
+refining that name as a better whole-thread name emerges, never to use it as a
+status line for the step in progress. The tool result is a *proposal*: the web
+service applies it out of band and may decline it, so the tool never reports
+that a rename landed.
 
 Allow-all exposes the tool automatically on compatible routes. A restrictive
 policy must name `SetConversationTitle`, while `disallowedTools` can remove it.
@@ -192,6 +195,46 @@ invalidation. A browser rename sets a permanent manual lock, so a later or
 racing agent result cannot overwrite it. The call remains visible in the
 collapsed Activity disclosure but creates no assistant message. If the tool is
 absent or unused, the first user message remains the automatic fallback title.
+
+## `Remember`: durable memory writes
+
+`Remember` is an app-owned request-scoped MCP tool that durably stores one
+explicitly stated fact. It is deterministic and append-only and uses no chat
+LLM, so a successful result means the fact is already recallable through
+`MemoryRecall` rather than queued for later curation.
+
+Its strict input is `{ "text": "..." }`. The text is stored NFKC-normalized,
+trimmed, and whitespace-collapsed to a single line — a memory is one markdown
+bullet — and the result echoes back exactly what was written, so the model can
+see how its input was normalized. Text over 500 characters once normalized is
+rejected.
+
+Availability is narrower than recall. The tool appears only when a memory block
+is configured, `memory.rememberTool.enabled` is not `false`, tool policy allows
+`Remember`, and the store affirms it can accept writes. That last condition
+excludes read-only stores and the Supermemory backend, which implements the
+shared `MemoryStore` contract but no durable write surface: a configured memory
+block does not by itself grant a write tool. Unlike `MemoryRecall`, `Remember`
+**is** gated by `tools.allowedTools`, so an operator can withhold durable writes
+while keeping recall; `disallowedTools` removes it and deny wins.
+
+Writes are idempotent across partial failure. The bullet id is derived from the
+content hash, so a retry recomputes it; the index is consulted first and then
+the whole canonical source, not just today's file. A canonical bullet whose
+index row is missing — the window left by a crash between the two writes — is
+therefore completed rather than duplicated, including when the retry arrives
+after the UTC date rolls over.
+
+Text that carries a configured credential value, a well-known token shape, a
+credential assignment, or terminal/bidi control characters is **rejected and
+nothing is written**; the model is told to restate the fact without the secret.
+Rejecting rather than redacting keeps a mangled value from being stored while
+still reporting success. As [security](/reference/setup-security/) notes, this
+is defense in depth rather than a guarantee: free-form model text can still
+carry sensitive data that no closed pattern set recognizes.
+
+Memory is append-only. There is no edit or delete through this tool; removal
+remains the explicit two-phase `mono-agent memory forget` workflow.
 
 ## `RunHistory`: prior-run evidence
 

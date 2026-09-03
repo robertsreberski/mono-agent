@@ -83,6 +83,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `memory.mode` | `string` | `MONO_AGENT_MEMORY_MODE` | lite | `journal` | Configures mode for the memory section. |
 | `memory.path` | `string` | `MONO_AGENT_MEMORY_PATH` | unset | `./.mono-agent/memory` | Configures path for the memory section. |
 | `memory.recallTool.enabled` | `boolean` | `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | true | `true` | Enables the memory capability. |
+| `memory.rememberTool.enabled` | `boolean` | `MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED` | true | `true` | Enables the memory capability. |
 | `memory.supermemory.apiKey` | `string` | `MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY` | unset | `example` | Secret value for memory.supermemory.apiKey; prefer the env override. |
 | `memory.supermemory.apiKeyEnv` | `string` | `MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV` | unset | `example` | Secret value for memory.supermemory.apiKeyEnv; prefer the env override. |
 | `memory.supermemory.baseUrl` | `string` | `MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL` | unset | `example` | Configures supermemory.baseUrl for the memory section. |

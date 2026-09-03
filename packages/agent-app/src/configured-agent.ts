@@ -78,6 +78,11 @@ import {
   MemoryRetrievalService,
 } from "./memory-retrieval.js";
 import {
+  createMemoryRememberRuntimeExtension,
+  isRememberCapableStore,
+  isRememberToolAllowed,
+} from "./memory-remember.js";
+import {
   clearSessionsSandboxPolicy,
   composeRuntimeOptionExtensions,
   createClearSessionsRuntimeExtension,
@@ -1117,8 +1122,19 @@ async function createConfiguredAgentHarnessInternal(
           ? {}
           : { onUnavailable: options.onMemoryRecallUnavailable }),
       });
+  // The durable write surface is gated three ways: the store must affirm the
+  // capability (a read-only or external backend never does), the operator must
+  // not have disabled it, and tool policy must allow it. Unlike MemoryRecall it
+  // is allowlist-gated, so an operator can withhold writes while keeping recall.
+  const memoryRemember = config.memory?.rememberTool?.enabled === false
+    || !(memory instanceof MemoryRetrievalService)
+    || !isRememberCapableStore(memory)
+    || !isRememberToolAllowed(config.tools)
+    ? undefined
+    : createMemoryRememberRuntimeExtension(memory);
   const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([
     memoryRecall,
+    memoryRemember,
     options.runtimeOptionsForRequest,
   ], {
     // The app-owned, read-only MemoryRecall endpoint is part of every configured

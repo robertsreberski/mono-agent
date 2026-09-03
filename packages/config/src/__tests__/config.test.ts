@@ -1210,6 +1210,53 @@ describe("loadMonoAgentConfig", () => {
     expect(forcedOn.memory?.recallTool).toEqual({ enabled: true });
   });
 
+  it("defaults memory.rememberTool on for the bujo backend and off for supermemory", () => {
+    const lite = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "memory", MONO_AGENT_MEMORY_MODE: "lite" },
+    });
+    expect(lite.memory?.rememberTool).toEqual({ enabled: true });
+
+    // An external backend has no deterministic remember path to advertise.
+    const supermemory = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "lite",
+        MONO_AGENT_MEMORY_BACKEND: "supermemory",
+        MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "https://api.supermemory.ai",
+      },
+    });
+    expect(supermemory.memory?.rememberTool).toEqual({ enabled: false });
+  });
+
+  it("lets MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED override the rememberTool default in both directions", () => {
+    const forcedOff = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "lite",
+        MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED: "false",
+      },
+    });
+    expect(forcedOff.memory?.rememberTool).toEqual({ enabled: false });
+
+    const forcedOn = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "lite",
+        MONO_AGENT_MEMORY_BACKEND: "supermemory",
+        MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "https://api.supermemory.ai",
+        MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED: "true",
+      },
+    });
+    expect(forcedOn.memory?.rememberTool).toEqual({ enabled: true });
+  });
+
   it("rejects a non-boolean MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED", () => {
     try {
       loadMonoAgentConfig({

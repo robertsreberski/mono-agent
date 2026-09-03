@@ -58,6 +58,7 @@ import {
   type AgentConfigurationProposal,
   type JsonPatchOperation,
 } from "./configuration-proposal-tool.js";
+import { containsSecretLikeValue, knownEnvironmentSecretValues } from "./untrusted-text.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import { ADAPTER_SEND_TOOL_NAMES, canonicalToolName } from "./modules/known-tools.js";
 import { RUN_HISTORY_MCP_SERVER_NAME, RUN_HISTORY_TOOL_NAME } from "./run-history.js";
@@ -1069,9 +1070,7 @@ function assertProposalContainsNoSecrets(
   if (proposal.role !== undefined && containsUnsafeConfigurationReviewControl(proposal.role)) {
     throw new Error("The proposed Role contains unsafe terminal or bidi control characters. It was rejected.");
   }
-  const secretValues = Object.entries(env)
-    .filter(([name, value]) => /(?:api.?key|credential|password|secret|token)/iu.test(name) && (value?.length ?? 0) >= 4)
-    .map(([, value]) => value!);
+  const secretValues = knownEnvironmentSecretValues(env);
   for (const operation of proposal.patch) {
     if (secretBearingPointer(operation.path) || (operation.from !== undefined && secretBearingPointer(operation.from))) {
       throw new Error("Secret-bearing config fields cannot be proposed in chat. Use the masked mono-agent auth or owner-only .env flow.");
@@ -1107,10 +1106,6 @@ function containsSecret(value: unknown, secrets: readonly string[]): boolean {
     );
   }
   return false;
-}
-
-function containsSecretLikeValue(value: string): boolean {
-  return /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{12,}|Bearer\s+\S{12,}|\d{6,12}:[A-Za-z0-9_-]{20,})\b/u.test(value);
 }
 
 function assertNoEnvironmentShadow(
@@ -1153,6 +1148,7 @@ const CONVERSATIONAL_CONFIG_POINTERS = new Set([
   "/context/skillDisclosure",
   "/memory/maxBytes",
   "/memory/recallTool/enabled",
+  "/memory/rememberTool/enabled",
   "/tools/allowedTools",
   "/tools/disallowedTools",
 ]);

@@ -5,11 +5,11 @@ sidebar:
   order: 1
 ---
 
-The tool policy decides which tools an agent may call — built-in tools (Read, Bash, …) and policy-gated app-owned MCP tools such as `RunHistory`, `SessionHistory`, `SetConversationTitle`, and adapter send tools. It is **allow-all by default**: an agent with no `tools` block gets every policy-gated tool, and you subtract from there. You declare it under `tools.allowedTools` / `tools.disallowedTools` (coverage: `config`), with deny always winning and overlaps rejected up front. External MCP-server tools use server declaration as their boundary instead.
+The tool policy decides which tools an agent may call — built-in tools (Read, Bash, …) and policy-gated app-owned MCP tools such as `RunHistory`, `SessionHistory`, `SetConversationTitle`, `Remember`, and adapter send tools. It is **allow-all by default**: an agent with no `tools` block gets every policy-gated tool, and you subtract from there. You declare it under `tools.allowedTools` / `tools.disallowedTools` (coverage: `config`), with deny always winning and overlaps rejected up front. External MCP-server tools use server declaration as their boundary instead.
 
 ## Allow-all by default
 
-If you set no `tools` block, or omit `allowedTools`, the agent can call **every** built-in, the eligible app-owned history and web-title tools on a compatible route, and every enabled channel's send tools. There is no allowlist to curate before an agent can do anything — you start open and remove what you don't want. `allowedTools` accepts four shapes:
+If you set no `tools` block, or omit `allowedTools`, the agent can call **every** built-in, the eligible app-owned history, web-title, and durable-memory-write tools on a compatible route, and every enabled channel's send tools. There is no allowlist to curate before an agent can do anything — you start open and remove what you don't want. `allowedTools` accepts four shapes:
 
 | `tools.allowedTools` | Result |
 | --- | --- |
@@ -148,6 +148,20 @@ agent updates. Direct OpenCode routes suppress the tool. If it is unavailable or
 unused, the web console keeps its existing first-user-message fallback. See
 [MCP servers](/tools/mcp/#setconversationtitle-web-conversation-naming) for the
 request and persistence boundary.
+
+## `Remember`
+
+`Remember` durably stores one explicitly stated fact in long-term memory. Unlike
+read-only `MemoryRecall` it **is** allowlist-gated, so an operator can withhold
+durable writes while keeping recall: under allow-all it is offered
+automatically, a restrictive `allowedTools` must name `Remember`, and
+`disallowedTools` removes it with deny winning.
+
+Policy is necessary but not sufficient. The tool also requires a configured
+memory block with `memory.rememberTool.enabled` left on, and a store that can
+actually accept writes — which excludes read-only stores and the Supermemory
+backend. See [MCP servers](/tools/mcp/#remember-durable-memory-writes) for the
+storage contract and the credential-rejection boundary.
 
 ## Tools not gated by allowedTools
 

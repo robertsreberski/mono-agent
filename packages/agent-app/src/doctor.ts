@@ -2092,6 +2092,28 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
         }
         continue;
       }
+      if (canonicalToolName(name) === "Remember") {
+        // Unlike MemoryRecall, Remember IS allowlist-gated, so listing it is
+        // correct and required under a restrictive policy. It still needs a
+        // configured memory block with the write surface left enabled.
+        if (config.memory === undefined) {
+          status = "waiting";
+          details.push(
+            `${name} is in allowedTools but no memory block is configured - durable writes will not work. Configure memory (or remove this entry).`,
+          );
+        } else if (config.memory.rememberTool?.enabled === false) {
+          status = "waiting";
+          details.push(
+            `${name} is in allowedTools but memory.rememberTool.enabled is off - durable writes will not work. Enable memory.rememberTool (or remove this entry).`,
+          );
+        } else if (config.memory.backend === "supermemory") {
+          status = "waiting";
+          details.push(
+            `${name} is in allowedTools but the supermemory backend exposes no durable write surface - the tool will not be offered.`,
+          );
+        }
+        continue;
+      }
       if (!isKnownToolName(name)) {
         status = "waiting";
         const suggestion = suggestToolName(name);
