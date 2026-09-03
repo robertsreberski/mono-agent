@@ -95,7 +95,7 @@ export class RemoteAgentResponder implements AgentResponder {
     // either not this contract or an agent bounded nowhere else either, and
     // either way buffering it whole is an unbounded allocation per poll. The
     // console's `OperatorClient` already reads to exactly this bound.
-    const body = JSON.parse(await readBoundedInfoBody(response)) as {
+    const body = JSON.parse(await readBoundedBody(response, "reject")) as {
       schema: number;
       pid?: number;
       label?: string;
@@ -214,7 +214,13 @@ export class RemoteAgentResponder implements AgentResponder {
       );
     }
     if (!response.ok && response.headers.get("content-type")?.includes("application/x-ndjson") !== true) {
-      const detail = await response.text().catch(() => "");
+      // Bounded like every other body this client reads. A non-2xx response is
+      // exactly the case a bound exists for — a hostile or broken peer — and it
+      // used to be the one case that had none. A diagnostic tail is echoed
+      // truncated anyway, so here the overflow is dropped rather than raised:
+      // losing the status behind a size error would be a worse diagnostic than
+      // a clipped detail.
+      const detail = await readBoundedBody(response, "truncate").catch(() => "");
       throw new RemoteAgentResponderError(
         `Agent responded ${response.status} at ${url}${detail.length > 0 ? `: ${detail.slice(0, 300)}` : "."}`,
         response.status === 401 ? "unauthorized" : "http_error",
@@ -225,10 +231,19 @@ export class RemoteAgentResponder implements AgentResponder {
 }
 
 /**
- * Buffer a `/v1/info` response under {@link MAX_INFO_BODY_BYTES}, failing as
- * soon as the stream passes it rather than after the whole body has landed.
+ * Buffer a response under {@link MAX_INFO_BODY_BYTES}, stopping as soon as the
+ * stream passes it rather than after the whole body has landed.
+ *
+ * Both of this client's response bodies read through here, whatever the status.
+ * `"reject"` is for a body that must be PARSED — a clipped `/v1/info` body is
+ * not JSON, so overflow is a failure. `"truncate"` is for a body that is only
+ * ECHOED — an error detail is clipped for display regardless, so overflow just
+ * ends the read and the status still reaches the caller.
  */
-async function readBoundedInfoBody(response: globalThis.Response): Promise<string> {
+async function readBoundedBody(
+  response: globalThis.Response,
+  onOverflow: "reject" | "truncate",
+): Promise<string> {
   if (response.body === null) return "";
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -237,13 +252,18 @@ async function readBoundedInfoBody(response: globalThis.Response): Promise<strin
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      total += value.byteLength;
-      if (total > MAX_INFO_BODY_BYTES) {
-        throw new RemoteAgentResponderError(
-          `Agent /v1/info body exceeds the ${String(MAX_INFO_BODY_BYTES)}-byte wire limit.`,
-          "info_too_large",
-        );
+      if (total + value.byteLength > MAX_INFO_BODY_BYTES) {
+        if (onOverflow === "reject") {
+          throw new RemoteAgentResponderError(
+            `Agent /v1/info body exceeds the ${String(MAX_INFO_BODY_BYTES)}-byte wire limit.`,
+            "info_too_large",
+          );
+        }
+        chunks.push(value.subarray(0, MAX_INFO_BODY_BYTES - total));
+        total = MAX_INFO_BODY_BYTES;
+        break;
       }
+      total += value.byteLength;
       chunks.push(value);
     }
   } finally {

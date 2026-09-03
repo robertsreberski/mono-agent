@@ -2105,12 +2105,72 @@ function authorize(req: Request, res: Response, apiKey: string | undefined): boo
 }
 
 function sendJsonError(res: Response, status: number, error: unknown): void {
-  res.status(status).json({
-    error: {
-      message: errorToMessage(error),
-      ...(codeOf(error) === undefined ? {} : { code: codeOf(error) }),
-    },
-  });
+  res.status(status).type("application/json").send(boundedErrorBody(error));
+}
+
+/** Appended to a message the fence had to cut, so a reader is never handed a
+ * truncated diagnostic as if it were the whole one. */
+const TRUNCATED_MESSAGE_SUFFIX = "\u2026 [truncated]";
+
+/**
+ * Serialize one error envelope under the SHARED `/v1/info` body cap.
+ *
+ * `sendBoundedInfo` bounds a success body by shedding fields; an error body has
+ * no field to shed — it is one diagnostic message — so it is bounded by
+ * clamping that message instead, which is the one place truncating is
+ * obviously correct. Bounding success and not failure is not a wire contract:
+ * before this, a rejecting `info` provider answered whatever its message
+ * measured (a real probe: 1,052,696 bytes against a 1,048,576-byte cap),
+ * because the route's `.catch` lands here and this responder had no bound.
+ *
+ * `code` survives clamping — the console and the TUI switch on it — and the
+ * message keeps its head, so a clamped body still names what failed.
+ */
+function boundedErrorBody(error: unknown): string {
+  const message = errorToMessage(error);
+  const rawCode = codeOf(error);
+  // A `code` is an identifier, kept whole whenever it can be. A "code" that
+  // alone overruns the cap is not an identifier, and dropping it is better than
+  // letting it crowd out the message that explains the failure.
+  const code = rawCode !== undefined
+    && Buffer.byteLength(errorEnvelope(TRUNCATED_MESSAGE_SUFFIX, rawCode), "utf8") <= MAX_INFO_BODY_BYTES
+    ? rawCode
+    : undefined;
+  const full = errorEnvelope(message, code);
+  if (Buffer.byteLength(full, "utf8") <= MAX_INFO_BODY_BYTES) return full;
+  return errorEnvelope(clampErrorMessage(message, code), code);
+}
+
+function errorEnvelope(message: string, code: string | undefined): string {
+  return JSON.stringify({ error: { message, ...(code === undefined ? {} : { code }) } });
+}
+
+/**
+ * A prefix of `message` whose envelope fits, plus the truncation marker.
+ *
+ * Measured against the SERIALIZED envelope, not the raw string, and shrunk in
+ * PROPORTION to how far over the envelope is. Both halves matter: the overshoot
+ * is counted in bytes while `kept` is counted in code units, and one unit can
+ * escape to six bytes (`\u0007` -> `\\u0007`), so subtracting a byte overshoot
+ * from a unit count deletes the entire message the moment escaping is heavy —
+ * leaving a body that is bounded but says nothing about what failed.
+ */
+function clampErrorMessage(message: string, code: string | undefined): string {
+  let kept = message;
+  for (;;) {
+    const candidate = kept + TRUNCATED_MESSAGE_SUFFIX;
+    const bytes = Buffer.byteLength(errorEnvelope(candidate, code), "utf8");
+    // The marker-only envelope was proven to fit before this was called, so the
+    // loop cannot spin at length 0.
+    if (bytes <= MAX_INFO_BODY_BYTES || kept.length === 0) return candidate;
+    // Never drop less than an eighth, so a proportion that barely moves (the
+    // envelope's own fixed overhead) still converges in O(log n) passes.
+    const proportional = Math.floor(kept.length * (MAX_INFO_BODY_BYTES / bytes));
+    kept = kept.slice(0, Math.min(proportional, kept.length - Math.ceil(kept.length / 8)));
+    // Never end on a lone high surrogate split out of a pair.
+    const last = kept.charCodeAt(kept.length - 1);
+    if (last >= 0xd800 && last <= 0xdbff) kept = kept.slice(0, -1);
+  }
 }
 
 function sendBoundedJobs(res: Response, jobs: readonly unknown[]): void {

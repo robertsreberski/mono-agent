@@ -2146,6 +2146,105 @@ describe("startTuiAdapter /v1/info payload fence", () => {
   });
 });
 
+/**
+ * The producer-side `/v1/info` ERROR fence.
+ *
+ * The success path is bounded by shedding fields, but a rejecting `info`
+ * provider never reaches it: it lands in the route's `.catch` and answers
+ * through the shared JSON error responder, which serialized whatever message
+ * the rejection carried. A real loopback probe returned a 1,052,696-byte 500
+ * against a 1,048,576-byte contract. This is not reachable through
+ * mono-agent's own info provider — its overflow stays on the bounded success
+ * path — but the adapter is PUBLISHED, and any embedder whose `info` throws
+ * large reaches it. Bounding success and not failure is not a defensible wire
+ * contract, so the invariant pinned here is: **no `/v1/info` response of any
+ * status exceeds `MAX_INFO_BODY_BYTES`.**
+ */
+describe("startTuiAdapter /v1/info error fence", () => {
+  async function readRaw(url: string): Promise<{
+    readonly status: number;
+    readonly contentType: string | null;
+    readonly bytes: number;
+    readonly text: string;
+  }> {
+    const response = await fetch(url);
+    const text = await response.text();
+    return {
+      status: response.status,
+      contentType: response.headers.get("content-type"),
+      bytes: Buffer.byteLength(text, "utf8"),
+      text,
+    };
+  }
+
+  it("clamps an oversized rejection instead of serializing it whole", async () => {
+    const detail = "D".repeat(2 * 1024 * 1024);
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: () => {
+        throw new CodedError("info_provider_failed", `Discovery failed: ${detail}`);
+      },
+    });
+
+    const raw = await readRaw(running.infoUrl);
+
+    expect(raw.status).toBe(500);
+    expect(raw.contentType).toContain("application/json");
+    expect(raw.bytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
+    // Still a valid, still a CODED error envelope: the console and the TUI
+    // switch on `code`, so clamping must not cost it.
+    const body = JSON.parse(raw.text) as { error?: { message?: unknown; code?: unknown } };
+    expect(body.error?.code).toBe("info_provider_failed");
+    expect(typeof body.error?.message).toBe("string");
+    // A clamped message still names what failed, and says it was clamped, so a
+    // reader is never handed a truncated diagnostic as if it were the whole one.
+    expect(String(body.error?.message).startsWith("Discovery failed: ")).toBe(true);
+    expect(String(body.error?.message).endsWith("[truncated]")).toBe(true);
+  });
+
+  it("clamps against the SERIALIZED envelope, not the raw message", async () => {
+    // Every unit here escapes to six bytes (\u0007 -> "\\u0007"), so a clamp
+    // that budgeted the raw string would hand back a body six times the cap.
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: () => {
+        throw new CodedError("info_provider_failed", `bell:${"\u0007".repeat(1024 * 1024)}`);
+      },
+    });
+
+    const raw = await readRaw(running.infoUrl);
+
+    expect(raw.status).toBe(500);
+    expect(raw.bytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
+    const body = JSON.parse(raw.text) as { error?: { message?: unknown; code?: unknown } };
+    expect(body.error?.code).toBe("info_provider_failed");
+    expect(String(body.error?.message).startsWith("bell:\u0007")).toBe(true);
+    expect(String(body.error?.message).endsWith("[truncated]")).toBe(true);
+  });
+
+  it("passes an ordinary rejection through byte-for-byte", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: async () => {
+        await Promise.resolve();
+        throw new CodedError("info_provider_failed", "Ollama endpoint refused the connection.");
+      },
+    });
+
+    const raw = await readRaw(running.infoUrl);
+
+    expect(raw.status).toBe(500);
+    // A fence that clamps when it does not have to is as wrong as no fence.
+    expect(JSON.parse(raw.text)).toEqual({
+      error: {
+        message: "Ollama endpoint refused the connection.",
+        code: "info_provider_failed",
+      },
+    });
+  });
+});
+
+
 function wildcardNonLoopbackLookup(
   _hostname: string,
   options: unknown,
