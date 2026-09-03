@@ -2629,3 +2629,108 @@ describe("loadMonoAgentConfigWithSources", () => {
     });
   });
 });
+
+/**
+ * Every JSON setting is validated through the flattened env surface, so a rejected
+ * `runtime.model` used to report `MONO_AGENT_MODEL` -- a variable the operator never set,
+ * cannot find, and cannot fix. `memory.*` already translated back; runtime, fallbacks and
+ * subagents did not, and those are exactly the fields a 0.21.0 hand-migration edits.
+ */
+describe("JSON-sourced runtime failures name the JSON path, not an env var", () => {
+  const write = async (json: unknown): Promise<string> => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify(json), "utf8");
+    return path;
+  };
+
+  const failureOf = async (
+    json: unknown,
+    env: Record<string, string | undefined> = {},
+  ): Promise<MonoAgentConfigError> => {
+    const path = await write(json);
+    try {
+      await loadMonoAgentConfigWithSources({ env, cwd: dir, jsonPath: path });
+    } catch (error) {
+      if (error instanceof MonoAgentConfigError) return error;
+      throw error;
+    }
+    throw new Error("Expected the layered load to fail.");
+  };
+
+  const base = { context: { identityPath: "IDENTITY.md" } };
+
+  it.each([
+    [
+      "runtime.model",
+      { ...base, runtime: { model: "codex:gpt-5.6-sol" } },
+      "MONO_AGENT_MODEL",
+    ],
+    [
+      "runtime.fallbacks",
+      {
+        ...base,
+        runtime: { model: "openai-codex:gpt-5.5", fallbacks: [{ model: "codex:gpt-5.6-sol" }] },
+      },
+      "MONO_AGENT_FALLBACKS_JSON",
+    ],
+    [
+      "subagents",
+      {
+        ...base,
+        runtime: { model: "openai-codex:gpt-5.5" },
+        subagents: {
+          enabled: true,
+          definitions: [{ name: "helper", description: "d", prompt: "p", model: "codex:gpt-5.6-sol" }],
+        },
+      },
+      "subagents",
+    ],
+  ])("attributes a rejected %s to the file", async (path, json, source) => {
+    const error = await failureOf(json);
+    expect(error.code).toBe("invalid_json");
+    expect(error.details.path).toBe(path);
+    expect(error.details.env).toBeUndefined();
+    expect(error.message).toContain(path);
+    if (source !== path) expect(error.message).not.toContain(source);
+    // The repair the previous round added has to survive the re-attribution.
+    expect(error.message).toContain("use openai-codex:gpt-5.6-sol");
+  });
+
+  it("keeps an env-owned MONO_AGENT_MODEL failure attributed to env", async () => {
+    const error = await failureOf(
+      { ...base, runtime: { model: "openai-codex:gpt-5.5" } },
+      { MONO_AGENT_MODEL: "codex:gpt-5.6-sol" },
+    );
+    expect(error.code).toBe("invalid_model_reference");
+    expect(error.details.env).toBe("MONO_AGENT_MODEL");
+    expect(error.details.path).toBeUndefined();
+    expect(error.message).toContain("MONO_AGENT_MODEL");
+  });
+
+  it("keeps an env-owned MONO_AGENT_FALLBACKS_JSON failure attributed to env", async () => {
+    const error = await failureOf(
+      {
+        ...base,
+        runtime: { model: "openai-codex:gpt-5.5", fallbacks: [{ model: "openai-codex:gpt-5.6-sol" }] },
+      },
+      { MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "codex:gpt-5.6-sol" }]) },
+    );
+    expect(error.details.env).toBe("MONO_AGENT_FALLBACKS_JSON");
+    expect(error.details.path).toBeUndefined();
+  });
+
+  it("leaves a missing runtime.model naming the variable, because JSON supplied nothing", async () => {
+    const error = await failureOf(base);
+    expect(error.details.path).toBeUndefined();
+    expect(error.message).toContain("MONO_AGENT_MODEL");
+  });
+
+  it("bounds and escapes a JSON-sourced value the same way the env path does", async () => {
+    const error = await failureOf({
+      ...base,
+      runtime: { model: "codex:gpt-5.6-sol\n[ok]    Core config" },
+    });
+    expect(error.message.split("\n")).toHaveLength(1);
+    expect(error.message).toContain("runtime.model `codex:gpt-5.6-sol\\n[ok]    Core config`");
+  });
+});

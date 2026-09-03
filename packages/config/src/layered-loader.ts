@@ -45,8 +45,45 @@ export async function loadMonoAgentConfigWithSources(
   try {
     return loadMonoAgentConfig({ env: layeredEnv, cwd: input.cwd });
   } catch (error) {
-    throw remapJsonMemoryError(error, jsonLayer, input.env);
+    // Two disjoint source sets, so the order is immaterial; both translate a diagnostic
+    // about the flattened env surface back to the file the operator actually edits.
+    throw remapJsonRuntimeError(remapJsonMemoryError(error, jsonLayer, input.env), jsonLayer, input.env);
   }
+}
+
+/**
+ * Every JSON setting is validated through the flattened env surface, so a rejected
+ * `runtime.model` reported `MONO_AGENT_MODEL` -- a variable the operator never set and cannot
+ * find. `memory.*` already translated back; the runtime, fallback and subagent sources did
+ * not, which made the repair unactionable for exactly the fields a 0.21.0 migration touches.
+ *
+ * The reader per source is what makes this sound: `layerJsonOntoEnv` lets env win, so a
+ * diagnostic is only JSON's to claim when the variable is unset *and* the JSON layer supplied
+ * the value.
+ */
+const JSON_RUNTIME_SOURCES: readonly {
+  readonly env: string;
+  readonly path: string;
+  readonly read: (json: MonoAgentConfigJson) => unknown;
+}[] = [
+  { env: "MONO_AGENT_MODEL", path: "runtime.model", read: (json) => json.runtime?.model },
+  { env: "MONO_AGENT_FALLBACKS_JSON", path: "runtime.fallbacks", read: (json) => json.runtime?.fallbacks },
+  { env: "MONO_AGENT_SUBAGENTS_JSON", path: "subagents", read: (json) => json.subagents },
+];
+
+/** Preserve the operator's real source surface when a layered runtime setting fails. */
+function remapJsonRuntimeError(
+  error: unknown,
+  json: MonoAgentConfigJson,
+  env: Record<string, string | undefined>,
+): unknown {
+  if (!(error instanceof MonoAgentConfigError)) return error;
+  const source = error.details.env;
+  if (typeof source !== "string") return error;
+  const mapping = JSON_RUNTIME_SOURCES.find((candidate) => candidate.env === source);
+  if (mapping === undefined) return error;
+  if (hasValue(env[source]) || mapping.read(json) === undefined) return error;
+  return remapConfigErrorToJson(error, source, mapping.path);
 }
 
 /** Preserve the operator's real source surface when layered memory validation fails. */

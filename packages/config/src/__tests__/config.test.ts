@@ -2719,3 +2719,82 @@ describe("retired settings are reported completely and in the operator's own sur
     }
   });
 });
+
+/**
+ * Naming the rejected value is what tells an operator which field to open, so it stays. But a
+ * model field takes arbitrary operator text -- a token, a key, a URL with credentials pasted
+ * in by mistake -- and every one of these messages is rendered into the terminal, `doctor`,
+ * the daemon log and launchd's captured stdout, which are durable and routinely shared. The
+ * echo is therefore bounded, and the diagnostic surfaces are line-oriented, so a value must
+ * not be able to forge lines that read as the loader's own.
+ */
+describe("echoed model references are bounded and cannot forge diagnostic lines", () => {
+  const utf8 = (value: string): number => new TextEncoder().encode(value).length;
+  const oversized = `codex:${"sk-live-AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDD".repeat(12)}`;
+  const forged = "codex:gpt-5.6-sol\n[ok]    Core config\n    Loaded mono-agent.config.json.";
+
+  const messageOf = (env: Record<string, string | undefined>): string => {
+    try {
+      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, ...env } });
+    } catch (error) {
+      if (error instanceof MonoAgentConfigError) return error.message;
+      throw error;
+    }
+    throw new Error("Expected the model reference to be rejected.");
+  };
+
+  const paths = {
+    primary: (model: string) => ({ MONO_AGENT_MODEL: model }),
+    fallback: (model: string) => ({ MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model }]) }),
+    subagent: (model: string) => ({
+      MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({
+        enabled: true,
+        definitions: [{ name: "helper", description: "d", prompt: "p", model }],
+      }),
+    }),
+    memoryLlm: (model: string) => ({
+      MONO_AGENT_MEMORY_PATH: "memory-root",
+      MONO_AGENT_MEMORY_MODE: "bujo",
+      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+      MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
+      MONO_AGENT_MEMORY_LLM_MODEL: model,
+    }),
+  } as const;
+  const pathNames = Object.keys(paths) as (keyof typeof paths)[];
+
+  it.each(pathNames)("keeps the replacement guidance for a normal bad ref on the %s path", (path) => {
+    const message = messageOf(paths[path]("codex:gpt-5.6-sol"));
+    expect(message).toContain("`codex:gpt-5.6-sol`");
+    expect(message).toContain("use openai-codex:gpt-5.6-sol");
+  });
+
+  it.each(pathNames)("bounds an oversized value on the %s path", (path) => {
+    const message = messageOf(paths[path](oversized));
+    expect(utf8(oversized)).toBe(486);
+    // Both halves are bounded: the echo of the operator's value and the parser's derived
+    // repair, which interpolates that same value a second time.
+    expect(utf8(message)).toBeLessThan(utf8(oversized));
+    expect(message).toContain("…");
+    expect(message).not.toContain(oversized);
+    // The actionable half survives the bound.
+    expect(message).toContain("use openai-codex:sk-live-AAAA");
+  });
+
+  it.each(pathNames)("escapes an embedded newline on the %s path", (path) => {
+    const message = messageOf(paths[path](forged));
+    expect(message).not.toContain("\n");
+    expect(message.split("\n")).toHaveLength(1);
+    expect(message).toContain("\\n[ok]    Core config");
+  });
+
+  it("bounds details.reason too, not only the rendered message", () => {
+    try {
+      loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_MODEL: oversized } });
+      throw new Error("Expected the model reference to be rejected.");
+    } catch (error) {
+      const details = (error as MonoAgentConfigError).details;
+      expect(utf8(details.reason as string)).toBeLessThanOrEqual(224);
+      expect(details.reason).not.toContain("\n");
+    }
+  });
+});

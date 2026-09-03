@@ -40,9 +40,21 @@ A leading `pi:` prefix is silently canonicalized away (`pi:openai-codex:gpt-5.6-
 The replacement is named in the message every operator surface prints — `mono-agent doctor`, `mono-agent validate`, `mono-agent config`, per-trigger override checks and the startup error alike — with the offending value quoted back:
 
 ```text
+runtime.model `codex:gpt-5.6-terra` is not a valid runtime model reference:
+codex is no longer a runtime backend; use openai-codex:gpt-5.6-terra
+```
+
+The message names the source you actually edit. A value from
+`mono-agent.config.json` is attributed to its JSON path, as above; the same value
+supplied through the environment is attributed to the variable instead:
+
+```text
 MONO_AGENT_MODEL `codex:gpt-5.6-terra` is not a valid runtime model reference:
 codex is no longer a runtime backend; use openai-codex:gpt-5.6-terra
 ```
+
+The quoted value is bounded and rendered on one line, so an over-long or
+newline-bearing value cannot flood the output or forge a second diagnostic line.
 
 `openai-codex` is a different auth store from the removed `codex` bridge, so applying that replacement is a deliberate choice, not a rename. Every model-carrying field is checked the same way: `runtime.model`, each `runtime.fallbacks[].model`, each `subagents.definitions[].model`, an `agent-host` `memory.llm.model`, and per-trigger `model` overrides.
 

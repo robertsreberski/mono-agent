@@ -146,9 +146,13 @@ array of `{ "model": "..." }` objects. Remove the variable and re-express the
 chain there, or drop it into `runtime.fallbacks` in mono-agent.config.json.
 
 MonoAgentConfigError: invalid_model_reference
-MONO_AGENT_MODEL `codex:gpt-5.6-terra` is not a valid runtime model reference:
+runtime.model `codex:gpt-5.6-terra` is not a valid runtime model reference:
 codex is no longer a runtime backend; use openai-codex:gpt-5.6-terra
 ```
+
+A model supplied through the environment is attributed to the variable
+(`MONO_AGENT_MODEL ...`) rather than the JSON path, so the message always names
+the place you edit to fix it.
 
 What it does *not* do is report everything at once. Within a class it is
 exhaustive — all retired JSON keys in one message, all retired environment
