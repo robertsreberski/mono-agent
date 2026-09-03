@@ -293,8 +293,20 @@ const errorMessage = (error: unknown) =>
 export const THREAD_WRITE_TIMEOUT_MS = 15_000;
 
 /**
- * Start one request under a deadline, and hand back the two different answers
- * a CALLER and a QUEUE need from it.
+ * What the REQUEST ITSELF did, as opposed to what the caller was told.
+ *
+ * A deadline aborts a request; it does not un-send it, and a transport that
+ * ignores abort can go on to deliver the mutation long after the caller has
+ * given up. Anything that has to reason about ordering needs this rather than
+ * the caller's promise.
+ */
+export type RequestLanding =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly error: unknown };
+
+/**
+ * Start one request under a deadline, and hand back the three different answers
+ * a CALLER, a QUEUE and an ORDERING argument need from it.
  *
  * `result` is the caller's. The signal is what a healthy `fetch` needs, and the
  * race is what makes the deadline hold anyway: a transport that ignores abort
@@ -311,17 +323,32 @@ export const THREAD_WRITE_TIMEOUT_MS = 15_000;
  * that ignores abort now stalls that one conversation's queue rather than
  * silently reordering it, and the operator sees the timeout either way. Wedging
  * one visible queue is the honest failure; reordering writes is a silent one.
+ *
+ * `landed` is for anything that has to ORDER itself against this request, and
+ * it never rejects. A reconciliation that reads while the request it is
+ * reconciling is still on the wire is not a linearization point at all: the
+ * read saw the row, the abandoned DELETE then removed it, and the console had
+ * already called that a refusal. Waiting on this first is what makes the read
+ * mean anything.
  */
 export const startBoundedRequest = <T,>(
   run: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number = THREAD_WRITE_TIMEOUT_MS,
-): { readonly result: Promise<T>; readonly settled: Promise<void> } => {
+): {
+  readonly result: Promise<T>;
+  readonly settled: Promise<void>;
+  readonly landed: Promise<RequestLanding>;
+} => {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const attempt = run(controller.signal);
   // Also keeps the loser of the race handled, so a late rejection is never
   // reported as unhandled.
-  const settled = attempt.then(() => undefined, () => undefined);
+  const landed: Promise<RequestLanding> = attempt.then(
+    () => ({ ok: true }) as const,
+    (error: unknown) => ({ ok: false, error }) as const,
+  );
+  const settled = landed.then(() => undefined);
   const deadline = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       controller.abort();
@@ -335,7 +362,7 @@ export const startBoundedRequest = <T,>(
       if (timer !== undefined) clearTimeout(timer);
     }
   })();
-  return { result, settled };
+  return { result, settled, landed };
 };
 
 /**
@@ -405,17 +432,46 @@ export interface RemovedThreadRegistry {
    */
   readonly suppress: (threadId: string, suppressed: ThreadSummary) => void;
   /**
-   * Undo a {@link RemovedThreadRegistry.remember} whose delete then failed, and
-   * hand back the newest projection this tombstone suppressed so the caller can
-   * put it back.
+   * Stop asserting that this conversation is gone, and hand back the newest
+   * projection the tombstone suppressed so the caller can put it back.
+   *
+   * The FENCE stays. This is the unreconcilable case -- the delete may well
+   * have been applied -- so a response issued before it still cannot be trusted
+   * to say the conversation exists. See {@link RemovedThreadRegistry.release}
+   * for the case where the server has told us it refused.
    */
   readonly forget: (threadId: string) => ThreadSummary | undefined;
+  /**
+   * Undo the delete entirely: the server ANSWERED that it refused, and a read
+   * issued afterwards still saw the conversation. Nothing was applied, so a
+   * response issued before the delete is no longer stale about whether the
+   * conversation exists and must not be fenced out -- a pre-delete bootstrap
+   * answering after the restore would otherwise drop the row straight back out
+   * of the sidebar with no refresh to put it back.
+   */
+  readonly release: (threadId: string) => ThreadSummary | undefined;
   readonly has: (threadId: string) => boolean;
+  /**
+   * The admission epoch a caller must quote for its response to be considered.
+   * Read it when a request is ISSUED, and hand it back when the response is
+   * applied; every delete advances it.
+   */
+  readonly epoch: () => number;
+  /**
+   * True when a response issued at `issuedAt` was overtaken by a delete of this
+   * conversation, and so cannot speak to whether it still exists.
+   */
+  readonly predatesDelete: (threadId: string, issuedAt: number) => boolean;
+  /** Live tombstones -- entries kept only as a fence are not counted. */
   readonly size: () => number;
 }
 
 interface RemovedThread {
   readonly at: number;
+  /** The admission epoch this delete was issued at. */
+  readonly fencedAt: number;
+  /** False once a failed delete has taken the assertion back. */
+  tombstoned: boolean;
   suppressed: ThreadSummary;
 }
 
@@ -439,6 +495,10 @@ export const createRemovedThreadRegistry = (
   ttlMs: number = REMOVED_THREAD_TTL_MS,
 ): RemovedThreadRegistry => {
   const removed = new Map<string, RemovedThread>();
+  // Advanced by every delete. A read quotes it when it is ISSUED, so a response
+  // that quotes a lower epoch than a conversation's delete was overtaken by
+  // that delete and cannot be admitted -- however the delete then turned out.
+  let epoch = 0;
   const expired = (entry: RemovedThread): boolean => now() - entry.at >= ttlMs;
   const live = (threadId: string): RemovedThread | undefined => {
     const entry = removed.get(threadId);
@@ -449,10 +509,25 @@ export const createRemovedThreadRegistry = (
     }
     return entry;
   };
+  const tombstone = (threadId: string): RemovedThread | undefined => {
+    const entry = live(threadId);
+    return entry?.tombstoned === true ? entry : undefined;
+  };
+  const stopAsserting = (
+    threadId: string,
+    keepFence: boolean,
+  ): ThreadSummary | undefined => {
+    const entry = tombstone(threadId);
+    if (entry === undefined) return undefined;
+    if (keepFence) entry.tombstoned = false;
+    else removed.delete(threadId);
+    return entry.suppressed;
+  };
   return {
     remember: (threadId, suppressed) => {
       removed.delete(threadId);
-      removed.set(threadId, { at: now(), suppressed });
+      epoch += 1;
+      removed.set(threadId, { at: now(), fencedAt: epoch, tombstoned: true, suppressed });
       // Insertion order is chronological, so the live entries are a suffix.
       for (const [candidate, entry] of removed) {
         if (!expired(entry)) break;
@@ -460,7 +535,7 @@ export const createRemovedThreadRegistry = (
       }
     },
     suppress: (threadId, suppressed) => {
-      const entry = live(threadId);
+      const entry = tombstone(threadId);
       if (entry === undefined) return;
       // ORDERED BY REVISION, not by arrival. Overwriting unconditionally made
       // "the newest projection this tombstone hid" mean "the last response to
@@ -476,13 +551,18 @@ export const createRemovedThreadRegistry = (
       if (suppressed.revision <= entry.suppressed.revision) return;
       entry.suppressed = suppressed;
     },
-    forget: (threadId) => {
+    forget: (threadId) => stopAsserting(threadId, true),
+    release: (threadId) => stopAsserting(threadId, false),
+    has: (threadId) => tombstone(threadId) !== undefined,
+    epoch: () => epoch,
+    // The fence outlives the tombstone deliberately: it is what a response
+    // issued before the delete has to be measured against, and such a response
+    // is bounded by the same deadlines the lifetime is derived from.
+    predatesDelete: (threadId, issuedAt) => {
       const entry = live(threadId);
-      removed.delete(threadId);
-      return entry?.suppressed;
+      return entry !== undefined && issuedAt < entry.fencedAt;
     },
-    has: (threadId) => live(threadId) !== undefined,
-    size: () => removed.size,
+    size: () => [...removed.values()].filter((entry) => entry.tombstoned).length,
   };
 };
 
@@ -494,24 +574,51 @@ export const createRemovedThreadRegistry = (
  * attachment cleanup and emits its invalidations, so a dropped connection or
  * this console's own deadline can fire while the conversation is already gone.
  *
- * - `refused`: the server answered, and the answer is one it can only produce
- *   BEFORE it touches anything -- the conversation still has an active turn, is
- *   not archived, is a configured cron channel, the caller is not allowed, the
- *   request was malformed. Nothing was applied; rolling back is safe.
- * - `applied`: the conversation is not there. A DELETE cannot be answered 404
- *   by a server that still holds the row, so the postcondition the operator
+ * - `refused`: the server answered with one of the codes it publishes for this
+ *   route BEFORE it touches anything -- the conversation still has an active
+ *   turn, is not archived, is a configured cron channel, or a guard rejected
+ *   the mutation outright. Nothing was applied.
+ * - `applied`: the console's own handler answered `thread_not_found`. It is the
+ *   handler that would have deleted the row, so the postcondition the operator
  *   asked for already holds however it got there.
- * - `unknown`: a 5xx, a proxy, a lost socket, a deadline. The state is genuinely
- *   unknown and neither assumption is available -- see {@link reconcileFailedDelete}.
+ * - `unknown`: everything else. The state is genuinely unknown and neither
+ *   assumption is available -- see {@link reconcileFailedDelete}.
  */
 export type DeleteFailureVerdict = "refused" | "applied" | "unknown";
 
+/**
+ * Every code the DELETE route can answer with before it has touched anything:
+ * the three the handler itself raises, and the guards that reject a mutation
+ * before any handler runs.
+ *
+ * A CODE, not a status class. Reading "4xx" as "the server refused" credits
+ * this server with every 4xx on the path -- a proxy's 404, a gateway's 408, a
+ * load balancer's 429 -- and none of those knows whether the delete was
+ * applied. Anything not published here is `unknown`, which is reconciled rather
+ * than assumed, so an unlisted code costs a round trip and never a wrong answer.
+ */
+const DELETE_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "turn_active",
+  "thread_not_archived",
+  "cron_channel_configured",
+  "untrusted_host",
+  "cross_site_request",
+  "invalid_origin",
+  "origin_mismatch",
+  "origin_required",
+  "invalid_host",
+]);
+
 export const classifyDeleteFailure = (error: unknown): DeleteFailureVerdict => {
   if (!(error instanceof ApiError)) return "unknown";
-  if (error.status === 404) return "applied";
-  // 5xx is the gateway, the proxy or a crash mid-handler: any of them can sit
-  // on the far side of a delete that landed.
-  return error.status >= 400 && error.status < 500 ? "refused" : "unknown";
+  // Only the route's own not-found is evidence. A bare 404 is as likely to be
+  // a proxy that never reached this console, and the console's `/api` fallback
+  // answers `not_found` for a route that does not exist at all.
+  if (error.status === 404) return error.code === "thread_not_found" ? "applied" : "unknown";
+  if (error.status < 400 || error.status >= 500) return "unknown";
+  return error.code !== undefined && DELETE_REFUSAL_CODES.has(error.code)
+    ? "refused"
+    : "unknown";
 };
 
 export interface FailedDeleteOutcome {
@@ -521,21 +628,77 @@ export interface FailedDeleteOutcome {
 }
 
 /**
- * Turn an `unknown` delete failure into an answer by ASKING the server, rather
- * than by assuming either way.
+ * How long a reconciliation waits for THIS CLIENT'S OWN abandoned DELETE to
+ * stop being outstanding.
+ *
+ * The write deadline again, because that is the budget the request already had
+ * and a healthy `fetch` rejects the instant it sees the abort, so a live
+ * transport pays nothing here at all.
+ */
+export const DELETE_LANDING_GRACE_MS = THREAD_WRITE_TIMEOUT_MS;
+
+/** `undefined` when the request is still outstanding after `timeoutMs`. */
+const landingWithin = async (
+  landed: Promise<RequestLanding>,
+  timeoutMs: number,
+): Promise<RequestLanding | undefined> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const grace = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), timeoutMs);
+  });
+  try {
+    return await Promise.race([landed, grace]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
+
+/**
+ * Turn a delete failure into an answer by ASKING the server, rather than by
+ * assuming either way -- and ask only once the question can be answered.
+ *
+ * TWO things have to be true before a read means anything here.
+ *
+ * First, this client's own DELETE must have stopped being outstanding. The
+ * console's deadline aborts a request; it does not un-send one, so a read
+ * issued while the DELETE is still on the wire cannot order itself against it:
+ * the read saw the row, the DELETE then landed and removed it, and the console
+ * had already called that a refusal. `landed` is what makes the read a
+ * linearization point with respect to this client. If the request never settles
+ * there is nothing to linearize against, and the verdict is `unknown` -- said
+ * plainly rather than papered over with a read that cannot mean anything.
+ *
+ * Second, a refusal is about the REQUEST, never about the conversation as it
+ * stands. "Cancel the active turn first" is a true statement about a row
+ * another client may have deleted while the answer was in flight, so a refusal
+ * is confirmed by a read like anything else. This costs one round trip on a
+ * refused delete and is the only thing that can notice the row is already gone.
  *
  * Bounded by the WRITE deadline, not the more generous read one: the operator
  * is already waiting on a delete that failed, and a reconciliation that has not
  * answered inside that budget has told us what it can -- nothing.
+ *
+ * REMAINING GAP, stated rather than closed: nothing here linearizes against
+ * OTHER clients. Between this read answering and the projection being repaired,
+ * another tab can delete the conversation, and no client-side protocol can see
+ * that. The read narrows the window to one round trip and the server's next
+ * invalidation closes it; a client cannot do better than that.
  */
 export const reconcileFailedDelete = async (
   threadId: string,
-  error: unknown,
+  landed: Promise<RequestLanding>,
 ): Promise<FailedDeleteOutcome> => {
-  const verdict = classifyDeleteFailure(error);
-  if (verdict !== "unknown") return { verdict };
+  const landing = await landingWithin(landed, DELETE_LANDING_GRACE_MS);
+  // Still on the wire. Any read now races it, so no verdict is available.
+  if (landing === undefined) return { verdict: "unknown" };
+  // It landed after the caller gave up, which is exactly what an abandoned
+  // request is always allowed to do.
+  if (landing.ok) return { verdict: "applied" };
+  if (classifyDeleteFailure(landing.error) === "applied") return { verdict: "applied" };
   try {
     const current = await boundedRequest((signal) => api.thread(threadId, signal));
+    // The DELETE has settled and the conversation outlived it, so it was not
+    // applied -- whatever the answer said.
     return { verdict: "refused", thread: current.thread };
   } catch (reconcileError) {
     // A second failure is not a second chance to guess: only an affirmative
@@ -551,7 +714,7 @@ const newerProjection = (
 ): ThreadSummary => (fetched === undefined || fetched.revision < held.revision ? held : fetched);
 
 /**
- * The threads a response may put into the projection.
+ * Whether one response may put one conversation into the projection.
  *
  * Every insertion path runs through this. The tombstone used to be consulted at
  * three of eleven of them, so a bootstrap, a thread page, or a selection fetch
@@ -559,17 +722,39 @@ const newerProjection = (
  * and `refreshNow` fires on every SSE event behind a 300 ms debounce, which
  * makes an in-flight bootstrap across a delete ordinary rather than exotic.
  *
- * What it filters out it also hands to the tombstone, because a delete that
- * fails has to be able to put back everything its tombstone hid.
+ * TWO tests, not one. The tombstone filters while it stands, and what it
+ * filters it also RECORDS, because a delete that fails has to be able to put
+ * back everything it hid -- the detail paths used to drop those projections on
+ * the floor, so the newest thing this tab had seen was not what a rollback
+ * handed back. The fence outlives the tombstone: a delete that turns out
+ * unreconcilable stops asserting the conversation is gone, but a response
+ * ISSUED BEFORE it is still not evidence that it survived. Without the fence an
+ * archived page that predated the delete walked back into the sidebar over the
+ * refresh that had just removed the row.
+ *
+ * `issuedAt` is {@link RemovedThreadRegistry.epoch} read when the request went
+ * out. It is a required argument on purpose: a caller that cannot say when it
+ * asked has no business inserting anything.
  */
+const admitThread = (
+  removed: RemovedThreadRegistry,
+  incoming: ThreadSummary,
+  issuedAt: number,
+): boolean => {
+  if (removed.has(incoming.id)) {
+    removed.suppress(incoming.id, incoming);
+    return false;
+  }
+  return !removed.predatesDelete(incoming.id, issuedAt);
+};
+
+/** {@link admitThread} over one response's worth of conversations. */
 const admitThreads = (
   removed: RemovedThreadRegistry,
   incoming: readonly ThreadSummary[],
-): readonly ThreadSummary[] => incoming.filter((thread) => {
-  if (!removed.has(thread.id)) return true;
-  removed.suppress(thread.id, thread);
-  return false;
-});
+  issuedAt: number,
+): readonly ThreadSummary[] =>
+  incoming.filter((thread) => admitThread(removed, thread, issuedAt));
 
 export interface ThreadWriteChain {
   readonly enqueue: <T>(
@@ -839,14 +1024,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     skillRegistryStateRef.current = skillRegistryState;
   }, [skillRegistryState]);
 
-  const applyBootstrap = useCallback((rawNext: Bootstrap) => {
+  const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number) => {
     // A bootstrap is a wholesale replacement, so a deleted conversation it
     // still lists is re-added, selected, and routed to. It is also the single
     // most likely response to be in flight across a delete: `refreshNow` issues
     // one on every SSE event, including the one the delete itself produced.
     const next: Bootstrap = {
       ...rawNext,
-      threads: admitThreads(removedThreadsRef.current, rawNext.threads),
+      threads: admitThreads(removedThreadsRef.current, rawNext.threads, issuedAt),
     };
     setBootstrap(next);
     setError(null);
@@ -886,8 +1071,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // Bounded like every other read. See `THREAD_READ_TIMEOUT_MS`: the
       // tombstone's lifetime is only an upper bound on late responses while
       // the responses themselves have one.
+      const issuedAt = removedThreadsRef.current.epoch();
       const next = await boundedRequest((signal) => api.bootstrap(signal), THREAD_READ_TIMEOUT_MS);
-      applyBootstrap(next);
+      applyBootstrap(next, issuedAt);
       setConnection("live");
     } catch (loadError) {
       setError(errorMessage(loadError));
@@ -911,12 +1097,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     archived: boolean,
     before?: string,
   ) => {
+    const issuedAt = removedThreadsRef.current.epoch();
     const page = await boundedRequest(
       (signal) => api.threads(sourceId, archived, before, signal),
       THREAD_READ_TIMEOUT_MS,
     );
     const key = threadBucketKey(sourceId, archived);
-    const admitted = admitThreads(removedThreadsRef.current, page.threads);
+    const admitted = admitThreads(removedThreadsRef.current, page.threads, issuedAt);
     setBootstrap((current) => {
       if (current === null) return current;
       const retained = before === undefined
@@ -941,11 +1128,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const loadThread = useCallback(async (threadId: string, signal: AbortSignal) => {
     setDetailLoading(true);
     try {
+      const issuedAt = removedThreadsRef.current.epoch();
       const next = await boundedRequest(
         (deadline) => api.thread(threadId, anySignal(signal, deadline)),
         THREAD_READ_TIMEOUT_MS,
       );
-      if (removedThreadsRef.current.has(threadId)) return;
+      // Admitted like any other projection, so a tombstone RECORDS it rather
+      // than dropping it: a detail read is routinely the newest thing this tab
+      // has seen about a conversation, and a failed delete has to hand that
+      // back rather than a staler listing.
+      if (!admitThread(removedThreadsRef.current, next.thread, issuedAt)) return;
       if (selectedThreadRef.current === threadId) setDetail(next);
     } catch (loadError) {
       if (!signal.aborted) setActionError(errorMessage(loadError));
@@ -973,6 +1165,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
     refreshInFlightRef.current = true;
     try {
+      const issuedAt = removedThreadsRef.current.epoch();
       const selectedForRefresh = selectedThreadRef.current;
       const [nextBootstrap, nextDetail] = await Promise.all([
         boundedRequest((signal) => api.bootstrap(signal), THREAD_READ_TIMEOUT_MS),
@@ -983,10 +1176,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             )
           : Promise.resolve(null),
       ]);
-      applyBootstrap(nextBootstrap);
+      applyBootstrap(nextBootstrap, issuedAt);
       if (
         nextDetail
-        && !removedThreadsRef.current.has(nextDetail.thread.id)
+        && admitThread(removedThreadsRef.current, nextDetail.thread, issuedAt)
         && selectedThreadRef.current === nextDetail.thread.id
       ) setDetail(nextDetail);
     } catch (refreshError) {
@@ -1206,13 +1399,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         setCronRunCursorByChannel((current) => Object.prototype.hasOwnProperty.call(current, channelKey)
           ? current
           : { ...current, [channelKey]: page.nextCursor ?? null });
+        const detailIssuedAt = removedThreadsRef.current.epoch();
         const nextDetail = await boundedRequest(
           (signal) => api.thread(selectedCronThreadId!, signal),
           THREAD_READ_TIMEOUT_MS,
         );
         if (
           selectedThreadRef.current === nextDetail.thread.id
-          && !removedThreadsRef.current.has(nextDetail.thread.id)
+          && admitThread(removedThreadsRef.current, nextDetail.thread, detailIssuedAt)
         ) setDetail(nextDetail);
       }
     } catch (cronError) {
@@ -1374,6 +1568,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setSelectedThreadId(threadId);
       setActionError(null);
       if (thread === undefined) {
+        const issuedAt = removedThreadsRef.current.epoch();
         void boundedRequest(
           (signal) => api.thread(threadId, signal),
           THREAD_READ_TIMEOUT_MS,
@@ -1381,7 +1576,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           const canonical = next.thread;
           // Deleted while this fetch was outstanding: selecting it now would
           // re-add it, route to it, and persist it as this agent's selection.
-          if (removedThreadsRef.current.has(canonical.id)) return;
+          if (!admitThread(removedThreadsRef.current, canonical, issuedAt)) return;
           setBootstrap((current) => current === null
             ? current
             : { ...current, threads: mergeThreads(current.threads, [canonical]) });
@@ -1412,6 +1607,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const createThread = useCallback(async () => {
     if (!selectedAgentId) throw new Error("Select an agent before starting a conversation.");
     try {
+      const issuedAt = removedThreadsRef.current.epoch();
       const thread = await boundedRequest(
         (signal) => api.createThread(selectedAgentId, signal),
       );
@@ -1421,8 +1617,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // it. Prepending the response blind therefore either listed it twice or
       // undid the delete. Every other insertion path was routed through the
       // tombstone and `mergeThreads`; this one was not.
-      if (removedThreadsRef.current.has(thread.id)) {
-        removedThreadsRef.current.suppress(thread.id, thread);
+      if (!admitThread(removedThreadsRef.current, thread, issuedAt)) {
         throw new Error("This conversation was deleted.");
       }
       const draftPreferenceKey = preferenceKeyForThread(selectedAgentId, null);
@@ -1461,12 +1656,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const known = threads.find((candidate) => candidate.id === threadId) ??
       (detail?.thread.id === threadId ? detail.thread : undefined);
     if (known !== undefined) return known;
+    const issuedAt = removedThreadsRef.current.epoch();
     const fetched = await boundedRequest(
       (signal) => api.thread(threadId, signal),
       THREAD_READ_TIMEOUT_MS,
     );
-    if (removedThreadsRef.current.has(fetched.thread.id)) {
-      removedThreadsRef.current.suppress(fetched.thread.id, fetched.thread);
+    if (!admitThread(removedThreadsRef.current, fetched.thread, issuedAt)) {
       throw new Error("This conversation was deleted.");
     }
     setBootstrap((current) => current === null
@@ -1475,15 +1670,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     return fetched.thread;
   }, [detail, threads]);
 
-  const applyThreadUpdate = useCallback((nextThread: ThreadSummary) => {
+  const applyThreadUpdate = useCallback((nextThread: ThreadSummary, issuedAt: number) => {
     // A response can outlive the conversation it describes: the migration's
     // read, an optimistic rollback, any write already in flight when the
     // operator deleted the thread. `mergeThreads` would re-add it, so the
     // sidebar showed a conversation the server had already destroyed.
-    if (removedThreadsRef.current.has(nextThread.id)) {
-      removedThreadsRef.current.suppress(nextThread.id, nextThread);
-      return;
-    }
+    //
+    // `issuedAt` is the admission epoch the producing request went out under.
+    // A LOCAL decision -- an optimistic edit, a rollback, the repair a refused
+    // delete owes -- is being made now and quotes the current epoch.
+    if (!admitThread(removedThreadsRef.current, nextThread, issuedAt)) return;
     setBootstrap((current) =>
       current ? { ...current, threads: mergeThreads(current.threads, [nextThread]) } : current,
     );
@@ -1508,6 +1704,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (!trimmed) return;
     try {
       const target = await fetchThreadSummary(threadId);
+      const issuedAt = removedThreadsRef.current.epoch();
       // Queued and bounded like every other write to this conversation. Rename,
       // archive and the override writes all PATCH the same row and all apply
       // the COMPLETE thread the server returns, so two in flight together let
@@ -1515,7 +1712,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // archive had completed put `archivedAt` back to null.
       const thread = await enqueueThreadWrite(target.id, (signal) =>
         api.patchThread(target.id, { title: trimmed }, signal));
-      applyThreadUpdate(thread);
+      applyThreadUpdate(thread, issuedAt);
     } catch (renameError) {
       setActionError(errorMessage(renameError));
       throw renameError;
@@ -1526,9 +1723,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     async (threadId: string) => {
       try {
         const target = await fetchThreadSummary(threadId);
+        const issuedAt = removedThreadsRef.current.epoch();
         const thread = await enqueueThreadWrite(target.id, (signal) =>
           api.patchThread(target.id, { archived: true }, signal));
-        applyThreadUpdate(thread);
+        applyThreadUpdate(thread, issuedAt);
         if (selectedThreadRef.current === target.id || selectedThreadRef.current === threadId) {
           operatorSelectionRef.current += 1;
           const replacement = visibleThreads.find((item) => item.id !== target.id);
@@ -1550,9 +1748,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const unarchiveThread = useCallback(async (threadId: string) => {
     try {
       const target = await fetchThreadSummary(threadId);
+      const issuedAt = removedThreadsRef.current.epoch();
       const thread = await enqueueThreadWrite(target.id, (signal) =>
         api.patchThread(target.id, { archived: false }, signal));
-      applyThreadUpdate(thread);
+      applyThreadUpdate(thread, issuedAt);
       operatorSelectionRef.current += 1;
       selectedThreadRef.current = thread.id;
       setSelectedThreadId(thread.id);
@@ -1623,8 +1822,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         || selectedThreadRef.current === threadId;
       const selectionAtRequest = operatorSelectionRef.current;
       removedThreadsRef.current.remember(thread.id, thread);
+      // `startBoundedRequest`, not `boundedRequest`: the reconciliation needs
+      // the request's REAL settlement, not the caller's. See
+      // `reconcileFailedDelete` -- a read issued while this DELETE is still on
+      // the wire cannot order itself against it.
+      const attempt = startBoundedRequest((signal) => api.deleteThread(thread.id, signal));
       try {
-        await boundedRequest((signal) => api.deleteThread(thread.id, signal));
+        await attempt.result;
       } catch (deleteRequestError) {
         // A rejection says the ANSWER did not arrive. Restoring on every one of
         // them treated it as proof the request was never applied, and the
@@ -1632,12 +1836,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         // and emits its invalidations -- so a dropped answer or this console's
         // own deadline resurrected a conversation the server no longer had,
         // over an authoritative refresh that had already removed it.
-        const outcome = await reconcileFailedDelete(thread.id, deleteRequestError);
+        const outcome = await reconcileFailedDelete(thread.id, attempt.landed);
         if (outcome.verdict === "applied") {
-          // Confirmed gone: the server answered a read for it with "not found".
-          // The operator asked for exactly this, so the tombstone stands and
-          // the local cleanup runs. Not a failure reported as a success -- a
-          // postcondition that was CHECKED rather than assumed.
+          // Confirmed gone: either the abandoned request landed after the
+          // caller gave up, or a read issued once it had settled was answered
+          // "not found". The operator asked for exactly this, so the tombstone
+          // stands and the local cleanup runs. Not a failure reported as a
+          // success -- a postcondition that was CHECKED rather than assumed.
           completeThreadRemoval(thread, threadId);
           return;
         }
@@ -1648,22 +1853,34 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           // anything -- drop the tombstone, keep the local projection as the
           // last thing the server actually said, and ask it again. Nothing that
           // a confirmed delete cleans up is touched.
+          //
+          // FORGOTTEN, not released: the delete may well have been applied, so
+          // the fence stays and a response issued before it still cannot put
+          // the conversation back. Only what the refresh below returns can.
           removedThreadsRef.current.forget(thread.id);
           queueRefresh();
           throw deleteRequestError;
         }
-        // Refused before the server touched anything, so the rollback is safe.
+        // Refused before the server touched anything, AND a read issued after
+        // the request had settled still saw the conversation, so the rollback
+        // is safe.
         //
-        // Forgetting the tombstone is not undoing the delete. Every response
-        // that answered while it stood -- the bootstrap `refreshNow` issues on
-        // the delete's own SSE event above all -- has already filtered this
+        // Released rather than forgotten: the server told us it applied
+        // nothing, so a response issued before the delete is no longer stale
+        // about whether the conversation exists and must not be fenced out. A
+        // pre-delete bootstrap answering after this repair would otherwise drop
+        // the row straight back out of a sidebar with no refresh coming.
+        //
+        // Releasing is not undoing the delete. Every response that answered
+        // while the tombstone stood -- the bootstrap `refreshNow` issues on the
+        // delete's own SSE event above all -- has already filtered this
         // conversation out of the projection, and nothing else puts it back:
         // the shipped test only proved that a LATER refresh eventually would.
         // The tombstone hands back the newest projection it suppressed, so the
         // repair happens here, where the failure is.
-        const suppressed = removedThreadsRef.current.forget(thread.id);
+        const suppressed = removedThreadsRef.current.release(thread.id);
         const restored = newerProjection(suppressed ?? thread, outcome.thread);
-        applyThreadUpdate(restored);
+        applyThreadUpdate(restored, removedThreadsRef.current.epoch());
         // A bootstrap that answered while it was tombstoned also re-resolved
         // the selection over a sidebar this conversation was missing from, so
         // restoring the row without the selection left the operator staring at
@@ -1880,10 +2097,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // Queued like any other write to this conversation, so an operator choice
     // made while it runs is sent after it rather than racing it. The body
     // reports its own failures, so nothing here can reject.
+    const migrationIssuedAt = removedThreadsRef.current.epoch();
     void enqueueThreadWrite(threadId, async (signal) => {
       try {
         const fresh = await api.thread(threadId, signal);
         if (removedThreadsRef.current.has(threadId)) {
+          // RECORD it on the way past. This read is a projection like any
+          // other, and a delete that then fails has to hand back the newest
+          // one this tab saw.
+          removedThreadsRef.current.suppress(threadId, fresh.thread);
           // Tombstoned while this read was out. DEFER, do not complete: the
           // adoption never happened, so dropping the operator's browser-local
           // choice here destroyed the only remaining copy of it. The delete
@@ -1901,7 +2123,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         ) {
           // Someone set an override while this tab held a stale projection.
           // Adopt theirs and drop the local copy rather than overwriting it.
-          applyThreadUpdate(fresh.thread);
+          applyThreadUpdate(fresh.thread, migrationIssuedAt);
           dropLocal();
           return;
         }
@@ -1920,7 +2142,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           effort: local.effort || null,
           ifRunConfigUnset: true,
         }, signal);
-        applyThreadUpdate(next);
+        applyThreadUpdate(next, migrationIssuedAt);
         dropLocal();
         setActionError(null);
       } catch (migrationError) {
@@ -1949,6 +2171,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const generations = overrideWriteRef.current;
     generations.set(thread.id, (generations.get(thread.id) ?? 0) + 1);
     const previous = { model: thread.runModel ?? null, effort: thread.runEffort ?? null };
+    const issuedAt = removedThreadsRef.current.epoch();
     // Optimistic straight away; the write itself queues behind whatever else
     // is already writing to this conversation, so the server sees the
     // operator's choices in the order they were made.
@@ -1956,14 +2179,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       ...thread,
       runModel: "model" in patch ? patch.model ?? null : previous.model,
       runEffort: "effort" in patch ? patch.effort ?? null : previous.effort,
-    });
+    }, issuedAt);
     try {
       const next = await enqueueThreadWrite(thread.id, (signal) =>
         api.patchThread(thread.id, patch, signal));
-      applyThreadUpdate(next);
+      applyThreadUpdate(next, issuedAt);
       setActionError(null);
     } catch (patchError) {
-      applyThreadUpdate(thread);
+      applyThreadUpdate(thread, issuedAt);
       setActionError(errorMessage(patchError));
     }
   }, [applyThreadUpdate, enqueueThreadWrite, selectedThread]);
