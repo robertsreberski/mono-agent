@@ -37,6 +37,15 @@ These prefixes were removed in 0.21.0 and are hard-rejected with a named replace
 
 A leading `pi:` prefix is silently canonicalized away (`pi:openai-codex:gpt-5.6-terra` loads as `openai-codex:gpt-5.6-terra`) — the `pi:` is not part of the provider id. Tier aliases (`haiku`, `sonnet`, `opus`) are rejected; use an exact model id.
 
+The replacement is named in the message every operator surface prints — `mono-agent doctor`, `mono-agent validate`, `mono-agent config`, per-trigger override checks and the startup error alike — with the offending value quoted back:
+
+```text
+MONO_AGENT_MODEL `codex:gpt-5.6-terra` is not a valid runtime model reference:
+codex is no longer a runtime backend; use openai-codex:gpt-5.6-terra
+```
+
+`openai-codex` is a different auth store from the removed `codex` bridge, so applying that replacement is a deliberate choice, not a rename. Every model-carrying field is checked the same way: `runtime.model`, each `runtime.fallbacks[].model`, each `subagents.definitions[].model`, an `agent-host` `memory.llm.model`, and per-trigger `model` overrides.
+
 Note that `openai-codex` and `opencode-go` are **Pi provider ids**, not survivals of the removed bridges. Routes naming them are ordinary Pi routes and keep working.
 
 ### What was not removed

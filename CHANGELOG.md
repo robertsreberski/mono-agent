@@ -14,8 +14,15 @@
   `claude-code:`, `codex-cli:`, `acp:` and `vercel:` are rejected at load with
   the replacement named.
 - **Breaking: `runtime.executionMode`, `memory.llm.executionMode`,
-  `runtime.routeSafety` and `runtime.fallbackModels` are retired.** Each now
-  fails at load with the exact repair rather than a generic unknown-key error.
+  `runtime.routeSafety` and `runtime.fallbackModels` are retired,** together with
+  their environment twins `MONO_AGENT_EXECUTION_MODE`,
+  `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`, `MONO_AGENT_ROUTE_SAFETY` and
+  `MONO_AGENT_FALLBACK_MODELS`. Each now fails at load with the exact repair for
+  the surface it was set on — the environment variables name an environment
+  repair (`MONO_AGENT_FALLBACK_MODELS` -> `MONO_AGENT_FALLBACKS_JSON`), not a JSON
+  key the operator may not have — rather than a generic unknown-key error. A load
+  reports every retired key, and every retired variable, in one message instead of
+  one per run. An empty assignment (`KEY=`) is still treated as unset.
 - **New `providers` config map** declaring which providers an agent supports,
   widening selection to those providers' advertised catalogs instead of just
   `runtime.model` and its fallbacks. Each provider advertises at most
@@ -28,10 +35,17 @@
   `agents.providers_json`), so a choice made on the desktop shows up on the phone
   instead of living in one browser's localStorage. The console selector groups
   and filters by provider.
-- **Retired config keys and non-Pi model references are migrated by hand.** Each
-  fails at load with its exact repair, so an unmigrated agent refuses to start
-  and names what to fix. See `packages/agent-runtime/MIGRATION.md` for the
-  per-config checklist and the deployment order.
+- **Retired config keys, retired environment variables and non-Pi model
+  references are migrated by hand.** Each fails at load naming its own repair —
+  including the concrete replacement for a rejected model reference, which the
+  parser knew and earlier builds discarded before it reached `doctor`, `validate`
+  or the startup error. The load stops at the first failing class, so expect a few
+  `mono-agent validate` passes per agent rather than one. See
+  `packages/agent-runtime/MIGRATION.md` for the per-config checklist (config file,
+  environment, and trigger frontmatter) and the deployment order, and
+  `docs/reference/deprecations.md` for the retired-surface reference.
+  `configVersion: 1` files are outside that checklist: that schema was never
+  accepted by the shipped loader and is rejected whole, so re-author them.
 
 - Upgrade the exact-pinned Pi AI catalog and TUI to 0.84.3, including GitHub
   Copilot support for Gemini 3.7 Flash and Grok 4.6, provider-required OAuth

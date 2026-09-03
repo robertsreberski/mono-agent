@@ -301,11 +301,21 @@ export async function readMonoAgentConfigJson(path: string): Promise<ReadMonoAge
   };
 }
 
-/** Reject removed JSON fields before a host's generic unknown-key validation. */
+/**
+ * Reject removed JSON fields before a host's generic unknown-key validation.
+ *
+ * Reports every retired key present, not just the first: migrating by hand is one edit
+ * pass, and a config carrying all four retired keys used to surface them one re-run at a
+ * time. `path` stays the first match so existing single-key consumers are unchanged;
+ * `paths` carries the full set.
+ */
 export function assertNoRetiredMonoAgentConfigJson(json: object): void {
-  const retired = RETIRED_CONFIG_FIELDS.find((field) => hasOwnJsonPath(json, field.path));
-  if (retired === undefined) return;
-  throw new MonoAgentConfigError("invalid_json", retired.message, { path: retired.path });
+  const retired = RETIRED_CONFIG_FIELDS.filter((field) => hasOwnJsonPath(json, field.path));
+  if (retired.length === 0) return;
+  throw new MonoAgentConfigError("invalid_json", retired.map((field) => field.message).join(" "), {
+    path: retired[0]!.path,
+    paths: retired.map((field) => field.path),
+  });
 }
 
 function hasOwnJsonPath(json: object, path: string): boolean {
