@@ -40,6 +40,7 @@ import {
   hostForUrl,
   isLoopbackHost,
   listen,
+  MAX_INFO_BODY_BYTES,
   normalizeOptionalString,
   parseCronOperatorOverview,
   parseCronOperatorRunDetail,
@@ -346,7 +347,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         });
     void Promise.all([resolveInfo(options.info), cronInfo])
       .then(([info, cronState]) => {
-        res.status(200).json({
+        sendBoundedInfo(res, {
           schema: TUI_WIRE_SCHEMA,
           pid: process.pid,
           capabilities: {
@@ -396,7 +397,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
             : { modelOptions: info.modelOptions }),
           ...(info?.skills === undefined ? {} : { skills: info.skills }),
           ...(info?.providers === undefined || info.providers.length === 0 ? {} : { providers: info.providers }),
-        });
+        }, options.logger);
       })
       .catch((error: unknown) => {
         options.logger?.error?.("TUI info provider failed.", { error: errorToMessage(error) });
@@ -1878,6 +1879,133 @@ function normalizeModelCatalogRequest(req: Request): TuiModelCatalogRequest {
     ...(cursor === undefined ? {} : { cursor }),
     limit: rawLimit,
   };
+}
+
+
+
+/**
+ * `/v1/info` fields the fence may shed, least load-bearing first. Every one of
+ * them is already optional on the wire — the response literal omits each when
+ * its source is absent — so shedding produces a body that is still valid at
+ * schema 1, which matters because `TUI_WIRE_SCHEMA` is compared with `!==` and
+ * cannot be bumped. `schema`, `pid` and `capabilities` are never sheddable:
+ * they are the liveness and negotiation half of the response.
+ */
+const INFO_SHED_ORDER = [
+  "modelOptions",
+  "models",
+  "providers",
+  "skills",
+  "label",
+  "effort",
+  "model",
+] as const;
+
+type SheddableInfoField = (typeof INFO_SHED_ORDER)[number];
+
+/**
+ * Send `/v1/info` under the byte contract its consumer enforces.
+ *
+ * Every contributor to this body carries its own producer-side budget (see the
+ * budget table in `agent-app`'s `channel-drivers/tui.ts`, and
+ * `MAX_SKILL_REGISTRY_BYTES` for skills) and those budgets sum to 960 KiB. This
+ * is the last-resort fence behind them: without it the ONLY enforcement of the
+ * 1 MiB cap lived in the consumer, so any producer-side miss took the agent
+ * offline instead of degrading it.
+ *
+ * It measures the exact string it sends rather than estimating, and sends that
+ * string rather than re-serializing, so what was measured is what goes on the
+ * wire. Shedding is logged at error level: a body that reaches this fence is a
+ * producer bug, and it must not disappear silently.
+ */
+function sendBoundedInfo(
+  res: Response,
+  body: Record<string, unknown>,
+  logger: TuiAdapterLogger | undefined,
+): void {
+  const candidate: Record<string, unknown> = { ...body };
+  const dropped: string[] = [];
+  let serialized = serializeInfoBody(candidate);
+  while (serialized === undefined) {
+    const field = largestSheddableInfoField(candidate);
+    // Each pass removes one field from a finite set, so this terminates.
+    if (field === undefined) break;
+    delete candidate[field];
+    dropped.push(field);
+    serialized = serializeInfoBody(candidate);
+  }
+  if (serialized !== undefined) {
+    if (dropped.length > 0) {
+      logger?.error?.("TUI info body exceeded its wire budget; fields were dropped.", {
+        droppedFields: dropped.join(","),
+      });
+    }
+    res.status(200).type("application/json").send(serialized);
+    return;
+  }
+  // Nothing sheddable is left and the remainder still will not fit (or will not
+  // serialize at all). Fall back to the fixed liveness floor: a schema-1 body
+  // small by construction, which keeps the agent reachable and its capability
+  // negotiation honest rather than answering 500 and reading as offline.
+  logger?.error?.("TUI info body could not be bounded; served the minimal liveness body.", {
+    droppedFields: dropped.join(","),
+  });
+  res.status(200).type("application/json").send(JSON.stringify({
+    schema: TUI_WIRE_SCHEMA,
+    pid: process.pid,
+    capabilities: { attachments: true },
+  }));
+}
+
+/**
+ * The optional field costing the most bytes right now.
+ *
+ * Shedding the biggest field first means the fence removes what is ACTUALLY
+ * oversized instead of four innocent projections queued ahead of it: a 1.5 MiB
+ * `skills` registry costs the console its skills, not its model picker as well.
+ * Ties break towards the front of `INFO_SHED_ORDER` (least load-bearing first),
+ * so the choice is deterministic. A field whose own value will not serialize
+ * sorts first of all — it is the reason the body cannot be measured at all.
+ */
+function largestSheddableInfoField(
+  body: Record<string, unknown>,
+): SheddableInfoField | undefined {
+  let largest: SheddableInfoField | undefined;
+  let largestBytes = -1;
+  for (const field of INFO_SHED_ORDER) {
+    if (!(field in body)) continue;
+    const bytes = infoFieldBytes(body[field]);
+    if (bytes > largestBytes) {
+      largest = field;
+      largestBytes = bytes;
+    }
+  }
+  return largest;
+}
+
+/** Serialized size of one field value; `Infinity` when it cannot be serialized at all. */
+function infoFieldBytes(value: unknown): number {
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === "string"
+      ? Buffer.byteLength(serialized, "utf8")
+      : Number.POSITIVE_INFINITY;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+/** Serialize the candidate body, or `undefined` when it does not fit or does not serialize. */
+function serializeInfoBody(body: Record<string, unknown>): string | undefined {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(body);
+  } catch {
+    return undefined;
+  }
+  // `JSON.stringify` yields undefined for a non-serializable top-level value.
+  if (typeof serialized !== "string") return undefined;
+  return Buffer.byteLength(serialized, "utf8") > MAX_INFO_BODY_BYTES ? undefined : serialized;
 }
 
 function sendBoundedModelCatalog(res: Response, page: TuiModelCatalogPage): void {

@@ -10,6 +10,8 @@ import type {
   TuiAdapterOptions,
   TuiAdapterStartResult,
   TuiModelCatalogProvider,
+  TuiModelOption,
+  TuiProviderInfo,
 } from "@mono-agent/operator-adapter";
 import {
   discoverLocalProviderModels,
@@ -61,27 +63,144 @@ export interface TuiChannelOverrides {
 }
 
 /**
- * Payload budget for the live-discovered half of the legacy `/v1/info`
- * projections (`models` plus their `modelOptions` entries). A local endpoint's
- * `/v1/models` response is bounded by neither count nor id length, and
+ * Producer-side payload budgets for `/v1/info`.
+ *
  * `/v1/info` shares ONE 1 MiB body cap (`MAX_INFO_BODY_BYTES`, enforced in
- * `@mono-agent/web`'s operator client) across every field it carries — skills,
- * providers, capabilities and the configured routes included. A body over that
- * cap does not degrade: it fails `info()` wholesale and the console shows the
- * agent OFFLINE, on a 5 s poll. A quarter of the budget is far beyond any real
- * local install (~190 typical refs) while leaving the rest of the body room.
+ * `@mono-agent/web`'s operator client) across every field it carries. A body
+ * over that cap does not degrade: `info()` rejects it wholesale and the console
+ * shows the agent OFFLINE, on a 5 s poll, behind a debug-level log. Every
+ * contributor therefore gets an explicit slice, and they sum under the cap:
+ *
+ *     configured routes   128 KiB      providers    128 KiB
+ *     skills              256 KiB      caps/misc     64 KiB
+ *     discovered models   384 KiB   -> 960 KiB total, 64 KiB headroom
+ *
+ * `skills` is enforced by `MAX_SKILL_REGISTRY_BYTES` in `skill-registry.ts`;
+ * `models`/`modelOptions`/`providers` are enforced here, at the only place the
+ * projections are built. The caps/misc slice is not separately enforced: the
+ * `schema`/`pid`/`capabilities` half of the body is a fixed shape carrying no
+ * operator-authored data beyond a short cron status, so 64 KiB is headroom, not
+ * a budget anything can spend. `sendBoundedInfo` in the operator adapter is the
+ * last-resort fence behind all of them, so that the PRODUCER, not the consumer,
+ * is what keeps an agent online.
  */
-const MAX_DISCOVERED_INFO_MODEL_BYTES = 256 * 1024;
-/** Effort levels, reasoning mode, context window and JSON punctuation per `modelOptions` entry. */
-const INFO_MODEL_METADATA_BYTES = 512;
+const MAX_CONFIGURED_INFO_MODEL_BYTES = 128 * 1024;
+const MAX_DISCOVERED_INFO_MODEL_BYTES = 384 * 1024;
+const MAX_INFO_PROVIDER_BYTES = 128 * 1024;
 
 /**
- * Upper bound on what publishing one discovered ref costs the `/v1/info` body:
- * its own bytes in `models`, again as the `modelOptions` key, and up to twice
- * more as that entry's `provider` + `providerLabel`, plus the fixed metadata.
+ * JSON framing each projection costs before a single entry is admitted, charged
+ * once per budget exactly as `boundSkillItems` (`skill-registry.ts`) charges
+ * its prefix and suffix.
  */
-const infoModelCostBytes = (ref: string): number =>
-  Buffer.byteLength(ref, "utf8") * 4 + INFO_MODEL_METADATA_BYTES;
+const INFO_MODEL_FRAME_BYTES = Buffer.byteLength('"models":[],"modelOptions":{},', "utf8");
+const INFO_PROVIDER_FRAME_BYTES = Buffer.byteLength('"providers":[],', "utf8");
+
+interface InfoModelProjection {
+  readonly keys: string[];
+  readonly seen: Set<string>;
+  readonly options: Record<string, TuiModelOption>;
+}
+
+/**
+ * The REAL serialized cost of publishing one ref in BOTH `/v1/info` model
+ * projections: its JSON string as a `models` element, and its `modelOptions`
+ * entry (that same string again as a key, a colon, the materialized option),
+ * plus one separating comma in each collection.
+ *
+ * Measured from the payload that will actually be sent, never estimated ahead
+ * of it. An arithmetic estimate over the raw ref is not an upper bound here for
+ * two independent, separately proven reasons:
+ *  - JSON escaping is invisible to it. One C0 byte serializes to six (`\u0000`)
+ *    in both projections, so a ref of control bytes costs 12x its length while
+ *    a `4 x length + 512` estimate charges roughly 4x.
+ *  - The option is not materialized yet. `effortLevels` comes from a local
+ *    provider's `capabilities.reasoning_levels`; the catalog now bounds it, but
+ *    only measurement can charge what the bound actually left behind.
+ */
+function infoModelEntryBytes(key: string, option: TuiModelOption | undefined): number {
+  const keyBytes = Buffer.byteLength(JSON.stringify(key), "utf8");
+  // `models` element + comma.
+  const arrayBytes = keyBytes + 1;
+  // `modelOptions` key + colon + value + comma.
+  const optionBytes = option === undefined
+    ? 0
+    : keyBytes + 1 + Buffer.byteLength(JSON.stringify(option), "utf8") + 1;
+  return arrayBytes + optionBytes;
+}
+
+/**
+ * Admit refs into the `/v1/info` model projections until `budgetBytes` is
+ * exhausted, measuring each candidate's materialized payload.
+ *
+ * `continue`, not `break`: one pathological entry must cost only itself. The
+ * TUI never calls `/v1/models` — there is no call site under `packages/tui/`,
+ * and `applyAgentInfo` builds the model picker from `/v1/info.models` alone —
+ * so a ref withheld here is UNSELECTABLE, not merely un-paginated. Breaking
+ * would delete every runnable ref sitting behind one oversized row.
+ */
+function admitInfoModels(
+  refs: readonly RuntimeModelReference[],
+  describe: (ref: RuntimeModelReference) => TuiModelOption | undefined,
+  budgetBytes: number,
+  into: InfoModelProjection,
+): void {
+  let bytes = INFO_MODEL_FRAME_BYTES;
+  for (const ref of refs) {
+    const key = modelReferenceKey(ref);
+    if (into.seen.has(key)) continue;
+    const option = describe(ref);
+    const cost = infoModelEntryBytes(key, option);
+    if (bytes + cost > budgetBytes) continue;
+    bytes += cost;
+    into.seen.add(key);
+    into.keys.push(key);
+    if (option !== undefined) into.options[key] = option;
+  }
+}
+
+/**
+ * Bound the `/v1/info` provider summary on its own measured slice. Entry ids
+ * and labels are already length-bounded by the catalog
+ * (`MAX_CATALOG_ID_BYTES`/`MAX_CATALOG_LABEL_BYTES`), so every entry costs
+ * about the same and the only unbounded dimension left is COUNT — a config may
+ * declare thousands, and the producer previously capped none of them (the
+ * consumer stops parsing at 64, but only after the whole body has already blown
+ * the 1 MiB cap and taken the agent offline).
+ *
+ * When the budget binds, the providers the agent's OWN routes use are admitted
+ * first. They sit LAST in the catalog's order (declared providers, then route
+ * providers, then discovered ones), so a plain prefix cut would drop exactly
+ * the provider the console needs most and keep a thousand the operator merely
+ * listed. Emission still follows the catalog's order, so nothing is reordered
+ * relative to what an unbounded body would have sent.
+ */
+function boundInfoProviders(
+  providers: readonly TuiProviderInfo[],
+  routeProviderIds: ReadonlySet<string>,
+): readonly TuiProviderInfo[] {
+  const costs = providers.map(
+    (provider) => Buffer.byteLength(JSON.stringify(provider), "utf8") + 1,
+  );
+  const total = costs.reduce((sum, cost) => sum + cost, INFO_PROVIDER_FRAME_BYTES);
+  // Preserve the catalog's frozen array identity when nothing has to be cut:
+  // /v1/info is polled every 5 s and hands back the very same object each time.
+  if (total <= MAX_INFO_PROVIDER_BYTES) return providers;
+
+  const admitted = new Set<number>();
+  let bytes = INFO_PROVIDER_FRAME_BYTES;
+  for (const routesFirst of [true, false]) {
+    for (const [index, provider] of providers.entries()) {
+      if (routeProviderIds.has(provider.id) !== routesFirst) continue;
+      const cost = costs[index]!;
+      // `continue`, not `break`: an entry that does not fit costs only itself.
+      if (bytes + cost > MAX_INFO_PROVIDER_BYTES) continue;
+      bytes += cost;
+      admitted.add(index);
+    }
+  }
+  return Object.freeze(providers.filter((_provider, index) => admitted.has(index)));
+}
 
 const APP_OWNED_TUI_START = Symbol("app-owned-tui-start");
 
@@ -164,13 +283,6 @@ export function createTuiChannelDriver(
       await skillRegistry.prime();
 
       const configuredRefs = [...configuredRuntimeModels(input.coreConfig.runtime)];
-      const configModelKeys: string[] = [];
-      for (const ref of configuredRefs) {
-        const key = modelReferenceKey(ref);
-        if (!configModelKeys.includes(key)) {
-          configModelKeys.push(key);
-        }
-      }
       let discoveredModels: readonly DiscoveredLocalModel[] = [];
       let discoveredLocalProviders: readonly LocalProviderDefinition[] = [];
       try {
@@ -236,33 +348,35 @@ export function createTuiChannelDriver(
       // withheld here are that it names nothing a turn could route to (it does
       // not parse), or that it no longer fits the budget.
       const discoveredRefs: RuntimeModelReference[] = [];
-      let discoveredInfoBytes = 0;
       for (const model of discoveredModels) {
-        if (configModelKeys.includes(model.ref)) continue;
-        let parsed: RuntimeModelReference;
         try {
-          parsed = parseMonoRuntimeModelReference(model.ref);
+          discoveredRefs.push(parseMonoRuntimeModelReference(model.ref));
         } catch {
           // A provider that reports an unparseable ref is skipped, not fatal.
-          continue;
         }
-        const cost = infoModelCostBytes(model.ref);
-        // `continue`, not `break`: one pathological id must cost only itself.
-        if (discoveredInfoBytes + cost > MAX_DISCOVERED_INFO_MODEL_BYTES) continue;
-        discoveredInfoBytes += cost;
-        discoveredRefs.push(parsed);
       }
-      const infoModelKeys = [
-        ...configModelKeys,
-        ...discoveredRefs.map((ref) => modelReferenceKey(ref)),
-      ];
 
       // Resolve both /v1/info projections once, here. `/v1/info` is polled every
       // 5s per connected console, and a throwing or slow info provider returns
       // 500 for the WHOLE response — showing the agent offline rather than
       // degraded. Neither projection may run per request.
-      const infoModelOptions = catalog.describe([...configuredRefs, ...discoveredRefs]);
-      const infoProviders = catalog.listProviders();
+      //
+      // Configured routes and discovered refs draw on SEPARATE budgets: a
+      // configured route is authored, a discovered one is whatever a local
+      // endpoint happened to report, and neither may starve the other. Both are
+      // charged their measured serialized size, and the configured half goes
+      // first so an authored route keeps its place in the picker.
+      const describeModelOption = (ref: RuntimeModelReference): TuiModelOption | undefined =>
+        catalog.describe([ref])[modelReferenceKey(ref)];
+      const projection: InfoModelProjection = { keys: [], seen: new Set(), options: {} };
+      admitInfoModels(configuredRefs, describeModelOption, MAX_CONFIGURED_INFO_MODEL_BYTES, projection);
+      admitInfoModels(discoveredRefs, describeModelOption, MAX_DISCOVERED_INFO_MODEL_BYTES, projection);
+      const infoModelKeys: readonly string[] = Object.freeze(projection.keys);
+      const infoModelOptions = Object.freeze(projection.options);
+      const infoProviders = boundInfoProviders(
+        catalog.listProviders(),
+        new Set(configuredRefs.map((ref) => ref.provider)),
+      );
 
       const modelCatalog: TuiModelCatalogProvider = (request) => {
         if (request.provider !== undefined) {

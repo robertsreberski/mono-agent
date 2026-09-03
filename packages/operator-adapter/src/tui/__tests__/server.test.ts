@@ -23,6 +23,7 @@ import {
   type AgentStreamWireFrame,
   type ChannelAskSubmission,
   type ChannelInteractionHub,
+  MAX_INFO_BODY_BYTES,
 } from "@mono-agent/agent-contracts";
 
 import {
@@ -1992,6 +1993,156 @@ describe("startTuiAdapter", () => {
       },
     });
     expect(contentSerializations).toBe(1);
+  });
+});
+
+/**
+ * The producer-side `/v1/info` fence.
+ *
+ * The console reads at most 1 MiB of this body and rejects a larger one
+ * WHOLESALE: `info()` throws `operator_info_too_large` and the agent renders
+ * OFFLINE, not degraded, on a 5 s poll behind a debug-level log. Before this
+ * fence the only enforcement of that cap lived in the consumer, so any
+ * producer-side miss took the agent down. The invariant pinned here is
+ * therefore not "this fixture is handled" but: **every `/v1/info` response is a
+ * 200 carrying a schema-1 JSON body of at most 1 MiB, whatever the info
+ * provider returns.**
+ */
+describe("startTuiAdapter /v1/info payload fence", () => {
+
+  async function readInfo(url: string): Promise<{
+    readonly status: number;
+    readonly contentType: string | null;
+    readonly bytes: number;
+    readonly body: Record<string, unknown>;
+  }> {
+    const response = await fetch(url);
+    const text = await response.text();
+    return {
+      status: response.status,
+      contentType: response.headers.get("content-type"),
+      bytes: Buffer.byteLength(text, "utf8"),
+      body: JSON.parse(text) as Record<string, unknown>,
+    };
+  }
+
+  it("sheds only the oversized field and keeps the body under the console read cap", async () => {
+    // ~1.6 MiB of skills: over the cap on its own, with every other field tiny.
+    const items = Array.from({ length: 3_000 }, (_unused, index) => ({
+      name: `skill-${String(index)}`,
+      description: "d".repeat(512),
+      availability: "inlined" as const,
+    }));
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: {
+        label: "fenced",
+        model: "anthropic:claude-fable-5",
+        effort: "high",
+        models: ["anthropic:claude-fable-5", "ollama:qwen3.6"],
+        modelOptions: { "anthropic:claude-fable-5": { reasoning: true } },
+        providers: [{ id: "anthropic", label: "Anthropic", modelCount: 1, source: "builtin" }],
+        skills: { status: "ready", items, total: items.length },
+      },
+    });
+
+    const info = await readInfo(running.infoUrl);
+
+    expect(info.status).toBe(200);
+    expect(info.contentType).toContain("application/json");
+    expect(info.bytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
+    // Schema 1 survives shedding: the console compares it with `!==`.
+    expect(info.body.schema).toBe(1);
+    expect(info.body.capabilities).toEqual({ attachments: true });
+    // Only the offending field is gone. Shedding in a fixed least-important
+    // order would have taken modelOptions, models and providers with it, so a
+    // 1.6 MiB skill registry would have cost the console its model picker too.
+    expect("skills" in info.body).toBe(false);
+    expect(info.body.label).toBe("fenced");
+    expect(info.body.model).toBe("anthropic:claude-fable-5");
+    expect(info.body.effort).toBe("high");
+    expect(info.body.models).toEqual(["anthropic:claude-fable-5", "ollama:qwen3.6"]);
+    expect(info.body.modelOptions).toEqual({ "anthropic:claude-fable-5": { reasoning: true } });
+    expect(info.body.providers).toEqual([
+      { id: "anthropic", label: "Anthropic", modelCount: 1, source: "builtin" },
+    ]);
+  });
+
+  it("sheds an oversized model reference rather than the whole body", async () => {
+    // The pathological field is the one field a fixed order would shed LAST.
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: {
+        model: `anthropic:${"m".repeat(2 * 1024 * 1024)}`,
+        effort: "high",
+        models: ["ollama:qwen3.6"],
+        skills: { status: "ready", items: [], total: 0 },
+      },
+    });
+
+    const info = await readInfo(running.infoUrl);
+
+    expect(info.status).toBe(200);
+    expect(info.bytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
+    expect(info.body.schema).toBe(1);
+    expect("model" in info.body).toBe(false);
+    expect(info.body.effort).toBe("high");
+    expect(info.body.models).toEqual(["ollama:qwen3.6"]);
+    expect(info.body.skills).toEqual({ status: "ready", items: [], total: 0 });
+  });
+
+  it("stays online when a field cannot be serialized at all", async () => {
+    // A non-serializable value used to throw inside the response literal, land
+    // in the route's `.catch`, and answer 500 — which the console reads as the
+    // agent being unreachable rather than as one missing projection.
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: {
+        model: "anthropic:claude-fable-5",
+        models: ["anthropic:claude-fable-5"],
+        skills: { status: "ready", items: [], total: 1n } as never,
+      },
+    });
+
+    const info = await readInfo(running.infoUrl);
+
+    expect(info.status).toBe(200);
+    expect(info.body.schema).toBe(1);
+    expect("skills" in info.body).toBe(false);
+    expect(info.body.model).toBe("anthropic:claude-fable-5");
+    expect(info.body.models).toEqual(["anthropic:claude-fable-5"]);
+  });
+
+  it("sends a body that fits byte-for-byte, shedding nothing", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: {
+        label: "small",
+        model: "anthropic:claude-fable-5",
+        effort: "high",
+        models: ["anthropic:claude-fable-5"],
+        modelOptions: { "anthropic:claude-fable-5": { reasoning: true } },
+        providers: [{ id: "anthropic", label: "Anthropic", modelCount: 1, source: "builtin" }],
+        skills: { status: "ready", items: [], total: 0 },
+      },
+    });
+
+    const info = await readInfo(running.infoUrl);
+
+    // A fence that sheds when it does not have to is as wrong as no fence.
+    expect(info.bytes).toBe(Buffer.byteLength(JSON.stringify(info.body), "utf8"));
+    expect(Object.keys(info.body).sort()).toEqual([
+      "capabilities",
+      "effort",
+      "label",
+      "model",
+      "modelOptions",
+      "models",
+      "pid",
+      "providers",
+      "schema",
+      "skills",
+    ]);
   });
 });
 
