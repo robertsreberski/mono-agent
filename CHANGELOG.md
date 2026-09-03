@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Remove the repository-owned final-agent and SearXNG demos together with their
+  root commands, build provenance, verification, CI, and documentation wiring.
 - Upgrade the exact-pinned Pi AI catalog and TUI to 0.84.3, including GitHub
   Copilot support for Gemini 3.7 Flash and Grok 4.6, provider-required OAuth
   cancellation signals, and the current GPT-5.6 Terra pricing metadata. Keep

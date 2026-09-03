@@ -188,7 +188,7 @@ pnpm install --frozen-lockfile
 pnpm run build
 ```
 
-`pnpm run build` builds every package (and the demos) in dependency order. On supported POSIX/macOS
+`pnpm run build` builds every package in dependency order. On supported POSIX/macOS
 hosts it first acquires the ignored exclusive `.mono-agent-build.lock`, removes the prior
 `.mono-agent-build.json`, finalizes the required CLI/TUI executable modes, syncs the completed deploy
 outputs, and atomically publishes a canonical

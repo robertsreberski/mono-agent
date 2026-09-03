@@ -11,25 +11,174 @@ extraction, and optional isolated browser rendering for sparse JavaScript pages.
 SearXNG and the browser run locally, but fetched/search-engine traffic still
 leaves the machine.
 
-## 1. Start the optional SearXNG companion
+## 1. Provision an optional SearXNG instance
 
-The repository includes a pinned, loopback-only Compose definition:
-
-```bash
-cd demos/searxng
-cp .env.example .env
-openssl rand -hex 32
-```
-
-Put the generated secret in `.env`, then:
+Mono-agent does not ship or manage SearXNG. The current upstream Compose
+template publishes on every host interface unless `SEARXNG_HOST` is set, and
+the current default `search.formats` contains only `html`. Use the upstream
+[container template](https://github.com/searxng/searxng/blob/master/container/docker-compose.yml)
+with both defaults overridden explicitly:
 
 ```bash
-docker compose up -d
-docker compose ps
+searxng_dir="${XDG_CONFIG_HOME:-$HOME/.config}/mono-agent/searxng"
+umask 077
+mkdir -p "$searxng_dir/core-config"
+cd "$searxng_dir"
+curl --fail --silent --show-error --location --remote-name \
+  https://raw.githubusercontent.com/searxng/searxng/master/container/docker-compose.yml
+curl --fail --silent --show-error --location --output .env.example \
+  https://raw.githubusercontent.com/searxng/searxng/master/container/.env.example
+cp -i .env.example .env
+searxng_secret="$(openssl rand -hex 32)"
+{
+  printf '\nSEARXNG_HOST=127.0.0.1\n'
+  printf 'SEARXNG_PORT=8088\n'
+  printf 'SEARXNG_BASE_URL=http://127.0.0.1:8088/\n'
+  printf 'SEARXNG_SECRET=%s\n' "$searxng_secret"
+} >> .env
+unset searxng_secret
+cat > core-config/settings.yml <<'YAML'
+use_default_settings: true
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "overridden-by-SEARXNG_SECRET"
+  limiter: false
+  public_instance: false
+  image_proxy: false
+YAML
 ```
 
-The service listens at `http://127.0.0.1:8088`. Mono-agent does not own its
-lifecycle.
+Review the downloaded template as upstream recommends, configure at least one
+engine that works from the operator network, then validate and start it:
+
+```bash
+docker compose --project-name mono-agent-searxng config --quiet
+docker compose --project-name mono-agent-searxng up -d
+test "$(docker compose --project-name mono-agent-searxng port core 8088)" = \
+  "127.0.0.1:8088"
+```
+
+The exact port assertion proves Docker published only IPv4 loopback. Verify the
+JSON contract that `WebSearch` uses, including the required result-array shape:
+
+```bash
+curl --fail --silent --show-error \
+  --request POST \
+  --header 'Accept: application/json' \
+  --data 'q=mono-agent&format=json&categories=general' \
+  http://127.0.0.1:8088/search \
+  | node --input-type=module -e '
+let body = "";
+for await (const chunk of process.stdin) body += chunk;
+const value = JSON.parse(body);
+if (!Array.isArray(value.results)) throw new Error("missing results array");
+const blocked = Array.isArray(value.unresponsive_engines) ? value.unresponsive_engines : [];
+if (value.results.length === 0 && blocked.length > 0) {
+  throw new Error(`empty results with unresponsive engines: ${JSON.stringify(blocked)}`);
+}
+console.log(`JSON API OK: ${value.results.length} result(s)`);
+'
+```
+
+The examples below assume the independently managed service listens at
+`http://127.0.0.1:8088`. Keep credentials out of the endpoint URL; mono-agent's
+SearXNG transport is deliberately unauthenticated and loopback-only.
+
+### Migrate an existing repository-managed Compose project
+
+In a reused checkout, the ignored legacy `.env` may remain after the tracked
+Compose files are removed. From the repository root, copy that secret and the
+last compatible Compose contract into a new operator-owned directory:
+
+```bash
+legacy_searxng_dir="${XDG_CONFIG_HOME:-$HOME/.config}/mono-agent/searxng-retired"
+node scripts/migrate-retired-searxng.mjs --destination "$legacy_searxng_dir"
+docker compose --project-name mono-agent-searxng \
+  --file "$legacy_searxng_dir/compose.yaml" \
+  --project-directory "$legacy_searxng_dir" config --quiet
+docker compose --project-name mono-agent-searxng \
+  --file "$legacy_searxng_dir/compose.yaml" \
+  --project-directory "$legacy_searxng_dir" ps
+```
+
+Pass `--env-file <path>` if the old `.env` is elsewhere. The migration accepts
+exactly one 64-hex `SEARXNG_SECRET` and writes a fresh `.env` containing only
+that assignment, so legacy Compose control variables cannot change the project.
+It fails closed when the secret is invalid or missing, the canonical destination
+is inside this repository, another path owns the destination, or the canonical
+parent is not owned by the current user or is group/world writable. It builds
+and verifies one complete random sibling directory, then exposes that directory
+with one rename. A crash before the rename leaves the destination absent; a
+retry uses a new staging directory. A crash after the rename leaves the exact
+complete bundle, which a retry accepts idempotently. The bundle preserves the
+project name `mono-agent-searxng` and cache volume
+`mono-agent-searxng_cache`, and the command makes **no Docker calls**: it does
+not start, stop, restart, or recreate a container and does not remove a volume.
+The source `.env` remains in place until the operator removes it after a
+verified cutover.
+
+This migration is supported only on POSIX local filesystems where Node exposes
+`process.getuid()` and Unix ownership and mode metadata are authoritative. It
+fails closed before creating staging on unsupported platforms, including
+Windows; native Windows ACL ownership validation is not implemented. The
+implementation does not claim protection from an actively hostile same-UID
+process in the final check-to-rename syscall window, power loss without
+filesystem durability, or non-local/NFS rename semantics. Do not use a shared
+or adversarially writable parent for this migration.
+
+The existing container still has its old bind-mount source. During an operator-
+chosen maintenance window, cut it over to the new path, then verify the
+migrated service's distinct Compose service and container port:
+
+```bash
+docker compose --project-name mono-agent-searxng \
+  --file "$legacy_searxng_dir/compose.yaml" \
+  --project-directory "$legacy_searxng_dir" up -d --no-deps searxng
+test "$(docker compose --project-name mono-agent-searxng \
+  --file "$legacy_searxng_dir/compose.yaml" \
+  --project-directory "$legacy_searxng_dir" port searxng 8080)" = \
+  "127.0.0.1:8088"
+curl --fail --silent --show-error \
+  --request POST \
+  --header 'Accept: application/json' \
+  --data 'q=mono-agent&format=json&categories=general' \
+  http://127.0.0.1:8088/search \
+  | node --input-type=module -e '
+let body = "";
+for await (const chunk of process.stdin) body += chunk;
+const value = JSON.parse(body);
+if (!Array.isArray(value.results)) throw new Error("missing results array");
+const blocked = Array.isArray(value.unresponsive_engines) ? value.unresponsive_engines : [];
+if (value.results.length === 0 && blocked.length > 0) {
+  throw new Error(`empty results with unresponsive engines: ${JSON.stringify(blocked)}`);
+}
+console.log(`JSON API OK: ${value.results.length} result(s)`);
+'
+```
+
+That explicit command may recreate the container; the migration command never
+runs it. If the service is later retired permanently, choose one cleanup:
+
+```bash
+# Stop/remove the container and network, but retain the named cache volume.
+docker compose --project-name mono-agent-searxng \
+  --file "$legacy_searxng_dir/compose.yaml" \
+  --project-directory "$legacy_searxng_dir" down
+
+# Destructive opt-in: also delete the named cache volume.
+docker compose --project-name mono-agent-searxng \
+  --file "$legacy_searxng_dir/compose.yaml" \
+  --project-directory "$legacy_searxng_dir" down --volumes
+```
+
+Do not run the second form unless deleting the cache is intentional. See the
+upstream [container operations and volume documentation](https://docs.searxng.org/admin/installation-docker.html#volumes)
+before changing the migrated deployment.
 
 ## 2. Configure the agent
 
@@ -131,8 +280,7 @@ Require these lines in the validation report:
 The probe fails when the endpoint answers with an empty result set *and* one or
 more unresponsive engines — a fully blocked instance still returns `HTTP 200`,
 so treat that `[WARN]` as "search is down", not as a slow start. Fix the engine
-selection before continuing; see
-[`demos/searxng`](https://github.com/robertsreberski/mono-agent/tree/main/demos/searxng).
+selection in the operator-owned SearXNG instance before continuing.
 
 ## 5. Smoke the real tools
 
@@ -151,13 +299,6 @@ The run artifact should contain:
 - bounded `tool_timing` metadata (`backend`, attempts, bytes, HTTP status,
   cache/render flags) without the query or URL;
 - no duplicate network work when an identical call repeats within that run.
-
-Stop or inspect the independently managed companion from its directory:
-
-```bash
-docker compose logs --tail 100 searxng
-docker compose down
-```
 
 See [Local-first web research](/tools/web-research/) for all parameters,
 failure behavior, extraction formats, retries, browser isolation, and sandbox

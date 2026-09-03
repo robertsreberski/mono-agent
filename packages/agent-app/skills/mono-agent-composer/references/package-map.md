@@ -129,7 +129,7 @@ Communication adapters are edge packages. They accept an `AgentResponder` and ow
 | Webhook | `@mono-agent/webhook-adapter` | `curl` the configured invocation path (with `Authorization: Bearer ...` when `apiKey` is set) |
 | Cron | `@mono-agent/cron-adapter` | One scheduled or manually triggered invocation |
 
-Adapters must not import the harness, runtime adapter, memory package (`@mono-agent/memory` subpaths), or other adapters. `@mono-agent/agent-app` composes them from config; custom hosts and demos may compose them directly.
+Adapters must not import the harness, runtime adapter, memory package (`@mono-agent/memory` subpaths), or other adapters. `@mono-agent/agent-app` composes them from config; custom app hosts may compose them directly.
 
 ## Observability Join
 

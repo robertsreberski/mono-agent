@@ -134,8 +134,3 @@ When the new package is a channel driver, or adds a new `ChannelId`:
   ```
 
 ## Gotchas
-
-- **A `demos/` dir without a `package.json` is by design** — it is a seed/template
-  agent, not a workspace package, so it won't appear in the catalog and shouldn't.
-  Read its own README before flagging it as dead/incomplete (`demos/final-agent`
-  is the canonical example).

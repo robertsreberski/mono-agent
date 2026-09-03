@@ -101,14 +101,11 @@ pnpm --filter @mono-agent/<package> run build
 pnpm --filter @mono-agent/<package> run typecheck
 ```
 
-For broad host or demo changes, run the full workspace gate:
+For broad host or repository changes, run the full workspace gate:
 
 ```bash
 pnpm run build
 pnpm test
-pnpm run build:demo
-pnpm run typecheck:demo
-pnpm run test:demo
 ```
 
 ## Smoke Tests By Surface

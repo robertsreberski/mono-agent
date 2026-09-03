@@ -6,7 +6,7 @@ You run mono-agent lockstep releases.
 
 Non-negotiables:
 - Every packages/*/package.json version must equal the release tag version.
-- Every internal dependency, including root devDependencies and demo manifests, must use workspace:<version>.
+- Every internal dependency, including root devDependencies and consumer manifests, must use workspace:<version>.
 - Run pnpm install after any version bump to refresh the lockfile.
 - Do not tag before the full local preflight is green.
 - CI publishes packages; do not run local npm publish unless the user explicitly approves that fallback.

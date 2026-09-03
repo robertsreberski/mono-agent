@@ -79,7 +79,6 @@ function createOutputs(root, order = "forward") {
     ["packages/web/webapp/dist/index.html", "<!doctype html>\n"],
     ["extras/example/package.json", '{"name":"extra"}\n'],
     ["extras/example/dist/index.js", "export const extra = true;\n"],
-    ["demos/final-agent/dist/cli.js", "console.log('demo');\n"],
   ];
   if (order === "reverse") entries.reverse();
   for (const [relativePath, contents] of entries) {
@@ -223,8 +222,6 @@ describe("deterministic output digest", () => {
       join(first, "packages/web"),
       join(first, "packages/web/webapp"),
       join(first, "extras"),
-      join(first, "demos"),
-      join(first, "demos/final-agent"),
     ]) {
       expect(syncedDirectories).toContain(ancestor);
     }
@@ -450,7 +447,7 @@ describe("provenance build lifecycle", () => {
   });
 
   it("accepts an exact user-global Windows pnpm entrypoint under PNPM_HOME", () => {
-    expect(selectBuildInvocation("pnpm", ["run", "build:demo"], {
+    expect(selectBuildInvocation("pnpm", ["-r", "--sort", "run", "build"], {
       platform: "win32",
       nodePath: "C:\\Program Files\\nodejs\\node.exe",
       npmExecPath: "D:\\Users\\example\\AppData\\Local\\pnpm\\pnpm.cjs",
@@ -459,14 +456,16 @@ describe("provenance build lifecycle", () => {
       command: "C:\\Program Files\\nodejs\\node.exe",
       args: [
         "D:\\Users\\example\\AppData\\Local\\pnpm\\pnpm.cjs",
+        "-r",
+        "--sort",
         "run",
-        "build:demo",
+        "build",
       ],
     });
   });
 
   it("rejects Windows shell fallback and untrusted pnpm entrypoints", () => {
-    expect(() => selectBuildInvocation("pnpm", ["run", "build:demo & private-command"], {
+    expect(() => selectBuildInvocation("pnpm", ["-r", "--sort", "run", "build & private-command"], {
       platform: "win32",
     })).toThrow("unsafe Windows pnpm build command");
     for (const npmExecPath of [
@@ -475,7 +474,7 @@ describe("provenance build lifecycle", () => {
       "C:\\Program Files\\nodejs\\node_modules\\pnpm\\bin\\not-pnpm.js",
       undefined,
     ]) {
-      expect(() => selectBuildInvocation("pnpm", ["run", "build:demo"], {
+      expect(() => selectBuildInvocation("pnpm", ["-r", "--sort", "run", "build"], {
         platform: "win32",
         nodePath: "C:\\Program Files\\nodejs\\node.exe",
         npmExecPath,
@@ -540,7 +539,7 @@ describe("provenance build lifecycle", () => {
     npmExecPath,
     pnpmHome,
   }) => {
-    expect(() => selectBuildInvocation("pnpm", ["run", "build:demo"], {
+    expect(() => selectBuildInvocation("pnpm", ["-r", "--sort", "run", "build"], {
       platform: "win32",
       nodePath,
       npmExecPath,
@@ -730,8 +729,26 @@ describe("provenance build lifecycle", () => {
   );
 
   it("leaves non-Windows build invocations shell-free and unchanged", () => {
-    expect(selectBuildInvocation("pnpm", ["run", "build:demo"], { platform: "darwin" }))
-      .toEqual({ command: "pnpm", args: ["run", "build:demo"] });
+    expect(selectBuildInvocation("pnpm", ["-r", "--sort", "run", "build"], { platform: "darwin" }))
+      .toEqual({ command: "pnpm", args: ["-r", "--sort", "run", "build"] });
+  });
+
+  it("runs the package build once with inherited output", () => {
+    const root = tempRoot();
+    const calls = [];
+    const result = runBuildWithProvenance({
+      platform: "freebsd",
+      repo: root,
+      runCommand(command, args, options) {
+        calls.push({ command, args, stdio: options.stdio });
+        return { status: 0, stdout: "" };
+      },
+    });
+
+    expect(result).toEqual({ exitCode: 0 });
+    expect(calls).toEqual([
+      { command: "pnpm", args: ["-r", "--sort", "run", "build"], stdio: "inherit" },
+    ]);
   });
 
   function fakeGit({
@@ -1026,7 +1043,7 @@ describe("closed marker probe", () => {
     const originalDigest = computeBuildOutputDigest(root);
     const dependencyDigest = computeRuntimeDependencyDigest(root);
     publishBuildMarker(root, marker({ outputDigest: originalDigest, dependencyDigest }));
-    writeFileSync(join(root, "demos/final-agent/dist/cli.js"), "console.log('changed');\n");
+    writeFileSync(join(root, "packages/example/dist/index.js"), "export const example = 2;\n");
     const out = sink();
     expect(runBuildProvenanceProbe([root], out)).toBe(0);
     const report = JSON.parse(out.text);
@@ -1044,7 +1061,7 @@ describe("closed marker probe", () => {
     const out = sink();
     expect(runBuildProvenanceProbe([root], out, {
       afterDependencyDigest() {
-        writeFileSync(join(root, "demos/final-agent/dist/cli.js"), "console.log('raced');\n");
+        writeFileSync(join(root, "packages/example/dist/index.js"), "export const example = 3;\n");
       },
     })).toBe(1);
     expect(JSON.parse(out.text)).toEqual({ schemaVersion: 2, status: "unsafe" });

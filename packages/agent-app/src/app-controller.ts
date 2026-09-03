@@ -89,7 +89,7 @@ export type {
 
 /**
  * Outcome of a live config re-apply (`applyConfigChange`). Consumed by callers
- * that trigger a reload and by demos that surface the result.
+ * that trigger a reload and by hosts that surface the result.
  */
 export interface MonoAgentAppOptions {
   readonly env?: Record<string, string | undefined>;

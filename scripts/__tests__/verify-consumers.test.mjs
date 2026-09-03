@@ -28,7 +28,7 @@ describe("verify-consumers", () => {
     const verifyJob = workflow.slice(verifyStart, websiteStart);
     const command = "pnpm run verify:consumers --skip-build";
     const expectedSequence = [
-      "      - name: Build packages and demos",
+      "      - name: Build packages",
       "        run: pnpm run build",
       "",
       "      - name: Typecheck marked documentation snippets",

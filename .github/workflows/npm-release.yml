@@ -64,10 +64,10 @@ jobs:
       - name: Check package architecture
         run: pnpm run check:architecture
 
-      - name: Build packages and demos
+      - name: Build packages
         run: pnpm run build
 
-      - name: Typecheck packages and demos
+      - name: Typecheck packages
         run: pnpm run typecheck
 
       - name: Run tests

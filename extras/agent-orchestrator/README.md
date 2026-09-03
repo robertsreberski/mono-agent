@@ -130,7 +130,7 @@ createCollaboratorToolRuntimeExtension
 
 ## Dependency Boundary
 
-This package may depend on core agent contracts and the MCP TypeScript SDK. It must not depend on communication adapters, the agent harness, operator surfaces, host demos, or concrete runtime packages.
+This package may depend on core agent contracts and the MCP TypeScript SDK. It must not depend on communication adapters, the agent harness, operator surfaces, host composition code, or concrete runtime packages.
 
 ## What This Package Does Not Own
 

@@ -215,7 +215,7 @@ Depends on `@earendil-works/pi-tui` plus `@mono-agent/agent-contracts`,
 readers). It must not depend on the agent harness, runtime adapter, memory,
 communication adapters (`@mono-agent/operator-adapter` is a **dev**-only dependency
 for wire round-trip tests — the runtime client speaks the shared
-`stream-wire` contract from agent-contracts), or host/demo code.
+`stream-wire` contract from agent-contracts), or host composition code.
 
 ## What This Package Does Not Own
 

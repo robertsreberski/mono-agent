@@ -42,8 +42,8 @@ afterEach(async () => {
 
 async function fixture(now: () => Date = () => new Date("2026-08-14T10:00:00.000Z")) {
   // Keep the lexical mkdtemp path: on macOS tmpdir() is normally below /var,
-  // whose canonical spelling is /private/var. This exercises the same
-  // product path used by the final demo instead of hiding it with realpath().
+  // whose canonical spelling is /private/var. Keep that lexical product path
+  // instead of hiding it with realpath().
   const cwd = await mkdtemp(join(tmpdir(), "mono-agent-cron-control-"));
   roots.push(cwd);
   const store = await openCronControlStore(cwd, { now });

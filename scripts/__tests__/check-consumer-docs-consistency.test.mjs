@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -23,6 +23,7 @@ describe("check-consumer-docs-consistency", () => {
       "# Quickstart",
       "",
       "Install @mono-agent/agent-evals for the old evaluation path.",
+      "Install @mono-agent/demos/cli or use packages/demos/README.md for the old demo package.",
       "The memory-bujo package owns durable memory.",
       "WhatsApp and A2A are bundled core channels.",
       "Built-in WhatsApp/A2A channels are available.",
@@ -33,8 +34,9 @@ describe("check-consumer-docs-consistency", () => {
 
     expect(result.checked).toBe(0);
     expect(result.userDocsChecked).toBe(1);
-    expect(result.issues).toHaveLength(4);
+    expect(result.issues).toHaveLength(6);
     expect(result.issues.join("\n")).toContain("@mono-agent/agent-evals");
+    expect(result.issues.filter((issue) => issue.includes('"demos package"'))).toHaveLength(2);
     expect(result.issues.join("\n")).toContain("memory-bujo package");
     expect(result.issues.join("\n")).toContain("WhatsApp/A2A in core");
   });
@@ -52,6 +54,7 @@ describe("check-consumer-docs-consistency", () => {
       "JSONL artifacts are not a source of truth for in-flight runs.",
       "Replay shows only redacted, bounded events that reached terminal persistence.",
       "A separate tool-output artifact may retain a block when best-effort persistence succeeds.",
+      "A generic packages/demo test fixture is allowed.",
       "",
     ].join("\n"));
 
@@ -61,47 +64,157 @@ describe("check-consumer-docs-consistency", () => {
     expect(result.issues).toEqual([]);
   });
 
-  it("flags retired memory tools across shipped demo Markdown while excluding generated and historical copies", async () => {
+  it("flags documentation for the exact retired demo paths and root commands", async () => {
     const repoRoot = await tempRepo();
-    await writeRepoDoc(repoRoot, "demos/a/IDENTITY.example.md", [
-      "# Identity",
-      "",
-      "Use journal_append.",
+    await writeRepoDoc(repoRoot, "docs/operations/legacy.md", [
+      "Run code from demos/final-agent/dist or configure demos/searxng/settings.yml.",
+      "Use build:demo, typecheck:demo, test:demo, demo:final, or deploy:final.",
       "",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "demos/a/SOUL.example.md", "Use entity_get.\n");
-    await writeRepoDoc(repoRoot, "demos/b/README.md", "Use memory_search.\n");
-    await writeRepoDoc(repoRoot, "demos/c/PLAYBOOK.example.md", "Use memory_read_day or memory_list_days.\n");
-    await writeRepoDoc(
-      repoRoot,
-      "website/src/content/docs/demo.md",
-      "Generated copy says to use memory_search and journal_append.\n",
-    );
-    await writeRepoDoc(repoRoot, "audit/history.md", "Historical memory_search and journal_append references.\n");
 
     const result = await checkConsumerDocsConsistency([], { repoRoot });
 
-    expect(result.userDocsChecked).toBe(4);
-    expect(result.issues).toHaveLength(5);
-    expect(result.issues[0]).toContain('demos/a/IDENTITY.example.md:3:5: references retired memory tool "journal_append"');
-    expect(result.issues[1]).toContain('demos/a/SOUL.example.md:1:5: references retired memory tool "entity_get"');
-    expect(result.issues[2]).toContain('demos/b/README.md:1:5: references retired memory tool "memory_search"');
-    expect(result.issues[3]).toContain('demos/c/PLAYBOOK.example.md:1:5: references retired memory tool "memory_read_day"');
-    expect(result.issues[4]).toContain('demos/c/PLAYBOOK.example.md:1:24: references retired memory tool "memory_list_days"');
-    expect(result.issues.join("\n")).not.toContain("website/src/content/docs");
-    expect(result.issues.join("\n")).not.toContain("audit/history.md");
+    expect(result.issues).toHaveLength(7);
+    expect(result.issues.filter((issue) => issue.includes('"demos/final-agent path"'))).toHaveLength(1);
+    expect(result.issues.filter((issue) => issue.includes('"demos/searxng path"'))).toHaveLength(1);
+    expect(result.issues.filter((issue) => issue.includes('"retired root demo command"'))).toHaveLength(5);
   });
 
-  it("orders recursive demo Markdown by locale-independent UTF-16 code units", async () => {
+  it("scans every catalog package README for retired demo references", async () => {
+    const repoRoot = await tempRepo();
+    await writeRepoDoc(
+      repoRoot,
+      "packages/webhook-adapter/README.md",
+      "Run demo:final from demos/final-agent/dist.\n",
+    );
+    await writeRepoDoc(
+      repoRoot,
+      "extras/a2a-adapter/README.md",
+      "Run deploy:final from demos/searxng/settings.yml.\n",
+    );
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+
+    expect(result.userDocsChecked).toBe(2);
+    expect(result.issues).toHaveLength(4);
+    expect(result.issues.join("\n")).toContain("packages/webhook-adapter/README.md");
+    expect(result.issues.join("\n")).toContain("extras/a2a-adapter/README.md");
+  });
+
+  it("allows near-miss package, path, and root-command names", async () => {
+    const repoRoot = await tempRepo();
+    await writeRepoDoc(repoRoot, "docs/operations/current.md", [
+      "Use @mono-agent/demos-tools.",
+      "Use @mono-agent/demos.tools.",
+      "See demos/final-agent-v2 and demos/searxng-snapshot.",
+      "See demos/final-agent.v2 and demos/searxng.snapshot.",
+      "Run test:demo-extra or team-build:demo-tools.",
+      "Run test:demo.extra or team-build:demo.tools.",
+      "Run test:demo/extra as a distinct namespaced task.",
+      "Run scope/test:demo as a distinct scoped task.",
+      "",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "package.json", JSON.stringify({
+      scripts: {
+        "test:demo-extra": "node fixture.js",
+        "team-build:demo-tools": "pnpm run test:demo-extra",
+        "test:demo.extra": "node fixture.js",
+        "team-build:demo.tools": "pnpm run test:demo.extra",
+        "test:demo/extra": "node fixture.js",
+        test: "pnpm run test:demo/extra",
+        "scope/test:demo": "node fixture.js",
+        scoped: "pnpm run scope/test:demo",
+      },
+    }));
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+
+    expect(result.issues).toEqual([]);
+  });
+
+  it("flags reintroduced retired demo roots and root package commands but permits the legacy secret", async () => {
+    const repoRoot = await tempRepo();
+    await writeRepoDoc(repoRoot, "demos/final-agent/dist/cli.js", "runnable\n");
+    await writeRepoDoc(repoRoot, "demos/searxng/.env", "SEARXNG_SECRET=preserved\n");
+    await writeRepoDoc(repoRoot, "demos/searxng/compose.yaml", "services: {}\n");
+    await writeRepoDoc(repoRoot, "package.json", JSON.stringify({
+      scripts: {
+        "demo:final": "node removed.js",
+        test: "pnpm run test:demo",
+      },
+    }));
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+
+    expect(result.issues).toHaveLength(4);
+    expect(result.issues[0]).toContain("demos/final-agent");
+    expect(result.issues[1]).toContain("demos/searxng");
+    expect(result.issues[2]).toContain('root script "demo:final" is a retired demo command');
+    expect(result.issues[3]).toContain('root script "test" invokes retired demo command "test:demo"');
+    expect(result.issues.join("\n")).not.toContain("SEARXNG_SECRET");
+  });
+
+  it("rejects a directory masquerading as the one allowed legacy SearXNG env file", async () => {
+    const repoRoot = await tempRepo();
+    await writeRepoDoc(repoRoot, "demos/searxng/.env/compose.yaml", "services: {}\n");
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toContain("demos/searxng");
+    expect(result.issues[0]).toContain(".env");
+  });
+
+  it("rejects broken and directory symlinks at retired demo roots", async () => {
+    const repoRoot = await tempRepo();
+    const externalDirectory = join(repoRoot, "fixture-searxng");
+    await mkdir(join(repoRoot, "demos"), { recursive: true });
+    await mkdir(externalDirectory);
+    await writeFile(join(externalDirectory, ".env"), "SEARXNG_SECRET=fixture\n");
+    await symlink(
+      join(repoRoot, "missing-final-agent"),
+      join(repoRoot, "demos/final-agent"),
+      "dir",
+    );
+    await symlink(externalDirectory, join(repoRoot, "demos/searxng"), "dir");
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+
+    expect(result.issues).toHaveLength(2);
+    expect(result.issues.every((issue) => issue.includes("must contain only real directories"))).toBe(true);
+    expect(result.issues.some((issue) => issue.includes("demos/final-agent"))).toBe(true);
+    expect(result.issues.some((issue) => issue.includes("demos/searxng"))).toBe(true);
+  });
+
+  it("rejects a symlinked demos ancestor without touching its destination", async () => {
+    const repoRoot = await tempRepo();
+    const externalRoot = await mkdtemp(join(tmpdir(), "mono-agent-external-demos-"));
+    tempDirs.push(externalRoot);
+    await mkdir(join(externalRoot, "final-agent"), { recursive: true });
+    await mkdir(join(externalRoot, "searxng"), { recursive: true });
+    await writeFile(join(externalRoot, "searxng/.env"), "SEARXNG_SECRET=fixture\n");
+    await symlink(externalRoot, join(repoRoot, "demos"), "dir");
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+
+    expect(result.issues).toHaveLength(2);
+    expect(result.issues.every((issue) => issue.includes("demos"))).toBe(true);
+    expect(result.issues.every((issue) => issue.includes("is not a real directory"))).toBe(true);
+    expect(await readFile(join(externalRoot, "searxng/.env"), "utf8")).toBe(
+      "SEARXNG_SECRET=fixture\n",
+    );
+  });
+
+  it("orders recursive documentation by locale-independent UTF-16 code units", async () => {
     const repoRoot = await tempRepo();
     const orderedPaths = [
-      "demos/A/README.md",
-      "demos/Z/README.md",
-      "demos/Ä/README.md",
-      "demos/á/README.md",
+      "docs/A/README.md",
+      "docs/Z/README.md",
+      "docs/Ä/README.md",
+      "docs/á/README.md",
     ];
     for (const relativePath of orderedPaths) {
-      await writeRepoDoc(repoRoot, relativePath, "Use journal_append.\n");
+      await writeRepoDoc(repoRoot, relativePath, "Install @mono-agent/agent-evals.\n");
     }
 
     const result = await checkConsumerDocsConsistency([], { repoRoot });
@@ -158,8 +271,8 @@ describe("check-consumer-docs-consistency", () => {
     );
     await writeRepoDoc(
       repoRoot,
-      "demos/current/SOUL.example.md",
-      historyAnnotationBlock("demos/current/SOUL.example.md", 2) + "\n",
+      "docs/current/SOUL.example.md",
+      historyAnnotationBlock("docs/current/SOUL.example.md", 2) + "\n",
     );
     await writeRepoDoc(
       repoRoot,
@@ -215,7 +328,7 @@ describe("check-consumer-docs-consistency", () => {
       "This is not actually a deprecated alias `memory_recall`; use it as the current tool.",
       "The retired alias `run_history` remains documented; use `memory_recall` for current recall.",
     ];
-    await writeRepoDoc(repoRoot, "demos/current/NEGATED.example.md", `${probes.join("\n")}\n`);
+    await writeRepoDoc(repoRoot, "docs/current/NEGATED.example.md", `${probes.join("\n")}\n`);
 
     const result = await checkConsumerDocsConsistency([], { repoRoot });
 

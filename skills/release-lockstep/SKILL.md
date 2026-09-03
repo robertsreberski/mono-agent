@@ -24,7 +24,7 @@ published alongside core.
 ## 1. Bump in a worktree
 
 Set the version in every catalog-publishable manifest, exact internal workspace
-range, and demo/consumer manifest, then refresh the lockfile:
+range, and consumer manifest, then refresh the lockfile:
 
 ```bash
 pnpm install
