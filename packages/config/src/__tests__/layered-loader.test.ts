@@ -2734,3 +2734,111 @@ describe("JSON-sourced runtime failures name the JSON path, not an env var", () 
     expect(error.message).toContain("runtime.model `codex:gpt-5.6-sol\\n[ok]    Core config`");
   });
 });
+
+/**
+ * Re-attribution used to be `message.replaceAll(source, path)`, which is a search over the
+ * whole rendered message -- including the operator's own value and the repair sentence built
+ * from it. A model reference is an arbitrary operator string, so one that happens to spell the
+ * env var name came back corrupted, and the repair told the operator to write a model that is
+ * not the one they meant.
+ */
+describe("JSON attribution rewrites the diagnostic's subject, never the operator's value", () => {
+  const failureOf = async (json: unknown): Promise<MonoAgentConfigError> => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify(json), "utf8");
+    try {
+      await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    } catch (error) {
+      if (error instanceof MonoAgentConfigError) return error;
+      throw error;
+    }
+    throw new Error("Expected the layered load to fail.");
+  };
+
+  const base = { context: { identityPath: "IDENTITY.md" } };
+
+  it.each([
+    [
+      "runtime.model",
+      { ...base, runtime: { model: "codex:MONO_AGENT_MODEL" } },
+      "codex:MONO_AGENT_MODEL",
+    ],
+    [
+      "runtime.fallbacks",
+      {
+        ...base,
+        runtime: {
+          model: "openai-codex:gpt-5.5",
+          fallbacks: [{ model: "codex:MONO_AGENT_FALLBACKS_JSON" }],
+        },
+      },
+      "codex:MONO_AGENT_FALLBACKS_JSON",
+    ],
+    [
+      "subagents",
+      {
+        ...base,
+        runtime: { model: "openai-codex:gpt-5.5" },
+        subagents: {
+          enabled: true,
+          definitions: [
+            { name: "helper", description: "d", prompt: "p", model: "codex:MONO_AGENT_SUBAGENTS_JSON" },
+          ],
+        },
+      },
+      "codex:MONO_AGENT_SUBAGENTS_JSON",
+    ],
+    [
+      "memory.llm.model",
+      {
+        ...base,
+        runtime: { model: "openai-codex:gpt-5.5" },
+        memory: {
+          mode: "bujo",
+          path: ".mono-agent/memory",
+          embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+          llm: { provider: "agent-host", model: "codex:MONO_AGENT_MEMORY_LLM_MODEL" },
+        },
+      },
+      "codex:MONO_AGENT_MEMORY_LLM_MODEL",
+    ],
+  ])("leaves a %s value that spells its own env var intact", async (path, json, value) => {
+    const error = await failureOf(json);
+
+    expect(error.details.path).toBe(path);
+    expect(error.message.startsWith(path)).toBe(true);
+    // The value the operator wrote, quoted back verbatim...
+    expect(error.message).toContain(`\`${value}\``);
+    // ...and the repair still names a model they can actually paste.
+    expect(error.message).toContain(`use openai-${value}`);
+  });
+
+  /**
+   * Not every source-attributed message names the variable as its subject; some name it
+   * mid-sentence, and those carry no quoted operator value at all. Re-attribution has to keep
+   * translating those, or the operator is sent back to a variable they never set.
+   */
+  it("still re-attributes a source named mid-sentence", async () => {
+    const error = await failureOf({
+      ...base,
+      runtime: { model: "openai-codex:gpt-5.5" },
+      memory: {
+        mode: "bujo",
+        path: ".mono-agent/memory",
+        embeddings: { provider: "openai", model: "text-embedding-3-small" },
+      },
+    });
+
+    expect(error.details.path).toBe("memory.embeddings.apiKey");
+    expect(error.message).toBe(
+      "openai memory embeddings require memory.embeddings.apiKey (or apiKeyEnv pointing at a set variable).",
+    );
+  });
+
+  it("still strips the env var when it is only the subject", async () => {
+    const error = await failureOf({ ...base, runtime: { model: "codex:gpt-5.6-sol" } });
+
+    expect(error.message.startsWith("runtime.model ")).toBe(true);
+    expect(error.message).not.toContain("MONO_AGENT_MODEL");
+  });
+});

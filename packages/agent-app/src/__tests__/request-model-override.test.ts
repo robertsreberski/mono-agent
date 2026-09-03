@@ -1,4 +1,9 @@
-import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import {
+  MODEL_REFERENCE_ECHO_MAX_BYTES,
+  MODEL_REFERENCE_REASON_MAX_BYTES,
+  parseMonoRuntimeModelReference,
+  sanitizeModelReferenceText,
+} from "@mono-agent/runtime-adapter";
 import type { LocalProviderDefinition, RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import { describe, expect, it, vi } from "vitest";
 
@@ -456,5 +461,78 @@ describe("composeRuntimeOptionExtensions with keyword escalation", () => {
     expect(result.runtimeOptions?.mcpServers).toEqual({ memo: { url: "http://127.0.0.1:1" } });
     expect(result.runtimeOptions?.allowedTools).toContain("memo_tool");
     await result.cleanup?.();
+  });
+});
+
+/**
+ * A rejected per-request override is operator-supplied text that failed to parse, so it
+ * carries none of a parsed reference's printable/single-line/bounded guarantees. Structured
+ * JSON logging escapes a newline on the way out, but it does not bound anything -- a
+ * 1,000,000-byte webhook `model` wrote a 1,000,000-byte log record per turn.
+ */
+describe("per-request override warnings bound the value they echo", () => {
+  const NEWLINE = String.fromCharCode(10);
+  const byteLength = (value: string): number => Buffer.byteLength(value, "utf8");
+  const echo = (value: string): string => sanitizeModelReferenceText(value, MODEL_REFERENCE_ECHO_MAX_BYTES);
+
+  it("leaves a short rejected model override quoted whole", async () => {
+    const logger = { warn: vi.fn() };
+    await run({ webhook: { model: "codex:gpt-5.6-sol" } }, { logger });
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("invalid per-request model"),
+      expect.objectContaining({ model: "codex:gpt-5.6-sol" }),
+    );
+  });
+
+  it("escapes a newline in a rejected model override", async () => {
+    const model = `codex:gpt-5.6-sol${NEWLINE}[ok] Core config: everything fine`;
+    const logger = { warn: vi.fn() };
+    await run({ webhook: { model } }, { logger });
+    const logged = logger.warn.mock.calls[0]?.[1] as { model: string; reason: string };
+    expect(logged.model).toBe(echo(model));
+    expect(logged.model).not.toContain(NEWLINE);
+    expect(logged.reason).not.toContain(NEWLINE);
+  });
+
+  it("clamps an oversized rejected model override", async () => {
+    const model = `${"x".repeat(1_000_000)}:y`;
+    const logger = { warn: vi.fn() };
+    await run({ webhook: { model } }, { logger });
+    const logged = logger.warn.mock.calls[0]?.[1] as { model: string; reason: string };
+    expect(logged.model).toBe(echo(model));
+    expect(byteLength(logged.model)).toBeLessThan(1_000);
+    expect(byteLength(logged.reason)).toBeLessThan(1_000);
+  });
+
+  it("escapes a newline in a rejected effort override", async () => {
+    const effort = `extreme${NEWLINE}[ok] Core config: everything fine`;
+    const logger = { warn: vi.fn() };
+    await run({ webhook: { effort } }, { logger });
+    const logged = logger.warn.mock.calls[0]?.[1] as { effort: string };
+    expect(logged.effort).toBe(echo(effort));
+    expect(logged.effort).not.toContain(NEWLINE);
+  });
+
+  it("clamps an oversized rejected effort override", async () => {
+    const effort = "e".repeat(100_000);
+    const logger = { warn: vi.fn() };
+    await run({ webhook: { effort } }, { logger });
+    const logged = logger.warn.mock.calls[0]?.[1] as { effort: string };
+    expect(logged.effort).toBe(echo(effort));
+    expect(byteLength(logged.effort)).toBeLessThan(1_000);
+  });
+
+  it("bounds the local-provider endpoint warning's echo too", async () => {
+    const logger = { warn: vi.fn() };
+    await run(
+      { tui: { model: "gateway:gpt-oss" } },
+      {
+        logger,
+        localProviders: [{ id: "gateway", type: "openai_compat", baseUrl: "http://api.example.com", enabled: true }],
+      },
+    );
+    const logged = logger.warn.mock.calls[0]?.[1] as { model: string; reason: string };
+    expect(logged.model).toBe("gateway:gpt-oss");
+    expect(logged.reason).toBe(sanitizeModelReferenceText(logged.reason, MODEL_REFERENCE_REASON_MAX_BYTES));
   });
 });
