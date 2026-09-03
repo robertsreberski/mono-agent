@@ -9,6 +9,9 @@ import {
   parseProcessJobProjection,
   parseAgentStreamFrame,
   MAX_INFO_BODY_BYTES,
+  MAX_INFO_PROVIDER_ID_BYTES,
+  MAX_INFO_PROVIDER_ITEMS,
+  MAX_INFO_PROVIDER_LABEL_BYTES,
   type AgentLiveInputSettlement,
   type AgentLiveInputUnavailableReason,
   type AgentAttachment,
@@ -57,12 +60,16 @@ const PRESERVED_MCP_APP_OPERATOR_ERRORS = new Map<string, number>([
 const CANCEL_TIMEOUT_MS = 2_000;
 const HISTORY_APPEND_TIMEOUT_MS = 5_000;
 // The provider summary rides `/v1/info`, which shares one 1 MiB body cap with
-// every other field and is polled every 5s. Provider ids and labels are not
-// length-bounded at their source, so bound them here: an oversized summary must
-// cost the summary, never the whole response (which shows the agent OFFLINE).
-const MAX_PROVIDER_ITEMS = 64;
-const MAX_PROVIDER_ID_BYTES = 128;
-const MAX_PROVIDER_LABEL_BYTES = 128;
+// every other field and is polled every 5s, so this parse stays bounded: an
+// oversized summary must cost the summary, never the whole response (which
+// shows the agent OFFLINE).
+//
+// Its bounds come from `@mono-agent/agent-contracts`, NOT from numbers chosen
+// here. Chosen here, they drifted from the producer's in both directions and
+// each drift silently cost the operator a provider: a 129-byte id the catalog
+// published was dropped, and the route provider the producer deliberately
+// admitted first sat at entry 65 of 71. The producer reads the same window and
+// keeps route providers inside it.
 const MAX_SKILL_ITEMS = 256;
 const MAX_SKILL_DESCRIPTION_BYTES = 256;
 const MAX_SKILL_NAME_BYTES = 256;
@@ -1077,19 +1084,24 @@ function parseModelOptions(value: unknown): Record<string, WebModelOption> | und
  * Parse the agent's provider summary. Total by construction: a malformed entry
  * is skipped rather than throwing, because a throw here becomes a 500 for the
  * entire `/v1/info` response and takes the agent offline.
+ *
+ * The item cap is a PREFIX window, and the producer knows its size: it orders
+ * the providers its own routes use into the front of the list precisely so this
+ * cut cannot reach them. Reading the window from any other order — sorting,
+ * filtering, or reversing before this loop — would throw that guarantee away.
  */
 function parseProviders(value: unknown): readonly WebAgentProvider[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const result: WebAgentProvider[] = [];
   for (const raw of value) {
-    if (result.length >= MAX_PROVIDER_ITEMS) break;
+    if (result.length >= MAX_INFO_PROVIDER_ITEMS) break;
     const entry = record(raw);
     if (entry === undefined) continue;
     const id = typeof entry.id === "string" ? entry.id : undefined;
     if (id === undefined || id.length === 0) continue;
-    if (Buffer.byteLength(id, "utf8") > MAX_PROVIDER_ID_BYTES) continue;
+    if (Buffer.byteLength(id, "utf8") > MAX_INFO_PROVIDER_ID_BYTES) continue;
     const rawLabel = typeof entry.label === "string" && entry.label.length > 0 ? entry.label : id;
-    const label = Buffer.byteLength(rawLabel, "utf8") > MAX_PROVIDER_LABEL_BYTES ? id : rawLabel;
+    const label = Buffer.byteLength(rawLabel, "utf8") > MAX_INFO_PROVIDER_LABEL_BYTES ? id : rawLabel;
     result.push({
       id,
       label,
