@@ -20,9 +20,11 @@
   `MONO_AGENT_FALLBACK_MODELS`. Each now fails at load with the exact repair for
   the surface it was set on — the environment variables name an environment
   repair (`MONO_AGENT_FALLBACK_MODELS` -> `MONO_AGENT_FALLBACKS_JSON`), not a JSON
-  key the operator may not have — rather than a generic unknown-key error. A load
-  reports every retired key, and every retired variable, in one message instead of
-  one per run. An empty assignment (`KEY=`) is still treated as unset.
+  key the operator may not have — rather than a generic unknown-key error. One
+  load names every retired key in one message, and every retired variable in one
+  message, instead of one per run; a config carrying both stops at the key and
+  names the variable on the next run. An empty assignment (`KEY=`) is still
+  treated as unset.
 - **New `providers` config map** declaring which providers an agent supports,
   widening selection to those providers' advertised catalogs instead of just
   `runtime.model` and its fallbacks. Each provider advertises at most
@@ -46,6 +48,13 @@
   `docs/reference/deprecations.md` for the retired-surface reference.
   `configVersion: 1` files are outside that checklist: that schema was never
   accepted by the shipped loader and is rejected whole, so re-author them.
+- **Operator-authored text is bounded wherever a diagnostic quotes it back.**
+  `doctor` and `validate` truncate every model, provider and reason they echo, so
+  a mistyped megabyte in `runtime.model` no longer produces a megabyte of report.
+  Webhook endpoint `name` and `path` are held to 255 bytes of printable
+  single-line text — the cap POSIX already puts on a `webhook/<name>.md` file, so
+  nothing authorable as a file is refused — and rejected rather than truncated,
+  because silently shortening an identity changes which route a request reaches.
 
 - Upgrade the exact-pinned Pi AI catalog and TUI to 0.84.3, including GitHub
   Copilot support for Gemini 3.7 Flash and Grok 4.6, provider-required OAuth

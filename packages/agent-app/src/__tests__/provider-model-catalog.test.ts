@@ -149,12 +149,13 @@ describe("provider-model-catalog", () => {
 
     const anthropicFirst = catalog.listModels("anthropic").models[0];
     expect(anthropicFirst).toBeDefined();
-    expect(catalog.resolve(`anthropic:${anthropicFirst!.id}`)).toEqual(anthropicFirst);
-    expect(catalog.resolve("anthropic:does-not-exist")).toBeUndefined();
-    expect(catalog.resolve("unknown:model")).toBeUndefined();
 
-    // resolve never triggers a re-read of the provider catalog (the page cache
-    // stays precomputed), so the counting spy sees no new calls.
+    // Reads after build never re-enter the provider catalog: the pages are
+    // precomputed, so the counting spy sees no new calls however many times
+    // they are served.
+    catalog.listModels("anthropic");
+    catalog.searchModels("claude");
+    catalog.listProviders();
     expect(listBuiltinModels.mock.calls.length).toBe(readsAfterBuild);
   });
 
@@ -216,7 +217,29 @@ describe("provider-model-catalog", () => {
     expect(openai?.source).toBe("custom");
     expect(catalog.listModels("openai").models.map((model) => model.id))
       .toEqual(["local-a", "local-b"]);
-    expect(catalog.resolve("openai:gpt-4.1")).toBeUndefined();
+  });
+
+  it("never advertises a model whose reference a turn could not route to", () => {
+    // Byte bounds are a paging concern and say nothing about content. A local
+    // endpoint reporting an id with a control character cleared the length
+    // filter, reached `/v1/models`, and was admitted by the console — the
+    // operator only found out at turn time, when the parser refused the
+    // reference. `/v1/info` already parsed each discovered ref; the paged
+    // catalog did not.
+    const unroutable = `llama3.1${String.fromCharCode(7)}turbo`;
+    const catalog = buildProviderModelCatalog({
+      providers: [{
+        id: "ollama",
+        type: "ollama",
+        baseUrl: "http://localhost:11434",
+        enabled: true,
+        models: [{ name: unroutable, enabled: true }, { name: "gemma4:31b", enabled: true }],
+      }],
+    });
+
+    const ids = catalog.listModels("ollama").models.map((model) => model.id);
+    expect(ids).toEqual(["gemma4:31b"]);
+    expect(catalog.listProviders().find((provider) => provider.id === "ollama")?.modelCount).toBe(1);
   });
 
   it("keeps a typed local provider's allowlist off Pi's built-in catalog", () => {
