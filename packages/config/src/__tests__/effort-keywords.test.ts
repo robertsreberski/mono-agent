@@ -42,6 +42,28 @@ describe("detectEffortKeyword", () => {
     expect(detectEffortKeyword("no trigger words here")).toBeUndefined();
   });
 
+  /**
+   * A trigger is a PHRASE, so what it matches has to be that phrase -- its own words plus at
+   * most one separator between them. `\s*` made the separator unbounded, so the "match" grew
+   * with the message around it and `keyword` (which exists to be printed) became a copy of the
+   * operator's whitespace.
+   */
+  it("matches a phrase, never an unbounded whitespace run between its words", () => {
+    const longestPhrase = Math.max(...EFFORT_KEYWORD_TRIGGERS.map((trigger) => trigger.label.length));
+    const flooded = `ultra${" ".repeat(1_000_000)}think`;
+    const match = detectEffortKeyword(flooded);
+    expect(match).toBeDefined();
+    expect(match!.keyword.length).toBeLessThanOrEqual(longestPhrase);
+  });
+
+  it("bounds every trigger's match by its own canonical phrase", () => {
+    for (const trigger of EFFORT_KEYWORD_TRIGGERS) {
+      const flooded = trigger.label.replace(" ", "\t".repeat(50_000));
+      const match = trigger.pattern.exec(flooded);
+      expect(match?.[0].length ?? 0).toBeLessThanOrEqual(trigger.label.length);
+    }
+  });
+
   it("exposes triggers in descending effort order for downstream consumers", () => {
     expect(EFFORT_KEYWORD_TRIGGERS.map((trigger) => trigger.effort)).toEqual(["max", "xhigh", "high"]);
   });
