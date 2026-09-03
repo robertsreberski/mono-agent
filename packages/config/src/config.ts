@@ -5,10 +5,13 @@ import {
   isAutodiscoverableProviderId,
   isPiBuiltinProvider,
   localProviderDefinitionFor,
+  MODEL_REFERENCE_ECHO_MAX_BYTES,
+  MODEL_REFERENCE_REASON_MAX_BYTES,
   modelReferenceKey,
   parseMonoRuntimeModelReference,
   PI_TRANSPORTS,
   RuntimeAdapterError,
+  sanitizeModelReferenceText,
   validateLocalProviderDefinition,
   validateProviderDefinition,
 } from "@mono-agent/runtime-adapter";
@@ -509,10 +512,24 @@ function redactApiKeyBlock<T extends { readonly apiKey?: string }>(
  * the innermost, actionable text.
  */
 function modelReferenceReason(error: unknown): string {
-  if (error instanceof RuntimeAdapterError && typeof error.details.reason === "string") {
-    return error.details.reason;
-  }
-  return error instanceof Error ? error.message : String(error);
+  const reason = error instanceof RuntimeAdapterError && typeof error.details.reason === "string"
+    ? error.details.reason
+    : error instanceof Error
+      ? error.message
+      : String(error);
+  // The adapter already bounds its own reason; re-bounding is a no-op there and is what
+  // covers the branches above it, where the text is an arbitrary thrown value.
+  return sanitizeModelReferenceText(reason, MODEL_REFERENCE_REASON_MAX_BYTES);
+}
+
+/**
+ * Bound and neutralize the operator's own value before quoting it back at them. Naming the
+ * rejected value is the half of the message that tells an operator *which* field to open, so
+ * it stays -- but it is untrusted, unbounded text on its way into durable operator-shared
+ * output, and it is treated as such.
+ */
+function modelReferenceEcho(raw: string): string {
+  return sanitizeModelReferenceText(raw, MODEL_REFERENCE_ECHO_MAX_BYTES);
 }
 
 function parseModel(raw: string): MonoAgentConfig["runtime"]["model"] {
@@ -522,7 +539,7 @@ function parseModel(raw: string): MonoAgentConfig["runtime"]["model"] {
     const reason = modelReferenceReason(error);
     throw new MonoAgentConfigError(
       "invalid_model_reference",
-      `MONO_AGENT_MODEL \`${raw}\` is not a valid runtime model reference: ${reason}`,
+      `MONO_AGENT_MODEL \`${modelReferenceEcho(raw)}\` is not a valid runtime model reference: ${reason}`,
       { env: "MONO_AGENT_MODEL", reason },
     );
   }
@@ -749,7 +766,7 @@ function parseSubagentModel(value: unknown, name: string): MonoAgentConfig["runt
     const reason = modelReferenceReason(error);
     throw new MonoAgentConfigError(
       "invalid_model_reference",
-      `MONO_AGENT_SUBAGENTS_JSON definition "${name}" model \`${value}\` is not a valid runtime model reference: ${reason}`,
+      `MONO_AGENT_SUBAGENTS_JSON definition "${name}" model \`${modelReferenceEcho(value)}\` is not a valid runtime model reference: ${reason}`,
       { env: "MONO_AGENT_SUBAGENTS_JSON", reason },
     );
   }
@@ -823,7 +840,7 @@ function parseFallbackModel(raw: string, env: string, index: number): MonoAgentC
     const reason = modelReferenceReason(error);
     throw new MonoAgentConfigError(
       "invalid_model_reference",
-      `${env} entry ${index + 1} model \`${raw}\` is not a valid runtime model reference: ${reason}`,
+      `${env} entry ${index + 1} model \`${modelReferenceEcho(raw)}\` is not a valid runtime model reference: ${reason}`,
       { env, index, reason },
     );
   }
@@ -1540,7 +1557,7 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
       const reason = modelReferenceReason(error);
       throw new MonoAgentConfigError(
         "invalid_model_reference",
-        `MONO_AGENT_MEMORY_LLM_MODEL \`${rawModel}\` is not a valid runtime model reference for agent-host memory LLM: ${reason}`,
+        `MONO_AGENT_MEMORY_LLM_MODEL \`${modelReferenceEcho(rawModel)}\` is not a valid runtime model reference for agent-host memory LLM: ${reason}`,
         { env: "MONO_AGENT_MEMORY_LLM_MODEL", reason },
       );
     }
