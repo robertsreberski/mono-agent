@@ -64,6 +64,24 @@ describe("detectEffortKeyword", () => {
     }
   });
 
+  it("treats one line break as one separator, on every phrase trigger", () => {
+    // A CRLF is one separator spelled with two characters. `\s?` bounded the
+    // whitespace run but consumed only the `\r`, so `ultra\r\nthink` failed its own
+    // phrase and fell through to the bare `think` trigger -- a Windows or
+    // textarea-wrapped client silently got `high` where it asked for `max`.
+    const phrases = EFFORT_KEYWORD_TRIGGERS.filter((trigger) => trigger.label.includes(" "));
+    expect(phrases.length).toBeGreaterThan(0);
+    for (const trigger of phrases) {
+      for (const separator of ["", " ", "\t", "\n", "\r", "\r\n"]) {
+        const message = trigger.label.replace(" ", separator);
+        expect(detectEffortKeyword(message), `${trigger.label} joined by ${JSON.stringify(separator)}`).toEqual({
+          effort: trigger.effort,
+          keyword: message,
+        });
+      }
+    }
+  });
+
   it("exposes triggers in descending effort order for downstream consumers", () => {
     expect(EFFORT_KEYWORD_TRIGGERS.map((trigger) => trigger.effort)).toEqual(["max", "xhigh", "high"]);
   });

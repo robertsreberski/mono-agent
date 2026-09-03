@@ -34,9 +34,15 @@ export interface EffortKeywordTrigger {
   readonly label: string;
 }
 
+// One separator, not one character. `\s*` let the match grow with the message (a
+// million spaces between the words matched a million characters, all of which
+// reached the escalation log). `\s?` bounded that but broke CRLF: a Windows
+// client sending `ultra\r\nthink` matched only the `\r`, so the phrase failed and
+// the bare `think` trigger escalated to `high` instead of `max`. A line break is
+// one separator that happens to be two characters, so it is spelled out.
 export const EFFORT_KEYWORD_TRIGGERS: readonly EffortKeywordTrigger[] = [
-  { effort: "max", pattern: /\bultra\s?think\b/i, label: "ultra think" },
-  { effort: "xhigh", pattern: /\bextra\s?think\b/i, label: "extra think" },
+  { effort: "max", pattern: /\bultra(?:\r\n|\s)?think\b/i, label: "ultra think" },
+  { effort: "xhigh", pattern: /\bextra(?:\r\n|\s)?think\b/i, label: "extra think" },
   { effort: "high", pattern: /\bthink\b/i, label: "think" },
 ];
 
