@@ -349,9 +349,10 @@ export const api = {
   },
 
   /**
-   * `signal` for the same reason `patchThread` takes one: a delete is queued
-   * with that conversation's other writes, so an unbounded one blocks every
-   * later write to it.
+   * `signal` because an unbounded delete never settles for the operator, not
+   * because it is queued: a delete deliberately BYPASSES the conversation's
+   * write queue -- see `deleteThread` in the console store -- so it does not
+   * wait out a stalled write before removing what the operator asked to remove.
    */
   deleteThread: async (threadId: string, signal?: AbortSignal) => {
     const response = await fetch(`/api/v1/threads/${encodeURIComponent(threadId)}`, {

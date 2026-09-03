@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
   AgentSummary,
@@ -399,6 +399,9 @@ export interface RemovedThreadRegistry {
    * to hand back what it hid: responses that arrived while it was pending had
    * already filtered the conversation out, so forgetting the tombstone alone
    * left the sidebar missing a conversation the server still has.
+   *
+   * Kept only if it is NEWER than what is already held -- ordered by the
+   * server's revision, not by the order the responses reached the tab.
    */
   readonly suppress: (threadId: string, suppressed: ThreadSummary) => void;
   /**
@@ -458,7 +461,20 @@ export const createRemovedThreadRegistry = (
     },
     suppress: (threadId, suppressed) => {
       const entry = live(threadId);
-      if (entry !== undefined) entry.suppressed = suppressed;
+      if (entry === undefined) return;
+      // ORDERED BY REVISION, not by arrival. Overwriting unconditionally made
+      // "the newest projection this tombstone hid" mean "the last response to
+      // reach the tab", and responses do not arrive in the order the server
+      // produced them: a delayed revision 2 landing after revision 3 became
+      // what a failed delete restored, rolling back a title, an archive state
+      // or a run override the server had already accepted. The revision is the
+      // server's own monotonic counter for the row, so it orders the
+      // projections by when the SERVER made them.
+      //
+      // An equal revision is the same server state, so the first one wins and
+      // nothing is gained by replacing it.
+      if (suppressed.revision <= entry.suppressed.revision) return;
+      entry.suppressed = suppressed;
     },
     forget: (threadId) => {
       const entry = live(threadId);
@@ -469,6 +485,70 @@ export const createRemovedThreadRegistry = (
     size: () => removed.size,
   };
 };
+
+/**
+ * What a failed DELETE actually tells you about the server.
+ *
+ * It tells you the ANSWER did not arrive. It does not tell you the request was
+ * never applied: the server commits the row deletion first and only then awaits
+ * attachment cleanup and emits its invalidations, so a dropped connection or
+ * this console's own deadline can fire while the conversation is already gone.
+ *
+ * - `refused`: the server answered, and the answer is one it can only produce
+ *   BEFORE it touches anything -- the conversation still has an active turn, is
+ *   not archived, is a configured cron channel, the caller is not allowed, the
+ *   request was malformed. Nothing was applied; rolling back is safe.
+ * - `applied`: the conversation is not there. A DELETE cannot be answered 404
+ *   by a server that still holds the row, so the postcondition the operator
+ *   asked for already holds however it got there.
+ * - `unknown`: a 5xx, a proxy, a lost socket, a deadline. The state is genuinely
+ *   unknown and neither assumption is available -- see {@link reconcileFailedDelete}.
+ */
+export type DeleteFailureVerdict = "refused" | "applied" | "unknown";
+
+export const classifyDeleteFailure = (error: unknown): DeleteFailureVerdict => {
+  if (!(error instanceof ApiError)) return "unknown";
+  if (error.status === 404) return "applied";
+  // 5xx is the gateway, the proxy or a crash mid-handler: any of them can sit
+  // on the far side of a delete that landed.
+  return error.status >= 400 && error.status < 500 ? "refused" : "unknown";
+};
+
+export interface FailedDeleteOutcome {
+  readonly verdict: DeleteFailureVerdict;
+  /** What the server says the conversation is now, when it was asked. */
+  readonly thread?: ThreadSummary;
+}
+
+/**
+ * Turn an `unknown` delete failure into an answer by ASKING the server, rather
+ * than by assuming either way.
+ *
+ * Bounded by the WRITE deadline, not the more generous read one: the operator
+ * is already waiting on a delete that failed, and a reconciliation that has not
+ * answered inside that budget has told us what it can -- nothing.
+ */
+export const reconcileFailedDelete = async (
+  threadId: string,
+  error: unknown,
+): Promise<FailedDeleteOutcome> => {
+  const verdict = classifyDeleteFailure(error);
+  if (verdict !== "unknown") return { verdict };
+  try {
+    const current = await boundedRequest((signal) => api.thread(threadId, signal));
+    return { verdict: "refused", thread: current.thread };
+  } catch (reconcileError) {
+    // A second failure is not a second chance to guess: only an affirmative
+    // "not found" moves this off `unknown`.
+    return { verdict: classifyDeleteFailure(reconcileError) === "applied" ? "applied" : "unknown" };
+  }
+};
+
+/** The later of two projections of one conversation, by the server's revision. */
+const newerProjection = (
+  held: ThreadSummary,
+  fetched: ThreadSummary | undefined,
+): ThreadSummary => (fetched === undefined || fetched.revision < held.revision ? held : fetched);
 
 /**
  * The threads a response may put into the projection.
@@ -707,6 +787,22 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // one was deleted must not put it back into the projection.
   const removedThreadsRef = useRef<RemovedThreadRegistry>(createRemovedThreadRegistry());
   const selectedThreadRef = useRef<string | null>(null);
+  /**
+   * Bumped by every selection the OPERATOR makes -- an agent, a conversation, a
+   * new conversation, an archive or unarchive -- and by nothing the console
+   * decides on its own.
+   *
+   * A failed delete owes the operator the selection its tombstone cost them,
+   * and the question it has to answer is "have they chosen somewhere else since
+   * I started?". `selectedThreadRef.current === null` was standing in for that
+   * and answers a different question in both directions: a bootstrap that
+   * answered mid-delete re-resolves the selection to a surviving conversation,
+   * which is not null and not a choice, so the repair was skipped; and an
+   * operator who deliberately moved to an empty agent leaves it null, which IS
+   * a choice, so Alpha's conversation id was restored under Beta and every
+   * later run action targeted a thread the console was not showing.
+   */
+  const operatorSelectionRef = useRef(0);
   const selectedAgentRef = useRef<string | null>(selectedAgentId);
   /** The catalog scope a page walk was started under. See `catalogScope`. */
   const catalogScopeRef = useRef<string>("");
@@ -1220,6 +1316,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   const selectAgent = useCallback(
     (sourceId: string) => {
+      operatorSelectionRef.current += 1;
       selectedAgentRef.current = sourceId;
       setSelectedAgentId(sourceId);
       localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, sourceId);
@@ -1264,6 +1361,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   const selectThread = useCallback(
     (threadId: string) => {
+      operatorSelectionRef.current += 1;
       const thread = threads.find((candidate) => candidate.id === threadId);
       if (thread) {
         selectedAgentRef.current = thread.sourceId;
@@ -1341,6 +1439,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         delete next[draftPreferenceKey];
         return next;
       });
+      operatorSelectionRef.current += 1;
       selectedThreadRef.current = thread.id;
       setSelectedThreadId(thread.id);
       persistThreadId(selectedAgentId, thread.id);
@@ -1431,6 +1530,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           api.patchThread(target.id, { archived: true }, signal));
         applyThreadUpdate(thread);
         if (selectedThreadRef.current === target.id || selectedThreadRef.current === threadId) {
+          operatorSelectionRef.current += 1;
           const replacement = visibleThreads.find((item) => item.id !== target.id);
           selectedThreadRef.current = replacement?.id ?? null;
           setSelectedThreadId(replacement?.id ?? null);
@@ -1453,6 +1553,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       const thread = await enqueueThreadWrite(target.id, (signal) =>
         api.patchThread(target.id, { archived: false }, signal));
       applyThreadUpdate(thread);
+      operatorSelectionRef.current += 1;
       selectedThreadRef.current = thread.id;
       setSelectedThreadId(thread.id);
       persistThreadId(thread.sourceId, thread.id);
@@ -1464,13 +1565,53 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [applyThreadUpdate, enqueueThreadWrite, fetchThreadSummary]);
 
+  /**
+   * Everything a CONFIRMED delete leaves this tab to clean up.
+   *
+   * Shared by the success path and by a failure whose reconciliation proved the
+   * server applied it anyway, because both end in the same place: the
+   * conversation does not exist. Deliberately unreachable from an UNCONFIRMED
+   * failure -- dropping the run preference of a conversation that still exists
+   * is the one-way door the previous round shipped.
+   */
+  const completeThreadRemoval = useCallback((thread: ThreadSummary, requestedId: string) => {
+    // Nothing can write to it again, so its write generation is dead weight.
+    overrideWriteRef.current.delete(thread.id);
+    const preferenceKey = preferenceKeyForThread(thread.sourceId, thread.id);
+    setModelByContext((current) => {
+      const next = { ...current };
+      delete next[preferenceKey];
+      return next;
+    });
+    setEffortByContext((current) => {
+      const next = { ...current };
+      delete next[preferenceKey];
+      return next;
+    });
+    setBootstrap((current) => current
+      ? { ...current, threads: current.threads.filter((item) => item.id !== thread.id) }
+      : current);
+    if (selectedThreadRef.current === thread.id || selectedThreadRef.current === requestedId) {
+      const replacement = visibleThreads.find((item) => item.id !== thread.id);
+      selectedThreadRef.current = replacement?.id ?? null;
+      setSelectedThreadId(replacement?.id ?? null);
+      setDetail(null);
+      updateThreadRoute(replacement, true);
+    }
+    if (readPersistedThreadIds()[thread.sourceId] === thread.id) {
+      persistThreadId(thread.sourceId, null);
+    }
+    setActionError(null);
+  }, [visibleThreads]);
+
   const deleteThread = useCallback(async (threadId: string) => {
     try {
       const thread = await fetchThreadSummary(threadId);
-      // Tombstoned BEFORE the round trip, and reversed if the round trip fails.
-      // Recorded afterwards, every response that arrived DURING the delete --
-      // the bootstrap `refreshNow` issues on the delete's own SSE event, a
-      // queued write's result -- was admitted, and the conversation came back.
+      // Tombstoned BEFORE the round trip, and reversed if the round trip proves
+      // the server refused it. Recorded afterwards, every response that arrived
+      // DURING the delete -- the bootstrap `refreshNow` issues on the delete's
+      // own SSE event, a queued write's result -- was admitted, and the
+      // conversation came back.
       //
       // Deliberately NOT queued behind this conversation's other writes, unlike
       // every other mutation. A delete produces no thread snapshot for a later
@@ -1480,10 +1621,39 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // conversation they asked to remove disappeared. It is still bounded.
       const wasSelected = selectedThreadRef.current === thread.id
         || selectedThreadRef.current === threadId;
+      const selectionAtRequest = operatorSelectionRef.current;
       removedThreadsRef.current.remember(thread.id, thread);
       try {
         await boundedRequest((signal) => api.deleteThread(thread.id, signal));
       } catch (deleteRequestError) {
+        // A rejection says the ANSWER did not arrive. Restoring on every one of
+        // them treated it as proof the request was never applied, and the
+        // server commits the row deletion before it awaits attachment cleanup
+        // and emits its invalidations -- so a dropped answer or this console's
+        // own deadline resurrected a conversation the server no longer had,
+        // over an authoritative refresh that had already removed it.
+        const outcome = await reconcileFailedDelete(thread.id, deleteRequestError);
+        if (outcome.verdict === "applied") {
+          // Confirmed gone: the server answered a read for it with "not found".
+          // The operator asked for exactly this, so the tombstone stands and
+          // the local cleanup runs. Not a failure reported as a success -- a
+          // postcondition that was CHECKED rather than assumed.
+          completeThreadRemoval(thread, threadId);
+          return;
+        }
+        if (outcome.verdict === "unknown") {
+          // Genuinely unknown, and neither assumption is available: restoring
+          // may resurrect a deleted conversation, and keeping the tombstone
+          // hides a live one for the rest of its lifetime. So stop asserting
+          // anything -- drop the tombstone, keep the local projection as the
+          // last thing the server actually said, and ask it again. Nothing that
+          // a confirmed delete cleans up is touched.
+          removedThreadsRef.current.forget(thread.id);
+          queueRefresh();
+          throw deleteRequestError;
+        }
+        // Refused before the server touched anything, so the rollback is safe.
+        //
         // Forgetting the tombstone is not undoing the delete. Every response
         // that answered while it stood -- the bootstrap `refreshNow` issues on
         // the delete's own SSE event above all -- has already filtered this
@@ -1492,52 +1662,34 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         // The tombstone hands back the newest projection it suppressed, so the
         // repair happens here, where the failure is.
         const suppressed = removedThreadsRef.current.forget(thread.id);
-        applyThreadUpdate(suppressed ?? thread);
+        const restored = newerProjection(suppressed ?? thread, outcome.thread);
+        applyThreadUpdate(restored);
         // A bootstrap that answered while it was tombstoned also re-resolved
         // the selection over a sidebar this conversation was missing from, so
         // restoring the row without the selection left the operator staring at
-        // an empty pane. Only when nothing else has been selected since: the
-        // operator's own later choice outranks this repair.
-        if (wasSelected && selectedThreadRef.current === null) {
-          selectedThreadRef.current = thread.id;
-          setSelectedThreadId(thread.id);
-          persistThreadId(thread.sourceId, thread.archivedAt ? null : thread.id);
-          updateThreadRoute(suppressed ?? thread, true);
+        // an empty pane. Only when the OPERATOR has not chosen somewhere else
+        // since -- see `operatorSelectionRef`; an automatic re-resolution is
+        // not a choice, and a deliberate move to another agent is. The agent
+        // comes back with it, because the automatic re-resolution can move that
+        // too, and a conversation restored under another agent is targeted by
+        // run actions the console is showing someone else's capabilities for.
+        if (wasSelected && operatorSelectionRef.current === selectionAtRequest) {
+          selectedAgentRef.current = restored.sourceId;
+          setSelectedAgentId(restored.sourceId);
+          localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, restored.sourceId);
+          selectedThreadRef.current = restored.id;
+          setSelectedThreadId(restored.id);
+          persistThreadId(restored.sourceId, restored.archivedAt ? null : restored.id);
+          updateThreadRoute(restored, true);
         }
         throw deleteRequestError;
       }
-      // Nothing can write to it again, so its write generation is dead weight.
-      overrideWriteRef.current.delete(thread.id);
-      const preferenceKey = preferenceKeyForThread(thread.sourceId, thread.id);
-      setModelByContext((current) => {
-        const next = { ...current };
-        delete next[preferenceKey];
-        return next;
-      });
-      setEffortByContext((current) => {
-        const next = { ...current };
-        delete next[preferenceKey];
-        return next;
-      });
-      setBootstrap((current) => current
-        ? { ...current, threads: current.threads.filter((item) => item.id !== thread.id) }
-        : current);
-      if (selectedThreadRef.current === thread.id || selectedThreadRef.current === threadId) {
-        const replacement = visibleThreads.find((item) => item.id !== thread.id);
-        selectedThreadRef.current = replacement?.id ?? null;
-        setSelectedThreadId(replacement?.id ?? null);
-        setDetail(null);
-        updateThreadRoute(replacement, true);
-      }
-      if (readPersistedThreadIds()[thread.sourceId] === thread.id) {
-        persistThreadId(thread.sourceId, null);
-      }
-      setActionError(null);
+      completeThreadRemoval(thread, threadId);
     } catch (deleteError) {
       setActionError(errorMessage(deleteError));
       throw deleteError;
     }
-  }, [applyThreadUpdate, fetchThreadSummary, visibleThreads]);
+  }, [applyThreadUpdate, completeThreadRemoval, fetchThreadSummary, queueRefresh]);
 
   const ensureProviderCatalog = useCallback(async (provider: string) => {
     const sourceId = selectedAgentId;

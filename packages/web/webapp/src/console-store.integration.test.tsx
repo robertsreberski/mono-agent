@@ -1,7 +1,7 @@
 import { act, render, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import {
   CATALOG_TTL_MS,
   ConsoleStoreProvider,
@@ -15,7 +15,12 @@ import {
 import { agent, bootstrap, thread } from "./test/fixtures";
 import type { AgentSkillRegistry, AgentSummary, CronOverview, ThreadDetail } from "./types";
 
-vi.mock("./api", () => ({
+// `importOriginal` so `ApiError` stays the REAL class: the store branches on
+// `instanceof ApiError` and on its status to tell a server that refused a
+// delete from a transport that lost the answer, and a look-alike declared here
+// would take the wrong branch in every test that models a server refusal.
+vi.mock("./api", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./api")>(),
   api: {
     bootstrap: vi.fn(),
     thread: vi.fn(),
@@ -1458,6 +1463,267 @@ describe("ConsoleStoreProvider integration", () => {
         await pending;
       });
       expect(store.current.threads.map((item) => item.id)).toEqual(["fresh-thread"]);
+    });
+  });
+
+  /**
+   * Round 5's cluster, and all one shape: the repair round 4 added treats a
+   * FAILED delete as proof that nothing happened and that nothing has moved
+   * since. A failed request proves neither. It proves the answer did not
+   * arrive.
+   */
+  describe("failed deletes reconciled rather than assumed", () => {
+    const alphaThread = thread("alpha-thread", "alpha");
+
+    const settle = async () => {
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    };
+
+    const seedOneThread = () => {
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alphaThread],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alphaThread] });
+      vi.mocked(api.thread).mockResolvedValue(detail(alphaThread, "hello"));
+    };
+
+    const heldDelete = () => {
+      let reject: ((error: Error) => void) | undefined;
+      vi.mocked(api.deleteThread).mockImplementation(async () => {
+        await new Promise<void>((_ok, no) => { reject = no; });
+      });
+      return { fail: (error: Error) => reject?.(error) };
+    };
+
+    const refresh = async (id: string) => {
+      act(() => FakeEventSource.latest?.emit("threads.changed", {
+        id,
+        version: 1,
+        type: "threads.changed",
+        at: "2026-08-14T09:00:00.000Z",
+      }));
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 400); }); });
+    };
+
+    // Two shapes of the same non-answer: a lost answer, and one the far side of
+    // the server produced itself. Neither says the delete was not applied.
+    it.each([
+      ["a request that never answered", () => new Error("The web console request timed out.")],
+      ["a gateway that answered for the server", () => new ApiError("Bad gateway", 502)],
+    ] as const)(
+      "does not resurrect a conversation the server deleted before %s failed",
+      async (_label, failure) => {
+      // P1-3. The server COMMITS the row deletion and only then awaits
+      // attachment cleanup and emits its invalidations, so a rejection can
+      // arrive after the delete is authoritative -- a proxy that dropped the
+      // answer, or this console's own deadline. Restoring on every rejection
+      // therefore puts back a conversation the server no longer has, over an
+      // authoritative refresh that had already removed it.
+      //
+      // The deleted conversation is NOT the selected one, deliberately: a
+      // refresh reads the selected conversation alongside the bootstrap and
+      // discards both if that read fails, so a server that has genuinely
+      // deleted the SELECTED conversation cannot deliver the authoritative
+      // refresh this defect needs. Deleting a second conversation reproduces it
+      // with every response consistent with a server that committed.
+      const gammaThread = thread("gamma-thread", "alpha", { updatedAt: "2026-07-17T09:00:00.000Z" });
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alphaThread, gammaThread],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alphaThread, gammaThread] });
+      vi.mocked(api.thread).mockResolvedValue(detail(alphaThread, "hello"));
+      const deletion = heldDelete();
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      const deleted = store.current.deleteThread("gamma-thread");
+      await settle();
+
+      // The server has committed: the row is gone from every later response,
+      // and a read of it is answered "not found".
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alphaThread],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alphaThread] });
+      vi.mocked(api.thread).mockImplementation(async (id: string) => {
+        if (id !== "alpha-thread") {
+          throw new ApiError("Conversation not found.", 404, "thread_not_found");
+        }
+        return detail(alphaThread, "hello");
+      });
+      await refresh("event-1");
+      expect(store.current.threads.map((item) => item.id)).toEqual(["alpha-thread"]);
+
+      let settledWith: "resolved" | "rejected" = "resolved";
+      await act(async () => {
+        deletion.fail(failure());
+        await deleted.catch(() => { settledWith = "rejected"; });
+      });
+      await settle();
+
+      expect(store.current.threads.map((item) => item.id)).toEqual(["alpha-thread"]);
+      expect(store.current.selectedThreadId).toBe("alpha-thread");
+      // Reconciliation ASKED the server and was told the conversation is gone,
+      // so the operator gets the outcome they asked for rather than an error
+      // beside a sidebar that already agrees with the server.
+      expect(settledWith).toBe("resolved");
+      expect(store.current.actionError).toBeNull();
+    },
+    );
+
+    it("leaves an unreconcilable delete to the server instead of guessing", async () => {
+      // The third state, and the one a boolean cannot hold: the delete failed
+      // AND the read that would settle what happened failed too. Restoring is a
+      // guess that can resurrect a deleted conversation; keeping the tombstone
+      // is a guess that hides a live one for its whole lifetime. So neither --
+      // drop the tombstone, assert nothing, and let the server's next answer
+      // decide.
+      seedOneThread();
+      const deletion = heldDelete();
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      const deleted = store.current.deleteThread("alpha-thread");
+      await settle();
+      // A refresh answers while the tombstone stands, so the projection has
+      // already dropped the conversation -- which is what makes restoring it a
+      // decision rather than a no-op.
+      await refresh("event-1");
+      expect(store.current.threads.map((item) => item.id)).toEqual([]);
+
+      // The transport is down for the reconciling read as well.
+      vi.mocked(api.thread).mockRejectedValue(new Error("The web console request timed out."));
+      await act(async () => {
+        deletion.fail(new Error("The web console request timed out."));
+        await expect(deleted).rejects.toThrow(/timed out/iu);
+      });
+      await settle();
+
+      expect(store.current.threads.map((item) => item.id)).toEqual([]);
+      expect(store.current.actionError).toMatch(/timed out/iu);
+
+      // The tombstone is gone, so the next authoritative answer is obeyed
+      // either way: still there means still there.
+      vi.mocked(api.thread).mockResolvedValue(detail(alphaThread, "hello"));
+      await refresh("event-2");
+      expect(store.current.threads.map((item) => item.id)).toEqual(["alpha-thread"]);
+    });
+
+    it("restores the selection a failed delete lost to an automatic one", async () => {
+      // P1-4a. `selectedThreadRef.current === null` was standing in for "the
+      // operator has not chosen anything since". A bootstrap that answered
+      // while the conversation was tombstoned re-resolves the selection to a
+      // surviving conversation, so the ref is not null -- and the repair the
+      // failure owes the operator is skipped.
+      const betaThread = thread("beta-thread", "alpha", { updatedAt: "2026-07-17T09:00:00.000Z" });
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alphaThread, betaThread],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alphaThread, betaThread] });
+      vi.mocked(api.thread).mockResolvedValue(detail(alphaThread, "hello"));
+      const deletion = heldDelete();
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      const deleted = store.current.deleteThread("alpha-thread");
+      await settle();
+      await refresh("event-1");
+      expect(store.current.selectedThreadId).toBe("beta-thread");
+
+      await act(async () => {
+        // 409: the server refused before it touched anything.
+        deletion.fail(new ApiError("Cancel the active turn before deleting this conversation.", 409, "turn_active"));
+        await expect(deleted).rejects.toBeInstanceOf(ApiError);
+      });
+      await settle();
+
+      expect(store.current.threads.map((item) => item.id).sort())
+        .toEqual(["alpha-thread", "beta-thread"]);
+      expect(store.current.selectedThreadId).toBe("alpha-thread");
+    });
+
+    it("leaves a selection the operator moved alone when a delete fails", async () => {
+      // P1-4b. The same null check the other way: the operator deliberately
+      // switched to another agent, so the ref IS null -- and the repair put
+      // Alpha's conversation id back under Beta, which every later model action
+      // then targets while the console shows Beta's capabilities.
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [alphaThread],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alphaThread] });
+      vi.mocked(api.thread).mockResolvedValue(detail(alphaThread, "hello"));
+      const deletion = heldDelete();
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      const deleted = store.current.deleteThread("alpha-thread");
+      await settle();
+      act(() => { store.current.selectAgent("beta"); });
+      await settle();
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBeNull();
+
+      await act(async () => {
+        deletion.fail(new ApiError("Archive the conversation before deleting it.", 409, "thread_not_archived"));
+        await expect(deleted).rejects.toBeInstanceOf(ApiError);
+      });
+      await settle();
+
+      // The conversation comes back -- the delete was refused -- but the
+      // operator's own choice of where to be outranks the repair.
+      expect(store.current.threads.map((item) => item.id)).toEqual(["alpha-thread"]);
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBeNull();
+    });
+
+    it("restores the newest suppressed projection, not the last one to arrive", async () => {
+      // P1-5. "Newest" meant "last response received". Responses arrive out of
+      // order, so a delayed older projection overwrote a newer one and the
+      // restore rolled back a title, an archive state or a run override the
+      // server had already accepted.
+      seedOneThread();
+      const deletion = heldDelete();
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      const deleted = store.current.deleteThread("alpha-thread");
+      await settle();
+
+      const revisionThree = { ...alphaThread, title: "Renamed again", revision: 3 };
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [revisionThree],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [revisionThree] });
+      await refresh("event-1");
+
+      // A response issued BEFORE that one, answered after it.
+      const revisionTwo = { ...alphaThread, title: "Renamed once", revision: 2 };
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [revisionTwo],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [revisionTwo] });
+      await refresh("event-2");
+
+      await act(async () => {
+        deletion.fail(new ApiError("Cancel the active turn before deleting this conversation.", 409, "turn_active"));
+        await expect(deleted).rejects.toBeInstanceOf(ApiError);
+      });
+      await settle();
+
+      expect(store.current.threads.map((item) => item.title)).toEqual(["Renamed again"]);
+      expect(store.current.threads[0]?.revision).toBe(3);
     });
   });
 });
