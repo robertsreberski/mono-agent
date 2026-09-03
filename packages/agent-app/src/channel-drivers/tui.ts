@@ -88,14 +88,21 @@ export interface TuiChannelOverrides {
  * becomes exactly that the moment one VALID item is bigger than the slice.
  * Round 3 bounded the model projection at 128 KiB and dropped a valid
  * configured fallback; round 4 kept the rule and raised the constant to
- * 512 KiB, and a valid 270,000-byte OpenRouter fallback was still dropped —
+ * 512 KiB, and a then-valid 270,000-byte OpenRouter fallback was still dropped —
  * from a body that would have been 540,778 bytes against a 1,048,576-byte cap.
- * The model-reference grammar has no length bound, so no constant is the right
- * one; the shape was wrong. Dropping an authored route served neither purpose a
- * budget has (the body fit, and nothing was being starved), and it cost real
- * function: the TUI never calls `/v1/models` and rebuilds its picker from
- * `info.models` alone, so a withheld route is an unselectable primary or
- * fallback in the operator's own console.
+ * No constant was the right one; the shape was wrong. Dropping an authored
+ * route served neither purpose a budget has (the body fit, and nothing was
+ * being starved), and it cost real function: the TUI never calls `/v1/models`
+ * and rebuilds its picker from `info.models` alone, so a withheld route is an
+ * unselectable primary or fallback in the operator's own console.
+ *
+ * A single reference is now bounded — `MAX_MODEL_REFERENCE_BYTES`, a containment
+ * ceiling derived from what model ids really are (Pi's catalog tops out at 77
+ * bytes; the `ollama:hf.co/<org>/<repo>:<quant>` long tail runs past 100). That
+ * retires the 270,000-byte vehicle, not the rule: nothing bounds how MANY routes
+ * an operator may declare or how many rows a local `/v1/models` may report, so a
+ * per-contributor slice would still be an opinion about authored content, and
+ * configured routes still get none.
  *
  * So every configured route is admitted, and a result that cannot fit is the
  * fence's call, made loudly. Advisory discovery then spends its own aggregate
@@ -401,10 +408,14 @@ export function createTuiChannelDriver(
       //
       // Bound this projection on its OWN payload budget, never on catalog
       // membership. The catalog's `MAX_CATALOG_ID_BYTES` is a display/paging
-      // bound, not a validity bound: a 257-byte model id parses, routes and runs
-      // exactly like a 20-byte one, so gating `models` on `catalog.resolve()`
-      // deleted a runnable model from every schema-1 client — subtractive at a
-      // schema that cannot be bumped (`TUI_WIRE_SCHEMA` is compared with `!==`).
+      // bound, not a validity bound, and the two answer different questions: a
+      // reference that clears the parser is runnable whether or not any page
+      // would show it, so gating `models` on `catalog.resolve()` deleted a
+      // runnable model from every schema-1 client — subtractive at a schema that
+      // cannot be bumped (`TUI_WIRE_SCHEMA` is compared with `!==`). The
+      // reachable divergence today is the per-provider advertised cap, which
+      // strands hundreds of live rows outside the page while every one of them
+      // stays selectable here.
       // What genuinely must stay bounded is the ONE 1 MiB body `/v1/info` shares
       // across every field, and `sendBoundedInfo` is what enforces it. So the
       // only reasons a DISCOVERED ref is withheld here are that it names nothing

@@ -38,12 +38,19 @@ export const MAX_PAGE_SIZE = 200;
  * entries are skipped rather than truncated, because a truncated id would not
  * resolve anyway.
  *
- * These are display/paging bounds, NOT validity bounds: the runtime reference
- * parser imposes no length limit, so a 257-byte model id is genuinely runnable
- * and merely unpageable. `/v1/info.models` deliberately does not inherit them
- * (see the `/v1/info` budget note in `channel-drivers/tui.ts`) — reusing them
- * there deleted runnable models from schema-1 clients at a wire schema that
- * cannot be bumped.
+ * These are display/paging bounds, NOT validity bounds, and the distinction
+ * survives the runtime reference parser having acquired a ceiling of its own.
+ * That ceiling (`MAX_MODEL_REFERENCE_BYTES`, agent-runtime's `model-refs.js`) is
+ * a containment bound on the WHOLE `<provider>:<model>` reference, derived from
+ * what model ids really are; it currently sits below `MAX_CATALOG_ID_BYTES`, so
+ * these numbers no longer cut anything a discovered or configured ref can reach
+ * and are kept as the standing bound on the catalog's own projections, whose
+ * inputs (`displayName`, an allowlist `name`) are not references and are not
+ * length-validated by config.
+ *
+ * `/v1/info.models` deliberately does not inherit them (see the `/v1/info`
+ * budget note in `channel-drivers/tui.ts`) — reusing them there deleted runnable
+ * models from schema-1 clients at a wire schema that cannot be bumped.
  *
  * PROVIDER ids and labels are bounded by the shared wire contract instead
  * (`MAX_INFO_PROVIDER_ID_BYTES`/`..._LABEL_BYTES` in `@mono-agent/agent-contracts`),
