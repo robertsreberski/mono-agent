@@ -8,6 +8,7 @@ import {
   parseCronOperatorRunSummary,
   parseProcessJobProjection,
   parseAgentStreamFrame,
+  MAX_INFO_BODY_BYTES,
   type AgentLiveInputSettlement,
   type AgentLiveInputUnavailableReason,
   type AgentAttachment,
@@ -42,7 +43,6 @@ import { errorMessage, WebConsoleError } from "./errors.js";
 import { isTrustedOperatorBaseUrl } from "./discovery.js";
 
 const OPERATOR_WIRE_SCHEMA = 1;
-const MAX_INFO_BODY_BYTES = 1024 * 1024;
 const MAX_PROCESS_JOBS_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 // Compatibility boundary: older operators may emit frames up to 8 MiB. New

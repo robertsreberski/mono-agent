@@ -105,6 +105,18 @@ export interface AgentAttachment {
 export const DEFAULT_AGENT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
 
 /**
+ * Maximum serialized size of an agent's `/v1/info` body.
+ *
+ * Load-bearing in both directions, which is why it lives here rather than beside
+ * either user. The operator adapter sheds optional fields to stay under it; the
+ * console's operator client reads at most this many bytes and rejects a larger
+ * body wholesale. A producer that exceeded a consumer that had drifted smaller
+ * would not degrade the agent — it would show it OFFLINE, on a 5 s poll, behind
+ * a debug-level log. One export removes the possibility.
+ */
+export const MAX_INFO_BODY_BYTES = 1024 * 1024;
+
+/**
  * Transport-neutral MIME types accepted by the built-in attachment flows.
  * Keeping this list beside {@link AgentAttachment} prevents browser and chat
  * adapters from drifting into subtly different upload behavior.

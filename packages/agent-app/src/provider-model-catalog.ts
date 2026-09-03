@@ -49,6 +49,35 @@ const withinBytes = (value: string, max: number): boolean =>
 export const DEFAULT_MAX_ADVERTISED_PER_PROVIDER = 100;
 export const MAX_SEARCH_RESULTS = 100;
 
+/**
+ * Producer-side bounds on ONE `describe()` entry's effort ladder.
+ *
+ * The built-in path is already bounded — `resolveAdvertisedModelEffortForBuiltin`
+ * runs every level through the `EFFORT_LEVELS` allowlist. The LOCAL path is not:
+ * `resolveModelEffortLevels` returns `capabilities.reasoning_levels` verbatim
+ * from `providers.local[].models[].capabilities`, which config validates for
+ * neither element length nor count. A single authored megabyte-wide level
+ * therefore reached `/v1/info` unmeasured and blew the shared 1 MiB body cap,
+ * taking the agent offline rather than degrading it.
+ *
+ * An over-long level is DROPPED rather than truncated: a truncated effort name
+ * would not be accepted by the runtime anyway, so publishing it offers a
+ * selection whose next turn fails. When nothing survives, `effortLevels` is
+ * omitted entirely and the client falls back to the global effort enum — the
+ * same degrade path a cloud model with unknown metadata already takes.
+ */
+const MAX_ADVERTISED_EFFORT_LEVELS = 32;
+const MAX_ADVERTISED_EFFORT_LEVEL_BYTES = 64;
+
+function boundedEffortLevels(levels: readonly string[] | undefined): readonly string[] | undefined {
+  if (levels === undefined) return undefined;
+  const bounded = levels
+    .filter((level) => withinBytes(level, MAX_ADVERTISED_EFFORT_LEVEL_BYTES))
+    .slice(0, MAX_ADVERTISED_EFFORT_LEVELS);
+  if (bounded.length === 0) return undefined;
+  return bounded.length === levels.length ? levels : bounded;
+}
+
 export interface ProviderModelCatalogInput {
   /** Configured provider definitions (the canonical `providers.entries` map). */
   readonly providers?: readonly ProviderDefinition[];
@@ -386,8 +415,14 @@ export function buildProviderModelCatalog(
       ...(localProviders === undefined ? {} : { localProviders }),
     });
     const contextWindow = resolveContextWindow(ref);
+    // `effortLevels` is the ONLY unbounded field in this projection.
+    // `provider` and `providerLabel` need no clamp of their own: the label is
+    // either a short Pi built-in label or the provider id verbatim, and the id
+    // repeats the provider half of this entry's own key — so a pathological one
+    // is charged, not hidden, by the caller's per-entry byte measurement.
+    const effortLevels = boundedEffortLevels(effort.effortLevels);
     return {
-      ...(effort.effortLevels === undefined ? {} : { effortLevels: effort.effortLevels }),
+      ...(effortLevels === undefined ? {} : { effortLevels }),
       reasoning: effort.reasoning,
       ...(effort.reasoningMode === undefined ? {} : { reasoningMode: effort.reasoningMode }),
       ...(contextWindow === undefined ? {} : { contextWindow }),

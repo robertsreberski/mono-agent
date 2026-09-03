@@ -30,6 +30,8 @@ interface BuildInputOptions {
   readonly effort?: string;
   readonly fallbackModels?: readonly { provider: string; model: string }[];
   readonly localProviders?: readonly LocalProviderDefinition[];
+  /** Canonical `providers.entries` list, for the provider-summary budget. */
+  readonly providerEntries?: readonly { id: string }[];
 }
 
 function baseInput(options: BuildInputOptions = {}): ChannelStartInput<TuiAdapterConfig> {
@@ -47,7 +49,11 @@ function baseInput(options: BuildInputOptions = {}): ChannelStartInput<TuiAdapte
       },
       context: { identityPath: "/tmp/IDENTITY.md", selectedSkills: [] },
       tools: { disallowedTools: [] },
-      ...(options.localProviders === undefined ? {} : { providers: { local: options.localProviders } }),
+      ...(options.providerEntries !== undefined
+        ? { providers: { entries: options.providerEntries } }
+        : options.localProviders === undefined
+          ? {}
+          : { providers: { local: options.localProviders } }),
     } as never,
     responder: noopResponder,
     cwd: "/tmp",
@@ -333,6 +339,215 @@ describe("tui channel driver — info composition", () => {
     expect(Buffer.byteLength(JSON.stringify(info), "utf8")).toBeLessThan(1024 * 1024);
     // A tail cut in discovery order, never a reorder.
     expect(info.models?.[1]).toBe(flood[0]!.ref);
+  });
+
+  it("publishes every ref of a realistic 600-model local catalog", async () => {
+    const localProviders: readonly LocalProviderDefinition[] = [
+      { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
+    ];
+    // 600 refs of ~240 bytes: the shape a large but entirely ordinary local
+    // install has. They serialize to ~347 KB in both /v1/info projections
+    // together, which fits the discovered slice with room to spare. The old
+    // per-ref ESTIMATE (`bytes * 4 + 512` against a 256 KiB slice) charged
+    // 1,472 bytes each and admitted only 178 of them.
+    //
+    // Those 422 dropped refs were not merely un-paginated: the TUI has no
+    // /v1/models call site at all (`applyAgentInfo` builds its picker from
+    // /v1/info.models alone), so each one was UNSELECTABLE -- a subtractive
+    // change at a wire schema the console compares with `!==`.
+    const suffix = "y".repeat(240 - "lmstudio:model-000:".length);
+    const catalog = Array.from({ length: 600 }, (_unused, index) => ({
+      ref: `lmstudio:model-${String(index).padStart(3, "0")}:${suffix}`,
+      label: "local",
+      providerId: "lmstudio",
+    })) satisfies DiscoveredLocalModel[];
+    expect(Buffer.byteLength(catalog[0]!.ref, "utf8")).toBe(240);
+
+    const captured = await startCapturingTui({
+      localProviders,
+      discoverModels: async () => catalog,
+    });
+    const info = await resolveInfo(captured);
+
+    expect(info.models).toEqual([
+      "anthropic:claude-fable-5",
+      ...catalog.map((model) => model.ref),
+    ]);
+    expect(Object.keys(info.modelOptions ?? {})).toHaveLength(601);
+    expect(Buffer.byteLength(JSON.stringify(info), "utf8")).toBeLessThan(1024 * 1024);
+  });
+
+  it("charges JSON escaping, so control-byte refs cannot overshoot the model budget", async () => {
+    const localProviders: readonly LocalProviderDefinition[] = [
+      { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
+    ];
+    // The invariant: whatever a local endpoint reports, the two model
+    // projections together never serialize past the budgets they were given.
+    //
+    // An arithmetic estimate over the RAW ref cannot hold that line. Each C0
+    // byte serializes to six (`\u0000`), and the ref appears at full escaped
+    // length TWICE -- once as a `models` element, once as the `modelOptions`
+    // key. A 4,009-byte ref of NULs therefore costs 48 KB on the wire while
+    // `bytes * 4 + 512` charges 16.5 KB: the estimate admitted 23 of these and
+    // emitted 1.1 MB, over the cap that takes the agent offline.
+    const escaped = Array.from({ length: 30 }, (_unused, index) => ({
+      ref: `lmstudio:${String(index).padStart(3, "0")}${"\u0000".repeat(4_000)}`,
+      label: "escaped",
+      providerId: "lmstudio",
+    })) satisfies DiscoveredLocalModel[];
+
+    const captured = await startCapturingTui({
+      localProviders,
+      discoverModels: async () => escaped,
+    });
+    const info = await resolveInfo(captured);
+
+    const projections = Buffer.byteLength(
+      JSON.stringify({ models: info.models, modelOptions: info.modelOptions }),
+      "utf8",
+    );
+    // 128 KiB configured routes + 384 KiB discovered models.
+    expect(projections).toBeLessThanOrEqual((128 + 384) * 1024);
+    expect(Buffer.byteLength(JSON.stringify(info), "utf8")).toBeLessThan(1024 * 1024);
+    // Bounded, not emptied: escaping costs these refs a lot, but some still run.
+    expect(info.models?.length).toBeGreaterThan(1);
+  });
+
+  it("skips only the oversized discovered row and keeps every ref behind it", async () => {
+    const localProviders: readonly LocalProviderDefinition[] = [
+      { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
+    ];
+    // Heterogeneous costs on purpose. One pathological id must cost only
+    // itself: `break` here would delete four runnable, selectable models
+    // because a fifth one was too big, and /v1/info.models is the only list
+    // the TUI's picker reads.
+    const rows = [
+      { ref: "lmstudio:small-0", label: "s0", providerId: "lmstudio" },
+      { ref: "lmstudio:small-1", label: "s1", providerId: "lmstudio" },
+      { ref: `lmstudio:${"x".repeat(200_000)}`, label: "huge", providerId: "lmstudio" },
+      { ref: "lmstudio:small-2", label: "s2", providerId: "lmstudio" },
+      { ref: "lmstudio:small-3", label: "s3", providerId: "lmstudio" },
+    ] satisfies DiscoveredLocalModel[];
+
+    const captured = await startCapturingTui({
+      localProviders,
+      discoverModels: async () => rows,
+    });
+    const info = await resolveInfo(captured);
+
+    const expected = [
+      "anthropic:claude-fable-5",
+      "lmstudio:small-0",
+      "lmstudio:small-1",
+      "lmstudio:small-2",
+      "lmstudio:small-3",
+    ];
+    expect(info.models).toEqual(expected);
+    expect(Object.keys(info.modelOptions ?? {}).sort()).toEqual([...expected].sort());
+  });
+
+  it("bounds an unbounded local effort ladder instead of dropping the model", async () => {
+    // `capabilities.reasoning_levels` reaches /v1/info from config verbatim:
+    // `resolveModelEffortLevels` returns it unfiltered, and config validates it
+    // for neither element length nor count. A single 1.1 MB level was charged
+    // 556 bytes by the old estimate and emitted a 1.1 MB info object.
+    const localProviders: readonly LocalProviderDefinition[] = [{
+      id: "lmstudio",
+      type: "lmstudio",
+      baseUrl: "http://localhost:1234",
+      enabled: true,
+      models: [{
+        name: "big-effort",
+        capabilities: { reasoning: true, reasoning_levels: ["z".repeat(1_100_000)] },
+      }],
+    }] as unknown as readonly LocalProviderDefinition[];
+
+    const captured = await startCapturingTui({
+      localProviders,
+      discoverModels: async () => [
+        { ref: "lmstudio:big-effort", label: "big", providerId: "lmstudio" },
+      ],
+    });
+    const info = await resolveInfo(captured);
+
+    // The model stays SELECTABLE. Dropping the ladder costs the picker its
+    // graded levels and it falls back to the global effort enum; dropping the
+    // ref would cost the operator the model itself.
+    expect(info.models).toContain("lmstudio:big-effort");
+    expect(info.modelOptions?.["lmstudio:big-effort"]).toEqual({
+      reasoning: true,
+      reasoningMode: "effort",
+      provider: "lmstudio",
+      providerLabel: "lmstudio",
+    });
+    expect(Buffer.byteLength(JSON.stringify(info), "utf8")).toBeLessThan(1024 * 1024);
+  });
+
+  it("caps how many effort levels one model may advertise", async () => {
+    const levels = Array.from({ length: 5_000 }, (_unused, index) => `e${String(index)}`);
+    const localProviders: readonly LocalProviderDefinition[] = [{
+      id: "lmstudio",
+      type: "lmstudio",
+      baseUrl: "http://localhost:1234",
+      enabled: true,
+      models: [{
+        name: "many-levels",
+        capabilities: { reasoning: true, reasoning_levels: levels },
+      }],
+    }] as unknown as readonly LocalProviderDefinition[];
+
+    const captured = await startCapturingTui({
+      localProviders,
+      discoverModels: async () => [
+        { ref: "lmstudio:many-levels", label: "many", providerId: "lmstudio" },
+      ],
+    });
+    const info = await resolveInfo(captured);
+
+    // Individually valid, collectively unbounded: count is capped too.
+    expect(info.modelOptions?.["lmstudio:many-levels"]?.effortLevels).toEqual(levels.slice(0, 32));
+  });
+
+  it("bounds the provider summary the producer emits", async () => {
+    // The consumer stops parsing at 64 providers; the producer capped none, so
+    // 20,000 configured entries generated a 1.68 MB body and took the agent
+    // offline. `providers` gets its own measured 128 KiB slice.
+    const providerEntries = Array.from({ length: 3_000 }, (_unused, index) => ({
+      id: `vendor-${String(index).padStart(5, "0")}`,
+    }));
+
+    const captured = await startCapturingTui({ providerEntries });
+    const info = await resolveInfo(captured);
+
+    const providerBytes = Buffer.byteLength(JSON.stringify(info.providers), "utf8");
+    expect(providerBytes).toBeLessThanOrEqual(128 * 1024);
+    expect(info.providers?.length).toBeGreaterThan(64);
+    expect(info.providers?.length).toBeLessThan(providerEntries.length);
+    // The provider the agent actually routes through survives the cut. It is
+    // LAST in catalog order (declared entries first, then route providers), so
+    // a plain prefix cut would have dropped it and kept 1,600 the operator
+    // merely listed.
+    expect(info.providers?.map((provider) => provider.id)).toContain("anthropic");
+    // Order still follows the catalog: a cut, never a reorder.
+    expect(info.providers?.[0]?.id).toBe("vendor-00000");
+    expect(info.providers?.at(-1)?.id).toBe("anthropic");
+    expect(Buffer.byteLength(JSON.stringify(info), "utf8")).toBeLessThan(1024 * 1024);
+  });
+
+  it("bounds the configured-route half of the model projections too", async () => {
+    // Configured routes were uncapped in both count and per-ref length: one
+    // accepted 400,007-byte route generated 1.2 MB and made the console's
+    // `info()` reject the whole response.
+    const captured = await startCapturingTui({
+      fallbackModels: [
+        { provider: "openrouter", model: "gpt-5.6-sol" },
+        { provider: "openrouter", model: "m".repeat(400_000) },
+      ],
+    });
+    const info = await resolveInfo(captured);
+
+    expect(info.models).toEqual(["anthropic:claude-fable-5", "openrouter:gpt-5.6-sol"]);
+    expect(Buffer.byteLength(JSON.stringify(info), "utf8")).toBeLessThan(1024 * 1024);
   });
 
   it("resolves toggle reasoning for a configured Ollama route through describe", async () => {
