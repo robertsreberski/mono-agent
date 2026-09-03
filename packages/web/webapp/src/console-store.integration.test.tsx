@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
 import {
+  CATALOG_TTL_MS,
   ConsoleStoreProvider,
   cronChannelPath,
   preferenceKeyForThread,
@@ -23,6 +24,8 @@ vi.mock("./api", () => ({
     deleteThread: vi.fn(),
     patchAgent: vi.fn(),
     agentSkills: vi.fn(),
+    agentModels: vi.fn(),
+    startTurn: vi.fn(),
     cronOverview: vi.fn(),
     cronRuns: vi.fn(),
     cronRun: vi.fn(),
@@ -354,7 +357,11 @@ describe("ConsoleStoreProvider integration", () => {
     await act(async () => store.current.archiveThread("redirected-legacy-id"));
 
     expect(api.thread).toHaveBeenCalledWith("redirected-legacy-id");
-    expect(api.patchThread).toHaveBeenCalledWith("canonical-thread", { archived: true });
+    expect(api.patchThread).toHaveBeenCalledWith(
+      "canonical-thread",
+      { archived: true },
+      expect.any(AbortSignal),
+    );
   });
 
   it("converges a selected cron feed on a live event without a manual refresh", async () => {
@@ -740,6 +747,278 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.threads.map((item) => item.id)).toEqual([]);
       // It must not have written to it either.
       expect(api.patchThread).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("per-conversation write ordering", () => {
+    const alphaThread = thread("alpha-thread", "alpha");
+
+    const seedOneThread = () => {
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alphaThread],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alphaThread] });
+      vi.mocked(api.thread).mockResolvedValue(detail(alphaThread, "hello"));
+    };
+
+    /**
+     * Records what the server SAW, in order, and lets each call be released by
+     * hand. It never looks at a request body: an earlier chain that serialized
+     * only the conditional migration write passed the previous ordering test
+     * once its mock recognised the old request shape, so nothing here is
+     * allowed to know what any of these writes looks like.
+     */
+    const patchRecorder = () => {
+      const order: string[] = [];
+      const gates: (() => void)[] = [];
+      let issued = 0;
+      vi.mocked(api.patchThread).mockImplementation(async (_threadId, patch) => {
+        const index = issued;
+        issued += 1;
+        order.push(`start:${String(index)}`);
+        await new Promise<void>((resolve) => { gates[index] = resolve; });
+        order.push(`end:${String(index)}`);
+        return {
+          ...alphaThread,
+          ...("title" in patch ? { title: patch.title ?? alphaThread.title } : {}),
+          ...("archived" in patch
+            ? { archivedAt: patch.archived === true ? "2026-08-14T09:00:00.000Z" : null }
+            : {}),
+        };
+      });
+      return { order, release: (index: number) => { gates[index]?.(); } };
+    };
+
+    it("holds a rename and an archive to the order they were issued", async () => {
+      // Both PATCH the same row and both apply the COMPLETE thread the server
+      // returns, so released together the older response overwrites the newer
+      // state: holding the rename until the archive had completed put
+      // `archivedAt` back to null.
+      seedOneThread();
+      const { order, release } = patchRecorder();
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      const renamed = store.current.renameThread("alpha-thread", "Renamed");
+      const archived = store.current.archiveThread("alpha-thread");
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+      expect(order).toEqual(["start:0"]);
+
+      await act(async () => {
+        release(0);
+        await renamed;
+      });
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+      expect(order).toEqual(["start:0", "end:0", "start:1"]);
+
+      await act(async () => {
+        release(1);
+        await archived;
+      });
+      expect(order).toEqual(["start:0", "end:0", "start:1", "end:1"]);
+      const [, first, second] = order;
+      expect([first, second]).toEqual(["end:0", "start:1"]);
+      expect(store.current.threads.find((item) => item.id === "alpha-thread")?.archivedAt)
+        .toBe("2026-08-14T09:00:00.000Z");
+    });
+
+    it("does not start a turn until the override writes issued before it have landed", async () => {
+      // A blank selection is omitted from the turn POST and the server then
+      // falls back to the conversation's PERSISTED override, so a
+      // reset-then-send ran the very override the reset had just cleared.
+      seedOneThread();
+      const { order, release } = patchRecorder();
+      vi.mocked(api.startTurn).mockImplementation(async () => {
+        order.push("startTurn");
+        return { thread: alphaThread, turn: { id: "turn-1", status: "running" } };
+      });
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      act(() => { store.current.resetRunOverride(); });
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+      expect(order).toEqual(["start:0"]);
+
+      const sent = store.current.sendTurn({ text: "go" });
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+      expect(api.startTurn).not.toHaveBeenCalled();
+
+      await act(async () => {
+        release(0);
+        await sent;
+      });
+      expect(order).toEqual(["start:0", "end:0", "startTurn"]);
+    });
+  });
+
+  describe("deleted-conversation tombstones", () => {
+    const alphaThread = thread("alpha-thread", "alpha");
+
+    it("keeps a deleted conversation out of every response that outlived it", async () => {
+      // The tombstone used to be consulted at three of eleven insertion points
+      // and recorded only AFTER the delete answered. `refreshNow` issues a
+      // bootstrap on every SSE event behind a 300 ms debounce, so a bootstrap
+      // in flight across a delete is ordinary, not exotic.
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alphaThread],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alphaThread] });
+      vi.mocked(api.thread).mockResolvedValue(detail(alphaThread, "hello"));
+      let releaseDelete: (() => void) | undefined;
+      const deletion = new Promise<void>((resolve) => { releaseDelete = resolve; });
+      vi.mocked(api.deleteThread).mockImplementation(async () => { await deletion; });
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      const deleted = store.current.deleteThread("alpha-thread");
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+
+      // Still in flight. A page and a bootstrap that both still list the
+      // conversation land here, and neither may put it back.
+      await act(async () => { await store.current.loadMoreThreads(); });
+      act(() => FakeEventSource.latest?.emit("threads.changed", {
+        id: "event-1",
+        version: 1,
+        type: "threads.changed",
+        at: "2026-08-14T09:00:00.000Z",
+      }));
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 400); }); });
+      expect(store.current.threads.map((item) => item.id)).toEqual([]);
+
+      await act(async () => {
+        releaseDelete?.();
+        await deleted;
+      });
+      // And a bootstrap that answers after the delete completed is still stale.
+      act(() => FakeEventSource.latest?.emit("threads.changed", {
+        id: "event-2",
+        version: 1,
+        type: "threads.changed",
+        at: "2026-08-14T09:00:01.000Z",
+      }));
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 400); }); });
+      expect(store.current.threads.map((item) => item.id)).toEqual([]);
+      expect(store.current.selectedThreadId).toBeNull();
+    });
+
+    it("restores a conversation whose delete failed", async () => {
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alphaThread],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alphaThread] });
+      vi.mocked(api.thread).mockResolvedValue(detail(alphaThread, "hello"));
+      vi.mocked(api.deleteThread).mockRejectedValue(new Error("delete failed"));
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      await act(async () => {
+        await expect(store.current.deleteThread("alpha-thread")).rejects.toThrow("delete failed");
+      });
+      act(() => FakeEventSource.latest?.emit("threads.changed", {
+        id: "event-1",
+        version: 1,
+        type: "threads.changed",
+        at: "2026-08-14T09:00:00.000Z",
+      }));
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 400); }); });
+      expect(store.current.threads.map((item) => item.id)).toEqual(["alpha-thread"]);
+    });
+  });
+
+  describe("provider catalog freshness", () => {
+    const withProvider = (generation: string) => agent("alpha", {
+      label: "Alpha",
+      generation,
+      models: ["localx:one"],
+      defaultModel: "localx:one",
+      providers: [{ id: "localx", label: "Local X" }],
+    });
+
+    const seedCatalog = (generation: string) => {
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([withProvider(generation)], []));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [] });
+    };
+
+    beforeEach(() => {
+      vi.mocked(api.agentModels).mockResolvedValue({
+        models: [{ id: "one", name: "One", provider: "localx", providerLabel: "Local X" }],
+        truncated: false,
+      });
+    });
+
+    it("refetches a provider once the agent process behind it is a different one", async () => {
+      // A source id outlives the process behind it. Keyed on the id alone the
+      // tab kept offering the retired generation's models until it was
+      // reloaded, and the server rejected every turn that used one.
+      seedCatalog("gen-1");
+      const store = await renderStore();
+      await act(async () => { await store.current.ensureProviderCatalog("localx"); });
+      expect(api.agentModels).toHaveBeenCalledTimes(1);
+
+      // Same source id, same everything else: only the process is new.
+      await act(async () => { await store.current.ensureProviderCatalog("localx"); });
+      expect(api.agentModels).toHaveBeenCalledTimes(1);
+
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([withProvider("gen-2")], []));
+      act(() => FakeEventSource.latest?.emit("agents.changed", {
+        id: "event-1",
+        version: 1,
+        type: "agents.changed",
+        at: "2026-08-14T09:00:00.000Z",
+      }));
+      await waitFor(() => expect(store.current.selectedAgent?.generation).toBe("gen-2"));
+      await waitFor(() => expect(store.current.catalogByProvider.localx).toBeUndefined());
+
+      await act(async () => { await store.current.ensureProviderCatalog("localx"); });
+      expect(api.agentModels).toHaveBeenCalledTimes(2);
+    });
+
+    it("revalidates a provider once its page is older than the catalog lifetime", async () => {
+      // Nothing pushes a catalog change, and a live process can gain or lose
+      // models without ever restarting -- so generation alone cannot see it.
+      seedCatalog("gen-1");
+      const store = await renderStore();
+      await act(async () => { await store.current.ensureProviderCatalog("localx"); });
+      expect(api.agentModels).toHaveBeenCalledTimes(1);
+
+      // Fresh: asking again must not put the same page back on the wire.
+      await act(async () => { await store.current.ensureProviderCatalog("localx"); });
+      expect(api.agentModels).toHaveBeenCalledTimes(1);
+
+      const realNow = Date.now;
+      const shifted = realNow() + CATALOG_TTL_MS + 1;
+      vi.spyOn(Date, "now").mockImplementation(() => shifted);
+      try {
+        await act(async () => { await store.current.ensureProviderCatalog("localx"); });
+      } finally {
+        vi.mocked(Date.now).mockRestore();
+      }
+      expect(api.agentModels).toHaveBeenCalledTimes(2);
+    });
+
+    it("replaces a revalidated page instead of merging a retired model back in", async () => {
+      seedCatalog("gen-1");
+      const store = await renderStore();
+      await act(async () => { await store.current.ensureProviderCatalog("localx"); });
+      expect(store.current.catalogByProvider.localx?.models.map((item) => item.id)).toEqual(["one"]);
+
+      vi.mocked(api.agentModels).mockResolvedValue({
+        models: [{ id: "two", name: "Two", provider: "localx", providerLabel: "Local X" }],
+        truncated: false,
+      });
+      const shifted = Date.now() + CATALOG_TTL_MS + 1;
+      vi.spyOn(Date, "now").mockImplementation(() => shifted);
+      try {
+        await act(async () => { await store.current.ensureProviderCatalog("localx"); });
+      } finally {
+        vi.mocked(Date.now).mockRestore();
+      }
+      expect(store.current.catalogByProvider.localx?.models.map((item) => item.id)).toEqual(["two"]);
     });
   });
 

@@ -39,6 +39,69 @@ function agent(sourceId = "agent-one", supportsAttachments = true): WebAgentSumm
 }
 
 describe("WebStore", () => {
+  it("broadcasts a replaced agent process without broadcasting its heartbeat", async () => {
+    // The generation is what the browser watches to know its per-agent caches
+    // -- the `/v1/models` pages above all -- describe a process that is gone.
+    // It therefore has to reach the browser: a restart behind an otherwise
+    // identical summary must still read as a notable change. The heartbeat
+    // must not, or the whole agent list is rebroadcast every discovery pass.
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    const first = { ...agent(), generation: "gen-1" };
+
+    expect(store.replaceAgents([first])).toBe(true);
+    expect(store.listAgents()[0]?.generation).toBe("gen-1");
+    expect(store.replaceAgents([first])).toBe(false);
+    expect(store.replaceAgents([{ ...first, updatedAt: "2026-07-17T09:00:05.000Z" }])).toBe(false);
+
+    const restarted = { ...first, generation: "gen-2", updatedAt: "2026-07-17T09:00:10.000Z" };
+    expect(store.replaceAgents([restarted])).toBe(true);
+    expect(store.listAgents()[0]?.generation).toBe("gen-2");
+    expect(store.getAgent("agent-one")?.generation).toBe("gen-2");
+
+    // Not a column: it describes the process behind a source id right now, and
+    // a value read back from disk would be a claim about a process nobody
+    // probed. A summary with none leaves the field absent rather than stale.
+    expect(store.replaceAgents([agent()])).toBe(true);
+    expect(store.listAgents()[0]?.generation).toBeUndefined();
+    store.close();
+  });
+
+  it("applies a conditional run-config patch and its refusal in one transaction", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+
+    expect(store.patchThreadIfRunConfigUnset(thread.id, { model: "anthropic:opus-5" }))
+      .toMatchObject({ applied: true, thread: { runModel: "anthropic:opus-5", runEffort: null } });
+
+    const held = store.getThread(thread.id)!;
+    // The precondition covers BOTH fields. Reading only `runModel` let an
+    // adoption overwrite a real effort-only choice made in another tab.
+    store.patchThread(thread.id, { model: null });
+    store.patchThread(thread.id, { effort: "low" });
+    const contested = store.getThread(thread.id)!;
+    const refused = store.patchThreadIfRunConfigUnset(thread.id, {
+      model: "anthropic:sonnet-5",
+      effort: "high",
+    });
+    expect(refused.applied).toBe(false);
+    // A refusal writes nothing at all: same revision, same everything.
+    expect(refused.thread).toEqual(contested);
+    expect(store.getThread(thread.id)).toEqual(contested);
+    expect(held.runModel).toBe("anthropic:opus-5");
+
+    store.patchThread(thread.id, { effort: null });
+    expect(store.patchThreadIfRunConfigUnset(thread.id, { effort: "high" }))
+      .toMatchObject({ applied: true, thread: { runEffort: "high" } });
+    expect(() => store.patchThreadIfRunConfigUnset("missing", { effort: "low" }))
+      .toThrowError(/not found/iu);
+    store.close();
+  });
+
   it("applies agent titles idempotently until a manual rename permanently locks the thread", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

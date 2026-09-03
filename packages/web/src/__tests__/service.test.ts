@@ -2278,6 +2278,142 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("never admits a page fetched under one generation into the generation that replaced it", async () => {
+    // The page is proxied across an await. A discovery refresh can retire this
+    // agent's generation inside that window, and keyed by source id alone the
+    // reply -- from a process that no longer exists -- was written straight
+    // into the freshly reconciled map, where `source: "page"` overwrites
+    // unconditionally. Generation 1's ladder then judged generation 2's turns.
+    let heldModelsPage: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => { heldModelsPage = resolve; });
+    let modelPages = 0;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "provider/default",
+        models: ["provider/default"],
+        modelOptions: { "provider/default": { effortLevels: ["low"], reasoning: true } },
+        capabilities: { attachments: true },
+      });
+      if (/\/v1\/models(?:\?|$)/u.test(url)) {
+        modelPages += 1;
+        if (modelPages === 1) await held;
+        return Response.json({
+          models: [{
+            id: "strict",
+            name: "Strict",
+            provider: "localx",
+            providerLabel: "Local X",
+            reasoning: true,
+            effortLevels: ["low"],
+          }],
+          truncated: false,
+        });
+      }
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+
+    const first = fakeDiscoveredAgent();
+    const second = fakeDiscoveredAgent({
+      baseUrl: "http://127.0.0.1:45124/gui",
+      source: { ...first.source, pid: 456, startedAt: "2026-07-18T08:00:00.000Z" },
+    });
+    let discovered = [first];
+    const service = await createService({ fetchImpl, discoverImpl: async () => discovered });
+
+    const stalePage = service.agentModels("agent-one", { provider: "localx", limit: 50 });
+    await waitFor(() => modelPages === 1);
+    discovered = [second];
+    await service.refreshAgents();
+    heldModelsPage?.();
+    await stalePage;
+
+    // Generation 2 has said nothing about `localx:strict`, so the permissive
+    // floor applies. If generation 1's page were admitted here, its low-only
+    // ladder would reject the grade the running agent accepts.
+    const contaminated = service.createThread("agent-one");
+    await expect(service.startTurn(contaminated.id, {
+      text: "gen2",
+      model: "localx:strict",
+      effort: "high",
+    })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+
+    // The other half of the invariant: a page fetched WITHIN generation 2 is
+    // still admitted, so this is dropping stale writes rather than all of them.
+    await service.agentModels("agent-one", { provider: "localx", limit: 50 });
+    const current = service.createThread("agent-one");
+    await expect(service.startTurn(current.id, {
+      text: "gen2-fresh",
+      model: "localx:strict",
+      effort: "high",
+    })).rejects.toMatchObject({ code: "invalid_effort" });
+    await expect(service.startTurn(current.id, {
+      text: "gen2-fresh",
+      model: "localx:strict",
+      effort: "low",
+    })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+
+  it("judges a blank selection against the route the picker offers for it", async () => {
+    // A payload that advertises a shortlist but no default. The browser fell
+    // back to `models[0]` while this stopped at `defaultModel` and judged
+    // against the global ladder, so the picker offered no grade at all while
+    // the server accepted every one of them.
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        models: ["local:ungraded", "local:graded"],
+        modelOptions: {
+          "local:ungraded": { reasoning: false },
+          "local:graded": { reasoning: true, effortLevels: ["low"] },
+        },
+        capabilities: { attachments: true },
+      });
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+
+    const blank = service.createThread("agent-one");
+    await expect(service.startTurn(blank.id, { text: "blank", effort: "high" }))
+      .rejects.toMatchObject({ code: "invalid_effort" });
+    // And the explicit route still governs itself.
+    await expect(service.startTurn(blank.id, { text: "explicit", model: "local:graded", effort: "low" }))
+      .resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+
+  it("leaves a lost conditional patch entirely without effect", async () => {
+    // The loser must write nothing and announce nothing: an event for a write
+    // that did not happen makes every other tab refetch a thread that has not
+    // moved, and a revision bump makes it look as if it had.
+    const service = await createService({});
+    const thread = service.createThread("agent-one");
+    // Effort-only, which the precondition has to cover as much as a model.
+    service.patchThread(thread.id, { effort: "low" });
+    const before = service.thread(thread.id)?.thread;
+
+    const events: string[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event.type); });
+    const refused = service.patchThread(thread.id, {
+      model: "anthropic:opus-5",
+      effort: "high",
+      ifRunConfigUnset: true,
+    });
+    unsubscribe();
+
+    expect(refused).toMatchObject({ runModel: null, runEffort: "low" });
+    expect(service.thread(thread.id)?.thread).toEqual(before);
+    expect(service.thread(thread.id)?.thread.revision).toBe(before?.revision);
+    expect(events).toEqual([]);
+    await service.stop();
+  });
+
   it("lets a re-fetched page replace the ladder an earlier page advertised", async () => {
     // Within one generation the newest page is the live word on what it
     // serves. Refusing to replace known metadata with later silence pinned the

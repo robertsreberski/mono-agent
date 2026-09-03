@@ -66,7 +66,7 @@ import {
   type DiscoveredOperatorAgent,
 } from "./discovery.js";
 import { conversationTitleFromFrame } from "./conversation-title.js";
-import { advertisedEffortLevels, effortLevelsForModel } from "./effort-ladder.js";
+import { advertisedEffortLevels, effectiveModelForAgent, effortLevelsForModel } from "./effort-ladder.js";
 import { errorCode, errorMessage, WebConsoleError } from "./errors.js";
 import { OperatorClient, type OperatorInfo } from "./operator-client.js";
 import {
@@ -635,15 +635,19 @@ export class WebService {
   patchThread(id: string, patch: PatchWebThreadInput): WebThread {
     if (patch.ifRunConfigUnset === true) {
       // Compare-and-set for the console's one-time adoption of a browser-local
-      // override. Synchronous by construction -- `getThread` and `patchThread`
-      // are both `better-sqlite3` calls on this one thread -- so no other
-      // request can slip between the check and the write. Whoever set an
-      // override first keeps it; the loser adopts what it reads back.
-      const current = this.store.getThread(id);
-      if (current === undefined) {
-        throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
-      }
-      if (current.runModel !== null || current.runEffort !== null) return current;
+      // override. Whoever set an override first keeps it; the loser adopts what
+      // it reads back, and no event is emitted because nothing changed.
+      //
+      // The check and the write are one `BEGIN IMMEDIATE` inside the store, not
+      // two calls from here: this request handler is synchronous, so no other
+      // HTTP request can interleave, but the process lease is held on a
+      // separate database file and does not stop a second connection to the
+      // state DB from writing between a bare read and a bare write.
+      const result = this.store.patchThreadIfRunConfigUnset(id, patch);
+      if (!result.applied) return result.thread;
+      this.emit("thread.changed", result.thread.id, { thread: result.thread });
+      this.emit("threads.changed", result.thread.id);
+      return result.thread;
     }
     const thread = this.store.patchThread(id, patch);
     this.emit("thread.changed", thread.id, { thread });
@@ -763,6 +767,7 @@ export class WebService {
     if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     const connection = this.connections.get(sourceId);
     if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
+    const generation = this.modelCatalogCache.get(sourceId)?.generation;
     const page = await connection.client.models({
       ...(input.provider === undefined ? {} : { provider: input.provider }),
       ...(input.q === undefined ? {} : { q: input.q }),
@@ -775,17 +780,24 @@ export class WebService {
     // and the only place the effort ladder a catalog model advertises is ever
     // seen -- `modelOptions` never describes it, so dropping it here is what
     // left effort validation with nothing to judge against.
-    const entries = this.catalogEntries(sourceId);
-    for (const model of page.models) {
+    //
+    // Admitted under the generation the request was ISSUED under, never under
+    // whatever is current when it answers. A discovery refresh can retire this
+    // agent's generation inside the await above, and keyed by source id alone
+    // the reply -- fetched from a process that is gone -- was written straight
+    // into the freshly reconciled map, where `source: "page"` overwrites
+    // unconditionally. Generation 1's ladder then judged generation 2's turns.
+    this.admitCatalogRefs(sourceId, generation, page.models.flatMap((model) => {
       const record: CatalogModelRecord = { source: "page", efforts: advertisedEffortLevels(model) };
       // The wire carries provider-local ids while every selection surface
       // speaks the canonical `<provider>:<model>` reference. Admit both, or a
       // turn is judged against metadata the page did advertise but under a
       // name nothing ever asks for.
-      this.admitModelRef(entries, model.id, record);
       const reference = model.provider ? `${model.provider}:${model.id}` : model.id;
-      if (reference !== model.id) this.admitModelRef(entries, reference, record);
-    }
+      const entries: (readonly [string, CatalogModelRecord])[] = [[model.id, record]];
+      if (reference !== model.id) entries.push([reference, record]);
+      return entries;
+    }));
     return page;
   }
 
@@ -1556,7 +1568,8 @@ export class WebService {
     ]));
     this.reconcileModelCatalogCache(generations);
     const summaries = await Promise.all(discovered.map(async (agent): Promise<WebAgentSummary> => {
-      if (agent.baseUrl === undefined) return offlineSummary(agent);
+      const generation = generations.get(agent.source.sourceId)!;
+      if (agent.baseUrl === undefined) return offlineSummary(agent, generation);
       const client = new OperatorClient({
         baseUrl: agent.baseUrl,
         ...(agent.apiKey === undefined ? {} : { apiKey: agent.apiKey }),
@@ -1566,10 +1579,11 @@ export class WebService {
       try {
         const info = await client.info(AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]));
         nextConnections.set(agent.source.sourceId, { client, info });
-        this.seedModelCatalogFromOptions(agent.source.sourceId, info.modelOptions);
+        this.seedModelCatalogFromOptions(agent.source.sourceId, generation, info.modelOptions);
         const efforts = collectEfforts(info);
         return {
           sourceId: agent.source.sourceId,
+          generation,
           label: info.label ?? agent.source.label,
           status: agent.source.health === "running" ? "online" : "degraded",
           pinned: false,
@@ -1590,7 +1604,7 @@ export class WebService {
           sourceId: agent.source.sourceId,
           error: errorMessage(error),
         });
-        return offlineSummary(agent);
+        return offlineSummary(agent, generation);
       }
     }));
     this.connections = nextConnections;
@@ -1811,18 +1825,31 @@ export class WebService {
     return connection;
   }
 
-  /** Tier-2 admission: the catalog cache, seeded from `modelOptions` keys and
-   *  appended to by every proxied `/v1/models` page. */
-  private catalogEntries(sourceId: string): Map<string, CatalogModelRecord> {
-    let entry = this.modelCatalogCache.get(sourceId);
-    if (entry === undefined) {
-      // Only reachable before any refresh has seen this source, which no
-      // caller can be: both feeds run behind a live connection. The empty
-      // generation makes the next refresh replace it rather than adopt it.
-      entry = { generation: "", models: new Map() };
-      this.modelCatalogCache.set(sourceId, entry);
-    }
-    return entry.models;
+  /**
+   * Tier-2 admission: the catalog cache, seeded from `modelOptions` keys and
+   * appended to by every proxied `/v1/models` page.
+   *
+   * Both feeds cross an await between deciding what to admit and admitting it,
+   * so both name the generation they read. A write whose generation is no
+   * longer the one on file is dropped outright rather than filed under the
+   * successor: it describes a process that has been replaced, and admitting it
+   * is exactly the cross-generation contamination `reconcileModelCatalogCache`
+   * exists to prevent. Nothing is created here either -- an entry exists for
+   * every discovered source from the moment a refresh reconciles it, and a
+   * source with no entry is one discovery has dropped.
+   *
+   * @returns whether the refs were admitted.
+   */
+  private admitCatalogRefs(
+    sourceId: string,
+    generation: string | undefined,
+    refs: readonly (readonly [string, CatalogModelRecord])[],
+  ): boolean {
+    if (generation === undefined) return false;
+    const entry = this.modelCatalogCache.get(sourceId);
+    if (entry === undefined || entry.generation !== generation) return false;
+    for (const [ref, record] of refs) this.admitModelRef(entry.models, ref, record);
+    return true;
   }
 
   /**
@@ -1853,15 +1880,17 @@ export class WebService {
 
   private seedModelCatalogFromOptions(
     sourceId: string,
+    generation: string,
     modelOptions: Readonly<Record<string, WebModelOption>> | undefined,
   ): void {
     if (modelOptions === undefined) return;
-    const entries = this.catalogEntries(sourceId);
     // `modelOptions` stays the authority for the refs it names, so the seed
     // only records admission; recording a ladder here would shadow it.
-    for (const key of Object.keys(modelOptions)) {
-      this.admitModelRef(entries, key, { source: "shortlist", efforts: undefined });
-    }
+    this.admitCatalogRefs(
+      sourceId,
+      generation,
+      Object.keys(modelOptions).map((key) => [key, { source: "shortlist", efforts: undefined }] as const),
+    );
   }
 
   private admitModelRef(
@@ -1895,7 +1924,11 @@ export class WebService {
     if (model !== undefined && !this.modelAdmitted(sourceId, agent, model)) {
       throw new WebConsoleError("invalid_model", "This agent did not advertise the selected model.", 400);
     }
-    const effectiveModel = model ?? agent.defaultModel;
+    // Both ends resolve a blank selection to the same route -- the browser fell
+    // back to the first shortlist entry while this stopped at `defaultModel`,
+    // so any `/v1/info` omitting `model` had the picker offering one ladder and
+    // this rejecting from another.
+    const effectiveModel = effectiveModelForAgent(agent, model);
     // `modelOptions` only ever covers the configured shortlist, so a model
     // reached through the provider catalog has no entry there. `effort-ladder`
     // holds the tiering, and the browser runs the exact same function, so the
@@ -2352,14 +2385,27 @@ export class WeightedTurnBudget {
  * told us: a reconfigured agent restarts at a new endpoint, with a new pid and
  * a new `startedAt`, and advertises a different catalog under the same id.
  * Deliberately excludes `updatedAt`, which every heartbeat moves.
+ *
+ * This is what the model catalog cache is scoped to -- and, since the browser
+ * caches the same `/v1/models` pages and had nothing generation-shaped to
+ * watch, what `WebAgentSummary.generation` carries to it.
+ *
+ * Hashed because it now goes on the wire: the raw form names the agent's
+ * operator endpoint and pid, and the console has no reason to hand those to a
+ * page. The token only has to be stable while one process lives and different
+ * once it is replaced, which a digest of those three fields is.
  */
 function agentGeneration(agent: DiscoveredOperatorAgent): string {
-  return [agent.baseUrl ?? "", agent.source.pid ?? "", agent.source.startedAt].join("|");
+  return createHash("sha256")
+    .update([agent.baseUrl ?? "", agent.source.pid ?? "", agent.source.startedAt].join("|"))
+    .digest("hex")
+    .slice(0, 16);
 }
 
-function offlineSummary(agent: DiscoveredOperatorAgent): WebAgentSummary {
+function offlineSummary(agent: DiscoveredOperatorAgent, generation: string): WebAgentSummary {
   return {
     sourceId: agent.source.sourceId,
+    generation,
     label: agent.source.label,
     status: "offline",
     pinned: false,

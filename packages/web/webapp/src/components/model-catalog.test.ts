@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
+import * as ladder from "../../../src/effort-ladder.js";
 import { advertisedEffortLevels, effortLevelsForModel } from "../../../src/effort-ladder.js";
 import type { CatalogModel } from "../types";
 import { agent } from "../test/fixtures";
+import * as catalog from "./model-catalog";
 import {
   AUTOMATIC_MODEL_ID,
   buildSelectorModels,
   defaultEffortName,
+  effectiveModelForAgent,
   effortLevelsForAgentModel,
   effortName,
   GLOBAL_EFFORT_LEVELS,
@@ -279,5 +282,48 @@ describe("groupSelectorModels", () => {
     expect(groups[0]?.label).toBe("pi");
     expect(groups[1]?.label).toBe("Anthropic");
     expect(groups[1]?.models.map((model) => model.id)).toEqual([sonnet]);
+  });
+});
+describe("the shared effort module", () => {
+  it("is the SAME module both ends run, not an equal copy of it", () => {
+    // The value-level table below this pins that the browser AGREES with
+    // `packages/web/src/effort-ladder.ts`. It cannot tell agreement from
+    // duplication: replacing the import in `model-catalog.ts` with a local copy
+    // that returns identical values passed all 28 of these tests, and a copy is
+    // exactly how the two ends drifted the first time. Identity is the part
+    // that cannot be satisfied by re-deriving the rule.
+    expect(catalog.effortLevelsForModel).toBe(ladder.effortLevelsForModel);
+    expect(catalog.advertisedEffortLevels).toBe(ladder.advertisedEffortLevels);
+    expect(catalog.effectiveModelForAgent).toBe(ladder.effectiveModelForAgent);
+    expect(catalog.GLOBAL_EFFORT_LEVELS).toBe(ladder.GLOBAL_EFFORT_LEVELS);
+  });
+
+  it("resolves a blank selection to the route the server will run", () => {
+    // A payload that advertises a shortlist but no default: the picker used to
+    // fall back to `models[0]` while the server stopped at `defaultModel` and
+    // judged against the global ladder, so the two disagreed about every turn
+    // that carried no explicit model.
+    const modelOptions = {
+      "local:ungraded": { reasoning: false },
+      "local:graded": { reasoning: true, effortLevels: ["low"] },
+    };
+    // Built without `agent()` on purpose: the fixture always supplies a
+    // default, and a payload with none is the whole case.
+    const { defaultModel: _omitted, ...noDefault } = agent("agent", {
+      models: ["local:ungraded", "local:graded"],
+      modelOptions,
+    });
+    expect(effectiveModelForAgent(noDefault, "")).toBe("local:ungraded");
+    expect(effortLevelsForAgentModel(noDefault, effectiveModelForAgent(noDefault, "") ?? ""))
+      .toEqual([]);
+
+    const withDefault = agent("agent", {
+      models: ["local:ungraded", "local:graded"],
+      defaultModel: "local:graded",
+      modelOptions,
+    });
+    expect(effectiveModelForAgent(withDefault, "")).toBe("local:graded");
+    expect(effectiveModelForAgent(withDefault, "local:ungraded")).toBe("local:ungraded");
+    expect(effectiveModelForAgent({}, "")).toBeUndefined();
   });
 });

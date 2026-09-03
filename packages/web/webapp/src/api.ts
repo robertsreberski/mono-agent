@@ -341,10 +341,16 @@ export const api = {
     return result.thread;
   },
 
-  deleteThread: async (threadId: string) => {
+  /**
+   * `signal` for the same reason `patchThread` takes one: a delete is queued
+   * with that conversation's other writes, so an unbounded one blocks every
+   * later write to it.
+   */
+  deleteThread: async (threadId: string, signal?: AbortSignal) => {
     const response = await fetch(`/api/v1/threads/${encodeURIComponent(threadId)}`, {
       method: "DELETE",
       headers: { Accept: "application/json" },
+      ...(signal === undefined ? {} : { signal }),
     });
     if (!response.ok) throw await readError(response);
   },

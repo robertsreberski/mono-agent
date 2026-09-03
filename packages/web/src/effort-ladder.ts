@@ -49,6 +49,31 @@ export interface EffortAdvertisement {
 export interface EffortAgentContext {
   readonly modelOptions?: Readonly<Record<string, EffortAdvertisement>> | undefined;
   readonly efforts?: readonly string[] | undefined;
+  /** The configured shortlist, in the order the agent advertised it. */
+  readonly models?: readonly string[] | undefined;
+  /** The route a turn carrying no explicit model runs on. */
+  readonly defaultModel?: string | undefined;
+}
+
+/**
+ * The model an effort decision is actually about when the selection is blank.
+ *
+ * Blank means "let the agent pick", and what the agent picks is its default
+ * route, or -- for a payload that advertises a shortlist but no default -- the
+ * first route on that shortlist. Both ends have to answer this the same way or
+ * the shared rule below is fed different models and drifts anyway: the browser
+ * fell back to `models[0]` while the server stopped at `defaultModel`, so for
+ * any `/v1/info` omitting `model` the picker offered the first route's ladder
+ * while `startTurn` judged against the global one.
+ *
+ * `undefined` means the caller knows of no route at all, which is the one case
+ * where {@link effortLevelsForModel} legitimately has nothing to look up.
+ */
+export function effectiveModelForAgent(
+  agent: EffortAgentContext,
+  model: string | undefined,
+): string | undefined {
+  return model || agent.defaultModel || agent.models?.[0] || undefined;
 }
 
 /**
