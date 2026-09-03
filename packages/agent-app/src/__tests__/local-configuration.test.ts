@@ -736,8 +736,8 @@ describe("local configuration transaction", () => {
       await expect(envManager.prepareProposal(proposal(first.version))).rejects.toThrow(/environment overrides/u);
       await expect(envManager.prepareProposal(proposal(first.version, {
         id: "secret-proposal",
-        patch: [{ op: "add", path: "/memory/embeddings/apiKey", value: "configured-secret" }],
-      }))).rejects.toThrow(/Secret-bearing|secret value/u);
+        patch: [{ op: "replace", path: "/agent/name", value: "configured-secret" }],
+      }))).rejects.toThrow(/secret value/u);
       await expect(envManager.prepareProposal(proposal(first.version, {
         id: "authority-proposal",
         patch: [{ op: "add", path: "/tools/allowedTools/-", value: "Bash" }],
@@ -784,6 +784,25 @@ describe("local configuration transaction", () => {
       await expect(staleManager.apply(card.id)).rejects.toThrow(/changed after the proposal/u);
     } finally {
       await staleManager.dispose();
+    }
+  });
+
+  it("matches configured SELF-CONFIG secrets in the same NFKC domain", async () => {
+    const { dir, configPath } = await scaffold();
+    const version = (await readMonoAgentConfigJson(configPath)).version;
+    const manager = await LocalConfigurationManager.create({
+      cwd: dir,
+      configPath,
+      env: { VAULT_PASSWORD: "ｚｔ９ｑ４ｗ７ｘ" },
+      configure: true,
+    });
+    try {
+      await expect(manager.prepareProposal(proposal(version, {
+        id: "normalized-configured-secret",
+        rationale: "Use zt9q4w7x while configuring this agent.",
+      }))).rejects.toThrow(/rationale appears to contain a secret/u);
+    } finally {
+      await manager.dispose();
     }
   });
 
@@ -1420,6 +1439,34 @@ describe("ProposeAgentConfiguration MCP tool", () => {
         arguments: {
           rationale: "Put a key in config.",
           patch: [{ op: "add", path: "/memory/embeddings/apiKey", value: "sk-secret-shaped-value" }],
+        },
+      }) as { isError?: boolean };
+      expect(result.isError).toBe(true);
+      await expect(readFile(sinkPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("rejects a rationale that becomes secret-shaped after NFKC normalization", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-proposal-normalized-secret-"));
+    dirs.push(dir);
+    const sinkPath = join(dir, "proposal.json");
+    const server = createConfigurationProposalServer({ sinkPath, baseVersion: "base-hash" });
+    const client = new Client({ name: "configuration-proposal-test", version: "0.1.0" }, { capabilities: {} });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const fullwidthSecret = `ｓｋ－${"a".repeat(48)}`;
+      expect(fullwidthSecret.normalize("NFKC")).toMatch(/^sk-/u);
+
+      const result = await client.callTool({
+        name: CONFIGURATION_PROPOSAL_TOOL_NAME,
+        arguments: {
+          rationale: `Rotate ${fullwidthSecret} after this change.`,
+          patch: [{ op: "replace", path: "/agent/name", value: "Clear" }],
         },
       }) as { isError?: boolean };
       expect(result.isError).toBe(true);

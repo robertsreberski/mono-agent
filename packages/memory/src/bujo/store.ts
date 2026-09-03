@@ -15,9 +15,12 @@ import {
   appendBullet,
   auditFilePath,
   dailyFilePath,
+  normalizeMemoryText,
   normalizedContentHash,
   withJournalWriteLock,
 } from "./daily.js";
+import { findCanonicalMemoryBullet, REMEMBER_ID_PREFIX } from "./canonical-lookup.js";
+import { assertBoundedMemoryText } from "./text-safety.js";
 import { parseDailyFile } from "./grammar.js";
 import { serializeBullet } from "./grammar.js";
 import { replaceDbCanonicalGraphProjectionWithParity } from "./graph.js";
@@ -56,7 +59,7 @@ import {
 import { consolidateBujoMemory, type ConsolidateResult } from "./consolidate.js";
 import { writeFutureLog } from "./projections.js";
 import { listCanonicalFileNames, readCanonicalFileSnapshot } from "./path-safety.js";
-import type { Bullet, BujoLogger, BujoOptions, BujoTier } from "./types.js";
+import type { Bullet, BujoLogger, BujoOptions, BujoTier, MemoryRememberResult } from "./types.js";
 import { BoundedBatchQueue, type BackgroundQueueSnapshot, type QueueJob } from "./queue.js";
 import {
   BUJO_RUNTIME_SNAPSHOT_STALE_AFTER_MS,
@@ -102,6 +105,31 @@ interface AdmittedOperation {
   readonly controller: AbortController;
   readonly settled: Promise<void>;
 }
+
+/**
+ * The canonical bullet is durable but its index projection failed.
+ *
+ * Distinct from a plain failure so a caller can retry the IDENTICAL text — which
+ * is idempotent and completes the projection — instead of rephrasing and
+ * creating a second memory for one fact.
+ */
+export class MemoryRememberPartialWriteError extends Error {
+  readonly canonicalWritten = true as const;
+
+  constructor(readonly source: string, override readonly cause: unknown) {
+    super(
+      `memory-bujo: the remembered fact is durable in ${source} but its index projection failed: `
+      + `${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+    this.name = "MemoryRememberPartialWriteError";
+  }
+}
+
+/** Explicitly requested facts outrank incidental capture noise. */
+const REMEMBER_SALIENCE = 0.8;
+
+/** Structural bound for one remembered fact; callers may bound more tightly. */
+const MAX_REMEMBER_TEXT_BYTES = 2048;
 
 export interface BujoQueueSnapshot {
   readonly index?: BackgroundQueueSnapshot & {
@@ -386,6 +414,17 @@ export class BujoMemoryStore implements MemoryStore {
     return this._tier === "bujo";
   }
 
+  /**
+   * Explicit capability signal for the app-owned `Remember` tool.
+   *
+   * A read-only store still structurally has `remember()`, so a method-shape
+   * check would happily advertise a write surface that can only ever throw.
+   * Callers gate on this instead; `assertWritable` remains the last line.
+   */
+  supportsRemember(): boolean {
+    return !this.readOnly;
+  }
+
   /** Deterministically expand already-fetched direct hits for explicit MemoryRecall only. */
   expandGraph(
     query: string,
@@ -442,6 +481,182 @@ export class BujoMemoryStore implements MemoryStore {
     return this._tier === "bujo"
       ? await this.runAdmittedWrite("appendHostSummary", run)
       : await this.runAdmittedMutation("appendHostSummary", run);
+  }
+
+  /**
+   * Durably store one explicitly remembered fact.
+   *
+   * Unlike `appendHostSummary`, this lands in the curated `daily/` source on
+   * EVERY tier and indexes in the same critical section, so a successful return
+   * means the fact is genuinely recallable rather than queued for later
+   * curation. It is deterministic and takes no LLM.
+   *
+   * Idempotent across partial failure. The bullet id is derived from the
+   * content hash, so a retry recomputes it; the index is consulted first, then
+   * the whole canonical source (NOT just today's file — a retry may land after
+   * a UTC date rollover). A canonical bullet with no index row is therefore
+   * completed rather than duplicated, and markdown stays the source of truth.
+   */
+  async remember(
+    conversationId: string,
+    text: string,
+    options: { readonly abortSignal?: AbortSignal } = {},
+  ): Promise<MemoryRememberResult> {
+    const stored = normalizeMemoryText(text);
+    // The normalized form is single-line by construction; assert it rather than
+    // trusting the caller, since the bullet grammar cannot represent otherwise.
+    assertBoundedMemoryText(stored, "remembered", "text", MAX_REMEMBER_TEXT_BYTES, false, true);
+    const hash = normalizedContentHash(stored);
+    const bulletId = `${REMEMBER_ID_PREFIX}${hash}`;
+    // Journal canonicalizes every record id to `J-<content hash>` on rebuild, so
+    // the record must already carry that id or the duplicate guard would stop
+    // matching after the first rebuild. BuJo and lite keep the bullet id.
+    const recordId = this._tier === "journal" ? `J-${hash}` : bulletId;
+    return await this.runAdmittedMutation("remember", async (abortSignal) => {
+      const now = this.clock();
+      // BuJo commits vectors inline — `indexQueue` is initialized for Journal
+      // only, so enqueuing here would silently leave the row vectorless and
+      // break BuJo's complete-vector-coverage invariant. Prepare the embedding
+      // BEFORE touching canonical source, the same ordering capture uses, so an
+      // embedding outage cannot leave a new bullet pretending success. The cheap
+      // pre-check keeps a repeat from paying for an embedding call; the
+      // authoritative duplicate check still runs inside the lock.
+      const preIndexed = this._tier === "bujo" ? this.db.get(recordId) : undefined;
+      const [preparedVector] = this._tier === "bujo" && preIndexed === undefined
+        ? await this.db.prepareUpsertVectors([{
+            id: recordId,
+            type: "note",
+            status: "open",
+            text: stored,
+            salience: REMEMBER_SALIENCE,
+            isInsight: false,
+            createdAt: now.toISOString(),
+            accessCount: 0,
+            tags: [],
+            source: {},
+          }])
+        : [undefined];
+      return await serializeJournalWrite(this.root, abortSignal, async () => await withJournalWriteLockRetry(
+        this.root,
+        this.db.busyTimeoutMs(),
+        abortSignal,
+        () => {
+          abortSignal.throwIfAborted();
+          const indexed = this.db.get(recordId);
+          // A dropped/invalidated row is a FORGOTTEN fact: recall filters it, so
+          // reporting "already remembered" would be a success the agent cannot
+          // read back. Explicit forget is deliberate, so re-storing the same
+          // text must not silently resurrect it either.
+          if (indexed !== undefined && (indexed.status === "dropped" || indexed.status === "invalidated")) {
+            throw new Error(
+              `memory-bujo: "${stored}" was explicitly forgotten (${indexed.status}) and is not re-storable; `
+              + "restore it through the memory CLI rather than remembering it again.",
+            );
+          }
+          if (indexed !== undefined) {
+            return {
+              id: recordId,
+              conversationId,
+              source: indexed.source.file ?? "",
+              text: indexed.text,
+              bytesWritten: 0,
+              duplicate: true,
+              recovered: false,
+            };
+          }
+          const located = findCanonicalMemoryBullet(this.root, bulletId, "remembered memory");
+          if (located !== undefined && located.bullet.text !== stored) {
+            throw new Error(`memory-bujo: remembered memory ${bulletId} conflicts with its canonical text.`);
+          }
+          if (
+            located !== undefined
+            && (located.bullet.status === "dropped" || located.bullet.status === "invalidated")
+          ) {
+            throw new Error(
+              `memory-bujo: "${stored}" was explicitly forgotten (${located.bullet.status}) and is not re-storable; `
+              + "restore it through the memory CLI rather than remembering it again.",
+            );
+          }
+          abortSignal.throwIfAborted();
+          const bullet: Bullet = located?.bullet ?? {
+            id: bulletId,
+            type: "note",
+            status: "open",
+            text: stored,
+            // An explicitly requested fact outranks incidental capture noise.
+            salience: REMEMBER_SALIENCE,
+            isInsight: false,
+            createdAt: now.toISOString(),
+            refs: [`sha256:${hash}`],
+          };
+          const relativePath = located?.file ?? relative(this.root, dailyFilePath(this.root, now));
+          // Recovery adopts the existing bullet verbatim: its createdAt and file
+          // are authoritative, so markdown and SQLite cannot disagree about when
+          // or where the fact was recorded.
+          if (located === undefined) {
+            // Only an append can create daily/<day>.md, and rebuild lets that
+            // file win over a root-legacy <day>.md for the same date — which
+            // would drop every fact in the legacy one. Recovery of a bullet
+            // that already lives in the legacy file is unaffected, so this is
+            // checked here rather than before the lookup.
+            assertNoShadowedLegacyDailyFile(this.root, now);
+          }
+          const bytesWritten = located === undefined
+            ? (appendBullet(this.root, bullet, now),
+               Buffer.byteLength(`${serializeBullet(bullet)}\n`, "utf8"))
+            : 0;
+          const record: MemoryRecord = {
+            id: recordId,
+            type: bullet.type,
+            status: bullet.status,
+            text: bullet.text,
+            salience: bullet.salience,
+            isInsight: bullet.isInsight,
+            createdAt: bullet.createdAt,
+            accessCount: 0,
+            tags: [],
+            // `session` is live-index telemetry only: it is never serialized into
+            // the bullet, so a rebuild reconstructs `file` alone.
+            source: { session: conversationId, file: relativePath },
+          };
+          // Never record a content hash off the Journal tier: a non-Journal
+          // index carrying content_hashes fails safe-rebuild validation.
+          //
+          // Past this point the canonical bullet is durable, so an index
+          // failure is a PARTIAL write, not a failed one. Callers must be able
+          // to tell those apart: retrying the identical text completes it,
+          // while rephrasing would create a second memory for the same fact.
+          try {
+            // Includes the abort check: once the bullet is durable, a
+            // cancellation here is a partial write, not a failed one.
+            abortSignal.throwIfAborted();
+            if (this._tier === "journal") {
+              const outcome = this.db.insertJournalLexical(record, hash);
+              if (outcome.inserted || !this.db.hasVector(record.id)) this.enqueueIndex(record);
+            } else if (this._tier === "bujo") {
+              this.db.commitPreparedUpserts([record], [preparedVector]);
+            } else {
+              // Lite is FTS-only and has no vector to commit.
+              this.db.upsertLexical(record);
+            }
+          } catch (error) {
+            // The canonical fact is durable whether this invocation appended it
+            // or recovered it. State, not per-call byte delta, determines what
+            // callers may truthfully report after projection fails.
+            throw new MemoryRememberPartialWriteError(relativePath, error);
+          }
+          return {
+            id: recordId,
+            conversationId,
+            source: relativePath,
+            text: bullet.text,
+            bytesWritten,
+            duplicate: false,
+            recovered: located !== undefined,
+          };
+        },
+      ));
+    }, options.abortSignal);
   }
 
   /**
@@ -1256,6 +1471,31 @@ function reasonOf(error: unknown): string {
 function withCleanupErrors(primary: unknown, cleanup: readonly unknown[], message: string): unknown {
   if (cleanup.length === 0) return primary;
   return new AggregateError(primary === undefined ? cleanup : [primary, ...cleanup], message);
+}
+
+/**
+ * Guard the one layout where appending to `daily/<date>.md` would hide data.
+ *
+ * Rebuild treats a canonical `daily/<date>.md` as authoritative for its date and
+ * skips a root-level `<date>.md` with the same name. In a store that still keeps
+ * that date only at the root, creating the modern file would therefore drop the
+ * legacy file's facts from the next rebuilt index.
+ */
+function assertNoShadowedLegacyDailyFile(root: string, when: Date): void {
+  const day = when.toISOString().slice(0, 10);
+  const legacy = readCanonicalFileSnapshot(root, `${day}.md`, { allowMissing: true });
+  if (legacy === undefined) return;
+  const modern = readCanonicalFileSnapshot(root, `daily/${day}.md`, { allowMissing: true });
+  if (modern !== undefined) return;
+  const legacyBody = legacy.content.trim();
+  // A migration can leave an empty placeholder (or just its canonical date
+  // heading) behind. There is no fact for a new modern file to hide in that
+  // case, so refusing the write would be a false data-safety failure.
+  if (legacyBody.length === 0 || legacyBody === `# ${day}`) return;
+  throw new Error(
+    `memory-bujo: ${day}.md still uses the root-level legacy layout; remembering a fact would create `
+    + `daily/${day}.md and hide it from the next rebuild. Migrate that file into daily/ first.`,
+  );
 }
 
 async function serializeJournalWrite<T>(

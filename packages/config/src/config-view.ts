@@ -126,6 +126,7 @@ export const CONFIG_ENV_KEYS = {
   "memory.llm.timeoutMs": "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
   "memory.llm.endpoint": "MONO_AGENT_MEMORY_LLM_ENDPOINT",
   "memory.recallTool.enabled": "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED",
+  "memory.rememberTool.enabled": "MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED",
   "memory.consolidation.enabled": "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED",
   "memory.consolidation.cron": "MONO_AGENT_MEMORY_CONSOLIDATION_CRON",
   "tools.allowedTools": "MONO_AGENT_ALLOWED_TOOLS",
@@ -609,6 +610,12 @@ function buildMemorySection(input: BuildMonoAgentConfigViewInput): ConfigViewSec
       label: "Recall tool",
       value: memory.recallTool === undefined ? "default" : memory.recallTool.enabled ? "on" : "off",
       jsonPresent: json.memory?.recallTool?.enabled !== undefined,
+    }),
+    toField(env, {
+      id: "memory.rememberTool.enabled",
+      label: "Remember tool",
+      value: memory.rememberTool === undefined ? "default" : memory.rememberTool.enabled ? "on" : "off",
+      jsonPresent: json.memory?.rememberTool?.enabled !== undefined,
     }),
   ];
 

@@ -368,6 +368,22 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED).toBe("false");
   });
 
+  it("translates JSON memory.rememberTool.enabled to an env key", () => {
+    const layered = layerJsonOntoEnv(
+      { memory: { mode: "journal", path: ".mono-agent/memory", rememberTool: { enabled: false } } },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED).toBe("false");
+  });
+
+  it("lets env override JSON memory.rememberTool.enabled", () => {
+    const layered = layerJsonOntoEnv(
+      { memory: { mode: "journal", path: ".mono-agent/memory", rememberTool: { enabled: false } } },
+      { MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED: "true" },
+    );
+    expect(layered.MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED).toBe("true");
+  });
+
   it("lets env override JSON memory.recallTool.enabled", () => {
     const layered = layerJsonOntoEnv(
       { memory: { mode: "journal", path: ".mono-agent/memory", recallTool: { enabled: false } } },
@@ -1545,6 +1561,16 @@ describe("loadMonoAgentConfigWithSources", () => {
       "recallTool.enabled",
       { mode: "lite", path: ".mono-agent/memory", recallTool: { enabled: [true] } },
       "memory.recallTool.enabled",
+    ],
+    [
+      "rememberTool block",
+      { mode: "lite", path: ".mono-agent/memory", rememberTool: [] },
+      "memory.rememberTool",
+    ],
+    [
+      "rememberTool.enabled",
+      { mode: "lite", path: ".mono-agent/memory", rememberTool: { enabled: [true] } },
+      "memory.rememberTool.enabled",
     ],
     [
       "consolidation block",

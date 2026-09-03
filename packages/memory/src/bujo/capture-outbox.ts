@@ -9,6 +9,7 @@ import type {
   MemoryRecord,
 } from "../store/index.js";
 import { appendBullet, dailyFilePath, rewriteBullet } from "./daily.js";
+import { findCanonicalMemoryBullet } from "./canonical-lookup.js";
 import { parseDailyFile } from "./grammar.js";
 import {
   appendGraphBatch,
@@ -1054,29 +1055,7 @@ function materializeNewIntentThreads(
 }
 
 function findCanonicalMemoryCreatedAt(root: string, id: string): string | undefined {
-  const dailyNames = listCanonicalFileNames(root, "daily", {
-    allowMissing: true,
-    include: (name) => name.endsWith(".md"),
-  });
-  const dailyNameSet = new Set(dailyNames);
-  const files = [
-    ...dailyNames.map((name) => `daily/${name}`),
-    ...listCanonicalRootFileNames(root, {
-      include: (name) => /^\d{4}-\d{2}-\d{2}\.md$/u.test(name) && !dailyNameSet.has(name),
-    }),
-  ];
-  const matches: string[] = [];
-  for (const file of files) {
-    const snapshot = readCanonicalFileSnapshot(root, file);
-    if (snapshot === undefined) throw new Error(`memory-capture: canonical source "${file}" disappeared.`);
-    for (const bullet of parseDailyFile(snapshot.content).bullets) {
-      if (bullet.id === id) matches.push(bullet.createdAt);
-    }
-  }
-  if (matches.length > 1) {
-    throw new Error(`memory-capture: thread target ${id} is duplicated in canonical source.`);
-  }
-  return matches[0];
+  return findCanonicalMemoryBullet(root, id, "thread target")?.bullet.createdAt;
 }
 
 function captureReplayDelta(

@@ -5,12 +5,13 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
+import { containsSecretLikeValue, containsUnsafeReviewControl } from "./untrusted-text.js";
+
 export const CONFIGURATION_PROPOSAL_MCP_SERVER_NAME = "agent_configuration";
 export const CONFIGURATION_PROPOSAL_TOOL_NAME = "ProposeAgentConfiguration";
 
 const SINK_ENV = "MONO_AGENT_CONFIGURATION_PROPOSAL_SINK";
 const BASE_VERSION_ENV = "MONO_AGENT_CONFIGURATION_BASE_VERSION";
-const BIDI_CONTROL = /\p{Bidi_Control}/u;
 
 export interface JsonPatchOperation {
   readonly op: "add" | "remove" | "replace" | "move" | "copy" | "test";
@@ -41,17 +42,7 @@ export interface ConfigurationProposalChildSettings {
  * operator's review.
  */
 export function containsUnsafeConfigurationReviewControl(value: string): boolean {
-  for (const character of value) {
-    const codePoint = character.codePointAt(0)!;
-    if (
-      (codePoint <= 0x1f && codePoint !== 0x0a)
-      || (codePoint >= 0x7f && codePoint <= 0x9f)
-      || BIDI_CONTROL.test(character)
-    ) {
-      return true;
-    }
-  }
-  return false;
+  return containsUnsafeReviewControl(value);
 }
 
 const patchOperationSchema = z.object({
@@ -217,7 +208,7 @@ function secretBearingPointer(pointer: string): boolean {
 
 function containsSecretLike(value: unknown): boolean {
   if (typeof value === "string") {
-    return /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{12,}|Bearer\s+\S{12,}|\d{6,12}:[A-Za-z0-9_-]{20,})\b/u.test(value);
+    return containsSecretLikeValue(value);
   }
   if (Array.isArray(value)) return value.some(containsSecretLike);
   if (typeof value === "object" && value !== null) {

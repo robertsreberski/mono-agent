@@ -119,9 +119,12 @@ export type {
   MemoryHealthStatus,
 } from "./audit.js";
 export { MARKER_FOR, parseBullet, serializeBullet, parseDailyFile, serializeDailyFile } from "./grammar.js";
-export { appendBullet, dailyFilePath } from "./daily.js";
+export { appendBullet, dailyFilePath, normalizeMemoryText, normalizedContentHash } from "./daily.js";
+export { findCanonicalMemoryBullet } from "./canonical-lookup.js";
+export { MemoryRememberPartialWriteError } from "./store.js";
+export type { CanonicalBulletLocation } from "./canonical-lookup.js";
 export { createIdFactory } from "./ids.js";
-export type { Bullet, BujoOptions, BujoTier } from "./types.js";
+export type { Bullet, BujoOptions, BujoTier, MemoryRememberResult } from "./types.js";
 export type { LlmComplete, LlmCompleteOptions } from "./llm.js";
 export { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 export type { MemoryModelKind } from "./model-error.js";

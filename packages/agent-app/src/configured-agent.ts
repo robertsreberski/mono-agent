@@ -78,6 +78,11 @@ import {
   MemoryRetrievalService,
 } from "./memory-retrieval.js";
 import {
+  createMemoryRememberRuntimeExtension,
+  isRememberCapableStore,
+  isRememberToolAllowed,
+} from "./memory-remember.js";
+import {
   clearSessionsSandboxPolicy,
   composeRuntimeOptionExtensions,
   createClearSessionsRuntimeExtension,
@@ -158,6 +163,13 @@ export interface ConfiguredAgentHarnessOptions {
   readonly model?: RuntimeModelReference;
   readonly executionMode?: RuntimeExecutionMode;
   readonly memory?: MemoryStore;
+  /**
+   * Authoritative process environment, as resolved by the host. Credential
+   * checks that must recognize this agent's own configured secrets read it, so
+   * a host started with an explicit `env` must pass the same map here rather
+   * than let those checks fall back to `process.env`.
+   */
+  readonly env?: Record<string, string | undefined>;
   readonly historyStore?: ConversationHistoryStore;
   /** App-owned run-scoped interaction details to add only to replay history. */
   readonly turnHistoryEnricher?: AgentHarnessOptions["turnHistoryEnricher"];
@@ -174,6 +186,8 @@ export interface ConfiguredAgentHarnessOptions {
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
   /** Best-effort diagnostic when the default MemoryRecall endpoint cannot start. */
   readonly onMemoryRecallUnavailable?: (error: unknown) => void;
+  /** Best-effort diagnostic when the durable Remember endpoint cannot start. */
+  readonly onMemoryRememberUnavailable?: (error: unknown) => void;
   /** Best-effort host diagnostic for post-provider memory write failures. */
   readonly onMemoryWarning?: (message: string) => void;
   /** Best-effort diagnostic for bounded lifecycle-sidecar write failures. */
@@ -1117,8 +1131,24 @@ async function createConfiguredAgentHarnessInternal(
           ? {}
           : { onUnavailable: options.onMemoryRecallUnavailable }),
       });
+  // The durable write surface is gated three ways: the store must affirm the
+  // capability (a read-only or external backend never does), the operator must
+  // not have disabled it, and tool policy must allow it. Unlike MemoryRecall it
+  // is allowlist-gated, so an operator can withhold writes while keeping recall.
+  const memoryRemember = config.memory?.rememberTool?.enabled === false
+    || !(memory instanceof MemoryRetrievalService)
+    || !isRememberCapableStore(memory)
+    || !isRememberToolAllowed(config.tools)
+    ? undefined
+    : createMemoryRememberRuntimeExtension(memory, {
+        ...(options.env === undefined ? {} : { env: options.env }),
+        ...(options.onMemoryRememberUnavailable === undefined
+          ? {}
+          : { onUnavailable: options.onMemoryRememberUnavailable }),
+      });
   const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([
     memoryRecall,
+    memoryRemember,
     options.runtimeOptionsForRequest,
   ], {
     // The app-owned, read-only MemoryRecall endpoint is part of every configured

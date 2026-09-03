@@ -46,6 +46,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Memory liveness check (managed tier/provider/model/dimension identity; provider-native typed discovery plus real finite-vector/dimension probe for Ollama or LM Studio; declared auth env; BuJo LLM config + consolidation cadence; no cross-provider fallback) | cli | `mono-agent validate` | — |
 | Memory write modes and per-turn BuJo capture | config | `memory.writeMode`: `disabled`, `append-host-summary`, or `capture`; capture requires `memory.mode: "bujo"` | `memory.write-mode`, `memory.per-turn-capture` |
 | Auto-provisioned read-only `MemoryRecall` tool exposed for every configured memory tier; no chat LLM | config | `config.memory.recallTool.enabled` (`MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`, default on; explicit false opts out) | `memory.recall-tool` |
+| Agent-callable `Remember` tool that durably stores one explicitly stated fact; deterministic, append-only, no chat LLM; bujo backend and writable stores only; allowlist-gated and rejects credential-bearing text | config | `config.memory.rememberTool.enabled` (`MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED`, default on for the bujo backend; explicit false opts out); a restrictive `tools.allowedTools` must name `Remember` | `memory.remember-tool` |
 | In-app memory LLM call timeout | config | `memory.llm.timeoutMs` (`MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`, default 60000) | `memory.llm-timeout` |
 
 ## Tools, MCP, sandbox

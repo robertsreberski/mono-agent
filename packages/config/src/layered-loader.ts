@@ -112,6 +112,10 @@ const MEMORY_JSON_SOURCES = {
     "memory.recallTool.enabled",
     (memory) => memory.recallTool?.enabled,
   ),
+  MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED: jsonMemorySource(
+    "memory.rememberTool.enabled",
+    (memory) => memory.rememberTool?.enabled,
+  ),
   MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: jsonMemorySource(
     "memory.supermemory.baseUrl",
     (memory) => memory.supermemory?.baseUrl,
@@ -363,6 +367,13 @@ function validateJsonMemoryBlocks(
   if (recallTool !== undefined) {
     validateJsonScalarFields(recallTool, "memory.recallTool", env, [
       ["enabled", "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED", "boolean"],
+    ]);
+  }
+
+  const rememberTool = validateOptionalJsonObject(memory.rememberTool, "memory.rememberTool");
+  if (rememberTool !== undefined) {
+    validateJsonScalarFields(rememberTool, "memory.rememberTool", env, [
+      ["enabled", "MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED", "boolean"],
     ]);
   }
 
@@ -832,6 +843,9 @@ export function layerJsonOntoEnv(
   }
   if (json.memory?.llm?.endpoint !== undefined) {
     fromJson.MONO_AGENT_MEMORY_LLM_ENDPOINT = json.memory.llm.endpoint;
+  }
+  if (json.memory?.rememberTool?.enabled !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED = String(json.memory.rememberTool.enabled);
   }
   if (json.memory?.recallTool?.enabled !== undefined) {
     fromJson.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED = String(json.memory.recallTool.enabled);

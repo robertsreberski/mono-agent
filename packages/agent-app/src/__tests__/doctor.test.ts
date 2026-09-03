@@ -6203,6 +6203,22 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(report.ok).toBe(true);
   });
 
+  it.each([
+    "Remember",
+    "mcp__mono-agent-memory-write__Remember",
+    "mcp__mono-agent-memory-write__*",
+  ])("applies Remember capability checks to the policy spelling %s", async (name) => {
+    const configPath = await writeToolsConfig({ allowedTools: [name] });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("waiting");
+    expect(tools.details.join("\n")).toContain("no memory block is configured");
+    expect(tools.details.join("\n")).toContain("durable writes will not work");
+    expect(report.ok).toBe(true);
+  });
+
   it("skips MCP tool names (unvalidatable offline) but keeps ok when a real tool is present", async () => {
     const configPath = await writeToolsConfig({ allowedTools: ["mcp__foo__bar", "Read"] });
 

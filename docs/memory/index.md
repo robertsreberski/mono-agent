@@ -405,6 +405,25 @@ Under the hood `agent-app` exposes a request-scoped loopback MCP endpoint over i
 
 **Tool-policy note:** `MemoryRecall` is an MCP tool, and like every MCP server tool (config `mcpServers`, `AskCollaborator`) it is **gated by its declaration, not by `tools.allowedTools`**. `tools.allowedTools` filters the built-in runtime tools (Read/Bash/…) and adapter send tools; it does **not** suppress app-injected MCP tools. Set `config.memory.recallTool.enabled: false` to remove the on-demand tool; automatic score- and answer-evidence-gated context recall remains part of configured memory.
 
+
+## Write Tool (`Remember`)
+
+`Remember` is the write counterpart to recall: it durably stores one explicitly
+stated fact — what the user meant when they said "remember that". It is
+deterministic and uses no chat LLM, so a success means the fact is already
+recallable rather than waiting on the capture pass. The text is stored
+NFKC-normalized, trimmed, and collapsed to a single line, and the tool echoes
+back exactly what it wrote.
+
+It is narrower than recall in three ways. It needs a writable **bujo-backend**
+store, so read-only stores and the Supermemory backend never receive it; it is
+gated by `memory.rememberTool.enabled` (default on for the bujo backend); and
+unlike `MemoryRecall` it **is** subject to `tools.allowedTools`, so a
+restrictive policy must name `Remember`. Text carrying a credential is rejected
+rather than redacted, and nothing is written.
+
+Memory stays append-only: there is no edit or delete through the tool, and
+removal remains the explicit two-phase `mono-agent memory forget` workflow.
 ## References
 
 - [Memory quality benchmark](/memory/benchmarking/) — disposable offline quality and efficiency gate
