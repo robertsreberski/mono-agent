@@ -37,9 +37,23 @@ export function auditFilePath(root: string, when: Date): string {
   return join(root, "audit", `${day}.md`);
 }
 
+/**
+ * The single canonical text shape for memory content: NFKC-normalized, trimmed,
+ * with every whitespace run collapsed to one space. A bullet is one markdown
+ * line (`serializeBullet` rejects newlines) and `parseBullet` trims on read, so
+ * only text in this shape survives a canonical round trip unchanged.
+ *
+ * Callers that inspect content before it is stored (for example a credential
+ * check) MUST run against this exact output rather than their raw input:
+ * compatibility characters can normalize into a materially different string.
+ * The transform is idempotent, so applying it again in the store is a no-op.
+ */
+export function normalizeMemoryText(text: string): string {
+  return text.normalize("NFKC").trim().replace(/\s+/gu, " ");
+}
+
 export function normalizedContentHash(text: string): string {
-  const normalized = text.normalize("NFKC").trim().replace(/\s+/gu, " ");
-  return createHash("sha256").update(normalized, "utf8").digest("hex");
+  return createHash("sha256").update(normalizeMemoryText(text), "utf8").digest("hex");
 }
 
 /** Append a bullet to today's daily file (creating it with a heading if absent). Returns the bullet. */

@@ -31,6 +31,7 @@ export const APP_TOOL_NAMES = [
   "RunHistory",
   "SessionHistory",
   "SetConversationTitle",
+  "Remember",
 ] as const;
 
 /** Adapter send tools — require BOTH an `allowedTools` entry AND an enabled channel. */

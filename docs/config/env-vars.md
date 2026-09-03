@@ -139,6 +139,7 @@ See [local provider configuration](/runtime/local-providers/) for the local prov
 | `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | `memory.embeddings.circuitBreaker.failureThreshold` | Consecutive embedding failures before the circuit opens (`1`–`100`); default `3`. |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS` | `memory.embeddings.circuitBreaker.cooldownMs` | Cooldown before an open embedding circuit permits a trial request (`1`–`3600000`); default `30000`. |
 | `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Auto-provisioned read-only `MemoryRecall`; default on for every configured tier, explicit false opts out. |
+| `MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED` | `memory.rememberTool.enabled` | Agent-callable `Remember` durable write tool; default on for the bujo backend, off for external backends, explicit false opts out. Also requires `Remember` under a restrictive `tools.allowedTools`. |
 | `MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED` | `memory.consolidation.enabled` | Scheduled BuJo consolidation; default on. |
 | `MONO_AGENT_MEMORY_CONSOLIDATION_CRON` | `memory.consolidation.cron` | Default `0 */2 * * *`. See [memory rituals and scheduling](/memory/rituals/). |
 | `MONO_AGENT_MEMORY_LLM_PROVIDER` | `memory.llm.provider` | `ollama` or `agent-host`. Strictly required for BuJo capture and tier selection; projection-only consolidation itself makes no model call. Missing prerequisites fail instead of downshifting tiers. |

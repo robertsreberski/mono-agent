@@ -52,6 +52,7 @@ import {
   isAppCoreConfigError,
   loadAppCoreConfig,
 } from "./app-config.js";
+import { isRememberToolAllowed, isRememberToolPolicyName } from "./memory-remember.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { adapterSendToolNames, isAdapterSendToolAllowed, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
 import { canonicalToolName, isAllowAllTools, isKnownToolName, isMcpToolName, suggestToolName } from "./modules/known-tools.js";
@@ -2067,6 +2068,38 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     details.push(`Allowed tools: ${allowedTools.join(", ")}.`);
     let mcpNoteAdded = false;
     for (const name of allowedTools) {
+      if (isRememberToolPolicyName(name)) {
+        // Reconcile with the runtime's own resolution, which honours the
+        // `mcp__mono-agent-memory-write__*` spellings and deny-wins. This check
+        // must precede the generic MCP branch below.
+        if (!isRememberToolAllowed(config.tools)) {
+          status = "waiting";
+          details.push(
+            `${name} is listed but tool policy still resolves to denied (deny wins, including the mcp__mono-agent-memory-write__* spellings) - the tool will not be offered.`,
+          );
+          continue;
+        }
+        // Unlike MemoryRecall, Remember IS allowlist-gated, so listing it is
+        // correct and required under a restrictive policy. It still needs a
+        // configured memory block with the write surface left enabled.
+        if (config.memory === undefined) {
+          status = "waiting";
+          details.push(
+            `${name} is in allowedTools but no memory block is configured - durable writes will not work. Configure memory (or remove this entry).`,
+          );
+        } else if (config.memory.rememberTool?.enabled === false) {
+          status = "waiting";
+          details.push(
+            `${name} is in allowedTools but memory.rememberTool.enabled is off - durable writes will not work. Enable memory.rememberTool (or remove this entry).`,
+          );
+        } else if (config.memory.backend === "supermemory") {
+          status = "waiting";
+          details.push(
+            `${name} is in allowedTools but the supermemory backend exposes no durable write surface - the tool will not be offered.`,
+          );
+        }
+        continue;
+      }
       if (isMcpToolName(name)) {
         // MCP tool names are owned by their servers; we cannot verify them offline.
         if (!mcpNoteAdded) {

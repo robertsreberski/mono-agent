@@ -134,6 +134,7 @@ const APP_TOOL_HINTS: Readonly<Record<string, string>> = {
   RunHistory: "inspect safe evidence from prior runs in this conversation",
   SessionHistory: "search bounded tool calls and results retained for this session",
   SetConversationTitle: "maintain semantic titles for writable web conversations",
+  Remember: "durably save specific facts the user asks you to remember",
 };
 
 const ADAPTER_SEND_TOOL_SET: ReadonlySet<string> = new Set(ADAPTER_SEND_TOOL_NAMES);

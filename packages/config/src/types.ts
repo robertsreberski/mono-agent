@@ -372,6 +372,13 @@ export interface MonoAgentConfig {
      * Defaults on for every configured memory tier; explicit false opts out.
      */
     readonly recallTool?: { readonly enabled: boolean };
+    /**
+     * Agent-callable `Remember` tool that durably stores one explicitly stated
+     * fact. Deterministic and append-only; it takes no chat LLM. Defaults on for
+     * the bujo backend (every tier) and off for external backends, which expose
+     * no such write surface. Explicit false opts out.
+     */
+    readonly rememberTool?: { readonly enabled: boolean };
     /** Bujo-tier lightweight consolidation. Scheduler default cadence: every two hours. */
     readonly consolidation?: MemoryConsolidationConfig;
   };

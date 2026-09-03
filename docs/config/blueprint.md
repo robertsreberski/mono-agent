@@ -189,6 +189,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
       // For agent-host, use: "model": "pi:openai-codex:gpt-5.6-terra", "executionMode": "sdk"; omit endpoint.
     },
     "recallTool": { "enabled": true },      // read-only MemoryRecall tool; default on when memory is configured
+    "rememberTool": { "enabled": true },    // agent-callable Remember write tool; bujo backend only, also allowlist-gated
     // Bujo auto-scheduler — override the default or disable it.
     // Consolidation runs in-app; no external cron or launchd needed.
     "consolidation": { "enabled": true, "cron": "0 */2 * * *" } // default: every two hours

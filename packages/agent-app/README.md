@@ -577,13 +577,33 @@ terminal record in place. A newer tool-history schema hard-fails downgrade until
 persisted conversation state is purged; an older compatible version is reported
 as upgrade-pending for the next writer.
 
+### Durable memory writes
+
+`Remember` gives the agent an explicit way to persist one stated fact, closing
+the loop left by read-only `MemoryRecall`. It is request-scoped, deterministic,
+and append-only, and it writes through the shared memory retrieval service so no
+second store is opened.
+
+Availability is deliberately narrow: a configured memory block with
+`memory.rememberTool.enabled` left on, a store that affirms `supportsRemember()`
+(read-only stores and external backends never do), and tool policy that allows
+`Remember` — unlike `MemoryRecall`, this tool is allowlist-gated so writes can be
+withheld without disabling recall.
+
+Before anything is stored the host normalizes the text to exactly what will be
+written and checks that against configured credential values, known token shapes,
+credential assignments, and terminal/bidi controls. A match is rejected rather
+than redacted, so a mangled value is never persisted behind a success result.
+
 ### Web conversation titles
 
 `SetConversationTitle` requires no config key. For an ordinary interactive web
 turn whose title is still automatic, the app supplies a request-scoped MCP tool
 that accepts one normalized title of at most 80 characters. Its model-facing
-guidance asks for a concise semantic title after the topic becomes clear and a
-new title only when the conversation materially changes direction. The web
+guidance asks it to name the conversation as a whole and to keep refining that
+name whenever a better whole-thread name emerges, never to use the title as a
+status line for the step in progress. The tool result stays a proposal: the
+console applies it out of band and may decline it. The web
 console applies successful tool results quietly while retaining the tool call in
 the collapsed Activity disclosure.
 

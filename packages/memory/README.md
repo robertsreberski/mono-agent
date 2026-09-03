@@ -112,6 +112,20 @@ The normal write and read paths are:
 Run config-aware maintenance through `mono-agent memory <subcommand>` from the
 agent folder. The retired `memory-bujo` executable is no longer packaged.
 
+### Explicit remember writes
+
+`BujoMemoryStore.remember(conversationId, text)` durably stores one explicitly
+stated fact. Unlike `appendHostSummary` it writes the curated `daily/` source on
+every tier and indexes in the same critical section, so the fact is recallable as
+soon as the call returns.
+
+The text is normalized with `normalizeMemoryText` (NFKC, trimmed, whitespace
+collapsed to one line) and the bullet id is derived from its content hash, which
+is what makes retries idempotent: the index is consulted first, then the whole
+canonical source, so a bullet appended before a crash is completed rather than
+duplicated even when the retry lands on a later day. `supportsRemember()` reports
+whether the store can accept writes at all; it is `false` on a read-only store.
+
 ### Strong completed-turn boundary
 
 Hosts with a stable provider-run id should use `persistCompletedTurn`. It resolves
@@ -353,6 +367,7 @@ BujoTier
 Bullet
 COMPLETED_TURN_INTAKE_SCHEMA_VERSION
 CandidateMemory
+CanonicalBulletLocation
 CanonicalGraphMutationState
 CanonicalGraphParityIssue
 CanonicalGraphParityIssueCode
@@ -423,6 +438,8 @@ MemoryHealthStatus
 MemoryModelError
 MemoryModelKind
 MemoryModelOutputError
+MemoryRememberPartialWriteError
+MemoryRememberResult
 MigrateDeps
 MigrateResult
 PrepareMemoryBundleImportOptions
@@ -452,9 +469,12 @@ dailyFilePath
 exportMemoryBundle
 extractCapturePlan
 extractCapturePlanStrict
+findCanonicalMemoryBullet
 inspectCompletedTurnIntake
 isConversationRelativeQuery
 migrate
+normalizeMemoryText
+normalizedContentHash
 parseBullet
 parseDailyFile
 parseMemoryExportBundleManifest

@@ -30,6 +30,23 @@ import {
 export interface SharedRecallStore extends MemoryStore, RecallCapableStore {
   /** Optional local-store telemetry hook; it must not alter relevance. */
   recordAccess?(ids: readonly string[]): void;
+  /**
+   * Deterministic durable write for an explicitly remembered fact. Present only
+   * on the bujo backend; external backends implement the shared MemoryStore
+   * contract without one, so they never advertise the capability below.
+   */
+  remember?(
+    conversationId: string,
+    text: string,
+    options?: { readonly abortSignal?: AbortSignal },
+  ): Promise<{
+    readonly id: string;
+    readonly source: string;
+    readonly text: string;
+    readonly duplicate: boolean;
+  }>;
+  /** Affirmative capability signal; false on a read-only store. */
+  supportsRemember?(): boolean;
 }
 
 export interface MemoryRetrievalServiceOptions {
@@ -177,6 +194,39 @@ export class MemoryRetrievalService implements MemoryStore {
 
   appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
     return this.store.appendHostSummary(conversationId, summary);
+  }
+
+  supportsRemember(): boolean {
+    // Both halves, not just the signal: advertising a write surface whose
+    // method is absent would fail every call instead of never appearing.
+    return typeof this.store.remember === "function" && this.store.supportsRemember?.() === true;
+  }
+
+  async remember(
+    conversationId: string,
+    text: string,
+    options: { readonly abortSignal?: AbortSignal } = {},
+  ): Promise<{
+    readonly id: string;
+    readonly source: string;
+    readonly text: string;
+    readonly duplicate: boolean;
+  }> {
+    const remember = this.store.remember;
+    if (remember === undefined) {
+      throw new Error("memory: the configured store has no durable remember surface.");
+    }
+    const result = await remember.call(this.store, conversationId, text, options);
+    // Recall memoizes per turn, so a query answered BEFORE this write would keep
+    // returning its stale empty result for the rest of the run — contradicting
+    // the immediate-recall guarantee the tool reports. Drop the caches rather
+    // than try to predict which queries this fact should now match.
+    //
+    // An already-stored fact changed nothing durable, so leave the caches
+    // alone: clearing them there would make concurrent turns repeat identical
+    // backend searches and re-record access telemetry.
+    if (!result.duplicate) this.releaseAllTurns();
+    return result;
   }
 
   scheduleCapture(conversationId: string, text: string): void {

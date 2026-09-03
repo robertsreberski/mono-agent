@@ -279,6 +279,7 @@ describe("wizard prompt builders", () => {
       "RunHistory",
       "SessionHistory",
       "SetConversationTitle",
+      "Remember",
       "TelegramSendMessage",
       "AskUser",
     ]);
@@ -289,6 +290,7 @@ describe("wizard prompt builders", () => {
     expect(options.find((option) => option.value === "RunHistory")?.hint).toContain("prior runs");
     expect(options.find((option) => option.value === "SessionHistory")?.hint).toContain("tool calls");
     expect(options.find((option) => option.value === "SetConversationTitle")?.hint).toContain("web conversations");
+    expect(options.find((option) => option.value === "Remember")?.hint).toContain("durably save");
   });
 
   it("toolMultiselectOptions offers the built-ins plus channel-agnostic AskUser with no channel", () => {

@@ -1341,6 +1341,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "memory.llm.trace": true,
     "memory.llm.timeoutMs": 60_000,
     "memory.recallTool.enabled": true,
+  "memory.rememberTool.enabled": true,
     "memory.consolidation.enabled": true,
     "memory.consolidation.cron": "0 */2 * * *",
     "tools.allowedTools": [ALLOW_ALL_TOOLS],

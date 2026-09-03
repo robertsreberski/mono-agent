@@ -395,6 +395,9 @@ export async function buildResponder(
   const responder = await createConfiguredAgentResponderForApp({
     config: coreConfig,
     cwd: controller.cwd,
+    // The host's resolved environment is authoritative for credential checks;
+    // falling back to process.env would hide a secret supplied only here.
+    env: controller.env,
     runtime,
     ...(runtimeForModel === undefined ? {} : { runtimeForModel }),
     ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
@@ -405,6 +408,12 @@ export async function buildResponder(
       ? {}
       : { continuationCapabilityIssuer: controller.continuationService }),
     ...(runtimeOptionsForRequest === undefined ? {} : { runtimeOptionsForRequest }),
+    onMemoryRememberUnavailable: (error) => {
+      controller.logger?.warn?.(
+        "Remember tool endpoint could not start; durable memory writes are unavailable this run.",
+        { error: error instanceof Error ? error.message : String(error) },
+      );
+    },
     onMemoryRecallUnavailable: (error) => {
       controller.logger?.warn?.(
         "MemoryRecall tool endpoint could not start; continuing without the explicit tool.",
