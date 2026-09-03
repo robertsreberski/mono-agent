@@ -7,11 +7,13 @@ import {
   ConsoleStoreProvider,
   cronChannelPath,
   preferenceKeyForThread,
+  REMOVED_THREAD_TTL_MS,
   RUN_PREFERENCES_STORAGE_KEY,
+  THREAD_READ_TIMEOUT_MS,
   useConsoleStore,
 } from "./console-store";
 import { agent, bootstrap, thread } from "./test/fixtures";
-import type { AgentSkillRegistry, CronOverview, ThreadDetail } from "./types";
+import type { AgentSkillRegistry, AgentSummary, CronOverview, ThreadDetail } from "./types";
 
 vi.mock("./api", () => ({
   api: {
@@ -341,7 +343,7 @@ describe("ConsoleStoreProvider integration", () => {
     const store = await renderStore();
 
     await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
-    expect(api.thread).toHaveBeenCalledWith(cronThread.id);
+    expect(api.thread).toHaveBeenCalledWith(cronThread.id, expect.any(AbortSignal));
     expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
   });
 
@@ -356,7 +358,7 @@ describe("ConsoleStoreProvider integration", () => {
 
     await act(async () => store.current.archiveThread("redirected-legacy-id"));
 
-    expect(api.thread).toHaveBeenCalledWith("redirected-legacy-id");
+    expect(api.thread).toHaveBeenCalledWith("redirected-legacy-id", expect.any(AbortSignal));
     expect(api.patchThread).toHaveBeenCalledWith(
       "canonical-thread",
       { archived: true },
@@ -1116,6 +1118,346 @@ describe("ConsoleStoreProvider integration", () => {
       releasePatch?.();
       await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
       expect(store.current.threads.map((item) => item.id)).toEqual([]);
+    });
+  });
+
+  /**
+   * Round 4's cluster. Every one of these is the same shape: an operation that
+   * FAILS or answers LATE leaves state only the success path knows how to
+   * repair. The suite that shipped with the tombstones proved the success paths
+   * and the "a later refresh fixes it" paths; none of it fails against the
+   * broken failure handlers, which is what makes each of these a repro rather
+   * than a regression test.
+   */
+  describe("failed and late responses repaired where they fail", () => {
+    const alphaThread = thread("alpha-thread", "alpha");
+    const preferenceKey = preferenceKeyForThread("alpha", "alpha-thread");
+
+    const settle = async () => {
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    };
+
+    const seedOneThread = (overrides: Partial<AgentSummary> = {}) => {
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha", ...overrides })],
+        [alphaThread],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alphaThread] });
+      vi.mocked(api.thread).mockResolvedValue(detail(alphaThread, "hello"));
+    };
+
+    /** A DELETE the test releases by hand, either way. */
+    const heldDelete = () => {
+      let reject: ((error: Error) => void) | undefined;
+      let resolve: (() => void) | undefined;
+      vi.mocked(api.deleteThread).mockImplementation(async () => {
+        await new Promise<void>((ok, no) => { resolve = ok; reject = no; });
+      });
+      return {
+        fail: () => reject?.(new Error("delete failed")),
+        succeed: () => resolve?.(),
+      };
+    };
+
+    const refresh = async (id: string) => {
+      act(() => FakeEventSource.latest?.emit("threads.changed", {
+        id,
+        version: 1,
+        type: "threads.changed",
+        at: "2026-08-14T09:00:00.000Z",
+      }));
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 400); }); });
+    };
+
+    it("keeps the legacy run preference when the delete that tombstoned it fails", async () => {
+      // P0. The migration marks the key migrated BEFORE any I/O and drops both
+      // local values the moment it sees a tombstone. A DELETE that then fails
+      // only forgets the tombstone: the server override is still unset, the
+      // browser copy is gone, and the key is marked migrated, so nothing --
+      // including a reload -- can recover what the operator chose.
+      // The agent must ADVERTISE the model, or `validateRunPreference` empties
+      // the stored preference on the first render and the repro would pass
+      // against the broken code for the wrong reason.
+      seedOneThread({ models: ["anthropic:opus-5"], defaultModel: "anthropic:opus-5" });
+      localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify({
+        [preferenceKey]: { model: "anthropic:opus-5", effort: "high" },
+      }));
+      let releaseMigrationRead: (() => void) | undefined;
+      const migrationRead = new Promise<void>((resolve) => { releaseMigrationRead = resolve; });
+      let reads = 0;
+      vi.mocked(api.thread).mockImplementation(async () => {
+        reads += 1;
+        // The migration's own confirming read, held open.
+        if (reads > 1) await migrationRead;
+        return detail(alphaThread, "hello");
+      });
+      const deletion = heldDelete();
+
+      const store = await renderStore();
+      await waitFor(() => expect(reads).toBeGreaterThan(1));
+      expect(store.current.model).toBe("anthropic:opus-5");
+
+      const deleted = store.current.deleteThread("alpha-thread");
+      await settle();
+      releaseMigrationRead?.();
+      await settle();
+      await act(async () => {
+        deletion.fail();
+        await expect(deleted).rejects.toThrow("delete failed");
+      });
+      await settle();
+
+      expect(store.current.model).toBe("anthropic:opus-5");
+      expect(store.current.effort).toBe("high");
+      expect(JSON.parse(localStorage.getItem(RUN_PREFERENCES_STORAGE_KEY) ?? "null"))
+        .toEqual({ [preferenceKey]: { model: "anthropic:opus-5", effort: "high" } });
+      // It must not have written the operator's choice to the server the delete
+      // failed against either -- the conversation is still theirs.
+      expect(api.patchThread).not.toHaveBeenCalled();
+
+      // And the adoption has to still be ELIGIBLE. Keeping the values while
+      // leaving the key marked migrated would look identical here and still be
+      // a one-way door: the preference would stay browser-local for the life of
+      // the tab and never reach the conversation.
+      vi.mocked(api.patchThread).mockResolvedValue({
+        ...alphaThread,
+        runModel: "anthropic:opus-5",
+        runEffort: "high",
+      });
+      const later = { ...alphaThread, updatedAt: "2026-08-14T09:00:00.000Z" };
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", {
+          label: "Alpha",
+          models: ["anthropic:opus-5"],
+          defaultModel: "anthropic:opus-5",
+        })],
+        [later],
+      ));
+      await refresh("event-1");
+      await waitFor(() => expect(api.patchThread).toHaveBeenCalledWith(
+        "alpha-thread",
+        { model: "anthropic:opus-5", effort: "high", ifRunConfigUnset: true },
+        expect.any(AbortSignal),
+      ));
+    });
+
+    it("restores a conversation an overlapping refresh dropped when its delete fails", async () => {
+      // P1-7. The failure handler forgets the tombstone and nothing else, so a
+      // response that arrived DURING the delete -- `refreshNow` fires one on
+      // every SSE event -- has already filtered the conversation out of the
+      // projection and nobody puts it back. The shipped test injects a LATER
+      // SSE before asserting restoration, which proves a future refresh can
+      // repair it, not that the failure did.
+      seedOneThread();
+      const deletion = heldDelete();
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      const deleted = store.current.deleteThread("alpha-thread");
+      await settle();
+      // The refresh carries a NEWER projection than the one the delete read.
+      // Whatever the failure hands back has to be that one: restoring the
+      // delete-time snapshot instead would silently roll a rename back.
+      const renamed = { ...alphaThread, title: "Renamed elsewhere", revision: 2 };
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [renamed],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [renamed] });
+      vi.mocked(api.thread).mockResolvedValue(detail(renamed, "hello"));
+      await refresh("event-1");
+      expect(store.current.threads.map((item) => item.id)).toEqual([]);
+
+      await act(async () => {
+        deletion.fail();
+        await expect(deleted).rejects.toThrow("delete failed");
+      });
+      await settle();
+      // No further event, and no further refresh: the failure itself repairs.
+      expect(store.current.threads.map((item) => item.id)).toEqual(["alpha-thread"]);
+      expect(store.current.threads[0]?.title).toBe("Renamed elsewhere");
+      expect(store.current.selectedThreadId).toBe("alpha-thread");
+    });
+
+    it("does not start a turn when a run-setting write issued before it failed", async () => {
+      // P1-6. Queue settlement collapses fulfilment AND rejection to `void`, so
+      // a send waits for a failed reset and then POSTs anyway. A blank
+      // selection is omitted from that POST and the server falls back to the
+      // conversation's stored override -- exactly the override the reset was
+      // clearing.
+      seedOneThread();
+      let rejectPatch: ((error: Error) => void) | undefined;
+      vi.mocked(api.patchThread).mockImplementation(async () => {
+        await new Promise<never>((_ok, no) => { rejectPatch = no; });
+        throw new Error("unreachable");
+      });
+      vi.mocked(api.startTurn).mockResolvedValue({
+        thread: alphaThread,
+        turn: { id: "turn-1", status: "running" },
+      });
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      act(() => { store.current.resetRunOverride(); });
+      await settle();
+      expect(api.patchThread).toHaveBeenCalledTimes(1);
+
+      const sent = store.current.sendTurn({ text: "go" });
+      await settle();
+      expect(api.startTurn).not.toHaveBeenCalled();
+
+      await act(async () => {
+        rejectPatch?.(new Error("reset failed"));
+        await expect(sent).rejects.toThrow();
+      });
+      expect(api.startTurn).not.toHaveBeenCalled();
+    });
+
+    it("still starts a turn once a later write supersedes the failed one", async () => {
+      // The refusal above must not wedge the composer: a write that SUCCEEDS
+      // after a failed one is the operator's newest intent and the server has
+      // it, so the next send is honest.
+      //
+      // The superseding write is HELD across the send deliberately. Released
+      // first, the queue drains before `sendTurn` asks, the settle takes its
+      // nothing-outstanding path, and the test would pass even if a success
+      // never cleared the failure -- which it did, until this held it open.
+      seedOneThread();
+      let releaseSecond: (() => void) | undefined;
+      const second = new Promise<void>((resolve) => { releaseSecond = resolve; });
+      let patches = 0;
+      vi.mocked(api.patchThread).mockImplementation(async () => {
+        patches += 1;
+        if (patches === 1) throw new Error("reset failed");
+        await second;
+        return { ...alphaThread, runModel: null, runEffort: "high" };
+      });
+      vi.mocked(api.startTurn).mockResolvedValue({
+        thread: alphaThread,
+        turn: { id: "turn-1", status: "running" },
+      });
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      act(() => { store.current.resetRunOverride(); });
+      await waitFor(() => expect(store.current.actionError).toBe("reset failed"));
+      act(() => { store.current.setEffort("high"); });
+      await waitFor(() => expect(api.patchThread).toHaveBeenCalledTimes(2));
+
+      const sent = store.current.sendTurn({ text: "go" });
+      await settle();
+      expect(api.startTurn).not.toHaveBeenCalled();
+
+      await act(async () => {
+        releaseSecond?.();
+        await sent;
+      });
+      expect(api.startTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not resurrect a deleted conversation with a late create response", async () => {
+      // P1-8. The server commits and emits before the POST answers, so the SSE
+      // can expose a conversation the create call has not returned yet. The
+      // create then prepends its response with neither `admitThreads` nor a
+      // dedup, so a delete made in that window is undone by the create's own
+      // answer.
+      const fresh = thread("fresh-thread", "alpha");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { label: "Alpha" })], []));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [] });
+      vi.mocked(api.thread).mockResolvedValue(detail(fresh, "hello"));
+      let releaseCreate: (() => void) | undefined;
+      const creation = new Promise<void>((resolve) => { releaseCreate = resolve; });
+      vi.mocked(api.createThread).mockImplementation(async () => {
+        await creation;
+        return fresh;
+      });
+      vi.mocked(api.deleteThread).mockResolvedValue(undefined);
+
+      const store = await renderStore();
+      const pending = store.current.createThread();
+      await settle();
+
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { label: "Alpha" })], [fresh]));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [fresh] });
+      await refresh("event-1");
+      expect(store.current.threads.map((item) => item.id)).toEqual(["fresh-thread"]);
+
+      await act(async () => { await store.current.deleteThread("fresh-thread"); });
+      expect(store.current.threads.map((item) => item.id)).toEqual([]);
+
+      await act(async () => {
+        releaseCreate?.();
+        await expect(pending).rejects.toThrow(/deleted/iu);
+      });
+      expect(store.current.threads.map((item) => item.id)).toEqual([]);
+      expect(store.current.selectedThreadId).toBeNull();
+    });
+
+    it("abandons a read the transport never answers, inside the tombstone lifetime", async () => {
+      // The tombstone's ten minutes only bounds a late response if the response
+      // itself is bounded. Reads had no deadline at all: a bootstrap, a page or
+      // a selection fetch on a transport that never answers stayed pending
+      // forever, so it could land after its tombstone expired and re-admit a
+      // conversation the server had destroyed.
+      seedOneThread();
+      vi.mocked(api.threads).mockResolvedValueOnce({ threads: [alphaThread], nextCursor: "cursor-1" });
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      // A transport that answers neither the request nor its abort.
+      vi.mocked(api.threads).mockImplementation(() => new Promise<never>(() => undefined));
+      let settledWith: unknown;
+      vi.useFakeTimers();
+      try {
+        const page = store.current.loadMoreThreads().then(
+          () => { settledWith = "resolved"; },
+          (error: unknown) => { settledWith = error; },
+        );
+        for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
+        expect(settledWith).toBeUndefined();
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(THREAD_READ_TIMEOUT_MS);
+          await page;
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(settledWith).toBeInstanceOf(Error);
+      expect((settledWith as Error).message).toMatch(/timed out/iu);
+      expect(THREAD_READ_TIMEOUT_MS).toBeLessThan(REMOVED_THREAD_TTL_MS);
+    });
+
+    it("does not list a conversation twice when its create and its event race", async () => {
+      // The same hole without a delete: the SSE admits the conversation, then
+      // the create prepends the very same row again.
+      const fresh = thread("fresh-thread", "alpha");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { label: "Alpha" })], []));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [] });
+      vi.mocked(api.thread).mockResolvedValue(detail(fresh, "hello"));
+      let releaseCreate: (() => void) | undefined;
+      const creation = new Promise<void>((resolve) => { releaseCreate = resolve; });
+      vi.mocked(api.createThread).mockImplementation(async () => {
+        await creation;
+        return fresh;
+      });
+
+      const store = await renderStore();
+      const pending = store.current.createThread();
+      await settle();
+
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { label: "Alpha" })], [fresh]));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [fresh] });
+      await refresh("event-1");
+
+      await act(async () => {
+        releaseCreate?.();
+        await pending;
+      });
+      expect(store.current.threads.map((item) => item.id)).toEqual(["fresh-thread"]);
     });
   });
 });

@@ -652,11 +652,28 @@ export class WebStore {
     // After `current` is read (it carries the PREVIOUS generations) and after
     // both comparisons, so a restart behind an otherwise identical summary
     // still reads as a change and still reaches the browser.
-    this.agentGenerations.clear();
-    for (const agent of agents) {
-      if (agent.generation !== undefined) this.agentGenerations.set(agent.sourceId, agent.generation);
+    //
+    // And only once the row it describes is actually on disk. Advancing before
+    // the transaction made the map a claim the database had not agreed to: a
+    // transaction that threw left the NEW generation stitched onto the OLD row,
+    // so the retry compared the new summary against a prior that already
+    // carried its generation, found only `updatedAt` different, and returned
+    // `notable === false`. The restart broadcast was then lost permanently ---
+    // not deferred --- and an open console stayed stale until it reconnected.
+    const adoptGenerations = (): void => {
+      this.agentGenerations.clear();
+      for (const agent of agents) {
+        if (agent.generation !== undefined) this.agentGenerations.set(agent.sourceId, agent.generation);
+      }
+    };
+    if (!changed) {
+      // Nothing to persist, so there is nothing for the adoption to outrun:
+      // every incoming generation already equals the one it is replacing, or
+      // `changed` would be true. The map is still swept so a departed agent
+      // does not leave one behind.
+      adoptGenerations();
+      return false;
     }
-    if (!changed) return false;
     this.transaction(() => {
       this.database.prepare("UPDATE agents SET status = 'offline'").run();
       const statement = this.database.prepare(`
@@ -701,6 +718,7 @@ export class WebStore {
         );
       }
     });
+    adoptGenerations();
     return notable;
   }
 

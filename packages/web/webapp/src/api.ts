@@ -279,10 +279,17 @@ export const api = {
     return result.job;
   },
 
-  createThread: async (sourceId: string) => {
+  /**
+   * `signal` because the server commits and emits the creation event BEFORE it
+   * answers this POST, so a held response describes a conversation the console
+   * may already know about -- and may already have deleted. The caller bounds
+   * it for the same reason it bounds every write.
+   */
+  createThread: async (sourceId: string, signal?: AbortSignal) => {
     const result = await request<{ thread: ThreadSummary }>("/api/v1/threads", {
       method: "POST",
       body: JSON.stringify({ sourceId }),
+      ...(signal === undefined ? {} : { signal }),
     });
     return result.thread;
   },

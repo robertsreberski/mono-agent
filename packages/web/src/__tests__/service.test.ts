@@ -11,7 +11,7 @@ import {
   type AgentReplyPart,
 } from "@mono-agent/agent-contracts";
 
-import { WebService, WeightedTurnBudget } from "../service.js";
+import { agentGeneration, WebService, WeightedTurnBudget } from "../service.js";
 import { fakeDiscoveredAgent, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
@@ -60,6 +60,54 @@ function operatorCronOverview(overrides: Record<string, unknown> = {}): Record<s
     ...overrides,
   };
 }
+
+describe("agentGeneration", () => {
+  it("does not collide two different processes onto one generation", () => {
+    // The tuple was joined with a delimiter that can occur inside its own
+    // fields, so two DIFFERENT `(baseUrl, pid, startedAt)` tuples flattened to
+    // one string and hashed to one token. Two live processes sharing a
+    // generation is exactly the state the token exists to make impossible: the
+    // console would go on serving one process's `/v1/models` pages to the
+    // other. Neither tuple below is one a first-party agent produces --- that
+    // is why this is robustness and not a fleet regression --- but a digest
+    // whose only defence is what its inputs happen to look like is not a
+    // digest of three fields, it is a digest of one string.
+    const left = fakeDiscoveredAgent({
+      baseUrl: "http://127.0.0.1:45123/gui|1",
+      source: { ...fakeDiscoveredAgent().source, pid: 2, startedAt: "2026-07-17T08:00:00.000Z" },
+    });
+    const right = fakeDiscoveredAgent({
+      baseUrl: "http://127.0.0.1:45123/gui",
+      source: { ...fakeDiscoveredAgent().source, pid: 1, startedAt: "2|2026-07-17T08:00:00.000Z" },
+    });
+    // Both flatten to the identical `|`-joined string, and did hash alike.
+    expect([left.baseUrl, left.source.pid, left.source.startedAt].join("|"))
+      .toBe([right.baseUrl, right.source.pid, right.source.startedAt].join("|"));
+    expect(agentGeneration(left)).not.toBe(agentGeneration(right));
+  });
+
+  it("is stable for one process and different once it is replaced", () => {
+    const base = fakeDiscoveredAgent();
+    expect(agentGeneration(base)).toBe(agentGeneration(fakeDiscoveredAgent()));
+    expect(agentGeneration(base)).toHaveLength(16);
+    // And it never carries the endpoint or pid it is built from.
+    expect(agentGeneration(base)).not.toContain("45123");
+    expect(agentGeneration(base)).not.toContain("123");
+    const restarted = fakeDiscoveredAgent({
+      source: { ...base.source, pid: 124, startedAt: "2026-07-17T08:30:00.000Z" },
+    });
+    expect(agentGeneration(restarted)).not.toBe(agentGeneration(base));
+
+    // The heartbeat must NOT move it. `updatedAt` changes on every discovery
+    // poll, so folding it in would retire the browser's per-agent caches every
+    // five seconds and make the token mean nothing. A previous round mutated
+    // exactly this and all 170 backend tests stayed green.
+    const beating = fakeDiscoveredAgent({
+      source: { ...base.source, updatedAt: "2026-07-17T09:00:05.000Z" },
+    });
+    expect(agentGeneration(beating)).toBe(agentGeneration(base));
+  });
+});
 
 describe("WebService", () => {
   it("delegates conversation search to the store and emits nothing for it", async () => {

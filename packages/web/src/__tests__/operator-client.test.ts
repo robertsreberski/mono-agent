@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import {
+  MAX_INFO_PROVIDER_ID_BYTES,
+  MAX_INFO_PROVIDER_ITEMS,
+} from "@mono-agent/agent-contracts";
+
 import { OperatorClient } from "../operator-client.js";
 import { fakeProcessJob } from "./helpers.js";
 
@@ -36,6 +41,40 @@ const replyPartOutcomes = [{
 }];
 
 describe("OperatorClient", () => {
+  it("parses the provider summary on the bounds the producer publishes against", async () => {
+    // These bounds are one contract, not two guesses. Chosen locally they
+    // drifted: a 256-byte provider id the catalog publishes was dropped here at
+    // 128, and the route provider the producer deliberately admitted first was
+    // cut here at entry 65 of 71. Read the shared numbers, and read the window
+    // as the PREFIX the producer orders its route providers into.
+    const atBound = `p${"i".repeat(MAX_INFO_PROVIDER_ID_BYTES - 1)}`;
+    const overBound = `${atBound}x`;
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        schema: 1,
+        capabilities: { attachments: true },
+        providers: [
+          { id: "anthropic", label: "Anthropic" },
+          { id: atBound },
+          { id: overBound },
+          ...Array.from({ length: MAX_INFO_PROVIDER_ITEMS }, (_unused, index) => ({
+            id: `vendor-${String(index).padStart(5, "0")}`,
+          })),
+        ],
+      })) as typeof fetch,
+    });
+
+    const ids = (await client.info()).providers?.map((provider) => provider.id) ?? [];
+    // The window is a prefix cut, so the head of the wire order survives whole.
+    expect(ids).toHaveLength(MAX_INFO_PROVIDER_ITEMS);
+    expect(ids[0]).toBe("anthropic");
+    expect(ids).toContain(atBound);
+    // One byte over is still refused -- the bound is shared, not absent.
+    expect(ids).not.toContain(overBound);
+    expect(ids.at(-1)).toBe(`vendor-${String(MAX_INFO_PROVIDER_ITEMS - 3).padStart(5, "0")}`);
+  });
+
   it("parses compact cron pages and bounded detail through distinct encoded routes", async () => {
     const requests: string[] = [];
     const client = new OperatorClient({

@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { chmod, lstat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -68,6 +69,62 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("does not advance an agent generation the transaction never persisted", async () => {
+    // The generation is stitched onto every row read back, so advancing the map
+    // BEFORE the write made a failed transaction permanent: the retry compared
+    // the restarted summary against a prior that already carried the new
+    // generation, saw only `updatedAt` differ, and reported `notable === false`.
+    // No `agents.changed` frame was ever emitted for that restart and an open
+    // console kept serving caches for a process that was gone.
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    const first = { ...agent(), generation: "gen-1" };
+    expect(store.replaceAgents([first])).toBe(true);
+
+    // One failed transaction. Injected on the instance rather than simulated
+    // through a payload, so the repro is exactly "the write threw" and nothing
+    // about the summary itself is special.
+    const prototype = Object.getPrototypeOf(store) as Record<string, unknown>;
+    const realTransaction = prototype.transaction as (this: unknown, run: () => unknown) => unknown;
+    let failNext = true;
+    Object.defineProperty(store, "transaction", {
+      configurable: true,
+      value: function transaction(this: unknown, run: () => unknown): unknown {
+        if (failNext) {
+          failNext = false;
+          // A REAL transaction that does all of its work and then fails to
+          // commit, rather than one that refuses to start. Both roll back to
+          // the same place, but this one also runs the callback, so anything
+          // the callback itself advances is caught here too.
+          return realTransaction.call(this, () => {
+            run();
+            throw new Error("simulated agent write failure");
+          });
+        }
+        return realTransaction.call(this, run);
+      },
+    });
+
+    const restarted = { ...first, generation: "gen-2", updatedAt: "2026-07-17T09:00:05.000Z" };
+    expect(() => store.replaceAgents([restarted])).toThrowError(/simulated agent write failure/u);
+    // Nothing was written, so nothing may claim it was: the store must still
+    // describe the process it last persisted.
+    expect(store.listAgents()[0]?.generation).toBe("gen-1");
+    expect(store.listAgents()[0]?.updatedAt).toBe("2026-07-17T09:00:00.000Z");
+
+    // The retry carries the identical summary. It is still a restart.
+    expect(store.replaceAgents([restarted])).toBe(true);
+    expect(store.listAgents()[0]?.generation).toBe("gen-2");
+    expect(store.listAgents()[0]?.updatedAt).toBe("2026-07-17T09:00:05.000Z");
+
+    // And the heartbeat suppression this shares a function with still holds:
+    // an idle fleet emits nothing.
+    expect(store.replaceAgents([restarted])).toBe(false);
+    expect(store.replaceAgents([{ ...restarted, updatedAt: "2026-07-17T09:00:10.000Z" }])).toBe(false);
+    store.close();
+  });
+
   it("applies a conditional run-config patch and its refusal in one transaction", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -99,6 +156,63 @@ describe("WebStore", () => {
       .toMatchObject({ applied: true, thread: { runEffort: "high" } });
     expect(() => store.patchThreadIfRunConfigUnset("missing", { effort: "low" }))
       .toThrowError(/not found/iu);
+    store.close();
+  });
+
+  it("holds the precondition read inside the same transaction as its write", async () => {
+    // The sequential test above passes with the read moved OUTSIDE
+    // `BEGIN IMMEDIATE`, so it does not prove what the method's comment claims.
+    // This does, with a real second connection in a real second PROCESS: the
+    // service lease is held on a different file, so it makes this process the
+    // only *service* writing, not this statement the only writer.
+    //
+    // The other connection takes the write lock, updates the same row and
+    // holds the transaction open. A compare-and-set whose read is inside its
+    // own `BEGIN IMMEDIATE` cannot read until that commits, so it sees the
+    // contested effort and REFUSES. A read outside would see the pre-commit
+    // snapshot, find the run config unset, wait for the lock and then apply --
+    // overwriting a choice made in another tab, which is the whole failure the
+    // conditional exists to prevent.
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const databasePath = join(stateDir, "state.sqlite");
+
+    const child = spawn(process.execPath, ["-e", `
+      const { DatabaseSync } = require("node:sqlite");
+      const db = new DatabaseSync(process.argv[1], { timeout: 5000 });
+      db.exec("PRAGMA journal_mode = WAL");
+      db.exec("BEGIN IMMEDIATE");
+      db.prepare("UPDATE threads SET run_effort = 'low' WHERE id = ?").run(process.argv[2]);
+      console.log("held");
+      // Long enough that the parent is certainly blocked on the lock, short
+      // enough to stay far inside the 5s busy timeout it waits with.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400);
+      db.exec("COMMIT");
+      db.close();
+    `, databasePath, thread.id], { stdio: ["ignore", "pipe", "pipe"] });
+    const stderr: Buffer[] = [];
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    const exited = new Promise<number | null>((resolve) => { child.on("exit", resolve); });
+    await new Promise<void>((resolve, reject) => {
+      child.stdout.on("data", (chunk: Buffer) => {
+        if (chunk.toString("utf8").includes("held")) resolve();
+      });
+      child.on("exit", () => {
+        reject(new Error(`the contending writer exited early: ${Buffer.concat(stderr).toString("utf8")}`));
+      });
+    });
+
+    const result = store.patchThreadIfRunConfigUnset(thread.id, { model: "anthropic:opus-5" });
+    expect(await exited).toBe(0);
+    expect(result.applied).toBe(false);
+    expect(result.thread.runEffort).toBe("low");
+    expect(result.thread.runModel).toBeNull();
+    expect(store.getThread(thread.id)?.runEffort).toBe("low");
+    expect(store.getThread(thread.id)?.runModel).toBeNull();
     store.close();
   });
 
