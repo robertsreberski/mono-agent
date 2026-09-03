@@ -18,20 +18,46 @@ const BIDI_CONTROL = /\p{Bidi_Control}/u;
  * tokens. Each requires a credential-specific alphabet and length, so prose
  * that merely mentions `sk-` does not match.
  */
-const SECRET_LIKE_VALUE =
-  /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{12,}|Bearer\s+\S{12,}|\d{6,12}:[A-Za-z0-9_-]{20,})\b/u;
+const SECRET_LIKE_VALUE = new RegExp(
+  [
+    // OpenAI, including project/service-account forms.
+    String.raw`sk-[A-Za-z0-9_-]{12,}`,
+    // GitHub classic/OAuth/refresh/server/user tokens, plus fine-grained PATs.
+    String.raw`gh[pousr]_[A-Za-z0-9]{20,}`,
+    String.raw`github_pat_[A-Za-z0-9_]{20,}`,
+    // Slack bot/user/app-level tokens.
+    String.raw`xox[baprs]-[A-Za-z0-9-]{12,}`,
+    String.raw`xapp-[A-Za-z0-9-]{12,}`,
+    // AWS access key ids.
+    String.raw`AKIA[A-Z0-9]{16}`,
+    // Telegram bot tokens.
+    String.raw`\d{6,12}:[A-Za-z0-9_-]{20,}`,
+  ].map((shape) => String.raw`\b${shape}\b`).join("|")
+    // Bearer/Basic carry their own delimiter, so they are matched separately
+    // from the word-bounded shapes above.
+    + String.raw`|\b(?:Bearer|Basic)\s+\S{12,}`,
+  // Case-insensitive: a lowercase `bearer ` or `akia…` is the same credential.
+  "iu",
+);
 
 /** Environment variable names whose values are treated as live credentials. */
 const CREDENTIAL_ENV_NAME = /(?:api.?key|credential|password|secret|token)/iu;
 
 /**
- * Names that merely *reference* a credential rather than holding one, or that
- * are operational settings whose names happen to contain a credential word —
- * `MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS` is a token budget, not a token.
- * Treating those values as secrets would reject ordinary facts that happen to
- * contain the same number or path.
+ * Names whose value is provably a variable name or a filesystem location rather
+ * than a credential, mirroring the `env`/`path` carve-out that
+ * `secretBearingPointer` already applies to config pointers.
+ *
+ * Deliberately narrow. An earlier revision also excluded `_TOKENS`, `_NAME`,
+ * and `_URL`, which dropped genuine credential holders such as
+ * `SERVICE_API_TOKENS` and `SLACK_APP_TOKENS` from the scan — and because this
+ * helper also backs the SELF-CONFIG proposal guard, that weakened two surfaces
+ * at once. The residual cost is accepted and documented: a credential-named
+ * budget such as `..._KEEP_RECENT_TOKENS=8000` still makes the literal `8000`
+ * unstorable through `Remember`. Favouring a false rejection over a persisted
+ * credential is the intended trade here.
  */
-const NON_CREDENTIAL_ENV_NAME = /(?:_ENV|_ENV_VAR|_PATH|_FILE|_DIR|_URL|_TOKENS|_NAME)$/iu;
+const NON_CREDENTIAL_ENV_NAME = /(?:_ENV|_ENV_VAR|_PATH|_FILE|_DIR)$/iu;
 
 /**
  * Shortest environment value worth matching.
@@ -82,7 +108,21 @@ export function knownEnvironmentSecretValues(env: Record<string, string | undefi
     .map(([, value]) => value!);
 }
 
-/** Whether the text contains any of this agent's own configured secret values. */
+/**
+ * Whether the text contains any of this agent's own configured secret values.
+ *
+ * Both sides are NFKC-folded before comparison. Callers normalize the text they
+ * are about to store, so comparing it against a raw environment value would
+ * miss a credential that is itself configured in a compatibility form (a
+ * fullwidth password matches only once both sides agree on a domain).
+ */
 export function containsKnownSecretValue(value: string, secrets: readonly string[]): boolean {
-  return secrets.some((secret) => value.includes(secret));
+  const folded = value.normalize("NFKC");
+  return secrets.some((secret) => {
+    const foldedSecret = secret.normalize("NFKC");
+    return value.includes(secret)
+      || folded.includes(foldedSecret)
+      || folded.includes(secret)
+      || value.includes(foldedSecret);
+  });
 }

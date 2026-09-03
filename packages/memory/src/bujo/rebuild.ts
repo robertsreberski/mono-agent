@@ -20,6 +20,7 @@ import type {
 import type { EmbeddingProvider } from "../search/index.js";
 
 import { normalizedContentHash } from "./daily.js";
+import { isRememberedMemoryId } from "./canonical-lookup.js";
 import { parseDailyFile } from "./grammar.js";
 import {
   emptyCanonicalGraphProjection,
@@ -107,6 +108,16 @@ import {
  * data, no built-in production path emits them in v1, and rebuild does not recreate them.
  *
  * @see safeRebuildMemoryIndex for the supported managed-generation rebuild path.
+ */
+/**
+ * Legacy low-level reindex. NOT tier-correct and not the supported path.
+ *
+ * It preserves each canonical bullet id verbatim and clears `content_hashes`,
+ * so on a Journal store it drops the required `J-<content hash>` identity and
+ * its uniqueness reservation, and it performs no duplicate detection at all.
+ * Use {@link safeRebuildMemoryIndex}, which maps Journal identities, keeps
+ * `content_hashes` empty off Journal, and validates the candidate before
+ * activating it.
  */
 export async function rebuildFromMarkdown(root: string, db: MemoryDb): Promise<{ indexed: number }> {
   const files = listCanonicalFileNames(root, "daily", {
@@ -1270,7 +1281,12 @@ function buildPlan(
   let skippedRawRecords = 0;
   let skippedJournalDuplicateRecords = 0;
   for (const record of rawRecords) {
-    if (tier === "bujo" && isLegacyHostObservation(record.text)) {
+    // An explicit `Remember` write is deliberate curated content, so its
+    // identity outranks a prose sniff: a remembered fact that happens to open
+    // with the legacy host-audit wording must not vanish on rebuild.
+    if (tier === "bujo"
+      && !isRememberedMemoryId(record.id)
+      && isLegacyHostObservation(record.text)) {
       skippedRawRecords += 1;
       continue;
     }

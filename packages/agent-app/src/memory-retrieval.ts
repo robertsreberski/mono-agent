@@ -35,7 +35,11 @@ export interface SharedRecallStore extends MemoryStore, RecallCapableStore {
    * on the bujo backend; external backends implement the shared MemoryStore
    * contract without one, so they never advertise the capability below.
    */
-  remember?(conversationId: string, text: string): Promise<{
+  remember?(
+    conversationId: string,
+    text: string,
+    options?: { readonly abortSignal?: AbortSignal },
+  ): Promise<{
     readonly id: string;
     readonly source: string;
     readonly text: string;
@@ -198,7 +202,11 @@ export class MemoryRetrievalService implements MemoryStore {
     return typeof this.store.remember === "function" && this.store.supportsRemember?.() === true;
   }
 
-  async remember(conversationId: string, text: string): Promise<{
+  async remember(
+    conversationId: string,
+    text: string,
+    options: { readonly abortSignal?: AbortSignal } = {},
+  ): Promise<{
     readonly id: string;
     readonly source: string;
     readonly text: string;
@@ -208,7 +216,13 @@ export class MemoryRetrievalService implements MemoryStore {
     if (remember === undefined) {
       throw new Error("memory: the configured store has no durable remember surface.");
     }
-    return await remember.call(this.store, conversationId, text);
+    const result = await remember.call(this.store, conversationId, text, options);
+    // Recall memoizes per turn, so a query answered BEFORE this write would keep
+    // returning its stale empty result for the rest of the run — contradicting
+    // the immediate-recall guarantee the tool reports. Drop the caches rather
+    // than try to predict which queries this fact should now match.
+    this.releaseAllTurns();
+    return result;
   }
 
   scheduleCapture(conversationId: string, text: string): void {

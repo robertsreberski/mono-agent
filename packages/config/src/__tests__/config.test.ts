@@ -1210,6 +1210,15 @@ describe("loadMonoAgentConfig", () => {
     expect(forcedOn.memory?.recallTool).toEqual({ enabled: true });
   });
 
+  it("fails closed when the remember flag is set without a memory path", () => {
+    // Adjacent memory flags fail closed here; omitting this one let a declared
+    // capability silently resolve to memory: undefined.
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED: "true" },
+    })).toThrow(/MONO_AGENT_MEMORY_PATH/u);
+  });
+
   it("defaults memory.rememberTool on for the bujo backend and off for supermemory", () => {
     const lite = loadMonoAgentConfig({
       cwd: "/repo",

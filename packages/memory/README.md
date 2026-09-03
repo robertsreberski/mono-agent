@@ -438,6 +438,7 @@ MemoryHealthStatus
 MemoryModelError
 MemoryModelKind
 MemoryModelOutputError
+MemoryRememberPartialWriteError
 MemoryRememberResult
 MigrateDeps
 MigrateResult

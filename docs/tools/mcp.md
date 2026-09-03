@@ -225,13 +225,41 @@ index row is missing — the window left by a crash between the two writes — i
 therefore completed rather than duplicated, including when the retry arrives
 after the UTC date rolls over.
 
-Text that carries a configured credential value, a well-known token shape, a
+Text that carries a configured credential value, a well-known token shape
+(OpenAI, GitHub classic and fine-grained, Slack bot and app-level, AWS access
+key ids, bearer/basic schemes, Telegram bot tokens, all case-insensitive), a
 credential assignment, or terminal/bidi control characters is **rejected and
 nothing is written**; the model is told to restate the fact without the secret.
 Rejecting rather than redacting keeps a mangled value from being stored while
-still reporting success. As [security](/reference/setup-security/) notes, this
-is defense in depth rather than a guarantee: free-form model text can still
-carry sensitive data that no closed pattern set recognizes.
+still reporting success. The check runs against the exact normalized text and
+compares it with configured values in the same Unicode domain, so a credential
+written in a compatibility form does not slip past.
+
+The configured-value scan reads the environment the **host** resolved, not
+`process.env`, so a secret supplied only through `startMonoAgentApp({ env })` is
+still recognized. Only `*_ENV`, `*_PATH`, `*_FILE`, and `*_DIR` names are
+skipped, because those hold a variable name or a location rather than a secret.
+Names such as `SERVICE_API_TOKENS` are deliberately **not** skipped: the same
+helper backs the SELF-CONFIG proposal guard, so a broader carve-out would weaken
+two surfaces at once. The accepted cost is a false rejection — a
+credential-named budget like `..._KEEP_RECENT_TOKENS=8000` makes the literal
+`8000` unstorable through this tool.
+
+As [security](/reference/setup-security/) notes, this is defense in depth rather
+than a guarantee: free-form model text can still carry sensitive data that no
+closed pattern set recognizes.
+
+Two outcomes are reported distinctly. A failure before anything durable is
+written says the fact was not stored, and the model may reword it. A canonical
+write whose index projection then failed reports the fact as **durable but
+unindexed** and tells the model to retry the identical wording — which completes
+it idempotently — rather than reword and create a second memory for one fact.
+
+Two states are refused rather than silently mishandled: a fact that was
+explicitly forgotten through `mono-agent memory forget` is not re-storable
+through the tool, and a date still kept only in the root-level legacy layout is
+refused because creating the modern `daily/<date>.md` would hide the legacy file
+from the next rebuild.
 
 Memory is append-only. There is no edit or delete through this tool; removal
 remains the explicit two-phase `mono-agent memory forget` workflow.

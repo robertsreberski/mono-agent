@@ -25,7 +25,11 @@ export const REMEMBER_MAX_CHARACTERS = 500;
  * simply never implement `supportsRemember` and are excluded.
  */
 export interface RememberCapableStore {
-  remember(conversationId: string, text: string): Promise<{
+  remember(
+    conversationId: string,
+    text: string,
+    options?: { readonly abortSignal?: AbortSignal },
+  ): Promise<{
     readonly id: string;
     readonly source: string;
     readonly text: string;
@@ -73,6 +77,9 @@ const REMEMBER_INPUT = {
   ),
 };
 
+/** Run-artifact filenames the shared visible-text guard treats as private evidence. */
+const RUN_ARTIFACT_EVIDENCE = /(?:\.events\.jsonl|\.summary\.json)\b/giu;
+
 function toolError(message: string) {
   return {
     content: [{ type: "text" as const, text: message }],
@@ -101,11 +108,28 @@ function rejectionReason(storedText: string, env: Record<string, string | undefi
     return "That text contains a configured credential value and was not stored. "
       + "Restate the fact without the secret.";
   }
-  if (containsSecretLikeValue(storedText) || containsVisibleSensitiveText(storedText)) {
+  // `containsVisibleSensitiveText` also treats run-artifact filenames as private
+  // evidence. That is right for a run projection and wrong for a memory fact, so
+  // neutralize those tokens before asking: "The release writes build.summary.json"
+  // is an ordinary sentence, not a credential.
+  const credentialProbe = storedText.replace(RUN_ARTIFACT_EVIDENCE, ".artifact");
+  if (containsSecretLikeValue(storedText) || containsVisibleSensitiveText(credentialProbe)) {
     return "That text looks like it carries a credential and was not stored. "
       + "Restate the fact without the secret.";
   }
   return undefined;
+}
+
+/**
+ * Whether the canonical bullet is durable and only its index projection failed.
+ *
+ * Matched structurally rather than by importing the error class so this module
+ * keeps its lazy boundary to the memory backend.
+ */
+function isPartialRememberWrite(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && (error as { readonly canonicalWritten?: unknown }).canonicalWritten === true;
 }
 
 /** Register the single `Remember` tool against one conversation's writable store. */
@@ -128,7 +152,7 @@ export function createMemoryRememberServer(
         + "text is rejected. Memory is append-only: you cannot edit or delete what you store.",
       inputSchema: REMEMBER_INPUT,
     },
-    async (args) => {
+    async (args, extra) => {
       // Loaded lazily: this module is imported by the composition root, and an
       // agent with no memory configured must not pay for the SQLite/BuJo stack.
       // Sharing the store's own transform is what keeps the credential checks
@@ -146,8 +170,16 @@ export function createMemoryRememberServer(
       }
       const rejected = rejectionReason(storedText, env);
       if (rejected !== undefined) return toolError(rejected);
+      // Cancellation must reach the store: without it a cancelled call still
+      // commits, so the client sees an abort while the fact lands anyway.
+      const abortSignal = (extra as { readonly signal?: AbortSignal } | undefined)?.signal;
+      if (abortSignal?.aborted === true) {
+        return toolError("That request was cancelled before the fact was stored.");
+      }
       try {
-        const result = await store.remember(conversationId, storedText);
+        const result = await store.remember(conversationId, storedText, {
+          ...(abortSignal === undefined ? {} : { abortSignal }),
+        });
         const text = result.duplicate
           ? `Already remembered: "${result.text}"`
           : `Remembered: "${result.text}"`;
@@ -162,8 +194,23 @@ export function createMemoryRememberServer(
           },
         };
       } catch (error) {
-        // A failed durable write must never read as success.
         const reason = error instanceof Error ? error.message : String(error);
+        // A canonical write that lost only its index is PARTIAL, not failed.
+        // Saying "not stored" here would invite the model to rephrase and
+        // create a second memory for one fact; retrying the identical text is
+        // idempotent and completes the projection instead.
+        if (isPartialRememberWrite(error)) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: `That fact is already durable but its index did not finish: ${reason} `
+                + "Retry the exact same wording to complete it; do not reword it.",
+            }],
+            structuredContent: { schema: 1, stored: true, indexed: false, storedText, reason },
+            isError: true as const,
+          };
+        }
+        // A failed durable write must never read as success.
         return toolError(`Memory could not store that fact: ${reason}`);
       }
     },

@@ -460,3 +460,30 @@ describe("shared MemoryRecall MCP", () => {
     }
   });
 });
+
+describe("MemoryRetrievalService.remember cache coherence", () => {
+  it("drops the per-turn recall cache so a stored fact is visible in the same run", async () => {
+    // Recall memoizes per turn. Without invalidation a query answered before the
+    // write keeps returning its stale empty result, contradicting the
+    // immediate-recall guarantee the Remember tool reports.
+    const hits: { readonly score: number; readonly record: { id: string; text: string } }[] = [];
+    const store = {
+      async load() { return undefined; },
+      async appendHostSummary() { return { conversationId: "c", source: "s", bytesWritten: 0 }; },
+      async recall() { return [...hits]; },
+      supportsRemember: () => true,
+      async remember(_conversationId: string, text: string) {
+        hits.push({ score: 1, record: { id: "RM-1", text } });
+        return { id: "RM-1", source: "daily/x.md", text, duplicate: false };
+      },
+      async close() {},
+    };
+    const service = new MemoryRetrievalService(store as never, {});
+
+    expect(await service.recallForTurn("turn-1", "squash merges")).toHaveLength(0);
+    await service.remember("conv-1", "Robert prefers squash merges.");
+    const after = await service.recallForTurn("turn-1", "squash merges");
+
+    expect(after.map((hit) => hit.record.text)).toContain("Robert prefers squash merges.");
+  });
+});

@@ -163,6 +163,13 @@ export interface ConfiguredAgentHarnessOptions {
   readonly model?: RuntimeModelReference;
   readonly executionMode?: RuntimeExecutionMode;
   readonly memory?: MemoryStore;
+  /**
+   * Authoritative process environment, as resolved by the host. Credential
+   * checks that must recognize this agent's own configured secrets read it, so
+   * a host started with an explicit `env` must pass the same map here rather
+   * than let those checks fall back to `process.env`.
+   */
+  readonly env?: Record<string, string | undefined>;
   readonly historyStore?: ConversationHistoryStore;
   /** App-owned run-scoped interaction details to add only to replay history. */
   readonly turnHistoryEnricher?: AgentHarnessOptions["turnHistoryEnricher"];
@@ -179,6 +186,8 @@ export interface ConfiguredAgentHarnessOptions {
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
   /** Best-effort diagnostic when the default MemoryRecall endpoint cannot start. */
   readonly onMemoryRecallUnavailable?: (error: unknown) => void;
+  /** Best-effort diagnostic when the durable Remember endpoint cannot start. */
+  readonly onMemoryRememberUnavailable?: (error: unknown) => void;
   /** Best-effort host diagnostic for post-provider memory write failures. */
   readonly onMemoryWarning?: (message: string) => void;
   /** Best-effort diagnostic for bounded lifecycle-sidecar write failures. */
@@ -1131,7 +1140,12 @@ async function createConfiguredAgentHarnessInternal(
     || !isRememberCapableStore(memory)
     || !isRememberToolAllowed(config.tools)
     ? undefined
-    : createMemoryRememberRuntimeExtension(memory);
+    : createMemoryRememberRuntimeExtension(memory, {
+        ...(options.env === undefined ? {} : { env: options.env }),
+        ...(options.onMemoryRememberUnavailable === undefined
+          ? {}
+          : { onUnavailable: options.onMemoryRememberUnavailable }),
+      });
   const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([
     memoryRecall,
     memoryRemember,

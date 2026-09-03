@@ -52,6 +52,7 @@ import {
   isAppCoreConfigError,
   loadAppCoreConfig,
 } from "./app-config.js";
+import { isRememberToolAllowed } from "./memory-remember.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { adapterSendToolNames, isAdapterSendToolAllowed, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
 import { canonicalToolName, isAllowAllTools, isKnownToolName, isMcpToolName, suggestToolName } from "./modules/known-tools.js";
@@ -2093,6 +2094,16 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
         continue;
       }
       if (canonicalToolName(name) === "Remember") {
+        // Reconcile with the runtime's own resolution, which honours the
+        // `mcp__mono-agent-memory-write__*` spellings and deny-wins. Reporting
+        // ok while the runtime omits the tool would send the operator hunting.
+        if (!isRememberToolAllowed(config.tools)) {
+          status = "waiting";
+          details.push(
+            `${name} is listed but tool policy still resolves to denied (deny wins, including the mcp__mono-agent-memory-write__* spellings) - the tool will not be offered.`,
+          );
+          continue;
+        }
         // Unlike MemoryRecall, Remember IS allowlist-gated, so listing it is
         // correct and required under a restrictive policy. It still needs a
         // configured memory block with the write surface left enabled.

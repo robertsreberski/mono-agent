@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -7,6 +7,7 @@ import { fakeEmbeddings } from "./helpers.js";
 import { createBujoMemoryStore } from "../store.js";
 import { appendBullet, dailyFilePath, normalizeMemoryText, normalizedContentHash } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
+import { safeRebuildMemoryIndex } from "../rebuild.js";
 import type { BujoTier } from "../types.js";
 
 const FIXED = new Date("2026-09-03T10:00:00.000Z");
@@ -209,6 +210,67 @@ describe("BujoMemoryStore.remember — idempotency across partial failure", () =
   });
 });
 
+describe("BujoMemoryStore.remember — data-safety guards", () => {
+  it("refuses to shadow a same-date root-legacy file", async () => {
+    // Rebuild lets daily/<date>.md win for its date, so creating it here would
+    // drop every fact in the legacy file from the next rebuilt index.
+    const dir = root("legacy-shadow");
+    const store = storeFor(dir, "lite", () => FIXED);
+    try {
+      writeFileSync(join(dir, "2026-09-03.md"), "# 2026-09-03\n\n", "utf8");
+      await expect(store.remember("conv-1", "Would hide the legacy file."))
+        .rejects.toThrow(/root-level legacy layout/u);
+      expect(existsSync(dailyFilePath(dir, FIXED))).toBe(false);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("refuses to re-store an explicitly forgotten fact instead of calling it a duplicate", async () => {
+    const dir = root("forgotten");
+    const store = storeFor(dir, "lite", () => FIXED);
+    try {
+      const text = "Robert asked for this to be forgotten.";
+      const stored = await store.remember("conv-1", text);
+      // Simulate the terminal state `memory forget apply` leaves behind.
+      const db = store["db"] as unknown as {
+        get(id: string): { status: string } | undefined;
+        upsertLexical(record: unknown): void;
+      };
+      const record = store["db"].get(stored.id)!;
+      db.upsertLexical({ ...record, status: "dropped" });
+
+      // Recall filters it, so "already remembered" would be an unreadable success.
+      await expect(store.remember("conv-1", text)).rejects.toThrow(/explicitly forgotten/u);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("keeps a remembered fact that opens with the legacy host-audit wording", async () => {
+    // BuJo rebuild drops legacy raw audit prose by prefix; a deliberate
+    // Remember write must be judged by its identity, not its first words.
+    const dir = root("prose-collision");
+    const text = "Host-observed completed turn. Robert prefers this phrasing verbatim.";
+    const store = storeFor(dir, "bujo", () => FIXED);
+    let id: string;
+    try {
+      id = (await store.remember("conv-1", text)).id;
+    } finally {
+      await store.close();
+    }
+
+    await safeRebuildMemoryIndex({ root: dir, tier: "bujo", embeddings: fakeEmbeddings(8), dim: 8 });
+
+    const reopened = storeFor(dir, "bujo", () => FIXED);
+    try {
+      expect(reopened["db"].get(id)?.text).toBe(text);
+    } finally {
+      await reopened.close();
+    }
+  });
+});
+
 describe("BujoMemoryStore.remember — canonical/index invariants", () => {
   it("commits a vector inline on the bujo tier, leaving no missing-vector debt", async () => {
     // BuJo initializes no index queue (that is Journal-only), so enqueuing here
@@ -247,18 +309,44 @@ describe("BujoMemoryStore.remember — canonical/index invariants", () => {
     }
   });
 
-  it("uses the tier-correct record id so the guard survives a rebuild", async () => {
+  it.each([
+    ["lite", `RM-${normalizedContentHash("Robert pins the pnpm version deliberately.")}`],
+    ["journal", `J-${normalizedContentHash("Robert pins the pnpm version deliberately.")}`],
+  ] as const)("keeps the %s record id across a real safe rebuild", async (tier, expected) => {
+    // The previous version of this test only read back the live id, so it would
+    // have stayed green if rebuild remapped the identity, cleared the Journal
+    // hash reservation, or made the next retry append a duplicate.
     const text = "Robert pins the pnpm version deliberately.";
-    const hash = normalizedContentHash(text);
-    for (const [tier, expected] of [["lite", `RM-${hash}`], ["journal", `J-${hash}`]] as const) {
-      const dir = root(`recordid-${tier}`);
-      const store = storeFor(dir, tier, () => FIXED);
-      try {
-        const result = await store.remember("conv-1", text);
-        expect(result.id).toBe(expected);
-      } finally {
-        await store.close();
-      }
+    const dir = root(`recordid-${tier}`);
+    const store = storeFor(dir, tier, () => FIXED);
+    try {
+      expect((await store.remember("conv-1", text)).id).toBe(expected);
+    } finally {
+      await store.close();
+    }
+
+    await safeRebuildMemoryIndex({
+      root: dir,
+      tier,
+      ...(tier === "lite" ? {} : { embeddings: fakeEmbeddings(8), dim: 8 }),
+    });
+
+    const reopened = storeFor(dir, tier, () => FIXED);
+    try {
+      const db = reopened["db"] as unknown as {
+        get(id: string): { text: string } | undefined;
+        contentHashRecord(hash: string): unknown;
+      };
+      // Same identity after rebuild, so the duplicate guard still matches.
+      expect(db.get(expected)?.text).toBe(text);
+      // And a retry is still a no-op rather than a second bullet.
+      const retry = await reopened.remember("conv-1", text);
+      expect(retry.duplicate).toBe(true);
+      expect(bulletsIn(dir, FIXED)).toHaveLength(1);
+      // Journal keeps its hash reservation; other tiers must hold none.
+      expect(db.contentHashRecord(normalizedContentHash(text)) !== undefined).toBe(tier === "journal");
+    } finally {
+      await reopened.close();
     }
   });
 

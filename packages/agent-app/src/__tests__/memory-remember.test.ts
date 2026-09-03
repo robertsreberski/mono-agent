@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
 import { createBujoMemoryStore, dailyFilePath } from "@mono-agent/memory/bujo";
 import { afterEach, describe, expect, it } from "vitest";
@@ -204,23 +205,23 @@ describe("Remember tool — credential rejection", () => {
     expect(dailyContent(dir)).toBe("");
   });
 
-  it("does not treat an operational setting that merely reads like a credential as one", async () => {
-    // `*_TOKENS` is a budget and `*_ENV` names a variable; neither holds a
-    // secret. The values here are non-numeric and well over the minimum length,
-    // so ONLY the name-based exclusion can let this through — a regression in
-    // that rule fails this test instead of hiding behind a value-shape filter.
+  it("does not treat a credential NAME reference as a credential value", async () => {
+    // `*_ENV` holds the name of a variable, never a secret, mirroring the
+    // env/path carve-out that secretBearingPointer already applies.
+    //
+    // Deliberately narrow: `*_TOKENS` is NOT excluded any more, so a
+    // credential-named budget such as ..._KEEP_RECENT_TOKENS=8000 does make the
+    // literal 8000 unstorable. That false rejection is the accepted cost of not
+    // weakening a guard the SELF-CONFIG proposal check also relies on.
     const { dir, store } = writableStore();
     const { result } = await callRemember(
       store,
-      "The compaction budget is profile-8000-wide and the key env is OPENAI_API_KEY.",
-      {
-        MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS: "profile-8000-wide",
-        MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "OPENAI_API_KEY",
-      },
+      "The embeddings key is read from OPENAI_API_KEY at startup.",
+      { MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "OPENAI_API_KEY" },
     );
 
     expect(result.isError).not.toBe(true);
-    expect(dailyContent(dir)).toContain("profile-8000-wide");
+    expect(dailyContent(dir)).toContain("read from OPENAI_API_KEY");
   });
 
   it("still rejects a short or numeric configured credential", async () => {
@@ -236,6 +237,89 @@ describe("Remember tool — credential rejection", () => {
 
     expect(result.isError).toBe(true);
     expect(dailyContent(dir)).toBe("");
+  });
+});
+
+describe("Remember tool — widened credential coverage", () => {
+  it.each([
+    ["a Slack app-level token", `xapp-${"a".repeat(24)}`],
+    ["a GitHub fine-grained PAT", `github_pat_${"b".repeat(24)}`],
+    ["an AWS access key id", `AKIA${"C".repeat(16)}`],
+    ["a lowercase bearer credential", `bearer ${"d".repeat(24)}`],
+  ])("refuses to persist %s", async (_label, secret) => {
+    const { dir, store } = writableStore();
+    const { result } = await callRemember(store, `The value is ${secret}`);
+    expect(result.isError).toBe(true);
+    expect(dailyContent(dir)).toBe("");
+  });
+
+  it("still scans a credential-named variable whose name ends in _TOKENS", async () => {
+    // A blanket `*_TOKENS` carve-out dropped real credential holders such as
+    // SERVICE_API_TOKENS, and this helper also backs the SELF-CONFIG guard.
+    const { dir, store } = writableStore();
+    const { result } = await callRemember(
+      store,
+      "The service value is opaque-live-token-1 for now.",
+      { SERVICE_API_TOKENS: "opaque-live-token-1" },
+    );
+    expect(result.isError).toBe(true);
+    expect(dailyContent(dir)).toBe("");
+  });
+
+  it("stores an ordinary fact naming a run artifact", async () => {
+    // The shared visible-text guard flags run-artifact filenames as private
+    // evidence, which says nothing about credentials in a memory fact.
+    const { dir, store } = writableStore();
+    const { result } = await callRemember(store, "The release script writes build.summary.json at the end.");
+    expect(result.isError).not.toBe(true);
+    expect(dailyContent(dir)).toContain("build.summary.json");
+  });
+
+  it("reports a partial write as durable-but-unindexed instead of not stored", async () => {
+    // Saying "not stored" after the canonical append already landed would invite
+    // the model to reword and create a second memory for one fact.
+    const partial: RememberCapableStore = {
+      supportsRemember: () => true,
+      remember: async () => {
+        const error = new Error("index projection failed") as Error & { canonicalWritten?: boolean };
+        error.canonicalWritten = true;
+        throw error;
+      },
+    };
+    const { result } = await callRemember(partial, "A fact whose index failed.");
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ stored: true, indexed: false });
+  });
+});
+
+describe("Remember runtime extension — production wiring", () => {
+  it("uses the environment supplied by the host, not process.env", async () => {
+    // The host resolves `options.env` as authoritative and SELF-CONFIG honours
+    // it. Composing Remember without it silently fell back to process.env, so a
+    // credential supplied only through the host was invisible to the guard.
+    const { dir, store } = writableStore();
+    const extension = await createMemoryRememberRuntimeExtension(store, {
+      env: { HOST_ONLY_API_KEY: "host-only-secret-value" },
+    })(request());
+    try {
+      const url = (extension.runtimeOptions?.mcpServers as Record<string, { url?: string }>)
+        ?.[MEMORY_REMEMBER_MCP_SERVER_NAME]?.url;
+      if (typeof url !== "string") throw new Error("Remember endpoint was not registered.");
+      const client = new Client({ name: "remember-env-test", version: "1.0.0" }, { capabilities: {} });
+      await client.connect(new StreamableHTTPClientTransport(new URL(url)) as never);
+      try {
+        const result = await client.callTool({
+          name: REMEMBER_TOOL_NAME,
+          arguments: { text: "The staging value is host-only-secret-value." },
+        }) as { isError?: boolean };
+        expect(result.isError).toBe(true);
+        expect(dailyContent(dir)).toBe("");
+      } finally {
+        await client.close().catch(() => undefined);
+      }
+    } finally {
+      await extension.cleanup?.();
+    }
   });
 });
 

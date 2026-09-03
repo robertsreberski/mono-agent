@@ -121,6 +121,7 @@ export type {
 export { MARKER_FOR, parseBullet, serializeBullet, parseDailyFile, serializeDailyFile } from "./grammar.js";
 export { appendBullet, dailyFilePath, normalizeMemoryText, normalizedContentHash } from "./daily.js";
 export { findCanonicalMemoryBullet } from "./canonical-lookup.js";
+export { MemoryRememberPartialWriteError } from "./store.js";
 export type { CanonicalBulletLocation } from "./canonical-lookup.js";
 export { createIdFactory } from "./ids.js";
 export type { Bullet, BujoOptions, BujoTier, MemoryRememberResult } from "./types.js";

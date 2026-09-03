@@ -60,7 +60,10 @@ export function createSetConversationTitleServer(): McpServer {
       return {
         content: [{
           type: "text" as const,
-          text: `Conversation title proposed: "${title}". Update it later only if a better name for the whole conversation emerges.`,
+          // JSON-quoted: the title is model-controlled text, and interpolating
+          // it raw lets a crafted value close the quote and append its own
+          // sentence — forging a claim that the rename landed.
+          text: `Conversation title proposed: ${JSON.stringify(title)}. Update it later only if a better name for the whole conversation emerges.`,
         }],
         structuredContent: { schema: 1, title },
       };
