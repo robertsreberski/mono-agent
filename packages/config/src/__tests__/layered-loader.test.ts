@@ -2835,6 +2835,22 @@ describe("JSON attribution rewrites the diagnostic's subject, never the operator
     );
   });
 
+  /**
+   * The parity split reads the ODD segments of a backtick split as the operator's value. That
+   * holds only while the operator's value contains no backtick of its own; one backtick shifts
+   * every segment after it, and the value's own text starts being read as config prose. A
+   * model reference is an arbitrary operator string, so this is reachable from a config file.
+   */
+  it("leaves a value that contains a backtick intact", async () => {
+    const value = "codex:a`MONO_AGENT_MODEL";
+    const error = await failureOf({ ...base, runtime: { model: value } });
+
+    expect(error.details.path).toBe("runtime.model");
+    expect(error.message).toContain(`\`${value}\``);
+    expect(error.message).toContain(`use openai-${value}`);
+    expect(error.message).not.toContain("codex:a`runtime.model");
+  });
+
   it("still strips the env var when it is only the subject", async () => {
     const error = await failureOf({ ...base, runtime: { model: "codex:gpt-5.6-sol" } });
 

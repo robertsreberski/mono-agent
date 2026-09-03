@@ -190,7 +190,11 @@ function applyEffortKeywordEscalation(
   }
   runtimeOptions.effort = match.effort;
   logger?.info?.("Escalating per-turn effort from message keyword.", {
-    keyword: match.keyword,
+    // A matched keyword is a slice of the operator's own message. The trigger bounds its
+    // LENGTH (a phrase plus at most one separator); it says nothing about the separator's
+    // CONTENT, which may be a line separator. Same escape-then-clamp helper and same budget
+    // as the warnings above, so no record here can outgrow or outline the others.
+    keyword: echoValue(match.keyword),
     from: resolvedEffort ?? null,
     to: match.effort,
   });

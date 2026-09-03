@@ -368,6 +368,14 @@ function jsonEmbeddingsCredentialPath(
  * The other operator-supplied fragments a config message interpolates cannot collide: a
  * subagent name is `^[a-z0-9][a-z0-9-]*$` and a memory mode is an enum, so neither can spell
  * an upper-case variable name.
+ *
+ * NOTE what this is and is not. Attribution here is still SURGERY ON A RENDERED STRING, and
+ * every version of it rests on some claim about where operator text sits in that string. The
+ * real fix is for the diagnostic to carry its source as a SLOT the loader re-renders, so
+ * nothing is ever searched for or replaced; that means changing where the messages are built
+ * (`packages/config/src/config.ts`), not where they are re-attributed, and it is filed as a
+ * handoff rather than done here. What this layer owes in the meantime is that its failure mode
+ * is a LOST attribution, never a CORRUPTED value -- see `replaceSourceBeforeOperatorText`.
  */
 function attributeMessageToJsonPath(
   error: MonoAgentConfigError,
@@ -381,20 +389,39 @@ function attributeMessageToJsonPath(
   const frameLength = typeof reason === "string" && reason.length < message.length && message.endsWith(reason)
     ? message.length - reason.length
     : message.length;
-  const attributed = replaceSourceOutsideQuotedValue(message.slice(0, frameLength), source, path)
+  const attributed = replaceSourceBeforeOperatorText(message.slice(0, frameLength), source, path)
     + message.slice(frameLength);
   return attributed.includes(path) ? attributed : `${path}: ${attributed}`;
 }
 
 /**
- * Config uses backticks for exactly one thing -- quoting an operator value back -- so the odd
- * segments of a backtick split are the operator's text and the even ones are config's prose.
+ * Rewrite the source only in the span that runs from the start of the message to its FIRST
+ * backtick. Config opens a backtick when, and only when, it begins quoting an operator value,
+ * so that span is config's own prose by construction and everything from the backtick on is
+ * either the value, the fixed connector after it, or a reason built from it.
+ *
+ * This replaces a parity rule -- "the odd segments of a backtick split are the operator's" --
+ * that was true only while the operator's value contained no backtick of its own. It can, and
+ * `codex:a\`MONO_AGENT_MODEL` came back as `codex:a\`runtime.model`: every segment after the
+ * value's own backtick shifted parity, so the value's second half was rewritten as if it were
+ * config's sentence. Counting backticks does not rescue the parity rule either -- a value with
+ * two of them restores an even count and corrupts just the same -- which is why the rule is
+ * replaced rather than guarded.
+ *
+ * The cost is deliberate and one-directional. Every message config renders with a quoted value
+ * that also names a source names it BEFORE the quote opens -- `parseModel`, the subagent and
+ * fallback entries, the agent-host memory LLM, all four pinned by the attribution cases below
+ * -- so nothing in use loses its attribution. A future
+ * message that named its source only AFTER its quoted value would keep the variable name in
+ * the sentence and be prefixed with the JSON path by the caller above -- an attribution that
+ * reads clumsily, rather than a value the operator is told to paste and cannot use.
  */
-function replaceSourceOutsideQuotedValue(frame: string, source: string, path: string): string {
-  return frame
-    .split("`")
-    .map((segment, index) => (index % 2 === 0 ? segment.replaceAll(source, path) : segment))
-    .join("`");
+function replaceSourceBeforeOperatorText(frame: string, source: string, path: string): string {
+  const quote = frame.indexOf("`");
+  if (quote === -1) {
+    return frame.replaceAll(source, path);
+  }
+  return frame.slice(0, quote).replaceAll(source, path) + frame.slice(quote);
 }
 
 function remapConfigErrorToJson(

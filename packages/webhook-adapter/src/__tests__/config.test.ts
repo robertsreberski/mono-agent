@@ -296,6 +296,69 @@ describe("loadWebhookAdapterConfig", () => {
       },
     })).rejects.toMatchObject({ code: "invalid_config" });
   });
+  /**
+   * An endpoint's name and path are its IDENTITY: the name keys `summary.invokeUrls` and the
+   * path is the value (`http://host:port<path>`), and that map is logged on every channel
+   * start and rendered by `mono-agent status`. Both were accepted at any length and with any
+   * code point, so one config field wrote a megabyte into a durable operator surface -- and a
+   * newline in either forged a line inside it.
+   */
+  describe("endpoint identity is bounded printable text", () => {
+    const endpointsJson = (endpoint: Record<string, unknown>): Record<string, string> => ({
+      MONO_AGENT_WEBHOOK_ENDPOINTS_JSON: JSON.stringify([endpoint]),
+    });
+
+    it("rejects an endpoint name longer than one filesystem name", async () => {
+      const name = "n".repeat(1_000_000);
+      await expect(
+        loadWebhookAdapterConfig({ env: endpointsJson({ path: "/hook", name }) }),
+      ).rejects.toThrow(/name is 1000000 bytes/u);
+    });
+
+    it("rejects an endpoint path longer than one filesystem name", async () => {
+      const path = `/${"p".repeat(1_000_000)}`;
+      await expect(
+        loadWebhookAdapterConfig({ env: endpointsJson({ path }) }),
+      ).rejects.toThrow(/path from config is 1000001 bytes/u);
+    });
+
+    it("never quotes the oversized value back inside the rejection", async () => {
+      const name = "n".repeat(1_000_000);
+      const error = await loadWebhookAdapterConfig({ env: endpointsJson({ path: "/hook", name }) })
+        .then(() => undefined, (thrown: unknown) => thrown as Error);
+      expect(error).toBeInstanceOf(Error);
+      expect(error!.message.length).toBeLessThan(300);
+      expect(error!.message).not.toContain("nnnn");
+    });
+
+    it("rejects a newline in an endpoint name so the summary stays one line per fact", async () => {
+      const name = `hook${String.fromCharCode(10)}[ok] Core config: everything fine`;
+      await expect(
+        loadWebhookAdapterConfig({ env: endpointsJson({ path: "/hook", name }) }),
+      ).rejects.toThrow(/single line/u);
+    });
+
+    it("accepts a name and a path at the bound", async () => {
+      const name = "n".repeat(255);
+      const path = `/${"p".repeat(254)}`;
+      const config = await loadWebhookAdapterConfig({ env: endpointsJson({ path, name }) });
+      expect(config.endpoints[0]?.name).toBe(name);
+      expect(config.endpoints[0]?.path).toBe(path);
+    });
+
+    it("still rejects an oversized name derived from a folder endpoint", async () => {
+      const webhookDir = join(dir, "webhook");
+      await mkdir(webhookDir, { recursive: true });
+      await writeFile(
+        join(webhookDir, "hook.md"),
+        `---\npath: /hook\nname: ${"n".repeat(1_000_000)}\n---\nbody\n`,
+        "utf8",
+      );
+      await expect(
+        loadWebhookAdapterConfig({ env: {}, cwd: dir }),
+      ).rejects.toThrow(/name is 1000000 bytes/u);
+    });
+  });
 });
 
 describe("redactWebhookAdapterConfig", () => {

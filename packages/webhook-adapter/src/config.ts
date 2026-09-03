@@ -77,6 +77,36 @@ const DEFAULT_MAX_STORED_REQUESTS = 100;
 const DEFAULT_WEBHOOK_DIR = "webhook";
 const MAX_RUN_MS = 86_400_000;
 
+/**
+ * Ceiling on one endpoint identity string (its `name`, its `path`), in UTF-8 bytes.
+ *
+ * An endpoint's identity is not private to the adapter: the name keys `summary.invokeUrls`
+ * and the path is the value inside it, and that map is logged on every channel start
+ * (`app-controller-channels.ts`) and rendered by `mono-agent status`
+ * (`cli-background-command.ts`). Neither was bounded, so a single config field wrote a
+ * megabyte into a durable, routinely-shared operator surface on every start.
+ *
+ * The number is derived rather than picked. The dominant source of an endpoint name is the
+ * stem of a `webhook/<name>.md` file, which POSIX `NAME_MAX` already caps at 255 bytes — so
+ * adopting the same cap for an inline `name` refuses nothing that can be authored as a file,
+ * and keeps the two authoring surfaces from disagreeing about what a name may be. The path is
+ * held to the same bound: its last segment is the default name, and 255 bytes is two orders of
+ * magnitude past any real route (`/webhook/invoke` is 15).
+ *
+ * This REJECTS rather than truncates. An identity is not a diagnostic echo: truncating one
+ * silently collides two endpoints and changes which route a request reaches, and a config
+ * error at load is the fail-visible option.
+ */
+const MAX_ENDPOINT_IDENTITY_BYTES = 255;
+
+/**
+ * Control, format, line- and paragraph-separator code points. Each is invisible or moves the
+ * cursor, which is what lets an identity restyle the status line quoting it or forge a second
+ * line inside the start log. A bound alone does not cover this: 40 printable bytes and one
+ * newline is still a forged line.
+ */
+const UNPRINTABLE_IDENTITY_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
 const WEBHOOK_MODES: readonly WebhookInvocationMode[] = ["sync", "async"];
 
 const invalidConfig = (message: string, details?: Record<string, unknown>): WebhookAdapterError =>
@@ -223,6 +253,7 @@ function mergeEndpoints(
   const nameSource = new Map<string, string>();
   const pathSource = new Map<string, string>();
   const append = (endpoint: WebhookEndpointConfig, source: string): void => {
+    assertEndpointIdentity(endpoint, source);
     const priorName = nameSource.get(endpoint.name);
     if (priorName !== undefined) {
       throw invalidConfig(`Duplicate webhook endpoint name "${endpoint.name}" from ${priorName} and ${source}.`, { name: endpoint.name });
@@ -242,6 +273,34 @@ function mergeEndpoints(
     append(endpoint, "webhook folder");
   }
   return merged;
+}
+
+/**
+ * Both endpoint sources converge here, so this is the one place that sees every endpoint the
+ * adapter will serve — inline config, `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON`, and the webhook
+ * folder alike. The path is checked before the name so the name's diagnostic can identify its
+ * endpoint by an already-validated path; neither diagnostic quotes the value it rejected,
+ * because quoting an unbounded value back is the defect being fixed.
+ */
+function assertEndpointIdentity(endpoint: WebhookEndpointConfig, source: string): void {
+  assertIdentityString(endpoint.path, `Webhook endpoint path from ${source}`, { source });
+  assertIdentityString(endpoint.name, `Webhook endpoint "${endpoint.path}" name`, {
+    source,
+    path: endpoint.path,
+  });
+}
+
+function assertIdentityString(value: string, subject: string, details: Record<string, unknown>): void {
+  const bytes = Buffer.byteLength(value, "utf8");
+  if (bytes > MAX_ENDPOINT_IDENTITY_BYTES) {
+    throw invalidConfig(
+      `${subject} is ${String(bytes)} bytes; the maximum is ${String(MAX_ENDPOINT_IDENTITY_BYTES)}.`,
+      { ...details, bytes, max: MAX_ENDPOINT_IDENTITY_BYTES },
+    );
+  }
+  if (UNPRINTABLE_IDENTITY_CHARACTERS.test(value)) {
+    throw invalidConfig(`${subject} must be printable text on a single line.`, details);
+  }
 }
 
 function defaultEndpoint(defaultMode: WebhookInvocationMode): WebhookEndpointConfig {

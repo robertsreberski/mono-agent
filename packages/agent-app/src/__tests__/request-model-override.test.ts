@@ -494,8 +494,13 @@ describe("per-request override warnings bound the value they echo", () => {
     expect(logged.reason).not.toContain(NEWLINE);
   });
 
+  /**
+   * The value has to be rejected for a reason that is NOT a length ceiling: whether the
+   * grammar layer caps a reference at all is a separate, moving decision, and this assertion
+   * is about what the WARNING does with an oversized value it was handed.
+   */
   it("clamps an oversized rejected model override", async () => {
-    const model = `${"x".repeat(1_000_000)}:y`;
+    const model = `codex:${"x".repeat(1_000_000)}`;
     const logger = { warn: vi.fn() };
     await run({ webhook: { model } }, { logger });
     const logged = logger.warn.mock.calls[0]?.[1] as { model: string; reason: string };
@@ -520,6 +525,68 @@ describe("per-request override warnings bound the value they echo", () => {
     const logged = logger.warn.mock.calls[0]?.[1] as { effort: string };
     expect(logged.effort).toBe(echo(effort));
     expect(byteLength(logged.effort)).toBeLessThan(1_000);
+  });
+
+  /**
+   * The escalation `info` is the same kind of record as the warnings above it: the keyword it
+   * prints is a slice of the operator's own message, so it carries no printable/single-line
+   * guarantee of its own and gets the one echo budget every other operator surface uses.
+   */
+  it("escapes a newline inside the matched keyword it logs", async () => {
+    const logger = { warn: vi.fn(), info: vi.fn() };
+    await run(undefined, { logger, baseEffort: "medium" }, `ultra${NEWLINE}think about it`);
+    const logged = logger.info.mock.calls[0]?.[1] as { keyword: string };
+    expect(logged.keyword).toBe(echo(`ultra${NEWLINE}think`));
+    expect(logged.keyword).not.toContain(NEWLINE);
+  });
+
+  /**
+   * The phrase separator is any ONE whitespace code point, and `\s` includes U+2028 -- a line
+   * separator, invisible and cursor-moving. A newline-only escape is not enough here, which is
+   * why the keyword goes through the same full sanitizer as every other echo.
+   */
+  it("escapes a line separator used as the phrase separator", async () => {
+    const separator = String.fromCharCode(0x2028);
+    const logger = { warn: vi.fn(), info: vi.fn() };
+    await run(undefined, { logger, baseEffort: "medium" }, `ultra${separator}think about it`);
+    const logged = logger.info.mock.calls[0]?.[1] as { keyword: string };
+    expect(logged.keyword).toBe(String.raw`ultra\u2028think`);
+    expect(logged.keyword).not.toContain(separator);
+  });
+
+  it("bounds the matched keyword when the message floods the phrase separator", async () => {
+    const logger = { warn: vi.fn(), info: vi.fn() };
+    await run(undefined, { logger, baseEffort: "medium" }, `ultra${" ".repeat(1_000_000)}think`);
+    const logged = logger.info.mock.calls[0]?.[1] as { keyword: string; to: string };
+    expect(byteLength(logged.keyword)).toBeLessThanOrEqual(MODEL_REFERENCE_ECHO_MAX_BYTES);
+    // A million spaces is not the phrase "ultra think", so the standalone `think` is what
+    // actually matched -- the escalation stays, one rung lower, and is reported as such.
+    expect(logged.keyword).toBe("think");
+    expect(logged.to).toBe("high");
+  });
+
+  /**
+   * `echoReason` covers the arbitrary throws BELOW the adapter, but the adapter's own error is
+   * already an over-budget carrier: its message is a fixed prefix PLUS a reason bounded to the
+   * whole reason budget, so the wrapped message necessarily exceeds it. Asserting on a short
+   * reason (which the previous round did) passes with or without the sanitizer.
+   */
+  it("bounds a reason whose wrapped message exceeds the reason budget", async () => {
+    const model = `codex:${"m".repeat(MODEL_REFERENCE_REASON_MAX_BYTES)}`;
+    const logger = { warn: vi.fn() };
+    await run({ webhook: { model } }, { logger });
+    const logged = logger.warn.mock.calls[0]?.[1] as { reason: string };
+    const raw = (() => {
+      try {
+        parseMonoRuntimeModelReference(model);
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+      throw new Error("Expected the model reference to be rejected.");
+    })();
+    expect(byteLength(raw)).toBeGreaterThan(MODEL_REFERENCE_REASON_MAX_BYTES);
+    expect(byteLength(logged.reason)).toBeLessThanOrEqual(MODEL_REFERENCE_REASON_MAX_BYTES);
+    expect(logged.reason).toBe(sanitizeModelReferenceText(raw, MODEL_REFERENCE_REASON_MAX_BYTES));
   });
 
   it("bounds the local-provider endpoint warning's echo too", async () => {
