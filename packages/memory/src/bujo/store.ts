@@ -494,6 +494,28 @@ export class BujoMemoryStore implements MemoryStore {
     const recordId = this._tier === "journal" ? `J-${hash}` : bulletId;
     return await this.runAdmittedMutation("remember", async (abortSignal) => {
       const now = this.clock();
+      // BuJo commits vectors inline — `indexQueue` is initialized for Journal
+      // only, so enqueuing here would silently leave the row vectorless and
+      // break BuJo's complete-vector-coverage invariant. Prepare the embedding
+      // BEFORE touching canonical source, the same ordering capture uses, so an
+      // embedding outage cannot leave a new bullet pretending success. The cheap
+      // pre-check keeps a repeat from paying for an embedding call; the
+      // authoritative duplicate check still runs inside the lock.
+      const preIndexed = this._tier === "bujo" ? this.db.get(recordId) : undefined;
+      const [preparedVector] = this._tier === "bujo" && preIndexed === undefined
+        ? await this.db.prepareUpsertVectors([{
+            id: recordId,
+            type: "note",
+            status: "open",
+            text: stored,
+            salience: REMEMBER_SALIENCE,
+            isInsight: false,
+            createdAt: now.toISOString(),
+            accessCount: 0,
+            tags: [],
+            source: {},
+          }])
+        : [undefined];
       return await serializeJournalWrite(this.root, abortSignal, async () => await withJournalWriteLockRetry(
         this.root,
         this.db.busyTimeoutMs(),
@@ -551,14 +573,16 @@ export class BujoMemoryStore implements MemoryStore {
             // the bullet, so a rebuild reconstructs `file` alone.
             source: { session: conversationId, file: relativePath },
           };
+          // Never record a content hash off the Journal tier: a non-Journal
+          // index carrying content_hashes fails safe-rebuild validation.
           if (this._tier === "journal") {
             const outcome = this.db.insertJournalLexical(record, hash);
             if (outcome.inserted || !this.db.hasVector(record.id)) this.enqueueIndex(record);
+          } else if (this._tier === "bujo") {
+            this.db.commitPreparedUpserts([record], [preparedVector]);
           } else {
-            // Never record a content hash off the Journal tier: a non-Journal
-            // index carrying content_hashes fails safe-rebuild validation.
+            // Lite is FTS-only and has no vector to commit.
             this.db.upsertLexical(record);
-            this.enqueueIndex(record);
           }
           return {
             id: recordId,

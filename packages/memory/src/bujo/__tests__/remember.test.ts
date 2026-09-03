@@ -210,6 +210,26 @@ describe("BujoMemoryStore.remember — idempotency across partial failure", () =
 });
 
 describe("BujoMemoryStore.remember — canonical/index invariants", () => {
+  it("commits a vector inline on the bujo tier, leaving no missing-vector debt", async () => {
+    // BuJo initializes no index queue (that is Journal-only), so enqueuing here
+    // would silently leave the row vectorless: semantic recall would miss the
+    // fact and the next restart would fail complete-vector-coverage. FTS alone
+    // still answers recall(), which is why this asserts the vector directly.
+    const dir = root("vector");
+    const store = storeFor(dir, "bujo", () => FIXED);
+    try {
+      const result = await store.remember("conv-1", "Robert reviews the fleet every Monday.");
+      const db = store["db"] as unknown as {
+        hasVector(id: string): boolean;
+        countMissingVectors(): number;
+      };
+      expect(db.hasVector(result.id)).toBe(true);
+      expect(db.countMissingVectors()).toBe(0);
+    } finally {
+      await store.close();
+    }
+  });
+
   it("keeps content_hashes empty off the Journal tier", async () => {
     // A non-Journal index carrying content hashes fails safe-rebuild validation.
     for (const tier of ["lite", "bujo"] as const) {

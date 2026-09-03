@@ -442,7 +442,7 @@ const memorySupermemory: CapabilityModule = {
       writeMode: "capture",
       supermemory: { baseUrl: values.supermemoryBaseUrl ?? "http://127.0.0.1:6767" },
       recallTool: { enabled: true },
-      rememberTool: { enabled: true },
+      rememberTool: { enabled: false }, // no durable write surface on this backend
     },
   }),
   envExampleLines: () => [

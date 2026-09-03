@@ -24,8 +24,23 @@ const SECRET_LIKE_VALUE =
 /** Environment variable names whose values are treated as live credentials. */
 const CREDENTIAL_ENV_NAME = /(?:api.?key|credential|password|secret|token)/iu;
 
-/** Shortest environment value worth matching; below this, collisions dominate. */
-const MIN_KNOWN_SECRET_LENGTH = 4;
+/**
+ * Names that merely *reference* a credential rather than holding one, or that
+ * are operational settings whose names happen to contain a credential word —
+ * `MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS` is a token budget, not a token.
+ * Treating those values as secrets would reject ordinary facts that happen to
+ * contain the same number or path.
+ */
+const NON_CREDENTIAL_ENV_NAME = /(?:_ENV|_ENV_VAR|_PATH|_FILE|_DIR|_URL|_TOKENS|_NAME)$/iu;
+
+/** A bare number is a budget or a limit, never a credential. */
+const NUMERIC_VALUE = /^\d+$/u;
+
+/**
+ * Shortest environment value worth matching. Real credentials are long; a short
+ * value collides with ordinary prose far more often than it protects anything.
+ */
+const MIN_KNOWN_SECRET_LENGTH = 8;
 
 /**
  * Reject terminal and bidi control characters. Ordinary Unicode text and LF
@@ -59,7 +74,11 @@ export function containsSecretLikeValue(value: string): boolean {
  */
 export function knownEnvironmentSecretValues(env: Record<string, string | undefined>): readonly string[] {
   return Object.entries(env)
-    .filter(([name, value]) => CREDENTIAL_ENV_NAME.test(name) && (value?.length ?? 0) >= MIN_KNOWN_SECRET_LENGTH)
+    .filter(([name, value]) =>
+      CREDENTIAL_ENV_NAME.test(name)
+      && !NON_CREDENTIAL_ENV_NAME.test(name)
+      && (value?.length ?? 0) >= MIN_KNOWN_SECRET_LENGTH
+      && !NUMERIC_VALUE.test(value!))
     .map(([, value]) => value!);
 }
 

@@ -193,15 +193,29 @@ describe("Remember tool — credential rejection", () => {
 
   it("refuses a configured secret written with compatibility characters", async () => {
     const { dir, store } = writableStore();
-    // Fullwidth digits normalize into the configured token's ASCII digits.
+    // Fullwidth Latin/digits normalize into the configured token's ASCII form.
     const { result } = await callRemember(
       store,
-      "The bot token is １２３４５６.",
-      { SLACK_TOKEN: "123456" },
+      "The bot token is ｚｔ９ｑ４ｗ７ｘ.",
+      { SLACK_TOKEN: "zt9q4w7x" },
     );
 
     expect(result.isError).toBe(true);
     expect(dailyContent(dir)).toBe("");
+  });
+
+  it("does not treat an operational setting that merely reads like a credential as one", async () => {
+    // `*_TOKENS` is a budget, not a token: an ordinary fact mentioning the same
+    // number must still be storable.
+    const { dir, store } = writableStore();
+    const { result } = await callRemember(
+      store,
+      "The compaction budget is 8000 tokens for this agent.",
+      { MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS: "8000", OPENAI_API_KEY_ENV: "OPENAI_API_KEY" },
+    );
+
+    expect(result.isError).not.toBe(true);
+    expect(dailyContent(dir)).toContain("The compaction budget is 8000 tokens");
   });
 });
 

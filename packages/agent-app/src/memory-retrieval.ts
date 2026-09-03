@@ -193,7 +193,9 @@ export class MemoryRetrievalService implements MemoryStore {
   }
 
   supportsRemember(): boolean {
-    return this.store.supportsRemember?.() === true;
+    // Both halves, not just the signal: advertising a write surface whose
+    // method is absent would fail every call instead of never appearing.
+    return typeof this.store.remember === "function" && this.store.supportsRemember?.() === true;
   }
 
   async remember(conversationId: string, text: string): Promise<{
