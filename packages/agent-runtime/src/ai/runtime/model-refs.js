@@ -18,54 +18,6 @@ const PROVIDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
  */
 const UNQUOTABLE_REFERENCE_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
-const UTF8_ENCODER = new TextEncoder();
-
-/**
- * Ceiling on a canonical `<provider>:<model>`, in UTF-8 bytes.
- *
- * This is a CONTAINMENT bound, not a display one. Its job is that no unbounded, externally
- * supplied identifier flows into a log line, a cache key or a wire payload -- a model
- * reference reaches all three, and both its halves come from outside this process (an
- * operator's config field, or a local endpoint's `/v1/models` answer). What it is emphatically
- * NOT is an opinion about how wide an operator's terminal is: how long a model may legitimately
- * be called is decided by providers, and a diagnostic that cannot fit one is bounded by
- * TRUNCATING it -- see `MODEL_REFERENCE_ECHO_MAX_BYTES` in @mono-agent/runtime-adapter, which is
- * now a separate number for a separate concern. Collapsing the two into one 96-byte constant
- * made this ceiling reject a real, current Hugging Face GGUF repo documented for Ollama at
- * 100 bytes; you can bound an echo by truncating, you cannot bound reality.
- *
- * Measured, then derived. What references actually are, as of this change:
- *  - Pi's built-in catalog: 1312 entries across 39 providers, p99 61 bytes, longest 77
- *    (`cloudflare-ai-gateway:workers-ai/@cf/mistralai/mistral-small-3.1-24b-instruct`);
- *    longest built-in provider id 26 (`qwen-token-plan-individual`).
- *  - Live `discoverLocalProviderModels` against this machine's Ollama (:11434) and LM Studio
- *    (:1234): 17 refs, longest 52 (`lmstudio:text-embedding-nomic-embed-text-v1.5@q4_k_m`).
- *  - The long tail is the Hugging Face GGUF form an Ollama route may name directly. Rendering
- *    the 4000 most-downloaded GGUF repos as `ollama:hf.co/<org>/<repo>:Q4_K_M` gives p50 59,
- *    p99 101, longest 120 -- 66 of those 4000 are past 96, which is how the old ceiling came
- *    to refuse a working model.
- *
- * So the ceiling is the structural worst case of that longest form, not a percentile of it:
- *
- *     ollama:hf.co/   13   fixed prefix
- *     <namespace>     32   Hugging Face namespace; max observed 30 over 3395 sampled
- *     /                1
- *     <repo>          96   Hugging Face's own documented repo-name cap (`huggingface_hub`
- *                          rejects longer); over 11325 sampled ids the max is exactly 96
- *     :                1
- *     <quant>         16   GGUF quant tag; longest of 53 distinct real tags is 10
- *                          (`UD-Q4_K_XL`)
- *                    ---
- *                    159  -> 160
- *
- * That leaves the built-in catalog 83 bytes of headroom and admits every real reference above,
- * while still refusing anything that is a payload rather than an identifier: the 400-byte,
- * 70,000-byte and 270,000-byte "model ids" that previous review rounds had riding the
- * `/v1/info` wire twice each are all still refused here, at the one place a reference is
- * constructed.
- */
-export const MAX_MODEL_REFERENCE_BYTES = 160;
-
 /**
  * @param {string} provider
  * @param {string} model
@@ -112,37 +64,43 @@ function requireModel(model) {
 }
 
 /**
- * Two independent guarantees about a parsed reference, which is handed to every operator
- * surface that names a model and quoted verbatim by each of them without re-validation.
+ * The one thing a parsed reference is guaranteed to CONTAIN nothing of.
  *
- * CONTENT is absolute and cannot be repaired downstream: a control or formatting code point
- * moves the cursor or hides itself, which is what lets a model id restyle the diagnostic
- * quoting it or forge a second line inside it. No legitimate model id contains one, and every
- * renderer is line-oriented, so this is refused at the source rather than escaped six times over.
+ * A reference this parser returns is handed to every operator surface that names a model and
+ * quoted verbatim by each of them, without re-validation: `mono-agent validate`, `doctor`, the
+ * TUI, the web console, the daemon log, launchd's captured stdout. All of them are
+ * line-oriented and most are durable, so a control or formatting code point in the value is
+ * enough to restyle the diagnostic quoting it or forge a second line inside it. No legitimate
+ * model id contains one, nothing downstream can repair one after the fact, and escaping it at
+ * six renderers is six chances to miss. So it is refused here, at the source, absolutely.
  *
- * LENGTH is a containment bound and nothing more (see `MAX_MODEL_REFERENCE_BYTES`). It is
- * deliberately NOT the width any particular renderer can print: a surface too narrow for a
- * legitimate reference truncates it -- `sanitizeModelReferenceText` in
- * @mono-agent/runtime-adapter, on that layer's own `MODEL_REFERENCE_ECHO_MAX_BYTES` -- and
- * truncating an echo costs a diagnostic some characters, whereas refusing a reference costs an
- * operator a model that works.
+ * There is deliberately NO length rule to go with it. A grammar layer does not get to decide
+ * what a provider may call a model, and three rounds of trying produced three wrong answers:
+ * 96 bytes refused a Hugging Face GGUF repo Ollama serves today, 160 bytes refused an
+ * `ollama:<model>:<tag>` reference whose two halves Ollama itself validates at 80 bytes each,
+ * and no maximum is published in common across Ollama, LM Studio, OpenRouter and custom
+ * `openai_compat` endpoints from which a third guess would be any better. mono-agent's own
+ * `discoverLocalProviderModels` was returning ids this parser then refused.
+ *
+ * The requirements that ceiling was carrying are all met by the layers that render or transmit
+ * a reference, where the answer to "too long" is a shorter STRING rather than a lost route:
+ *  - a diagnostic echo is clamped by truncation, marking the cut -- `sanitizeModelReferenceText`
+ *    on `MODEL_REFERENCE_ECHO_MAX_BYTES`, @mono-agent/runtime-adapter;
+ *  - an adapter error body is clamped by `sendJsonError`;
+ *  - the `/v1/info` payload is bounded by per-contributor measured budgets and a total
+ *    serializer fence that sheds whole fields (`channel-drivers/tui.ts`, `sendBoundedInfo`).
+ * Each of those is asserted at its own layer; none of them is asserted here, because none of
+ * them is this function's job.
  *
  * Runs last, after `rejectRemovedRuntimeReference`, so a retired backend still gets its
  * concrete repair named (`codex:x` -> `openai-codex:x`) instead of a generic shape complaint.
- * Rejection messages are operator-supplied text too, but they are bounded where they are
- * rendered, by `sanitizeModelReferenceText`; the two halves compose.
+ * Rejection messages are operator-supplied text too, and are bounded where they are rendered.
  *
  * @param {string} reference
  */
 function requireQuotableReference(reference) {
   if (UNQUOTABLE_REFERENCE_CHARACTERS.test(reference)) {
     throw new Error("model reference must not contain control or formatting characters");
-  }
-  const bytes = UTF8_ENCODER.encode(reference).length;
-  if (bytes > MAX_MODEL_REFERENCE_BYTES) {
-    throw new Error(
-      `model reference must be at most ${MAX_MODEL_REFERENCE_BYTES} bytes; got ${bytes}`,
-    );
   }
 }
 

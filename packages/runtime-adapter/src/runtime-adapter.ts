@@ -60,22 +60,29 @@ export class RuntimeAdapterError extends Error {
  * The rule, therefore, is not "trim model ids": it is that no operator-supplied text reaches a
  * diagnostic without being reduced to printable single-line text AND bounded.
  *
- * This is a DISPLAY budget, and it is deliberately its own number rather than the parser's
- * acceptance ceiling. A previous round defined it as `MAX_MODEL_REFERENCE_BYTES` on the rule
- * "a reference is accepted exactly when every operator surface can quote it whole" -- elegant,
- * and wrong in the one direction that costs an operator something: it made a print width
- * decide what a model may be called, and duly refused a real Hugging Face GGUF repo Ollama
- * serves today at 100 bytes. The concerns are not one. An echo is bounded by TRUNCATING it,
- * which `sanitizeModelReferenceText` does, marking the cut; a reference cannot be truncated
- * into validity, so its ceiling has to be justified by what model ids are (see
- * `MAX_MODEL_REFERENCE_BYTES`, now 160 and derived from the real distribution).
+ * This is a DISPLAY budget, and it is the ONLY bound a model reference has left, because it is
+ * the only kind of bound that costs nobody a working model. Two rounds tried to make the parser
+ * share it, or share something like it: first as `MAX_MODEL_REFERENCE_BYTES` = 96 on the rule "a
+ * reference is accepted exactly when every operator surface can quote it whole", which duly
+ * refused a Hugging Face GGUF repo Ollama serves today at 100 bytes; then at 160, derived from a
+ * sampled distribution, which refused an `ollama:<model>:<tag>` reference whose two halves Ollama
+ * itself validates at 80 bytes each. The parser now has no length rule at all -- what a model may
+ * be called is decided by providers -- and this number stayed exactly where it was.
  *
- * Keeping this at 96 costs nothing real. It bounds the value quoted back at an operator when
- * that value FAILED to parse -- `modelReferenceEcho` in @mono-agent/config, the only consumer,
- * is on the rejection path -- so it never truncates a working reference. It stays large enough
- * to show a mistyped one in full: 96 bytes covers every reference in Pi's 1312-entry built-in
- * catalog (longest 77) and every ref this machine's Ollama and LM Studio discovery returns
- * (longest 52), and a longer value is shown as much of itself as fits, plus the marker.
+ * That asymmetry is the point, not an accident of which side moved. An echo is bounded by
+ * TRUNCATING it, which `sanitizeModelReferenceText` does, marking the cut; a reference cannot be
+ * truncated into validity, so a ceiling there can only ever refuse. Truncating an echo costs a
+ * diagnostic some characters. Refusing a reference costs an operator a route that runs.
+ *
+ * Keeping this at 96 therefore costs nothing real. Every consumer is on a REJECTION path --
+ * `modelReferenceEcho` in @mono-agent/config, `echoValue` in agent-app's request-model-override,
+ * `echo` in its trigger-overrides -- so it never truncates a reference that parsed. It stays
+ * large enough to show a mistyped one in full: 96 bytes covers every reference in Pi's
+ * 1312-entry built-in catalog (longest 77) and every ref this machine's Ollama and LM Studio
+ * discovery returns (longest 52), and a longer value is shown as much of itself as fits, plus
+ * the marker. A reference that DID parse and is genuinely longer than this -- which is now
+ * possible at any size -- is clamped here rather than refused there; the model-reference bound
+ * suite asserts that at 100, 168, 400, 70,000 and 270,000 bytes.
  */
 export const MODEL_REFERENCE_ECHO_MAX_BYTES = 96;
 

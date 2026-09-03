@@ -2056,6 +2056,41 @@ describe("validateMonoAgentFolder", () => {
     );
   });
 
+  it("bounds a per-trigger override the parser accepted but Pi cannot resolve", async () => {
+    // The parser no longer imposes a byte ceiling -- no constant held across
+    // Ollama, LM Studio, OpenRouter and custom endpoints, so a legitimately long
+    // id must parse. Acceptance therefore stopped being a length guarantee, and
+    // this diagnostic echoed the raw config value. A 500,000-byte override
+    // produced a 500,011-byte issue line in `mono-agent validate` output, the
+    // daemon log and launchd's captured stdout.
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      cron: {
+        jobs: [{
+          id: "oversized-override",
+          enabled: true,
+          expression: "0 7 * * *",
+          prompt: "Summarize.",
+          model: `openrouter:${"m".repeat(500_000)}`,
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const runtime = sectionById(report, "runtime");
+    const line = runtime.details.find((detail) => detail.includes("cron.jobs[0].model="));
+
+    expect(line).toBeDefined();
+    // Bounded, and still identifying the offending route and the reason.
+    expect(Buffer.byteLength(line as string, "utf8")).toBeLessThan(1_000);
+    expect(line).toContain("cron.jobs[0].model=");
+    expect(line).toContain("pi model not found");
+    // The whole value must not survive into the diagnostic.
+    expect(line).not.toContain("m".repeat(200));
+  });
+
   it.each(["webhook", "cron"] as const)(
     "ignores unknown Pi model overrides on disabled %s entries",
     async (channel) => {

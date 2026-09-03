@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { listPiBuiltinModels, listPiBuiltinProviders } from "../../ai/pi-interop.js";
-import { MAX_MODEL_REFERENCE_BYTES, parseRuntimeModelReference } from "../../ai/runtime/model-refs.js";
+import { parseRuntimeModelReference } from "../../ai/runtime/model-refs.js";
 
 const utf8 = (value) => new TextEncoder().encode(value).length;
 
@@ -19,6 +19,21 @@ const LONGEST_BUILTIN = "cloudflare-ai-gateway:workers-ai/@cf/mistralai/mistral-
  */
 const HF_GGUF_100_BYTE_REFERENCE =
   "ollama:hf.co/mradermacher/Qwen3.5-27B-HERETIC-Polaris-Advanced-Thinking-Alpha-uncensored-GGUF:Q4_K_M";
+
+/**
+ * A canonical `ollama:<model>:<tag>` reference at 168 bytes.
+ *
+ * Ollama validates the model half and the tag half INDEPENDENTLY, 80 bytes each (v0.33.2,
+ * `server/modelpath.go`), so a reference an operator can `ollama pull` today reaches
+ * 7 + 80 + 1 + 80 = 168 bytes. This is the counterexample that retired the parser's byte
+ * ceiling: 96 refused a real Hugging Face GGUF repo, 160 was derived from a sampled
+ * distribution and refused this, and no maximum is published in common across Ollama,
+ * LM Studio, OpenRouter and custom `openai_compat` endpoints for a third guess to be any
+ * better. A grammar layer does not get to decide what a provider may call a model.
+ */
+const OLLAMA_168_BYTE_REFERENCE =
+  "ollama:hf.co/unsloth/Qwen3.5-Coder-480B-A35B-Instruct-Thinking-2512-Turbo-Preview2-GGUF"
+  + ":UD-Q4_K_XL-imatrix-calibration-v3-longcontext-262144-rope-scaled-linear-tuned-v2";
 
 const accepted = [
   ["anthropic:claude-opus-5", { provider: "anthropic", model: "claude-opus-5", reference: "anthropic:claude-opus-5" }],
@@ -69,6 +84,14 @@ const accepted = [
       reference: HF_GGUF_100_BYTE_REFERENCE,
     },
   ],
+  [
+    OLLAMA_168_BYTE_REFERENCE,
+    {
+      provider: "ollama",
+      model: OLLAMA_168_BYTE_REFERENCE.slice("ollama:".length),
+      reference: OLLAMA_168_BYTE_REFERENCE,
+    },
+  ],
 ];
 
 const rejected = [
@@ -102,77 +125,103 @@ describe("parseRuntimeModelReference", () => {
 });
 
 /**
+ * What an accepted reference may CONTAIN is settled here and nowhere else.
+ *
  * A reference this function returns is quoted, without re-validation, by roughly six renderers
  * -- `doctor`, `validate`, the TUI, the web console, the daemon log, launchd's captured stdout
- * -- and reaches cache keys and wire payloads besides. What an accepted reference may CONTAIN
- * is therefore settled here: bounding any one renderer would leave the composed line unbounded
- * through the others, and a control character cannot be made safe after the fact.
+ * -- and reaches cache keys and wire payloads besides. Bounding any one of them would leave the
+ * composed line unbounded through the others, and a control character cannot be made safe after
+ * the fact, so the content rule is absolute and lives at the source.
  *
- * How LONG one may be is a different question with a different answer, and conflating them is
- * the mistake these cases now guard against. A renderer too narrow for a legitimate reference
- * truncates it; the ceiling here exists to keep an identifier from becoming a payload, and is
- * derived from what model ids actually are rather than from any renderer's width.
+ * How LONG a reference may be is a different question, and this layer no longer answers it (see
+ * `requireQuotableReference`). The two properties the retired ceiling was carrying are asserted
+ * where they are actually enforced, not here:
+ *  - an oversized id cannot reach a diagnostic unclamped --
+ *    `packages/runtime-adapter/src/__tests__/runtime-adapter.test.ts`, "an accepted reference is
+ *    bounded where it is RENDERED, at any length";
+ *  - an oversized id cannot break the `/v1/info` budget --
+ *    `packages/agent-app/src/__tests__/tui-channel.test.ts` and `tui-info-wire.test.ts`.
+ * A ceiling asserted here would have been a fourth guess at a number no provider publishes;
+ * those two are the guarantees anybody actually wanted from it.
  */
 describe("parseRuntimeModelReference bounds what it accepts", () => {
-  it.each([
-    ["newline", "openai:foo\nbar"],
-    ["carriage return", "openai:foo\rbar"],
-    ["tab", "openai:foo\tbar"],
-    ["NUL", "openai:foo\u0000bar"],
-    ["escape", "openai:foo\u001B[31mbar"],
-    ["line separator", "openai:foo\u2028bar"],
-    ["paragraph separator", "openai:foo\u2029bar"],
-    ["right-to-left override", "openai:foo\u202Ebar"],
-    ["zero-width space", "openai:foo\u200Bbar"],
-  ])("rejects a model id carrying a %s", (_label, authored) => {
-    expect(() => parseRuntimeModelReference(authored)).toThrow(
+  /** Every code point `UNQUOTABLE_REFERENCE_CHARACTERS` covers, one representative per class. */
+  const UNQUOTABLE = [
+    ["newline", "\n"],
+    ["carriage return", "\r"],
+    ["tab", "\t"],
+    ["NUL", "\u0000"],
+    ["escape", "\u001B"],
+    ["line separator", "\u2028"],
+    ["paragraph separator", "\u2029"],
+    ["right-to-left override", "\u202E"],
+    ["zero-width space", "\u200B"],
+  ];
+
+  it.each(UNQUOTABLE)("rejects a model id carrying a %s", (_label, character) => {
+    expect(() => parseRuntimeModelReference(`openai:foo${character}bar`)).toThrow(
       "model reference must not contain control or formatting characters",
     );
   });
 
-  it("rejects a model id longer than any real model id", () => {
-    expect(() => parseRuntimeModelReference(`openai:${"a".repeat(400)}`)).toThrow(
-      `model reference must be at most ${MAX_MODEL_REFERENCE_BYTES} bytes; got 407`,
+  /**
+   * The content rule is ABSOLUTE, which means it cannot be outrun. Length is the axis a value
+   * would use to try: with no ceiling left a hostile id may be any size it likes, and a scan
+   * that sampled a prefix, or a check some fast path skipped for a value that "obviously" needs
+   * no inspection, would still pass every case above. So the same code points are re-checked
+   * buried in the middle of ids two and five orders of magnitude past any real one.
+   */
+  it.each(UNQUOTABLE)("rejects a %s however long the id carrying it is", (_label, character) => {
+    for (const padding of [400, 70_000, 270_000]) {
+      const half = "a".repeat(padding);
+      expect(() => parseRuntimeModelReference(`openai:${half}${character}${half}`)).toThrow(
+        "model reference must not contain control or formatting characters",
+      );
+    }
+  });
+
+  it("rejects a formatting code point sitting between astral-plane characters", () => {
+    // The unsafe set is matched with the `u` flag, so it walks code points rather than UTF-16
+    // code units. A surrogate-pair neighbourhood is where a code-unit scan goes wrong.
+    expect(() => parseRuntimeModelReference("openai:\u{1F9E0}\u200D\u{1F9E0}")).toThrow(
+      "model reference must not contain control or formatting characters",
     );
   });
 
-  it("bounds the provider half too, not only the model half", () => {
-    // `PROVIDER_ID_RE` constrains a provider id's alphabet but not its length, so a reference
-    // can be pathological on either side of the colon.
-    expect(() => parseRuntimeModelReference(`${"a".repeat(400)}:gpt-4`)).toThrow(
-      `model reference must be at most ${MAX_MODEL_REFERENCE_BYTES} bytes; got 406`,
-    );
+  /**
+   * The deliberate ABSENCE of a length rule, pinned as an acceptance rather than left implicit.
+   *
+   * This is the case a re-added ceiling has to break, and it is written as literal sizes rather
+   * than as arithmetic over some constant: the previous round's boundary tests derived their
+   * inputs from the very ceiling they were checking, which is why they survived changing it.
+   * Nothing here can -- whatever number a future ceiling picked, one of these lengths is past it.
+   */
+  it.each([
+    ["the longest reference Ollama's own component limits allow", OLLAMA_168_BYTE_REFERENCE],
+    ["a real 100-byte Hugging Face GGUF repo", HF_GGUF_100_BYTE_REFERENCE],
+    ["407 bytes", `openai:${"a".repeat(400)}`],
+    ["a 400-byte provider half", `${"a".repeat(400)}:gpt-4`],
+    ["70,007 bytes", `openai:${"a".repeat(70_000)}`],
+    ["270,007 bytes", `openai:${"a".repeat(270_000)}`],
+  ])("imposes no length rule of its own, so it accepts %s", (_label, authored) => {
+    const parsed = parseRuntimeModelReference(authored);
+    // Returned WHOLE: not truncated, not clamped, not marked. What a renderer does about the
+    // size is the renderer's business, and it does it to a copy.
+    expect(parsed.reference).toBe(authored);
+    expect(utf8(parsed.reference)).toBe(utf8(authored));
   });
 
-  it("accepts a reference exactly at the ceiling and rejects the next byte", () => {
-    const atCeiling = `openai:${"a".repeat(MAX_MODEL_REFERENCE_BYTES - "openai:".length)}`;
-    expect(utf8(atCeiling)).toBe(MAX_MODEL_REFERENCE_BYTES);
-    expect(parseRuntimeModelReference(atCeiling).reference).toBe(atCeiling);
-    expect(() => parseRuntimeModelReference(`${atCeiling}a`)).toThrow(
-      `must be at most ${MAX_MODEL_REFERENCE_BYTES} bytes; got ${MAX_MODEL_REFERENCE_BYTES + 1}`,
-    );
-  });
-
-  it("counts UTF-8 bytes, not characters, so a multibyte id cannot slip past the ceiling", () => {
-    // Derived from the constant, so the unit stays pinned wherever the ceiling sits: `wide` is
-    // the first 4-byte-per-character id past it. Its UTF-16 length is barely half its byte
-    // length, which is exactly what a ceiling counted in code units would wave through.
-    const perCharacter = 4;
-    const modelBudget = MAX_MODEL_REFERENCE_BYTES - "openai:".length;
-    const overflowing = Math.floor(modelBudget / perCharacter) + 1;
-    const wide = `openai:${"\u{1F9E0}".repeat(overflowing)}`;
-    expect(wide.length).toBeLessThan(MAX_MODEL_REFERENCE_BYTES);
-    expect(utf8(wide)).toBeGreaterThan(MAX_MODEL_REFERENCE_BYTES);
-    expect(() => parseRuntimeModelReference(wide)).toThrow(
-      `must be at most ${MAX_MODEL_REFERENCE_BYTES} bytes; got ${utf8(wide)}`,
-    );
-    expect(() => parseRuntimeModelReference(`openai:${"\u{1F9E0}".repeat(overflowing - 1)}`)).not.toThrow();
-  });
-
-  it("applies the ceiling to the canonical form, so the legacy pi: wrapper is not charged for", () => {
-    const canonical = `openai:${"a".repeat(MAX_MODEL_REFERENCE_BYTES - "openai:".length)}`;
-    expect(utf8(`pi:${canonical}`)).toBeGreaterThan(MAX_MODEL_REFERENCE_BYTES);
-    expect(parseRuntimeModelReference(`pi:${canonical}`).reference).toBe(canonical);
+  it("accepts a multibyte id whose byte length far exceeds its code-unit length", () => {
+    // A ceiling counted in UTF-16 code units rather than UTF-8 bytes was the specific bug the
+    // old boundary case guarded. With no ceiling at all the failure mode inverts: what must not
+    // happen is the parser mangling a multibyte id on the way through.
+    const wide = `openai:${"\u{1F9E0}".repeat(500)}`;
+    expect(wide.length).toBeLessThan(utf8(wide));
+    expect(parseRuntimeModelReference(wide)).toEqual({
+      provider: "openai",
+      model: "\u{1F9E0}".repeat(500),
+      reference: wide,
+    });
   });
 
   it.each([
@@ -180,43 +229,11 @@ describe("parseRuntimeModelReference bounds what it accepts", () => {
     [`codex:${"a".repeat(400)}`, `use openai-codex:${"a".repeat(400)}`],
     ["vercel:anthropic:claude\u2028opus", "use anthropic:claude\u2028opus directly"],
   ])("still names the replacement for a retired backend carrying a bad value: %j", (authored, repair) => {
-    // Order is load-bearing: the shape check runs AFTER the retired-backend check so an
-    // operator gets the concrete repair rather than a generic complaint. That message is
-    // operator-supplied text too, and is bounded where it is rendered, by runtime-adapter's
+    // Order is load-bearing: the content check runs AFTER the retired-backend check so an
+    // operator gets the concrete repair rather than a generic complaint. That message carries
+    // the operator's own text, and is bounded where it is rendered, by runtime-adapter's
     // `sanitizeModelReferenceText` -- not by re-checking the shape first here.
     expect(() => parseRuntimeModelReference(authored)).toThrow(repair);
-  });
-
-  it("keeps the ceiling an identifier bound rather than a licence for a payload", () => {
-    // The failure mode this pins is not a typo, it is a temptation in both directions. Too low
-    // and a working model is refused -- which is what happened when the ceiling was collapsed
-    // into the 96-byte diagnostic echo budget and a real 100-byte Hugging Face GGUF reference
-    // stopped parsing. Too high, or nudged up once per complaint, and the bound quietly stops
-    // meaning anything. So the constant is asserted against a DERIVATION rather than against
-    // itself: the longest reference the upstream naming systems can structurally produce.
-    const structuralWorstCase =
-      "ollama:hf.co/".length   // the fixed Ollama prefix for a Hugging Face pull
-      + 32                     // HF namespace; longest of 3395 sampled is 30
-      + "/".length
-      + 96                     // HF's own documented repo-name cap; 11325 ids sampled, max 96
-      + ":".length
-      + 16;                    // GGUF quant tag; longest of 53 real tags is 10 (UD-Q4_K_XL)
-    expect(structuralWorstCase).toBe(159);
-    expect(MAX_MODEL_REFERENCE_BYTES).toBeGreaterThanOrEqual(structuralWorstCase);
-    // Rounded to the worst case, not padded past it: the ceiling has to be re-derived to move,
-    // not merely raised until the latest complaint fits.
-    expect(MAX_MODEL_REFERENCE_BYTES - structuralWorstCase).toBeLessThan(16);
-    // A reference of exactly that shape really does parse, so the derivation is not arithmetic
-    // about a form the grammar would have rejected anyway.
-    const worstCaseReference =
-      `ollama:hf.co/${"n".repeat(32)}/${"r".repeat(96)}:${"Q".repeat(16)}`;
-    expect(utf8(worstCaseReference)).toBe(structuralWorstCase);
-    expect(parseRuntimeModelReference(worstCaseReference).reference).toBe(worstCaseReference);
-    // And it still clears Pi's whole built-in catalog with room to spare, which is the other
-    // population it has to cover.
-    const longestBuiltin = utf8(LONGEST_BUILTIN);
-    expect(longestBuiltin).toBe(77);
-    expect(MAX_MODEL_REFERENCE_BYTES - longestBuiltin).toBeGreaterThanOrEqual(64);
   });
 
   it("accepts every reference in Pi's built-in catalog", () => {
@@ -235,6 +252,5 @@ describe("parseRuntimeModelReference bounds what it accepts", () => {
     expect(refused).toEqual([]);
     const longest = references.reduce((a, b) => (utf8(b) > utf8(a) ? b : a));
     expect(utf8(longest)).toBe(77);
-    expect(utf8(longest)).toBeLessThan(MAX_MODEL_REFERENCE_BYTES);
   });
 });
