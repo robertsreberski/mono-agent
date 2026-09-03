@@ -3,6 +3,7 @@ import { realpath } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentMessageStream, AgentReplyPart, AgentRequestBase, AgentResponder, ProcessJobOperator, ProcessJobProjection, RunningChannel } from "@mono-agent/agent-contracts";
+import { MAX_INFO_PROVIDER_ITEMS } from "@mono-agent/agent-contracts";
 import type { DiscoveredLocalModel, DiscoveredProvider, LocalProviderDefinition } from "@mono-agent/runtime-adapter";
 import type { TuiAdapterConfig, TuiAdapterInfo, TuiAdapterOptions, TuiAdapterStartResult } from "@mono-agent/operator-adapter";
 import type { DeliverWebNotificationInput } from "@mono-agent/web";
@@ -406,8 +407,8 @@ describe("tui channel driver — info composition", () => {
       JSON.stringify({ models: info.models, modelOptions: info.modelOptions }),
       "utf8",
     );
-    // 128 KiB configured routes + 384 KiB discovered models.
-    expect(projections).toBeLessThanOrEqual((128 + 384) * 1024);
+    // One shared 512 KiB slice for `models` + `modelOptions`.
+    expect(projections).toBeLessThanOrEqual(512 * 1024);
     expect(Buffer.byteLength(JSON.stringify(info), "utf8")).toBeLessThan(1024 * 1024);
     // Bounded, not emptied: escaping costs these refs a lot, but some still run.
     expect(info.models?.length).toBeGreaterThan(1);
@@ -508,10 +509,11 @@ describe("tui channel driver — info composition", () => {
     expect(info.modelOptions?.["lmstudio:many-levels"]?.effortLevels).toEqual(levels.slice(0, 32));
   });
 
-  it("bounds the provider summary the producer emits", async () => {
-    // The consumer stops parsing at 64 providers; the producer capped none, so
-    // 20,000 configured entries generated a 1.68 MB body and took the agent
-    // offline. `providers` gets its own measured 128 KiB slice.
+  it("bounds the provider summary and orders routes into the console's window", async () => {
+    // The consumer stops parsing at the first MAX_INFO_PROVIDER_ITEMS entries;
+    // the producer capped none, so 20,000 configured entries generated a
+    // 1.68 MB body and took the agent offline. `providers` gets its own
+    // measured 128 KiB slice.
     const providerEntries = Array.from({ length: 3_000 }, (_unused, index) => ({
       id: `vendor-${String(index).padStart(5, "0")}`,
     }));
@@ -521,23 +523,44 @@ describe("tui channel driver — info composition", () => {
 
     const providerBytes = Buffer.byteLength(JSON.stringify(info.providers), "utf8");
     expect(providerBytes).toBeLessThanOrEqual(128 * 1024);
-    expect(info.providers?.length).toBeGreaterThan(64);
+    expect(info.providers?.length).toBeGreaterThan(MAX_INFO_PROVIDER_ITEMS);
     expect(info.providers?.length).toBeLessThan(providerEntries.length);
-    // The provider the agent actually routes through survives the cut. It is
-    // LAST in catalog order (declared entries first, then route providers), so
-    // a plain prefix cut would have dropped it and kept 1,600 the operator
-    // merely listed.
-    expect(info.providers?.map((provider) => provider.id)).toContain("anthropic");
-    // Order still follows the catalog: a cut, never a reorder.
-    expect(info.providers?.[0]?.id).toBe("vendor-00000");
-    expect(info.providers?.at(-1)?.id).toBe("anthropic");
+    // The provider the agent actually routes through survives the cut AND
+    // lands inside the window the console parses. It is LAST in catalog order
+    // (declared entries first, then route providers), so BOTH prefix cuts —
+    // this slice and the console's item window — would otherwise drop exactly
+    // the provider the picker cannot work without and keep a thousand the
+    // operator merely listed. Admitting it and then emitting it at position
+    // 3,001 is not admitting it; see `tui-info-wire.test.ts` for the same
+    // claim proved across the real producer -> consumer boundary.
+    const ids = info.providers?.map((provider) => provider.id) ?? [];
+    expect(ids.slice(0, MAX_INFO_PROVIDER_ITEMS)).toContain("anthropic");
+    // Reordered only where it must be: routes first, catalog order behind them.
+    expect(ids[0]).toBe("anthropic");
+    expect(ids[1]).toBe("vendor-00000");
     expect(Buffer.byteLength(JSON.stringify(info), "utf8")).toBeLessThan(1024 * 1024);
   });
 
-  it("bounds the configured-route half of the model projections too", async () => {
+  it("leaves a catalog that fits both cuts in the catalog's own order and identity", async () => {
+    // Reordering is only ever a response to a cut. A summary the console can
+    // parse whole must arrive exactly as the catalog built it -- including the
+    // frozen array identity /v1/info hands back on every 5 s poll.
+    const providerEntries = Array.from({ length: 8 }, (_unused, index) => ({
+      id: `vendor-${String(index).padStart(5, "0")}`,
+    }));
+
+    const captured = await startCapturingTui({ providerEntries });
+    const info = await resolveInfo(captured);
+
+    expect(info.providers?.map((provider) => provider.id))
+      .toEqual([...providerEntries.map((entry) => entry.id), "anthropic"]);
+  });
+
+  it("bounds configured routes at the shared model slice, not below it", async () => {
     // Configured routes were uncapped in both count and per-ref length: one
     // accepted 400,007-byte route generated 1.2 MB and made the console's
-    // `info()` reject the whole response.
+    // `info()` reject the whole response. It costs ~800 KB across the two
+    // projections, so the 512 KiB slice still cannot hold it.
     const captured = await startCapturingTui({
       fallbackModels: [
         { provider: "openrouter", model: "gpt-5.6-sol" },
@@ -547,6 +570,42 @@ describe("tui channel driver — info composition", () => {
     const info = await resolveInfo(captured);
 
     expect(info.models).toEqual(["anthropic:claude-fable-5", "openrouter:gpt-5.6-sol"]);
+    expect(Buffer.byteLength(JSON.stringify(info), "utf8")).toBeLessThan(1024 * 1024);
+  });
+
+  it("keeps a valid long configured route ahead of a discovery flood", async () => {
+    const localProviders: readonly LocalProviderDefinition[] = [
+      { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
+    ];
+    // 70,000 bytes: no shorter than the reference grammar allows, and a route
+    // a turn really would run. Charged against a 128 KiB configured-only slice
+    // it cost ~140 KB and was dropped -- while the complete body it belonged to
+    // measured 140,731 bytes, a seventh of the cap. A budget bounds a total; it
+    // does not rule on which content deserves to ship.
+    const model = "m".repeat(70_000);
+    const flood = Array.from({ length: 5_000 }, (_unused, index) => ({
+      ref: `lmstudio:model-${String(index).padStart(6, "0")}-${"x".repeat(200)}`,
+      label: "flood",
+      providerId: "lmstudio",
+    })) satisfies DiscoveredLocalModel[];
+
+    const captured = await startCapturingTui({
+      fallbackModels: [{ provider: "openrouter", model }],
+      localProviders,
+      discoverModels: async () => flood,
+    });
+    const info = await resolveInfo(captured);
+
+    expect(info.models).toContain(`openrouter:${model}`);
+    // Discovery still fills in behind it, and still cannot spend more than its
+    // own 384 KiB on top of what the routes took.
+    expect(info.models?.length).toBeGreaterThan(2);
+    expect(info.models?.length).toBeLessThan(flood.length);
+    const projections = Buffer.byteLength(
+      JSON.stringify({ models: info.models, modelOptions: info.modelOptions }),
+      "utf8",
+    );
+    expect(projections).toBeLessThanOrEqual(512 * 1024);
     expect(Buffer.byteLength(JSON.stringify(info), "utf8")).toBeLessThan(1024 * 1024);
   });
 

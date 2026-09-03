@@ -4,6 +4,10 @@ import type {
   TuiProviderInfo,
 } from "@mono-agent/operator-adapter";
 import {
+  MAX_INFO_PROVIDER_ID_BYTES,
+  MAX_INFO_PROVIDER_LABEL_BYTES,
+} from "@mono-agent/agent-contracts";
+import {
   getPiBuiltinModel,
   listPiBuiltinModels,
   listPiBuiltinProviders,
@@ -37,9 +41,16 @@ export const MAX_PAGE_SIZE = 200;
  * These are display/paging bounds, NOT validity bounds: the runtime reference
  * parser imposes no length limit, so a 257-byte model id is genuinely runnable
  * and merely unpageable. `/v1/info.models` deliberately does not inherit them
- * (see `MAX_DISCOVERED_INFO_MODEL_BYTES` in `channel-drivers/tui.ts`) — reusing
- * them there deleted runnable models from schema-1 clients at a wire schema
- * that cannot be bumped.
+ * (see `MAX_INFO_MODEL_BYTES` in `channel-drivers/tui.ts`) — reusing them there
+ * deleted runnable models from schema-1 clients at a wire schema that cannot be
+ * bumped.
+ *
+ * PROVIDER ids and labels are bounded by the shared wire contract instead
+ * (`MAX_INFO_PROVIDER_ID_BYTES`/`..._LABEL_BYTES` in `@mono-agent/agent-contracts`),
+ * because `/v1/info.providers` has a consumer that enforces its own copy of the
+ * same numbers. A local bound here and a local bound there is how a 129-byte
+ * provider id came to be published by this catalog and discarded by the
+ * console. Model ids have no such second enforcer and keep the local bound.
  */
 export const MAX_CATALOG_ID_BYTES = 256;
 export const MAX_CATALOG_LABEL_BYTES = 256;
@@ -226,7 +237,7 @@ export function buildProviderModelCatalog(
   // Drop oversized provider ids here rather than mid-loop: `orderedIds` drives
   // the final `listProviders()` projection, so an id skipped later would still
   // be dereferenced there.
-  const boundedIds = orderedIds.filter((id) => withinBytes(id, MAX_CATALOG_ID_BYTES));
+  const boundedIds = orderedIds.filter((id) => withinBytes(id, MAX_INFO_PROVIDER_ID_BYTES));
   orderedIds.length = 0;
   orderedIds.push(...boundedIds);
 
@@ -253,7 +264,7 @@ export function buildProviderModelCatalog(
 
   for (const id of orderedIds) {
     const rawLabel = providerLabelById.get(id) ?? id;
-    const providerLabel = withinBytes(rawLabel, MAX_CATALOG_LABEL_BYTES) ? rawLabel : id;
+    const providerLabel = withinBytes(rawLabel, MAX_INFO_PROVIDER_LABEL_BYTES) ? rawLabel : id;
     const configured = configuredById.get(id);
     // A configured provider that declares a local `type` OWNS the id, even when
     // Pi ships a built-in under the same name. `runtimeOptionsForLocalProvider`

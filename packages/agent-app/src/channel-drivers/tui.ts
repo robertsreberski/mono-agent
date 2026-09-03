@@ -2,6 +2,7 @@ import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import type { AgentMessageStream, ProcessJobOperator } from "@mono-agent/agent-contracts";
+import { MAX_INFO_PROVIDER_ITEMS } from "@mono-agent/agent-contracts";
 import { resolveConfiguredProviders } from "@mono-agent/config";
 
 import type {
@@ -71,9 +72,9 @@ export interface TuiChannelOverrides {
  * shows the agent OFFLINE, on a 5 s poll, behind a debug-level log. Every
  * contributor therefore gets an explicit slice, and they sum under the cap:
  *
- *     configured routes   128 KiB      providers    128 KiB
- *     skills              256 KiB      caps/misc     64 KiB
- *     discovered models   384 KiB   -> 960 KiB total, 64 KiB headroom
+ *     models + modelOptions   512 KiB      providers    128 KiB
+ *     skills                  256 KiB      caps/misc     64 KiB
+ *                                       -> 960 KiB total, 64 KiB headroom
  *
  * `skills` is enforced by `MAX_SKILL_REGISTRY_BYTES` in `skill-registry.ts`;
  * `models`/`modelOptions`/`providers` are enforced here, at the only place the
@@ -83,8 +84,26 @@ export interface TuiChannelOverrides {
  * a budget anything can spend. `sendBoundedInfo` in the operator adapter is the
  * last-resort fence behind all of them, so that the PRODUCER, not the consumer,
  * is what keeps an agent online.
+ *
+ * What a budget is FOR bounds how it may be spent. It exists so one field
+ * cannot starve another and so the total stays under the wire cap — it is not
+ * an opinion about which content deserves to ship. Splitting `models` into a
+ * 128 KiB configured half and a 384 KiB discovered half broke that rule: the
+ * model-reference grammar has no length bound, so a single VALID 70,000-byte
+ * fallback cost ~140 KB across the two projections, overran the configured
+ * half, and was dropped — from a body that would have totalled 140,731 bytes,
+ * under a seventh of the cap. The TUI never calls `/v1/models` and rebuilds its
+ * picker from `info.models` alone, so that was an unselectable primary or
+ * fallback in the operator's own console.
+ *
+ * So `models` and `modelOptions` share ONE slice. Configured routes have first
+ * claim on all of it (they are the operator's declared routes; a route the
+ * picker cannot offer is a route nobody can run), and discovered refs then take
+ * up to {@link MAX_DISCOVERED_INFO_MODEL_BYTES} more without ever pushing the
+ * pair past the slice. Advisory local discovery therefore still cannot flood
+ * the body, and an authored route is never dropped to reserve room for it.
  */
-const MAX_CONFIGURED_INFO_MODEL_BYTES = 128 * 1024;
+const MAX_INFO_MODEL_BYTES = 512 * 1024;
 const MAX_DISCOVERED_INFO_MODEL_BYTES = 384 * 1024;
 const MAX_INFO_PROVIDER_BYTES = 128 * 1024;
 
@@ -100,6 +119,13 @@ interface InfoModelProjection {
   readonly keys: string[];
   readonly seen: Set<string>;
   readonly options: Record<string, TuiModelOption>;
+  /**
+   * Serialized bytes already committed to `models` + `modelOptions`, carried
+   * ACROSS admission passes. One running total is what makes the slice shared:
+   * a per-pass counter is how the configured half came to be independently
+   * capped, and it cannot express "first claim on the whole slice".
+   */
+  bytes: number;
 }
 
 /**
@@ -145,14 +171,13 @@ function admitInfoModels(
   budgetBytes: number,
   into: InfoModelProjection,
 ): void {
-  let bytes = INFO_MODEL_FRAME_BYTES;
   for (const ref of refs) {
     const key = modelReferenceKey(ref);
     if (into.seen.has(key)) continue;
     const option = describe(ref);
     const cost = infoModelEntryBytes(key, option);
-    if (bytes + cost > budgetBytes) continue;
-    bytes += cost;
+    if (into.bytes + cost > budgetBytes) continue;
+    into.bytes += cost;
     into.seen.add(key);
     into.keys.push(key);
     if (option !== undefined) into.options[key] = option;
@@ -160,22 +185,27 @@ function admitInfoModels(
 }
 
 /**
- * Bound the `/v1/info` provider summary on its own measured slice. Entry ids
- * and labels are already length-bounded by the catalog
- * (`MAX_CATALOG_ID_BYTES`/`MAX_CATALOG_LABEL_BYTES`), so every entry costs
- * about the same and the only unbounded dimension left is COUNT — a config may
- * declare thousands, and the producer previously capped none of them (the
- * consumer stops parsing at 64, but only after the whole body has already blown
- * the 1 MiB cap and taken the agent offline).
+ * Project the `/v1/info` provider summary onto its own measured slice, with the
+ * providers the agent's OWN routes use placed where every consumer can see
+ * them.
  *
- * When the budget binds, the providers the agent's OWN routes use are admitted
- * first. They sit LAST in the catalog's order (declared providers, then route
- * providers, then discovered ones), so a plain prefix cut would drop exactly
- * the provider the console needs most and keep a thousand the operator merely
- * listed. Emission still follows the catalog's order, so nothing is reordered
- * relative to what an unbounded body would have sent.
+ * Two independent cuts land on this list, and the catalog's order is wrong for
+ * both. Route providers sit LAST in it (declared providers, then route
+ * providers, then discovered ones), while the byte slice and the console's
+ * {@link MAX_INFO_PROVIDER_ITEMS} parse window are both PREFIX cuts. Admitting
+ * routes first but emitting in catalog order — which is what this did — put the
+ * prioritized entry at position 71 of 71 and let the console throw it away at
+ * 64: a probe really did receive `anthropic` and parse 64 vendors without it.
+ * Prioritizing at the producer only means something if it survives to the
+ * consumer, so the priority has to be expressed as ORDER on the wire.
+ *
+ * Reordering is not subtractive — no entry is removed and no field changes — so
+ * it is legal at a wire schema compared with `!==`. It is also confined to the
+ * case that needs it: a catalog that fits both the slice and the window is
+ * emitted exactly as the catalog built it, frozen identity included, because
+ * `/v1/info` is polled every 5 s and hands back the very same object each time.
  */
-function boundInfoProviders(
+function projectInfoProviders(
   providers: readonly TuiProviderInfo[],
   routeProviderIds: ReadonlySet<string>,
 ): readonly TuiProviderInfo[] {
@@ -183,11 +213,11 @@ function boundInfoProviders(
     (provider) => Buffer.byteLength(JSON.stringify(provider), "utf8") + 1,
   );
   const total = costs.reduce((sum, cost) => sum + cost, INFO_PROVIDER_FRAME_BYTES);
-  // Preserve the catalog's frozen array identity when nothing has to be cut:
-  // /v1/info is polled every 5 s and hands back the very same object each time.
-  if (total <= MAX_INFO_PROVIDER_BYTES) return providers;
+  if (total <= MAX_INFO_PROVIDER_BYTES && providers.length <= MAX_INFO_PROVIDER_ITEMS) {
+    return providers;
+  }
 
-  const admitted = new Set<number>();
+  const admitted: TuiProviderInfo[] = [];
   let bytes = INFO_PROVIDER_FRAME_BYTES;
   for (const routesFirst of [true, false]) {
     for (const [index, provider] of providers.entries()) {
@@ -196,10 +226,10 @@ function boundInfoProviders(
       // `continue`, not `break`: an entry that does not fit costs only itself.
       if (bytes + cost > MAX_INFO_PROVIDER_BYTES) continue;
       bytes += cost;
-      admitted.add(index);
+      admitted.push(provider);
     }
   }
-  return Object.freeze(providers.filter((_provider, index) => admitted.has(index)));
+  return Object.freeze(admitted);
 }
 
 const APP_OWNED_TUI_START = Symbol("app-owned-tui-start");
@@ -368,12 +398,26 @@ export function createTuiChannelDriver(
       // first so an authored route keeps its place in the picker.
       const describeModelOption = (ref: RuntimeModelReference): TuiModelOption | undefined =>
         catalog.describe([ref])[modelReferenceKey(ref)];
-      const projection: InfoModelProjection = { keys: [], seen: new Set(), options: {} };
-      admitInfoModels(configuredRefs, describeModelOption, MAX_CONFIGURED_INFO_MODEL_BYTES, projection);
-      admitInfoModels(discoveredRefs, describeModelOption, MAX_DISCOVERED_INFO_MODEL_BYTES, projection);
+      const projection: InfoModelProjection = {
+        keys: [],
+        seen: new Set(),
+        options: {},
+        bytes: INFO_MODEL_FRAME_BYTES,
+      };
+      // Configured routes first, against the WHOLE slice: an authored route is
+      // withheld only when the slice itself cannot hold it, never to reserve
+      // room for discovery. Discovery then gets its own 384 KiB on top of
+      // whatever they spent, clamped to the slice so the pair stays bounded.
+      admitInfoModels(configuredRefs, describeModelOption, MAX_INFO_MODEL_BYTES, projection);
+      admitInfoModels(
+        discoveredRefs,
+        describeModelOption,
+        Math.min(MAX_INFO_MODEL_BYTES, projection.bytes + MAX_DISCOVERED_INFO_MODEL_BYTES),
+        projection,
+      );
       const infoModelKeys: readonly string[] = Object.freeze(projection.keys);
       const infoModelOptions = Object.freeze(projection.options);
-      const infoProviders = boundInfoProviders(
+      const infoProviders = projectInfoProviders(
         catalog.listProviders(),
         new Set(configuredRefs.map((ref) => ref.provider)),
       );
