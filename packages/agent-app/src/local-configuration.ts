@@ -58,7 +58,11 @@ import {
   type AgentConfigurationProposal,
   type JsonPatchOperation,
 } from "./configuration-proposal-tool.js";
-import { containsSecretLikeValue, knownEnvironmentSecretValues } from "./untrusted-text.js";
+import {
+  containsKnownSecretValue,
+  containsSecretLikeValue,
+  knownEnvironmentSecretValues,
+} from "./untrusted-text.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import { ADAPTER_SEND_TOOL_NAMES, canonicalToolName } from "./modules/known-tools.js";
 import { RUN_HISTORY_MCP_SERVER_NAME, RUN_HISTORY_TOOL_NAME } from "./run-history.js";
@@ -1097,7 +1101,9 @@ function secretBearingPointer(pointer: string): boolean {
 }
 
 function containsSecret(value: unknown, secrets: readonly string[]): boolean {
-  if (typeof value === "string") return secrets.some((secret) => value.includes(secret)) || containsSecretLikeValue(value);
+  if (typeof value === "string") {
+    return containsKnownSecretValue(value, secrets) || containsSecretLikeValue(value);
+  }
   if (Array.isArray(value)) return value.some((entry) => containsSecret(entry, secrets));
   if (isRecord(value)) {
     return Object.entries(value).some(([key, entry]) =>

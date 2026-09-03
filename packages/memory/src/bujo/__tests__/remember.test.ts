@@ -123,6 +123,30 @@ describe("BujoMemoryStore.remember — storage contract", () => {
 });
 
 describe("BujoMemoryStore.remember — idempotency across partial failure", () => {
+  it("keeps reporting durable canonical state when recovery indexing fails again", async () => {
+    const dir = root("repeated-index-failure");
+    const store = storeFor(dir, "lite", () => FIXED);
+    try {
+      const text = "Robert keeps release notes in the changelog.";
+      vi.spyOn(store["db"] as never, "upsertLexical").mockImplementation(() => {
+        throw new Error("simulated repeated index crash");
+      });
+
+      await expect(store.remember("conv-1", text)).rejects.toMatchObject({
+        canonicalWritten: true,
+      });
+      // The retry finds the already-durable bullet. A second projection failure
+      // must not regress to a plain "nothing was stored" error merely because
+      // this invocation appended zero bytes.
+      await expect(store.remember("conv-1", text)).rejects.toMatchObject({
+        canonicalWritten: true,
+      });
+      expect(bulletsIn(dir, FIXED)).toHaveLength(1);
+    } finally {
+      await store.close();
+    }
+  });
+
   it("completes an unindexed canonical bullet after the UTC day rolls over, without duplicating it", async () => {
     // The hazard: append lands, indexing dies, and the model retries the tool the
     // next day. A guard that only scanned today's file would miss yesterday's
@@ -217,10 +241,37 @@ describe("BujoMemoryStore.remember — data-safety guards", () => {
     const dir = root("legacy-shadow");
     const store = storeFor(dir, "lite", () => FIXED);
     try {
-      writeFileSync(join(dir, "2026-09-03.md"), "# 2026-09-03\n\n", "utf8");
+      writeFileSync(
+        join(dir, "2026-09-03.md"),
+        `# 2026-09-03\n\n${serializeBullet({
+          id: "legacy-fact",
+          type: "note",
+          status: "open",
+          text: "A real fact in the legacy layout.",
+          salience: 0.5,
+          isInsight: false,
+          createdAt: FIXED.toISOString(),
+          refs: [],
+        })}\n`,
+        "utf8",
+      );
       await expect(store.remember("conv-1", "Would hide the legacy file."))
         .rejects.toThrow(/root-level legacy layout/u);
       expect(existsSync(dailyFilePath(dir, FIXED))).toBe(false);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("does not treat a header-only root-legacy file as hidden canonical data", async () => {
+    const dir = root("empty-legacy");
+    const store = storeFor(dir, "lite", () => FIXED);
+    try {
+      writeFileSync(join(dir, "2026-09-03.md"), "# 2026-09-03\n\n", "utf8");
+
+      await expect(store.remember("conv-1", "No legacy fact can be shadowed here."))
+        .resolves.toMatchObject({ duplicate: false });
+      expect(bulletsIn(dir, FIXED)).toHaveLength(1);
     } finally {
       await store.close();
     }
@@ -280,6 +331,34 @@ describe("BujoMemoryStore.remember — data-safety guards", () => {
       await store.close();
     }
   });
+
+  it.each(["dropped", "invalidated"] as const)(
+    "refuses to resurrect an unindexed canonical fact whose status is %s",
+    async (status) => {
+      const dir = root(`canonical-${status}`);
+      const text = `Robert explicitly marked this fact ${status}.`;
+      const id = `RM-${normalizedContentHash(text)}`;
+      appendBullet(dir, {
+        id,
+        type: "note",
+        status,
+        text,
+        salience: 0.8,
+        isInsight: false,
+        createdAt: FIXED.toISOString(),
+        refs: [],
+      }, FIXED);
+
+      const store = storeFor(dir, "lite", () => FIXED);
+      try {
+        await expect(store.remember("conv-1", text)).rejects.toThrow(/explicitly forgotten/u);
+        expect(store["db"].get(id)).toBeUndefined();
+        expect(bulletsIn(dir, FIXED)).toHaveLength(1);
+      } finally {
+        await store.close();
+      }
+    },
+  );
 
   it("does not exempt a hand-authored RM- bullet from the legacy audit filter", async () => {
     // Only a real content-hash identity earns the rebuild exemption; otherwise

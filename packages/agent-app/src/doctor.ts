@@ -52,7 +52,7 @@ import {
   isAppCoreConfigError,
   loadAppCoreConfig,
 } from "./app-config.js";
-import { isRememberToolAllowed } from "./memory-remember.js";
+import { isRememberToolAllowed, isRememberToolPolicyName } from "./memory-remember.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { adapterSendToolNames, isAdapterSendToolAllowed, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
 import { canonicalToolName, isAllowAllTools, isKnownToolName, isMcpToolName, suggestToolName } from "./modules/known-tools.js";
@@ -2068,35 +2068,10 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     details.push(`Allowed tools: ${allowedTools.join(", ")}.`);
     let mcpNoteAdded = false;
     for (const name of allowedTools) {
-      if (isMcpToolName(name)) {
-        // MCP tool names are owned by their servers; we cannot verify them offline.
-        if (!mcpNoteAdded) {
-          details.push("MCP tool names are provided by their servers and cannot be validated offline.");
-          mcpNoteAdded = true;
-        }
-        continue;
-      }
-      // Accept both the new `MemoryRecall` and the legacy `memory_recall` alias.
-      if (canonicalToolName(name) === "MemoryRecall") {
-        // MemoryRecall is auto-provisioned from memory.recallTool.enabled and is NOT
-        // allowlist-gated. Listing it is harmless redundancy WHEN recall is on, but a
-        // real misconfiguration when it is off (the user expects a recall they won't get).
-        if (config.memory?.recallTool?.enabled === true) {
-          details.push(
-            `${name} in allowedTools has no effect — recall is auto-provisioned by memory.recallTool.enabled (already on). You can remove this entry.`,
-          );
-        } else {
-          status = "waiting";
-          details.push(
-            `${name} is in allowedTools but memory.recallTool.enabled is off — recall will not work. Enable memory.recallTool (or remove this entry).`,
-          );
-        }
-        continue;
-      }
-      if (canonicalToolName(name) === "Remember") {
+      if (isRememberToolPolicyName(name)) {
         // Reconcile with the runtime's own resolution, which honours the
-        // `mcp__mono-agent-memory-write__*` spellings and deny-wins. Reporting
-        // ok while the runtime omits the tool would send the operator hunting.
+        // `mcp__mono-agent-memory-write__*` spellings and deny-wins. This check
+        // must precede the generic MCP branch below.
         if (!isRememberToolAllowed(config.tools)) {
           status = "waiting";
           details.push(
@@ -2121,6 +2096,31 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
           status = "waiting";
           details.push(
             `${name} is in allowedTools but the supermemory backend exposes no durable write surface - the tool will not be offered.`,
+          );
+        }
+        continue;
+      }
+      if (isMcpToolName(name)) {
+        // MCP tool names are owned by their servers; we cannot verify them offline.
+        if (!mcpNoteAdded) {
+          details.push("MCP tool names are provided by their servers and cannot be validated offline.");
+          mcpNoteAdded = true;
+        }
+        continue;
+      }
+      // Accept both the new `MemoryRecall` and the legacy `memory_recall` alias.
+      if (canonicalToolName(name) === "MemoryRecall") {
+        // MemoryRecall is auto-provisioned from memory.recallTool.enabled and is NOT
+        // allowlist-gated. Listing it is harmless redundancy WHEN recall is on, but a
+        // real misconfiguration when it is off (the user expects a recall they won't get).
+        if (config.memory?.recallTool?.enabled === true) {
+          details.push(
+            `${name} in allowedTools has no effect — recall is auto-provisioned by memory.recallTool.enabled (already on). You can remove this entry.`,
+          );
+        } else {
+          status = "waiting";
+          details.push(
+            `${name} is in allowedTools but memory.recallTool.enabled is off — recall will not work. Enable memory.recallTool (or remove this entry).`,
           );
         }
         continue;

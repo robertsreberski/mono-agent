@@ -91,31 +91,37 @@ export function containsUnsafeReviewControl(value: string): boolean {
 }
 
 /**
- * HTTP Basic payloads are base64 of `user:password`, which is often shorter than
- * any useful length floor — `Basic dXNlcjpwYXNz` is twelve characters. Decode
- * the candidate instead: a real pair contains a colon and printable text, while
- * prose that merely names the scheme ("Basic authentication") does not.
+ * HTTP Basic payloads are base64 of `user:password`, which can be as short as
+ * four characters and can contain non-UTF-8 legacy bytes. Decode the candidate
+ * instead: a real pair contains a colon and no control bytes, while prose that
+ * merely names the scheme ("Basic authentication") does not.
  */
-const BASIC_SCHEME = /\bBasic\s+([A-Za-z0-9+/]{8,}={0,2})\b/giu;
+const BASIC_SCHEME = /\bBasic\s+([A-Za-z0-9+/]{2,}={0,2})(?![A-Za-z0-9+/=])/giu;
 
 function containsBasicCredential(value: string): boolean {
   for (const match of value.matchAll(BASIC_SCHEME)) {
     const payload = match[1];
     if (payload === undefined) continue;
-    let decoded: string;
-    try {
-      decoded = Buffer.from(payload, "base64").toString("utf8");
-    } catch {
-      continue;
-    }
-    if (decoded.includes(":") && /^[ -~]+$/u.test(decoded)) return true;
+    const unpaddedPayload = payload.replace(/=+$/u, "");
+    if (unpaddedPayload.length % 4 === 1) continue;
+    const bytes = Buffer.from(payload, "base64");
+    // Buffer's base64 decoder is intentionally permissive. Require a canonical
+    // round trip so malformed prose is never reinterpreted as a credential.
+    if (bytes.toString("base64").replace(/=+$/u, "") !== unpaddedPayload) continue;
+    if (
+      bytes.includes(0x3a)
+      && !bytes.some((byte) => byte <= 0x1f || byte === 0x7f)
+    ) return true;
   }
   return false;
 }
 
 /** Whether the text carries a value shaped like a well-known credential. */
 export function containsSecretLikeValue(value: string): boolean {
-  return SECRET_LIKE_VALUE.test(value) || containsBasicCredential(value);
+  // Callers outside Remember also use this guard. Fold compatibility
+  // characters here so no caller can accidentally scan a weaker raw form.
+  const normalized = value.normalize("NFKC");
+  return SECRET_LIKE_VALUE.test(normalized) || containsBasicCredential(normalized);
 }
 
 /**
@@ -129,7 +135,11 @@ export function knownEnvironmentSecretValues(env: Record<string, string | undefi
     .filter(([name, value]) =>
       CREDENTIAL_ENV_NAME.test(name)
       && !NON_CREDENTIAL_ENV_NAME.test(name)
-      && (value?.length ?? 0) >= MIN_KNOWN_SECRET_LENGTH)
+      // Remember persists in NFKC form. Retain a value when either its raw or
+      // folded representation reaches the floor so compatibility ligatures
+      // cannot disappear from the configured-secret set before comparison.
+      && value !== undefined
+      && Math.max(value.length, value.normalize("NFKC").length) >= MIN_KNOWN_SECRET_LENGTH)
     .map(([, value]) => value!);
 }
 

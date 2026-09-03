@@ -205,6 +205,24 @@ describe("Remember tool — credential rejection", () => {
     expect(dailyContent(dir)).toBe("");
   });
 
+  it("measures configured-secret length in the normalized storage domain", async () => {
+    const { dir, store } = writableStore();
+    // The two-code-unit configured value expands to four stored characters.
+    // Filtering on raw length would omit it before the NFKC-aware comparison.
+    const compatibilitySecret = "ﬃx";
+    expect(compatibilitySecret).toHaveLength(2);
+    expect(compatibilitySecret.normalize("NFKC")).toBe("ffix");
+
+    const { result } = await callRemember(
+      store,
+      "The compact credential is ffix.",
+      { TEST_API_KEY: compatibilitySecret },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(dailyContent(dir)).toBe("");
+  });
+
   it("does not treat a credential NAME reference as a credential value", async () => {
     // `*_ENV` holds the name of a variable, never a secret, mirroring the
     // env/path carve-out that secretBearingPointer already applies.
@@ -300,11 +318,14 @@ describe("Remember tool — credential-shape precision", () => {
     expect(dailyContent(dir)).toBe("");
   });
 
-  it("refuses a short HTTP Basic credential", async () => {
-    // `Basic dXNlcjpwYXNz` decodes to user:pass and is only 12 characters, so a
-    // length floor cannot separate it from prose — the payload is decoded.
+  it.each([
+    ["one-character username and password", Buffer.from("a:b").toString("base64")],
+    ["Unicode username and password", Buffer.from("ü:päss").toString("base64")],
+    ["a legacy single-byte username", Buffer.from([0xfc, 0x3a, 0x70, 0x61, 0x73, 0x73]).toString("base64")],
+  ])("refuses an HTTP Basic credential with %s", async (_label, encoded) => {
+    // A length floor cannot separate Basic credentials from prose, and valid
+    // RFC 7617 credentials are byte sequences, not necessarily UTF-8.
     const { dir, store } = writableStore();
-    const encoded = Buffer.from("user:pass").toString("base64");
     const { result } = await callRemember(store, `The header is Basic ${encoded}`);
     expect(result.isError).toBe(true);
     expect(dailyContent(dir)).toBe("");

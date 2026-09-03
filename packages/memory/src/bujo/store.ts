@@ -568,6 +568,15 @@ export class BujoMemoryStore implements MemoryStore {
           if (located !== undefined && located.bullet.text !== stored) {
             throw new Error(`memory-bujo: remembered memory ${bulletId} conflicts with its canonical text.`);
           }
+          if (
+            located !== undefined
+            && (located.bullet.status === "dropped" || located.bullet.status === "invalidated")
+          ) {
+            throw new Error(
+              `memory-bujo: "${stored}" was explicitly forgotten (${located.bullet.status}) and is not re-storable; `
+              + "restore it through the memory CLI rather than remembering it again.",
+            );
+          }
           abortSignal.throwIfAborted();
           const bullet: Bullet = located?.bullet ?? {
             id: bulletId,
@@ -631,11 +640,9 @@ export class BujoMemoryStore implements MemoryStore {
               this.db.upsertLexical(record);
             }
           } catch (error) {
-            if (located !== undefined && bytesWritten === 0 && this.db.get(recordId) === undefined) {
-              // Nothing new became durable in this call and the projection did
-              // not land, so the caller may still treat it as a plain failure.
-              throw error;
-            }
+            // The canonical fact is durable whether this invocation appended it
+            // or recovered it. State, not per-call byte delta, determines what
+            // callers may truthfully report after projection fails.
             throw new MemoryRememberPartialWriteError(relativePath, error);
           }
           return {
@@ -1480,6 +1487,11 @@ function assertNoShadowedLegacyDailyFile(root: string, when: Date): void {
   if (legacy === undefined) return;
   const modern = readCanonicalFileSnapshot(root, `daily/${day}.md`, { allowMissing: true });
   if (modern !== undefined) return;
+  const legacyBody = legacy.content.trim();
+  // A migration can leave an empty placeholder (or just its canonical date
+  // heading) behind. There is no fact for a new modern file to hide in that
+  // case, so refusing the write would be a false data-safety failure.
+  if (legacyBody.length === 0 || legacyBody === `# ${day}`) return;
   throw new Error(
     `memory-bujo: ${day}.md still uses the root-level legacy layout; remembering a fact would create `
     + `daily/${day}.md and hide it from the next rebuild. Migrate that file into daily/ first.`,

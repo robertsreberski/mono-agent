@@ -54,6 +54,11 @@ const REMEMBER_POLICY_NAMES = [
   `mcp__${MEMORY_REMEMBER_MCP_SERVER_NAME}__*`,
 ] as const;
 
+/** Whether a policy entry names the app-owned Remember surface. */
+export function isRememberToolPolicyName(name: string): boolean {
+  return REMEMBER_POLICY_NAMES.some((candidate) => candidate === name);
+}
+
 /**
  * Durable memory writes follow the normal app-owned allow/deny boundary.
  *
@@ -64,10 +69,10 @@ const REMEMBER_POLICY_NAMES = [
 export function isRememberToolAllowed(policy: RememberPolicy | undefined): boolean {
   const allowed = policy?.allowedTools ?? [];
   const denied = policy?.disallowedTools ?? [];
-  if (denied.includes("*") || REMEMBER_POLICY_NAMES.some((name) => denied.includes(name))) {
+  if (denied.includes("*") || denied.some(isRememberToolPolicyName)) {
     return false;
   }
-  return allowed.includes("*") || REMEMBER_POLICY_NAMES.some((name) => allowed.includes(name));
+  return allowed.includes("*") || allowed.some(isRememberToolPolicyName);
 }
 
 const REMEMBER_INPUT = {
