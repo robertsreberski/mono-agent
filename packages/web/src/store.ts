@@ -599,14 +599,40 @@ export class WebStore {
     this.database.close();
   }
 
+  /**
+   * Persist the discovered agent list. Returns whether the change is worth
+   * telling clients about.
+   *
+   * `updatedAt` is a heartbeat timestamp that moves on every discovery poll, so
+   * comparing it made this return `true` roughly once every five seconds --- and
+   * `agents.changed` carries the whole agent list, every model, every model
+   * option and every provider. Measured against a 67-agent fleet that was 60 KB
+   * per event and 99.5% of all SSE traffic: ~42 MiB/hour to an idle console with
+   * nobody using it, which is a real cost on a metered phone.
+   *
+   * So the two questions are separated. Any difference at all is still written,
+   * because the store should hold the freshest heartbeat; only a difference that
+   * survives normalizing `updatedAt` is broadcast. Nothing in the console reads
+   * an agent's `updatedAt` --- it stays on the wire for clients that want it, it
+   * just no longer triggers a fleet-sized frame on its own. `agentGeneration()`
+   * already excludes it for the same reason.
+   */
   replaceAgents(agents: readonly WebAgentSummary[]): boolean {
     const current = this.listAgents();
     const currentById = new Map(current.map((agent) => [agent.sourceId, agent]));
     const incomingIds = new Set(agents.map((agent) => agent.sourceId));
-    const changed = agents.some((agent) => {
+    const departed = current.some((agent) => !incomingIds.has(agent.sourceId) && agent.status !== "offline");
+    const differs = (agent: WebAgentSummary, ignoreHeartbeat: boolean): boolean => {
       const prior = currentById.get(agent.sourceId);
-      return prior === undefined || !isDeepStrictEqual(prior, { ...agent, pinned: prior.pinned });
-    }) || current.some((agent) => !incomingIds.has(agent.sourceId) && agent.status !== "offline");
+      if (prior === undefined) return true;
+      // `pinned` is store-owned and never arrives from discovery; normalizing it
+      // keeps a locally pinned agent from looking like an incoming change.
+      const next = { ...agent, pinned: prior.pinned };
+      if (!ignoreHeartbeat) return !isDeepStrictEqual(prior, next);
+      return !isDeepStrictEqual({ ...prior, updatedAt: "" }, { ...next, updatedAt: "" });
+    };
+    const changed = agents.some((agent) => differs(agent, false)) || departed;
+    const notable = agents.some((agent) => differs(agent, true)) || departed;
     if (!changed) return false;
     this.transaction(() => {
       this.database.prepare("UPDATE agents SET status = 'offline'").run();
@@ -652,7 +678,7 @@ export class WebStore {
         );
       }
     });
-    return true;
+    return notable;
   }
 
   listAgents(): WebAgentSummary[] {

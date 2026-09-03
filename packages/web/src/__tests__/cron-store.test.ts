@@ -108,6 +108,37 @@ function insertLegacyRunningTurn(database: DatabaseSync, threadId: string, id: s
   `).run(assistantMessageId, threadId, id, at, at);
 }
 
+describe("WebStore agent broadcast suppression", () => {
+  it("persists a heartbeat-only refresh without reporting it as worth broadcasting", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+
+    expect(store.replaceAgents([agent()])).toBe(true);
+
+    // Only `updatedAt` moved. `agents.changed` carries the entire agent list, so
+    // returning true here rebroadcasts every model and provider of every agent
+    // on each five-second discovery poll. The store must still take the fresher
+    // timestamp; it just must not call it newsworthy.
+    const beat = { ...agent(), updatedAt: "2026-08-14T10:00:05.000Z" };
+    expect(store.replaceAgents([beat])).toBe(false);
+    expect(store.listAgents()[0]?.updatedAt).toBe("2026-08-14T10:00:05.000Z");
+
+    // A real change still broadcasts, even when the heartbeat moves with it —
+    // otherwise suppression would swallow the update it rode in on.
+    const real = {
+      ...agent(),
+      updatedAt: "2026-08-14T10:00:10.000Z",
+      models: ["provider/default", "provider/added"],
+    };
+    expect(store.replaceAgents([real])).toBe(true);
+    expect(store.listAgents()[0]?.models).toEqual(["provider/default", "provider/added"]);
+
+    // A vanished agent is newsworthy on its own, with no summary to compare.
+    expect(store.replaceAgents([])).toBe(true);
+  });
+});
+
 describe("WebStore first-class cron channels", () => {
   it("returns a cron-specific read-only error while preserving offline errors for ordinary threads", async () => {
     const base = await temporaryRoot();
