@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
+import { MAX_INFO_BODY_BYTES } from "@mono-agent/agent-contracts";
 import type { TuiAdapterConfig } from "@mono-agent/operator-adapter";
 import { OperatorClient } from "@mono-agent/web";
 
@@ -137,5 +138,88 @@ describe("/v1/info over the real producer -> consumer wire", () => {
     expect(sentProviderIds).toContain(longId);
     // Nothing the producer put inside the window is discarded on arrival.
     expect(info.providers?.map((provider) => provider.id)).toEqual(sentProviderIds);
+  });
+
+  /** One `/v1/info` read with a single configured OpenRouter fallback of `refBytes`. */
+  async function probeConfiguredRoute(refBytes: number) {
+    const model = "m".repeat(refBytes);
+    const { info, bodyBytes } = await readInfoOverTheWire({
+      fallbackModels: [{ provider: "openrouter", model }],
+    });
+    return {
+      refBytes,
+      bodyBytes,
+      present: info.models?.includes(`openrouter:${model}`) === true,
+      // The fence sheds WHOLE fields. `models` present but missing this route
+      // can only be the PRODUCER having adjudicated it away.
+      modelsShed: info.models === undefined,
+    };
+  }
+
+  /**
+   * Bytes of headroom left below the shared cap by the largest probe, so the
+   * sweep's top rung is unambiguously inside the cap rather than balanced on it.
+   */
+  const PROBE_HEADROOM_BYTES = 1024;
+
+  it("never drops a valid configured route from a body that fits, at any size", async () => {
+    // A test pinned to one size is how this defect survived two review rounds:
+    // round 3 bounded the model projection and dropped a valid route, round 4
+    // kept the rule and raised the constant from 128 KiB to 512 KiB, and the
+    // test it shipped with — one 70,000-byte ref — went green while the next
+    // size along still lost the route. So no size here is a fixture.
+    //
+    // Two small probes measure what the REAL producer charges per byte of ref,
+    // and the largest ref whose COMPLETE body still fits the one bound both
+    // halves share is extrapolated from that. Neither measurement asks the
+    // producer whether it admitted anything, so the oracle cannot be fooled by
+    // the behaviour under test. The sweep then runs in eighths up to that edge,
+    // which is what makes it unsatisfiable by a bigger constant: any slice below
+    // the cap fails the top rungs, and a slice at the cap can no longer reject
+    // anything the fence would have accepted.
+    const near = await probeConfiguredRoute(1_000);
+    const far = await probeConfiguredRoute(100_000);
+    // Calibration must itself have shipped, or the slope below is meaningless.
+    expect([near.present, far.present]).toEqual([true, true]);
+    const bytesPerRefByte = (far.bodyBytes - near.bodyBytes) / (far.refBytes - near.refBytes);
+    // A ref rides the wire twice: once in `models`, once as a `modelOptions` key.
+    expect(bytesPerRefByte).toBeGreaterThanOrEqual(2);
+
+    const largestFittingRef = far.refBytes + Math.floor(
+      (MAX_INFO_BODY_BYTES - far.bodyBytes - PROBE_HEADROOM_BYTES) / bytesPerRefByte,
+    );
+    const probes = [near, far];
+    for (let eighth = 1; eighth <= 8; eighth += 1) {
+      probes.push(await probeConfiguredRoute(Math.floor((largestFittingRef * eighth) / 8)));
+    }
+
+    // Every probe fits by construction, so the fence never had to fire...
+    expect(probes.filter((probe) => probe.modelsShed)).toEqual([]);
+    // ...and every probe must therefore have carried its route.
+    expect(probes.filter((probe) => !probe.present)).toEqual([]);
+    // And carried it on the wire, not merely in a body the fence had emptied:
+    // each response is at least as large as the two copies of the ref it holds.
+    expect(probes.filter((probe) => probe.bodyBytes <= probe.refBytes * 2)).toEqual([]);
+    // The sweep really did reach the edge of the shared cap, so there is no room
+    // left under it for a producer-side slice to have been the deciding bound.
+    const edge = probes.at(-1);
+    expect(edge?.bodyBytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
+    expect(edge?.bodyBytes).toBeGreaterThan(MAX_INFO_BODY_BYTES - PROBE_HEADROOM_BYTES * 4);
+  });
+
+  it("leaves what genuinely cannot ship to the fence, not to a producer budget", async () => {
+    // Twice the shared cap in a single ref: this one truly cannot go out whole.
+    const model = "m".repeat(MAX_INFO_BODY_BYTES * 2);
+    const { info, bodyBytes } = await readInfoOverTheWire({
+      fallbackModels: [{ provider: "openrouter", model }],
+    });
+
+    // The fence sheds whole optional fields, so the console sees `models` gone
+    // — never a `models` list quietly missing one authored route while the
+    // routes the producer preferred are still in it.
+    expect(info.models).toBeUndefined();
+    expect(bodyBytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
+    // Degraded, not offline: the liveness half of the body still answers.
+    expect(info.schema).toBe(1);
   });
 });

@@ -32,18 +32,18 @@ export const MAX_PAGE_SIZE = 200;
  * Producer-side length bounds for the CATALOG's own projections
  * (`listProviders`/`listModels`/`searchModels`/`resolve`). Provider ids, model
  * ids and display names are not length-bounded by config validation, and both
- * `/v1/info` and a `/v1/models` page have a body cap to respect: exceeding
- * `/v1/info`'s single 1 MiB cap fails `info()` wholesale and shows the agent
- * OFFLINE rather than degraded, and an over-cap page 500s instead of serving.
- * Oversized entries are skipped rather than truncated, because a truncated id
- * would not resolve anyway.
+ * `/v1/info` and a `/v1/models` page have a body cap to respect: an over-cap
+ * `/v1/models` page 500s instead of serving, and an over-cap `/v1/info` body
+ * costs the console a whole field at `sendBoundedInfo`'s fence. Oversized
+ * entries are skipped rather than truncated, because a truncated id would not
+ * resolve anyway.
  *
  * These are display/paging bounds, NOT validity bounds: the runtime reference
  * parser imposes no length limit, so a 257-byte model id is genuinely runnable
  * and merely unpageable. `/v1/info.models` deliberately does not inherit them
- * (see `MAX_INFO_MODEL_BYTES` in `channel-drivers/tui.ts`) — reusing them there
- * deleted runnable models from schema-1 clients at a wire schema that cannot be
- * bumped.
+ * (see the `/v1/info` budget note in `channel-drivers/tui.ts`) — reusing them
+ * there deleted runnable models from schema-1 clients at a wire schema that
+ * cannot be bumped.
  *
  * PROVIDER ids and labels are bounded by the shared wire contract instead
  * (`MAX_INFO_PROVIDER_ID_BYTES`/`..._LABEL_BYTES` in `@mono-agent/agent-contracts`),

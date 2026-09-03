@@ -1,6 +1,10 @@
 import {
   AgentResponseCancelledError,
   frameFeedingMessageStream,
+  MAX_INFO_BODY_BYTES,
+  MAX_INFO_PROVIDER_ID_BYTES,
+  MAX_INFO_PROVIDER_ITEMS,
+  MAX_INFO_PROVIDER_LABEL_BYTES,
   parseAgentStreamFrame,
   type AgentMessageStream,
   type AgentRequestBase,
@@ -21,6 +25,11 @@ export interface RemoteAgentResponderOptions {
  * Bounded provider summary from `/v1/info` — mirrors the operator-adapter's
  * `TuiProviderInfo` without importing it, so the TUI stays dependency-free.
  * Older agents that omit `providers` degrade to the flat model shortlist.
+ *
+ * The BOUNDS are not mirrored: they come from `@mono-agent/agent-contracts`, the
+ * one place the producer and both consumers read them from. A local copy here
+ * is how the console showed 64 vendors for the same agent this client showed 71
+ * of — two clients disagreeing about one wire, with no error to explain it.
  */
 export interface RemoteProviderInfo {
   readonly id: string;
@@ -80,7 +89,13 @@ export class RemoteAgentResponder implements AgentResponder {
     providers?: readonly RemoteProviderInfo[];
   }> {
     const response = await this.request(`${this.baseUrl}/v1/info`, { headers: this.headers(false) });
-    const body = (await response.json()) as {
+    // Read under the SHARED cap rather than `response.json()`. `/v1/info` is
+    // polled for the life of the session, and the producer's own fence
+    // guarantees a body at or under `MAX_INFO_BODY_BYTES`; a body over it is
+    // either not this contract or an agent bounded nowhere else either, and
+    // either way buffering it whole is an unbounded allocation per poll. The
+    // console's `OperatorClient` already reads to exactly this bound.
+    const body = JSON.parse(await readBoundedInfoBody(response)) as {
       schema: number;
       pid?: number;
       label?: string;
@@ -209,6 +224,34 @@ export class RemoteAgentResponder implements AgentResponder {
   }
 }
 
+/**
+ * Buffer a `/v1/info` response under {@link MAX_INFO_BODY_BYTES}, failing as
+ * soon as the stream passes it rather than after the whole body has landed.
+ */
+async function readBoundedInfoBody(response: globalThis.Response): Promise<string> {
+  if (response.body === null) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_INFO_BODY_BYTES) {
+        throw new RemoteAgentResponderError(
+          `Agent /v1/info body exceeds the ${String(MAX_INFO_BODY_BYTES)}-byte wire limit.`,
+          "info_too_large",
+        );
+      }
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total).toString("utf8");
+}
+
 function assertRemoteFrameSize(frame: string): void {
   if (Buffer.byteLength(frame, "utf8") <= MAX_REMOTE_FRAME_BYTES) return;
   throw new RemoteAgentResponderError(
@@ -265,6 +308,11 @@ function parseProviders(value: unknown): readonly RemoteProviderInfo[] | undefin
   }
   const result: RemoteProviderInfo[] = [];
   for (const raw of value) {
+    // The item cap is a PREFIX window, and the producer knows its size: it
+    // orders the providers its own routes use into the front of the list
+    // precisely so this cut cannot reach them. Reading from any other order —
+    // sorting, filtering or reversing before this loop — throws that away.
+    if (result.length >= MAX_INFO_PROVIDER_ITEMS) break;
     if (typeof raw !== "object" || raw === null) {
       continue;
     }
@@ -272,12 +320,17 @@ function parseProviders(value: unknown): readonly RemoteProviderInfo[] | undefin
     if (typeof entry.id !== "string" || entry.id.length === 0 || typeof entry.label !== "string" || typeof entry.modelCount !== "number") {
       continue;
     }
+    if (Buffer.byteLength(entry.id, "utf8") > MAX_INFO_PROVIDER_ID_BYTES) {
+      continue;
+    }
     if (entry.source !== "builtin" && entry.source !== "custom" && entry.source !== "discovered") {
       continue;
     }
     const parsed: RemoteProviderInfo = {
       id: entry.id,
-      label: entry.label,
+      // An over-long label costs the label, never the provider: the id alone
+      // still selects a working route.
+      label: Buffer.byteLength(entry.label, "utf8") > MAX_INFO_PROVIDER_LABEL_BYTES ? entry.id : entry.label,
       modelCount: entry.modelCount,
       ...(typeof entry.totalModelCount === "number" ? { totalModelCount: entry.totalModelCount } : {}),
       source: entry.source,

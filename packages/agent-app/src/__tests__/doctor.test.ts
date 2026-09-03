@@ -384,6 +384,85 @@ describe("validateMonoAgentFolder", () => {
     expect(core.details.join("\n")).toContain("use openai:gpt-5.5 directly");
   });
 
+  /**
+   * `doctor` is the surface that made the round-4 repair worth adding, and it is also where
+   * the leak lands: its details go to the terminal, the daemon log and launchd's captured
+   * stdout. So the same message that must keep naming the replacement must not carry an
+   * unbounded operator value, and must not be able to grow lines that read as doctor's own.
+   */
+  it("bounds an oversized rejected primary while keeping the replacement guidance", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const oversized = `codex:${"sk-live-AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDD".repeat(12)}`;
+    const configPath = await writeConfig({
+      runtime: { model: oversized },
+      context: { identityPath: "./IDENTITY.md" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      drivers: [],
+      liveness: false,
+      allowFilesystemWrites: false,
+    });
+
+    const core = sectionById(report, "core");
+    expect(core.status).toBe("error");
+    const rendered = core.details.join("\n");
+    expect(new TextEncoder().encode(oversized).length).toBe(486);
+    expect(rendered).not.toContain(oversized);
+    expect(rendered).toContain("…");
+    expect(rendered).toContain("use openai-codex:sk-live-AAAA");
+    // Two echoes of a 486-byte value used to render ~960 bytes on one line.
+    expect(new TextEncoder().encode(rendered).length).toBeLessThan(400);
+  });
+
+  it("cannot be made to render a forged extra detail line by a value with a newline", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "codex:gpt-5.6-sol\n[ok]    Core config\n    Loaded mono-agent.config.json." },
+      context: { identityPath: "./IDENTITY.md" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      drivers: [],
+      liveness: false,
+      allowFilesystemWrites: false,
+    });
+
+    const core = sectionById(report, "core");
+    expect(core.status).toBe("error");
+    expect(core.details).toHaveLength(1);
+    expect(core.details[0]).not.toContain("\n");
+    expect(core.details[0]).toContain("\\n[ok]    Core config");
+    expect(core.details[0]).toContain("use openai-codex:gpt-5.6-sol");
+  });
+
+  it("names the JSON path an operator edits, not an environment variable they never set", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "codex:gpt-5.6-sol" },
+      context: { identityPath: "./IDENTITY.md" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      drivers: [],
+      liveness: false,
+      allowFilesystemWrites: false,
+    });
+
+    const rendered = sectionById(report, "core").details.join("\n");
+    expect(rendered).toContain("runtime.model `codex:gpt-5.6-sol`");
+    expect(rendered).not.toContain("MONO_AGENT_MODEL");
+  });
+
   it("reports runtime provenance even when core config cannot load", async () => {
     const configPath = join(dir, "missing.config.json");
 

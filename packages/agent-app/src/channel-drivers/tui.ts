@@ -2,7 +2,7 @@ import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import type { AgentMessageStream, ProcessJobOperator } from "@mono-agent/agent-contracts";
-import { MAX_INFO_PROVIDER_ITEMS } from "@mono-agent/agent-contracts";
+import { MAX_INFO_BODY_BYTES, MAX_INFO_PROVIDER_ITEMS } from "@mono-agent/agent-contracts";
 import { resolveConfiguredProviders } from "@mono-agent/config";
 
 import type {
@@ -37,7 +37,7 @@ import type { ChannelDriver, ChannelStartInput, RunningChannel } from "../channe
 import { agentAppPackageVersion } from "../package-version.js";
 import { buildProviderModelCatalog } from "../provider-model-catalog.js";
 import { configuredRuntimeModels } from "../runtime-routes.js";
-import { createSkillRegistryMonitor } from "../skill-registry.js";
+import { createSkillRegistryMonitor, MAX_SKILL_REGISTRY_BYTES } from "../skill-registry.js";
 import type { CronOperatorRegistry } from "../cron-operator-service.js";
 
 type TuiAdapterModule = typeof import("@mono-agent/operator-adapter");
@@ -66,51 +66,72 @@ export interface TuiChannelOverrides {
 /**
  * Producer-side payload budgets for `/v1/info`.
  *
- * `/v1/info` shares ONE 1 MiB body cap (`MAX_INFO_BODY_BYTES`, enforced in
- * `@mono-agent/web`'s operator client) across every field it carries. A body
- * over that cap does not degrade: `info()` rejects it wholesale and the console
- * shows the agent OFFLINE, on a 5 s poll, behind a debug-level log. Every
- * contributor therefore gets an explicit slice, and they sum under the cap:
+ * `/v1/info` shares ONE 1 MiB body cap ({@link MAX_INFO_BODY_BYTES}) across
+ * every field it carries, and `sendBoundedInfo` in the operator adapter is what
+ * enforces it: it measures the exact string it is about to send, sheds whole
+ * optional fields largest-first, logs the shed at error level, and falls back to
+ * a fixed liveness body. That fence is TOTAL — no body leaves this process over
+ * the cap whatever these numbers say — so the fence, and only the fence, is what
+ * decides that something genuinely cannot ship.
  *
- *     models + modelOptions   512 KiB      providers    128 KiB
- *     skills                  256 KiB      caps/misc     64 KiB
- *                                       -> 960 KiB total, 64 KiB headroom
+ * What a budget HERE is for is bounding the AGGREGATE growth of a contributor
+ * whose size nobody authored, so one such contributor cannot flood the body and
+ * cost an unrelated field its place at the fence:
  *
- * `skills` is enforced by `MAX_SKILL_REGISTRY_BYTES` in `skill-registry.ts`;
- * `models`/`modelOptions`/`providers` are enforced here, at the only place the
- * projections are built. The caps/misc slice is not separately enforced: the
- * `schema`/`pid`/`capabilities` half of the body is a fixed shape carrying no
- * operator-authored data beyond a short cron status, so 64 KiB is headroom, not
- * a budget anything can spend. `sendBoundedInfo` in the operator adapter is the
- * last-resort fence behind all of them, so that the PRODUCER, not the consumer,
- * is what keeps an agent online.
+ *     discovered model refs   384 KiB  advisory: whatever a local endpoint said
+ *     provider summary        128 KiB  advisory tail behind the declared vendors
+ *     skills                  256 KiB  `MAX_SKILL_REGISTRY_BYTES`, skill-registry.ts
  *
- * What a budget is FOR bounds how it may be spent. It exists so one field
- * cannot starve another and so the total stays under the wire cap — it is not
- * an opinion about which content deserves to ship. Splitting `models` into a
- * 128 KiB configured half and a 384 KiB discovered half broke that rule: the
- * model-reference grammar has no length bound, so a single VALID 70,000-byte
- * fallback cost ~140 KB across the two projections, overran the configured
- * half, and was dropped — from a body that would have totalled 140,731 bytes,
- * under a seventh of the cap. The TUI never calls `/v1/models` and rebuilds its
- * picker from `info.models` alone, so that was an unselectable primary or
+ * Configured routes get NO budget here, and that is the correction to a defect
+ * this file carried through three review rounds. A budget is not an opinion
+ * about which content deserves to ship, and a fixed per-contributor slice
+ * becomes exactly that the moment one VALID item is bigger than the slice.
+ * Round 3 bounded the model projection at 128 KiB and dropped a valid
+ * configured fallback; round 4 kept the rule and raised the constant to
+ * 512 KiB, and a valid 270,000-byte OpenRouter fallback was still dropped —
+ * from a body that would have been 540,778 bytes against a 1,048,576-byte cap.
+ * The model-reference grammar has no length bound, so no constant is the right
+ * one; the shape was wrong. Dropping an authored route served neither purpose a
+ * budget has (the body fit, and nothing was being starved), and it cost real
+ * function: the TUI never calls `/v1/models` and rebuilds its picker from
+ * `info.models` alone, so a withheld route is an unselectable primary or
  * fallback in the operator's own console.
  *
- * So `models` and `modelOptions` share ONE slice. Configured routes have first
- * claim on all of it (they are the operator's declared routes; a route the
- * picker cannot offer is a route nobody can run), and discovered refs then take
- * up to {@link MAX_DISCOVERED_INFO_MODEL_BYTES} more without ever pushing the
- * pair past the slice. Advisory local discovery therefore still cannot flood
- * the body, and an authored route is never dropped to reserve room for it.
+ * So every configured route is admitted, and a result that cannot fit is the
+ * fence's call, made loudly. Advisory discovery then spends its own aggregate
+ * budget on top — but never room the body no longer has
+ * ({@link INFO_NON_MODEL_RESERVE_BYTES}) — so discovery can never be the reason
+ * the fence fires.
+ *
+ * The discovery budget is exported because it is the whole contract between
+ * authored routes and advisory content, and a test that keeps its own copy of a
+ * constant cannot notice that constant changing.
  */
-const MAX_INFO_MODEL_BYTES = 512 * 1024;
-const MAX_DISCOVERED_INFO_MODEL_BYTES = 384 * 1024;
+export const MAX_DISCOVERED_INFO_MODEL_BYTES = 384 * 1024;
 const MAX_INFO_PROVIDER_BYTES = 128 * 1024;
 
 /**
+ * Room the model projections leave for the rest of the body when deciding how
+ * much ADVISORY discovery may spend.
+ *
+ * Reserving against the other contributors' own budgets is sound here precisely
+ * because it constrains discovery alone: no authored content is ever measured
+ * against it, so a conservative reserve costs at worst a few discovered refs
+ * nobody declared. Measuring the real rest-of-body instead is not available —
+ * `skills` is re-snapshotted per request while these projections are resolved
+ * once at start — and it is not needed, because the fence measures the real
+ * thing.
+ *
+ * The trailing 64 KiB covers the `schema`/`pid`/`capabilities` half of the
+ * body: a fixed shape carrying no operator-authored data beyond a short cron
+ * status, so it is headroom rather than a budget anything can spend.
+ */
+const INFO_NON_MODEL_RESERVE_BYTES = MAX_INFO_PROVIDER_BYTES + MAX_SKILL_REGISTRY_BYTES + 64 * 1024;
+
+/**
  * JSON framing each projection costs before a single entry is admitted, charged
- * once per budget exactly as `boundSkillItems` (`skill-registry.ts`) charges
- * its prefix and suffix.
+ * once against the running total exactly as `boundSkillItems`
+ * (`skill-registry.ts`) charges its prefix and suffix.
  */
 const INFO_MODEL_FRAME_BYTES = Buffer.byteLength('"models":[],"modelOptions":{},', "utf8");
 const INFO_PROVIDER_FRAME_BYTES = Buffer.byteLength('"providers":[],', "utf8");
@@ -121,9 +142,10 @@ interface InfoModelProjection {
   readonly options: Record<string, TuiModelOption>;
   /**
    * Serialized bytes already committed to `models` + `modelOptions`, carried
-   * ACROSS admission passes. One running total is what makes the slice shared:
-   * a per-pass counter is how the configured half came to be independently
-   * capped, and it cannot express "first claim on the whole slice".
+   * ACROSS admission passes. One running total is what lets the discovery pass
+   * see what the configured pass already spent: a per-pass counter cannot
+   * express "advisory refs may not spend room the body no longer has", which is
+   * the only thing either pass is still bounded by.
    */
   bytes: number;
 }
@@ -156,20 +178,25 @@ function infoModelEntryBytes(key: string, option: TuiModelOption | undefined): n
 }
 
 /**
- * Admit refs into the `/v1/info` model projections until `budgetBytes` is
- * exhausted, measuring each candidate's materialized payload.
+ * Admit refs into the `/v1/info` model projections, measuring each candidate's
+ * materialized payload against the running total.
  *
- * `continue`, not `break`: one pathological entry must cost only itself. The
- * TUI never calls `/v1/models` — there is no call site under `packages/tui/`,
- * and `applyAgentInfo` builds the model picker from `/v1/info.models` alone —
- * so a ref withheld here is UNSELECTABLE, not merely un-paginated. Breaking
- * would delete every runnable ref sitting behind one oversized row.
+ * `budgetBytes` is a ceiling on that RUNNING TOTAL and it is OPTIONAL. Omitting
+ * it admits every ref, which is what configured routes get: see the budget note
+ * above — the fence adjudicates an oversized body, this function does not.
+ *
+ * `continue`, not `break`, where a ceiling does apply: one pathological entry
+ * must cost only itself. The TUI never calls `/v1/models` — there is no call
+ * site under `packages/tui/`, and `applyAgentInfo` builds the model picker from
+ * `/v1/info.models` alone — so a ref withheld here is UNSELECTABLE, not merely
+ * un-paginated. Breaking would delete every runnable ref sitting behind one
+ * oversized row.
  */
 function admitInfoModels(
   refs: readonly RuntimeModelReference[],
   describe: (ref: RuntimeModelReference) => TuiModelOption | undefined,
-  budgetBytes: number,
   into: InfoModelProjection,
+  budgetBytes: number = Number.POSITIVE_INFINITY,
 ): void {
   for (const ref of refs) {
     const key = modelReferenceKey(ref);
@@ -204,6 +231,12 @@ function admitInfoModels(
  * case that needs it: a catalog that fits both the slice and the window is
  * emitted exactly as the catalog built it, frozen identity included, because
  * `/v1/info` is polled every 5 s and hands back the very same object each time.
+ *
+ * Unlike the model projections, an aggregate slice is the right shape HERE: one
+ * entry's id and label are bounded by the shared wire contract
+ * (`MAX_INFO_PROVIDER_ID_BYTES`/`..._LABEL_BYTES`), so no single valid provider
+ * can be larger than the slice and the cut can only ever fall on the advisory
+ * tail — never on a route provider, which is admitted first.
  */
 function projectInfoProviders(
   providers: readonly TuiProviderInfo[],
@@ -373,10 +406,11 @@ export function createTuiChannelDriver(
       // deleted a runnable model from every schema-1 client — subtractive at a
       // schema that cannot be bumped (`TUI_WIRE_SCHEMA` is compared with `!==`).
       // What genuinely must stay bounded is the ONE 1 MiB body `/v1/info` shares
-      // across every field: over it, `info()` fails wholesale and the agent shows
-      // OFFLINE rather than degraded. So the only reasons a discovered ref is
-      // withheld here are that it names nothing a turn could route to (it does
-      // not parse), or that it no longer fits the budget.
+      // across every field, and `sendBoundedInfo` is what enforces it. So the
+      // only reasons a DISCOVERED ref is withheld here are that it names nothing
+      // a turn could route to (it does not parse), or that advisory discovery
+      // has spent its aggregate budget. A configured route is withheld for
+      // neither reason: see the budget note at the top of this file.
       const discoveredRefs: RuntimeModelReference[] = [];
       for (const model of discoveredModels) {
         try {
@@ -390,12 +424,6 @@ export function createTuiChannelDriver(
       // 5s per connected console, and a throwing or slow info provider returns
       // 500 for the WHOLE response — showing the agent offline rather than
       // degraded. Neither projection may run per request.
-      //
-      // Configured routes and discovered refs draw on SEPARATE budgets: a
-      // configured route is authored, a discovered one is whatever a local
-      // endpoint happened to report, and neither may starve the other. Both are
-      // charged their measured serialized size, and the configured half goes
-      // first so an authored route keeps its place in the picker.
       const describeModelOption = (ref: RuntimeModelReference): TuiModelOption | undefined =>
         catalog.describe([ref])[modelReferenceKey(ref)];
       const projection: InfoModelProjection = {
@@ -404,16 +432,25 @@ export function createTuiChannelDriver(
         options: {},
         bytes: INFO_MODEL_FRAME_BYTES,
       };
-      // Configured routes first, against the WHOLE slice: an authored route is
-      // withheld only when the slice itself cannot hold it, never to reserve
-      // room for discovery. Discovery then gets its own 384 KiB on top of
-      // whatever they spent, clamped to the slice so the pair stays bounded.
-      admitInfoModels(configuredRefs, describeModelOption, MAX_INFO_MODEL_BYTES, projection);
+      // Every configured route, unconditionally. These are the operator's
+      // declared routes; a route the picker cannot offer is a route nobody can
+      // run, and no producer-side number gets to decide that a valid one is too
+      // big to mention. If the whole body then will not fit, `sendBoundedInfo`
+      // sheds a field and logs it — one loud, visible degradation instead of a
+      // silent hole in the middle of the picker.
+      admitInfoModels(configuredRefs, describeModelOption, projection);
+      // Advisory discovery on top: its own aggregate budget, and never room the
+      // body no longer has. When authored routes have already spent past the
+      // reserve this ceiling sits below the running total and discovery admits
+      // nothing, which is the correct order of yielding.
       admitInfoModels(
         discoveredRefs,
         describeModelOption,
-        Math.min(MAX_INFO_MODEL_BYTES, projection.bytes + MAX_DISCOVERED_INFO_MODEL_BYTES),
         projection,
+        Math.min(
+          projection.bytes + MAX_DISCOVERED_INFO_MODEL_BYTES,
+          MAX_INFO_BODY_BYTES - INFO_NON_MODEL_RESERVE_BYTES,
+        ),
       );
       const infoModelKeys: readonly string[] = Object.freeze(projection.keys);
       const infoModelOptions = Object.freeze(projection.options);
