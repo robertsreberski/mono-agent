@@ -43,6 +43,30 @@ async function withRawInfoBody(
 }
 
 /**
+ * Serve one fixed `/v1/info` response with an arbitrary STATUS, so the client's
+ * non-2xx path can be put in front of a real socket rather than only a double.
+ */
+async function withRawInfoResponse(
+  status: number,
+  body: string,
+  run: (client: RemoteAgentResponder) => Promise<void>,
+): Promise<void> {
+  const { createServer } = await import("node:http");
+  const server = createServer((_request, response) => {
+    response.writeHead(status, { "content-type": "application/json" });
+    response.end(body);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : 0;
+  try {
+    await run(new RemoteAgentResponder({ baseUrl: `http://127.0.0.1:${String(port)}` }));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+/**
  * Round-trip tests against the real operator-adapter TUI server: the client half of the
  * wire contract is exercised against the exact server that agent-app runs.
  */
@@ -320,6 +344,60 @@ describe("RemoteAgentResponder", () => {
       const error = await client.info().then(() => undefined, (caught: unknown) => caught);
       expect(error).toBeInstanceOf(RemoteAgentResponderError);
       expect((error as RemoteAgentResponderError).code).toBe("info_too_large");
+    });
+  });
+
+  it("bounds an oversized NON-2xx body instead of buffering it whole", async () => {
+    // The bounded reader used to sit behind the 2xx check: a non-2xx response
+    // was read with `response.text()`, so the one case a bound exists for — a
+    // hostile or broken peer — was the one case that had no bound. The
+    // adapter's own error responder really did answer 1,052,696 bytes against
+    // this 1,048,576-byte contract, so this body is not a hypothetical.
+    const chunkBytes = 64 * 1024;
+    const totalBytes = 8 * MAX_INFO_BODY_BYTES;
+    let produced = 0;
+    const fetchImpl: typeof fetch = async () => new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (produced >= totalBytes) {
+            controller.close();
+            return;
+          }
+          const size = Math.min(chunkBytes, totalBytes - produced);
+          produced += size;
+          controller.enqueue(new Uint8Array(size).fill(0x45));
+        },
+      }),
+      { status: 500, headers: { "content-type": "application/json" } },
+    );
+
+    const client = new RemoteAgentResponder({ baseUrl: "http://127.0.0.1:1", fetchImpl });
+    const error = await client.info().then(() => undefined, (caught: unknown) => caught);
+
+    // The failure still reads as the HTTP failure it is...
+    expect(error).toBeInstanceOf(RemoteAgentResponderError);
+    expect((error as RemoteAgentResponderError).code).toBe("http_error");
+    expect((error as RemoteAgentResponderError).message).toContain("500");
+    // ...and the client stopped pulling at the shared cap while the peer still
+    // had 7 MiB queued. Counting what the peer was ASKED to produce is the only
+    // honest measure here: asserting on the thrown message alone would pass
+    // just as well while the client buffered every byte. The slack is the
+    // stream's own one-chunk prefetch, not the client's buffer.
+    expect(produced).toBeLessThan(MAX_INFO_BODY_BYTES + 4 * chunkBytes);
+  });
+
+  it("still reports the status and a detail prefix from an oversized error body", async () => {
+    // Bounding must not cost the diagnostic: a clamped read still has to name
+    // the status and echo the head of what the peer said.
+    const body = `{"error":{"message":"Discovery failed: ${"D".repeat(2 * MAX_INFO_BODY_BYTES)}"}}`;
+
+    await withRawInfoResponse(503, body, async (client) => {
+      const error = await client.info().then(() => undefined, (caught: unknown) => caught);
+      expect(error).toBeInstanceOf(RemoteAgentResponderError);
+      expect((error as RemoteAgentResponderError).code).toBe("http_error");
+      const message = (error as RemoteAgentResponderError).message;
+      expect(message).toContain("503");
+      expect(message).toContain("Discovery failed: DDD");
     });
   });
 
