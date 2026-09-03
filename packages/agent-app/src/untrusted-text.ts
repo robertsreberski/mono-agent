@@ -33,10 +33,11 @@ const SECRET_LIKE_VALUE = new RegExp(
     // Telegram bot tokens.
     String.raw`\d{6,12}:[A-Za-z0-9_-]{20,}`,
   ].map((shape) => String.raw`\b${shape}\b`).join("|")
-    // Bearer/Basic carry their own delimiter, so they are matched separately
-    // from the word-bounded shapes above. The payload must look like a token:
-    // `\S{12,}` also matched ordinary prose such as "Basic authentication".
-    + String.raw`|\b(?:Bearer|Basic)\s+[A-Za-z0-9+/._~-]{16,}={0,2}`,
+    // Bearer carries its own delimiter, so it is matched separately from the
+    // word-bounded shapes above. The payload must look like a token: `\S{12,}`
+    // also matched ordinary prose such as "Bearer authentication". Basic is
+    // handled by decoding rather than by length — see containsBasicCredential.
+    + String.raw`|\bBearer\s+[A-Za-z0-9+/._~-]{16,}={0,2}`,
   // Case-insensitive: a lowercase `bearer ` or `akia…` is the same credential.
   "iu",
 );
@@ -89,9 +90,32 @@ export function containsUnsafeReviewControl(value: string): boolean {
   return false;
 }
 
+/**
+ * HTTP Basic payloads are base64 of `user:password`, which is often shorter than
+ * any useful length floor — `Basic dXNlcjpwYXNz` is twelve characters. Decode
+ * the candidate instead: a real pair contains a colon and printable text, while
+ * prose that merely names the scheme ("Basic authentication") does not.
+ */
+const BASIC_SCHEME = /\bBasic\s+([A-Za-z0-9+/]{8,}={0,2})\b/giu;
+
+function containsBasicCredential(value: string): boolean {
+  for (const match of value.matchAll(BASIC_SCHEME)) {
+    const payload = match[1];
+    if (payload === undefined) continue;
+    let decoded: string;
+    try {
+      decoded = Buffer.from(payload, "base64").toString("utf8");
+    } catch {
+      continue;
+    }
+    if (decoded.includes(":") && /^[ -~]+$/u.test(decoded)) return true;
+  }
+  return false;
+}
+
 /** Whether the text carries a value shaped like a well-known credential. */
 export function containsSecretLikeValue(value: string): boolean {
-  return SECRET_LIKE_VALUE.test(value);
+  return SECRET_LIKE_VALUE.test(value) || containsBasicCredential(value);
 }
 
 /**

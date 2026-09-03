@@ -1285,7 +1285,7 @@ function buildPlan(
     // identity outranks a prose sniff: a remembered fact that happens to open
     // with the legacy host-audit wording must not vanish on rebuild.
     if (tier === "bujo"
-      && !isRememberedMemoryId(record.id)
+      && !isRememberedMemoryId(record.id, record.text)
       && isLegacyHostObservation(record.text)) {
       skippedRawRecords += 1;
       continue;

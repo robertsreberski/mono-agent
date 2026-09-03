@@ -287,7 +287,9 @@ describe("BujoMemoryStore.remember — data-safety guards", () => {
     const dir = root("fake-identity");
     const text = "Host-observed completed turn. Not a real remembered fact.";
     const bullet = {
-      id: "RM-not-a-hash",
+      // Hash-SHAPED but not the hash of this text: a shape-only check would
+      // have granted the exemption, so the identity must be self-verifying.
+      id: `RM-${"a".repeat(64)}`,
       type: "note" as const,
       status: "open" as const,
       text,
@@ -302,7 +304,7 @@ describe("BujoMemoryStore.remember — data-safety guards", () => {
 
     const store = storeFor(dir, "bujo", () => FIXED);
     try {
-      expect(store["db"].get("RM-not-a-hash")).toBeUndefined();
+      expect(store["db"].get(`RM-${"a".repeat(64)}`)).toBeUndefined();
     } finally {
       await store.close();
     }

@@ -1,3 +1,4 @@
+import { normalizedContentHash } from "./daily.js";
 import { parseDailyFile } from "./grammar.js";
 import {
   listCanonicalFileNames,
@@ -15,16 +16,15 @@ import type { Bullet } from "./types.js";
 export const REMEMBER_ID_PREFIX = "RM-";
 
 /**
- * Whether this canonical id was minted by an explicit `Remember` write.
+ * Whether this bullet was minted by an explicit `Remember` write.
  *
- * The complete content-hash identity is validated, not just the prefix: a
- * legacy or hand-authored bullet named `RM-anything` must not inherit the
- * rebuild exemption that a real remembered fact gets.
+ * The id must be the content hash OF THIS TEXT, not merely hash-shaped: a
+ * hand-authored `RM-<any 64 hex>` bullet would otherwise inherit the rebuild
+ * exemption that only a genuine remembered fact earns. Deriving the identity
+ * from the text makes the claim self-verifying.
  */
-const REMEMBERED_MEMORY_ID = /^RM-[0-9a-f]{64}$/u;
-
-export function isRememberedMemoryId(id: string): boolean {
-  return REMEMBERED_MEMORY_ID.test(id);
+export function isRememberedMemoryId(id: string, text: string): boolean {
+  return id === `${REMEMBER_ID_PREFIX}${normalizedContentHash(text)}`;
 }
 
 /**
@@ -87,13 +87,9 @@ export function findCanonicalMemoryBullet(
   for (const file of files) {
     // Bound the read itself: checking the total after loading would already
     // have materialized an oversized file into memory under the write locks.
+    // Zero remaining is still at the bound, not over it; a following empty file
+    // costs nothing, so let the bounded read reject only a non-empty one.
     const remainingBytes = MAX_SCANNED_CANONICAL_BYTES - scannedBytes;
-    if (remainingBytes <= 0) {
-      throw new Error(
-        `memory-bujo: canonical source exceeds the ${MAX_SCANNED_CANONICAL_BYTES}-byte duplicate-scan `
-        + "bound; consolidate or archive older files.",
-      );
-    }
     let snapshot;
     try {
       snapshot = readCanonicalFileSnapshot(root, file, { maxBytes: remainingBytes });

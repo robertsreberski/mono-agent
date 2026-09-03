@@ -300,6 +300,16 @@ describe("Remember tool — credential-shape precision", () => {
     expect(dailyContent(dir)).toBe("");
   });
 
+  it("refuses a short HTTP Basic credential", async () => {
+    // `Basic dXNlcjpwYXNz` decodes to user:pass and is only 12 characters, so a
+    // length floor cannot separate it from prose — the payload is decoded.
+    const { dir, store } = writableStore();
+    const encoded = Buffer.from("user:pass").toString("base64");
+    const { result } = await callRemember(store, `The header is Basic ${encoded}`);
+    expect(result.isError).toBe(true);
+    expect(dailyContent(dir)).toBe("");
+  });
+
   it.each([
     ["Basic authentication", "We use Basic authentication for that endpoint."],
     ["Bearer authentication", "Bearer authentication is required there."],
