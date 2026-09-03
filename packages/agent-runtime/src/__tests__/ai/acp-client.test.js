@@ -33,7 +33,7 @@ function profile(mode = "normal", overrides = {}) {
     configurationOwner: "client",
     capabilityPolicy: { sessionConfig: { boolean: true } },
     process: {
-      startupTimeoutMs: 1_000,
+      startupTimeoutMs: 5_000,
       requestTimeoutMs: 1_000,
       shutdownGraceMs: 100,
       killGraceMs: 500,

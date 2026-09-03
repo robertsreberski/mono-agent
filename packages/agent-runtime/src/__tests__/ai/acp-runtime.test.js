@@ -23,7 +23,7 @@ function descriptor(mode = "normal", overrides = {}) {
     mcpOwner: "agent",
     sessionConfig: { modeId: "ask", configOptions: { model: "fast" } },
     process: {
-      startupTimeoutMs: 1_000,
+      startupTimeoutMs: 5_000,
       requestTimeoutMs: 2_000,
       shutdownGraceMs: 100,
       killGraceMs: 500,

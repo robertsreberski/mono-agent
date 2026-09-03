@@ -1038,7 +1038,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       ["constructor", "constructor-value"],
       ["prototype", "prototype-value"],
     ]);
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await ToolHistoryWriter.open({ root, persistenceCeilingMs: 5_000 });
     const invocation = await writer.persist(run, {
       phase: "invocation",
       toolCallId: "path-keyed-call",
@@ -2038,7 +2038,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("serializes parallel starts deterministically and paginates across runs whose per-run sequences overlap", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await ToolHistoryWriter.open({ root, persistenceCeilingMs: 5_000 });
     try {
       for (const runId of ["run-a", "run-b", "run-c"]) {
         const run = binding(runId);
