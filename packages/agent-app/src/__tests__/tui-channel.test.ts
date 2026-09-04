@@ -237,7 +237,7 @@ describe("tui channel driver — info composition", () => {
         schema: "mono-agent.acp-source.v1",
         bridgeVersion: 1,
         protocolVersion: 1,
-        installedVersion: "0.20.13",
+        installedVersion: "0.20.14",
         workspacePath: await realpath("/tmp"),
       },
     });
