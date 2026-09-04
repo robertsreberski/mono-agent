@@ -64,9 +64,10 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
 - `packages/tui`: `@earendil-works/pi-tui` at `0.85.0`. A clean build and
   typecheck do not exercise terminal input/rendering — **verify the console
   interactively** before trusting a TUI bump.
-- Pi 0.85's JSONL v4 store upgrades legacy v3 transcripts during open. Preserve
-  an end-to-end legacy-resume regression test instead of adding a second
-  mono-agent-owned file migration.
+- Pi 0.85's JSONL v4 store reads legacy v3 transcripts during open and writes
+  the upgraded representation when the resumed session next persists a turn.
+  Preserve an end-to-end legacy-resume regression test instead of adding a
+  second mono-agent-owned file migration.
 - A packed consumer should resolve Pi AI `0.85.0` from both the runtime and Pi
   Agent Core. The release guard verifies both resolution paths independently so
   Core's upstream floating range cannot be rewired by a host dependency.

@@ -28,8 +28,12 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import {
   cleanupSessionOnThrow,
+  commitSession,
+  discardUncommittedSession,
   resolveDurableNativeSessionRepo,
+  resolveSession,
   retireDurableNativeSession,
+  rollbackAbortedTurn,
 } from "../../ai/providers/pi-native/session-lifecycle.js";
 import {
   disposeProviderSession,
@@ -127,6 +131,80 @@ describe("pi-native sessions", () => {
     expect(moveTo).toHaveBeenCalledWith("baseline-leaf");
     expect(close).toHaveBeenCalledTimes(1);
     expect(moveTo.mock.invocationCallOrder[0]).toBeLessThan(close.mock.invocationCallOrder[0]);
+  });
+
+  it("releases a claimed liveness entry when reopening its session fails", async () => {
+    const id = `open-failure-${Date.now()}`;
+    const metadata = { id, path: `/tmp/${id}.jsonl` };
+    const rawSession = {
+      metadata,
+      close: vi.fn(async () => undefined),
+    };
+    const repo = {
+      list: vi.fn()
+        .mockResolvedValueOnce([metadata])
+        .mockResolvedValueOnce([]),
+      open: vi.fn().mockRejectedValue(new Error("open failed")),
+      create: vi.fn(async () => rawSession),
+      delete: vi.fn(async () => undefined),
+    };
+    const params = {
+      requestedSessionId: id,
+      providerSessionId: id,
+      durableRepo: repo,
+      sessionTtlMs: undefined,
+      cwd: "/tmp",
+      resolved: { provider: "faux", model: "faux-model", reference: "faux:faux-model" },
+      options: {},
+      events: [],
+      runtimeWarnings: [],
+      start: Date.now(),
+      piTransport: "auto",
+    };
+
+    const failedState = {};
+    await expect(resolveSession(failedState, params)).rejects.toThrow("open failed");
+    expect(failedState.sessionEntry).toBeNull();
+
+    const retryState = {};
+    await expect(resolveSession(retryState, params)).resolves.toEqual({ done: false });
+    expect(repo.list).toHaveBeenCalledTimes(2);
+    expect(repo.create).toHaveBeenCalledTimes(1);
+    await cleanupSessionOnThrow(retryState, { durableRepo: repo });
+  });
+
+  it.each([
+    ["pre-request discard", (runState, repo) => discardUncommittedSession(runState, { durableRepo: repo })],
+    ["lifecycle commit", (runState, repo) => commitSession(runState, {
+      options: { sessionKeepAlive: false },
+      requestedSessionId: null,
+      providerSessionId: "close-failure-commit",
+      durableRepo: repo,
+      sessionTtlMs: undefined,
+      externalAbort: false,
+      errorMessage: null,
+      onEvent: vi.fn(),
+    })],
+    ["final abort rollback", (runState, repo) => rollbackAbortedTurn(runState, {
+      requestedSessionId: null,
+      providerSessionId: "close-failure-abort",
+      durableRepo: repo,
+    })],
+    ["outer throw cleanup", (runState, repo) => cleanupSessionOnThrow(runState, { durableRepo: repo })],
+  ])("%s still deletes a fresh transcript when close rejects", async (_label, cleanup) => {
+    const metadata = { id: "close-failure", path: "/tmp/close-failure.jsonl" };
+    const close = vi.fn().mockRejectedValue(new Error("close failed"));
+    const repo = { delete: vi.fn(async () => undefined) };
+    const runState = {
+      session: { getMetadata: vi.fn(async () => metadata), close },
+      sessionEntry: null,
+      reservation: null,
+      baselineLeafId: null,
+    };
+
+    await expect(cleanup(runState, repo)).resolves.toBeUndefined();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(repo.delete).toHaveBeenCalledWith(metadata, expect.anything());
   });
 
   it("retires every cold duplicate for an exact durable id and treats absence as success", async () => {

@@ -63,6 +63,25 @@ async function invalidateNativeSession(entry) {
   }
 }
 
+/**
+ * Release a Pi session handle and remove its repository record as independent
+ * best-effort operations. A close failure must not prevent deletion of a fresh
+ * or otherwise poisoned transcript.
+ * @param {any} session
+ * @param {any} repo
+ * @param {any} [knownMetadata]
+ */
+async function closeAndDeleteSession(session, repo, knownMetadata) {
+  let metadata = knownMetadata;
+  if (!metadata) {
+    try { metadata = await session.getMetadata(); } catch { /* best-effort */ }
+  }
+  try { await session.close(); } catch { /* best-effort */ }
+  if (metadata) {
+    try { await repo.delete(metadata, PI_CONTEXT); } catch { /* best-effort */ }
+  }
+}
+
 // Live pi-native sessions, keyed by provider session id. Entries are
 // { metadata, repo, durable, busy }. Pi 0.85 sessions are closed after every
 // turn so their repository record can be reopened safely; the registry owns
@@ -367,10 +386,21 @@ export async function resolveSession(runState, {
         };
       }
       runState.sessionEntry = claimed.entry;
-      runState.session = createPiSessionAdapter(await claimed.entry.repo.open(
-        claimed.entry.metadata,
-        PI_CONTEXT,
-      ));
+      try {
+        runState.session = createPiSessionAdapter(await claimed.entry.repo.open(
+          claimed.entry.metadata,
+          PI_CONTEXT,
+        ));
+      } catch (error) {
+        // The claim made this registry entry busy. An open failure means the
+        // entry cannot be driven, so remove its liveness record before
+        // propagating; otherwise every later resume retries the same broken
+        // entry forever. Preserve the durable transcript for a later cold
+        // reopen/recovery attempt.
+        liveness.release(requestedSessionId);
+        runState.sessionEntry = null;
+        throw error;
+      }
     }
   } else {
     // Fresh runs persist into the durable jsonl repo when piSessionsRoot is
@@ -396,11 +426,10 @@ export async function discardUncommittedSession(runState, { durableRepo }) {
   // transcript was appended yet (prompt never ran), so the live session is
   // already at its pre-turn leaf and needs no rollback.
   if (runState.session && !runState.sessionEntry) {
-    try {
-      const metadata = await runState.session.getMetadata();
-      await runState.session.close();
-      await (durableRepo || nativeSessionRepo).delete(metadata, PI_CONTEXT);
-    } catch { /* best-effort */ }
+    await closeAndDeleteSession(
+      runState.session,
+      durableRepo || nativeSessionRepo,
+    );
   }
   // Drop the create-on-miss BUSY reservation too, else the busy placeholder
   // leaks and every future resume of this conversation's stable id returns
@@ -463,10 +492,7 @@ export async function commitSession(runState, {
       if (requestedSessionId) nativeSessions.delete(requestedSessionId);
       const broken = sessionEntry;
       if (broken) {
-        try {
-          await session.close();
-          await broken.repo.delete(broken.metadata, PI_CONTEXT);
-        } catch { /* best-effort */ }
+        await closeAndDeleteSession(session, broken.repo, broken.metadata);
       }
     }
   } else if (sessionEntry) {
@@ -487,11 +513,7 @@ export async function commitSession(runState, {
     // (the success keep-alive path overwrites it with the finalized entry, so
     // it is only this drop branch that must clean it up).
     if (reservation) reservation.release();
-    try {
-      const metadata = await session.getMetadata();
-      await session.close();
-      await (durableRepo || nativeSessionRepo).delete(metadata, PI_CONTEXT);
-    } catch { /* best-effort */ }
+    await closeAndDeleteSession(session, durableRepo || nativeSessionRepo);
   }
 }
 
@@ -513,11 +535,7 @@ export async function rollbackAbortedTurn(runState, { requestedSessionId, provid
     nativeSessions.delete(requestedSessionId);
   } else {
     nativeSessions.delete(providerSessionId);
-    try {
-      const metadata = await session.getMetadata();
-      await session.close();
-      await (durableRepo || nativeSessionRepo).delete(metadata, PI_CONTEXT);
-    } catch { /* best-effort */ }
+    await closeAndDeleteSession(session, durableRepo || nativeSessionRepo);
   }
 }
 
@@ -540,11 +558,7 @@ export async function cleanupSessionOnThrow(runState, { durableRepo }) {
   // resumed user session here would be data loss) and never when the throw
   // preceded session create.
   if (session && !sessionEntry) {
-    try {
-      const metadata = await session.getMetadata();
-      await session.close();
-      await (durableRepo || nativeSessionRepo).delete(metadata, PI_CONTEXT);
-    } catch { /* best-effort */ }
+    await closeAndDeleteSession(session, durableRepo || nativeSessionRepo);
   }
   // Drop a create-on-miss BUSY placeholder (R8) left in the registry by a throw
   // during/after the reservation — including a throw inside the create await
