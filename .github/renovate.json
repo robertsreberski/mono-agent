@@ -1,0 +1,47 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "enabledManagers": ["npm"],
+  "dependencyDashboard": false,
+  "lockFileMaintenance": {
+    "enabled": false
+  },
+  "semanticCommits": "enabled",
+  "branchConcurrentLimit": 1,
+  "prConcurrentLimit": 1,
+  "prHourlyLimit": 1,
+  "packageRules": [
+    {
+      "description": "Disable dependency updates outside the Pi stack",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["*"],
+      "enabled": false
+    },
+    {
+      "description": "Propose the synchronized Pi stack as one reviewed migration",
+      "matchManagers": ["npm"],
+      "matchDatasources": ["npm"],
+      "matchPackageNames": [
+        "@earendil-works/pi-ai",
+        "@earendil-works/pi-agent-core",
+        "@earendil-works/pi-tui"
+      ],
+      "enabled": true,
+      "groupName": "Pi dependencies",
+      "groupSlug": "pi-dependencies",
+      "minimumGroupSize": 3,
+      "rangeStrategy": "pin",
+      "respectLatest": true,
+      "ignoreUnstable": true,
+      "minimumReleaseAge": "0 days",
+      "prCreation": "immediate",
+      "draftPR": true,
+      "automerge": false,
+      "reviewers": ["robertsreberski"],
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "deps",
+      "prBodyNotes": [
+        "### Pi migration gate\n\nThis draft is a compatibility migration, not a mechanical dependency bump. A maintainer must copy the following into a new PR comment to start Copilot; the code block in this bot-authored body is not the invocation itself.\n\n```text\n@copilot Treat this as a Pi compatibility migration. Read AGENTS.md and skills/pi-upstream-recon/SKILL.md completely. Move @earendil-works/pi-ai, @earendil-works/pi-agent-core, and @earendil-works/pi-tui to the same target version proposed by this PR; do not retain an older Agent Core. Inspect the target release's shipped declarations and JavaScript for Session, AgentHarness, compaction, authentication, provider registration, and TUI changes before editing compatibility code. Update the dependency policy, affected runtime/provider/TUI code, focused tests, current-version documentation, and changelog as required. Run the focused Pi tests and pnpm run verify:all. Do not release, deploy, or mark the PR ready.\n```\n\nBefore a maintainer marks this PR ready for review, all three Pi packages must resolve to the identical stable version, hosted CI must pass, and the PR must record one real authenticated Pi model smoke test plus one interactive TUI smoke test. If the target Agent Core cannot satisfy mono-agent's required prompt, event, subscription, compaction, abort, and wait-for-idle behavior, leave the PR draft and blocked. Human review and merge are always required."
+      ]
+    }
+  ]
+}
