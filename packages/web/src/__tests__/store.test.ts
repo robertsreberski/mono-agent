@@ -1920,6 +1920,51 @@ describe("WebStore", () => {
     reopened.close();
   });
 
+  it("retains Monitor delivery tombstones after their conversation is deleted", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const monitor = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 7 });
+    const deliveryKey = `monitor:${monitor.monitorId}:7`;
+    const payloadSha256 = "e".repeat(64);
+
+    expect(store.reserveMonitorWake({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      monitorId: monitor.monitorId,
+      deliveryKey,
+      payloadSha256,
+    })).toEqual({ kind: "new" });
+    store.completeMonitorWake({
+      sourceId: "agent-one",
+      monitorId: monitor.monitorId,
+      deliveryKey,
+      disposition: "follow_up",
+    });
+    store.patchThread(thread.id, { archived: true });
+    await store.deleteArchivedThread(thread.id);
+
+    const raw = new DatabaseSync(store.paths.database, { readOnly: true });
+    const retained = raw.prepare(`
+      SELECT thread_id, state, disposition
+      FROM monitor_wake_deliveries WHERE source_id = ? AND delivery_key = ?
+    `).get("agent-one", deliveryKey);
+    raw.close();
+    expect(retained).toEqual({ thread_id: null, state: "completed", disposition: "follow_up" });
+
+    const replacement = store.createThread("agent-one");
+    expect(() => store.reserveMonitorWake({
+      sourceId: "agent-one",
+      threadId: replacement.id,
+      monitorId: monitor.monitorId,
+      deliveryKey,
+      payloadSha256,
+    })).toThrowError(expect.objectContaining({ code: "notification_idempotency_conflict" }));
+    store.close();
+  });
+
   it("persists completed and ambiguous process-job wake claims across reopen", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -1985,7 +2030,7 @@ describe("WebStore", () => {
     reopened.close();
   });
 
-  it("migrates a seeded schema v10 database to v13 keeping its thread rows", async () => {
+  it("migrates a seeded schema v10 database to v14 keeping its thread rows", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -2020,12 +2065,12 @@ describe("WebStore", () => {
     const agentColumns = new Set((inspected.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
       .map((column) => column.name));
     inspected.close();
-    expect(version.user_version).toBe(13);
+    expect(version.user_version).toBe(14);
     expect(agentColumns.has("providers_json")).toBe(true);
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(["run_model", "run_effort"]));
   });
 
-  it("re-runs the v11-v13 migrations without failing when current columns and tables already exist", async () => {
+  it("re-runs the v11-v14 migrations without failing when current columns and tables already exist", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -2046,7 +2091,7 @@ describe("WebStore", () => {
     reopened.close();
     expect(
       new DatabaseSync(databasePath, { readOnly: true }).prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 13 });
+    ).toMatchObject({ user_version: 14 });
   });
 
   it("migrates schema v12 by creating the Monitor wake ledger", async () => {
@@ -2064,11 +2109,85 @@ describe("WebStore", () => {
     const migrated = await WebStore.open({ stateDir });
     migrated.close();
     const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 13 });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 14 });
     expect(inspected.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'monitor_wake_deliveries'",
     ).get()).toBeDefined();
     inspected.close();
+  });
+
+  it("migrates schema v13 Monitor receipts from cascading deletion to retained tombstones", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const seeded = await WebStore.open({ stateDir });
+    seeded.replaceAgents([agent()]);
+    const thread = seeded.createThread("agent-one");
+    const monitor = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 9 });
+    const deliveryKey = `monitor:${monitor.monitorId}:9`;
+    expect(seeded.reserveMonitorWake({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      monitorId: monitor.monitorId,
+      deliveryKey,
+      payloadSha256: "f".repeat(64),
+    })).toEqual({ kind: "new" });
+    seeded.completeMonitorWake({
+      sourceId: "agent-one",
+      monitorId: monitor.monitorId,
+      deliveryKey,
+      disposition: "steered",
+    });
+    seeded.close();
+
+    const databasePath = join(stateDir, "state.sqlite");
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      PRAGMA foreign_keys = OFF;
+      ALTER TABLE monitor_wake_deliveries RENAME TO monitor_wake_deliveries_v14_source;
+      CREATE TABLE monitor_wake_deliveries (
+        source_id TEXT NOT NULL REFERENCES agents(source_id),
+        monitor_id TEXT NOT NULL,
+        delivery_key TEXT NOT NULL,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        payload_sha256 TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('accepted', 'completed')),
+        disposition TEXT CHECK (disposition IN ('steered', 'follow_up')),
+        turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        PRIMARY KEY (source_id, delivery_key)
+      );
+      INSERT INTO monitor_wake_deliveries
+      SELECT * FROM monitor_wake_deliveries_v14_source;
+      DROP TABLE monitor_wake_deliveries_v14_source;
+      PRAGMA user_version = 13;
+    `);
+    legacy.close();
+
+    const migrated = await WebStore.open({ stateDir });
+    const inspected = new DatabaseSync(databasePath, { readOnly: true });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 14 });
+    const threadForeignKey = (inspected.prepare("PRAGMA foreign_key_list(monitor_wake_deliveries)").all() as Array<{
+      from: string;
+      on_delete: string;
+    }>).find((foreignKey) => foreignKey.from === "thread_id");
+    expect(threadForeignKey?.on_delete).toBe("SET NULL");
+    inspected.close();
+
+    migrated.patchThread(thread.id, { archived: true });
+    await migrated.deleteArchivedThread(thread.id);
+    const retained = new DatabaseSync(databasePath, { readOnly: true });
+    expect(retained.prepare(`
+      SELECT thread_id, state, disposition
+      FROM monitor_wake_deliveries WHERE source_id = ? AND delivery_key = ?
+    `).get("agent-one", deliveryKey)).toEqual({
+      thread_id: null,
+      state: "completed",
+      disposition: "steered",
+    });
+    retained.close();
+    migrated.close();
   });
 
   it("sets, merges, and clears per-thread model and effort overrides", async () => {
@@ -2171,7 +2290,7 @@ describe("WebStore", () => {
     const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
     const processJobCards = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'").get();
     inspected.close();
-    expect(version.user_version).toBe(13);
+    expect(version.user_version).toBe(14);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
     expect(liveInputs).toBeDefined();
@@ -2198,7 +2317,7 @@ describe("WebStore", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'",
     ).get();
     inspected.close();
-    expect(version.user_version).toBe(13);
+    expect(version.user_version).toBe(14);
     expect(processJobCards).toBeDefined();
   });
 
@@ -2211,7 +2330,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 14");
+    future.exec("PRAGMA user_version = 15");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 
@@ -3266,7 +3385,7 @@ describe("WebStore conversation search", () => {
     expect(
       new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true })
         .prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 13 });
+    ).toMatchObject({ user_version: 14 });
     reopened.close();
   });
 });

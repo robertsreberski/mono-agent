@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  AGENT_LIVE_INPUT_MAX_CHARACTERS,
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   isChannelUserCancelReason,
   type AgentReplyPart,
@@ -1093,6 +1094,93 @@ describe("WebService", () => {
     stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
     stream?.close();
     await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    await service.stop();
+  });
+
+  it("queues an oversized Monitor wake as a follow-up instead of ambiguously steering it", async () => {
+    const encoder = new TextEncoder();
+    let activeStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const liveInputs: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => turnBodies.length === 1
+          ? new ReadableStream<Uint8Array>({ start(controller) { activeStream = controller; } })
+          : `${JSON.stringify({ kind: "finish", finalText: "Oversized wake handled" })}\n`,
+        onLiveInput(_conversationId, body) {
+          liveInputs.push(body);
+          return { status: "applied", runId: "active-run" };
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Keep working" });
+    await waitFor(() => activeStream !== undefined);
+    const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
+    const wakePrompt = "x".repeat(AGENT_LIVE_INPUT_MAX_CHARACTERS + 1);
+    const delivery = service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "monitor",
+      deliveryKey: `monitor:${monitor.monitorId}:1`,
+      threadId: thread.id,
+      monitor,
+      wakePrompt,
+    });
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    expect(liveInputs).toEqual([]);
+    expect(turnBodies).toHaveLength(1);
+
+    activeStream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+    activeStream?.close();
+    await expect(delivery).resolves.toMatchObject({
+      delivery: { delivered: true, disposition: "follow_up" },
+    });
+    expect(turnBodies).toHaveLength(2);
+    expect(turnBodies[1]).toMatchObject({ text: wakePrompt });
+    await service.stop();
+  });
+
+  it("abandons a Monitor claim when destination refresh fails before operator delivery", async () => {
+    let discovery: "ready" | "offline" = "ready";
+    const service = await createService({
+      discoverImpl: async () => discovery === "ready" ? [fakeDiscoveredAgent()] : [],
+      fetchImpl: operatorFetch({
+        turns: () => `${JSON.stringify({ kind: "finish", finalText: "Recovered" })}\n`,
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    discovery = "offline";
+    await service.refreshAgents();
+    const refresh = vi.spyOn(service, "refreshAgents")
+      .mockRejectedValueOnce(new Error("discovery unavailable"));
+    const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
+    const input = {
+      sourceId: "agent-one",
+      triggerKind: "monitor" as const,
+      deliveryKey: `monitor:${monitor.monitorId}:1`,
+      threadId: thread.id,
+      monitor,
+      wakePrompt: "retry after discovery recovers",
+    };
+
+    await expect(service.deliverNotification(input)).resolves.toMatchObject({
+      duplicate: false,
+      delivery: { delivered: false, code: "destination_channel_unavailable", retryable: true },
+    });
+    const raw = new DatabaseSync(service.store.paths.database, { readOnly: true });
+    const retainedClaims = raw.prepare("SELECT COUNT(*) AS count FROM monitor_wake_deliveries")
+      .get() as { count: number };
+    raw.close();
+    expect(retainedClaims.count).toBe(0);
+
+    refresh.mockRestore();
+    discovery = "ready";
+    await expect(service.deliverNotification(input)).resolves.toMatchObject({
+      duplicate: false,
+      delivery: { delivered: true, disposition: "follow_up" },
+    });
     await service.stop();
   });
 

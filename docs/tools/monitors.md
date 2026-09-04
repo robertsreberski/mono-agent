@@ -107,6 +107,8 @@ thread, and sends the normal response-ready Web Push when configured. A silent
 `NOTHING_TO_REPORT` result completes delivery without a Web Push. Web SQLite
 retains only the Monitor delivery identity and payload hash for duplicate
 suppression; the fenced event text remains memory-only.
+Deleting that web conversation clears the ledger's thread reference but retains
+the delivery tombstone, so the same key can never name different content later.
 
 The envelope states three things the schema alone cannot: the turn was raised by
 the host and not by the user, the fenced content is bounded, redacted, untrusted

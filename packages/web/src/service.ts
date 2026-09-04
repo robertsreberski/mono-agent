@@ -2,6 +2,7 @@ import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 
 import {
+  AGENT_LIVE_INPUT_MAX_CHARACTERS,
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
   type AgentReplyPart,
@@ -1592,7 +1593,17 @@ export class WebService {
       });
       let connection = this.connections.get(input.sourceId);
       if (connection === undefined) {
-        await this.refreshAgents();
+        try {
+          await this.refreshAgents();
+        } catch (error) {
+          abandon();
+          this.options.logger?.debug?.("Web Monitor destination refresh failed before delivery.", {
+            threadId: input.threadId,
+            monitorId: input.monitor.monitorId,
+            error: errorMessage(error),
+          });
+          return { delivered: false, code: "destination_channel_unavailable", retryable: true };
+        }
         connection = this.connections.get(input.sourceId);
       }
       if (this.stopped || connection === undefined) {
@@ -1608,7 +1619,9 @@ export class WebService {
         return { delivered: false, code: "monitor_origin_mismatch", retryable: false };
       }
       const active = this.activeTurns.get(input.threadId);
-      if (active !== undefined && connection.info.supportsLiveInput) {
+      if (active !== undefined
+        && connection.info.supportsLiveInput
+        && input.wakePrompt.length <= AGENT_LIVE_INPUT_MAX_CHARACTERS) {
         try {
           const settlement = await active.client.liveInput({
             conversationId: `web:${input.threadId}`,

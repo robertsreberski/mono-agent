@@ -443,7 +443,7 @@ export function escapeLikeTerm(raw: string): string {
   return raw.replaceAll(/[\\%_]/gu, (character) => `\\${character}`);
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 13;
+const WEB_STORAGE_SCHEMA_VERSION = 14;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
 export const WEB_MESSAGE_PAGE_MAX = 100;
@@ -1717,7 +1717,7 @@ export class WebStore {
       FROM monitor_wake_deliveries WHERE source_id = ? AND delivery_key = ?
     `).get(input.sourceId, input.deliveryKey) as unknown as {
       monitor_id: string;
-      thread_id: string;
+      thread_id: string | null;
       payload_sha256: string;
       state: "accepted" | "completed";
       disposition: "steered" | "follow_up" | null;
@@ -3438,7 +3438,7 @@ export class WebStore {
         source_id TEXT NOT NULL REFERENCES agents(source_id),
         monitor_id TEXT NOT NULL,
         delivery_key TEXT NOT NULL,
-        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL,
         payload_sha256 TEXT NOT NULL,
         state TEXT NOT NULL CHECK (state IN ('accepted', 'completed')),
         disposition TEXT CHECK (disposition IN ('steered', 'follow_up')),
@@ -3629,6 +3629,10 @@ export class WebStore {
             this.database.exec("ALTER TABLE agents ADD COLUMN providers_json TEXT");
           }
         }
+        // Schema v13 tied the Monitor idempotency ledger to the conversation
+        // with ON DELETE CASCADE. That erased the tombstone and allowed a
+        // delivery key to name different content after thread deletion.
+        if (versionRow.user_version === 13) this.migrateMonitorWakeDeliveries();
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
       } catch (error) {
         if (this.database.isTransaction) this.database.exec("ROLLBACK");
@@ -3639,6 +3643,36 @@ export class WebStore {
       if (error instanceof WebConsoleError) throw error;
       throw new WebConsoleError("storage_corrupt", `Unable to initialize web state: ${error instanceof Error ? error.message : String(error)}`, 500);
     }
+  }
+
+  /** Preserve Monitor delivery tombstones while making deleted threads threadless. */
+  private migrateMonitorWakeDeliveries(): void {
+    this.database.exec(`
+      CREATE TABLE monitor_wake_deliveries_v14 (
+        source_id TEXT NOT NULL REFERENCES agents(source_id),
+        monitor_id TEXT NOT NULL,
+        delivery_key TEXT NOT NULL,
+        thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL,
+        payload_sha256 TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('accepted', 'completed')),
+        disposition TEXT CHECK (disposition IN ('steered', 'follow_up')),
+        turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        PRIMARY KEY (source_id, delivery_key)
+      );
+      INSERT INTO monitor_wake_deliveries_v14 (
+        source_id, monitor_id, delivery_key, thread_id, payload_sha256,
+        state, disposition, turn_id, created_at, completed_at
+      ) SELECT
+        source_id, monitor_id, delivery_key, thread_id, payload_sha256,
+        state, disposition, turn_id, created_at, completed_at
+      FROM monitor_wake_deliveries;
+      DROP TABLE monitor_wake_deliveries;
+      ALTER TABLE monitor_wake_deliveries_v14 RENAME TO monitor_wake_deliveries;
+      CREATE INDEX monitor_wake_deliveries_by_thread
+        ON monitor_wake_deliveries(thread_id, created_at);
+    `);
   }
 
   /**
