@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { deliverWebNotification } from "../notification-client.js";
 import { prepareWebStatePaths } from "../state-paths.js";
-import { fakeProcessJob, temporaryRoot } from "./helpers.js";
+import { fakeMonitor, fakeProcessJob, temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
 
@@ -95,6 +95,38 @@ describe("deliverWebNotification", () => {
         duplicate: false,
         delivery: { delivered: true, disposition: "follow_up" },
       });
+    expect(deliveredBody).toEqual(input);
+  });
+
+  it("carries a Monitor wake and parses its delivery receipt", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    await writeIngressRecord(stateDir);
+    let deliveredBody: unknown;
+    const fetchImpl = (async (_request, init) => {
+      deliveredBody = JSON.parse(String(init?.body)) as unknown;
+      return Response.json({
+        threadId: "thread-one",
+        duplicate: false,
+        delivery: { delivered: true, disposition: "steered" },
+      }, { status: 201 });
+    }) as typeof fetch;
+    const monitor = fakeMonitor({ conversationId: "web:thread-one", seq: 4 });
+    const input = {
+      sourceId: "agent-one",
+      triggerKind: "monitor" as const,
+      deliveryKey: `monitor:${monitor.monitorId}:4`,
+      threadId: "thread-one",
+      monitor,
+      wakePrompt: "Inspect this fenced event batch.",
+    };
+
+    await expect(deliverWebNotification(input, { stateDir, fetchImpl })).resolves.toEqual({
+      threadId: "thread-one",
+      duplicate: false,
+      delivery: { delivered: true, disposition: "steered" },
+    });
     expect(deliveredBody).toEqual(input);
   });
 

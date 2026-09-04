@@ -91,7 +91,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `memory.supermemory.timeoutMs` | `integer` | `MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS` | 10000 | `10000` | Configures supermemory.timeoutMs for the memory section. |
 | `memory.writeMode` | `string` | `MONO_AGENT_MEMORY_WRITE_MODE` | disabled | `disabled` | Configures writeMode for the memory section. |
 | `monitors.coalesceMs` | `integer` | `--` | 200 | `200` | Window over which stdout lines are batched into one event wake (compiled cap 5000). |
-| `monitors.enabled` | `boolean` | `--` | false | `true` | Opt in to the Pi-native Monitor/MonitorStop tools. Monitors are a streaming class of the process-job substrate and additionally require processJobs.enabled; wake delivery is Telegram and Slack only. |
+| `monitors.enabled` | `boolean` | `--` | false | `true` | Opt in to the Pi-native Monitor/MonitorStop tools. Monitors are a streaming class of the process-job substrate and additionally require processJobs.enabled; wake delivery supports Telegram, Slack, and existing web conversations. |
 | `monitors.maxActive` | `integer` | `--` | 8 | `8` | Maximum simultaneously running monitors across every conversation, counted independently of processJobs.maxConcurrent (compiled cap 32). |
 | `monitors.maxActivePerConversation` | `integer` | `--` | 2 | `3` | Maximum simultaneously running monitors for one conversation (compiled cap 8). |
 | `monitors.maxBatchBytes` | `integer` | `--` | 65536 | `65536` | Maximum bytes carried by one event batch; older lines are dropped and counted (compiled cap 1 MiB). |

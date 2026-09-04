@@ -558,6 +558,19 @@ describe("web HTTP server", () => {
     expect(await json(response)).toMatchObject({ error: { code: "request_too_large" } });
   });
 
+  it("authenticates the owner-private notification ingress before reading a large body", async () => {
+    const { handle } = await start({ host: "127.0.0.1" });
+    const paths = await prepareWebStatePaths({ stateDir: handle.stateDir });
+    const ingress = JSON.parse(await readFile(paths.notificationIngress, "utf8")) as { url: string };
+    const response = await fetch(ingress.url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ payload: "x".repeat(8 * 1024 * 1024 + 1) }),
+    });
+    expect(response.status).toBe(401);
+    expect(await json(response)).toMatchObject({ error: { code: "unauthorized" } });
+  });
+
   it("validates exact host configuration before acquiring the persistent service lease", async () => {
     const root = await temporaryRoot();
     cleanup.push(root);

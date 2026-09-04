@@ -27,8 +27,9 @@ export async function routeMonitorWake(
 ): Promise<HostWakeDeliveryResult> {
   const origin = input.projection.origin;
   const expectedConversationId = baseConversationId(origin.conversationId);
+  const expectedDeliveryKey = `monitor:${input.projection.monitorId}:${String(input.projection.counters.seq)}`;
   if (input.conversationId !== expectedConversationId
-    || !input.deliveryKey.startsWith(`monitor:${input.projection.monitorId}:`)
+    || input.deliveryKey !== expectedDeliveryKey
     || !input.conversationId.startsWith(`${origin.channel}:`)) {
     return {
       delivered: false,
