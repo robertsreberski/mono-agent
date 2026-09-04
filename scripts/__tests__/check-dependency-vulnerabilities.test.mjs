@@ -1748,6 +1748,23 @@ describe("dependency vulnerability gate", () => {
     expect(timeoutSignal.aborted).toBe(true);
   });
 
+  it("rotates official npm registry IPv4 routes instead of retrying one black hole", async () => {
+    const requestedAddresses = [];
+    await expect(queryBulkAdvisories({ ws: ["8.20.1"] }, {
+      resolveRegistryAddressesImpl: async () => ["192.0.2.1", "192.0.2.2", "192.0.2.3"],
+      requestRegistryAddressImpl: async (_url, _request, address) => {
+        requestedAddresses.push(address);
+        if (address === "192.0.2.1") throw new Error("fixture route timed out");
+        if (address === "192.0.2.2") {
+          return httpResponse("registry unavailable", { status: 503, raw: true });
+        }
+        return httpResponse({ ws: [] });
+      },
+    })).resolves.toEqual({ ws: [] });
+
+    expect(requestedAddresses).toEqual(["192.0.2.1", "192.0.2.2", "192.0.2.3"]);
+  });
+
   it("retries timed-out and unavailable bulk requests within a bounded budget", async () => {
     vi.useFakeTimers();
     const requestSignals = [];
@@ -1819,7 +1836,7 @@ describe("dependency vulnerability gate", () => {
     expect(requestedPackages.map((packageNames) => packageNames.length))
       .toEqual([450, 450, 450, 450, 1]);
     expect(requestedPackages.flat()).toEqual(Object.keys(inventory));
-    expect(maxActiveRequests).toBe(3);
+    expect(maxActiveRequests).toBe(1);
     expect(Object.keys(report)).toEqual([
       "package-0000",
       "package-0450",

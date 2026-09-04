@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
+import { resolve4 } from "node:dns/promises";
 import { readFile } from "node:fs/promises";
+import { request as httpsRequest } from "node:https";
 import { resolve } from "node:path";
+import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -17,9 +20,10 @@ const MAX_PRODUCTION_PATHS_PER_PACKAGE_VERSION = 10_000;
 const MAX_PRODUCTION_SUBTREE_COUNT_STEPS = 100_000;
 const MAX_PRODUCTION_TRAVERSAL_STEPS = 100_000;
 const MAX_BULK_REQUEST_PACKAGES = 450;
-const MAX_CONCURRENT_BULK_REQUESTS = 3;
+const MAX_CONCURRENT_BULK_REQUESTS = 1;
 const BULK_REQUEST_TRANSIENT_RETRIES = 2;
 const BULK_REQUEST_RETRY_DELAY_MS = 60_000;
+const NPM_REGISTRY_ROUTE_TIMEOUT_MS = 2_000;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_WHY_PATHS_PER_TARGET = 10_000;
 const MAX_WHY_TRAVERSAL_STEPS_PER_TARGET = 100_000;
@@ -907,7 +911,6 @@ async function mapWithConcurrency(values, concurrency, mapper) {
 
 async function queryBulkAdvisoryRequest(inventory, options) {
   const registryUrl = options.registryUrl ?? DEFAULT_AUDIT_REGISTRY_URL;
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   let endpoint;
   try {
     if (typeof registryUrl !== "string") {
@@ -935,6 +938,11 @@ async function queryBulkAdvisoryRequest(inventory, options) {
   let source;
   try {
     const request = Promise.resolve().then(async () => {
+      const fetchImpl = options.fetchImpl ?? ((url, init) => fetchBulkAdvisoryEndpoint(
+        url,
+        init,
+        options,
+      ));
       const fetched = await fetchImpl(endpoint, {
         method: "POST",
         headers: {
@@ -969,6 +977,9 @@ async function queryBulkAdvisoryRequest(inventory, options) {
     if (error === timeoutError) {
       throw new BulkAdvisoryTransientError(`bulk advisory request timed out after ${timeoutMs}ms.`);
     }
+    if (error instanceof BulkAdvisoryRouteError) {
+      throw new BulkAdvisoryTransientError(error.message);
+    }
     if (error === responseTooLargeError) {
       throw error;
     }
@@ -999,6 +1010,94 @@ async function queryBulkAdvisoryRequest(inventory, options) {
 }
 
 class BulkAdvisoryTransientError extends Error {}
+
+class BulkAdvisoryRouteError extends Error {}
+
+let preferredNpmRegistryAddress;
+
+async function fetchBulkAdvisoryEndpoint(endpoint, init, options) {
+  if (endpoint.protocol !== "https:" || endpoint.hostname !== "registry.npmjs.org") {
+    return await globalThis.fetch(endpoint, init);
+  }
+  const resolveAddresses = options.resolveRegistryAddressesImpl ?? resolve4;
+  const requestAddress = options.requestRegistryAddressImpl ?? requestNpmRegistryAddress;
+  let addresses;
+  try {
+    addresses = await resolveAddresses(endpoint.hostname);
+  } catch (error) {
+    throw new BulkAdvisoryRouteError(`npm registry IPv4 lookup failed: ${reasonOf(error)}`);
+  }
+  if (!Array.isArray(addresses) || addresses.length === 0
+    || addresses.some((address) => typeof address !== "string")) {
+    throw new BulkAdvisoryRouteError("npm registry IPv4 lookup returned no usable addresses.");
+  }
+  const uniqueAddresses = [...new Set(addresses)];
+  if (preferredNpmRegistryAddress !== undefined
+    && uniqueAddresses.includes(preferredNpmRegistryAddress)) {
+    uniqueAddresses.splice(uniqueAddresses.indexOf(preferredNpmRegistryAddress), 1);
+    uniqueAddresses.unshift(preferredNpmRegistryAddress);
+  }
+
+  let lastError;
+  for (const address of uniqueAddresses) {
+    try {
+      const response = await requestAddress(endpoint, init, address);
+      if (response.status >= 500) {
+        await response.body?.cancel();
+        lastError = new Error(`npm registry route ${address} returned HTTP ${response.status}`);
+        if (preferredNpmRegistryAddress === address) preferredNpmRegistryAddress = undefined;
+        continue;
+      }
+      preferredNpmRegistryAddress = address;
+      return response;
+    } catch (error) {
+      if (init.signal?.aborted) throw init.signal.reason ?? error;
+      lastError = error;
+      if (preferredNpmRegistryAddress === address) preferredNpmRegistryAddress = undefined;
+    }
+  }
+  throw new BulkAdvisoryRouteError(
+    `npm registry IPv4 routes did not respond: ${reasonOf(lastError)}`,
+  );
+}
+
+async function requestNpmRegistryAddress(endpoint, init, address) {
+  return await new Promise((resolveRequest, rejectRequest) => {
+    const request = httpsRequest(endpoint, {
+      method: init.method,
+      headers: {
+        ...init.headers,
+        "content-length": Buffer.byteLength(init.body),
+      },
+      agent: false,
+      lookup: (_hostname, lookupOptions, callback) => {
+        if (lookupOptions.all) {
+          callback(null, [{ address, family: 4 }]);
+        } else {
+          callback(null, address, 4);
+        }
+      },
+    });
+    const abortRequest = () => request.destroy(init.signal.reason);
+    init.signal?.addEventListener("abort", abortRequest, { once: true });
+    request.once("response", (response) => {
+      request.setTimeout(0);
+      response.once("close", () => init.signal?.removeEventListener("abort", abortRequest));
+      resolveRequest({
+        ok: response.statusCode >= 200 && response.statusCode < 300,
+        status: response.statusCode,
+        body: Readable.toWeb(response),
+      });
+    });
+    request.once("error", rejectRequest);
+    request.setTimeout(NPM_REGISTRY_ROUTE_TIMEOUT_MS, () => {
+      request.destroy(new Error(
+        `npm registry route ${address} timed out after ${NPM_REGISTRY_ROUTE_TIMEOUT_MS}ms`,
+      ));
+    });
+    request.end(init.body);
+  });
+}
 
 function wait(milliseconds) {
   return new Promise((resolveWait) => setTimeout(resolveWait, milliseconds));
