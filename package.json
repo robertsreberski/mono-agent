@@ -58,6 +58,7 @@
     "@mono-agent/docs-mcp": "workspace:0.20.14",
     "@mono-agent/memory": "workspace:0.20.14",
     "@mono-agent/memory-supermemory": "workspace:0.20.14",
+    "@mono-agent/messenger-adapter": "workspace:0.20.14",
     "@mono-agent/observability": "workspace:0.20.14",
     "@mono-agent/openai-api-adapter": "workspace:0.20.14",
     "@mono-agent/runtime-adapter": "workspace:0.20.14",

@@ -15,7 +15,8 @@ export type { NotifyDeliveryResult } from "@mono-agent/agent-contracts";
  * optional `notify` hook remains the authoritative delivery capability, so a
  * recognized plugin destination can still fail closed as unsupported. This is
  * intentionally wider than the webhook callback list: WhatsApp is recognized
- * here, but its plugin driver does not expose a native notify hook yet.
+ * here, but its plugin driver does not expose a native notify hook yet, while
+ * the Messenger plugin driver does.
  * web/cron/webhook/openai-api/a2a are request-driven, not ordinary push
  * destinations. Process-job web lifecycle routing is handled explicitly below.
  */
@@ -23,6 +24,7 @@ const PUSH_CHANNEL_BY_SCHEME: Partial<Record<string, ChannelId>> = {
   telegram: "telegram",
   slack: "slack",
   whatsapp: "whatsapp",
+  messenger: "messenger",
 };
 
 /** The push channel that owns a destination conversationId (requires a `<scheme>:<target>` form), or undefined. */

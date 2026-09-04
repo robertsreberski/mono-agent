@@ -165,7 +165,7 @@ tui / web ── agent-contracts + config + observability
 Runtime-only composition (not manifest dependency edges)
 
 tui / web ── HTTP operator protocol ──> operator-adapter
-agent-app ── channels.plugins[] ──> a2a-adapter / whatsapp-adapter
+agent-app ── channels.plugins[] ──> a2a-adapter / whatsapp-adapter / messenger-adapter
 agent-app ── selected memory backend ──> memory-supermemory
 custom host ── request-scoped extension ──> agent-orchestrator
 authoring harness ── explicit MCP companion ──> docs-mcp
@@ -329,6 +329,7 @@ flowchart TB
     Telegram["@mono-agent/telegram-adapter<br/>Bot API + long polling"]
     Webhook["@mono-agent/webhook-adapter<br/>HTTP sync/async invocation"]
     WhatsApp["@mono-agent/whatsapp-adapter<br/>extra plugin: Baileys socket + group trigger policy"]
+    Messenger["@mono-agent/messenger-adapter<br/>extra plugin: Meta webhook + Send API"]
   end
 
   subgraph Core["Core contracts and config"]
@@ -365,6 +366,7 @@ flowchart TB
   Host --> Cron
   Host -. optional package .-> Slack
   Host -. plugin .-> WhatsApp
+  Host -. plugin .-> Messenger
   Host -. runtime extension .-> Orchestrator
   Host --> Config
   Host --> AgentApp
@@ -378,6 +380,7 @@ flowchart TB
   Slack --> Contracts
   Webhook --> Contracts
   WhatsApp --> Contracts
+  Messenger --> Contracts
 
   Orchestrator --> Contracts
   Orchestrator -.->|runtime extension| Harness
