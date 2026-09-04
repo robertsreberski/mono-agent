@@ -175,6 +175,12 @@ export const buildSelectorModels = ({
 }: BuildSelectorModelsInput): readonly ModelSelectorOption[] => {
   if (!agent) return [];
   const shortlistIds = new Set(modelOptions);
+  const displayNameForReference = (reference: string | undefined): string | undefined => {
+    if (!reference) return undefined;
+    return agent.modelOptions?.[reference]?.label
+      ?? findCatalogModel(catalogByProvider, reference)?.name
+      ?? reference;
+  };
   const providerOf = (reference: string): { readonly provider: string; readonly label: string } => {
     const catalogModel = findCatalogModel(catalogByProvider, reference);
     if (catalogModel && catalogModel.provider) {
@@ -187,7 +193,7 @@ export const buildSelectorModels = ({
   const rows: ModelSelectorOption[] = [
     {
       id: AUTOMATIC_MODEL_ID,
-      name: `Default · ${(agent.modelOptions?.[agent.defaultModel ?? ""]?.label ?? agent.defaultModel) || "agent"}`,
+      name: `Default · ${displayNameForReference(agent.defaultModel) ?? "agent"}`,
       description: agent.defaultModel
         ? `Agent default · ${agent.defaultModel}`
         : "Use the agent default",
@@ -205,7 +211,7 @@ export const buildSelectorModels = ({
     const { provider, label } = providerOf(reference);
     rows.push({
       id: reference,
-      name: agent.modelOptions?.[reference]?.label ?? reference,
+      name: displayNameForReference(reference) ?? reference,
       description: reference,
       efforts: buildEffortOptions(
         agent,
@@ -274,7 +280,13 @@ export const selectorProvides = (
   groups: readonly CatalogProviderGroup[],
   agentProviders: readonly AgentProvider[] = [],
 ): readonly { readonly provider: string; readonly label: string }[] => {
-  const provides = groups.map((group) => ({ provider: group.provider, label: group.label }));
+  const advertisedLabels = new Map(
+    agentProviders.map((provider) => [provider.id, provider.label]),
+  );
+  const provides = groups.map((group) => ({
+    provider: group.provider,
+    label: advertisedLabels.get(group.provider) ?? group.label,
+  }));
   const seen = new Set(provides.map((entry) => entry.provider));
   for (const provider of agentProviders) {
     if (seen.has(provider.id)) continue;

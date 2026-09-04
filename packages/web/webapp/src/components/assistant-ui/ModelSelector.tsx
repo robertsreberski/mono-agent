@@ -102,10 +102,13 @@ export function ModelSelector({
     searchRef.current?.focus();
   }, [disabled, open, setOpen]);
 
-  const selectModel = (model: ModelSelectorOption) => {
-    onValueChange(model.id);
+  const closeSelector = () => {
     setOpen(false);
     window.requestAnimationFrame(() => triggerRef.current?.focus());
+  };
+
+  const selectModel = (model: ModelSelectorOption) => {
+    onValueChange(model.id);
   };
 
   const normalizeQuery = (value: string) =>
@@ -125,7 +128,11 @@ export function ModelSelector({
   }, [activeProvider, models, query]);
 
   const groups = useMemo(() => groupSelectorModels(filteredModels), [filteredModels]);
-  const provides = useMemo(() => selectorProvides(groups, agentProviders), [agentProviders, groups]);
+  const providerGroups = useMemo(() => groupSelectorModels(models), [models]);
+  const provides = useMemo(
+    () => selectorProvides(providerGroups, agentProviders),
+    [agentProviders, providerGroups],
+  );
 
   const emptyMessage = query.trim().length === 0
     ? activeProvider !== null && (
@@ -387,20 +394,28 @@ export function ModelSelector({
                 </div>
               )}
 
-              {onReset !== undefined && (
-                <div className="model-selector__reset">
+              <div className="model-selector__actions">
+                {onReset !== undefined && (
                   <button
                     type="button"
+                    className="model-selector__reset"
                     onClick={() => {
                       onReset();
-                      setOpen(false);
+                      closeSelector();
                     }}
                   >
                     <Icon name="restore" size={13} />
                     Reset to agent default
                   </button>
-                </div>
-              )}
+                )}
+                <button
+                  type="button"
+                  className="model-selector__close"
+                  onClick={closeSelector}
+                >
+                  Close
+                </button>
+              </div>
             </Command>
           </Popover.Popup>
         </Popover.Positioner>

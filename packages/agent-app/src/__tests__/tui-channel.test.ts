@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentMessageStream, AgentReplyPart, AgentRequestBase, AgentResponder, MonitorProjection, ProcessJobOperator, ProcessJobProjection, RunningChannel } from "@mono-agent/agent-contracts";
 import { MAX_INFO_BODY_BYTES, MAX_INFO_PROVIDER_ITEMS } from "@mono-agent/agent-contracts";
 import type { EffortLevel, MonoAgentConfig } from "@mono-agent/config";
-import type { DiscoveredLocalModel, DiscoveredProvider, LocalProviderDefinition } from "@mono-agent/runtime-adapter";
+import type { DiscoveredLocalModel, DiscoveredProvider, LocalProviderDefinition, ProviderDefinition } from "@mono-agent/runtime-adapter";
 import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { TuiAdapterConfig, TuiAdapterInfo, TuiAdapterOptions, TuiAdapterStartResult } from "@mono-agent/operator-adapter";
 import type { DeliverWebNotificationInput } from "@mono-agent/web";
@@ -36,7 +36,7 @@ interface BuildInputOptions {
   readonly fallbackModels?: readonly string[];
   readonly localProviders?: readonly LocalProviderDefinition[];
   /** Canonical `providers.entries` list, for the provider-summary budget. */
-  readonly providerEntries?: readonly { id: string }[];
+  readonly providerEntries?: readonly ProviderDefinition[];
 }
 
 /**
@@ -110,6 +110,7 @@ const NOOP_MODEL_DISCOVERY = {
 };
 
 const FABLE_MODEL_OPTIONS = {
+  label: "Claude Fable 5",
   reasoning: true,
   reasoningMode: "effort" as const,
   effortLevels: ["minimal", "low", "medium", "high", "xhigh", "max"],
@@ -257,6 +258,21 @@ describe("tui channel driver — info composition", () => {
     });
     expect(info.providers?.find((provider) => provider.id === "anthropic"))
       .toMatchObject({ id: "anthropic", label: "Anthropic", source: "builtin", configured: true });
+  });
+
+  it("publishes a configured model display name through /v1/info", async () => {
+    const captured = await startCapturingTui({
+      providerEntries: [{
+        id: "anthropic",
+        models: [{ name: "claude-fable-5", displayName: "Fable for Robert" }],
+      }],
+    });
+    const info = await resolveInfo(captured);
+
+    expect(info.modelOptions?.["anthropic:claude-fable-5"]?.label)
+      .toBe("Fable for Robert");
+    expect(captured.modelCatalog?.({ provider: "anthropic", limit: 10 }).models[0]?.name)
+      .toBe("Fable for Robert");
   });
 
   it("omits effort from info when the runtime has none configured", async () => {
@@ -732,6 +748,7 @@ describe("tui channel driver — info composition", () => {
     // ref would cost the operator the model itself.
     expect(info.models).toContain("lmstudio:big-effort");
     expect(info.modelOptions?.["lmstudio:big-effort"]).toEqual({
+      label: "big-effort",
       reasoning: true,
       reasoningMode: "effort",
       provider: "lmstudio",

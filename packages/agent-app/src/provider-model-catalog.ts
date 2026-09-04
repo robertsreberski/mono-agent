@@ -446,6 +446,12 @@ export function buildProviderModelCatalog(
       ...(localProviders === undefined ? {} : { localProviders }),
     });
     const contextWindow = resolveContextWindow(ref);
+    const configuredModel = configuredById.get(ref.provider)?.models?.find(
+      (model) => model.name === ref.model || model.alias === ref.model,
+    );
+    const label = byProviderId.get(ref.provider)?.models.find(
+      (model) => model.id === (configuredModel?.name ?? ref.model),
+    )?.name;
     // `effortLevels` is the ONLY unbounded field in this projection.
     // `provider` and `providerLabel` need no clamp of their own: the label is
     // either a short Pi built-in label or the provider id verbatim, and the id
@@ -453,6 +459,7 @@ export function buildProviderModelCatalog(
     // is charged, not hidden, by the caller's per-entry byte measurement.
     const effortLevels = boundedEffortLevels(effort.effortLevels);
     return {
+      ...(label === undefined ? {} : { label }),
       ...(effortLevels === undefined ? {} : { effortLevels }),
       reasoning: effort.reasoning,
       ...(effort.reasoningMode === undefined ? {} : { reasoningMode: effort.reasoningMode }),
