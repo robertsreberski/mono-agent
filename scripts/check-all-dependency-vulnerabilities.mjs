@@ -54,25 +54,36 @@ export function mergeProductionInventories(productionGraphs) {
 
 export function filterBulkAdvisoryReport(report, inventory) {
   const filteredEntries = [];
+  const advisoryVersionEntries = [];
   for (const [packageName, advisories] of Object.entries(report)) {
     if (!Object.hasOwn(inventory, packageName)) continue;
-    const relevantAdvisories = advisories.filter((advisory) => {
+    const relevantAdvisories = [];
+    const packageAdvisoryVersions = [];
+    for (const advisory of advisories) {
       const range = advisory.vulnerable_versions;
       if (semver.validRange(range) === null) {
         throw new Error(`bulk advisory for ${packageName} has an invalid vulnerable_versions range.`);
       }
-      return inventory[packageName].some((version) => {
+      const matchingVersions = inventory[packageName].filter((version) => {
         if (semver.valid(version) === null) {
           throw new Error(`production dependency inventory has an invalid version for ${packageName}.`);
         }
         return semver.satisfies(version, range, { includePrerelease: true });
       });
-    });
+      if (matchingVersions.length > 0) {
+        relevantAdvisories.push(advisory);
+        packageAdvisoryVersions.push([String(advisory.id), matchingVersions]);
+      }
+    }
     if (relevantAdvisories.length > 0) {
       filteredEntries.push([packageName, relevantAdvisories]);
+      advisoryVersionEntries.push([packageName, Object.fromEntries(packageAdvisoryVersions)]);
     }
   }
-  return Object.fromEntries(filteredEntries);
+  return {
+    report: Object.fromEntries(filteredEntries),
+    advisoryVersions: Object.fromEntries(advisoryVersionEntries),
+  };
 }
 
 export async function runAllDependencyVulnerabilityChecks(options = {}) {
@@ -122,25 +133,29 @@ export async function runAllDependencyVulnerabilityChecks(options = {}) {
   }
 
   let exitCode = 0;
-  for (const { graph, productionGraph } of prepared) {
-    if (graph.isolated) {
-      stdout.write(`Auditing isolated ${graph.label} production graph.\n`);
+  try {
+    for (const { graph, productionGraph } of prepared) {
+      if (graph.isolated) {
+        stdout.write(`Auditing isolated ${graph.label} production graph.\n`);
+      }
+      const selected = filterBulkAdvisoryReport(sharedReport, productionGraph.inventory);
+      const result = await runCheck({
+        cwd: resolve(root, graph.cwd),
+        productionGraph,
+        advisoryVersions: selected.advisoryVersions,
+        dispositionsPath: resolve(root, graph.dispositions),
+        stdout,
+        stderr,
+        rootPackageNames: graph.rootPackageNames,
+        pnpmCommand: options.pnpmCommand,
+        runCommand: options.runCommand,
+        queryAdvisories: async () => selected.report,
+      });
+      if (result.exitCode !== 0) exitCode = 1;
     }
-    const result = await runCheck({
-      cwd: resolve(root, graph.cwd),
-      productionGraph,
-      dispositionsPath: resolve(root, graph.dispositions),
-      stdout,
-      stderr,
-      rootPackageNames: graph.rootPackageNames,
-      pnpmCommand: options.pnpmCommand,
-      runCommand: options.runCommand,
-      queryAdvisories: async (graphInventory) => filterBulkAdvisoryReport(
-        sharedReport,
-        graphInventory,
-      ),
-    });
-    if (result.exitCode !== 0) exitCode = 1;
+  } catch (error) {
+    stderr.write(`dependency vulnerability check: FAILED — ${reasonOf(error)}\n`);
+    return { exitCode: 1 };
   }
   return { exitCode };
 }

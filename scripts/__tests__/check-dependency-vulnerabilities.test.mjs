@@ -1880,6 +1880,35 @@ describe("dependency vulnerability gate", () => {
     },
   );
 
+  it("attributes a shared advisory only to its owned exact versions and paths", () => {
+    const advisory = wsAdvisory();
+    const productionGraph = {
+      inventory: { ws: ["8.20.1", "8.21.1"] },
+      dependencyPaths: {
+        "ws@8.20.1": ["fixture -> ws@8.20.1"],
+        "ws@8.21.1": ["fixture -> ws@8.21.1"],
+      },
+    };
+    const evaluation = evaluateDependencyVulnerabilities({
+      productionGraph,
+      report: { ws: [advisory] },
+      dispositions: emptyDispositions(),
+      advisoryVersions: { ws: { [String(advisory.id)]: ["8.20.1"] } },
+      now: NOW,
+    });
+
+    expect(evaluation.inventory.ws).toEqual(["8.20.1", "8.21.1"]);
+    expect(evaluation.active[0].versions).toEqual(["8.20.1"]);
+    expect(evaluation.active[0].dependencyPaths).toEqual(["fixture -> ws@8.20.1"]);
+    expect(() => evaluateDependencyVulnerabilities({
+      productionGraph,
+      report: { ws: [advisory] },
+      dispositions: emptyDispositions(),
+      advisoryVersions: { ws: { [String(advisory.id)]: ["9.0.0"] } },
+      now: NOW,
+    })).toThrow("must contain exact inventory versions");
+  });
+
   it("rejects malformed, duplicate, and over-budget live advisory reports before expansion", () => {
     const graph = graphFor("ws", "8.20.1", "fixture -> ws@8.20.1");
     const advisory = wsAdvisory();

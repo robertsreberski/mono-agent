@@ -37,11 +37,14 @@ describe("combined dependency vulnerability gate", () => {
     };
 
     expect(filterBulkAdvisoryReport({ shared: [advisory] }, {
-      shared: ["1.5.0"],
-    })).toEqual({ shared: [advisory] });
+      shared: ["1.5.0", "2.0.0"],
+    })).toEqual({
+      report: { shared: [advisory] },
+      advisoryVersions: { shared: { 123: ["1.5.0"] } },
+    });
     expect(filterBulkAdvisoryReport({ shared: [advisory] }, {
       shared: ["2.0.0"],
-    })).toEqual({});
+    })).toEqual({ report: {}, advisoryVersions: {} });
     expect(() => filterBulkAdvisoryReport({
       shared: [{ ...advisory, vulnerable_versions: "not a range" }],
     }, {
@@ -60,9 +63,11 @@ describe("combined dependency vulnerability gate", () => {
     };
     const queryAdvisories = vi.fn(async () => ({ shared: [advisory] }));
     const graphReports = [];
+    const advisoryVersions = [];
     const runCheck = vi.fn(async (options) => {
       const report = await options.queryAdvisories(options.productionGraph.inventory);
       graphReports.push(report);
+      advisoryVersions.push(options.advisoryVersions);
       return { exitCode: 0 };
     });
     const result = await runAllDependencyVulnerabilityChecks({
@@ -102,6 +107,10 @@ describe("combined dependency vulnerability gate", () => {
     });
     expect(runCheck).toHaveBeenCalledTimes(2);
     expect(graphReports).toEqual([{ shared: [advisory] }, {}]);
+    expect(advisoryVersions).toEqual([
+      { shared: { 123: ["1.0.0"] } },
+      {},
+    ]);
     expect(stdout.text).toBe("Auditing isolated web console production graph.\n");
   });
 
@@ -126,6 +135,38 @@ describe("combined dependency vulnerability gate", () => {
 
     expect(result.exitCode).toBe(1);
     expect(stderr.text).toContain("package absent from inventory: unexpected");
+    expect(runCheck).not.toHaveBeenCalled();
+  });
+
+  it("fails closed with a bounded diagnostic when shared advisory selection is invalid", async () => {
+    const stderr = sink();
+    const runCheck = vi.fn();
+    const result = await runAllDependencyVulnerabilityChecks({
+      repoRoot: "/repo",
+      stdout: sink(),
+      stderr,
+      graphs: [{
+        kind: "pnpm",
+        label: "workspace",
+        cwd: ".",
+        dispositions: "root.json",
+        isolated: false,
+      }],
+      collectGraph: async () => graph({ root: ["1.0.0"] }),
+      queryAdvisories: async () => ({
+        root: [{
+          id: 123,
+          severity: "high",
+          title: "fixture advisory",
+          url: "https://example.invalid/advisory/123",
+          vulnerable_versions: "not a range",
+        }],
+      }),
+      runCheck,
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(stderr.text).toContain("invalid vulnerable_versions range");
     expect(runCheck).not.toHaveBeenCalled();
   });
 });

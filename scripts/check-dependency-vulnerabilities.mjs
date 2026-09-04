@@ -1051,7 +1051,13 @@ async function readBoundedResponseBody(body, maxBytes, limitError, abortRequest)
   return Buffer.concat(chunks, totalBytes).toString("utf8");
 }
 
-export function evaluateDependencyVulnerabilities({ productionGraph, report, dispositions, now = new Date() }) {
+export function evaluateDependencyVulnerabilities({
+  productionGraph,
+  report,
+  dispositions,
+  advisoryVersions,
+  now = new Date(),
+}) {
   const normalizedGraph = normalizeProductionGraph(productionGraph);
   const normalizedInventory = normalizedGraph.inventory;
   const normalizedDispositions = normalizeDispositions(dispositions);
@@ -1064,6 +1070,9 @@ export function evaluateDependencyVulnerabilities({ productionGraph, report, dis
     throw new Error("bulk advisory report must be an object keyed by package name.");
   }
   const normalizedReport = normalizeBulkAdvisoryReport(report, normalizedInventory);
+  const normalizedAdvisoryVersions = advisoryVersions === undefined
+    ? undefined
+    : normalizeAdvisoryVersions(advisoryVersions, normalizedInventory, normalizedReport);
 
   const active = [];
   const advisoryPathBudget = { steps: 0 };
@@ -1071,7 +1080,8 @@ export function evaluateDependencyVulnerabilities({ productionGraph, report, dis
     for (const advisory of advisories) {
       const normalized = normalizeLiveAdvisory(
         packageName,
-        normalizedInventory[packageName],
+        normalizedAdvisoryVersions?.get(advisoryKey(packageName, advisory.id))
+          ?? normalizedInventory[packageName],
         normalizedGraph.dependencyPaths,
         advisory,
         advisoryPathBudget,
@@ -1188,6 +1198,7 @@ export async function runDependencyVulnerabilityCheck(options = {}) {
       productionGraph: graphWithPaths,
       report: normalizedReport,
       dispositions,
+      advisoryVersions: options.advisoryVersions,
       now: options.now,
     });
     renderEvaluation(evaluation, { stdout, stderr });
@@ -1376,6 +1387,47 @@ export function normalizeBulkAdvisoryReport(report, inventory) {
     });
   }
   return normalizedReport;
+}
+
+function normalizeAdvisoryVersions(input, inventory, report) {
+  const document = snapshotDataRecord(input, "advisory version ownership");
+  const expected = new Set(Object.entries(report).flatMap(([packageName, advisories]) => (
+    advisories.map((advisory) => advisoryKey(packageName, advisory.id))
+  )));
+  const normalized = new Map();
+  for (const [packageName, packageInput] of Object.entries(document)) {
+    if (!Object.hasOwn(inventory, packageName)) {
+      throw new Error(`advisory version ownership returned package absent from inventory: ${packageName}.`);
+    }
+    const packageDocument = snapshotDataRecord(
+      packageInput,
+      `advisory version ownership for ${packageName}`,
+    );
+    for (const [advisoryId, inputVersions] of Object.entries(packageDocument)) {
+      const key = advisoryKey(packageName, advisoryId);
+      if (!expected.has(key)) {
+        throw new Error(`advisory version ownership contains unexpected advisory ${key}.`);
+      }
+      const versions = snapshotDataArray(
+        inputVersions,
+        `advisory version ownership for ${key}`,
+      );
+      if (versions.length === 0
+        || versions.some((version) => typeof version !== "string"
+          || !inventory[packageName].includes(version))) {
+        throw new Error(`advisory version ownership for ${key} must contain exact inventory versions.`);
+      }
+      if (new Set(versions).size !== versions.length) {
+        throw new Error(`advisory version ownership for ${key} contains duplicate exact versions.`);
+      }
+      normalized.set(key, [...versions].sort());
+    }
+  }
+  const missing = [...expected].filter((key) => !normalized.has(key));
+  if (missing.length > 0) {
+    throw new Error(`advisory version ownership is missing ${missing.join(", ")}.`);
+  }
+  return normalized;
 }
 
 function parseArgs(argv) {
