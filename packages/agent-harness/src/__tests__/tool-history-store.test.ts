@@ -259,7 +259,12 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     const artifact = join(artifactRoot, run.runId, "result.txt");
     await mkdir(join(artifactRoot, run.runId), { recursive: true });
     await writeFile(artifact, "artifact body");
-    const writer = await ToolHistoryWriter.open({ root, artifactRoot });
+    const writer = await ToolHistoryWriter.open({
+      root,
+      artifactRoot,
+      // This test exercises artifact invalidation, not the 250 ms streaming ceiling.
+      persistenceCeilingMs: 5_000,
+    });
     let resultRecordId: string | undefined;
     try {
       await writer.persist(run, {
@@ -1728,7 +1733,11 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("keeps phase-scoped write incidents visible until each missing phase is recovered", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await ToolHistoryWriter.open({
+      root,
+      // Preserve the write-failure assertions under loaded workspace CI.
+      persistenceCeilingMs: 5_000,
+    });
     const run = binding("lost-phases");
     try {
       await expect(writer.persist(run, {

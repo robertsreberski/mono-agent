@@ -12,7 +12,7 @@ import {
   runVerifyAll,
 } from "../verify-all.mjs";
 
-const EXPECTED_CI_NODE_MATRIX = Object.freeze([MINIMUM_NODE_VERSION, "24.18.0"]);
+const EXPECTED_CI_NODE_MATRIX = Object.freeze(["24.18.0"]);
 const CI_CHECKOUT_STEP = [
   "      - name: Checkout",
   "        uses: actions/checkout@v4",
@@ -275,28 +275,33 @@ describe("verify-all", () => {
     }
   });
 
-  it("rejects release argv drift that removes the minimum-version proof", () => {
+  it("rejects making the Node 24 packed-consumer smoke claim minimum-version proof", () => {
     const source = readCiWorkflow();
-    const original = "        run: pnpm run release:consumer -- --tag \"${{ steps.release-smoke.outputs.tag }}\" --require-minimum";
-    const mutated = "        run: pnpm run release:consumer -- --tag \"${{ steps.release-smoke.outputs.tag }}\"";
+    const original = "        run: pnpm run release:consumer -- --tag \"${{ steps.release-smoke.outputs.tag }}\"";
+    const mutated = "        run: pnpm run release:consumer -- --tag \"${{ steps.release-smoke.outputs.tag }}\" --require-minimum";
     const mutatedSource = replaceExactly(source, original, mutated);
 
     expect(() => expectCiParity(mutatedSource)).toThrow();
   });
 
-  it("rejects moving the packed consumer condition to another Node version", () => {
+  it("rejects restoring the deprecated Node 22 PR check", () => {
     const source = readCiWorkflow();
-    const original = [
-      "      - name: Install packed consumer at the minimum Node version",
-      "        if: ${{ matrix.node-version == '22.19.0' }}",
-    ].join("\n");
-    const mutated = [
-      "      - name: Install packed consumer at the minimum Node version",
-      "        if: ${{ matrix.node-version == '24.18.0' }}",
-    ].join("\n");
-    const mutatedSource = replaceExactly(source, original, mutated);
+    const mutations = [
+      replaceExactly(
+        source,
+        "        node-version: [\"24.18.0\"]",
+        "        node-version: [\"22.19.0\", \"24.18.0\"]",
+      ),
+      replaceExactly(
+        source,
+        "    name: Verify (Node ${{ matrix.node-version }})",
+        "    name: Verify (Node 22.19.0)",
+      ),
+    ];
 
-    expect(() => expectCiParity(mutatedSource)).toThrow();
+    for (const mutation of mutations) {
+      expect(() => expectCiParity(mutation)).toThrow();
+    }
   });
 
   it("rejects shared gate reordering", () => {
@@ -621,7 +626,6 @@ describe("verify-all", () => {
     ].join("\n");
     const dependencyVulnerabilities = [
       "      - name: Check production dependency vulnerabilities",
-      "        if: ${{ matrix.node-version == '22.19.0' }}",
       "        run: pnpm run check:dependency-vulnerabilities",
     ].join("\n");
     const releaseTag = [
@@ -738,13 +742,13 @@ describe("verify-all", () => {
 
   it("rejects every noncanonical CI Node matrix value", () => {
     const source = readCiWorkflow();
-    const matrix = "        node-version: [\"22.19.0\", \"24.18.0\"]";
+    const matrix = "        node-version: [\"24.18.0\"]";
 
-    for (const replacement of ["20", "99", "future"]) {
+    for (const replacement of ["20", "22.19.0", "99", "future"]) {
       const mutation = replaceExactly(
         source,
         matrix,
-        `        node-version: ["22.19.0", "${replacement}"]`,
+        `        node-version: ["${replacement}"]`,
       );
       expect(() => parseCiVerifyJob(mutation)).toThrow(/must remain exactly/u);
     }
@@ -893,7 +897,9 @@ function parseCiVerifyJob(source) {
     ["name", "runs-on", "timeout-minutes", "strategy", "steps"],
     "CI verify job",
   );
-  requireStringField(verifyFields, "name", "CI verify job");
+  if (requireStringField(verifyFields, "name", "CI verify job") !== "Verify (Node ${{ matrix.node-version }})") {
+    throw new Error("The CI verify check name must remain derived from the Node matrix.");
+  }
   if (requireScalarField(verifyFields, "runs-on", "CI verify job") !== "ubuntu-latest") {
     throw new Error("The CI verify job must run on ubuntu-latest.");
   }
@@ -1131,10 +1137,10 @@ const CI_RUN_STEP_CONTRACTS = Object.freeze([
     command: "pnpm",
     args: ["run", "release:pack", "--", "--tag", CI_RELEASE_TAG_EXPRESSION],
   }),
-  gateRunContract(`pnpm run release:consumer -- --tag "${CI_RELEASE_TAG_EXPRESSION}" --require-minimum`, {
+  gateRunContract(`pnpm run release:consumer -- --tag "${CI_RELEASE_TAG_EXPRESSION}"`, {
     label: "release:consumer",
     command: "pnpm",
-    args: ["run", "release:consumer", "--", "--tag", CI_RELEASE_TAG_EXPRESSION, "--require-minimum"],
+    args: ["run", "release:consumer", "--", "--tag", CI_RELEASE_TAG_EXPRESSION],
   }),
   gateRunContract("pnpm run typecheck", {
     label: "typecheck",

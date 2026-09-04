@@ -113,40 +113,16 @@ export const VERIFY_GATE_DELTA = Object.freeze({
         args: Object.freeze(["run", "check:dependency-vulnerabilities"]),
       }),
       ciAfter: "dependency install",
-      ciNodeVersion: MINIMUM_NODE_VERSION,
       verifyAll: Object.freeze({
         label: "check:dependency-vulnerabilities",
         command: "pnpm",
         args: Object.freeze(["run", "check:dependency-vulnerabilities"]),
       }),
       verifyAllAfter: "check:licenses",
-      reason: "CI runs the production advisory gate immediately after its frozen install on the minimum-Node leg; local verify:all runs it after license policy on every supported runtime.",
+      reason: "CI runs the production advisory gate immediately after its frozen install; local verify:all runs it after license policy.",
     }),
   ]),
-  matrixDifferences: Object.freeze([
-    Object.freeze({
-      label: "check:dependency-vulnerabilities",
-      ciCondition: `\${{ matrix.node-version == '${MINIMUM_NODE_VERSION}' }}`,
-      ciNodeVersion: MINIMUM_NODE_VERSION,
-      verifyAllOnlyGate: Object.freeze({
-        label: "check:dependency-vulnerabilities",
-        command: "pnpm",
-        args: Object.freeze(["run", "check:dependency-vulnerabilities"]),
-      }),
-      reason: "CI audits production dependencies once on the minimum-Node leg; verify:all runs the same fail-closed audit on every supported local runtime.",
-    }),
-    Object.freeze({
-      label: "release:consumer",
-      ciCondition: `\${{ matrix.node-version == '${MINIMUM_NODE_VERSION}' }}`,
-      ciNodeVersion: MINIMUM_NODE_VERSION,
-      verifyAllOnlyGate: Object.freeze({
-        label: "release:consumer",
-        command: "pnpm",
-        args: Object.freeze(["run", "release:consumer", "--", "--tag", CI_RELEASE_TAG_EXPRESSION]),
-      }),
-      reason: "CI runs the packed consumer only on the minimum-Node leg; verify:all also smoke-tests it on newer supported Node versions without --require-minimum.",
-    }),
-  ]),
+  matrixDifferences: Object.freeze([]),
 });
 
 export function createRepoGate({ releaseTag, nodeVersion = process.versions.node }) {
