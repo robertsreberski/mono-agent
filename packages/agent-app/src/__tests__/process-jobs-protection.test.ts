@@ -11,8 +11,8 @@ import {
 } from "../process-jobs-protection.js";
 import type { ProcessJobsRootRegistrySnapshot } from "../process-jobs-root-registry.js";
 
-const PI = { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" } as const;
-const CLAUDE = { sdk: "claude", model: "claude-opus-4-8" } as const;
+const PI = { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" } as const;
+const CLAUDE = { provider: "anthropic", model: "claude-opus-4-8", reference: "anthropic:claude-opus-4-8" } as const;
 const EMPTY = { kind: "empty", roots: [], protectedRoots: [] } as never;
 const READY = { kind: "ready", roots: [{}], protectedRoots: ["private"] } as never;
 const FAILED = { kind: "failed", roots: [], protectedRoots: ["control"] } as never;
@@ -36,7 +36,7 @@ function config(input: {
       : { subagents: { enabled: true, definitions: [{ name: "child", model: input.child }] } }),
     ...(input.memory === undefined
       ? {}
-      : { memory: { llm: { provider: "agent-host", model: `${input.memory.sdk}:${input.memory.model}` } } }),
+      : { memory: { llm: { provider: "agent-host", model: `${input.memory.provider}:${input.memory.model}` } } }),
     ...(sandbox === "absent"
       ? {}
       : { sandbox: createSandboxPolicy({ mode: sandbox, root: "/agent/workspace" }) }),
@@ -108,8 +108,8 @@ describe("ProcessJobs app-private protection posture", () => {
     ["fallback", { fallback: CLAUDE }],
     ["Agent child", { child: CLAUDE }],
     ["agent-host memory", { memory: CLAUDE }],
-  ] as const)("rejects a configured non-Pi %s route", (_label, route) => {
-    expect(() => resolve({ coreConfig: config(route) })).toThrow(/every configured primary, fallback, Agent child/u);
+  ] as const)("accepts a parsed provider route for %s", (_label, route) => {
+    expect(resolve({ coreConfig: config(route) })).toMatchObject({ kind: "unsafe-unprotected" });
   });
 
   it("gives failed registry state precedence over every unsafe eligibility error", () => {

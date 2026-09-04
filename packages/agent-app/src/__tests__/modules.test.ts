@@ -38,8 +38,8 @@ describe("resolveModuleInputs", () => {
   });
 
   it("lets overrides win over defaults", () => {
-    const values = resolveModuleInputs(fixtureModule, { model: "codex:gpt-5.5" });
-    expect(values.model).toBe("codex:gpt-5.5");
+    const values = resolveModuleInputs(fixtureModule, { model: "openai-codex:gpt-5.5" });
+    expect(values.model).toBe("openai-codex:gpt-5.5");
   });
 
   it("preserves overrides that do not correspond to a declared input", () => {
@@ -51,53 +51,52 @@ describe("resolveModuleInputs", () => {
 
 describe("baseConfig", () => {
   it("sets runtime.model and workspace '.'", () => {
-    const config = baseConfig({ dirBasename: "my-agent", skillsRootExists: false }, "My Agent", DEFAULT_MODEL, [], "uniform");
+    const config = baseConfig({ dirBasename: "my-agent", skillsRootExists: false }, "My Agent", DEFAULT_MODEL, []);
     expect(config.runtime?.model).toBe(DEFAULT_MODEL);
     expect(config.runtime?.workspace).toBe(".");
   });
 
   it("always selects the two bundled project skills with index disclosure", () => {
-    const withSkills = baseConfig({ dirBasename: "a", skillsRootExists: true }, "A", DEFAULT_MODEL, [], "uniform");
+    const withSkills = baseConfig({ dirBasename: "a", skillsRootExists: true }, "A", DEFAULT_MODEL, []);
     expect(withSkills.context?.skillsRoot).toBe("./skills");
 
-    const withoutSkills = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [], "uniform");
+    const withoutSkills = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, []);
     expect(withoutSkills.context?.skillsRoot).toBe("./skills");
     expect(withoutSkills.context?.selectedSkills).toEqual(["mono-agent-configure", "mono-agent-memory"]);
     expect(withoutSkills.context?.skillDisclosure).toBe("index");
   });
 
   it("sets public identity and traceability.sourceLabel from the agent name", () => {
-    const config = baseConfig({ dirBasename: "orchestrator", skillsRootExists: false }, "Research Companion", DEFAULT_MODEL, [], "uniform");
+    const config = baseConfig({ dirBasename: "orchestrator", skillsRootExists: false }, "Research Companion", DEFAULT_MODEL, []);
     expect(config.agent?.name).toBe("Research Companion");
     expect(config.traceability?.sourceLabel).toBe("Research Companion");
     expect(config.traceability?.registryDir).toBe("./.mono-agent/trace-sources");
   });
 
   it("includes canonical fallbacks only when non-empty", () => {
-    const none = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [], "uniform");
+    const none = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, []);
     expect(none.runtime).not.toHaveProperty("fallbacks");
 
-    const some = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [{ model: "codex:gpt-5.5", effort: "high" }], "per-route-native");
-    expect(some.runtime?.fallbacks).toEqual([{ model: "codex:gpt-5.5", effort: "high" }]);
-    expect(some.runtime?.routeSafety).toBe("per-route-native");
+    const some = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [{ model: "openai-codex:gpt-5.5", effort: "high" }]);
+    expect(some.runtime?.fallbacks).toEqual([{ model: "openai-codex:gpt-5.5", effort: "high" }]);
   });
 
   it("includes runtime.effort only when supplied", () => {
-    const none = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [], "uniform");
+    const none = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, []);
     expect(none.runtime).not.toHaveProperty("effort");
 
-    const configured = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [], "uniform", "high");
+    const configured = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [], "high");
     expect(configured.runtime?.effort).toBe("high");
   });
 
   it("starts with an empty allowedTools policy", () => {
-    const config = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [], "uniform");
+    const config = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, []);
     expect(config.tools?.allowedTools).toEqual([]);
     expect(config.tools?.disallowedTools).toEqual([]);
   });
 
   it("omits $schema and any module-owned blocks (memory/sandbox/webhook)", () => {
-    const config = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [], "uniform");
+    const config = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, []);
     expect(config).not.toHaveProperty("$schema");
     expect(config).not.toHaveProperty("memory");
     expect(config).not.toHaveProperty("sandbox");

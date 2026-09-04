@@ -28,29 +28,22 @@ my-agent/
 
 ## Annotated Config
 
-New configs use `runtime.fallbacks[]`, where each route owns its optional exact
-effort. Legacy `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain
-supported compatibility inputs with no removal deadline; do not emit them for a
-new agent.
+Configs use `runtime.fallbacks[]`, where each route owns its optional exact
+effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired in
+0.21.0 and are now rejected at load — never emit them.
 
 ```jsonc
 {
   // Runtime: primary model plus ordered backups tried on retryable provider
   // failures (failover is reported in run results, never silent).
   "runtime": {
-    "model": "claude:claude-sonnet-4-6",   // claude:* | codex:* | pi:<provider>:<model>
-    "fallbacks": [{ "model": "pi:ollama:gemma4:31b" }],
-    "routeSafety": "uniform",              // uniform | per-route-native
-    "executionMode": "sdk",                // sdk | cli (default inferred from model)
-    "effort": "medium",                    // none|minimal|low|medium|high|xhigh|max|ultra; omit for direct opencode:*
-                                           // Reasoning-capable pi:* maps ultra to LOW; Pi without reasoning uses OFF.
-                                           // Direct codex:* forwards ultra unchanged. Mono-agent rejects ultra on its Claude SDK route
-                                           // because the pinned SDK public contract ends at max (the SDK JavaScript itself forwards the value).
-                                           // The Claude CLI route passes --effort ultra, but both tested Claude Code binaries
-                                           // (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort.
-                                           // Direct OpenCode rejects explicit effort.
+    "model": "anthropic:claude-sonnet-4-6", // canonical <provider>:<model>, split at the first colon only
+    "fallbacks": [{ "model": "ollama:gemma4:31b" }],
+    "effort": "medium",                    // none|minimal|low|medium|high|xhigh|max|ultra
+                                           // Narrowed per model for display; still accepted at turn time.
+                                           // A model advertising no ultra rung simply does not offer it in pickers.
                                            // Ranking above max only prevents keyword downgrade.
-    "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (CLI backends)
+    "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "compaction": {
       "enabled": true,                     // default true
@@ -72,7 +65,11 @@ new agent.
     "maxPendingRuns": 100
   },
 
-  // Local/self-hosted providers for pi:<provider>:<model> references.
+  // Providers the agent supports, keyed by canonical provider id. This map
+  // gates what is selectable: a route naming a provider that is neither a Pi
+  // builtin, nor `ollama`/`lmstudio` (zero-config autodiscovered), nor declared
+  // here with a "baseUrl", fails config load. `piAuthPath`, `piNative`, and
+  // `local` are reserved keys, never provider ids.
   "providers": {
     "piAuthPath": "~/.pi/agent/auth.json", // Pi OAuth credentials (openai-codex, ...)
     // Pi-native bridge tuning (all optional).
@@ -82,19 +79,22 @@ new agent.
       "maxRetryDelayMs": 60000,            // backoff cap between retries (ms)
       "piSessionsRoot": ".mono-agent/sessions" // durable JSONL sessions → resume across restarts (unset = in-memory)
     },
-    "local": [
-      {
-        "id": "ollama",
-        "type": "ollama",                  // ollama | lmstudio | openai_compat
-        "baseUrl": "http://localhost:11434",
-        "enabled": true,
-        "trustPublicUrl": false,           // explicit opt-in for non-private URLs
-        // Keep the key in .env; config stores only its variable name.
-        // Inline "apiKey" remains schema-compatible for existing consumers.
-        "apiKeyEnv": "MY_PROVIDER_KEY",
-        "models": [{ "name": "gemma4:31b", "capabilities": { "context_window": 32768 } }]
-      }
-    ]
+    // One entry per provider id; every field below is optional. Declare an
+    // ollama/lmstudio entry only to override its endpoint or credential.
+    "ollama": {
+      "type": "ollama",                    // ollama | lmstudio | openai_compat; required with a
+                                           // baseUrl unless the id is ollama or lmstudio
+      "baseUrl": "http://localhost:11434",
+      "enabled": true,                     // false keeps the route loadable but unselectable
+      "trustPublicUrl": false,             // explicit opt-in for non-private URLs
+      // Keep the key in .env; config stores only its variable name.
+      // Inline "apiKey" remains schema-compatible for existing consumers.
+      "apiKeyEnv": "MY_PROVIDER_KEY",
+      "maxAdvertisedModels": 100,          // 1-200 catalog cap; default 100
+      "models": [{ "name": "gemma4:31b", "capabilities": { "context_window": 32768 } }]
+    }
+    // Legacy shape, still accepted and migrated on load — do not emit it for a
+    // new agent: "local": [{ "id": "ollama", "type": "ollama", ... }]
   },
 
   // Identity, optional soul, and selected skills.
@@ -128,11 +128,14 @@ new agent.
       "dim": 768                           // nomic-embed-text:v1.5 output dimension
     },
     "llm": {                               // enables bujo capture and the effective bujo tier; omit for lite/journal
-      // Env: MONO_AGENT_MEMORY_LLM_PROVIDER / _MODEL / _EXECUTION_MODE / _ENDPOINT.
+      // Env: MONO_AGENT_MEMORY_LLM_PROVIDER / _MODEL / _ENDPOINT / _TRACE / _TIMEOUT_MS.
+      // `memory.llm.executionMode` and MONO_AGENT_MEMORY_LLM_EXECUTION_MODE were
+      // retired in 0.21.0 and are rejected at load — never emit them.
       "provider": "ollama",                // ollama | agent-host
-      "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. pi:openai-codex:gpt-5.5
+      "model": "qwen3.6:latest",           // ollama: model string; agent-host: canonical <provider>:<model>
       "endpoint": "http://localhost:11434" // ollama only; invalid for agent-host
-      // For agent-host, use: "model": "pi:openai-codex:gpt-5.5", "executionMode": "sdk"; omit endpoint.
+      // For agent-host, use: "model": "openai-codex:gpt-5.6-sol"; omit endpoint.
+      // agent-host also accepts "trace" (default true) and "timeoutMs" (default 60000).
     },
     // Bujo auto-scheduler — override the default or disable it.
     // Consolidation runs in-app; no external cron or launchd needed.
@@ -204,9 +207,9 @@ new agent.
     "progress": { "enabled": true }
   },
 
-  // Sandbox for Pi-owned runtime commands. Direct Codex uses its own sandbox;
-  // Claude/direct OpenCode cannot enforce these exact srt scopes. All reject
-  // this block (pi:opencode-go:* remains a Pi route).
+  // Sandbox for Pi-owned runtime commands. Every route is Pi-native, so this
+  // block applies uniformly across the primary, every fallback, and every
+  // per-trigger override — no route family rejects it any more.
   "sandbox": {
     "mode": "native",                      // native (srt-wrapped) | off
     "network": { "mode": "none", "allowlist": [] }, // none|localhost|allowlist|all; *.suffix wildcards; all = open egress with filesystem still enforced (managed/explicit node+cli SRT launch only)
@@ -275,7 +278,7 @@ new agent.
         "path": "/webhook/invoke",
         "mode": "sync",
         "prompt": "Respond to this request:",
-        "model": "claude:claude-sonnet-4-6", // optional per-trigger override
+        "model": "anthropic:claude-sonnet-4-6", // optional per-trigger override
         "effort": "high",                  // same eight-level effort enum as runtime
         "maxRunMs": 3600000,               // endpoint override; 0 disables only this watchdog
         "notify": true,                     // deliver the successful final answer verbatim
@@ -414,7 +417,7 @@ new agent.
         "timezone": "UTC",                 // IANA timezone
         "prompt": "Post the morning summary.",
         "conversationId": "cron-daily",    // optional: share memory/history across ticks
-        "model": "claude:claude-sonnet-4-6", // optional per-trigger override
+        "model": "anthropic:claude-sonnet-4-6", // optional per-trigger override
         "effort": "high",
         "notify": true,                     // successful non-empty final answer is delivered verbatim
         // Explicit destination; if omitted, infer only with exactly one candidate.
@@ -437,7 +440,7 @@ new agent.
 mono-agent presets list                 # saved answer-sets (id, risk, description)
 mono-agent presets show <id>            # generated config + .env.example + follow-up checklist
 mono-agent init --preset <id> --yes [--with slack,cron] [--dry-run]   # scaffold from a preset (non-interactive)
-mono-agent init --model claude:claude-sonnet-4-6 --fallback pi:ollama:gemma4:31b [--memory lite|journal|bujo]
+mono-agent init --model anthropic:claude-sonnet-4-6 --fallback ollama:gemma4:31b [--memory lite|journal|bujo]
 mono-agent config       # resolved config field-by-field, each value tagged env/json/default
 mono-agent validate [--preset <id>] [--consumer <path>]     # per-section report; --preset also checks the preset's capabilities
 mono-agent start        # traceability + every configured channel
@@ -447,7 +450,7 @@ mono-agent restart --clear-sessions  # restart AND purge persisted pi sessions (
 
 A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` / `--env-file` paths there. `start` prints the traceability source (Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts) and one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason. Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it) and run `mono-agent restart` to apply — there is no live browser re-apply.
 
-For BuJo capture and the effective `bujo` tier that runs scheduled consolidation, configure `memory.llm`. Use `provider: "ollama"` with a local Ollama chat model string and optional `endpoint`, or `provider: "agent-host"` with `model` as a normal SDK runtime model reference such as `pi:openai-codex:gpt-5.5` and `executionMode: "sdk"`. `endpoint` is Ollama-only, and CLI-backed refs such as `codex:gpt-5.5` are rejected for memory LLMs until runtimes can enforce no external actions. The same values can be supplied via `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`, and `MONO_AGENT_MEMORY_LLM_ENDPOINT`. Routine BuJo consolidation runs via the in-app scheduler; the standalone `memory-bujo` maintenance CLI was removed (use `mono-agent memory <subcommand>` from the agent folder). `agent-host` LLM capture is an in-app composition path that injects the `LlmComplete` implementation into the BuJo store.
+For BuJo capture and the effective `bujo` tier that runs scheduled consolidation, configure `memory.llm`. Use `provider: "ollama"` with a local Ollama chat model string and optional `endpoint`, or `provider: "agent-host"` with `model` as a canonical `<provider>:<model>` runtime reference such as `openai-codex:gpt-5.6-sol`. Every route is Pi-native, so there is no SDK-versus-CLI distinction and no reference family is singled out for rejection: any reference the runtime accepts is valid here, including `openai-codex:*`. `endpoint` is Ollama-only and invalid for `agent-host`; `agent-host` additionally accepts `trace` (record each `complete()` as a `mem-*` run; default `true`) and `timeoutMs` (per-`complete()` abort, default 60000, range 1000-600000). The same values can be supplied via `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_ENDPOINT`, `MONO_AGENT_MEMORY_LLM_TRACE`, and `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`. `memory.llm.executionMode` and `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` were retired in 0.21.0 and now fail config load — delete them, never emit them. Routine BuJo consolidation runs via the in-app scheduler; the standalone `memory-bujo` maintenance CLI was removed (use `mono-agent memory <subcommand>` from the agent folder). `agent-host` LLM capture is an in-app composition path that injects the `LlmComplete` implementation into the BuJo store.
 
 For operator views, run `mono-agent tui` or `mono-agent web` from any directory once the agent is started. Both discover running agents via the trace-source registry. The TUI and assistant-ui web console chat over the default-on `tui` stream endpoint (`"tui": {"enabled": false}` opts out); on macOS, `mono-agent tui --configure` opens a persistent, visibly marked proposal-only SELF-CONFIG conversation against the managed background agent and must not be combined with `--local`. Approval, rejection, and no-change turns continue that session; only quitting exits it. `mono-agent web` is an always-on service namespace, binds `0.0.0.0:5050` by default, and has no app login; use `--loopback` to narrow it. Capable agents expose stable read-only cron channels there. Run-now and runtime enable controls remain hidden unless `tui.apiKey` is configured and `cron.operatorActions.enabled` is explicitly true; every mutation still requires confirmation, is agent-audited, and does not rewrite job config. The former read-only recorder command, package, and relay were removed; use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). The low-level `mono-agent-tui` bin also supports `--responder <file>` (embedded, an ESM module default-exporting an `AgentResponderLike` or exporting `createResponder(env, cwd, configJson)`) and `--url <baseUrl>` (direct connect).
 

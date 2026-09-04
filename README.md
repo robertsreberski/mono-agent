@@ -205,8 +205,7 @@ Hosts can pass local OpenAI-compatible providers into `@mono-agent/agent-runtime
 ```json
 {
   "runtime": {
-    "model": "pi:ollama:qwen3:8b",
-    "executionMode": "sdk",
+    "model": "ollama:qwen3:8b",
     "workspace": "."
   },
   "providers": {
@@ -223,8 +222,8 @@ Built-in Pi credentialed providers use the Pi auth file instead of
 `providers.local`. Core config defaults `providers.piAuthPath` to
 `~/.pi/agent/auth.json` and exposes `MONO_AGENT_PI_AUTH_PATH` for hosts that keep
 credentials elsewhere. Subscription/account-backed providers include
-`pi:openai-codex:*`, `pi:anthropic:*`, `pi:github-copilot:*`, and
-`pi:opencode-go:*`. OpenAI-Codex, Anthropic, and GitHub Copilot use Pi
+`openai-codex:*`, `anthropic:*`, `github-copilot:*`, and
+`opencode-go:*`. OpenAI-Codex, Anthropic, and GitHub Copilot use Pi
 OAuth/account flows where supported; OpenCode-Go uses an API key (`OPENCODE_API_KEY`)
 that guided setup can save into the Pi auth store. Recover a Pi OAuth provider
 with `mono-agent auth login <provider>`. Anthropic keeps the localhost callback
@@ -305,8 +304,8 @@ Replace `@mono-agent/agent-runtime` with the package under test.
 - Interactive secret persistence fails closed unless the canonical agent directory is current-user-owned and not group/world-writable, `.env`/`.gitignore` are current-user single-link regular paths, `.env` is untracked valid dotenv text, exact ignore rules are protected from group/world writes, and promotion can prove owner-only permissions plus pathname no-clobber identity. Windows gets manual instructions instead of an automatic secret write.
 - Settings JSON is local, schema-validated, and written with restrictive file permissions where the settings helper writes it.
 - Secret fields are redacted in diagnostics and status output.
-- Tool policy is allow-all by default (omit `tools.allowedTools`, or include `"*"` in the list, for every tool). Pi and Claude SDK flows may narrow with a list or go chat-only with `[]`; Claude Code CLI supports non-empty lists and deny-lists but rejects empty-list chat-only. Direct Codex and direct OpenCode require an effective allow-all policy: the allowlist is omitted or contains `"*"`, and `disallowedTools` is empty. Direct OpenCode also rejects real MCP sources; the host suppresses its implicit MCP-backed `AskUser` tool on direct routes, while rejected per-trigger overrides keep the base runtime's interaction tools. Guided readiness deliberately rejects advanced direct OpenCode refs; use the Pi `pi:opencode-go:*` path or an explicit scaffold/config with OpenCode's native `permissionMode`. Unsupported policies fail before provider startup. See the [runtime enforcement table](./docs/tools/policy.md). The programmatic harness safety net with no policy is fail-closed (`failClosedToolPolicy()`).
-- Mono-agent sandbox policy is explicit and fail-closed for Pi-owned commands. Under the default uniform route safety, validation/runtime reject a route that cannot represent the common `srt` contract. Explicit per-route-native routing may use Codex/Claude/OpenCode only under their documented native contract; it reports that mono-agent roots, deny-write globs, and network policy do not apply to those attempts rather than presenting them as enforced.
+- Tool policy is allow-all by default (omit `tools.allowedTools`, or include `"*"` in the list, for every tool). Narrow it with an explicit list, or go chat-only with `[]`. Unsupported policies fail before provider startup. See the [runtime enforcement table](./docs/tools/policy.md). The programmatic harness safety net with no policy is fail-closed (`failClosedToolPolicy()`).
+- Mono-agent sandbox policy is explicit and fail-closed for Pi-owned commands. Every route is Pi-native, so the `srt` contract — mono-agent roots, deny-write globs, and network policy — applies uniformly; validation and runtime reject a route that cannot represent it.
 - Memory writes are host-owned and optional.
 - Fixtures and fake runtimes are for tests only, not product-runtime substitutes.
 
@@ -352,13 +351,10 @@ flowchart TB
     Observability["@mono-agent/observability<br/>JSONL events + summaries + trace registry"]
   end
 
-  subgraph Runtime["Runtime backend choices"]
+  subgraph Runtime["Pi runtime"]
     RuntimeAdapter["@mono-agent/runtime-adapter<br/>model refs + sandbox policy"]
-    AgentRuntime["@mono-agent/agent-runtime<br/>provider/CLI implementation"]
-    ClaudeSdk["Claude SDK<br/>claude:&lt;model&gt; + sdk"]
-    ClaudeCli["Claude Code CLI<br/>claude:&lt;model&gt; + cli"]
-    CodexCli["Codex app CLI<br/>codex:&lt;model&gt; + cli"]
-    PiSdk["Pi SDK providers<br/>pi:&lt;provider&gt;:&lt;model&gt; + sdk"]
+    AgentRuntime["@mono-agent/agent-runtime<br/>Pi implementation"]
+    PiSdk["Pi providers<br/>&lt;provider&gt;:&lt;model&gt;"]
   end
 
   Host -. optional .-> Tui
@@ -400,9 +396,6 @@ flowchart TB
 
   RuntimeAdapter --> AgentRuntime
   RuntimeAdapter --> Contracts
-  AgentRuntime --> ClaudeSdk
-  AgentRuntime --> ClaudeCli
-  AgentRuntime --> CodexCli
   AgentRuntime --> PiSdk
 ```
 

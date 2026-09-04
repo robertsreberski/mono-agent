@@ -1651,7 +1651,7 @@ describe("adapter send tool posted-message indexing", () => {
     const harness = createAgentHarness({
       identityPath: join(dir, "IDENTITY.md"),
       runtime: fake.runtime,
-      model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" },
+      model: { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" },
       cwd: dir,
       historyStore: postedReplyHistory.wrapHistoryStore(historyStore),
     });
@@ -1824,7 +1824,7 @@ async function writeConfig(json: Record<string, unknown>): Promise<string> {
 
 function baseConfig(): Record<string, unknown> {
   return {
-    runtime: { model: "pi:openai-codex:gpt-5.5", workspace: "." },
+    runtime: { model: "openai-codex:gpt-5.5", workspace: "." },
     context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
     tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: "./artifacts" },

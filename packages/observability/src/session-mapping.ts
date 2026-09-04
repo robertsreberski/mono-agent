@@ -242,7 +242,6 @@ export interface Session {
   readonly provider?: string;
   readonly providerSessionId?: string | null;
   readonly isolated?: boolean;
-  readonly api?: string;
   readonly effort?: string;
   /**
    * Trigger prompt (userInput minus the recalled-memory tail). Retained free
@@ -917,21 +916,17 @@ function resolveOutcome(finalTextRaw: string): SessionOutcome {
 }
 
 /**
- * Best-effort parse of a `sdk:provider:model` reference. `api` = the sdk segment
- * (e.g. "pi"), `provider` = the provider segment (e.g. "ollama"). Omits both when
- * the reference has fewer than two colon-separated segments (unparseable) — the
- * UI shows "—" for absent fields.
+ * Best-effort parse of a canonical `<provider>:<model>` reference. Older
+ * persisted session rows may still carry the removed `api` field, but new rows
+ * emit only the provider before the first colon. The model is opaque and may
+ * contain further colons.
  */
-function parseModelRef(ref: string | undefined): { readonly api?: string; readonly provider?: string } {
+function parseModelRef(ref: string | undefined): { readonly provider?: string } {
   if (ref === undefined) return {};
-  const parts = ref.split(":");
-  if (parts.length < 2) return {};
-  const api = parts[0]?.trim();
-  const provider = parts[1]?.trim();
-  return {
-    ...(api === undefined || api.length === 0 ? {} : { api }),
-    ...(provider === undefined || provider.length === 0 ? {} : { provider }),
-  };
+  const separator = ref.indexOf(":");
+  if (separator <= 0 || separator === ref.length - 1) return {};
+  const provider = ref.slice(0, separator).trim();
+  return provider.length === 0 ? {} : { provider };
 }
 
 /**

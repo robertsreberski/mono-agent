@@ -1,11 +1,13 @@
 {
   "$schema": "https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packages/agent-app/schema/mono-agent.config.schema.json",
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5",
-    "fallbackModels": [
-      "pi:opencode-go:glm-5.2"
+    "model": "openai-codex:gpt-5.5",
+    "fallbacks": [
+      {
+        "model": "opencode-go:glm-5.2",
+        "effort": "xhigh"
+      }
     ],
-    "executionMode": "sdk",
     "effort": "xhigh",
     "workspace": ".",
     "permissionMode": "bypassPermissions",

@@ -41,7 +41,7 @@ describe("runCli runs report", () => {
       endedAt: "2026-06-24T10:00:01.000Z",
       durationMs: 1000,
       cost: { cumulativeUsd: 0.05 },
-      model: "codex:gpt-5.5",
+      model: "openai-codex:gpt-5.5",
       eventCount: 0,
       artifactPaths: [],
     });
@@ -53,7 +53,7 @@ describe("runCli runs report", () => {
       startedAt: "2026-06-24T10:01:00.000Z",
       endedAt: "2026-06-24T10:01:01.000Z",
       durationMs: 3000,
-      model: "codex:gpt-5.5",
+      model: "openai-codex:gpt-5.5",
       eventCount: 0,
       artifactPaths: [],
     });
@@ -82,7 +82,7 @@ describe("runCli runs report", () => {
       expect(report.overall.statusCounts.failed).toBe(1);
       expect(report.overall.cost.totalUsd).toBe(0.05);
       expect(report.groups).toHaveLength(1);
-      expect(report.groups[0]).toMatchObject({ key: "codex:gpt-5.5", totalRuns: 2 });
+      expect(report.groups[0]).toMatchObject({ key: "openai-codex:gpt-5.5", totalRuns: 2 });
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       fetchSpy.mockRestore();

@@ -15,6 +15,7 @@ import {
 } from "@mono-agent/agent-contracts";
 import type { JsonEnvFieldSpec, RedactedSecretValue, SettingsJson } from "@mono-agent/agent-contracts";
 
+import { assertEndpointIdentity } from "./endpoint-identity.js";
 import { loadWebhookEndpointsFromDirectory } from "./endpoints-dir.js";
 import { normalizePath, WebhookAdapterError, type WebhookInvocationMode } from "./server.js";
 
@@ -214,7 +215,11 @@ async function loadDirectoryEndpoints(
   return await loadWebhookEndpointsFromDirectory(resolve(input.cwd, dirName), defaultMode);
 }
 
-/** Combine inline-config endpoints with folder endpoints; duplicate name or path is a hard error. */
+/**
+ * Combine inline-config endpoints with folder endpoints; duplicate name or path is a hard
+ * error. Identity is asserted here for the inline sources, which have no earlier gate; a
+ * folder endpoint was already checked by the directory loader and re-checking it is a no-op.
+ */
 function mergeEndpoints(
   configEndpoints: WebhookEndpointConfig[],
   directoryEndpoints: WebhookEndpointConfig[],
@@ -223,6 +228,7 @@ function mergeEndpoints(
   const nameSource = new Map<string, string>();
   const pathSource = new Map<string, string>();
   const append = (endpoint: WebhookEndpointConfig, source: string): void => {
+    assertEndpointIdentity(endpoint, source);
     const priorName = nameSource.get(endpoint.name);
     if (priorName !== undefined) {
       throw invalidConfig(`Duplicate webhook endpoint name "${endpoint.name}" from ${priorName} and ${source}.`, { name: endpoint.name });

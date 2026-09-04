@@ -79,7 +79,6 @@ describe("AgentHarness backpressure (maxPendingRuns)", () => {
       identityPath,
       runtime,
       model,
-      executionMode: "sdk",
       attachmentsDir,
       // Width 1: only one provider call at a time. Pending 1: only one admitted
       // run may wait for that slot; a further arrival fails fast.
@@ -132,7 +131,6 @@ describe("AgentHarness backpressure (maxPendingRuns)", () => {
       identityPath,
       runtime,
       model,
-      executionMode: "sdk",
       concurrency: { maxPendingRuns: 1 },
     });
 
@@ -170,7 +168,6 @@ describe("AgentHarness backpressure (maxPendingRuns)", () => {
       identityPath,
       runtime,
       model,
-      executionMode: "sdk",
       historyStore,
       concurrency: { maxPendingRuns: 1 },
     });

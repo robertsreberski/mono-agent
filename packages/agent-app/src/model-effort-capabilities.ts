@@ -1,8 +1,8 @@
 import { EFFORT_LEVELS } from "@mono-agent/config";
 import {
-  curatedClaudeSdkModels,
   getPiBuiltinModel,
   reasoningLevelsForPiModel,
+  type PiBuiltinModelSnapshot,
 } from "@mono-agent/agent-runtime";
 import type {
   LocalProviderDefinition,
@@ -11,21 +11,10 @@ import type {
 } from "@mono-agent/runtime-adapter";
 import { resolveModelEffortLevels } from "@mono-agent/runtime-adapter";
 
-import type { CodexCatalogModel } from "./codex-model-catalog.js";
-
 const KNOWN_EFFORTS = new Set<string>(EFFORT_LEVELS);
-
-export interface ClaudeEffortCatalogEntry {
-  readonly model: string;
-  readonly reference?: string;
-  readonly supportedEfforts: readonly string[];
-}
 
 export interface AdvertisedModelEffortCatalog {
   readonly localProviders?: readonly LocalProviderDefinition[];
-  readonly claudeCatalog?: readonly ClaudeEffortCatalogEntry[];
-  readonly codexCatalog?: readonly CodexCatalogModel[];
-  readonly suppressExplicitEffort?: boolean;
 }
 
 function knownEfforts(values: readonly string[]): string[] {
@@ -46,12 +35,17 @@ function gradedEffort(levels: readonly string[]): ModelEffortLevels {
   };
 }
 
-function claudeCatalogEntry(
-  ref: RuntimeModelReference,
-  catalog: readonly ClaudeEffortCatalogEntry[] | undefined,
-): ClaudeEffortCatalogEntry | undefined {
-  const reference = `claude:${ref.model}`;
-  return catalog?.find((entry) => entry.model === ref.model || entry.reference === reference);
+/**
+ * Resolve the effort snapshot for one already-cloned Pi built-in model. Kept
+ * separate from {@link resolveAdvertisedModelEffort} so the provider catalog can
+ * compute effort from a cached snapshot without paying a fresh
+ * `getPiBuiltinModel` clone per model.
+ */
+export function resolveAdvertisedModelEffortForBuiltin(
+  builtin: PiBuiltinModelSnapshot,
+): ModelEffortLevels {
+  if (builtin.reasoning !== true) return noExplicitEffort(false);
+  return gradedEffort(reasoningLevelsForPiModel(builtin));
 }
 
 /**
@@ -62,35 +56,11 @@ export function resolveAdvertisedModelEffort(
   ref: RuntimeModelReference,
   catalog: AdvertisedModelEffortCatalog = {},
 ): ModelEffortLevels {
-  if (catalog.suppressExplicitEffort === true || ref.sdk === "opencode" || ref.sdk === "acp") {
-    return noExplicitEffort(true);
+  const local = resolveModelEffortLevels(ref, catalog.localProviders);
+  if (catalog.localProviders?.some((provider) => provider.id === ref.provider)) {
+    return local;
   }
-
-  if (ref.sdk === "pi") {
-    const local = resolveModelEffortLevels(ref, catalog.localProviders);
-    if (ref.provider !== undefined && catalog.localProviders?.some((provider) => provider.id === ref.provider)) {
-      return local;
-    }
-    if (ref.provider === undefined) return noExplicitEffort(true);
-    const builtin = getPiBuiltinModel(ref.provider, ref.model);
-    if (builtin === undefined) return noExplicitEffort(true);
-    if (builtin.reasoning !== true) return noExplicitEffort(false);
-    return gradedEffort(reasoningLevelsForPiModel(builtin));
-  }
-
-  if (ref.sdk === "claude") {
-    const discovered = claudeCatalogEntry(ref, catalog.claudeCatalog);
-    if (discovered !== undefined) return gradedEffort(discovered.supportedEfforts);
-    const pinned = claudeCatalogEntry(ref, curatedClaudeSdkModels());
-    if (pinned !== undefined) return gradedEffort(pinned.supportedEfforts);
-    return noExplicitEffort(true);
-  }
-
-  if (ref.sdk === "codex") {
-    const match = catalog.codexCatalog?.find((entry) => entry.id === ref.model);
-    if (match === undefined) return noExplicitEffort(true);
-    return gradedEffort(match.supportedEfforts);
-  }
-
-  return noExplicitEffort(true);
+  const builtin = getPiBuiltinModel(ref.provider, ref.model);
+  if (builtin === undefined) return noExplicitEffort(true);
+  return resolveAdvertisedModelEffortForBuiltin(builtin);
 }

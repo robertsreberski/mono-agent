@@ -120,7 +120,7 @@ BuJo (`bujo` tier — full capture + projection-only consolidation):
     "path": "./.mono-agent/memory",
     "writeMode": "capture",
     "embeddings": { "provider": "ollama", "model": "nomic-embed-text:v1.5" },
-    "llm": { "provider": "agent-host", "model": "claude:claude-sonnet-4-6" },
+    "llm": { "provider": "agent-host", "model": "anthropic:claude-sonnet-4-6" },
     "recallTool": { "enabled": true }
   }
 }

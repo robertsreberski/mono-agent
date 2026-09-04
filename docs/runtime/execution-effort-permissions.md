@@ -1,19 +1,18 @@
 ---
-title: "Execution mode, effort & permissions"
-description: "Configure SDK or CLI execution, reasoning effort, permission posture, turn limits, and workspace scope."
+title: "Effort & permissions"
+description: "Configure reasoning effort, keyword escalation, permission posture, turn limits, and workspace scope."
 sidebar:
   order: 2
 ---
 
-This page covers the `runtime.*` knobs that shape *how* a run executes once a backend is selected: whether the model runs through an in-process SDK or a CLI subprocess, how much reasoning effort it spends, how tool permissions are posed, and how many turns a run may take. All of these are `config` coverage (set in `mono-agent.config.json`) with a matching `MONO_AGENT_*` environment override. For *which* backend each model string maps to, see [Backends](/runtime/backends/).
+This page covers the `runtime.*` knobs that shape *how* a run executes once a provider is selected: how much reasoning effort it spends, how tool permissions are posed, and how many turns a run may take. All of these are `config` coverage (set in `mono-agent.config.json`) with a matching `MONO_AGENT_*` environment override. For *which* provider each model string maps to, see [Pi runtime & model references](/runtime/backends/).
 
 A representative runtime block:
 
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.6-terra",
-    "executionMode": "sdk",
+    "model": "openai-codex:gpt-5.6-terra",
     "effort": "medium",
     "permissionMode": "default",
     "maxTurns": 0,
@@ -22,46 +21,36 @@ A representative runtime block:
 }
 ```
 
-## Execution mode
-
-`runtime.executionMode` selects how the model is driven: `sdk` runs the provider in-process; `cli` shells out to a vendor CLI subprocess (Claude Code / Codex / OpenCode). When omitted, the mode is **inferred from the model string**: `codex:*` and `opencode:*` references default to `cli`, everything else (including `claude:*` and `pi:<provider>:<model>`) defaults to `sdk`. Set it explicitly only to override that inference.
-
-| Key | Values | Default | Env var |
-|-----|--------|---------|---------|
-| `runtime.executionMode` | `sdk` \| `cli` | inferred (codex/opencode → `cli`, else `sdk`) | `MONO_AGENT_EXECUTION_MODE` |
-
-Several other features key off the backend implied by execution mode — most notably `permissionMode` (CLI-only, below). When wiring a model into `memory.llm`, the same `executionMode` field applies there; see [Capture & recall](/memory/capture-and-recall/).
-
 ## Effort
 
-`runtime.effort` is the primary route's reasoning-effort hint. Canonical `runtime.fallbacks[]` entries have independent optional effort; omission means that route's provider default rather than inheritance from the primary. Higher effort trades latency and token cost for deeper reasoning. The wizard offers only the effort values advertised for the selected model plus **Provider default**. The direct OpenCode bridge exposes no reasoning-effort input, so any explicit effort on that route is rejected before provider startup; `pi:opencode-go:*` remains a normal Pi effort path.
+`runtime.effort` is the primary route's reasoning-effort hint. Canonical `runtime.fallbacks[]` entries have independent optional effort; omission means that route's provider default rather than inheritance from the primary. Higher effort trades latency and token cost for deeper reasoning. The wizard offers only the effort values advertised for the selected model plus **Provider default**.
 
 | Key | Values | Default | Env var |
 |-----|--------|---------|---------|
 | `runtime.effort` | `none` \| `minimal` \| `low` \| `medium` \| `high` \| `xhigh` \| `max` \| `ultra` | provider/model default when omitted | `MONO_AGENT_EFFORT` |
 
-`ultra` is route-specific. Reasoning-capable `pi:*` maps `ultra` to LOW; Pi
-without reasoning uses OFF. Direct `codex:*` forwards `ultra` unchanged.
-Mono-agent rejects `ultra` on its Claude SDK route because the pinned SDK public
-contract ends at `max` (the SDK JavaScript itself forwards the value). The
-Claude CLI route passes `--effort ultra`, but both tested Claude Code binaries
-(SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and
-use default effort. Direct OpenCode rejects explicit effort. `effortRank`
-places `ultra` above `max` only so keyword escalation cannot downgrade an
-explicitly configured value.
+The Pi runtime maps the configured value onto the resolved model's capabilities:
+
+- A model without reasoning (or `reasoning_mode: none`) always runs with the off thinking level.
+- `none`, then, is a no-op there; on a reasoning-capable model `none` forces thinking off.
+- Passthrough levels `minimal`/`medium`/`high`/`xhigh` map one-to-one.
+- `max` passes through only when the resolved model explicitly advertises `max` as a reasoning level; otherwise it degrades to the Pi `xhigh` ceiling so an advertised-but-unsupported level never escalates silently.
+- `ultra` is not a Pi reasoning level and resolves to `low`.
+
+`mono-agent doctor` validates effort against the model's advertised levels and, when the configured value sits outside the advertised set, emits a warning naming the nearest supported level — while remaining permissive and forwarding the configured value. `effortRank` places `ultra` above `max` only so keyword escalation cannot downgrade an explicitly configured value.
 
 ```json
-{ "runtime": { "model": "pi:openai-codex:gpt-5.6-terra", "effort": "high" } }
+{ "runtime": { "model": "openai-codex:gpt-5.6-terra", "effort": "high" } }
 ```
 
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.6-terra",
+    "model": "openai-codex:gpt-5.6-terra",
     "effort": "high",
     "fallbacks": [
-      { "model": "codex:gpt-5.6-sol", "effort": "xhigh" },
-      { "model": "pi:ollama:gemma4:31b" }
+      { "model": "openai-codex:gpt-5.6-sol", "effort": "xhigh" },
+      { "model": "ollama:gemma4:31b" }
     ]
   }
 }
@@ -79,75 +68,34 @@ Every inbound message is scanned for effort trigger phrases, always on with no c
 
 Matching is case-insensitive on word boundaries anywhere in the message ("what do you *think*?" triggers; "thinking" and "rethink" do not), and the strongest matching phrase wins. Escalation is one-directional: the turn runs at the **higher** of the otherwise-resolved effort (configured default or a per-trigger override) and the keyword's level, so a bare `think` never lowers a `xhigh` agent and an equal-or-lower keyword changes nothing. The trigger words stay in the message text.
 
-`max` degrades gracefully to each route's ceiling — Pi preserves native `max` when the resolved model advertises it and otherwise clamps to `xhigh`; direct Codex clamps to `xhigh`; Claude keeps native `max`. A direct OpenCode model anywhere in the effective chain skips escalation entirely (no runtime effort control, same rule as explicit effort overrides). The escalated effort is visible in the run's `run_config` event with `overridden: true`, and only the single turn is affected — the session and configured default stay unchanged. The trigger list is exported as `EFFORT_KEYWORD_TRIGGERS` from `@mono-agent/config`.
+Escalated `max` degrades to the same per-model ceiling as configured effort: native `max` when the resolved model advertises it, otherwise `xhigh`. The escalated effort is visible in the run's `run_config` event with `overridden: true`, and only the single turn is affected — the session and configured default stay unchanged. The trigger list is exported as `EFFORT_KEYWORD_TRIGGERS` from `@mono-agent/config`.
 
 ## Permission mode
 
-`runtime.permissionMode` sets the tool-permission posture for **CLI backends only** (Claude Code / Codex / OpenCode). It mirrors the underlying CLI's permission flags and has no effect on `sdk` execution mode.
+`runtime.permissionMode` is validated config with the `MONO_AGENT_PERMISSION_MODE` override. With the Pi-only runtime there are no vendor CLI processes to project permission flags onto, so the key is **validated and forwarded, never enforced**: it rides through run options and the fallback router's per-attempt policy options, and nothing inside the runtime reads it. The built-in tools do not consult it, the sandbox does not consult it, and the approval manager does not take it — `createApprovalManager` is configured by `onToolApprovalRequest`, `toolRiskTiers`, and `approvalAlwaysAllowTools` alone.
 
-| Value | Meaning |
-|-------|---------|
-| `default` | Normal interactive permission prompts |
-| `plan` | Planning posture — the model proposes without executing edits/commands |
+The values below therefore describe an *intent a host can implement*, not a posture mono-agent applies on its own:
+
+| Value | Intent for a host that reads it |
+|-------|---------------------------------|
+| `default` | Normal posture — the host pauses tool calls that need approval for its approval callback |
+| `plan` | Read-only posture used by guided/planning flows |
 | `acceptEdits` | Auto-accept file edits |
-| `bypassPermissions` | Bypass permission prompts entirely |
+| `bypassPermissions` | Remove interactive guardrails |
 
 | Key | Values | Default | Env var |
 |-----|--------|---------|---------|
 | `runtime.permissionMode` | `default` \| `plan` \| `acceptEdits` \| `bypassPermissions` | `default` | `MONO_AGENT_PERMISSION_MODE` |
 
-`permissionMode` is the *config-level* posture. Programmatic human-in-the-loop approval gates (risk tiers, timeout, always-allow lists) are a separate, **code-only** mechanism on `createMonoRuntime({ onToolApprovalRequest, toolRiskTiers, approvalDefaultRiskTier, approvalTimeoutMs, approvalAlwaysAllowTools })` that requires a host UI to answer prompts — see [programmatic approval & structured output](/programmatic/approval-and-structured-output/). For limiting *which* tools exist at all, use the tool policy in [Tools & guards](/runtime/tools-and-guards/) and [Tool policy](/tools/policy/).
-
-Direct `codex:*` normal runs currently support only effective allow-all at the mono-agent tool-policy layer: `tools.allowedTools` is omitted or contains `"*"`, and `disallowedTools` is empty. Named entries next to `"*"` do not narrow the policy. Unattended direct-Codex turns always use approval policy `never`: `plan` is read-only, `default`/`acceptEdits` use Codex's native workspace-write sandbox, and `bypassPermissions` explicitly selects danger-full-access.
-
-Code-defined hosts may set `runtimeOptions.codexSandboxNetworkAccess: true` to enable Codex's native per-turn network access in the `plan`, `default`, and `acceptEdits` sandboxes, including on a retained thread. The option defaults to false and only strict `true` enables it; there is no config or environment key. The guided no-tools probe stays read-only with network disabled, and `bypassPermissions` stays danger-full-access regardless of the option.
-
-This provider-native setting is unrelated to `RuntimeRunOptions.sandboxPolicy`, which controls mono-agent's own sandbox and is not consumed by Codex's provider-owned tool loop. Combining `default`/`acceptEdits` workspace-write with network access grants repository read and network egress in the same turn. Prefer `plan` when only read-only browsing is needed.
-
-Every valid MCP server forwarded from `mcp.json` / `tools.mcpServers` is an explicit authorization boundary on direct Codex. If Codex synthesizes an `mcp_tool_call` elicitation for that exact server name, mono-agent accepts the single call without persisting an approval. Inherited or unconfigured servers, genuine downstream MCP form/URL elicitations, and other app-server requests remain fail-closed. Consequently, direct Codex `plan` constrains Codex-owned filesystem and command execution; it does not sandbox side effects implemented by a declared MCP server. Remove a server when its complete tool surface is not authorized for planning turns.
-
-Uniform route safety rejects a mono-agent SRT policy that Codex cannot represent; explicit per-route-native routing records that the Codex attempt uses its native contract instead. Choose Pi when exact SRT controls must apply to every route. The guided route check retains its dedicated read-only/no-approval/exact-no-tool contract and is not a reusable normal-run policy.
-
-Direct `opencode:*` also requires effective allow-all, but projects `permissionMode`
-into OpenCode's native permission rules and replies rather than pretending the
-mono-agent sandbox applies:
-
-- `plan` allows native file reads while denying edits and all other permissions. This is a read-only workflow posture, **not a confidentiality boundary**: OpenCode's path rules follow symlinks, so a permitted path can still expose sensitive content through an alias.
-- `default` asks through a programmatic `onToolApprovalRequest` callback for reads and other supported permission names, and rejects when no callback answers.
-- `acceptEdits` uses the same baseline as `default` and additionally permits edits.
-- `bypassPermissions` permits non-interactive permission classes without asking.
-
-Direct OpenCode always denies `question`, `task`, `plan_enter`, and `plan_exit`
-because this bridge has no live-question or native-subagent event path. Dynamic
-permission names from MCP/custom tools are valid, but in `default` and
-`acceptEdits` they require an explicit host approval and reject unattended.
-Callback errors, timeouts, malformed permission events, and invalid answers also
-reject. `pi:opencode-go:*` is a Pi SDK route and uses Pi's tool/sandbox contract
-instead.
-
-Every direct-OpenCode run starts a password-authenticated loopback server on an
-ephemeral port with a unique private database (0700 parent / 0600 file). The
-database is deleted after the server closes, so direct OpenCode does not resume
-provider sessions and never imports the user's sessions or saved approvals.
-Repo/global config and external plugins/skills are disabled; provider-owned shell
-tools inherit only a narrow non-secret environment. Built-in providers use the
-normal OpenCode auth store so refresh-token rotation persists.
-`OPENCODE_AUTH_CONTENT` is rejected; persist credentials with `opencode auth
-login`. A host `always` approval is cached only for the current mono-agent run:
-the provider receives `once`, so project-wide approval state is never saved.
-Stable OpenCode CLI >=1.15.0 and a native database migration marker are required;
-run `opencode db migrate --pure` once before first use.
-
-Use Pi with the mono-agent native `srt` sandbox when secrets or filesystem roots
-must be enforced; direct OpenCode permission rules do not provide that boundary.
+The enforced tool posture for Pi-executed tools comes from the [sandbox](/tools/sandbox/) filesystem scopes and the programmatic human-in-the-loop approval gates on `createMonoRuntime` (`onToolApprovalRequest`, `toolRiskTiers`, `approvalDefaultRiskTier`, `approvalTimeoutMs`, `approvalAlwaysAllowTools`), which require a host UI to answer prompts — see [programmatic approval & structured output](/programmatic/approval-and-structured-output/). For limiting *which* tools exist at all, use the tool policy in [Tools & guards](/runtime/tools-and-guards/) and [Tool policy](/tools/policy/).
 
 :::caution
-`permissionMode: "bypassPermissions"` removes interactive guardrails. On Pi, pair a powerful tool surface with the [sandbox](/tools/sandbox/) filesystem scopes. Direct Codex maps bypass mode to danger-full-access and rejects mono-agent `srt`; Claude and direct OpenCode likewise cannot enforce mono-agent `srt` around provider-owned tools. Use Pi (including `pi:opencode-go:*`) when exact mono-agent roots, deny-write globs, or network policy are required.
+`permissionMode: "bypassPermissions"` asks a host to drop its interactive guardrails; it does not by itself loosen anything mono-agent enforces, and setting `default` does not by itself add a gate. Do not treat this key as a safety control. The enforced boundary is the [sandbox](/tools/sandbox/) filesystem scopes — `sandbox.readableRoots` / `sandbox.writableRoots` relative entries resolve against the workspace, and `.env*`, `.git/config`, and `.git/hooks/**` are denied for writes by default — together with the tool policy and the programmatic approval gates.
 :::
 
 ## Max turns
 
-`runtime.maxTurns` caps the number of turns a single run may take. `0` (or omitting the key) means **unlimited**; values `1`–`100` cap supported runtimes. Direct OpenCode rejects every positive value because its current bridge has no enforceable hard turn cap; use `0`/omit the field or choose another runtime.
+`runtime.maxTurns` caps the number of turns a single run may take. `0` (or omitting the key) means **unlimited**; values `1`–`100` cap turns. The Pi runtime counts turn completions and stops the loop once the cap is reached, surfacing the limit as `max_turns_hit` on the run result.
 
 | Key | Values | Default | Env var |
 |-----|--------|---------|---------|
@@ -156,7 +104,7 @@ must be enforced; direct OpenCode permission rules do not provide that boundary.
 This value does not size conversation history. The configured app uses an owner-only, disk-backed 64-message history window for each exact conversation id regardless of whether `maxTurns` is positive, `0`, or omitted (`auto` coverage). Aggregate defaults are 256 MiB, 10,000 conversations, and 365 days of inactivity; publication is atomic and retention runs only after commit. A custom history store is available via code (`createConfiguredAgentResponder({ historyStore })`). See [Sessions & concurrency](/runtime/sessions-concurrency/).
 
 ```json
-{ "runtime": { "model": "codex:gpt-5.6-terra", "maxTurns": 12 } }
+{ "runtime": { "model": "openai-codex:gpt-5.6-terra", "maxTurns": 12 } }
 ```
 
 ## Workspace
@@ -174,10 +122,9 @@ The workspace is also the default root for sandbox filesystem scopes — `sandbo
 
 | Key | Env var | Default | Coverage |
 |-----|---------|---------|----------|
-| `runtime.executionMode` | `MONO_AGENT_EXECUTION_MODE` | inferred from model | config |
 | `runtime.effort` | `MONO_AGENT_EFFORT` | unset (provider/model default) | config |
-| `runtime.permissionMode` | `MONO_AGENT_PERMISSION_MODE` | `default` (CLI only) | config |
+| `runtime.permissionMode` | `MONO_AGENT_PERMISSION_MODE` | `default` | config |
 | `runtime.maxTurns` | `MONO_AGENT_MAX_TURNS` | `0` (unlimited) | config |
 | `runtime.workspace` | `MONO_AGENT_WORKSPACE` | `"."` | config |
 
-See also: [Backends](/runtime/backends/) · [Fallback chain](/runtime/fallback/) · [Sessions & concurrency](/runtime/sessions-concurrency/) · [Config blueprint](/config/blueprint/) · [Environment variables](/config/env-vars/).
+See also: [Pi runtime & model references](/runtime/backends/) · [Providers](/runtime/providers/) · [Fallback chain](/runtime/fallback/) · [Sessions & concurrency](/runtime/sessions-concurrency/) · [Config blueprint](/config/blueprint/) · [Environment variables](/config/env-vars/).

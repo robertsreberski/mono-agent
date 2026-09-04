@@ -2,8 +2,6 @@
 
 /** @type {"projected"} */
 export const TOOL_POLICY_PROJECTED = "projected";
-/** @type {"allow_all_only"} */
-export const TOOL_POLICY_ALLOW_ALL_ONLY = "allow_all_only";
 
 /**
  * True when a tool policy is semantically unrestricted.

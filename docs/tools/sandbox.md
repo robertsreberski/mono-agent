@@ -7,7 +7,7 @@ sidebar:
 
 For Pi-native agents, the sandbox confines mono-agent-owned commands by wrapping them with `srt` (the native sandbox runtime) and a generated settings file: a filesystem scope (readable/writable roots, deny-write globs), a network policy, and a fallback for when the sandbox engine is unavailable. This includes both `Bash` commands and the child process behind `NodeRepl`. This page covers the `sandbox` config block, the matching `MONO_AGENT_SANDBOX_*` env vars, and the monotonic merge that lets request-scoped policies tighten — but never widen — the configured baseline.
 
-The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`. Under the default `runtime.routeSafety: "uniform"`, a non-Pi route that cannot represent the configured SRT policy fails closed. Explicit `per-route-native` allows a mixed chain only with route-local contracts: Pi keeps this exact policy, while Claude/Codex/OpenCode use their documented provider-native safety and do not pretend the SRT roots/network rules apply. Use Pi (including `pi:opencode-go:*`) whenever every attempted route must enforce the mono-agent policy.
+The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`.
 
 ## Quick reference
 
@@ -156,7 +156,7 @@ If you set `denyWrite` yourself, you replace the defaults — include the four e
 
 If `mode: "native"` but no SRT engine passes its functional proof, the `fallback` decides what happens:
 
-- **`fail-closed`** (default) — the command is rejected with a `sandbox_unavailable` error. Nothing runs unsandboxed.
+- **`fail-closed`** (default) — the command is rejected and nothing runs unsandboxed. The sandbox raises `sandbox_unavailable` internally; what the tool call returns is the outcome code `sandbox_prepare_failed`, with the text `Error: Sandbox engine is unavailable and policy is fail-closed.` The run continues — only that command fails.
 - **`unsafe-host-process`** — the command runs **unwrapped on the host**. This requires **both** `fallback: "unsafe-host-process"` **and** `unsafeAllowHostProcess: true`. Setting `fallback` to `unsafe-host-process` without the explicit `unsafeAllowHostProcess: true` is a config error.
 
 ```json
@@ -173,7 +173,7 @@ If `mode: "native"` but no SRT engine passes its functional proof, the `fallback
 The `unsafe-host-process` fallback runs tool commands directly on the host with no isolation if the sandbox engine is missing. When it is active, mono-agent reports: `WARNING: Unsafe sandbox fallback is active: all sandbox roots/denyWrite entries are inert; commands run unsandboxed.` Use it only in trusted, controlled environments (e.g. CI you own end to end). Prefer `fail-closed` for anything handling untrusted input or running untrusted code.
 :::
 
-`mono-agent start` does not silently relax a fail-closed policy. It records the effective sandbox state at startup; `mono-agent status` prints `effective`, `engine`, `fallback`, and whether the fallback is active. For a fail-closed missing engine, sandboxed commands fail with `sandbox_unavailable`. For an unsafe fallback, `start`/`status` include the unsafe warning above so the operator can see that filesystem roots and `denyWrite` entries are not protecting the host process.
+`mono-agent start` does not silently relax a fail-closed policy. It records the effective sandbox state at startup; `mono-agent status` prints `effective`, `engine`, `fallback`, and whether the fallback is active. For a fail-closed missing engine, `status` describes the engine as unavailable with `sandbox_unavailable`, and the sandboxed commands themselves fail with the `sandbox_prepare_failed` tool outcome. For an unsafe fallback, `start`/`status` include the unsafe warning above so the operator can see that filesystem roots and `denyWrite` entries are not protecting the host process.
 
 Runtime resolution prefers the managed macOS install and re-hashes its complete
 tree against the independent release digest before each command. A
@@ -228,20 +228,6 @@ When a request supplies its own sandbox policy, it is merged with the configured
 - `unsafeAllowHostProcess` stays on only if **both** sides have it on.
 
 This merge is **auto** (the harness performs it). Constructing request-scoped policies is a **code** path — see [Programmatic](/programmatic/).
-
-## Runtime boundary
-
-:::caution
-Provider-owned tool loops do not silently bypass this policy. In `uniform` mode,
-validation/runtime reject a route that cannot represent the common contract. In
-explicit `per-route-native` mode, doctor prints every route contract and warns
-that mono-agent readable/writable roots, deny-write globs, and network rules do
-not project onto non-Pi routes. Pi retains SRT; Claude uses provider-native
-controls with representable tool restrictions; direct Codex/OpenCode use native
-safety plus an effective allow-all policy. Unsupported capabilities skip the route instead of
-being removed silently. Static trigger routes and dynamic overrides are checked
-at the same boundary.
-:::
 
 ## Related
 

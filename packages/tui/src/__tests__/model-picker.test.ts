@@ -341,3 +341,199 @@ describe("/model override agent-switch and clear regressions", () => {
     }
   });
 });
+
+describe("/model picker provider grouping (Layer 4)", () => {
+  const PROVIDERS = [
+    { id: "anthropic", label: "Anthropic", modelCount: 2, source: "builtin" as const, configured: true as const },
+    { id: "ollama", label: "Ollama", modelCount: 1, source: "discovered" as const },
+  ];
+
+  it("groups rows under provider headings matching the console's ordering and marks the current model", async () => {
+    const adapter = await startTuiAdapter({
+      responder: okResponder(),
+      info: {
+        model: "ollama:qwen3:8b",
+        models: ["anthropic:claude-fable-5", "anthropic:claude-fable-mini", "ollama:qwen3:8b"],
+        providers: PROVIDERS,
+      },
+    });
+    const terminal = new TestTerminal(120, 30);
+    const handle = startMonoAgentTui({
+      terminal,
+      connection: { baseUrl: adapter.baseUrl },
+      flushIntervalMs: 0,
+    });
+    try {
+      await frame();
+      await frame(); // info() resolves
+
+      type(terminal, "/model");
+      terminal.feed("\r");
+      await frame();
+
+      const overlay = stripAnsi(terminal.output()).replace(/\s+/gu, " ");
+      // Configured provider (anthropic) first, matching console ordering, then
+      // the discovered provider (ollama), each under its heading.
+      expect(overlay.indexOf("Anthropic")).toBeLessThan(overlay.indexOf("Ollama"));
+      expect(overlay).toContain("Anthropic");
+      expect(overlay).toContain("claude-fable-5");
+      expect(overlay).toContain("Ollama");
+      // No session override is active, so the `(current)` marker lands on the
+      // trailing default/clear-override row, exactly as the effort picker marks
+      // its active level.
+      expect(overlay).toContain("(clear override) — (current)");
+      expect(overlay).toContain("default");
+    } finally {
+      await handle.stop();
+      await adapter.stop();
+    }
+  });
+
+  it("keeps the overlay open when enter lands on a provider heading, then selects the model below it", async () => {
+    const adapter = await startTuiAdapter({
+      responder: okResponder(),
+      info: {
+        model: "ollama:qwen3:8b",
+        models: ["anthropic:claude-fable-5", "anthropic:claude-fable-mini", "ollama:qwen3:8b"],
+        providers: PROVIDERS,
+      },
+    });
+    const terminal = new TestTerminal(120, 30);
+    const handle = startMonoAgentTui({
+      terminal,
+      connection: { baseUrl: adapter.baseUrl },
+      flushIntervalMs: 0,
+    });
+    try {
+      await frame();
+      await frame(); // info() resolves
+
+      type(terminal, "/model");
+      terminal.feed("\r");
+      await frame();
+
+      // Row 0 is the "Anthropic" heading. Enter on it is inert: no override is
+      // set and, critically, the picker does not close -- a heading Enter that
+      // dismissed the overlay would read as a silently rejected selection.
+      terminal.feed("\r");
+      await frame();
+      expect(lastStatusBar(terminal)).not.toContain("(override)");
+
+      // The overlay still owns the keys, so the very next down+enter selects the
+      // first model under that heading. Had the heading Enter closed the picker,
+      // these two keys would land in the chat editor and set no override.
+      terminal.feed(DOWN);
+      await frame();
+      terminal.feed("\r");
+      await frame();
+      expect(lastStatusBar(terminal)).toContain("anthropic:claude-fable-5");
+      expect(lastStatusBar(terminal)).toContain("(override)");
+    } finally {
+      await handle.stop();
+      await adapter.stop();
+    }
+  });
+
+  it("falls back to the flat shortlist (no grouping) when an agent advertises no providers", async () => {
+    const adapter = await startTuiAdapter({
+      responder: okResponder(),
+      info: { model: "claude-fable-5", models: ["claude-fable-5", "codex:gpt-5.5"] },
+    });
+    const terminal = new TestTerminal(120, 30);
+    const handle = startMonoAgentTui({
+      terminal,
+      connection: { baseUrl: adapter.baseUrl },
+      flushIntervalMs: 0,
+    });
+    try {
+      await frame();
+      await frame(); // info() resolves
+
+      type(terminal, "/model");
+      terminal.feed("\r");
+      await frame();
+
+      // No provider headings appear; the legacy flat list is preserved so the
+      // override contract (first model at index 1, as before) is unchanged.
+      const overlay = stripAnsi(terminal.output());
+      expect(overlay).toContain("claude-fable-5");
+      expect(overlay).toContain("codex:gpt-5.5");
+      expect(overlay).not.toMatch(/Anthropic|Ollama|Unknown/);
+    } finally {
+      await handle.stop();
+      await adapter.stop();
+    }
+  });
+
+  it("marks the active session override with (current) on its model row, even when grouped", async () => {
+    const adapter = await startTuiAdapter({
+      responder: okResponder(),
+      info: {
+        model: "ollama:qwen3:8b",
+        models: ["anthropic:claude-fable-5", "ollama:qwen3:8b"],
+        providers: PROVIDERS,
+      },
+    });
+    const terminal = new TestTerminal(120, 30);
+    const handle = startMonoAgentTui({
+      terminal,
+      connection: { baseUrl: adapter.baseUrl },
+      flushIntervalMs: 0,
+    });
+    try {
+      await frame();
+      await frame(); // info() resolves
+
+      // Set an override first, then open the grouped picker.
+      type(terminal, "/model ollama:qwen3:8b");
+      terminal.feed("\r");
+      await frame();
+
+      type(terminal, "/model");
+      terminal.feed("\r");
+      await frame();
+
+      const overlay = stripAnsi(terminal.output()).replace(/\s+/gu, " ");
+      expect(overlay).toContain("qwen3:8b (current)");
+    } finally {
+      await handle.stop();
+      await adapter.stop();
+    }
+  });
+
+  it("collects models outside any advertised provider under an Unknown heading", async () => {
+    const adapter = await startTuiAdapter({
+      responder: okResponder(),
+      info: {
+        model: "claude-fable-5",
+        models: ["claude-fable-5", "codex:gpt-5.5"],
+        providers: [{ id: "anthropic", label: "Anthropic", modelCount: 0, source: "builtin" as const }],
+      },
+    });
+    const terminal = new TestTerminal(120, 30);
+    const handle = startMonoAgentTui({
+      terminal,
+      connection: { baseUrl: adapter.baseUrl },
+      flushIntervalMs: 0,
+    });
+    try {
+      await frame();
+      await frame(); // info() resolves
+
+      type(terminal, "/model");
+      terminal.feed("\r");
+      await frame();
+
+      const overlay = stripAnsi(terminal.output()).replace(/\s+/gu, " ");
+      // anthropic has no models in the shortlist, so no anthropic group renders;
+      // both shortlist refs fall into Unknown.
+      expect(overlay).not.toContain("Anthropic");
+      expect(overlay).toContain("Unknown");
+      expect(overlay).toContain("claude-fable-5");
+      expect(overlay).toContain("codex:gpt-5.5");
+    } finally {
+      await handle.stop();
+      await adapter.stop();
+    }
+  });
+});

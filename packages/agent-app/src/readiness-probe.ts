@@ -14,7 +14,6 @@ import {
 import type { WizardPlan } from "./wizard/answers.js";
 import type {
   PiTransport,
-  RuntimeExecutionMode,
   RuntimeEventLike,
   RuntimeModelReference,
   RuntimeResult,
@@ -83,7 +82,7 @@ export interface ReadinessRouteResult {
   readonly key: string;
   readonly index: number;
   readonly model: string;
-  /** Omitted means the provider's own default; legacy fallbacks inherit. */
+  /** Omitted means the provider's own default. */
   readonly effort?: string;
   readonly status: "verified" | "failed" | "skipped_verified" | "interrupted";
   readonly kind?: ReadinessProbeFailureKind;
@@ -122,7 +121,7 @@ interface ReadinessRoutePlan {
 
 /** Provider-aware hard deadline for the one-turn primary-model probe. */
 export function readinessProbeTimeoutMs(model: RuntimeModelReference): number {
-  return model.sdk === "pi" && model.provider !== undefined && LOCAL_PI_PROVIDERS.has(model.provider)
+  return LOCAL_PI_PROVIDERS.has(model.provider)
     ? LOCAL_READINESS_TIMEOUT_MS
     : CLOUD_READINESS_TIMEOUT_MS;
 }
@@ -248,7 +247,6 @@ interface ReadinessWorkerHandle {
 
 interface ReadinessWorkerRuntimeSpec {
   readonly model: RuntimeModelReference;
-  readonly executionMode?: RuntimeExecutionMode;
   readonly effort?: string;
   readonly workspace: string;
   readonly artifactDir: string;
@@ -302,14 +300,10 @@ function startReadinessWorker(input: {
       cwd: input.cwd,
       runtime: {
         model: {
-          sdk: model.sdk,
+          provider: model.provider,
           model: model.model,
-          ...(model.provider === undefined ? {} : { provider: model.provider }),
-          ...(model.reference === undefined ? {} : { reference: model.reference }),
+          reference: model.reference,
         },
-        ...(input.runtime.executionMode === undefined
-          ? {}
-          : { executionMode: input.runtime.executionMode }),
         ...(input.runtime.effort === undefined ? {} : { effort: input.runtime.effort }),
         workspace: input.runtime.workspace,
         artifactDir: input.runtime.artifactDir,
@@ -444,12 +438,6 @@ function selectedReadinessRoutes(
         ...(typeof entry.effort === "string" ? { effort: entry.effort } : {}),
       });
     }
-  } else if (Array.isArray(runtime.fallbackModels)) {
-    // Legacy fallbackModels intentionally retain their historical inheritance.
-    for (const model of runtime.fallbackModels) {
-      if (typeof model !== "string" || model.length === 0) continue;
-      authored.push({ model, ...(inheritedEffort === undefined ? {} : { effort: inheritedEffort }) });
-    }
   }
 
   const immutableRoutes = authored.map((route, index) => ({ index, model: route.model, effort: route.effort ?? null }));
@@ -457,7 +445,6 @@ function selectedReadinessRoutes(
   delete executionRuntime.model;
   delete executionRuntime.effort;
   delete executionRuntime.fallbacks;
-  delete executionRuntime.fallbackModels;
   delete executionRuntime.session;
   delete executionRuntime.workspace;
   const nonSecretEnvironment = Object.fromEntries(
@@ -512,7 +499,6 @@ function singleRouteWizardPlan(plan: WizardPlan, route: ReadinessRoutePlan): Wiz
     model: route.model,
   };
   delete runtime.fallbacks;
-  delete runtime.fallbackModels;
   delete runtime.session;
   if (route.effort === undefined) delete runtime.effort;
   else runtime.effort = route.effort;
@@ -651,16 +637,6 @@ function boundedRouteField(value: string, limit: number): string {
 
 /** Run exactly one route with no fallback chain. */
 async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<ReadinessProbeResult> {
-  const selectedModel = options.plan.configJson.runtime?.model;
-  if (typeof selectedModel === "string" && selectedModel.startsWith("opencode:")) {
-    return {
-      ok: false,
-      kind: "unsupported_guided_probe",
-      message:
-        "Direct opencode:* is an advanced config-only backend and cannot run the guided no-tool readiness probe. " +
-        "Choose pi:opencode-go:<model>, or use non-interactive --model opencode:<provider>:<model> scaffolding and validate the explicit runtime.permissionMode configuration.",
-    };
-  }
   const dir = await mkdtemp(join(tmpdir(), "mono-agent-readiness-"));
   const secrets = options.secretValues ?? {};
   const redact = (value: unknown, fallback: string): string => redactSecrets(value, {
@@ -673,7 +649,6 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
     config.tools = { allowedTools: [], disallowedTools: [] };
     const runtime = config.runtime as Record<string, unknown>;
     config.runtime = { ...runtime, workspace: ".mono-agent/workspace" };
-    delete (config.runtime as Record<string, unknown>).fallbackModels;
     delete (config.runtime as Record<string, unknown>).fallbacks;
     delete (config.runtime as Record<string, unknown>).session;
     delete config.memory;
@@ -720,7 +695,6 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
       drivers: [],
       liveness: false,
       allowFilesystemWrites: false,
-      codexNoToolsProbe: true,
     });
     if (!validation.ok) {
       return {
@@ -760,7 +734,6 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
     });
     const runOptions: ReadinessRuntimeRunOptions = {
       model: loaded.runtime.model,
-      ...(loaded.runtime.executionMode === undefined ? {} : { executionMode: loaded.runtime.executionMode }),
       ...(loaded.runtime.effort === undefined ? {} : { effort: loaded.runtime.effort }),
       messages: [{ role: "user", content: "Reply with a short readiness acknowledgement." }],
       abortSignal: controller.signal,
@@ -774,7 +747,6 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
       mcpServers: {},
       // Codex app-server has no general allowlist. This dedicated mode uses a
       // read-only/never-approve payload and fails on the first tool action.
-      codexNoToolsProbe: true,
       onEvent: (event) => {
         const action = toolActionInEvent(event);
         if (action !== undefined && firstToolAction === undefined) {
@@ -812,9 +784,6 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
           cwd: dir,
           runtime: {
             model: loaded.runtime.model,
-            ...(loaded.runtime.executionMode === undefined
-              ? {}
-              : { executionMode: loaded.runtime.executionMode }),
             ...(loaded.runtime.effort === undefined ? {} : { effort: loaded.runtime.effort }),
             workspace: loaded.runtime.workspace,
             artifactDir: loaded.artifacts.dir,

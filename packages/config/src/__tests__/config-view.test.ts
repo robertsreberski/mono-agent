@@ -71,10 +71,9 @@ describe("buildMonoAgentConfigView", () => {
       agent: { name: "Research Partner" },
       runtime: {
         fallbacks: [
-          { model: "codex:gpt-5.6-sol" },
-          { model: "claude:claude-sonnet-4-6", effort: "high" },
+          { model: "openai-codex:gpt-5.6-sol" },
+          { model: "anthropic:claude-sonnet-4-6", effort: "high" },
         ],
-        routeSafety: "per-route-native",
       },
     });
 
@@ -82,29 +81,6 @@ describe("buildMonoAgentConfigView", () => {
     expect(field(sections, "agent.name")).toMatchObject({ value: "Research Partner", source: "json" });
     expect(field(sections, "runtime.fallbacks").value).toContain("provider default");
     expect(field(sections, "runtime.fallbacks").value).toContain("high");
-    expect(field(sections, "runtime.routeSafety")).toMatchObject({ value: "per-route-native", source: "json" });
-  });
-
-  it("does not present a JSON fallback encoding as active when the alternate env encoding wins", () => {
-    const sections = buildView(
-      { ...baseEnv, MONO_AGENT_FALLBACK_MODELS: "claude:claude-sonnet-4-6" },
-      { runtime: { fallbacks: [{ model: "codex:gpt-5.6-sol" }] } },
-    );
-
-    expect(field(sections, "runtime.fallbackModels")).toMatchObject({
-      value: "claude:claude-sonnet-4-6",
-      source: "env",
-    });
-    expect(field(sections, "runtime.fallbacks")).toMatchObject({ value: "—", source: "default" });
-  });
-
-  it("reports an empty legacy fallback clear as env-sourced", () => {
-    const sections = buildView(
-      { ...baseEnv, MONO_AGENT_FALLBACK_MODELS: "" },
-      { runtime: { fallbackModels: ["claude:claude-sonnet-4-6"] } },
-    );
-
-    expect(field(sections, "runtime.fallbackModels")).toMatchObject({ value: "—", source: "env" });
   });
 
   it("marks an env-sourced field as env", () => {
@@ -208,7 +184,7 @@ describe("buildMonoAgentConfigView", () => {
   it("surfaces the observability and local-provider sections the old registry omitted", () => {
     const sections = buildView(baseEnv);
     expect(section(sections, "observability").status).toBe("disabled");
-    expect(field(sections, "providers.local")).toBeDefined();
+    expect(field(sections, "providers")).toBeDefined();
     expect(field(sections, "observability.exporters")).toBeDefined();
   });
 
@@ -226,6 +202,15 @@ describe("buildMonoAgentConfigView", () => {
       ),
       "providers.piNative.transport",
     )).toMatchObject({ value: "websocket", source: "env" });
+  });
+
+  it("warns that the legacy local-provider registry env name is deprecated", () => {
+    expect(findRemovedConfigWarnings({
+      json: {},
+      env: { MONO_AGENT_LOCAL_PROVIDERS_JSON: "[]" },
+    })).toContain(
+      "[WARN] MONO_AGENT_LOCAL_PROVIDERS_JSON is deprecated; use MONO_AGENT_PROVIDERS_JSON with the provider-map shape instead.",
+    );
   });
 
   it("redacts the embeddings api key and never leaks the value", () => {

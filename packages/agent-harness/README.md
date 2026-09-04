@@ -37,12 +37,11 @@ import {
   parseMonoRuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
 
-const model = parseMonoRuntimeModelReference("claude:claude-sonnet-4-6");
+const model = parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6");
 const harness = createAgentHarness({
   identityPath: new URL("./IDENTITY.md", import.meta.url).pathname,
   runtime: createMonoRuntime({ workspace: process.cwd() }),
   model,
-  executionMode: "sdk",
   cwd: process.cwd(),
   toolPolicy: createToolPolicy({ allowedTools: ["Read"] }),
 });

@@ -2,7 +2,12 @@
 // surfaces. Consumers should use these functions instead of importing pi-ai
 // directly so the runtime's known-good Pi version remains authoritative.
 
-import { getBuiltinModel, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
+import {
+  builtinProviders,
+  getBuiltinModel,
+  getBuiltinModels,
+  getBuiltinProviders,
+} from "@earendil-works/pi-ai/providers/all";
 import { getPiOAuthAuth, resolveOAuthApiKey, toAuthInteraction } from "./pi-oauth-compat.js";
 import { reasoningLevelsForPiModel as resolveReasoningLevels } from "./providers/pi-models.js";
 
@@ -39,6 +44,13 @@ import { reasoningLevelsForPiModel as resolveReasoningLevels } from "./providers
 
 /**
  * @typedef {"none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max"} PiReasoningLevel
+ */
+
+/**
+ * @typedef {{
+ *   id: string,
+ *   label: string
+ * }} PiBuiltinProviderSnapshot
  */
 
 /**
@@ -101,6 +113,58 @@ export function getPiBuiltinModel(providerId, modelId) {
   return model === undefined
     ? undefined
     : /** @type {PiBuiltinModelSnapshot} */ (cloneInteropValue(model));
+}
+
+let builtinProviderLabels;
+function builtinProviderLabelMap() {
+  // `getBuiltinProviders()` is the authoritative static catalog set (39 ids),
+  // but it returns bare ids — the human display label lives on the constructed
+  // `Provider.name`, which only `builtinProviders()` exposes. Build the name
+  // lookup once from the constructed providers and gate what we ADVERTISE on
+  // the static id set below, so the dynamic "radius" gateway (present in
+  // `builtinProviders()` but absent from `getBuiltinProviders()`) never enters
+  // the advertised catalog. A throwing construction degrades to id-as-label.
+  builtinProviderLabels ??= (() => {
+    try {
+      return new Map(builtinProviders().map((provider) => [provider.id, provider.name]));
+    } catch {
+      return new Map();
+    }
+  })();
+  return builtinProviderLabels;
+}
+
+/**
+ * List defensive snapshots of Pi's static built-in providers (id + display
+ * label). The dynamic "radius" gateway is deliberately excluded: it has no
+ * static catalog and must not be advertised as a browsable provider.
+ *
+ * @returns {PiBuiltinProviderSnapshot[]}
+ */
+export function listPiBuiltinProviders() {
+  const labels = builtinProviderLabelMap();
+  return getBuiltinProviders().map((id) => ({
+    id,
+    label: labels.get(id) ?? id,
+  }));
+}
+
+/**
+ * Describe one static Pi built-in provider by id, or `undefined` for unknown
+ * ids (including the dynamic "radius" gateway).
+ *
+ * @param {string} providerId
+ * @returns {PiBuiltinProviderSnapshot|undefined}
+ */
+export function describePiBuiltinProvider(providerId) {
+  const id = String(providerId);
+  if (!getBuiltinProviders().includes(/** @type {any} */ (id))) {
+    return undefined;
+  }
+  return {
+    id,
+    label: builtinProviderLabelMap().get(id) ?? id,
+  };
 }
 
 /**

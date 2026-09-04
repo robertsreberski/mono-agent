@@ -73,7 +73,6 @@ describe("AgentHarness cancel frees the concurrency slot (R10)", () => {
       identityPath,
       runtime,
       model,
-      executionMode: "sdk",
       session,
       concurrency: { maxConcurrentRuns: 1 },
     });

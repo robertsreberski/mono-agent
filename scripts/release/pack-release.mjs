@@ -64,17 +64,20 @@ const BUILD_ARTIFACT_EXTENSIONS = [".d.ts", ".d.mts", ".d.cts", ".js", ".mjs", "
 const SOURCE_EXTENSIONS = [".ts", ".mts", ".cts", ".tsx", ".js", ".mjs", ".cjs"];
 const SOURCE_MAP_SUFFIX = ".map";
 const DIST_PREFIX = "dist/";
+const TYPES_PREFIX = "types/";
+const BUILD_OUTPUT_PREFIXES = [DIST_PREFIX, TYPES_PREFIX];
 
 /**
  * Packed compiled output whose source no longer exists under `src/`.
  *
- * `dist/` is gitignored and no build step clears it, so deleting a source leaves its old
+ * Build output is gitignored and no build step clears it, so deleting a source leaves its old
  * `.js`/`.d.ts` behind and `pnpm pack` ships it: @mono-agent/telegram-adapter@0.15.3 published
- * `dist/ask.js` two releases after `src/ask.ts` was removed. Dead output is not merely untidy —
- * it makes greps, audits, and dead-code sweeps report a surface that no longer exists.
+ * `dist/ask.js` two releases after `src/ask.ts` was removed. Declaration-only `types/` emit can
+ * likewise make TypeScript resolve a source that no longer exists. Dead output is not merely
+ * untidy — it makes greps, audits, and dead-code sweeps report a surface that no longer exists.
  *
  * Only tsc-shaped emit is considered. `webapp/dist` bundles (hashed names, no one-to-one
- * source) sit outside `dist/`, and packages with no `src/` are skipped entirely.
+ * source) sit outside the recognized roots, and packages with no `src/` are skipped entirely.
  */
 export function orphanedBuildArtifacts(packageDir, filePaths) {
   const sourceDir = path.join(packageDir, "src");
@@ -84,13 +87,14 @@ export function orphanedBuildArtifacts(packageDir, filePaths) {
 
   const orphans = [];
   for (const filePath of filePaths) {
-    if (!filePath.startsWith(DIST_PREFIX)) continue;
+    const outputPrefix = BUILD_OUTPUT_PREFIXES.find((candidate) => filePath.startsWith(candidate));
+    if (outputPrefix === undefined) continue;
     const emitted = filePath.endsWith(SOURCE_MAP_SUFFIX)
       ? filePath.slice(0, -SOURCE_MAP_SUFFIX.length)
       : filePath;
     const extension = BUILD_ARTIFACT_EXTENSIONS.find((candidate) => emitted.endsWith(candidate));
     if (extension === undefined) continue;
-    const stem = emitted.slice(DIST_PREFIX.length, -extension.length);
+    const stem = emitted.slice(outputPrefix.length, -extension.length);
     const hasSource = SOURCE_EXTENSIONS.some(
       (candidate) => fs.existsSync(path.join(sourceDir, `${stem}${candidate}`)),
     );

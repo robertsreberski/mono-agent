@@ -10,7 +10,6 @@ import type {
 import type { TraceSourceHandle, TraceSourceMemoryHealth } from "@mono-agent/observability";
 import type {
   MonoRuntimeLike,
-  RuntimeExecutionMode,
   RuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
 import { createSrtSandboxEngine } from "@mono-agent/runtime-adapter";
@@ -688,14 +687,10 @@ export class MonoAgentAppController implements MonoAgentApp {
    */
   requestModelOverrideRuntimeOptions(
     coreConfig: MonoAgentConfig,
-    compatibility: { readonly mcpSources: readonly string[]; readonly indexSkillsActive: boolean },
   ): {
     readonly extension: RuntimeOptionsExtension;
-    readonly targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean;
-    readonly targetsUnsupportedHistoryTool: (metadata: Record<string, unknown> | undefined) => boolean;
-    readonly targetsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
     readonly targetsProcessJobsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
-  } { return responderOperations.requestModelOverrideRuntimeOptions(this, coreConfig, compatibility); }
+  } { return responderOperations.requestModelOverrideRuntimeOptions(this, coreConfig); }
 
   /**
    * Memoized factory for runtimes bound to a per-request override model. Reuses
@@ -707,7 +702,7 @@ export class MonoAgentAppController implements MonoAgentApp {
    */
   buildRuntimeForModel(
     coreConfig: MonoAgentConfig,
-  ): (model: RuntimeModelReference, executionMode?: RuntimeExecutionMode) => MonoRuntimeLike { return responderOperations.buildRuntimeForModel(this, coreConfig); }
+  ): (model: RuntimeModelReference) => MonoRuntimeLike { return responderOperations.buildRuntimeForModel(this, coreConfig); }
 
   /**
    * Run-identifying context threaded onto exported spans (Phoenix shows the same

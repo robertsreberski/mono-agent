@@ -42,8 +42,7 @@ A Telegram agent that: asks the user for context before it acts (blocking), runs
 ```jsonc
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.6-sol",
-    "executionMode": "sdk",
+    "model": "openai-codex:gpt-5.6-sol",
     "session": { "mode": "continuous", "idleTimeoutMs": 1800000 }
   },
   "context": { "identityPath": "./IDENTITY.md", "selectedSkills": [] },

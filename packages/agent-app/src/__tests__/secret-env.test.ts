@@ -737,7 +737,7 @@ describe("initMonoAgentFolder secret outcome", () => {
 
   it("atomically refuses a guided config path won by another writer", async () => {
     const configPath = join(dir, "mono-agent.config.json");
-    const concurrent = '{"runtime":{"model":"pi:ollama:concurrent"}}\n';
+    const concurrent = '{"runtime":{"model":"ollama:concurrent"}}\n';
     await writeFile(configPath, concurrent, { mode: 0o600 });
 
     await expect(initMonoAgentFolder({ dir, requireConfigCreation: true }))

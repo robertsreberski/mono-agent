@@ -89,7 +89,7 @@ export interface ArtifactAuditReport {
  * `subkind`) so the persisted shape is stable across router/runtime versions.
  */
 export interface FailoverAttempt {
-  /** Model reference tried, e.g. "pi:openai-codex:gpt-5.5". */
+  /** Model reference tried, e.g. "openai-codex:gpt-5.5". */
   readonly model?: string;
   /** Failure kind for this attempt, e.g. "provider_unavailable" or "skipped_capability_mismatch". */
   readonly failureKind?: string;

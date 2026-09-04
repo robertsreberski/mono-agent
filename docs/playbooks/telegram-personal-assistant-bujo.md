@@ -39,7 +39,7 @@ Put `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`; the source config omits the c
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6"
+    "model": "anthropic:claude-sonnet-4-6"
   },
   "telegram": {
     "enabled": true,
@@ -81,7 +81,7 @@ Use the exact `nomic-embed-text:v1.5` tag; the bare `nomic-embed-text` tag resol
 ## Steps
 
 1. Pull the local models the memory tier needs: `ollama pull nomic-embed-text:v1.5 && ollama pull qwen3.6:latest`.
-2. Scaffold the agent: `mono-agent init --model claude:claude-sonnet-4-6 --memory bujo`.
+2. Scaffold the agent: `mono-agent init --model anthropic:claude-sonnet-4-6 --memory bujo`.
 3. In guided init choose Ollama for this recipe's embeddings, put
    `MONO_AGENT_TELEGRAM_BOT_TOKEN` in `.env`, then edit
    `mono-agent.config.json`: add the `telegram` section with `allowedChatIds`,

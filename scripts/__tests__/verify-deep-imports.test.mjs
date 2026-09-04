@@ -19,13 +19,23 @@ describe("verify-deep-imports", () => {
     expect(specifiers).toContain("@mono-agent/agent-runtime/ai/failure.js");
     expect(specifiers).toContain("@mono-agent/agent-runtime/agent/compaction.js");
     expect(specifiers).toContain("@mono-agent/agent-runtime/ai/runtime/registry.js");
-    expect(specifiers).toContain("@mono-agent/agent-runtime/ai/providers/claude-sdk.js");
-    expect(specifiers).toContain("@mono-agent/agent-runtime/ai/providers/claude-cli.js");
-    expect(specifiers).toContain("@mono-agent/agent-runtime/ai/providers/codex-app.js");
+    // The Codex app-server client survives the runtime-bridge removal: it backs
+    // `tools.web.search.backend: "codex"` and must stay a published subpath.
+    expect(specifiers).toContain("@mono-agent/agent-runtime/ai/providers/codex/app-server-client.js");
     expect(specifiers).toContain("@mono-agent/agent-runtime/agent/tools/shared/ripgrep.js");
     // Phase 6 removed the wildcards + the pi-sdk shim; neither should be mapped.
     expect(specifiers.some((s) => s.includes("*"))).toBe(false);
     expect(specifiers).not.toContain("@mono-agent/agent-runtime/ai/providers/pi-sdk.js");
+    // 0.21.0 deleted the non-Pi runtime bridges; their subpaths must not return.
+    for (const removed of [
+      "@mono-agent/agent-runtime/ai/providers/claude-sdk.js",
+      "@mono-agent/agent-runtime/ai/providers/claude-cli.js",
+      "@mono-agent/agent-runtime/ai/providers/codex-app.js",
+      "@mono-agent/agent-runtime/ai/providers/opencode-app.js",
+      "@mono-agent/agent-runtime/ai/providers/acp.js",
+    ]) {
+      expect(specifiers).not.toContain(removed);
+    }
   });
 
   it("maps each non-wildcard export key to its types condition target", () => {

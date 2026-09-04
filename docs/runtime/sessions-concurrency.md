@@ -53,7 +53,7 @@ In `continuous` mode the runtime holds one warm provider session per conversatio
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6",
+    "model": "anthropic:claude-sonnet-4-6",
     "session": { "mode": "continuous", "idleTimeoutMs": 1800000, "rollover": "daily", "rolloverTimezone": "UTC", "rolloverNotice": false }
   }
 }
@@ -61,7 +61,7 @@ In `continuous` mode the runtime holds one warm provider session per conversatio
 
 Env vars: `MONO_AGENT_SESSION_MODE`, `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS`, `MONO_AGENT_SESSION_ROLLOVER`, `MONO_AGENT_SESSION_ROLLOVER_TIMEZONE`, `MONO_AGENT_SESSION_ROLLOVER_NOTICE`.
 
-Warm in-memory sessions are lost on restart. To resume across restarts, use the default durable history store together with `providers.piNative.piSessionsRoot` (Pi-native backends only — see [Pi-native tuning](#pi-native-tuning) below). The history store, not a conversation-id hash, owns the resumable provider epoch.
+Warm in-memory sessions are lost on restart. To resume across restarts, use the default durable history store together with `providers.piNative.piSessionsRoot` (see [Pi-native tuning](#pi-native-tuning) below). The history store, not a conversation-id hash, owns the resumable provider epoch.
 
 `rolloverNotice` is adapter-local and default-off. It does not enable rollover by itself and does not add a new IPC channel or change provider resume behavior. When daily rollover is already enabled and a base conversation crosses into a new day bucket, the responder streams `New session bucket started: <bucket>.` before the model answer and includes the same prelude in the returned final text for final-only transports.
 
@@ -150,7 +150,7 @@ Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, d
 
 ## Pi-native tuning
 
-`providers.piNative` tunes the Pi-native provider path: transport selection, retry behavior on transient provider failures, and optional durable session storage. These apply to `pi:<provider>:<model>` backends. All fields are optional.
+`providers.piNative` tunes the Pi-native provider path: transport selection, retry behavior on transient provider failures, and optional durable session storage. These apply to every provider route. All fields are optional.
 
 | Key | Range / Default | Meaning |
 | --- | --- | --- |
@@ -192,11 +192,11 @@ When `piSessionsRoot` is unset, sessions are in-memory only. A programmatic cust
 `mono-agent restart --clear-sessions` purges `piSessionsRoot`, canonical message-history files, the separate canonical tool-history sidecar, and ACP session authorizations, so the agent neither resumes a provider transcript nor replays or searches an earlier chat turn — a fresh start. Previously issued ACP session ids are revoked. Output reports message-history files/bytes separately from tool-history calls/records/bytes and ACP authorization counts. Durable memory under `memory.path`, recorded run artifacts, and process-job records/output remain untouched. Any nonterminal process job is interrupted by restart independently of the flag. A missing store is a no-op.
 :::
 
-For retry behavior across *different* models (provider failover, not transport retries), see [Fallback models](/runtime/fallback/). Transport retries here are within a single model; fallback moves to the next model in the chain.
+For retry behavior across *different* models (provider failover, not transport retries), see [Fallback & failover](/runtime/fallback/). Transport retries here are within a single model; fallback moves to the next model in the chain.
 
 ## Related
 
-- [Backends & models](/runtime/backends/) — choosing `runtime.model` and execution mode
-- [Local providers](/runtime/local-providers/) — `pi:<provider>:<model>` for Ollama / LM Studio / OpenAI-compatible
-- [Fallback models](/runtime/fallback/) — ordered backups on retryable provider failure
+- [Pi runtime & model references](/runtime/backends/) — choosing `runtime.model`
+- [Local providers](/runtime/local-providers/) — `<provider>:<model>` for Ollama / LM Studio / OpenAI-compatible
+- [Fallback & failover](/runtime/fallback/) — ordered backups on retryable provider failure
 - [Tool scheduling](/runtime/tools-and-guards/#tool-scheduling-code-only) — safe parallel or forced-sequential tool calls within a model step (code-only)

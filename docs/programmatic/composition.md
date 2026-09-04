@@ -90,11 +90,11 @@ it is absent; other configurations keep it outside the app dependency closure.
 | `config` | `MonoAgentConfig` | **Required.** The loaded config |
 | `cwd` | `string` | Agent-root authority and folder used to resolve agent-local optional plugins (configured harness/responders default to `process.cwd()`) |
 | `runtime` | `MonoRuntimeLike` | Inject a custom or shared runtime instead of building one from `runtime.model` |
-| `model` / `executionMode` | `RuntimeModelReference` / `string` | Override the config's primary model / execution mode |
+| `model` | `RuntimeModelReference` | Override the config's primary model |
 | `memory` | `MemoryStore` | Supply a memory store instead of provisioning from `config.memory` |
 | `historyStore` | `ConversationHistoryStore` | Replace the configured app's owner-only disk-backed 64-message history store with a custom implementation |
 | `turnHistoryEnricher` | `AgentHarnessTurnHistoryEnricher` | App-owned hook for adding run-scoped interaction evidence only to replay history; outward responses and memory capture keep the original assistant text |
-| `runtimeOptions` | static run options | Extra runtime options merged for every run (no `model`/`messages`/`abortSignal`/`executionMode`/`onEvent`) |
+| `runtimeOptions` | static run options | Extra runtime options merged for every run (no `model`/`messages`/`abortSignal`/`onEvent`) |
 | `runtimeOptionsForRequest` | `(input) => extension` | Per-request run options (see below) |
 
 `createConfiguredAgentHarness(options)` is also exported if you want the harness
@@ -110,7 +110,7 @@ A custom `historyStore` keeps provider sessions process-local unless it implemen
 
 ## Injecting a custom runtime (`MonoRuntimeLike`)
 
-Both `startMonoAgentApp` and the configured responder factories accept a `runtime?: MonoRuntimeLike` from `@mono-agent/runtime-adapter`. Pass one to share a single runtime across hosts, point at an unsupported backend, or stub the provider in tests. When omitted, the runtime is built from `config.runtime.model` plus canonical `runtime.fallbacks` (or legacy `runtime.fallbackModels`).
+Both `startMonoAgentApp` and the configured responder factories accept a `runtime?: MonoRuntimeLike` from `@mono-agent/runtime-adapter`. Pass one to share a single runtime across hosts or stub the provider in tests. When omitted, the runtime is built from `config.runtime.model` plus canonical `runtime.fallbacks`.
 
 ```ts
 import { startMonoAgentApp } from "@mono-agent/agent-app";
@@ -122,14 +122,14 @@ const app = await startMonoAgentApp({ cwd: process.cwd(), runtime: myRuntime });
 ```
 
 :::caution
-A custom runtime fully replaces model selection, so config keys like `runtime.model`, `runtime.executionMode`, `runtime.fallbacks`, and `runtime.routeSafety` no longer drive provider behavior — your runtime owns that. For the built-in runtime's model refs, execution modes, and fallback chain, see [backends](/runtime/backends/) and [fallback](/runtime/fallback/).
+A custom runtime fully replaces model selection, so config keys like `runtime.model` and `runtime.fallbacks` no longer drive provider behavior — your runtime owns that. For the built-in Pi runtime's model refs and fallback chain, see [providers](/runtime/providers/) and [fallback](/runtime/fallback/).
 :::
 
 Notes:
 
 - The configured fallback chain is applied by the built-in runtime's router. An injected runtime bypasses that wiring, so your runtime owns retry and failover behavior.
 - The BuJo memory LLM is separate from the channel runtime. `createConfiguredMemory(config, { memoryRuntime })` is the seam for tests or custom memory LLM execution; otherwise memory builds its own fallback-free runtime from `memory.llm`.
-- Per-trigger model overrides from cron and webhook use `runtimeForModel`. A host with a custom runtime that should honor those overrides must also provide a `runtimeForModel(model, executionMode)` factory.
+- Per-trigger model overrides from cron and webhook (and child subagent profile models) use `runtimeForModel`. A host with a custom runtime that should honor those overrides must also provide a `runtimeForModel(model)` factory.
 
 ## Custom memory stores
 
@@ -174,10 +174,10 @@ const responder = await createConfiguredAgentResponder({
 });
 ```
 
-The callback receives `{ request, runId, context }` (the inbound request, the run id, and the already-built `BuiltAgentContext`). It returns a partial `runtimeOptions` object plus an optional `cleanup` hook. `messages`, `abortSignal`, `executionMode`, `onEvent`, provider-session ids, keep-alive fields, and `piSessionsRoot` remain harness-owned. `model` and `effort` are accepted for the configured cron/webhook/TUI override path. A request extension may set `piTransport` only when the host left it unset; an explicit host/config value remains authoritative.
+The callback receives `{ request, runId, context }` (the inbound request, the run id, and the already-built `BuiltAgentContext`). It returns a partial `runtimeOptions` object plus an optional `cleanup` hook. `messages`, `abortSignal`, `onEvent`, provider-session ids, keep-alive fields, and `piSessionsRoot` remain harness-owned. `model` and `effort` are accepted for the configured cron/webhook/TUI override path. A request extension may set `piTransport` only when the host left it unset; an explicit host/config value remains authoritative.
 
 :::note
-Request-scoped options apply at the harness **run boundary**: they are resolved after context assembly and merged just before the provider call, then `cleanup` runs when the turn finishes. A model-changing option under continuous-session mode must match a valid model already declared in the request's cron, webhook, or TUI metadata, because that declaration isolates the turn before history assembly. An undeclared late model change fails before provider execution; otherwise a warm session could have omitted history for the wrong runtime. Execution mode remains harness-derived from the effective model.
+Request-scoped options apply at the harness **run boundary**: they are resolved after context assembly and merged just before the provider call, then `cleanup` runs when the turn finishes. A model-changing option under continuous-session mode must match a valid model already declared in the request's cron, webhook, or TUI metadata, because that declaration isolates the turn before history assembly. An undeclared late model change fails before provider execution; otherwise a warm session could have omitted history for the wrong runtime.
 :::
 
 ## Dropping to the harness

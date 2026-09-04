@@ -12,12 +12,6 @@ export function validateOptions(options: AgentHarnessOptions): void {
   if (typeof options.model !== "object" || options.model === null) {
     throw new TypeError("model must be a parsed runtime model reference.");
   }
-  if (
-    options.executionMode !== undefined &&
-    (typeof options.executionMode !== "string" || options.executionMode.length === 0)
-  ) {
-    throw new TypeError("executionMode must be an optional non-empty string.");
-  }
   if (options.mcpRequestContext !== undefined) {
     if (!Array.isArray(options.mcpRequestContext.serverNames)
       || options.mcpRequestContext.serverNames.some((name) => typeof name !== "string" || name.trim().length === 0)) {

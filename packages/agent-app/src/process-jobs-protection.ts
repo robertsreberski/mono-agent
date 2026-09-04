@@ -79,7 +79,7 @@ export function resolveProcessJobsProtectionPosture(input: {
   }
   if (!configuredProcessJobsRoutesOnlyPiNative(input.coreConfig)) {
     throw unsafePostureConfigError(
-      "processJobs.unsafeAllowUnprotectedState requires every configured primary, fallback, Agent child, and agent-host memory route to be Pi-native.",
+      "processJobs.unsafeAllowUnprotectedState requires every configured primary, fallback, Agent child, and agent-host memory route to resolve without duplicate fallbacks.",
     );
   }
   return {

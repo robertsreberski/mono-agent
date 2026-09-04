@@ -75,10 +75,10 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // Runtime: primary model plus ordered backups tried on retryable provider
   // failures (failover is reported in run results, never silent).
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.6-terra", // pi:<provider>:<model> | claude:* | codex:* | opencode:*
+    "model": "openai-codex:gpt-5.6-terra", // <provider>:<model>; the Pi runtime serves every provider
     "fallbacks": [
-      { "model": "claude:claude-sonnet-5", "effort": "xhigh", "attempts": 2 },
-      { "model": "pi:ollama:gemma4:31b" } // omitted effort = provider default, omitted attempts = single shot
+      { "model": "anthropic:claude-sonnet-4-6", "effort": "xhigh", "attempts": 2 },
+      { "model": "ollama:gemma4:31b" } // omitted effort = provider default, omitted attempts = single shot
     ],
     // Same-model retries before the chain advances. Transient failures only:
     // context overflow and bad credentials still advance immediately.
@@ -87,17 +87,13 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
       "backoffMs": 1000,                   // doubles per retry
       "maxBackoffMs": 15000
     },
-    "routeSafety": "per-route-native",     // uniform (default) | per-route-native
-    "executionMode": "sdk",                // sdk | cli (default inferred from model)
     "effort": "medium",                    // none|minimal|low|medium|high|xhigh|max|ultra
-                                           // Reasoning-capable pi:* maps ultra to LOW; Pi without reasoning uses OFF.
-                                           // Direct codex:* forwards ultra unchanged. Mono-agent rejects ultra on its Claude SDK route
-                                           // because the pinned SDK public contract ends at max (the SDK JavaScript itself forwards the value).
-                                           // The Claude CLI route passes --effort ultra, but both tested Claude Code binaries
-                                           // (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort.
-                                           // Direct OpenCode rejects explicit effort.
+                                           // Reasoning-capable models map ultra to LOW; models without reasoning use OFF.
+                                           // max degrades to xhigh unless the resolved model advertises it.
+                                           // mono-agent doctor warns and names the nearest supported level when a
+                                           // configured value is outside the model's advertised set.
                                            // Ranking above max only prevents keyword downgrade.
-    "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (CLI backends)
+    "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (validated + forwarded; not consumed by the Pi runtime)
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "compaction": {
       "enabled": true,                     // default true
@@ -126,7 +122,8 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "maxPendingRuns": 16                    // admitted runs waiting before provider execution
   },
 
-  // Local/self-hosted providers for pi:<provider>:<model> references.
+  // Local/self-hosted providers and Pi runtime options; keys are provider ids
+  // (reserved: local, piAuthPath, piNative). See docs/runtime/providers.md.
   "providers": {
     "piAuthPath": "~/.pi/agent/auth.json", // Pi credentials (OAuth/account + API-key providers)
     // Pi-native bridge tuning (all optional).
@@ -183,10 +180,10 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "llm": {                               // required for strict bujo; rejected for lite/journal
       // Env: MONO_AGENT_MEMORY_LLM_PROVIDER / _MODEL / _EXECUTION_MODE / _ENDPOINT / _TIMEOUT_MS.
       "provider": "ollama",                // ollama | agent-host
-      "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. pi:openai-codex:gpt-5.6-terra
+      "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. openai-codex:gpt-5.6-terra
       "endpoint": "http://localhost:11434", // ollama only; invalid for agent-host
       "timeoutMs": 60000                   // in-app per-call timeout; 1000-600000, default 60000. Raise for slow local models.
-      // For agent-host, use: "model": "pi:openai-codex:gpt-5.6-terra", "executionMode": "sdk"; omit endpoint.
+      // For agent-host, use: "model": "openai-codex:gpt-5.6-terra"; omit endpoint.
     },
     "recallTool": { "enabled": true },      // read-only MemoryRecall tool; default on when memory is configured
     "rememberTool": { "enabled": true },    // agent-callable Remember write tool; bujo backend only, also allowlist-gated
@@ -195,9 +192,9 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "consolidation": { "enabled": true, "cron": "0 */2 * * *" } // default: every two hours
   },
 
-  // Tool policy (allow-all by default) + MCP servers. Direct codex:* normal runs
-  // require effective allow-all (omitted or containing "*", with no denied tools);
-  // use an enforcing runtime for narrower lists.
+  // Tool policy (allow-all by default) + MCP servers. The Pi runtime maps the
+  // allowlist/denylist onto its direct built-in tools; MCP tools are not
+  // re-filtered through the built-in lists.
   "tools": {
     "allowedTools": ["*"],                 // omit or include "*" = all tools; ["Read","Bash"] = just those; [] = none (chat-only)
     "disallowedTools": [],                 // deny wins where supported; overlap is rejected
@@ -269,9 +266,9 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "progress": { "enabled": true }
   },
 
-  // Sandbox for Pi-owned runtime commands. Under uniform route safety, a route
-  // that cannot enforce these scopes fails closed. Under per-route-native,
-  // non-Pi routes use the explicit provider-native contract instead.
+  // Sandbox for Pi-owned runtime commands. Every route is Pi-native, so one
+  // contract covers the whole chain; a route that cannot enforce these scopes
+  // fails closed.
   "sandbox": {
     "mode": "native",                      // native (srt-wrapped) | off
     "network": { "mode": "none", "allowlist": [] }, // none|localhost|allowlist|all; *.suffix wildcards; all = open egress, filesystem still enforced
@@ -456,9 +453,9 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
 
 ```bash
 mono-agent init         # bare TTY wizard: every route checked + strict full Agent ready gate
-mono-agent init --name "Research Companion" --model pi:openai-codex:gpt-5.6-terra \
-  --fallback pi:opencode-go:kimi-k2.6 --fallback-effort medium \
-  --fallback pi:ollama:gemma4:31b --fallback-effort provider-default [--memory lite|journal|bujo]
+mono-agent init --name "Research Companion" --model openai-codex:gpt-5.6-terra \
+  --fallback opencode-go:kimi-k2.6 --fallback-effort medium \
+  --fallback ollama:gemma4:31b --fallback-effort provider-default [--memory lite|journal|bujo]
                         # any flag/non-TTY is scaffold-only and makes no readiness claim
 mono-agent validate     # section report; exit 0 means structurally valid, not zero waiting dependencies
 mono-agent validate --consumer ../local-agent-alpha  # read-only report for a downstream folder
@@ -472,7 +469,7 @@ Edit `mono-agent.config.json` directly and run `mono-agent restart` to apply it 
 Agent-aware CLI commands load `.env` before config resolution; exported shell variables remain in precedence. Use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` and `--env-file` paths there. Keep secrets in an untracked, owner-only dotenv file or exported environment—never in committed config.
 
 :::caution
-For `memory.llm`, CLI-backed refs such as `codex:gpt-5.6-terra` are rejected; use `provider: "ollama"` with a local model string, or `provider: "agent-host"` with an SDK runtime ref like `pi:openai-codex:gpt-5.6-terra` and `executionMode: "sdk"` (omit `endpoint`). See [Capture & recall](/memory/capture-and-recall/).
+For `memory.llm`, use `provider: "ollama"` with a local model string, or `provider: "agent-host"` with a runtime ref like `openai-codex:gpt-5.6-terra` (omit `endpoint`). See [Capture & recall](/memory/capture-and-recall/).
 :::
 
 ## Section reference
@@ -482,9 +479,9 @@ Every top-level section maps to a deep-dive page:
 | Section | What it controls | Deep dive |
 | --- | --- | --- |
 | `agent` | Public display name (never path/service/session identity) | [Identity & soul](/context/identity-and-soul/) |
-| `runtime` | Model, fallback chain, execution mode, effort, sessions | [Backends](/runtime/backends/), [Effort & permissions](/runtime/execution-effort-permissions/), [Fallback](/runtime/fallback/), [Sessions & concurrency](/runtime/sessions-concurrency/) |
+| `runtime` | Model, fallback chain, effort, sessions | [Providers](/runtime/providers/), [Effort & permissions](/runtime/execution-effort-permissions/), [Fallback](/runtime/fallback/), [Sessions & concurrency](/runtime/sessions-concurrency/) |
 | `concurrency` | Per-channel admission and provider-execution bounds | [Sessions & concurrency](/runtime/sessions-concurrency/) |
-| `providers` | Pi auth, `piNative` bridge tuning, local/self-hosted providers | [Local providers](/runtime/local-providers/) |
+| `providers` | Provider map: Pi auth, `piNative` bridge tuning, local/self-hosted providers | [Providers](/runtime/providers/), [Local providers](/runtime/local-providers/) |
 | `context` | Identity, soul, skills selection | [Identity & soul](/context/identity-and-soul/), [Skills](/context/skills/), [Assembly](/context/assembly/) |
 | `memory` | Backend, tier, recall, embeddings, capture LLM, consolidation | [Embeddings](/memory/embeddings/), [Capture & recall](/memory/capture-and-recall/), [Consolidation](/memory/rituals/) |
 | `tools` | Allow/deny tool policy, MCP servers | [Tool policy](/tools/policy/), [MCP](/tools/mcp/) |

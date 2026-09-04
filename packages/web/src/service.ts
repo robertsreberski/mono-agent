@@ -33,6 +33,7 @@ import {
   WEB_STAGED_UPLOAD_TTL_MS,
   type CreateWebUploadInput,
   type PatchWebAgentInput,
+  type PatchWebThreadInput,
   type StartWebTurnInput,
   type WebAgentSummary,
   type WebAttachment,
@@ -56,6 +57,7 @@ import {
   type WebThreadSearchPage,
   type SearchWebThreadsInput,
   type WebMessagePage,
+  type WebModelPage,
   type WebPushSubscriptionStatus,
 } from "./contracts.js";
 import {
@@ -64,6 +66,7 @@ import {
   type DiscoveredOperatorAgent,
 } from "./discovery.js";
 import { conversationTitleFromFrame } from "./conversation-title.js";
+import { advertisedEffortLevels, effectiveModelForAgent, effortLevelsForModel } from "./effort-ladder.js";
 import { errorCode, errorMessage, WebConsoleError } from "./errors.js";
 import { OperatorClient, type OperatorInfo } from "./operator-client.js";
 import {
@@ -93,6 +96,8 @@ const DEFAULT_DISCOVERY_INTERVAL_MS = 5_000;
 const DEFAULT_PURGE_INTERVAL_MS = 60 * 60 * 1_000;
 const INFO_TIMEOUT_MS = 2_500;
 const ASK_DISCOVERY_TIMEOUT_MS = 120_000;
+/** Bounded per-agent catalog-admitted model refs; beyond it, oldest go first. */
+const MODEL_CATALOG_CACHE_CAP = 2_048;
 const REPLY_ACCESS_TTL_MS = 10 * 60 * 1_000;
 /**
  * Raster types the console keeps its own copy of. `image/svg+xml` is absent on
@@ -208,6 +213,22 @@ export interface WebUploadReservation {
   release(): void;
 }
 
+/**
+ * One admitted model reference. `source` records who said it: a `/v1/models`
+ * page is the live word on the models it serves, while the `modelOptions` seed
+ * only proves the ref is selectable and never describes a ladder.
+ */
+interface CatalogModelRecord {
+  readonly source: "page" | "shortlist";
+  readonly efforts: readonly string[] | undefined;
+}
+
+/** One agent generation's admitted refs. See `reconcileModelCatalogCache`. */
+interface CatalogCacheEntry {
+  readonly generation: string;
+  readonly models: Map<string, CatalogModelRecord>;
+}
+
 export class WebService {
   readonly store: WebStore;
   private readonly options: CreateWebServiceOptions;
@@ -229,6 +250,13 @@ export class WebService {
   private readonly replyAccessKey: Buffer;
   private readonly askWatches = new Map<string, AskWatch>();
   private connections = new Map<string, AgentConnection>();
+  /** Bounded catalog-admitted model refs per agent, seeded from `modelOptions`
+   *  and appended to by every proxied `/v1/models` page. Admission is `has`,
+   *  metadata is `get`. Map preserves insertion order, so evicting the oldest
+   *  entry is deleting the head. Scoped to the agent GENERATION that filled it
+   *  (see `reconcileModelCatalogCache`), because a source id outlives the
+   *  process behind it. */
+  private readonly modelCatalogCache = new Map<string, CatalogCacheEntry>();
   /** Parts whose durable copy is being fetched, so concurrent reads fetch once. */
   private persistingReplyImages = new Set<string>();
   private discoveryTimer: ReturnType<typeof setInterval> | undefined;
@@ -604,7 +632,23 @@ export class WebService {
     return result;
   }
 
-  patchThread(id: string, patch: { readonly title?: string; readonly archived?: boolean }): WebThread {
+  patchThread(id: string, patch: PatchWebThreadInput): WebThread {
+    if (patch.ifRunConfigUnset === true) {
+      // Compare-and-set for the console's one-time adoption of a browser-local
+      // override. Whoever set an override first keeps it; the loser adopts what
+      // it reads back, and no event is emitted because nothing changed.
+      //
+      // The check and the write are one `BEGIN IMMEDIATE` inside the store, not
+      // two calls from here: this request handler is synchronous, so no other
+      // HTTP request can interleave, but the process lease is held on a
+      // separate database file and does not stop a second connection to the
+      // state DB from writing between a bare read and a bare write.
+      const result = this.store.patchThreadIfRunConfigUnset(id, patch);
+      if (!result.applied) return result.thread;
+      this.emit("thread.changed", result.thread.id, { thread: result.thread });
+      this.emit("threads.changed", result.thread.id);
+      return result.thread;
+    }
     const thread = this.store.patchThread(id, patch);
     this.emit("thread.changed", thread.id, { thread });
     this.emit("threads.changed", thread.id);
@@ -711,6 +755,50 @@ export class WebService {
       this.emit("threads.changed", message.threadId);
     }
     return this.decorateMessage(message);
+  }
+
+  async agentModels(sourceId: string, input: {
+    readonly provider?: string;
+    readonly q?: string;
+    readonly cursor?: string;
+    readonly limit: number;
+  }): Promise<WebModelPage> {
+    const agent = this.store.getAgent(sourceId);
+    if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const connection = this.connections.get(sourceId);
+    if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
+    const generation = this.modelCatalogCache.get(sourceId)?.generation;
+    const page = await connection.client.models({
+      ...(input.provider === undefined ? {} : { provider: input.provider }),
+      ...(input.q === undefined ? {} : { q: input.q }),
+      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+      limit: input.limit,
+      signal: AbortSignal.timeout(INFO_TIMEOUT_MS),
+    });
+    // Every proxied page widens the per-agent catalog cache, the only feed
+    // (besides `modelOptions` keys) that makes tier-2 model admission possible,
+    // and the only place the effort ladder a catalog model advertises is ever
+    // seen -- `modelOptions` never describes it, so dropping it here is what
+    // left effort validation with nothing to judge against.
+    //
+    // Admitted under the generation the request was ISSUED under, never under
+    // whatever is current when it answers. A discovery refresh can retire this
+    // agent's generation inside the await above, and keyed by source id alone
+    // the reply -- fetched from a process that is gone -- was written straight
+    // into the freshly reconciled map, where `source: "page"` overwrites
+    // unconditionally. Generation 1's ladder then judged generation 2's turns.
+    this.admitCatalogRefs(sourceId, generation, page.models.flatMap((model) => {
+      const record: CatalogModelRecord = { source: "page", efforts: advertisedEffortLevels(model) };
+      // The wire carries provider-local ids while every selection surface
+      // speaks the canonical `<provider>:<model>` reference. Admit both, or a
+      // turn is judged against metadata the page did advertise but under a
+      // name nothing ever asks for.
+      const reference = model.provider ? `${model.provider}:${model.id}` : model.id;
+      const entries: (readonly [string, CatalogModelRecord])[] = [[model.id, record]];
+      if (reference !== model.id) entries.push([reference, record]);
+      return entries;
+    }));
+    return page;
   }
 
   async cronConfigView(sourceId: string): Promise<WebChannelConfigView> {
@@ -844,8 +932,15 @@ export class WebService {
     if (agent === undefined || connection === undefined || !thread.canSend) {
       throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
     }
-    validateModelAndEffort(agent, input.model, input.effort);
-    const started = this.store.beginTurn({ threadId, text, attachmentIds, ...(input.quote === undefined ? {} : { quote: input.quote }), ...(input.model === undefined ? {} : { model: input.model }), ...(input.effort === undefined ? {} : { effort: input.effort }) });
+    // The per-thread override is server state now, so it governs turns this
+    // server starts too -- process-job follow-ups and other assistant-owned
+    // wakes omit model/effort and would otherwise silently run on the agent
+    // default, ignoring the selection made in that very conversation. An
+    // explicit request value still wins.
+    const model = input.model ?? thread.runModel ?? undefined;
+    const effort = input.effort ?? thread.runEffort ?? undefined;
+    this.validateModelAndEffort(thread.sourceId, agent, model, effort);
+    const started = this.store.beginTurn({ threadId, text, attachmentIds, ...(input.quote === undefined ? {} : { quote: input.quote }), ...(model === undefined ? {} : { model }), ...(effort === undefined ? {} : { effort }) });
     this.launchTurn(started, connection.client, operatorText);
     this.emit("turn.changed", threadId, { turn: started.thread.runState });
     this.emit("threads.changed", threadId);
@@ -1464,8 +1559,17 @@ export class WebService {
     }
 
     const nextConnections = new Map<string, AgentConnection>();
+    // What the cache is allowed to survive: the same process, at the same
+    // endpoint, since the same start. Anything else is a new generation whose
+    // catalog the previous one cannot speak for.
+    const generations = new Map(discovered.map((agent) => [
+      agent.source.sourceId,
+      agentGeneration(agent),
+    ]));
+    this.reconcileModelCatalogCache(generations);
     const summaries = await Promise.all(discovered.map(async (agent): Promise<WebAgentSummary> => {
-      if (agent.baseUrl === undefined) return offlineSummary(agent);
+      const generation = generations.get(agent.source.sourceId)!;
+      if (agent.baseUrl === undefined) return offlineSummary(agent, generation);
       const client = new OperatorClient({
         baseUrl: agent.baseUrl,
         ...(agent.apiKey === undefined ? {} : { apiKey: agent.apiKey }),
@@ -1475,9 +1579,11 @@ export class WebService {
       try {
         const info = await client.info(AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]));
         nextConnections.set(agent.source.sourceId, { client, info });
+        this.seedModelCatalogFromOptions(agent.source.sourceId, generation, info.modelOptions);
         const efforts = collectEfforts(info);
         return {
           sourceId: agent.source.sourceId,
+          generation,
           label: info.label ?? agent.source.label,
           status: agent.source.health === "running" ? "online" : "degraded",
           pinned: false,
@@ -1488,6 +1594,7 @@ export class WebService {
           ...(info.effort === undefined ? {} : { defaultEffort: info.effort }),
           ...(efforts.length === 0 ? {} : { efforts }),
           ...(info.modelOptions === undefined ? {} : { modelOptions: info.modelOptions }),
+          ...(info.providers === undefined ? {} : { providers: info.providers }),
           ...(info.cron === undefined ? {} : { cron: info.cron }),
           ...(info.supportsAskById ? { supportsAskById: true } : {}),
           updatedAt: agent.source.updatedAt,
@@ -1497,7 +1604,7 @@ export class WebService {
           sourceId: agent.source.sourceId,
           error: errorMessage(error),
         });
-        return offlineSummary(agent);
+        return offlineSummary(agent, generation);
       }
     }));
     this.connections = nextConnections;
@@ -1716,6 +1823,135 @@ export class WebService {
       );
     }
     return connection;
+  }
+
+  /**
+   * Tier-2 admission: the catalog cache, seeded from `modelOptions` keys and
+   * appended to by every proxied `/v1/models` page.
+   *
+   * Both feeds cross an await between deciding what to admit and admitting it,
+   * so both name the generation they read. A write whose generation is no
+   * longer the one on file is dropped outright rather than filed under the
+   * successor: it describes a process that has been replaced, and admitting it
+   * is exactly the cross-generation contamination `reconcileModelCatalogCache`
+   * exists to prevent. Nothing is created here either -- an entry exists for
+   * every discovered source from the moment a refresh reconciles it, and a
+   * source with no entry is one discovery has dropped.
+   *
+   * @returns whether the refs were admitted.
+   */
+  private admitCatalogRefs(
+    sourceId: string,
+    generation: string | undefined,
+    refs: readonly (readonly [string, CatalogModelRecord])[],
+  ): boolean {
+    if (generation === undefined) return false;
+    const entry = this.modelCatalogCache.get(sourceId);
+    if (entry === undefined || entry.generation !== generation) return false;
+    for (const [ref, record] of refs) this.admitModelRef(entry.models, ref, record);
+    return true;
+  }
+
+  /**
+   * Bind the cache to the agent process that filled it, and to nothing else.
+   * A source id outlives the process behind it: reconfigure an agent and
+   * restart it and the next generation advertises a different catalog under
+   * the same id. Keyed by id alone, generation 1's ladder judged generation
+   * 2's turns and rejected grades the running agent accepts, with no way to
+   * clear it short of restarting the console.
+   *
+   * The single place the cache is scoped, so there is one answer to "whose
+   * catalog is this". Runs before the per-agent probes of a refresh, so a seed
+   * or a proxied page during that refresh files under the current generation.
+   * Sources discovery no longer reports are dropped outright, or a retired
+   * agent's refs would accumulate for the life of the process.
+   */
+  private reconcileModelCatalogCache(
+    generations: ReadonlyMap<string, string>,
+  ): void {
+    for (const sourceId of [...this.modelCatalogCache.keys()]) {
+      if (!generations.has(sourceId)) this.modelCatalogCache.delete(sourceId);
+    }
+    for (const [sourceId, generation] of generations) {
+      if (this.modelCatalogCache.get(sourceId)?.generation === generation) continue;
+      this.modelCatalogCache.set(sourceId, { generation, models: new Map() });
+    }
+  }
+
+  private seedModelCatalogFromOptions(
+    sourceId: string,
+    generation: string,
+    modelOptions: Readonly<Record<string, WebModelOption>> | undefined,
+  ): void {
+    if (modelOptions === undefined) return;
+    // `modelOptions` stays the authority for the refs it names, so the seed
+    // only records admission; recording a ladder here would shadow it.
+    this.admitCatalogRefs(
+      sourceId,
+      generation,
+      Object.keys(modelOptions).map((key) => [key, { source: "shortlist", efforts: undefined }] as const),
+    );
+  }
+
+  private admitModelRef(
+    entries: Map<string, CatalogModelRecord>,
+    ref: string,
+    record: CatalogModelRecord,
+  ): void {
+    const known = entries.get(ref);
+    if (known !== undefined) {
+      // A page is the live word on what it serves, so its metadata replaces
+      // whatever is held -- including replacing a ladder with silence, which
+      // is how a re-fetched catalog heals a model whose grades changed. The
+      // shortlist seed only records admission and must never shadow a page.
+      // Re-setting an existing key leaves its eviction position alone.
+      if (record.source === "page") entries.set(ref, record);
+      return;
+    }
+    entries.set(ref, record);
+    if (entries.size > MODEL_CATALOG_CACHE_CAP) {
+      const oldest = entries.keys().next().value;
+      if (oldest !== undefined) entries.delete(oldest);
+    }
+  }
+
+  private validateModelAndEffort(
+    sourceId: string,
+    agent: WebAgentSummary,
+    model: string | undefined,
+    effort: string | undefined,
+  ): void {
+    if (model !== undefined && !this.modelAdmitted(sourceId, agent, model)) {
+      throw new WebConsoleError("invalid_model", "This agent did not advertise the selected model.", 400);
+    }
+    // Both ends resolve a blank selection to the same route -- the browser fell
+    // back to the first shortlist entry while this stopped at `defaultModel`,
+    // so any `/v1/info` omitting `model` had the picker offering one ladder and
+    // this rejecting from another.
+    const effectiveModel = effectiveModelForAgent(agent, model);
+    // `modelOptions` only ever covers the configured shortlist, so a model
+    // reached through the provider catalog has no entry there. `effort-ladder`
+    // holds the tiering, and the browser runs the exact same function, so the
+    // picker cannot offer a grade this rejects or hide one it accepts.
+    const cached = effectiveModel === undefined
+      ? undefined
+      : this.modelCatalogCache.get(sourceId)?.models.get(effectiveModel);
+    const allowedEfforts = effortLevelsForModel(agent, effectiveModel, cached?.efforts);
+    if (effort !== undefined && !allowedEfforts.includes(effort)) {
+      throw new WebConsoleError("invalid_effort", "This agent did not advertise the selected effort for this model.", 400);
+    }
+  }
+
+  private modelAdmitted(sourceId: string, agent: WebAgentSummary, model: string): boolean {
+    // Tier 1: the configured-route shortlist — unchanged, always allowed.
+    if (agent.models === undefined ? model === agent.defaultModel : agent.models.includes(model)) return true;
+    // Tier 2: a model reached only through the catalog cache.
+    const cached = this.modelCatalogCache.get(sourceId);
+    if (cached !== undefined && cached.models.has(model)) return true;
+    // Tier 3: syntactic `<provider>:<model>` floor. The web package has no pi-ai
+    // access, so a well-formed ref passes here and the agent itself is the real
+    // gate at turn time.
+    return modelPassesSyntacticFloor(model);
   }
 
   private authorizeReplyPart<T extends "attachment" | "mcp_app">(
@@ -2143,9 +2379,54 @@ export class WeightedTurnBudget {
   }
 }
 
-function offlineSummary(agent: DiscoveredOperatorAgent): WebAgentSummary {
+/**
+ * The identity of the agent PROCESS behind a source id. `sourceId` is stable
+ * across restarts by design, so it cannot scope anything the running process
+ * told us: a reconfigured agent restarts at a new endpoint, with a new pid and
+ * a new `startedAt`, and advertises a different catalog under the same id.
+ * Deliberately excludes `updatedAt`, which every heartbeat moves.
+ *
+ * This is what the model catalog cache is scoped to -- and, since the browser
+ * caches the same `/v1/models` pages and had nothing generation-shaped to
+ * watch, what `WebAgentSummary.generation` carries to it.
+ *
+ * Hashed because it now goes on the wire: the raw form names the agent's
+ * operator endpoint and pid, and the console has no reason to hand those to a
+ * page. The token only has to be stable while one process lives and different
+ * once it is replaced, which a digest of those three fields is.
+ *
+ * Length-prefixed rather than `|`-joined. A separator that can occur inside a
+ * field is not a separator: two different accepted tuples whose parts happen to
+ * contain the delimiter flatten to the same string and hash to the same token,
+ * and two distinct processes sharing a generation is precisely the state the
+ * token exists to make impossible. Nothing first-party produces such a tuple
+ * today, which is why this is robustness rather than a live defect --- but a
+ * digest whose only defence is what its inputs happen to look like is one
+ * unrelated change away from being wrong.
+ *
+ * Hashed as UTF-16 code units for the same reason the prefix replaced the
+ * delimiter. UTF-8 has no encoding for an unpaired surrogate, so a lone high
+ * surrogate and a lone low surrogate both became the replacement character and
+ * two different one-character fields -- identically length-prefixed -- hashed
+ * alike. `utf16le` is a lossless transcription of exactly the code units the
+ * length prefix counts, so what is hashed is what was measured.
+ */
+export function agentGeneration(agent: DiscoveredOperatorAgent): string {
+  const parts = [
+    agent.baseUrl ?? "",
+    String(agent.source.pid ?? ""),
+    agent.source.startedAt,
+  ];
+  return createHash("sha256")
+    .update(parts.map((part) => `${String(part.length)}:${part}`).join(""), "utf16le")
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function offlineSummary(agent: DiscoveredOperatorAgent, generation: string): WebAgentSummary {
   return {
     sourceId: agent.source.sourceId,
+    generation,
     label: agent.source.label,
     status: "offline",
     pinned: false,
@@ -2161,33 +2442,25 @@ function collectEfforts(info: OperatorInfo): readonly string[] {
   // ladder rather than treating only the current default as selectable.
   if (info.modelOptions === undefined) return EFFORT_LEVELS;
   const models = info.models ?? (info.model === undefined ? [] : [info.model]);
-  return [...new Set(models.flatMap((model) => effortLevelsForOption(info.modelOptions?.[model])))];
+  // Same rule as every other effort decision, so the union an agent advertises
+  // cannot disagree with what a turn on one of those models may carry.
+  return [...new Set(models.flatMap((model) => effortLevelsForModel(info, model, undefined)))];
 }
 
-function validateModelAndEffort(agent: WebAgentSummary, model: string | undefined, effort: string | undefined): void {
-  if (model !== undefined
-    && (agent.models === undefined ? model !== agent.defaultModel : !agent.models.includes(model))) {
-    throw new WebConsoleError("invalid_model", "This agent did not advertise the selected model.", 400);
-  }
-  const effectiveModel = model ?? agent.defaultModel;
-  const option = effectiveModel === undefined ? undefined : agent.modelOptions?.[effectiveModel];
-  const allowedEfforts = agent.modelOptions === undefined
-    ? agent.efforts
-    : effortLevelsForOption(option);
-  if (effort !== undefined && (allowedEfforts === undefined || !allowedEfforts.includes(effort))) {
-    throw new WebConsoleError("invalid_effort", "This agent did not advertise the selected effort for this model.", 400);
-  }
-}
-
-function effortLevelsForOption(option: WebModelOption | undefined): readonly string[] {
-  if (option === undefined
-    || option.reasoning === false
-    || option.reasoningMode === "none"
-    || option.effortLevels?.length === 0) {
-    return [];
-  }
-  if (option.reasoningMode === "toggle") return ["high", "none"];
-  return option.effortLevels ?? [];
+/**
+ * Tier 3: the syntactic floor. `@mono-agent/web` may not import pi-ai, so this
+ * cannot be authoritative -- the agent is. It exists to reject obvious garbage,
+ * and it must not be looser than the runtime parser, or a reference the console
+ * accepts is silently ignored and the turn runs on the default model instead.
+ */
+function modelPassesSyntacticFloor(model: string): boolean {
+  const separator = model.indexOf(":");
+  if (separator <= 0 || separator >= model.length - 1) return false;
+  const provider = model.slice(0, separator);
+  const rest = model.slice(separator + 1);
+  // Provider ids are lowercase kebab/alphanumeric; the model half may carry
+  // further colons and slashes but must not be blank or padded.
+  return /^[a-z0-9][a-z0-9-]*$/u.test(provider) && rest.trim() === rest && rest.trim().length > 0;
 }
 
 function normalizeFilename(value: string): string {

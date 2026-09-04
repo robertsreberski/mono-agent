@@ -14,7 +14,6 @@ import type {
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 import type {
   MonoRuntimeLike,
-  RuntimeExecutionMode,
   RuntimeModelReference,
   RuntimeRunOptions,
 } from "@mono-agent/runtime-adapter";
@@ -390,7 +389,6 @@ export interface AgentHarnessOptions {
   readonly attachmentsDir?: string;
   readonly runtime: MonoRuntimeLike;
   readonly model: RuntimeModelReference;
-  readonly executionMode?: RuntimeExecutionMode;
   readonly cwd?: string;
   readonly effort?: string;
   readonly maxTurns?: number;
@@ -401,7 +399,7 @@ export interface AgentHarnessOptions {
    * contract remain in-memory. Unset = in-memory only.
    */
   readonly piSessionsRoot?: string;
-  readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "executionMode" | "onEvent" | "toolLifecycleSink">;
+  readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink">;
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
@@ -415,10 +413,7 @@ export interface AgentHarnessOptions {
    * When unset, an override still sets the per-run model but cannot reshape a
    * frozen fallback chain (the router would ignore it).
    */
-  readonly runtimeForModel?: (
-    model: RuntimeModelReference,
-    executionMode?: RuntimeExecutionMode,
-  ) => MonoRuntimeLike;
+  readonly runtimeForModel?: (model: RuntimeModelReference) => MonoRuntimeLike;
   readonly memory?: MemoryStore;
   readonly memoryWriteMode?: MemoryWriteMode;
   /** Best-effort post-provider persistence warning sink (host log/metric). */
@@ -484,12 +479,10 @@ export interface AgentHarnessRuntimeOptionsExtension {
   // mode, a model change must already be declared in that request metadata so
   // the harness isolates it before assembling context. `Partial` keeps every field optional (an
   // extension that sets only `mcpServers` stays valid). `messages`/`abortSignal`/
-  // `onEvent` and `executionMode` stay harness-owned: executionMode is derived
-  // from the effective model + host config in the harness, so an extension must
-  // not set it. Provider-session ids, keep-alive fields, and piSessionsRoot are
-  // accepted structurally for compatibility but stripped and replaced by the
-  // harness's coordinated decision.
-  readonly runtimeOptions?: Partial<Omit<RuntimeRunOptions, "messages" | "abortSignal" | "onEvent" | "executionMode" | "toolLifecycleSink">>;
+  // `onEvent` stays harness-owned. Provider-session ids, keep-alive fields, and
+  // piSessionsRoot are accepted structurally for compatibility but stripped
+  // and replaced by the harness's coordinated decision.
+  readonly runtimeOptions?: Partial<Omit<RuntimeRunOptions, "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink">>;
   /**
    * Authoritative request-scoped tool boundary. When present, it replaces the
    * host/static allowed, denied, MCP-server, and MCP-config-path fields instead

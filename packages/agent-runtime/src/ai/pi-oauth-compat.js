@@ -10,7 +10,7 @@
 // they cannot be imported. The supported surface is `provider.auth.oauth`,
 // reached through the provider factories.
 //
-// mono-agent resolves providers dynamically from `pi:<provider>:<model>`, so it
+// mono-agent resolves providers dynamically from `<provider>:<model>`, so it
 // needs a lookup by id — this module rebuilds that over `builtinProviders()` and
 // preserves the old call contracts exactly, keeping the migration confined here.
 //

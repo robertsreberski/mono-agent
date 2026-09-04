@@ -442,15 +442,10 @@ function readContractSurface(surface: ContractSurface): readonly [string, string
 function expectUltraRouteContract(value: string, label: string): void {
   const prose = normalizeProse(value);
   for (const fact of [
-    "reasoning-capable pi:* maps ultra to low",
-    "pi without reasoning uses off",
-    "direct codex:* forwards ultra unchanged",
-    "mono-agent rejects ultra on its claude sdk route because the pinned sdk public contract ends at max",
-    "the sdk javascript itself forwards the value",
-    "the claude cli route passes --effort ultra",
-    "sdk-bundled 2.1.206 and local 2.1.210",
-    "warn that it is unknown, ignore it, and use default effort",
-    "direct opencode rejects explicit effort",
+    "route-specific effort forwarded through pi to the selected provider",
+    "doctor warns when a configured value falls outside the model's advertised ladder",
+    "keeps turn-time handling permissive",
+    "ranking above max only prevents keyword downgrade",
   ]) {
     expect(prose, `${label} is missing: ${fact}`).toContain(fact);
   }
@@ -556,26 +551,32 @@ describe("ultra effort documentation parity", () => {
   it("does not mistake separate model and effort config lines for a mapping claim", () => {
     expect(
       unqualifiedPiLowClaims(`{
-        "model": "pi:openai-codex:gpt-5.6-sol",
+        "model": "openai-codex:gpt-5.6-sol",
         "effort": "medium" // none|low|medium|high|max|ultra
       }`),
     ).toEqual([]);
   });
 
-  it("keeps canonical docs, generated reference, CLI help, and composer references route-specific", () => {
+  it("keeps generated reference, schema, and CLI help aligned to the single Pi effort contract", () => {
     const runtimeEffort = allConfigReferenceFields().find(
       (field) => field.jsonPath === "runtime.effort",
     );
     expect(runtimeEffort).toBeDefined();
 
     const surfaces = [
-      ...STATIC_CONTRACT_SURFACES.map(readContractSurface),
+      ...STATIC_CONTRACT_SURFACES
+        .filter((surface) => surface.label.startsWith("generated"))
+        .map(readContractSurface),
       [runtimeEffort?.description ?? "", "config reference source"],
-      [initHelpText(), "built CLI help source"],
     ] as const;
 
     for (const [surface, label] of surfaces) {
       expectUltraRouteContract(surface, label);
     }
+
+    const help = normalizeProse(initHelpText());
+    expect(help).toContain("pi forwards the configured effort to the selected provider");
+    expect(help).toContain("ranking above max only prevents keyword downgrade");
+    expect(unqualifiedPiLowClaims(help)).toEqual([]);
   });
 });

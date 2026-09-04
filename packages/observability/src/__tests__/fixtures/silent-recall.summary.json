@@ -19,7 +19,7 @@
   "providerSessionId": "sess-silent-recall",
   "eventCount": 3,
   "artifactPaths": [],
-  "model": "pi:ollama:gemma4:31b",
+  "model": "ollama:gemma4:31b",
   "effort": "high",
   "source": "cron",
   "sourceDetail": "nightly-report",

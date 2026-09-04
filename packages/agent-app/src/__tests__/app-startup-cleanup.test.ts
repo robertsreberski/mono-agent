@@ -87,7 +87,7 @@ describe("mono-agent app startup rollback", () => {
     await writeFile(join(cwd, "IDENTITY.md"), "# Startup rollback test\n");
     await writeFile(configPath, `${JSON.stringify({
       runtime: {
-        model: "pi:openai-codex:gpt-5.5",
+        model: "openai-codex:gpt-5.5",
         retry: { primaryAttempts: 1, backoffMs: 0, maxBackoffMs: 0 },
         workspace: ".",
       },
@@ -168,7 +168,7 @@ describe("mono-agent app startup rollback", () => {
     await writeFile(join(cwd, "IDENTITY.md"), "# Channel start rollback test\n");
     await writeFile(configPath, `${JSON.stringify({
       runtime: {
-        model: "pi:openai-codex:gpt-5.5",
+        model: "openai-codex:gpt-5.5",
         retry: { primaryAttempts: 1, backoffMs: 0, maxBackoffMs: 0 },
         workspace: ".",
       },
@@ -270,7 +270,7 @@ describe("mono-agent app startup rollback", () => {
     await writeFile(join(cwd, "IDENTITY.md"), "# Channel refresh stop test\n");
     await writeFile(configPath, `${JSON.stringify({
       runtime: {
-        model: "pi:openai-codex:gpt-5.5",
+        model: "openai-codex:gpt-5.5",
         retry: { primaryAttempts: 1, backoffMs: 0, maxBackoffMs: 0 },
         workspace: ".",
       },

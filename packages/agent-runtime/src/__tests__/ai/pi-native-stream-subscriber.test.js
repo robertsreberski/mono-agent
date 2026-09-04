@@ -48,7 +48,7 @@ function driver(overrides = {}) {
     toolLimits: {},
     harness,
     sdk: "pi",
-    model: "pi:faux:m",
+    model: "faux:m",
   });
   return { runState, emitted, harness, handler, flush: async () => await gate?.flush() };
 }
@@ -120,7 +120,7 @@ describe("createStreamSubscriber — exact context snapshots", () => {
     expect(emitted.filter((event) => event.type === "context_usage")).toEqual([
       expect.objectContaining({
         sdk: "pi",
-        model: "pi:faux:m",
+        model: "faux:m",
         measurementId: "assistant-1",
         contextWindow: 128_000,
         tokens: { input: 120, output: 15, cacheRead: 30, cacheCreation: 5, total: 170 },

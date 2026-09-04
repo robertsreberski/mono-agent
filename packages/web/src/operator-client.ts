@@ -8,6 +8,10 @@ import {
   parseCronOperatorRunSummary,
   parseProcessJobProjection,
   parseAgentStreamFrame,
+  MAX_INFO_BODY_BYTES,
+  MAX_INFO_PROVIDER_ID_BYTES,
+  MAX_INFO_PROVIDER_ITEMS,
+  MAX_INFO_PROVIDER_LABEL_BYTES,
   type AgentLiveInputSettlement,
   type AgentLiveInputUnavailableReason,
   type AgentAttachment,
@@ -32,7 +36,9 @@ import type {
   WebCronRunDetail,
   WebCronRunPage,
   WebCronRunSummary,
+  WebAgentProvider,
   WebModelOption,
+  WebModelPage,
   WebSkillInfo,
   WebSkillRegistry,
 } from "./contracts.js";
@@ -40,7 +46,6 @@ import { errorMessage, WebConsoleError } from "./errors.js";
 import { isTrustedOperatorBaseUrl } from "./discovery.js";
 
 const OPERATOR_WIRE_SCHEMA = 1;
-const MAX_INFO_BODY_BYTES = 1024 * 1024;
 const MAX_PROCESS_JOBS_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 // Compatibility boundary: older operators may emit frames up to 8 MiB. New
@@ -54,6 +59,17 @@ const PRESERVED_MCP_APP_OPERATOR_ERRORS = new Map<string, number>([
 ]);
 const CANCEL_TIMEOUT_MS = 2_000;
 const HISTORY_APPEND_TIMEOUT_MS = 5_000;
+// The provider summary rides `/v1/info`, which shares one 1 MiB body cap with
+// every other field and is polled every 5s, so this parse stays bounded: an
+// oversized summary must cost the summary, never the whole response (which
+// shows the agent OFFLINE).
+//
+// Its bounds come from `@mono-agent/agent-contracts`, NOT from numbers chosen
+// here. Chosen here, they drifted from the producer's in both directions and
+// each drift silently cost the operator a provider: a 129-byte id the catalog
+// published was dropped, and the route provider the producer deliberately
+// admitted first sat at entry 65 of 71. The producer reads the same window and
+// keeps route providers inside it.
 const MAX_SKILL_ITEMS = 256;
 const MAX_SKILL_DESCRIPTION_BYTES = 256;
 const MAX_SKILL_NAME_BYTES = 256;
@@ -78,6 +94,8 @@ export interface OperatorInfo {
   readonly effort?: string;
   readonly models?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, WebModelOption>>;
+  /** Providers this agent supports, for the catalog selector. Bounded. */
+  readonly providers?: readonly WebAgentProvider[];
   /** Live registry snapshot. Absent when the producer predates skill discovery. */
   readonly skills?: OperatorSkillRegistry;
   readonly supportsAttachments: boolean;
@@ -168,6 +186,7 @@ export class OperatorClient {
     }
     const models = stringArray(body.models);
     const modelOptions = parseModelOptions(body.modelOptions);
+    const providers = parseProviders(body.providers);
     const skills = parseSkillRegistry(body.skills);
     const capabilities = record(body.capabilities);
     const cron = record(capabilities?.cron);
@@ -180,6 +199,7 @@ export class OperatorClient {
       ...(typeof body.effort === "string" ? { effort: body.effort } : {}),
       ...(models === undefined ? {} : { models }),
       ...(modelOptions === undefined ? {} : { modelOptions }),
+      ...(providers === undefined ? {} : { providers }),
       ...(skills === undefined ? {} : { skills }),
       supportsAttachments: capabilities?.attachments === true,
       supportsHistoryAppend: capabilities?.historyAppend === true,
@@ -377,6 +397,27 @@ export class OperatorClient {
       },
     );
     return parseCronRunPage(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_cron_too_large")));
+  }
+
+  async models(input: {
+    readonly provider?: string;
+    readonly q?: string;
+    readonly cursor?: string;
+    readonly limit: number;
+    readonly signal?: AbortSignal;
+  }): Promise<WebModelPage> {
+    const query = new URLSearchParams({ limit: String(input.limit) });
+    if (input.provider !== undefined) query.set("provider", input.provider);
+    if (input.q !== undefined) query.set("q", input.q);
+    if (input.cursor !== undefined) query.set("cursor", input.cursor);
+    const response = await this.request(
+      `${this.baseUrl}/v1/models?${query.toString()}`,
+      {
+        headers: this.headers(false),
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      },
+    );
+    return parseModelPage(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_models_too_large")));
   }
 
   async cronRun(jobId: string, runId: string, signal?: AbortSignal): Promise<WebCronRunDetail> {
@@ -725,6 +766,55 @@ function parseCronRunPage(value: unknown): WebCronRunPage {
   return parseSharedCron(parseCronOperatorRunPage, value);
 }
 
+function parseModelPage(value: unknown): WebModelPage {
+  const body = record(value);
+  if (body === undefined
+    || !Array.isArray(body.models)
+    || (body.nextCursor !== undefined && typeof body.nextCursor !== "string")
+    || typeof body.truncated !== "boolean") {
+    throw new WebConsoleError("invalid_operator_models", "The agent returned invalid model catalog data.", 502);
+  }
+  return {
+    models: body.models.map(parseCatalogModel),
+    ...(body.nextCursor === undefined ? {} : { nextCursor: body.nextCursor }),
+    truncated: body.truncated,
+  };
+}
+
+function parseCatalogModel(value: unknown): WebModelPage["models"][number] {
+  const model = record(value);
+  if (model === undefined
+    || typeof model.id !== "string"
+    || typeof model.name !== "string"
+    || typeof model.provider !== "string"
+    || typeof model.providerLabel !== "string") {
+    throw new WebConsoleError("invalid_operator_models", "The agent returned invalid model catalog data.", 502);
+  }
+  const effortLevels = stringArray(model.effortLevels);
+  if (model.effortLevels !== undefined && effortLevels === undefined) {
+    throw new WebConsoleError("invalid_operator_models", "The agent returned invalid model catalog data.", 502);
+  }
+  if (model.contextWindow !== undefined && typeof model.contextWindow !== "number") {
+    throw new WebConsoleError("invalid_operator_models", "The agent returned invalid model catalog data.", 502);
+  }
+  if (model.reasoning !== undefined && typeof model.reasoning !== "boolean") {
+    throw new WebConsoleError("invalid_operator_models", "The agent returned invalid model catalog data.", 502);
+  }
+  if (model.reasoningMode !== undefined && typeof model.reasoningMode !== "string") {
+    throw new WebConsoleError("invalid_operator_models", "The agent returned invalid model catalog data.", 502);
+  }
+  return {
+    id: model.id,
+    name: model.name,
+    provider: model.provider,
+    providerLabel: model.providerLabel,
+    ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
+    ...(model.reasoning === undefined ? {} : { reasoning: model.reasoning }),
+    ...(effortLevels === undefined ? {} : { effortLevels }),
+    ...(model.reasoningMode === undefined ? {} : { reasoningMode: model.reasoningMode }),
+  };
+}
+
 function parseSharedCron<T>(parser: (value: unknown) => T, value: unknown): T {
   try {
     return parser(value);
@@ -988,6 +1078,37 @@ function parseModelOptions(value: unknown): Record<string, WebModelOption> | und
     };
   }
   return Object.keys(result).length === 0 ? undefined : result;
+}
+
+/**
+ * Parse the agent's provider summary. Total by construction: a malformed entry
+ * is skipped rather than throwing, because a throw here becomes a 500 for the
+ * entire `/v1/info` response and takes the agent offline.
+ *
+ * The item cap is a PREFIX window, and the producer knows its size: it orders
+ * the providers its own routes use into the front of the list precisely so this
+ * cut cannot reach them. Reading the window from any other order — sorting,
+ * filtering, or reversing before this loop — would throw that guarantee away.
+ */
+function parseProviders(value: unknown): readonly WebAgentProvider[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const result: WebAgentProvider[] = [];
+  for (const raw of value) {
+    if (result.length >= MAX_INFO_PROVIDER_ITEMS) break;
+    const entry = record(raw);
+    if (entry === undefined) continue;
+    const id = typeof entry.id === "string" ? entry.id : undefined;
+    if (id === undefined || id.length === 0) continue;
+    if (Buffer.byteLength(id, "utf8") > MAX_INFO_PROVIDER_ID_BYTES) continue;
+    const rawLabel = typeof entry.label === "string" && entry.label.length > 0 ? entry.label : id;
+    const label = Buffer.byteLength(rawLabel, "utf8") > MAX_INFO_PROVIDER_LABEL_BYTES ? id : rawLabel;
+    result.push({
+      id,
+      label,
+      ...(entry.configured === true ? { configured: true } : {}),
+    });
+  }
+  return result.length === 0 ? undefined : result;
 }
 
 function stringArray(value: unknown): readonly string[] | undefined {

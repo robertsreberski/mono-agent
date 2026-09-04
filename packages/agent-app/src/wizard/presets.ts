@@ -57,7 +57,7 @@ export const PRESET_CATALOG: readonly WizardPreset[] = [
     riskLevel: "low",
     playbook: "local-only-ollama-agent.md",
     answers: {
-      model: "pi:ollama:llama3.1:8b",
+      model: "ollama:llama3.1:8b",
       channels: ["channel:webhook"],
       memory: "memory:journal",
     },
@@ -69,7 +69,7 @@ export const PRESET_CATALOG: readonly WizardPreset[] = [
     riskLevel: "medium",
     playbook: "sandboxed-code-agent.md",
     answers: {
-      model: "pi:openai-codex:gpt-5.6-terra",
+      model: "openai-codex:gpt-5.6-terra",
       channels: ["channel:webhook"],
       sandbox: true,
     },

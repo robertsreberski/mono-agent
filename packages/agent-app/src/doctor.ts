@@ -1,7 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
 import { access, lstat, mkdir, readdir, readFile, realpath, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -22,18 +21,17 @@ import {
   loadToolPolicyFromJsonFile,
 } from "@mono-agent/agent-harness";
 import {
-  defaultExecutionModeForModel,
   describeMonoRuntimeSupport,
   inspectCodexSubscriptionSearch,
   isValidMcpServerName,
   modelReferenceKey,
   networkPolicyAllowsUrl,
   parseMonoRuntimeModelReference,
-  resolveModelEffortLevels,
 } from "@mono-agent/runtime-adapter";
 import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import {
   buildMonoAgentConfigView,
+  EFFORT_LEVELS,
   findJsonSecretConfigWarnings,
   findRemovedConfigWarnings,
   readMonoAgentConfigJson,
@@ -43,8 +41,12 @@ import {
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
   describeSandboxEffectiveState,
+  MODEL_REFERENCE_ECHO_MAX_BYTES,
+  MODEL_REFERENCE_REASON_MAX_BYTES,
   resolveSandboxEffectiveState,
+  RuntimeAdapterError,
   sandboxEffectiveStateWarning,
+  sanitizeModelReferenceText,
 } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
@@ -114,8 +116,8 @@ import {
 import { piAuthRecoveryCommand } from "./provider-setup.js";
 import { inspectPiAuthStore, type PiAuthStoreInspection, type PiAuthStoreUnsafeReason } from "./pi-auth-store-inspection.js";
 import { checkManagedProjectSkills, managedProjectSkillsExist } from "./project-skills.js";
-import { configuredRuntimeFallbackModels, configuredRuntimeModels } from "./runtime-routes.js";
 import { runtimeProvenanceDetail } from "./runtime-provenance.js";
+import { resolveAdvertisedModelEffort } from "./model-effort-capabilities.js";
 import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 import {
   DEFAULT_LAUNCHD_LOG_POLICY,
@@ -128,7 +130,6 @@ import { readLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
 import type { ManagedLaunchdLogMonitorStatus } from "./background-log-maintenance.js";
 import { exporterSection, runsSection } from "./doctor-observability.js";
 import { sessionToolHistorySection } from "./doctor-session-history.js";
-import { runtimeRouteContainsUnsupportedHistoryTool } from "./app-controller-utils.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor-types.js";
 
 export type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor-types.js";
@@ -139,7 +140,7 @@ const CONTINUATION_V2_ROLLBACK_GUARD = "UPGRADED-TO-RECORDS-V3";
 const CONTINUATION_V2_ROLLBACK_GUARD_CONTENT =
   "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n";
 
-export interface SdkAuthStatusExecOptions {
+export interface DoctorStatusExecOptions {
   readonly cwd: string;
   readonly env: Record<string, string | undefined>;
   readonly timeout: number;
@@ -147,16 +148,24 @@ export interface SdkAuthStatusExecOptions {
   readonly encoding: "utf8";
 }
 
-export interface SdkAuthStatusExecResult {
+export interface DoctorStatusExecResult {
   readonly stdout: string;
 }
 
-/** Injectable process seam for bounded, read-only provider credential/login checks. */
-export type SdkAuthStatusExecFile = (
+/** Injectable process seam for bounded, read-only local tool version checks. */
+export type DoctorStatusExecFile = (
   file: string,
   args: readonly string[],
-  options: SdkAuthStatusExecOptions,
-) => Promise<SdkAuthStatusExecResult>;
+  options: DoctorStatusExecOptions,
+) => Promise<DoctorStatusExecResult>;
+
+const DOCTOR_STATUS_TIMEOUT_MS = 5_000;
+const DOCTOR_STATUS_MAX_BUFFER_BYTES = 64 * 1024;
+
+const defaultDoctorStatusExecFile: DoctorStatusExecFile = async (file, args, options) => {
+  const { stdout } = await execFile(file, [...args], options);
+  return { stdout };
+};
 
 export type CodexWebSearchProbe = (options: {
   readonly model: string;
@@ -174,22 +183,16 @@ export interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput 
   readonly allowFilesystemWrites?: boolean;
   /**
    * When false, skip live probes (Ollama and Supermemory reachability, the
-   * Phoenix export probe, and SDK external-login status checks) and validate
+   * Phoenix export probe, and local tool version checks) and validate
    * only structure/shape. Those probes can only ever downgrade a section to
    * `waiting`, never `error`, so skipping them leaves the pass/fail verdict
    * (`ok`) unchanged — the start preflight relies on this. Defaults to true.
    */
   readonly liveness?: boolean;
-  /**
-   * Internal readiness-probe mode. Direct Codex cannot enforce arbitrary tool
-   * allowlists, but the disposable probe has a dedicated runtime contract that
-   * runs read-only and fails on the first tool action.
-   */
-  readonly codexNoToolsProbe?: boolean;
   /** Model refs whose credentials were proven by a successful live turn. */
   readonly verifiedCredentialModelRefs?: readonly string[];
-  /** Injectable subprocess seam for deterministic provider credential/login-status tests. */
-  readonly sdkAuthStatusExecFile?: SdkAuthStatusExecFile;
+  /** Injectable subprocess seam for deterministic local tool version checks. */
+  readonly statusExecFile?: DoctorStatusExecFile;
   /** Injectable ChatGPT-subscription Codex search readiness probe. */
   readonly codexWebSearchProbe?: CodexWebSearchProbe;
   /** Managed workers resolve optional plugins only from their attested app closure. */
@@ -251,10 +254,7 @@ export async function validateMonoAgentFolder(
     sections.push(await credentialsSection(
       coreConfig,
       options.env,
-      options.cwd,
-      liveness,
       options.verifiedCredentialModelRefs,
-      options.sdkAuthStatusExecFile,
       staticTriggerCredentialRefs,
     ));
     sections.push(await contextSection(coreConfig, options.cwd));
@@ -269,7 +269,7 @@ export async function validateMonoAgentFolder(
     sections.push(await toolsSection(coreConfig, options));
     sections.push(await sessionToolHistorySection({
       historyRoot: join(coreConfig.artifacts.dir, "..", "history"),
-      requestScopedToolSupported: !runtimeRouteContainsUnsupportedHistoryTool(coreConfig),
+      requestScopedToolSupported: true,
     }));
     sections.push(await webToolsSection(coreConfig, options, liveness));
     sections.push(await continuationSection(coreConfig, options));
@@ -463,39 +463,7 @@ async function applyRequestModelOverrideCompatibilityChecks(
   drivers: readonly ChannelDriver[],
   input: MonoAgentAppConfigInput,
 ): Promise<void> {
-  const baseIsDirectCodex = config.runtime.model.sdk === "codex";
-  const routeSafety = config.runtime.routeSafety ?? "uniform";
-  const directBoundaryConflicts: string[] = [];
-  const sandboxBypasses: string[] = [];
-  const toolPolicyBypasses: string[] = [];
-  const effortBypasses: string[] = [];
-  const turnCapBypasses: string[] = [];
-  const mcpBypasses: string[] = [];
-  const skillBypasses: string[] = [];
   const piModelResolutionFailures: string[] = [];
-  const monoSandboxActive = config.sandbox !== undefined && config.sandbox.mode !== "off";
-  const restrictiveToolPolicy = !hasAllowAllOnlyToolPolicy(config.tools);
-  let configuredMcpServerNames: string[] = [];
-  if (config.tools.mcpConfigPath !== undefined) {
-    try {
-      configuredMcpServerNames = Object.keys(
-        (await loadToolPolicyFromJsonFile(config.tools.mcpConfigPath)).mcpServers ?? {},
-      );
-    } catch {
-      // The tools section owns missing/malformed MCP-file diagnostics.
-    }
-  }
-  let adapterToolNames: readonly string[] = [];
-  try {
-    const settings = await resolveAdapterSendToolsSettings(input, {
-      allowedTools: config.tools.allowedTools,
-      disallowedTools: config.tools.disallowedTools,
-    });
-    if (settings !== undefined) adapterToolNames = adapterSendToolNames(settings);
-  } catch {
-    // Channel/tools sections own adapter config diagnostics.
-  }
-  const effectiveMcpSources = effectiveMcpRuntimeSources(config, configuredMcpServerNames, adapterToolNames);
   for (const driver of drivers) {
     if (driver.id !== "webhook" && driver.id !== "cron") continue;
     let loaded: unknown;
@@ -507,73 +475,25 @@ async function applyRequestModelOverrideCompatibilityChecks(
     }
     for (const { entryPath, entry } of staticTriggerConfigEntries(driver.id, loaded)) {
       const hasModelOverride = typeof entry.model === "string";
-      const hasEffortOverride = typeof entry.effort === "string";
-      if (!hasModelOverride && !hasEffortOverride) continue;
+      if (!hasModelOverride) continue;
       try {
-        const model = hasModelOverride
-          ? parseMonoRuntimeModelReference(entry.model as string)
-          : config.runtime.model;
-        const location = hasModelOverride
-          ? `${entryPath}.model=${entry.model as string}`
-          : `${entryPath}.effort=${entry.effort as string}`;
-        if (hasModelOverride) {
-          const resolutionIssue = piModelResolutionIssue(config, model);
-          if (resolutionIssue !== undefined) {
-            piModelResolutionFailures.push(`${location}: ${resolutionIssue}.`);
-          }
-        }
-        if (routeSafety === "uniform" && hasModelOverride && (model.sdk === "codex") !== baseIsDirectCodex) {
-          directBoundaryConflicts.push(location);
-        }
-        if (routeSafety === "uniform" && hasModelOverride && monoSandboxActive && (model.sdk === "claude" || model.sdk === "opencode" || model.sdk === "codex")) {
-          sandboxBypasses.push(location);
-        }
-        if (hasModelOverride && restrictiveToolPolicy && model.sdk === "opencode") {
-          toolPolicyBypasses.push(location);
-        }
-        const effectiveEffort = hasEffortOverride ? entry.effort as string : config.runtime.effort;
-        const legacyFallbacks = (config.runtime.fallbacks?.length ?? 0) > 0
-          ? []
-          : config.runtime.fallbackModels ?? [];
-        const directOpenCodeModels = [model, ...legacyFallbacks]
-          .filter((candidate) => candidate.sdk === "opencode");
-        if (directOpenCodeModels.length > 0 && effectiveEffort !== undefined) {
-          effortBypasses.push(
-            `${location} (effective effort=${effectiveEffort}) (direct OpenCode route=${directOpenCodeModels.map(referenceOf).join(", ")})`,
-          );
-        }
-        if (directOpenCodeModels.length > 0 && Number(config.runtime.maxTurns) > 0) {
-          turnCapBypasses.push(
-            `${location} (runtime.maxTurns=${config.runtime.maxTurns}; direct OpenCode route=${directOpenCodeModels.map(referenceOf).join(", ")})`,
-          );
-        }
-        if (directOpenCodeModels.length > 0 && effectiveMcpSources.length > 0) {
-          mcpBypasses.push(
-            `${location} (direct OpenCode route=${directOpenCodeModels.map(referenceOf).join(", ")}; MCP sources=${effectiveMcpSources.join("; ")})`,
-          );
-        }
-        if (
-          directOpenCodeModels.length > 0
-          && config.context.skillDisclosure === "index"
-          && config.context.skillsRoot !== undefined
-        ) {
-          skillBypasses.push(location);
+        const model = parseMonoRuntimeModelReference(entry.model as string);
+        const resolutionIssue = piModelResolutionIssue(config, model);
+        if (resolutionIssue !== undefined) {
+          // The parser accepted this value, but acceptance is no longer a length
+          // guarantee: the byte ceiling was removed because no constant could
+          // hold for every provider, so a legitimately long id parses. This is a
+          // diagnostic, not the protocol string, so it is bounded here rather
+          // than at the grammar.
+          const echoed = sanitizeModelReferenceText(entry.model as string, MODEL_REFERENCE_ECHO_MAX_BYTES);
+          piModelResolutionFailures.push(`${entryPath}.model=${echoed}: ${resolutionIssue}.`);
         }
       } catch {
         // Adapter configIssues owns syntax diagnostics.
       }
     }
   }
-  if (
-    directBoundaryConflicts.length === 0
-    && sandboxBypasses.length === 0
-    && toolPolicyBypasses.length === 0
-    && effortBypasses.length === 0
-    && turnCapBypasses.length === 0
-    && mcpBypasses.length === 0
-    && skillBypasses.length === 0
-    && piModelResolutionFailures.length === 0
-  ) return;
+  if (piModelResolutionFailures.length === 0) return;
   const index = sections.findIndex((section) => section.id === "runtime");
   if (index < 0) return;
   const runtime = sections[index]!;
@@ -582,66 +502,14 @@ async function applyRequestModelOverrideCompatibilityChecks(
     status: "error",
     details: [
       ...runtime.details,
-      ...(directBoundaryConflicts.length === 0
-        ? []
-        : [
-            "Uniform route safety cannot cross the direct-Codex runtime boundary because tool and sandbox contracts would change mid-agent. Choose per-route-native to opt into explicit route-local contracts.",
-            ...directBoundaryConflicts,
-          ]),
-      ...(sandboxBypasses.length === 0
-        ? []
-        : [
-            "Claude or direct OpenCode model overrides cannot run under uniform route safety while mono-agent SRT is active; direct Codex is also provider-owned. Choose per-route-native only after reviewing the explicit route-local contracts.",
-            ...sandboxBypasses,
-          ]),
-      ...(toolPolicyBypasses.length === 0
-        ? []
-        : [
-            "Per-trigger direct OpenCode model overrides require an effective allow-all policy because OpenCode's provider-owned tool loop does not consume mono-agent allowedTools/disallowedTools.",
-            ...toolPolicyBypasses,
-          ]),
-      ...(effortBypasses.length === 0
-        ? []
-        : [
-            "Per-trigger direct OpenCode routes cannot receive runtime effort because the OpenCode SDK does not expose effort control.",
-            ...effortBypasses,
-          ]),
-      ...(turnCapBypasses.length === 0
-        ? []
-        : [
-            "Per-trigger direct OpenCode routes cannot enforce runtime.maxTurns; omit it, set it to 0, or use a runtime with a hard turn cap.",
-            ...turnCapBypasses,
-          ]),
-      ...(mcpBypasses.length === 0
-        ? []
-        : [
-            "Per-trigger direct OpenCode routes cannot receive configured or auto-provisioned MCP runtime options.",
-            ...mcpBypasses,
-          ]),
-      ...(skillBypasses.length === 0
-        ? []
-        : [
-            "Per-trigger direct OpenCode routes cannot use index skill disclosure because the bridge disables external/runtime skills; use full disclosure or a Pi runtime.",
-            ...skillBypasses,
-          ]),
-      ...(piModelResolutionFailures.length === 0
-        ? []
-        : [
-            "Per-trigger Pi model overrides must resolve through providers.local or Pi's exact built-in catalog before execution.",
-            ...piModelResolutionFailures,
-          ]),
+      "Per-trigger Pi model overrides must resolve through providers.local or Pi's exact built-in catalog before execution.",
+      ...piModelResolutionFailures,
     ],
   };
 }
 
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function hasAllowAllOnlyToolPolicy(
-  tools: Pick<MonoAgentConfig["tools"], "allowedTools" | "disallowedTools">,
-): boolean {
-  return isAllowAllTools(tools.allowedTools) && tools.disallowedTools.length === 0;
 }
 
 /** Adapter send tools each channel owns; an allowed entry needs BOTH the tool AND the enabled channel. */
@@ -729,53 +597,27 @@ function runtimeSection(config: MonoAgentConfig): ValidationSection {
   const details: string[] = [];
   let status: ValidationStatus = "ok";
   const routes = configuredRuntimeRouteChecks(config);
-  const routeSafety = config.runtime.routeSafety ?? "uniform";
-  details.push(`Route safety: ${routeSafety}.`);
-  if (routes.length > 1) {
-    details.push(
-      routeSafety === "per-route-native"
-        ? "Mixed runtime families are allowed; every attempt uses its explicit route-native safety contract."
-        : "Fallback routes use the uniform compatibility contract; validation fails closed when any route cannot represent a required capability.",
-    );
-  }
-  const directOpenCodeModels = routes.filter((route) => route.model.sdk === "opencode");
-  if (Number(config.runtime.maxTurns) > 0 && directOpenCodeModels.length > 0) {
-    status = "error";
-    details.push(
-      `Direct OpenCode model${directOpenCodeModels.length === 1 ? "" : "s"} ${directOpenCodeModels.map((route) => referenceOf(route.model)).join(", ")} cannot enforce runtime.maxTurns=${config.runtime.maxTurns}; omit it, set it to 0, or use a runtime with a hard turn cap.`,
-    );
-  }
-  if (
-    directOpenCodeModels.length > 0
-    && config.context.skillDisclosure === "index"
-    && config.context.skillsRoot !== undefined
-  ) {
-    status = "error";
-    details.push(
-      `Direct OpenCode model${directOpenCodeModels.length === 1 ? "" : "s"} ${directOpenCodeModels.map((route) => referenceOf(route.model)).join(", ")} cannot use context.skillDisclosure=index because runtime skills are disabled; use full disclosure or a Pi runtime.`,
-    );
-  }
   for (const route of routes) {
     try {
-      const support = describeMonoRuntimeSupport(route.model, route.executionMode);
+      const support = describeMonoRuntimeSupport(route.model);
       const resolutionIssue = piModelResolutionIssue(config, route.model);
-      const effortIssue = runtimeRouteEffortIssue(config, route);
-      if (support.compatible && resolutionIssue === undefined) {
+      const effortWarning = runtimeRouteEffortWarning(config, route);
+      if (resolutionIssue === undefined) {
         details.push(
-          `${route.label} ${referenceOf(route.model)} runs on ${support.backend?.label ?? "unknown backend"} ` +
+          `${route.label} ${displayReferenceOf(route.model)} runs on ${support.backend.label} ` +
           `(effort: ${route.effort ?? "provider default"}).`,
         );
       } else {
         status = "error";
-        details.push(`${route.label} ${referenceOf(route.model)}: ${resolutionIssue ?? support.incompatibilityReason ?? "unsupported"}.`);
+        details.push(`${route.label} ${displayReferenceOf(route.model)}: ${resolutionIssue}.`);
       }
-      if (effortIssue !== undefined) {
-        status = "error";
-        details.push(`${route.label} ${referenceOf(route.model)}: ${effortIssue}`);
+      if (effortWarning !== undefined) {
+        if (status !== "error") status = "waiting";
+        details.push(effortWarning);
       }
     } catch (error) {
       status = "error";
-      details.push(`${route.label} ${referenceOf(route.model)}: ${error instanceof Error ? error.message : String(error)}.`);
+      details.push(`${route.label} ${displayReferenceOf(route.model)}: ${displayReason(error)}.`);
     }
   }
 
@@ -784,61 +626,62 @@ function runtimeSection(config: MonoAgentConfig): ValidationSection {
 
 interface ConfiguredRuntimeRouteCheck {
   readonly label: string;
+  readonly configPath: string;
   readonly model: RuntimeModelReference;
   readonly effort?: string;
-  readonly executionMode?: MonoAgentConfig["runtime"]["executionMode"];
 }
 
 function configuredRuntimeRouteChecks(config: MonoAgentConfig): readonly ConfiguredRuntimeRouteCheck[] {
   const primary: ConfiguredRuntimeRouteCheck = {
     label: "Primary model",
+    configPath: "runtime.effort",
     model: config.runtime.model,
     ...(config.runtime.effort === undefined ? {} : { effort: config.runtime.effort }),
-    executionMode: config.runtime.executionMode,
   };
-  if ((config.runtime.fallbacks?.length ?? 0) > 0) {
-    return [
-      primary,
-      ...(config.runtime.fallbacks ?? []).map((fallback) => ({
-        label: "Fallback model",
-        model: fallback.model,
-        ...(fallback.effort === undefined ? {} : { effort: fallback.effort }),
-      })),
-    ];
-  }
   return [
     primary,
-    ...(config.runtime.fallbackModels ?? []).map((model) => ({
+    ...(config.runtime.fallbacks ?? []).map((fallback, index) => ({
       label: "Fallback model",
-      model,
-      ...(config.runtime.effort === undefined ? {} : { effort: config.runtime.effort }),
+      configPath: `runtime.fallbacks[${index}].effort`,
+      model: fallback.model,
+      ...(fallback.effort === undefined ? {} : { effort: fallback.effort }),
     })),
   ];
 }
 
-function runtimeRouteEffortIssue(
+function runtimeRouteEffortWarning(
   config: MonoAgentConfig,
   route: ConfiguredRuntimeRouteCheck,
 ): string | undefined {
   if (route.effort === undefined) return undefined;
-  if (route.model.sdk === "opencode") {
-    return `Direct OpenCode model ${referenceOf(route.model)} cannot receive runtime.effort=${route.effort}; the OpenCode SDK exposes no reasoning-effort input. Omit the route effort.`;
+  // Always go through the shared resolver. Deriving the ladder from
+  // `thinkingLevelMap`'s KEYS treated an override table as the complete
+  // supported set: claude-fable-5 maps only {off, xhigh, max}, which yielded
+  // [none, xhigh, max] and made a perfectly valid `effort: medium` warn and
+  // recommend xhigh. The resolver reports [minimal, low, medium, high, xhigh,
+  // max] for that model, and it is the same one the catalog and pickers use --
+  // doctor disagreeing with what the selector offers is its own bug.
+  const resolved = resolveAdvertisedModelEffort(route.model, {
+    ...(config.providers?.local === undefined ? {} : { localProviders: config.providers.local }),
+  });
+  // A NON-REASONING route has no advertised ladder at all, so the level-list
+  // check below returns clean and `effort: high` was reported ready. Keep this
+  // ahead of that check: a local model can declare `reasoning_mode: "none"`
+  // WITH `reasoning_levels`, and "this route does not reason" is the accurate
+  // diagnosis there, not "pick another level".
+  if (resolved.reasoning === false && route.effort !== "none") {
+    return `[WARN] ${route.configPath}=${route.effort} is unsupported because known model metadata marks ${displayReferenceOf(route.model)} as non-reasoning; use none, or omit it for the provider default. The runtime remains permissive and will forward the configured value.`;
   }
-  const metadata = resolveModelEffortLevels(route.model, config.providers?.local);
-  if (metadata.effortLevels !== undefined && !metadata.effortLevels.includes(route.effort)) {
-    return `effort=${route.effort} is unsupported by known model metadata; choose ${metadata.effortLevels.join(", ")}, or omit it for provider default.`;
-  }
-  if (metadata.reasoning === false && route.effort !== "none") {
-    return `effort=${route.effort} is unsupported because known model metadata marks this route as non-reasoning; use none or provider default.`;
-  }
-  if (
-    route.model.sdk === "claude"
-    && (route.executionMode ?? defaultExecutionModeForModel(route.model)) === "sdk"
-    && !["low", "medium", "high", "xhigh", "max"].includes(route.effort)
-  ) {
-    return `effort=${route.effort} is unsupported by the Claude Agent SDK; choose low, medium, high, xhigh, max, or provider default.`;
-  }
-  return undefined;
+  const advertised = resolved.effortLevels
+    ?.filter((level) => (EFFORT_LEVELS as readonly string[]).includes(level));
+  if (advertised === undefined || advertised.length === 0 || advertised.includes(route.effort)) return undefined;
+  const configuredIndex = EFFORT_LEVELS.indexOf(route.effort as (typeof EFFORT_LEVELS)[number]);
+  const nearest = advertised.reduce((best, candidate) => {
+    const candidateIndex = EFFORT_LEVELS.indexOf(candidate as (typeof EFFORT_LEVELS)[number]);
+    const bestIndex = EFFORT_LEVELS.indexOf(best as (typeof EFFORT_LEVELS)[number]);
+    return Math.abs(candidateIndex - configuredIndex) < Math.abs(bestIndex - configuredIndex) ? candidate : best;
+  });
+  return `[WARN] ${route.configPath}=${route.effort} is outside ${displayReferenceOf(route.model)}'s advertised effort levels (${advertised.join(", ")}); nearest advertised level: ${nearest}. The runtime remains permissive and will forward the configured value.`;
 }
 
 /**
@@ -851,20 +694,16 @@ function piModelResolutionIssue(
   config: MonoAgentConfig,
   model: RuntimeModelReference,
 ): string | undefined {
-  if (model.sdk !== "pi" || model.provider === undefined) {
-    return undefined;
-  }
-
   const localProvider = config.providers?.local?.find((provider) => provider.id === model.provider);
   if (localProvider !== undefined) {
     if (localProvider.enabled === false) {
-      return `provider \`${model.provider}\` is disabled in providers.local`;
+      return `provider \`${displayText(model.provider)}\` is disabled in providers.local`;
     }
     const localModel = localProvider.models?.find(
       (candidate) => candidate.name === model.model || candidate.alias === model.model,
     );
     if (localModel?.enabled === false) {
-      return `model \`${model.model}\` is disabled in providers.local for provider \`${model.provider}\``;
+      return `model \`${displayText(model.model)}\` is disabled in providers.local for provider \`${displayText(model.provider)}\``;
     }
     return undefined;
   }
@@ -876,8 +715,15 @@ function piModelResolutionIssue(
     return undefined;
   }
 
+  // This is doctor's own validate-time diagnostic, not the runtime failure
+  // string. The one that must stay byte-identical for `NON_RETRYABLE_PROVIDER_RE`
+  // is built in agent-runtime's `ai/providers/pi-models.js`; nothing matches
+  // against this text. So the reference is bounded here, which matters now that
+  // the parser imposes no length ceiling and a legitimately long id reaches this
+  // line whole.
+  const reference = displayText(`${model.provider}:${model.model}`);
   return (
-    `pi model not found: ${model.provider}:${model.model}; no matching providers.local entry exists and Pi's built-in catalog has no exact model. ` +
+    `pi model not found: ${reference}; no matching providers.local entry exists and Pi's built-in catalog has no exact model. ` +
     "The sibling Pi CLI models.json is not a mono-agent runtime source; add providers.local for a self-hosted provider or choose a built-in Pi model"
   );
 }
@@ -909,258 +755,15 @@ async function readPiAuthProviders(path: string): Promise<
 }
 
 /**
- * Static env-credential contract for an SDK-authenticated backend (claude/codex).
- * `envKeys` are the environment variables the backend accepts, in preference
- * order; `loginDetail` names the interactive OAuth path that lives OUTSIDE the
- * environment (Claude subscription / ChatGPT sign-in) and therefore CANNOT be
- * verified by a static env check; `failureHint` is what a fresh user actually
- * sees when neither is present (the opaque E1 failure).
- */
-type SdkAuthName = "claude" | "codex";
-
-interface SdkAuthScheme {
-  readonly envKeys: readonly string[];
-  readonly loginCommand: string;
-  readonly loginDetail: string;
-  readonly failureHint: string;
-  readonly statusCommand: string;
-  readonly statusArgs: readonly string[];
-}
-
-/**
- * What each SDK-authenticated backend truthfully reads for credentials. Only the
- * env vars are statically checkable; the login paths are recorded so the warning
- * can stay honest (a logged-in user is fine and we must not claim otherwise).
- *
- * - claude (`claude:*`, sdk + cli): the Claude Code process authenticates from
- *   `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN` in
- *   the env, OR from a `claude /login` subscription session stored outside the
- *   environment (macOS Keychain / `~/.claude`), OR from a Bedrock/Vertex
- *   configuration (`CLAUDE_CODE_USE_BEDROCK`/`CLAUDE_CODE_USE_VERTEX` + cloud
- *   credentials) — none of which the env-key check can see, hence the hedge in
- *   the warning. Its own error string is verbatim: "Claude Code authentication
- *   failed. Run `claude /login` or configure ANTHROPIC_API_KEY,
- *   ANTHROPIC_AUTH_TOKEN, or CLAUDE_CODE_OAUTH_TOKEN."
- * - codex (`codex:*`, cli): the Codex app-server authenticates from
- *   `OPENAI_API_KEY` in the env, OR from a `codex login` ChatGPT session stored
- *   in `~/.codex/auth.json` — also outside the environment.
- */
-const SDK_AUTH_SCHEMES: Record<SdkAuthName, SdkAuthScheme> = {
-  claude: {
-    envKeys: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
-    loginCommand: "claude /login",
-    loginDetail:
-      "a `claude /login` subscription session or a Bedrock/Vertex configuration (CLAUDE_CODE_USE_BEDROCK/VERTEX)",
-    failureHint: 'the first turn fails with an opaque "Claude Code process exited with code 1" that names nothing',
-    statusCommand: "claude auth status --json",
-    statusArgs: ["auth", "status", "--json"],
-  },
-  codex: {
-    envKeys: ["OPENAI_API_KEY"],
-    loginCommand: "codex login",
-    loginDetail: "a `codex login` ChatGPT session (`~/.codex/auth.json`, outside the environment)",
-    failureHint: "the first turn fails to authenticate",
-    statusCommand: "codex login status",
-    statusArgs: ["login", "status"],
-  },
-};
-
-const SDK_AUTH_STATUS_TIMEOUT_MS = 5_000;
-const SDK_AUTH_STATUS_MAX_BUFFER_BYTES = 64 * 1024;
-
-function isSdkAuthName(value: string): value is SdkAuthName {
-  return value === "claude" || value === "codex";
-}
-
-const defaultSdkAuthStatusExecFile: SdkAuthStatusExecFile = async (file, args, options) => {
-  const { stdout } = await execFile(file, [...args], options);
-  return { stdout };
-};
-
-/**
- * Performs the SDK's local, read-only login-status command. A zero Codex exit
- * confirms its external login; Claude additionally requires strict JSON with
- * `loggedIn: true`. Missing binaries, timeouts, non-zero exits, and malformed
- * output all fail closed without leaking command output into validation.
- */
-async function checkSdkExternalLoginStatus(
-  sdk: SdkAuthName,
-  env: Record<string, string | undefined>,
-  cwd: string,
-  run: SdkAuthStatusExecFile,
-): Promise<boolean> {
-  const scheme = SDK_AUTH_SCHEMES[sdk];
-  try {
-    const { stdout } = await run(sdk, scheme.statusArgs, {
-      cwd,
-      env,
-      timeout: SDK_AUTH_STATUS_TIMEOUT_MS,
-      maxBuffer: SDK_AUTH_STATUS_MAX_BUFFER_BYTES,
-      encoding: "utf8",
-    });
-    if (sdk === "codex") {
-      return true;
-    }
-    const parsed: unknown = JSON.parse(stdout);
-    return parsed !== null
-      && typeof parsed === "object"
-      && !Array.isArray(parsed)
-      && (parsed as { readonly loggedIn?: unknown }).loggedIn === true;
-  } catch {
-    return false;
-  }
-}
-
-type OpenCodeCredentialInspection =
-  | { readonly status: "ok"; readonly providers: ReadonlySet<string> }
-  | { readonly status: "migration_required" | "auth_missing" | "auth_invalid" | "inline_auth_unsupported" };
-
-/** Read provider IDs directly from auth.json without launching mutation-capable OpenCode middleware. */
-async function inspectOpenCodeCredentialProviders(
-  env: Record<string, string | undefined>,
-): Promise<OpenCodeCredentialInspection> {
-  if (env.OPENCODE_AUTH_CONTENT !== undefined) {
-    return { status: "inline_auth_unsupported" };
-  }
-  const dataHome = typeof env.XDG_DATA_HOME === "string" && env.XDG_DATA_HOME.length > 0
-    ? env.XDG_DATA_HOME
-    : join(typeof env.HOME === "string" && env.HOME.length > 0 ? env.HOME : homedir(), ".local", "share");
-  const opencodeData = join(dataHome, "opencode");
-  const marker = await regularCurrentUserFile(join(opencodeData, "opencode.db"));
-  if (!marker) return { status: "migration_required" };
-  const authPath = join(opencodeData, "auth.json");
-  if (!(await regularCurrentUserFile(authPath))) return { status: "auth_missing" };
-  try {
-    const parsed: unknown = JSON.parse(await readFile(authPath, "utf8"));
-    if (!isUnknownRecord(parsed)) return { status: "auth_invalid" };
-    const providers = new Set<string>();
-    for (const [provider, credential] of Object.entries(parsed)) {
-      if (provider.length === 0 || provider.trim() !== provider || !isOpenCodeCredentialEntry(credential)) {
-        return { status: "auth_invalid" };
-      }
-      providers.add(provider);
-    }
-    return { status: "ok", providers };
-  } catch {
-    return { status: "auth_invalid" };
-  }
-}
-
-async function regularCurrentUserFile(path: string): Promise<boolean> {
-  try {
-    const info = await lstat(path);
-    return info.isFile() && (typeof process.getuid !== "function" || info.uid === process.getuid());
-  } catch {
-    return false;
-  }
-}
-
-function isOpenCodeCredentialEntry(value: unknown): boolean {
-  if (!isUnknownRecord(value)) return false;
-  if (value.type === "oauth") {
-    return typeof value.refresh === "string"
-      && typeof value.access === "string"
-      && (value.refresh.trim().length > 0 || value.access.trim().length > 0)
-      && typeof value.expires === "number"
-      && Number.isSafeInteger(value.expires)
-      && value.expires >= 0
-      && (value.accountId === undefined || typeof value.accountId === "string")
-      && (value.enterpriseUrl === undefined || typeof value.enterpriseUrl === "string");
-  }
-  if (value.type === "api") {
-    return typeof value.key === "string"
-      && value.key.trim().length > 0
-      && (value.metadata === undefined
-        || (isUnknownRecord(value.metadata) && Object.values(value.metadata).every((entry) => typeof entry === "string")));
-  }
-  if (value.type === "wellknown") {
-    return typeof value.key === "string" && value.key.trim().length > 0
-      && typeof value.token === "string" && value.token.trim().length > 0;
-  }
-  return false;
-}
-
-async function checkOpenCodeVersion(
-  env: Record<string, string | undefined>,
-  cwd: string,
-  run: SdkAuthStatusExecFile,
-): Promise<boolean> {
-  const versionEnv: Record<string, string | undefined> = {};
-  for (const key of [
-    "PATH",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "SHELL",
-    "TMPDIR",
-    "TMP",
-    "TEMP",
-    "SystemRoot",
-    "WINDIR",
-    "ComSpec",
-    "PATHEXT",
-  ]) {
-    const value = env[key];
-    if (typeof value === "string" && value.length > 0) versionEnv[key] = value;
-  }
-  try {
-    const { stdout } = await run("opencode", ["--version"], {
-      cwd,
-      env: versionEnv,
-      timeout: SDK_AUTH_STATUS_TIMEOUT_MS,
-      maxBuffer: SDK_AUTH_STATUS_MAX_BUFFER_BYTES,
-      encoding: "utf8",
-    });
-    const match = /^v?(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z.-]+)?$/u.exec(stdout.trim());
-    if (match === null) return false;
-    const major = Number(match[1]);
-    const minor = Number(match[2]);
-    const patch = Number(match[3]);
-    return Number.isSafeInteger(major)
-      && Number.isSafeInteger(minor)
-      && Number.isSafeInteger(patch)
-      && (major > 1 || (major === 1 && minor >= 15));
-  } catch {
-    return false;
-  }
-}
-
-/** First env key whose value is present and non-blank, or undefined when none are set. */
-function firstPresentEnvKey(env: Record<string, string | undefined>, keys: readonly string[]): string | undefined {
-  for (const key of keys) {
-    const value = env[key];
-    if (typeof value === "string" && value.trim().length > 0) {
-      return key;
-    }
-  }
-  return undefined;
-}
-
-/**
  * Checks that every referenced model (primary, fallbacks, and the agent-host memory LLM)
  * has discoverable credentials, so a keyless or expired-OAuth provider is caught at
  * `validate` time instead of degrading crons/memory silently at runtime (the failure mode
- * that broke memory capture for ~10 days: the auth store's OAuth token had quietly expired,
- * and the E1 fresh-instance case where `claude:*` with no `ANTHROPIC_API_KEY` "validates"
- * clean but the first turn dies with an opaque "process exited with code 1").
+ * that broke memory capture for ~10 days when an auth-store OAuth token quietly expired.
  *
- * The check is read-only. Static validation never launches a process; live validation may
- * run bounded, local SDK login-status commands, which inspect durable external login state
- * without making a model turn or mutating the auth store.
- *
- * - Pi providers: inspect the auth store (`piAuthPath`) and the config's own
+ * The read-only check inspects the auth store (`piAuthPath`) and the config's own
  *   `providers.local` custom providers. A custom/local provider follows its declared
  *   `apiKey` / `apiKeyEnv` contract instead of Pi OAuth; an OAuth provider absent from
  *   the store, or whose access token has expired, is flagged `waiting` with a re-auth hint.
- * - SDK-authenticated providers (`claude:*` / `codex:*`): inspect the RESOLVED ENV (process
- *   env + loaded `.env`) for the backend's accepted keys. During live validation only, a
- *   missing env credential falls back to `claude auth status --json` / `codex login status`.
- *   The commands use the same resolved environment (including PATH and HOME), are bounded,
- *   cached once per SDK, and never make a model turn. Static validation remains process-free.
- * - Direct OpenCode (`opencode:<provider>:<model>`): inspect exact provider IDs in the
- *   standard auth.json and require the native DB migration marker. Static validation launches
- *   no process. Live validation runs only a bounded `opencode --version` preflight; it never
- *   runs the mutation-capable auth middleware or makes a model turn.
  *
  * `waiting` (never `error`) keeps the verdict non-fatal, mirroring the Ollama/Phoenix
  * probes — the goal is visibility, not blocking start.
@@ -1168,10 +771,7 @@ function firstPresentEnvKey(env: Record<string, string | undefined>, keys: reado
 async function credentialsSection(
   config: MonoAgentConfig,
   env: Record<string, string | undefined>,
-  cwd: string,
-  liveness: boolean,
   verifiedCredentialModelRefs: readonly string[] = [],
-  sdkAuthStatusExecFile: SdkAuthStatusExecFile = defaultSdkAuthStatusExecFile,
   staticTriggerRefs: readonly { label: string; ref: RuntimeModelReference }[] = [],
 ): Promise<ValidationSection> {
   const refs: { label: string; ref: RuntimeModelReference }[] = [
@@ -1182,7 +782,7 @@ async function credentialsSection(
     })),
     ...staticTriggerRefs,
   ];
-  if (config.memory?.llm !== undefined && config.memory.llm.provider !== "ollama") {
+  if (config.memory?.llm?.provider === "agent-host") {
     try {
       refs.push({ label: "Memory LLM", ref: parseMonoRuntimeModelReference(config.memory.llm.model) });
     } catch {
@@ -1190,11 +790,7 @@ async function credentialsSection(
     }
   }
 
-  const authenticatedRefs = refs.filter((r) =>
-    (r.ref.sdk === "pi" && typeof r.ref.provider === "string")
-    || (r.ref.sdk === "opencode" && typeof r.ref.provider === "string")
-    || isSdkAuthName(r.ref.sdk),
-  );
+  const authenticatedRefs = refs;
   if (authenticatedRefs.length === 0) {
     return {
       id: "credentials",
@@ -1208,114 +804,17 @@ async function credentialsSection(
   let status: ValidationStatus = "ok";
   const verified = new Set(verifiedCredentialModelRefs);
   for (const { label, ref } of authenticatedRefs) {
-    const refStr = referenceOf(ref);
-    if (verified.has(refStr)) {
-      details.push(`${label} ${refStr}: credentials verified by a successful live model check.`);
+    // The set holds whole canonical references, so the LOOKUP key stays whole;
+    // only the printed form is bounded.
+    if (verified.has(referenceOf(ref))) {
+      details.push(`${label} ${displayReferenceOf(ref)}: credentials verified by a successful live model check.`);
     }
   }
   const unverifiedRefs = authenticatedRefs.filter(({ ref }) => !verified.has(referenceOf(ref)));
-  const piRefs = unverifiedRefs.filter((r) => r.ref.sdk === "pi" && typeof r.ref.provider === "string");
-  const openCodeRefs = unverifiedRefs.filter((r) => r.ref.sdk === "opencode" && typeof r.ref.provider === "string");
-  const sdkRefs = unverifiedRefs.filter(
-    (r): r is { label: string; ref: RuntimeModelReference & { sdk: SdkAuthName } } => isSdkAuthName(r.ref.sdk),
-  );
-
-  if (piRefs.length > 0) {
-    const piStatus = await appendPiCredentialDetails(config, piRefs, details, env);
+  if (unverifiedRefs.length > 0) {
+    const piStatus = await appendPiCredentialDetails(config, unverifiedRefs, details, env);
     if (piStatus === "waiting") {
       status = "waiting";
-    }
-  }
-
-  const openCodeInspection = openCodeRefs.length > 0
-    ? inspectOpenCodeCredentialProviders(env)
-    : undefined;
-  const openCodeVersion = liveness && openCodeRefs.length > 0
-    ? checkOpenCodeVersion(env, cwd, sdkAuthStatusExecFile)
-    : undefined;
-
-  const sdkAuthStatuses = new Map<SdkAuthName, Promise<boolean>>();
-  const externalLoginStatus = (sdk: SdkAuthName): Promise<boolean> => {
-    const cached = sdkAuthStatuses.get(sdk);
-    if (cached !== undefined) {
-      return cached;
-    }
-    const pending = checkSdkExternalLoginStatus(sdk, env, cwd, sdkAuthStatusExecFile);
-    sdkAuthStatuses.set(sdk, pending);
-    return pending;
-  };
-
-  // Start each unique local status check before awaiting details so two SDKs
-  // cost one bounded timeout window rather than running serially.
-  if (liveness) {
-    for (const { ref } of sdkRefs) {
-      const scheme = SDK_AUTH_SCHEMES[ref.sdk];
-      if (scheme !== undefined && firstPresentEnvKey(env, scheme.envKeys) === undefined) {
-        void externalLoginStatus(ref.sdk);
-      }
-    }
-  }
-
-  for (const { label, ref } of sdkRefs) {
-    const refStr = referenceOf(ref);
-    const scheme = SDK_AUTH_SCHEMES[ref.sdk];
-    if (scheme === undefined) {
-      continue;
-    }
-    const present = firstPresentEnvKey(env, scheme.envKeys);
-    if (present !== undefined) {
-      details.push(`${label} ${refStr}: SDK credential present in the resolved env (${present}); credential detected, live model verification is still pending.`);
-      continue;
-    }
-    if (liveness && await externalLoginStatus(ref.sdk)) {
-      details.push(
-        `${label} ${refStr}: external sign-in detected by read-only \`${scheme.statusCommand}\`; ` +
-          "credentials are not verified until a live model turn succeeds.",
-      );
-      continue;
-    }
-    status = "waiting";
-    details.push(
-      `[WARN] ${label} ${refStr}: no SDK credential in the resolved env (checked ${scheme.envKeys.join(", ")}). ` +
-        (liveness
-          ? `External login was not verified by \`${scheme.statusCommand}\`; `
-          : `If you authenticated via ${scheme.loginDetail} this is fine and can't be verified during static validation; `) +
-        `otherwise ${scheme.failureHint} — set ${scheme.envKeys[0]} or run \`${scheme.loginCommand}\`.`,
-    );
-  }
-
-
-  if (openCodeRefs.length > 0) {
-    const inspection = openCodeInspection === undefined ? undefined : await openCodeInspection;
-    const supportedVersion = openCodeVersion === undefined ? false : await openCodeVersion;
-    for (const { label, ref } of openCodeRefs) {
-      const refStr = referenceOf(ref);
-      const provider = ref.provider as string;
-      const credentialPresent = inspection?.status === "ok" && inspection.providers.has(provider);
-      if (credentialPresent && liveness && supportedVersion) {
-        details.push(
-          `${label} ${refStr}: provider \`${provider}\` credential present in the standard OpenCode auth store; stable OpenCode CLI >=1.15.0 detected without a model turn. Credential detected; live model verification is still pending.`,
-        );
-      } else {
-        status = "waiting";
-        const warning = inspection?.status === "migration_required"
-          ? "the native OpenCode database migration marker is missing or invalid; run `opencode db migrate --pure` once"
-          : inspection?.status === "inline_auth_unsupported"
-            ? "OPENCODE_AUTH_CONTENT is unsupported for direct runs; persist credentials with `opencode auth login` and unset it"
-            : inspection?.status === "auth_invalid"
-              ? "the standard OpenCode auth.json is malformed or contains an unsupported credential entry"
-              : credentialPresent && !liveness
-                ? "credentials and migration marker are present, but the required stable OpenCode CLI >=1.15.0 is unverified during static validation"
-                : credentialPresent && !supportedVersion
-                  ? "credentials are present, but stable OpenCode CLI >=1.15.0 could not be verified"
-              : inspection?.status === "ok"
-                ? `no exact credential entry exists for provider \`${provider}\`; run \`opencode auth login\` for that provider`
-                : "the standard OpenCode auth.json is missing; run `opencode auth login`";
-        const safetyNote = liveness
-          ? "No model turn or mutation-capable OpenCode command was run."
-          : "No OpenCode process was launched.";
-        details.push(`[WARN] ${label} ${refStr}: ${warning}. ${safetyNote}`);
-      }
     }
   }
 
@@ -1351,33 +850,37 @@ async function appendPiCredentialDetails(
 
   for (const { label, ref } of piRefs) {
     const provider = ref.provider as string;
-    const refStr = referenceOf(ref);
-    const loginCommand = piAuthRecoveryCommand(provider, authPath);
+    // Display-only from here down: `provider` is still the lookup key into the
+    // auth store and providers.local, `providerLabel` and `refStr` are what the
+    // detail lines quote back at the operator.
+    const providerLabel = displayText(provider);
+    const refStr = displayReferenceOf(ref);
+    const loginCommand = piAuthRecoveryCommand(providerLabel, authPath);
     const localProvider = localProviders.get(provider);
     if (localProvider !== undefined) {
       if (localProvider.enabled === false) {
         status = "waiting";
         details.push(
-          `[WARN] ${label} ${refStr}: provider \`${provider}\` is configured in providers.local but disabled (\`enabled: false\`); the runtime will throw \`provider disabled: ${provider}\` on the first turn. Set \`enabled: true\` on that providers.local entry.`,
+          `[WARN] ${label} ${refStr}: provider \`${providerLabel}\` is configured in providers.local but disabled (\`enabled: false\`); the runtime will throw \`provider disabled: ${providerLabel}\` on the first turn. Set \`enabled: true\` on that providers.local entry.`,
         );
       } else if (localProvider.apiKey !== undefined) {
         details.push(
-          `${label} ${refStr}: provider \`${provider}\` configured via config providers.local (API key configured); credential detected, live model verification is still pending.`,
+          `${label} ${refStr}: provider \`${providerLabel}\` configured via config providers.local (API key configured); credential detected, live model verification is still pending.`,
         );
       } else if (localProvider.apiKeyEnv !== undefined) {
         if (hasNonEmptyCredentialValue(env[localProvider.apiKeyEnv])) {
           details.push(
-            `${label} ${refStr}: provider \`${provider}\` configured via config providers.local with ${localProvider.apiKeyEnv} present in the resolved environment; credential detected, live model verification is still pending.`,
+            `${label} ${refStr}: provider \`${providerLabel}\` configured via config providers.local with ${localProvider.apiKeyEnv} present in the resolved environment; credential detected, live model verification is still pending.`,
           );
         } else {
           status = "waiting";
           details.push(
-            `[WARN] ${label} ${refStr}: provider \`${provider}\` declares apiKeyEnv \`${localProvider.apiKeyEnv}\`, but the resolved environment has no non-empty value and no inline apiKey fallback. Set ${localProvider.apiKeyEnv} before starting.`,
+            `[WARN] ${label} ${refStr}: provider \`${providerLabel}\` declares apiKeyEnv \`${localProvider.apiKeyEnv}\`, but the resolved environment has no non-empty value and no inline apiKey fallback. Set ${localProvider.apiKeyEnv} before starting.`,
           );
         }
       } else {
         details.push(
-          `${label} ${refStr}: provider \`${provider}\` configured via config providers.local (keyless local provider; no API key declared).`,
+          `${label} ${refStr}: provider \`${providerLabel}\` configured via config providers.local (keyless local provider; no API key declared).`,
         );
       }
       continue;
@@ -1385,7 +888,7 @@ async function appendPiCredentialDetails(
     const apiKeyEnv = PI_API_KEY_ENV_BY_PROVIDER[provider];
     if (apiKeyEnv !== undefined && hasNonEmptyCredentialValue(env[apiKeyEnv])) {
       details.push(
-        `${label} ${refStr}: Pi API-key credential for \`${provider}\` present in the resolved environment (${apiKeyEnv}); credential detected, live model verification is still pending.`,
+        `${label} ${refStr}: Pi API-key credential for \`${providerLabel}\` present in the resolved environment (${apiKeyEnv}); credential detected, live model verification is still pending.`,
       );
       continue;
     }
@@ -1403,8 +906,8 @@ async function appendPiCredentialDetails(
     if (entry === undefined) {
       status = "waiting";
       details.push(apiKeyEnv === undefined
-        ? `[WARN] ${label} ${refStr}: no Pi credentials found for provider \`${provider}\` in the auth store. Authenticate it with \`${loginCommand}\`, or set providers.piAuthPath.`
-        : `[WARN] ${label} ${refStr}: no Pi API key credentials found for provider \`${provider}\` in the auth store or resolved environment. Run \`${loginCommand}\`, or set ${apiKeyEnv}.`);
+        ? `[WARN] ${label} ${refStr}: no Pi credentials found for provider \`${providerLabel}\` in the auth store. Authenticate it with \`${loginCommand}\`, or set providers.piAuthPath.`
+        : `[WARN] ${label} ${refStr}: no Pi API key credentials found for provider \`${providerLabel}\` in the auth store or resolved environment. Run \`${loginCommand}\`, or set ${apiKeyEnv}.`);
       continue;
     }
     const isOAuth = entry.type === "oauth";
@@ -1412,21 +915,21 @@ async function appendPiCredentialDetails(
     if (isApiKey && !hasNonEmptyCredentialValue(entry.key)) {
       status = "waiting";
       details.push(
-        `[WARN] ${label} ${refStr}: stored API-key credential for \`${provider}\` has no usable key. Run \`${loginCommand}\`; no secret value was displayed.`,
+        `[WARN] ${label} ${refStr}: stored API-key credential for \`${providerLabel}\` has no usable key. Run \`${loginCommand}\`; no secret value was displayed.`,
       );
       continue;
     }
     if (isOAuth && !hasNonEmptyCredentialValue(entry.access) && !hasNonEmptyCredentialValue(entry.refresh)) {
       status = "waiting";
       details.push(
-        `[WARN] ${label} ${refStr}: stored OAuth credential for \`${provider}\` has no usable access or refresh token. Re-authenticate with \`${loginCommand}\`; no secret value was displayed.`,
+        `[WARN] ${label} ${refStr}: stored OAuth credential for \`${providerLabel}\` has no usable access or refresh token. Re-authenticate with \`${loginCommand}\`; no secret value was displayed.`,
       );
       continue;
     }
     if (!isOAuth && !isApiKey) {
       status = "waiting";
       details.push(
-        `[WARN] ${label} ${refStr}: stored credential for \`${provider}\` has an unsupported or missing type. Re-authenticate with \`${loginCommand}\`; no secret value was displayed.`,
+        `[WARN] ${label} ${refStr}: stored credential for \`${providerLabel}\` has an unsupported or missing type. Re-authenticate with \`${loginCommand}\`; no secret value was displayed.`,
       );
       continue;
     }
@@ -1435,14 +938,14 @@ async function appendPiCredentialDetails(
     if (isOAuth && expired) {
       status = "waiting";
       details.push(
-        `[WARN] ${label} ${refStr}: OAuth token for \`${provider}\` expired${whenNote} — the runtime may auto-refresh, but this credential is not ready until a request succeeds; if runs fail with "No API key for provider: ${provider}" re-authenticate with \`${loginCommand}\`.`,
+        `[WARN] ${label} ${refStr}: OAuth token for \`${providerLabel}\` expired${whenNote} — the runtime may auto-refresh, but this credential is not ready until a request succeeds; if runs fail with "No API key for provider: ${providerLabel}" re-authenticate with \`${loginCommand}\`.`,
       );
       continue;
     }
     details.push(
       isOAuth
-        ? `${label} ${refStr}: OAuth credentials for \`${provider}\` present (token valid${whenNote}); credential detected, live model verification is still pending.`
-        : `${label} ${refStr}: API key credentials for \`${provider}\` present; credential detected, live model verification is still pending.`,
+        ? `${label} ${refStr}: OAuth credentials for \`${providerLabel}\` present (token valid${whenNote}); credential detected, live model verification is still pending.`
+        : `${label} ${refStr}: API key credentials for \`${providerLabel}\` present; credential detected, live model verification is still pending.`,
     );
   }
 
@@ -1625,12 +1128,12 @@ async function memorySection(
         const resolutionIssue = piModelResolutionIssue(config, model);
         if (resolutionIssue !== undefined) {
           status = "error";
-          details.push(`Agent-host memory LLM ${referenceOf(model)}: ${resolutionIssue}.`);
+          details.push(`Agent-host memory LLM ${displayReferenceOf(model)}: ${resolutionIssue}.`);
         }
       } catch (error) {
         status = "error";
         details.push(
-          `Agent-host memory LLM ${config.memory.llm.model}: ${error instanceof Error ? error.message : String(error)}.`,
+          `Agent-host memory LLM ${displayText(config.memory.llm.model)}: ${displayReason(error)}.`,
         );
       }
     }
@@ -1982,12 +1485,12 @@ async function localEmbeddingLivenessWarnings(
     }
     if (provider === "ollama" && /HTTP 404/u.test(reason)) {
       return [
-        `[WARN] Ollama embedding model ${embeddings.model} could not be proved at ${endpoint} (${reason}); ` +
-        `run \`ollama pull ${embeddings.model}\` and verify its embedding capability.`,
+        `[WARN] Ollama embedding model ${displayText(embeddings.model)} could not be proved at ${endpoint} (${reason}); ` +
+        `run \`ollama pull ${displayText(embeddings.model)}\` and verify its embedding capability.`,
       ];
     }
     return [
-      `[WARN] ${label} embedding readiness failed for ${embeddings.model} at ${endpoint} (${reason}). ` +
+      `[WARN] ${label} embedding readiness failed for ${displayText(embeddings.model)} at ${endpoint} (${reason}). ` +
       "Verify the selected model, authentication, and configured dimension.",
     ];
   }
@@ -2034,8 +1537,8 @@ function memoryLlmLabel(llm: NonNullable<MonoAgentConfig["memory"]>["llm"]): str
     return "none";
   }
   return llm.provider === "ollama"
-    ? `ollama:${llm.model}`
-    : `agent-host:${llm.model}${llm.executionMode === undefined ? "" : ` (${llm.executionMode})`}`;
+    ? `ollama:${displayText(llm.model)}`
+    : `agent-host:${displayText(llm.model)}`;
 }
 
 async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFolderOptions): Promise<ValidationSection> {
@@ -2140,53 +1643,6 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     // Under allow-all the disallow list is already folded into the "except" clause above.
     details.push(`Disallowed tools: ${config.tools.disallowedTools.join(", ")}.`);
   }
-  const runtimeModels = configuredRuntimeModels(config.runtime);
-  const directCodexModels = runtimeModels
-    .filter((model) => model.sdk === "codex")
-    .map(referenceOf);
-  const directOpenCodeModels = runtimeModels
-    .filter((model) => model.sdk === "opencode")
-    .map(referenceOf);
-  const claudeCliModels = [
-    { model: config.runtime.model, executionMode: config.runtime.executionMode },
-    ...configuredRuntimeFallbackModels(config.runtime).map((model) => ({
-      model,
-      executionMode: defaultExecutionModeForModel(model),
-    })),
-  ]
-    .filter(({ model, executionMode }) => model.sdk === "claude" && executionMode === "cli")
-    .map(({ model }) => referenceOf(model));
-  const allowAllOnly = hasAllowAllOnlyToolPolicy(config.tools);
-  const dedicatedNoToolsProbe = input.codexNoToolsProbe === true
-    && allowedTools.length === 0
-    && config.tools.disallowedTools.length === 0;
-  if (
-    directCodexModels.length > 0
-    && !dedicatedNoToolsProbe
-    && !allowAllOnly
-  ) {
-    status = "error";
-    details.push(
-      `Direct Codex model${directCodexModels.length === 1 ? "" : "s"} ${directCodexModels.join(", ")} cannot enforce ` +
-        "tools.allowedTools/tools.disallowedTools. Use allow-all-only (allowedTools omitted or containing \"*\", with no disallowedTools), " +
-        "or select a runtime that supports restrictive tool policies.",
-    );
-  }
-  if (directOpenCodeModels.length > 0 && !allowAllOnly) {
-    status = "error";
-    details.push(
-      `Direct OpenCode model${directOpenCodeModels.length === 1 ? "" : "s"} ${directOpenCodeModels.join(", ")} cannot enforce ` +
-        "tools.allowedTools/tools.disallowedTools. Use allow-all-only (allowedTools omitted or containing \"*\", with no disallowedTools), " +
-        "or use a Pi runtime (including pi:opencode-go:*).",
-    );
-  }
-  if (claudeCliModels.length > 0 && allowedTools.length === 0) {
-    status = "error";
-    details.push(
-      `Claude CLI model${claudeCliModels.length === 1 ? "" : "s"} ${claudeCliModels.join(", ")} cannot enforce an empty ` +
-        "tools.allowedTools list because omitting --tools enables Claude Code's default tool set. Use Claude SDK for a chat-only agent, or configure a non-empty enforceable tool list.",
-    );
-  }
   let configuredMcpServerNames: string[] = [];
   let configuredMcpServers: Record<string, unknown> = {};
   if (config.tools.mcpConfigPath !== undefined) {
@@ -2254,7 +1710,6 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
   const adapterSendTools = await resolveAdapterSendToolsSettings(input, {
     allowedTools: config.tools.allowedTools,
     disallowedTools: config.tools.disallowedTools,
-    suppressInteractionTools: directOpenCodeModels.length > 0,
   });
   if (adapterSendTools === undefined) {
     details.push("No adapter-derived send tools enabled.");
@@ -2265,7 +1720,6 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     config,
     input,
     adapterSendTools,
-    directOpenCodeModels.length > 0,
   );
   if (blockedAdapterEndpoints.length > 0) {
     if (status !== "error") {
@@ -2273,20 +1727,6 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     }
     details.push(...blockedAdapterEndpoints);
   }
-  const effectiveMcpSources = effectiveMcpRuntimeSources(
-    config,
-    configuredMcpServerNames,
-    adapterSendTools === undefined ? [] : adapterSendToolNames(adapterSendTools),
-  );
-  if (directOpenCodeModels.length > 0 && effectiveMcpSources.length > 0) {
-    status = "error";
-    details.push(
-      `Direct OpenCode model${directOpenCodeModels.length === 1 ? "" : "s"} ${directOpenCodeModels.join(", ")} cannot safely consume ` +
-        `MCP runtime options from ${effectiveMcpSources.join("; ")}. Disable those MCP sources or use a Pi runtime (including pi:opencode-go:*).`,
-    );
-  }
-
-
   // Subagents: the Agent tool is registered only when BOTH the capability is
   // enabled and the tool is allowed, so surface either half being missing.
   const subagents = config.subagents;
@@ -2309,16 +1749,6 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
       );
     } else {
       details.push("Subagents inherit the parent's skill index and the ReadSkill tool.");
-      // The parent's own chain is capability-checked elsewhere; a profile that
-      // pins its own model is not, so a direct-OpenCode profile would silently
-      // run without the index it was told it had.
-      for (const definition of subagents.definitions ?? []) {
-        if (definition.model?.sdk === "opencode") {
-          details.push(
-            `Subagent "${definition.name}" is pinned to a direct OpenCode model, which cannot use ReadSkill; it runs without the skill index.`,
-          );
-        }
-      }
     }
     for (const tool of subagents.inline?.allowedTools ?? []) {
       if (!isKnownToolName(tool) && !isMcpToolName(tool)) {
@@ -2507,7 +1937,7 @@ async function readAgentBrowserVersion(
   command: string,
   input: ValidateMonoAgentFolderOptions,
 ): Promise<readonly [number, number, number] | null> {
-  const run = input.sdkAuthStatusExecFile ?? defaultSdkAuthStatusExecFile;
+  const run = input.statusExecFile ?? defaultDoctorStatusExecFile;
   try {
     const { stdout } = await run(command, ["--version"], {
       cwd: input.cwd,
@@ -2515,8 +1945,8 @@ async function readAgentBrowserVersion(
         ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "SHELL", "TMPDIR", "TMP", "TEMP"]
           .flatMap((key) => typeof input.env[key] === "string" ? [[key, input.env[key]]] : []),
       ),
-      timeout: SDK_AUTH_STATUS_TIMEOUT_MS,
-      maxBuffer: SDK_AUTH_STATUS_MAX_BUFFER_BYTES,
+      timeout: DOCTOR_STATUS_TIMEOUT_MS,
+      maxBuffer: DOCTOR_STATUS_MAX_BUFFER_BYTES,
       encoding: "utf8",
     });
     const match = /(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?:\s|$)/u.exec(stdout.trim());
@@ -2683,7 +2113,7 @@ async function processJobsSection(
     `Owner-only local state: ${settings.stateDir}.`,
     `Concurrency: ${String(settings.maxConcurrent)} global, ${String(settings.maxActivePerConversation)} per conversation, ${String(settings.maxQueued)} queued.`,
     `Caps: runtime=${String(settings.maxRuntimeMs)}ms, queue-age=${String(settings.maxQueueAgeMs)}ms, output=${String(settings.maxOutputBytes)} bytes, chain-depth=${String(settings.maxChainDepth)}.`,
-    `Runtime availability: Pi-native Exec/Bash only; configured primary is ${config.runtime.model.sdk}.`,
+    `Runtime availability: Pi-native Exec/Bash only; configured primary provider is ${displayText(config.runtime.model.provider)}.`,
   ];
   const inspection = await inspectProcessJobState(input.cwd, settings.stateDir);
   return {
@@ -3864,7 +3294,6 @@ async function adapterSendToolNetworkPolicyWarnings(
   config: MonoAgentConfig,
   input: ValidateMonoAgentFolderOptions,
   settings: Awaited<ReturnType<typeof resolveAdapterSendToolsSettings>>,
-  suppressInteractionTools: boolean,
 ): Promise<readonly string[]> {
   if (config.sandbox === undefined || config.sandbox.mode !== "native") {
     return [];
@@ -3887,7 +3316,7 @@ async function adapterSendToolNetworkPolicyWarnings(
     });
   }
 
-  const askUserAllowed = !suppressInteractionTools && isAdapterSendToolAllowed("AskUser", {
+  const askUserAllowed = isAdapterSendToolAllowed("AskUser", {
     allowedTools: config.tools.allowedTools,
     disallowedTools: config.tools.disallowedTools,
   });
@@ -3937,123 +3366,7 @@ function endpointHost(url: string): string {
   }
 }
 
-function effectiveMcpRuntimeSources(
-  config: MonoAgentConfig,
-  configuredMcpServerNames: readonly string[],
-  adapterToolNames: readonly string[],
-): string[] {
-  const sources: string[] = [];
-  if (configuredMcpServerNames.length > 0) {
-    sources.push(`tools.mcpConfigPath (${configuredMcpServerNames.join(", ")})`);
-  }
-  if (config.memory?.recallTool?.enabled === true) {
-    sources.push("memory.recallTool");
-  }
-  if (
-    config.memory?.backend === "supermemory"
-    && config.memory.supermemory?.exposeMcpServer === true
-    && config.memory.supermemory.apiKey !== undefined
-  ) {
-    sources.push("memory.supermemory.exposeMcpServer");
-  }
-  if (adapterToolNames.length > 0) {
-    sources.push(`adapter send tools (${adapterToolNames.join(", ")})`);
-  }
-  return sources;
-}
-
 async function sandboxSection(config: MonoAgentConfig, engine?: SandboxEngine): Promise<ValidationSection> {
-  const runtimeModels = configuredRuntimeModels(config.runtime);
-  const directCodexRefs = runtimeModels
-    .filter((model) => model.sdk === "codex")
-    .map((model) => model.reference ?? `codex:${model.model}`);
-  const claudeRefs = runtimeModels
-    .filter((model) => model.sdk === "claude")
-    .map((model) => model.reference ?? `claude:${model.model}`);
-  const directOpenCodeRefs = runtimeModels
-    .filter((model) => model.sdk === "opencode")
-    .map((model) => model.reference ?? `opencode:${model.provider ?? "unknown"}:${model.model}`);
-  const routeSafety = config.runtime.routeSafety ?? "uniform";
-  if (routeSafety === "per-route-native") {
-    const monoSandboxActive = config.sandbox !== undefined && config.sandbox.mode !== "off";
-    const piRoutes = runtimeModels.filter((model) => model.sdk === "pi");
-    const details = runtimeModels.map((model, index) => routeNativeSafetyDetail(model, index, config));
-    let status: ValidationStatus = !monoSandboxActive && piRoutes.length > 0 ? "disabled" : "ok";
-    if (monoSandboxActive && piRoutes.length > 0) {
-      const state = await resolveSandboxEffectiveState({
-        policy: config.sandbox!,
-        ...(engine === undefined ? {} : { engine }),
-      });
-      const warning = sandboxEffectiveStateWarning(state);
-      details.push(
-        `Pi route SRT policy: mode ${config.sandbox!.mode}, network ${config.sandbox!.network.mode}, fallback ${config.sandbox!.fallback}.`,
-        describeSandboxEffectiveState(state),
-        ...(warning === undefined ? [] : [warning]),
-      );
-      if (warning !== undefined || state.effective === "blocked") status = "waiting";
-    } else if (piRoutes.length > 0) {
-      details.push(
-        "Pi route SRT policy: disabled; Bash and stdio MCP subprocesses run unsandboxed.",
-      );
-    } else if (monoSandboxActive) {
-      details.push(
-        "The configured mono-agent SRT policy has no Pi route to enforce it; provider-owned route contracts below apply instead.",
-      );
-      status = "waiting";
-    }
-    if (monoSandboxActive && runtimeModels.some((model) => model.sdk !== "pi")) {
-      details.push(
-        "[WARN] Per-route-native explicitly does not project mono-agent readableRoots, writableRoots, denyWrite, or network rules onto non-Pi routes; review each route contract before start.",
-      );
-      status = "waiting";
-    }
-    if (runtimeModels.some((model) => model.sdk === "codex") && config.runtime.permissionMode === "bypassPermissions") {
-      status = "waiting";
-    }
-    return { id: "sandbox", label: "Sandbox", status, details };
-  }
-  const incompatibleDetails: string[] = [];
-  if (config.sandbox !== undefined && config.sandbox.mode !== "off" && directCodexRefs.length > 0) {
-    const codexPosture = directCodexSandboxPosture(config.runtime.permissionMode);
-    incompatibleDetails.push(
-      `Native mono-agent sandbox policy cannot govern direct Codex runtime${directCodexRefs.length === 1 ? "" : "s"}: ${directCodexRefs.join(", ")}.`,
-      `${codexPosture.detail} Remove the mono-agent sandbox block or use Pi when exact srt roots, denyWrite, or network policy are required.`,
-    );
-  }
-  if (config.sandbox !== undefined && config.sandbox.mode !== "off" && claudeRefs.length > 0) {
-    incompatibleDetails.push(
-      `Native mono-agent sandbox policy cannot govern Claude runtime${claudeRefs.length === 1 ? "" : "s"}: ${claudeRefs.join(", ")}.`,
-      "Claude's provider-owned tool loop does not consume mono-agent sandboxPolicy. Set sandbox.mode to off, remove the sandbox block, or use a Pi runtime when mono-agent srt enforcement is required.",
-    );
-  }
-  if (config.sandbox !== undefined && config.sandbox.mode !== "off" && directOpenCodeRefs.length > 0) {
-    incompatibleDetails.push(
-      `Native mono-agent sandbox policy cannot govern direct OpenCode runtime${directOpenCodeRefs.length === 1 ? "" : "s"}: ${directOpenCodeRefs.join(", ")}.`,
-      "Direct OpenCode's provider-owned tool loop does not consume mono-agent sandboxPolicy. Set sandbox.mode to off, remove the sandbox block, or use a pi:opencode-go:* runtime when mono-agent srt enforcement is required.",
-    );
-  }
-  if (incompatibleDetails.length > 0) {
-    return {
-      id: "sandbox",
-      label: "Sandbox",
-      status: "error",
-      details: incompatibleDetails,
-    };
-  }
-  if (directCodexRefs.length > 0 && (config.sandbox === undefined || config.sandbox.mode === "off")) {
-    const posture = directCodexSandboxPosture(config.runtime.permissionMode);
-    return {
-      id: "sandbox",
-      label: "Sandbox",
-      status: posture.status,
-      details: [
-        posture.detail,
-        config.sandbox === undefined
-          ? "No mono-agent native srt policy is configured."
-          : "The mono-agent native srt policy is explicitly off; the Codex-native posture still applies.",
-      ],
-    };
-  }
   if (config.sandbox === undefined) {
     return { id: "sandbox", label: "Sandbox", status: "disabled", details: ["No sandbox policy configured."] };
   }
@@ -4079,53 +3392,6 @@ async function sandboxSection(config: MonoAgentConfig, engine?: SandboxEngine): 
     label: "Sandbox",
     status,
     details,
-  };
-}
-
-function routeNativeSafetyDetail(
-  model: RuntimeModelReference,
-  index: number,
-  config: MonoAgentConfig,
-): string {
-  const label = index === 0 ? "Primary" : `Fallback ${index}`;
-  const ref = referenceOf(model);
-  if (model.sdk === "pi") {
-    if (config.sandbox === undefined || config.sandbox.mode === "off") {
-      return `${label} ${ref}: Pi-owned tools use mono-agent tool policy; SRT is disabled, so Bash and stdio MCP subprocesses run unsandboxed.`;
-    }
-    if (config.sandbox.fallback === "unsafe-host-process") {
-      return `${label} ${ref}: Pi-owned tools use the configured mono-agent SRT policy; its explicit unsafe-host-process fallback can run subprocesses unsandboxed when SRT is unavailable.`;
-    }
-    return `${label} ${ref}: Pi-owned tools use the configured mono-agent SRT policy and fail closed when it is unavailable.`;
-  }
-  if (model.sdk === "claude") {
-    return `${label} ${ref}: Claude provider-owned permissions apply; mono-agent SRT filesystem/network rules are not projected.`;
-  }
-  if (model.sdk === "codex") {
-    return `${label} ${ref}: ${directCodexSandboxPosture(config.runtime.permissionMode).detail}`;
-  }
-  return `${label} ${ref}: OpenCode provider-owned execution with an effective allow-all tool policy applies; mono-agent SRT rules are not projected.`;
-}
-
-function directCodexSandboxPosture(permissionMode: MonoAgentConfig["runtime"]["permissionMode"]): {
-  readonly status: ValidationStatus;
-  readonly detail: string;
-} {
-  if (permissionMode === "bypassPermissions") {
-    return {
-      status: "waiting",
-      detail: "[WARN] Direct Codex bypassPermissions uses native danger-full-access with no filesystem or network sandbox; unattended approval prompts are still disabled.",
-    };
-  }
-  if (permissionMode === "plan") {
-    return {
-      status: "ok",
-      detail: "Direct Codex plan mode uses its native read-only sandbox with network disabled; unattended escalation requests are denied.",
-    };
-  }
-  return {
-    status: "ok",
-    detail: "Direct Codex default/acceptEdits mode uses its native workspace-write sandbox with network disabled; unattended escalation requests are denied.",
   };
 }
 
@@ -4164,6 +3430,47 @@ async function channelSection(
 
 function referenceOf(model: RuntimeModelReference): string {
   return modelReferenceKey(model);
+}
+
+/**
+ * Bounded, single-line rendering of operator-supplied text for a diagnostic.
+ *
+ * `referenceOf` is the canonical KEY -- it is compared against
+ * `verifiedCredentialModelRefs`, which carries whole references -- so it must
+ * stay unbounded. What gets PRINTED must not be. The parser deliberately has no
+ * length ceiling any more (a reference cannot be truncated into validity, so a
+ * ceiling there could only refuse a model that runs), which means acceptance
+ * stopped being a length guarantee: a 500,000-byte reference parses today and
+ * every one of these lines is echoed by `mono-agent validate`, the daemon log
+ * and launchd's captured stdout. Escaping comes with the clamp, so a reference
+ * carrying a newline also cannot forge a detail line that reads as doctor's own.
+ */
+function displayText(value: string): string {
+  return sanitizeModelReferenceText(value, MODEL_REFERENCE_ECHO_MAX_BYTES);
+}
+
+/** Bounded display form of a model reference. Never use it as a map or set key. */
+function displayReferenceOf(model: RuntimeModelReference): string {
+  return displayText(referenceOf(model));
+}
+
+/**
+ * Bounded display form of a thrown reason. A reason gets the larger budget because it is one
+ * fixed repair sentence plus at most one echo of the value.
+ *
+ * Unwrap one layer first, as `modelReferenceReason` in @mono-agent/config and `reasonOf` in
+ * trigger-overrides already do: the adapter's `message` wraps a 32-byte generic prefix around
+ * a reason ALREADY at the full reason budget, so clamping the wrapped form spends the budget
+ * on the prefix and pays for it out of the tail -- which is where the kernel parser puts the
+ * concrete repair whenever it quotes the operator's value first.
+ */
+function displayReason(error: unknown): string {
+  const reason = error instanceof RuntimeAdapterError && typeof error.details.reason === "string"
+    ? error.details.reason
+    : error instanceof Error
+      ? error.message
+      : String(error);
+  return sanitizeModelReferenceText(reason, MODEL_REFERENCE_REASON_MAX_BYTES);
 }
 
 async function pathExists(path: string): Promise<boolean> {

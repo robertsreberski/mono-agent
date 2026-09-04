@@ -23,7 +23,7 @@ async function syntheticReadinessWorker(): Promise<{ readonly url: URL; readonly
       const exact = process.env.DURABLE_PROVIDER_KEY === "durable-worker-key"
         && process.env.SHELL_ONLY_PROVIDER_KEY === undefined
         && typeof workerData.cwd === "string"
-        && typeof workerData.runtime?.model?.sdk === "string"
+        && typeof workerData.runtime?.model?.provider === "string"
         && typeof workerData.runtime?.workspace === "string"
         && workerData.configPath === undefined;
       parentPort.postMessage(exact
@@ -57,9 +57,7 @@ async function runProbeForTest(
 ): Promise<Awaited<ReturnType<typeof runAllRouteReadinessProbe>>> {
   const result = await runAllRouteReadinessProbe(options);
   const runtime = (options.plan.configJson.runtime ?? {}) as Record<string, unknown>;
-  const hasFallbacks =
-    (Array.isArray(runtime.fallbacks) && runtime.fallbacks.length > 0)
-    || (Array.isArray(runtime.fallbackModels) && runtime.fallbackModels.length > 0);
+  const hasFallbacks = Array.isArray(runtime.fallbacks) && runtime.fallbacks.length > 0;
   if (hasFallbacks || options.resume !== undefined) {
     return result;
   }
@@ -77,26 +75,6 @@ async function runProbeForTest(
 describe("readiness probe", () => {
   const plan = composeWizardPlan(defaultAnswers(), { dirBasename: "agent", skillsRootExists: false });
 
-  it("returns a typed unsupported result before probing direct OpenCode", async () => {
-    const directOpenCodePlan = composeWizardPlan(defaultAnswers({
-      model: "opencode:github-copilot:gpt-5.1",
-    }), { dirBasename: "agent", skillsRootExists: false });
-    const run = vi.fn(async () => ({ text: "must not run" }));
-    const dispose = vi.fn(async () => {});
-
-    await expect(runProbeForTest({
-      plan: directOpenCodePlan,
-      run,
-      dispose,
-    })).resolves.toEqual({
-      ok: false,
-      kind: "unsupported_guided_probe",
-      message: expect.stringMatching(/pi:opencode-go:<model>.*runtime\.permissionMode/u),
-    });
-    expect(run).not.toHaveBeenCalled();
-    expect(dispose).not.toHaveBeenCalled();
-  });
-
   it("runs against the selected model with a no-tool disposable config", async () => {
     let seen: { model: unknown; allowedTools: readonly string[]; workspace: string; identityPath: string } | undefined;
     const result = await runProbeForTest({
@@ -113,10 +91,9 @@ describe("readiness probe", () => {
           allowedTools: [],
           disallowedTools: [],
           mcpServers: {},
-          codexNoToolsProbe: true,
           sessionKeepAlive: false,
         });
-        expect(config.runtime.fallbackModels).toBeUndefined();
+        expect(config.runtime.fallbacks).toBeUndefined();
         expect(config.memory).toBeUndefined();
         expect(config.tools.allowedTools).toEqual([]);
         await expect(access(config.context.identityPath)).resolves.toBeUndefined();
@@ -125,7 +102,7 @@ describe("readiness probe", () => {
       },
     });
     expect(result).toEqual({ ok: true });
-    expect(seen).toMatchObject({ model: { reference: "codex:gpt-5.6-terra" }, allowedTools: [] });
+    expect(seen).toMatchObject({ model: { reference: "openai-codex:gpt-5.6-terra" }, allowedTools: [] });
     expect(seen?.workspace).toContain("mono-agent-readiness-");
     expect(seen?.identityPath).toContain("mono-agent-readiness-");
   });
@@ -136,8 +113,8 @@ describe("readiness probe", () => {
       PATH: "/usr/bin:/bin",
       PROVIDER_SECRET: "ambient-secret",
       UNSET_VALUE: undefined,
-      MONO_AGENT_MODEL: "pi:openai-codex:not-the-selected-model",
-      MONO_AGENT_FALLBACK_MODELS: "pi:openai-codex:not-the-selected-fallback",
+      MONO_AGENT_MODEL: "openai-codex:not-the-selected-model",
+      MONO_AGENT_FALLBACK_MODELS: "openai-codex:not-the-selected-fallback",
       MONO_AGENT_MEMORY_PATH: "/tmp/ambient-memory",
       MONO_AGENT_MEMORY_BACKEND: "supermemory",
       MONO_AGENT_SESSION_MODE: "per-message",
@@ -159,8 +136,8 @@ describe("readiness probe", () => {
       hostEnv,
       secretValues,
       run: async ({ config, options }) => {
-        expect(config.runtime.model).toMatchObject({ reference: "codex:gpt-5.6-terra" });
-        expect(config.runtime.fallbackModels).toBeUndefined();
+        expect(config.runtime.model).toMatchObject({ reference: "openai-codex:gpt-5.6-terra" });
+        expect(config.runtime.fallbacks).toBeUndefined();
         expect(config.memory).toBeUndefined();
         expect(config.runtime.session).toMatchObject({ mode: "continuous" });
         expect(config.providers?.piNative?.piSessionsRoot).toBeUndefined();
@@ -475,10 +452,9 @@ describe("readiness probe", () => {
   });
 
   it("uses longer default deadlines for local providers", () => {
-    expect(readinessProbeTimeoutMs({ sdk: "codex", model: "gpt-5.6-terra" })).toBe(90_000);
-    expect(readinessProbeTimeoutMs({ sdk: "pi", provider: "openai-codex", model: "gpt-5.6-terra" })).toBe(90_000);
-    expect(readinessProbeTimeoutMs({ sdk: "pi", provider: "ollama", model: "qwen3:8b" })).toBe(240_000);
-    expect(readinessProbeTimeoutMs({ sdk: "pi", provider: "lmstudio", model: "qwen3-8b" })).toBe(240_000);
+    expect(readinessProbeTimeoutMs({ provider: "openai-codex", model: "gpt-5.6-terra", reference: "openai-codex:gpt-5.6-terra" })).toBe(90_000);
+    expect(readinessProbeTimeoutMs({ provider: "ollama", model: "qwen3:8b", reference: "ollama:qwen3:8b" })).toBe(240_000);
+    expect(readinessProbeTimeoutMs({ provider: "lmstudio", model: "qwen3:8b", reference: "lmstudio:qwen3:8b" })).toBe(240_000);
   });
 
   it("bounds and redacts provider errors before returning them", async () => {
@@ -504,10 +480,9 @@ describe("readiness probe", () => {
     configJson.runtime = {
       ...(configJson.runtime as Record<string, unknown>),
       effort: "high",
-      routeSafety: "per-route-native",
       fallbacks: [
-        { model: "claude:claude-sonnet-5", effort: "low" },
-        { model: "pi:openai:gpt-5.5" },
+        { model: "anthropic:claude-sonnet-5", effort: "low" },
+        { model: "openai:gpt-5.5" },
       ],
     };
     const allRoutesPlan = { ...plan, configJson: configJson as never };
@@ -524,21 +499,21 @@ describe("readiness probe", () => {
           model: reference,
           ...(options.effort === undefined ? {} : { effort: options.effort }),
         });
-        return reference.startsWith("claude:")
+        return reference.startsWith("anthropic:")
           ? { text: "", failureKind: "provider_unavailable", error: "Claude unavailable" }
           : { text: "ready" };
       },
     });
 
     expect(seen).toEqual([
-      { model: "codex:gpt-5.6-terra", effort: "high" },
-      { model: "claude:claude-sonnet-5", effort: "low" },
-      { model: "pi:openai:gpt-5.5" },
+      { model: "openai-codex:gpt-5.6-terra", effort: "high" },
+      { model: "anthropic:claude-sonnet-5", effort: "low" },
+      { model: "openai:gpt-5.5" },
     ]);
     expect(starts).toEqual([
-      "1/3:codex:gpt-5.6-terra",
-      "2/3:claude:claude-sonnet-5",
-      "3/3:pi:openai:gpt-5.5",
+      "1/3:openai-codex:gpt-5.6-terra",
+      "2/3:anthropic:claude-sonnet-5",
+      "3/3:openai:gpt-5.5",
     ]);
     expect(completions).toEqual(["0:verified", "1:failed", "2:verified"]);
     expect(result).toMatchObject({
@@ -555,7 +530,7 @@ describe("readiness probe", () => {
     const configJson = structuredClone(plan.configJson) as Record<string, unknown>;
     configJson.runtime = {
       ...(configJson.runtime as Record<string, unknown>),
-      fallbackModels: ["pi:openai-codex:gpt-5.6-sol"],
+      fallbacks: [{ model: "openai-codex:gpt-5.6-sol" }],
       effort: "xhigh",
     };
     const resumePlan = { ...plan, configJson: configJson as never };
@@ -582,7 +557,7 @@ describe("readiness probe", () => {
     const configJson = structuredClone(plan.configJson) as Record<string, unknown>;
     configJson.runtime = {
       ...(configJson.runtime as Record<string, unknown>),
-      fallbackModels: ["pi:openai-codex:gpt-5.6-sol"],
+      fallbacks: [{ model: "openai-codex:gpt-5.6-sol" }],
     };
     const resumePlan = { ...plan, configJson: configJson as never };
     const first = await runProbeForTest({ plan: resumePlan, run: async () => ({ text: "ready" }) });
@@ -616,7 +591,7 @@ describe("readiness probe", () => {
     const firstConfig = structuredClone(plan.configJson) as Record<string, unknown>;
     firstConfig.runtime = {
       ...(firstConfig.runtime as Record<string, unknown>),
-      fallbackModels: ["pi:openai-codex:gpt-5.6-sol"],
+      fallbacks: [{ model: "openai-codex:gpt-5.6-sol" }],
     };
     firstConfig.providers = { piAuthPath: "/tmp/readiness-auth-a.json" };
     const firstPlan = { ...plan, configJson: firstConfig as never };
@@ -643,7 +618,7 @@ describe("readiness probe", () => {
     const configJson = structuredClone(plan.configJson) as Record<string, unknown>;
     configJson.runtime = {
       ...(configJson.runtime as Record<string, unknown>),
-      fallbackModels: ["pi:openai-codex:gpt-5.6-sol"],
+      fallbacks: [{ model: "openai-codex:gpt-5.6-sol" }],
     };
     const controller = new AbortController();
     const result = await runProbeForTest({

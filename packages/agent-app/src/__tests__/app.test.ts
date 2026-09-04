@@ -59,7 +59,7 @@ async function writeConfig(json: Record<string, unknown>): Promise<string> {
 
 function baseConfig(): Record<string, unknown> {
   return {
-    runtime: { model: "pi:openai-codex:gpt-5.5", workspace: "." },
+    runtime: { model: "openai-codex:gpt-5.5", workspace: "." },
     context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
     tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: "./artifacts" },
@@ -73,7 +73,7 @@ function parsedCoreConfig(): MonoAgentConfig {
     ...config,
     runtime: {
       ...(config.runtime as Record<string, unknown>),
-      model: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"),
+      model: parseMonoRuntimeModelReference("openai-codex:gpt-5.5"),
     },
   } as unknown as MonoAgentConfig;
 }
@@ -1957,16 +1957,15 @@ describe("startMonoAgentApp", () => {
       expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
       expect(captured?.pendingAsks).toBeUndefined();
       expect(captured?.allowedUpdates).toEqual(["message", "callback_query"]);
-      expect(captured?.runtimeControls).toMatchObject({
-        defaultModel: "pi:openai-codex:gpt-5.5",
-        models: [{ value: "pi:openai-codex:gpt-5.5" }],
-      });
+      expect(captured?.runtimeControls?.defaultModel).toBe("openai-codex:gpt-5.5");
+      // The configured route always leads; the provider-widened tail follows it.
+      expect(captured?.runtimeControls?.models[0]?.value).toBe("openai-codex:gpt-5.5");
     } finally {
       await app.stop();
     }
   });
 
-  it("advertises only configured Telegram primary and fallback models with effort options", async () => {
+  it("leads the Telegram catalog with configured routes, then widens by provider", async () => {
     let captured: TelegramAdapterStartOptions | undefined;
     const driver = createTelegramChannelDriver({
       startAdapter: async (options) => {
@@ -1981,8 +1980,8 @@ describe("startMonoAgentApp", () => {
       },
     });
     const core = parsedCoreConfig();
-    const primary = parseMonoRuntimeModelReference("codex:gpt-5.6-terra");
-    const fallback = parseMonoRuntimeModelReference("codex:gpt-5.6-sol");
+    const primary = parseMonoRuntimeModelReference("openai-codex:gpt-5.6-terra");
+    const fallback = parseMonoRuntimeModelReference("openai-codex:gpt-5.6-sol");
 
     const running = await driver.start({
       config: { enabled: true, botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
@@ -2000,14 +1999,26 @@ describe("startMonoAgentApp", () => {
       onFailure: vi.fn(),
     });
 
-    expect(captured?.runtimeControls?.defaultModel).toBe("codex:gpt-5.6-terra");
+    expect(captured?.runtimeControls?.defaultModel).toBe("openai-codex:gpt-5.6-terra");
     expect(captured?.runtimeControls?.defaultEffort).toBe("high");
-    expect(captured?.runtimeControls?.models.map((model) => model.value)).toEqual([
-      "codex:gpt-5.6-terra",
-      "codex:gpt-5.6-sol",
+    const telegramModels = captured?.runtimeControls?.models.map((model) => model.value) ?? [];
+    // The configured routes lead, deduped and in declaration order. `fallbacks`
+    // repeats the primary, which must not produce a second entry.
+    expect(telegramModels.slice(0, 2)).toEqual([
+      "openai-codex:gpt-5.6-terra",
+      "openai-codex:gpt-5.6-sol",
     ]);
+    // Everything after them is provider-widened from the routes' own provider,
+    // deduped, and bounded so an inline Telegram menu stays renderable.
+    expect(telegramModels.length).toBeGreaterThan(2);
+    expect(telegramModels.length).toBeLessThanOrEqual(2 + 25);
+    expect(new Set(telegramModels).size).toBe(telegramModels.length);
+    expect(telegramModels.every((model) => model.startsWith("openai-codex:"))).toBe(true);
+    // Narrowed to what Pi actually advertises for this model. gpt-5.6-terra's
+    // `thinkingLevelMap` has no `ultra`, so the global ladder's last rung is
+    // dropped for display; turn time stays permissive.
     expect(captured?.runtimeControls?.models[0]?.efforts.map((effort) => effort.value)).toEqual([
-      "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+      "none", "minimal", "low", "medium", "high", "xhigh", "max",
     ]);
     await running.stop();
   });
@@ -2037,8 +2048,8 @@ describe("startMonoAgentApp", () => {
       },
     });
     const core = parsedCoreConfig();
-    const primary = parseMonoRuntimeModelReference("codex:gpt-5.6-terra");
-    const fallback = parseMonoRuntimeModelReference("codex:gpt-5.6-sol");
+    const primary = parseMonoRuntimeModelReference("openai-codex:gpt-5.6-terra");
+    const fallback = parseMonoRuntimeModelReference("openai-codex:gpt-5.6-sol");
     const coreConfig: MonoAgentConfig = {
       ...core,
       runtime: {
@@ -2073,9 +2084,9 @@ describe("startMonoAgentApp", () => {
     });
 
     expect(slackCaptured?.runtimeControls).toEqual(telegramCaptured?.runtimeControls);
-    expect(slackCaptured?.runtimeControls?.models.map((model) => model.value)).toEqual([
-      "codex:gpt-5.6-terra",
-      "codex:gpt-5.6-sol",
+    expect(slackCaptured?.runtimeControls?.models.slice(0, 2).map((model) => model.value)).toEqual([
+      "openai-codex:gpt-5.6-terra",
+      "openai-codex:gpt-5.6-sol",
     ]);
 
     await slack.stop();
@@ -2097,8 +2108,8 @@ describe("startMonoAgentApp", () => {
       },
     });
     const core = parsedCoreConfig();
-    const toggleModel = parseMonoRuntimeModelReference("pi:ollama:qwen3.6:latest");
-    const noReasoningModel = parseMonoRuntimeModelReference("pi:lmstudio:some-new-model");
+    const toggleModel = parseMonoRuntimeModelReference("ollama:qwen3.6:latest");
+    const noReasoningModel = parseMonoRuntimeModelReference("lmstudio:some-new-model");
 
     const running = await driver.start({
       config: { enabled: true, botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
@@ -2192,146 +2203,6 @@ describe("startMonoAgentApp", () => {
     }
   });
 
-  it("suppresses implicit AskUser for a direct OpenCode host and restores it after reloading to Pi", async () => {
-    const configPath = await writeConfig({
-      ...baseConfig(),
-      runtime: { model: "opencode:github-copilot:gpt-5.1", workspace: "." },
-      tools: { allowedTools: ["*"], disallowedTools: [] },
-    });
-    const env: Record<string, string | undefined> = {};
-    const runtimeCalls: RuntimeRunOptions[] = [];
-    const runtime = {
-      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
-        runtimeCalls.push(options);
-        return { text: "ok" };
-      },
-    };
-    let responder: AgentResponder | undefined;
-    const driver: ChannelDriver = {
-      id: "probe" as never,
-      label: "Probe",
-      async loadConfig() {
-        return { enabled: true };
-      },
-      isConfigError() {
-        return false;
-      },
-      async start(input) {
-        responder = input.responder;
-        return { summary: {}, stop: async () => undefined };
-      },
-    };
-
-    const app = await startMonoAgentApp({ cwd: dir, configPath, env, drivers: [driver], runtime });
-    try {
-      expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
-      await responder?.respond(
-        {
-          conversationId: "web:direct-thread",
-          text: "ping",
-          abortSignal: new AbortController().signal,
-          metadata: {
-            source: "web",
-            web: {
-              threadId: "direct-thread",
-              turnId: "direct-turn",
-              conversationTitle: { schema: 1, writable: true },
-            },
-          },
-        },
-        { append: async () => undefined },
-      );
-      expect(runtimeCalls[0]?.model).toEqual(expect.objectContaining({ sdk: "opencode" }));
-      expect(runtimeCalls[0]?.mcpServers).toBeUndefined();
-
-      await writeFile(configPath, JSON.stringify({
-        ...baseConfig(),
-        tools: { allowedTools: ["*"], disallowedTools: [] },
-      }, null, 2));
-      expect((await app.applyConfigChange("switch-to-pi")).kind).toBe("applied");
-      expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
-
-      await responder?.respond(
-        {
-          conversationId: "web:pi-thread",
-          text: "ping",
-          abortSignal: new AbortController().signal,
-          metadata: {
-            source: "web",
-            web: {
-              threadId: "pi-thread",
-              turnId: "pi-turn",
-              conversationTitle: { schema: 1, writable: true },
-            },
-          },
-        },
-        { append: async () => undefined },
-      );
-      expect(runtimeCalls[1]?.model).toEqual(expect.objectContaining({ sdk: "pi" }));
-      const server = runtimeCalls[1]?.mcpServers?.[ADAPTER_SEND_TOOLS_MCP_SERVER_NAME] as
-        | { env?: Record<string, string> }
-        | undefined;
-      expect(server).toBeDefined();
-      expect(JSON.parse(server?.env?.MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS ?? "[]")).toContain("AskUser");
-      expect(server?.env?.MONO_AGENT_INTERACTION_BRIDGE_TOKEN).toBeDefined();
-      expect(runtimeCalls[1]?.mcpServers?.[RUN_HISTORY_MCP_SERVER_NAME]).toBeDefined();
-      expect(runtimeCalls[1]?.mcpServers?.[SET_CONVERSATION_TITLE_MCP_SERVER_NAME]).toBeDefined();
-    } finally {
-      await app.stop();
-    }
-  });
-
-  it("applies an accepted Pi-to-OpenCode request override without leaking AskUser MCP", async () => {
-    // primaryAttempts 1 keeps this agent off the fallback router, so the
-    // injected runtime is the one that serves the override and can observe it.
-    // A routed agent instead gets a model-bound runtime from runtimeForModel —
-    // see the sibling case below.
-    await writeConfig({
-      ...baseConfig(),
-      runtime: { ...(baseConfig().runtime as Record<string, unknown>), retry: { primaryAttempts: 1 } },
-      tools: { allowedTools: ["*"], disallowedTools: [] },
-    });
-    const runtimeCalls: RuntimeRunOptions[] = [];
-    const runtime = {
-      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
-        runtimeCalls.push(options);
-        return { text: "ok" };
-      },
-    };
-    const driver: ChannelDriver = {
-      id: "probe" as never,
-      label: "Probe",
-      async loadConfig() {
-        return { enabled: true };
-      },
-      isConfigError() {
-        return false;
-      },
-      async start(input) {
-        await input.responder.respond(
-          {
-            conversationId: "direct-override",
-            text: "ping",
-            abortSignal: new AbortController().signal,
-            metadata: { webhook: { model: "opencode:github-copilot:gpt-5.1" } },
-          },
-          { append: async () => undefined },
-        );
-        return { summary: {}, stop: async () => undefined };
-      },
-    };
-
-    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver], runtime });
-    expect(runtimeCalls[0]?.model).toEqual(expect.objectContaining({
-      sdk: "opencode",
-      provider: "github-copilot",
-      model: "gpt-5.1",
-    }));
-    expect(runtimeCalls[0]?.mcpServers).toBeUndefined();
-    expect(runtimeCalls[0]?.mcpApps).toBeUndefined();
-    await app.stop();
-  });
-
   it("routes a request model override through a model-bound runtime when retries are on", async () => {
     // Regression guard for the retry-only chain: the router freezes the model
     // chain, so an override served by the SHARED router would silently run on
@@ -2365,7 +2236,7 @@ describe("startMonoAgentApp", () => {
             conversationId: "routed-override",
             text: "ping",
             abortSignal: new AbortController().signal,
-            metadata: { webhook: { model: "opencode:github-copilot:gpt-5.1" } },
+            metadata: { webhook: { model: "github-copilot:gpt-5.1" } },
           },
           { append: async () => undefined },
         );
@@ -2376,60 +2247,13 @@ describe("startMonoAgentApp", () => {
     const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver], runtime });
     // The shared runtime must NOT have served the override; before the fix it
     // did, and the router overwrote the model with the configured primary.
-    expect(runtimeCalls.some((call) => call.model?.sdk === "pi")).toBe(false);
+    expect(runtimeCalls).toHaveLength(0);
     await app.stop();
     // Starts a whole app with a channel driver and a retry-enabled runtime chain. It runs in well
     // under a second in isolation but measured 17s in a full-suite run, where it competes with the
     // other 109 files — so Vitest's 5s default timed it out while it passed on its own. Allow 60s:
     // enough headroom for a slower CI runner, still short enough to catch a genuine hang.
   }, 60_000);
-
-  it("keeps Pi AskUser MCP when an OpenCode override is rejected by inherited effort", async () => {
-    await writeConfig({
-      ...baseConfig(),
-      runtime: { model: "pi:openai-codex:gpt-5.5", workspace: ".", effort: "high" },
-      tools: { allowedTools: ["*"], disallowedTools: [] },
-    });
-    const runtimeCalls: RuntimeRunOptions[] = [];
-    const runtime = {
-      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
-        runtimeCalls.push(options);
-        return { text: "ok" };
-      },
-    };
-    const driver: ChannelDriver = {
-      id: "probe" as never,
-      label: "Probe",
-      async loadConfig() {
-        return { enabled: true };
-      },
-      isConfigError() {
-        return false;
-      },
-      async start(input) {
-        await input.responder.respond(
-          {
-            conversationId: "rejected-direct-override",
-            text: "ping",
-            abortSignal: new AbortController().signal,
-            metadata: { webhook: { model: "opencode:github-copilot:gpt-5.1" } },
-          },
-          { append: async () => undefined },
-        );
-        return { summary: {}, stop: async () => undefined };
-      },
-    };
-
-    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver], runtime });
-    expect(runtimeCalls[0]?.model).toEqual(expect.objectContaining({ sdk: "pi" }));
-    const server = runtimeCalls[0]?.mcpServers?.[ADAPTER_SEND_TOOLS_MCP_SERVER_NAME] as
-      | { env?: Record<string, string> }
-      | undefined;
-    expect(server).toBeDefined();
-    expect(JSON.parse(server?.env?.MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS ?? "[]")).toContain("AskUser");
-    expect(runtimeCalls[0]?.mcpServers?.[RUN_HISTORY_MCP_SERVER_NAME]).toBeDefined();
-    await app.stop();
-  });
 
   it("forwards apiRoot and attachment sizing from telegram config into the adapter start options", async () => {
     let captured: TelegramAdapterStartOptions | undefined;
@@ -3052,7 +2876,7 @@ describe("startMonoAgentApp", () => {
     await writeConfig(baseConfig());
     const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });
     const coreConfig = {
-      runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" }, executionMode: "sdk", maxTurns: 4, workspace: dir, session: { mode: "per-message", idleTimeoutMs: 1_800_000 } },
+      runtime: { model: { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" }, executionMode: "sdk", maxTurns: 4, workspace: dir, session: { mode: "per-message", idleTimeoutMs: 1_800_000 } },
       context: { identityPath: join(dir, "IDENTITY.md"), selectedSkills: [] },
       memory: { mode: "lite", path: join(dir, "mem"), writeMode: "disabled", maxBytes: 8_000 },
       tools: { allowedTools: [], disallowedTools: [] },
@@ -3094,7 +2918,7 @@ describe("startMonoAgentApp global trace-source mirror", () => {
 
   function mirrorConfig(traceability: Record<string, unknown> = {}): Record<string, unknown> {
     return {
-      runtime: { model: "pi:openai-codex:gpt-5.5", workspace: "." },
+      runtime: { model: "openai-codex:gpt-5.5", workspace: "." },
       context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
       artifacts: { dir: "./artifacts" },

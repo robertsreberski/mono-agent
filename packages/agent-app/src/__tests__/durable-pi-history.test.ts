@@ -101,15 +101,13 @@ describe("configured durable Pi history", () => {
     models.setProvider(faux.provider);
     const piModel = faux.getModel();
     const model = {
-      sdk: "pi",
       provider: "faux",
       model: "faux-model",
-      reference: "pi:faux:faux-model",
+      reference: "faux:faux-model",
     } as const;
     const config: MonoAgentConfig = {
       runtime: {
         model,
-        executionMode: "sdk",
         maxTurns: 4,
         workspace: dir,
         session: { mode: "continuous", idleTimeoutMs: 60_000 },

@@ -13,7 +13,7 @@ const sections: readonly ConfigViewSection[] = [
     label: "Runtime",
     status: "active",
     fields: [
-      { id: "runtime.model", label: "Model", value: "pi:ollama:qwen3:8b", source: "json" },
+      { id: "runtime.model", label: "Model", value: "ollama:qwen3:8b", source: "json" },
       { id: "runtime.effort", label: "Effort", value: "—", source: "default" },
       { id: "runtime.workspace", label: "Workspace", value: "/work", source: "env" },
       { id: "traceability.heartbeatMs", label: "Heartbeat", value: "10000", source: "json", restatesDefault: true },
@@ -31,7 +31,7 @@ describe("renderConfigView", () => {
   it("tags every field with its source layer", () => {
     const out = renderConfigView(sections);
     expect(out).toContain("Runtime");
-    expect(out).toMatch(/Model.*pi:ollama:qwen3:8b.*\[json\]/u);
+    expect(out).toMatch(/Model.*ollama:qwen3:8b.*\[json\]/u);
     expect(out).toMatch(/Effort.*\[default\]/u);
     expect(out).toMatch(/Workspace.*\[env\]/u);
     expect(out).toMatch(/Heartbeat.*10000.*same as default.*\[json\]/u);
@@ -86,7 +86,7 @@ describe("runCli config", () => {
       await writeFile(
         configPath,
         JSON.stringify({
-          runtime: { model: "pi:openai-codex:gpt-5.5" },
+          runtime: { model: "openai-codex:gpt-5.5" },
           context: { identityPath: "./IDENTITY.md" },
           memory: {
             mode: "journal",
@@ -145,7 +145,7 @@ describe("runCli config", () => {
       await writeFile(
         configPath,
         JSON.stringify({
-          runtime: { model: "pi:openai-codex:gpt-5.5" },
+          runtime: { model: "openai-codex:gpt-5.5" },
           context: { identityPath: "./IDENTITY.md" },
           memory: {
             mode: "bujo",
@@ -203,7 +203,7 @@ describe("runCli config", () => {
       await writeFile(
         configPath,
         JSON.stringify({
-          runtime: { model: "pi:openai-codex:gpt-5.5" },
+          runtime: { model: "openai-codex:gpt-5.5" },
           context: { identityPath: "./IDENTITY.md" },
           memory: {
             mode: "journal",
@@ -326,7 +326,7 @@ describe("runCli config", () => {
       await writeFile(
         configPath,
         JSON.stringify({
-          runtime: { model: "pi:openai-codex:gpt-5.5" },
+          runtime: { model: "openai-codex:gpt-5.5" },
           context: { identityPath: "./IDENTITY.md" },
           console: { enabled: true, port: 4400 },
           traceability: {

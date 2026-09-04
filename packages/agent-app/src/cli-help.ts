@@ -29,7 +29,7 @@ interface HelpEntry {
   readonly lines: readonly string[];
 }
 
-const HELP_COMMANDS: readonly HelpEntry[] = [
+export const HELP_COMMANDS: readonly HelpEntry[] = [
   {
     command: "init",
     group: "Setup",
@@ -38,8 +38,7 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     signature: "mono-agent init [--preset <id>] [--with <csv>] [--yes] [--auth] [--dry-run]\n" +
       "                [--name <display-name>] [--model <ref>] [--effort <level>]\n" +
       "                [--fallback <ref> [--fallback-effort <provider-default|level>]]...\n" +
-      "                [--route-safety uniform|per-route-native]\n" +
-      "                [--codex-auth browser|device] [--memory lite|journal|bujo]",
+      "                [--memory lite|journal|bujo]",
     lines: [
       "Fast scaffold-only path: flags or non-TTY input; without explicit --auth,",
       "it makes no provider call and never claims readiness. Bare init on a TTY runs",
@@ -47,11 +46,8 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       `with timeouts of ${readinessProbeTimeoutDescription()}.`,
       "--preset seeds a blueprint; --with adds channels.",
       `Effort levels: ${EFFORT_LEVELS.join(", ")}; an omitted fallback effort uses that provider's default.`,
-      "Reasoning-capable pi:* maps ultra to LOW; Pi without reasoning uses OFF; direct codex:* forwards ultra unchanged.",
-      "Mono-agent rejects ultra on its Claude SDK route because the pinned SDK public contract ends at max (the SDK JavaScript itself forwards the value).",
-      "The Claude CLI route passes --effort ultra, but both tested Claude Code binaries (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort.",
-      "Direct OpenCode rejects explicit effort. Ranking above max only prevents keyword downgrade.",
-      "--auth runs supported provider auth/preflight before writing; --codex-auth device supports headless hosts.",
+      "Pi forwards the configured effort to the selected provider. Ranking above max only prevents keyword downgrade.",
+      "--auth runs supported Pi provider auth/preflight before writing.",
       "--dry-run previews only. Existing scaffold/config files are not overwritten;",
       "guided secret setup may securely update .env and .gitignore after explicit review.",
     ],
@@ -73,11 +69,10 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     command: "auth",
     group: "Setup",
     short: "auth login <provider>",
-    summary: "Log in to a bundled Pi provider, or direct Codex.",
-    signature: "mono-agent auth login <provider|codex> [--pi-auth-path <path>] [--api-key-stdin]\n" +
-      "                       [--codex-auth browser|device] [--config <path>]",
+    summary: "Log in to a bundled Pi provider.",
+    signature: "mono-agent auth login <provider> [--pi-auth-path <path>] [--api-key-stdin] [--config <path>]",
     lines: [
-      "Run a supported bundled Pi provider login, or direct Codex browser/device login.",
+      "Run a supported bundled Pi provider login.",
       "Pi credentials are promoted with owner-only no-clobber checks.",
       "API-key providers prompt securely on a TTY; --api-key-stdin explicitly reads a redirected secret.",
       "Path precedence: --pi-auth-path, MONO_AGENT_PI_AUTH_PATH, providers.piAuthPath, then Pi's default.",
@@ -350,7 +345,7 @@ const HELP_GROUPS: readonly { readonly id: HelpGroupId; readonly note?: string }
 ];
 
 /** `help <alias>` resolves to the canonical command's detail view, noting the alias. */
-const HELP_ALIASES = new Map<string, string>([
+export const HELP_ALIASES = new Map<string, string>([
   ["doctor", "validate"],
   ["setup", "init"],
 ]);
@@ -360,29 +355,13 @@ const HELP_NOTES = `Background mode runs the agent under launchd, keeping it ali
 .env file in the working directory, the same as foreground mode. The background
 commands require macOS; elsewhere use start --foreground.
 
-Init model references look like pi:<provider>:<model>, claude:claude-sonnet-4-6,
-codex:gpt-5.6-terra, codex:gpt-5.6-sol, or opencode:<provider>:<model>. The init wizard
+Init model references use <provider>:<model>, for example
+openai-codex:gpt-5.6-terra or anthropic:claude-sonnet-4-6. The init wizard
 selects the live provider-declared default when available and falls back offline to
-codex:gpt-5.6-terra. Direct and Pi OpenAI-Codex Sol choices remain selectable.
-Direct GPT-5.6 routes require Codex CLI 0.144.0 or newer. Guided Pi authentication
-covers Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go. Claude remains selectable;
-direct opencode:<provider>:<model> refs are for
-hand-authored runtime backend config and are rejected by guided selection/readiness.
+openai-codex:gpt-5.6-terra. Guided Pi authentication covers Anthropic,
+GitHub Copilot, OpenAI Codex, and OpenCode-Go.
 
-Mixed fallback chains are allowed. runtime.routeSafety=uniform (the default)
-requires one compatibility-preserving contract across every route;
-per-route-native makes each route's exact safety boundary explicit (Pi SRT,
-Claude provider-owned permissions, Codex native sandbox, or OpenCode native).
-
-Native mono-agent srt policy is enforced by Pi-owned tools. In uniform mode,
-Claude, direct Codex, and direct OpenCode cannot silently weaken that policy.
-In per-route-native mode, validate reports each provider-owned safety contract
-and rejects capabilities that the selected route cannot represent.
-Direct OpenCode's bridge cannot enforce an explicit runtime.effort; omit effort and
-configure runtime.permissionMode deliberately for hand-authored direct routes.
-It is per-run/non-resumable and rejects MCP (including auto-provisioned memory
-or send tools), positive maxTurns, index skill disclosure, structured output,
-live input, fast mode, and native subagents instead of silently dropping them.
+Managed SRT and mono-agent tool policy apply consistently to every configured route.
 
 A .env file in the current folder is loaded automatically when present;
 already-exported shell variables take precedence.

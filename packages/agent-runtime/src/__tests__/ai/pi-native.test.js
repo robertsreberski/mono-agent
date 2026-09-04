@@ -357,7 +357,7 @@ afterEach(() => {
 
 function runOptions(model, overrides = {}) {
   return {
-    model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:faux-model" },
+    model: { provider: "faux", model: "faux-model", reference: "faux:faux-model" },
     piResolvedModel: model,
     piResolvedModels: fauxModels,
     effort: "none",
@@ -373,10 +373,9 @@ describe("pi-native AgentHarness bridge", () => {
   it("classifies a configured Pi provider with no resolved credential as provider_auth", async () => {
     const result = await generatePiNativeResponse("system", {
       model: {
-        sdk: "pi",
         provider: "openai-codex",
         model: "gpt-5.6-sol",
-        reference: "pi:openai-codex:gpt-5.6-sol",
+        reference: "openai-codex:gpt-5.6-sol",
       },
       messages: [{ role: "user", content: "hello" }],
       effort: "none",
@@ -427,7 +426,7 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.error).toBeNull();
     expect(result.text).toBe("hello world");
     expect(result.sdk).toBe("pi");
-    expect(result.model).toBe("pi:faux:faux-model");
+    expect(result.model).toBe("faux:faux-model");
     expect(result.cancelled).toBe(false);
     expect(result.providerSessionId).toBeTruthy();
     expect(Array.isArray(result.events)).toBe(true);
@@ -442,7 +441,7 @@ describe("pi-native AgentHarness bridge", () => {
     const contextUsage = events.find((event) => event?.type === "context_usage");
     expect(contextUsage).toMatchObject({
       sdk: "pi",
-      model: "pi:faux:faux-model",
+      model: "faux:faux-model",
       contextWindow: 128_000,
       tokens: {
         input: expect.any(Number),
@@ -1112,7 +1111,7 @@ describe("pi-native auto-compaction", () => {
     ]);
     const result = await generatePiNativeResponse("system", runOptions(base, {
       piResolvedModel: windowed,
-      model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:proactive" },
+      model: { provider: "faux", model: "proactive", reference: "faux:proactive" },
       messages: bigHistory(60, 2000),
       resolvePiApiKey: async () => "faux-key",
       piSessionsRoot: sessionsRoot,
@@ -1137,7 +1136,7 @@ describe("pi-native auto-compaction", () => {
     ]);
     const result = await generatePiNativeResponse("system", runOptions(base, {
       piResolvedModel: windowed,
-      model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:reactive" },
+      model: { provider: "faux", model: "reactive", reference: "faux:reactive" },
       messages: bigHistory(60, 2000),
       resolvePiApiKey: async () => "faux-key",
       piSessionsRoot: sessionsRoot,
@@ -1162,7 +1161,7 @@ describe("pi-native auto-compaction", () => {
     ]);
     const result = await generatePiNativeResponse("system", runOptions(base, {
       piResolvedModel: windowed,
-      model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:guard" },
+      model: { provider: "faux", model: "guard", reference: "faux:guard" },
       messages: bigHistory(60, 2000),
       resolvePiApiKey: async () => "faux-key",
       piSessionsRoot: sessionsRoot,
@@ -1187,7 +1186,7 @@ describe("pi-native auto-compaction", () => {
     ]);
     const result = await generatePiNativeResponse("system", runOptions(base, {
       piResolvedModel: windowed,
-      model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:loop" },
+      model: { provider: "faux", model: "loop", reference: "faux:loop" },
       messages: bigHistory(60, 2000),
       resolvePiApiKey: async () => "faux-key",
       piSessionsRoot: sessionsRoot,
@@ -1202,7 +1201,7 @@ describe("pi-native auto-compaction", () => {
     const base = setup();
     // Declared window is large, so proactively nothing fires at first.
     const windowed = { ...base, contextWindow: 200000 };
-    const runRef = { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:learn" };
+    const runRef = { provider: "faux", model: "learn", reference: "faux:learn" };
 
     // Run 1: a ~60k-token transcript stays under the declared-window trigger
     // (~150k), so it does NOT compact proactively. The overflow names the real
@@ -1269,7 +1268,7 @@ describe("pi-native auto-compaction", () => {
   }
 
   it("proactively compacts on a seeded session once fixed overhead is counted (default on)", async () => {
-    const { base, windowed, bigSystemPrompt, messages } = overheadFixture("pi:faux:overhead-on");
+    const { base, windowed, bigSystemPrompt, messages } = overheadFixture("faux:overhead-on");
     // When the corrected trigger fires: call 1 = compaction summary, call 2 = turn.
     let providerCalls = 0;
     faux.setResponses([
@@ -1278,7 +1277,7 @@ describe("pi-native auto-compaction", () => {
     ]);
     const result = await generatePiNativeResponse(bigSystemPrompt, runOptions(base, {
       piResolvedModel: windowed,
-      model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:overhead-on" },
+      model: { provider: "faux", model: "overhead-on", reference: "faux:overhead-on" },
       messages,
       allowedTools: ["Read", "Grep", "Bash"],
       resolvePiApiKey: async () => "faux-key",
@@ -1307,7 +1306,7 @@ describe("pi-native auto-compaction", () => {
   });
 
   it("does NOT proactively compact on the same seeded session when fixed overhead is explicitly disabled", async () => {
-    const { base, windowed, bigSystemPrompt, messages } = overheadFixture("pi:faux:overhead-off");
+    const { base, windowed, bigSystemPrompt, messages } = overheadFixture("faux:overhead-off");
     // With overhead explicitly disabled the transcript alone is under the trigger,
     // so no compaction fires: call 1 IS the turn (text "turn-output"), never a summary.
     let providerCalls = 0;
@@ -1317,7 +1316,7 @@ describe("pi-native auto-compaction", () => {
     ]);
     const result = await generatePiNativeResponse(bigSystemPrompt, runOptions(base, {
       piResolvedModel: windowed,
-      model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:overhead-off" },
+      model: { provider: "faux", model: "overhead-off", reference: "faux:overhead-off" },
       messages,
       allowedTools: ["Read", "Grep", "Bash"],
       resolvePiApiKey: async () => "faux-key",

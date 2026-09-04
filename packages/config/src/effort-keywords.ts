@@ -8,10 +8,23 @@ import type { EffortLevel } from "./types.js";
  * never lowers it, so the comparison against the otherwise-resolved effort must
  * use `effortRank`/`maxEffortLevel` with strict-increase semantics.
  *
- * The `\s*` between the modifier and "think" makes the fused forms
- * ("ultrathink"/"extrathink") hit their own trigger instead of degrading to the
- * bare `\bthink\b` one, which is why the triggers must stay in descending
- * effort order — every stronger phrase also contains a standalone "think".
+ * The separator between the modifier and "think" is `\s?` — at most one. It
+ * exists so the fused forms ("ultrathink"/"extrathink") hit their own trigger
+ * instead of degrading to the bare `\bthink\b` one, which is why the triggers
+ * must stay in descending effort order — every stronger phrase also contains a
+ * standalone "think".
+ *
+ * It was `\s*`, and unbounded repetition is the wrong shape for a two-word
+ * phrase twice over. A match is quoted back in the escalation log line, so the
+ * "match" grew without limit with the operator's own message: `ultra` + a
+ * million spaces + `think` matched 1,000,010 characters and wrote all of them
+ * into a log record. And semantically, `ultra` ending one paragraph and `think`
+ * opening the next are two words, not the phrase "ultra think". At most one
+ * separator says exactly what a phrase is; a wider run degrades to the
+ * standalone `think` trigger, which is a real escalation one rung lower rather
+ * than a silent no-op. Bounding the match is not the same as making it
+ * PRINTABLE — a single separator may still be a line separator — so the log
+ * site escapes what it quotes; see `request-model-override.ts`.
  */
 export interface EffortKeywordTrigger {
   /** Effort the phrase escalates to. Triggers never emit `ultra`; Pi uses LOW only with reasoning, otherwise OFF. */
@@ -21,15 +34,25 @@ export interface EffortKeywordTrigger {
   readonly label: string;
 }
 
+// One separator, not one character. `\s*` let the match grow with the message (a
+// million spaces between the words matched a million characters, all of which
+// reached the escalation log). `\s?` bounded that but broke CRLF: a Windows
+// client sending `ultra\r\nthink` matched only the `\r`, so the phrase failed and
+// the bare `think` trigger escalated to `high` instead of `max`. A line break is
+// one separator that happens to be two characters, so it is spelled out.
 export const EFFORT_KEYWORD_TRIGGERS: readonly EffortKeywordTrigger[] = [
-  { effort: "max", pattern: /\bultra\s*think\b/i, label: "ultra think" },
-  { effort: "xhigh", pattern: /\bextra\s*think\b/i, label: "extra think" },
+  { effort: "max", pattern: /\bultra(?:\r\n|\s)?think\b/i, label: "ultra think" },
+  { effort: "xhigh", pattern: /\bextra(?:\r\n|\s)?think\b/i, label: "extra think" },
   { effort: "high", pattern: /\bthink\b/i, label: "think" },
 ];
 
 export interface EffortKeywordMatch {
   readonly effort: EffortLevel;
-  /** The exact substring that matched, for log lines. */
+  /**
+   * The exact substring that matched, for log lines. Bounded by the trigger's own phrase
+   * (its words plus at most one separator), but NOT guaranteed printable: the separator may
+   * be a line or paragraph separator, so a renderer still escapes it.
+   */
   readonly keyword: string;
 }
 

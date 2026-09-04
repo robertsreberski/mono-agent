@@ -122,7 +122,7 @@ describe("recorded run reader", () => {
       sourceDetail: "nightly-digest",
     });
     await recorder.finish({
-      model: "pi:openai-codex:gpt-5.5",
+      model: "openai-codex:gpt-5.5",
       effort: "high",
       providerSessionId: "provider-session-1",
       isolated: false,
@@ -132,7 +132,7 @@ describe("recorded run reader", () => {
       conversationId: "cron:nightly-digest",
       providerSessionId: "provider-session-1",
       isolated: false,
-      model: "pi:openai-codex:gpt-5.5",
+      model: "openai-codex:gpt-5.5",
       effort: "high",
       source: "cron",
       sourceDetail: "nightly-digest",

@@ -17,8 +17,7 @@ import { agentAppPackageVersion } from "../package-version.js";
 function baseConfig(memory: NonNullable<MonoAgentConfig["memory"]>): MonoAgentConfig {
   return {
     runtime: {
-      model: { sdk: "pi", provider: "ollama", model: "qwen3:8b", reference: "pi:ollama:qwen3:8b" },
-      executionMode: "sdk",
+      model: { provider: "ollama", model: "qwen3:8b", reference: "ollama:qwen3:8b" },
       maxTurns: 4,
       workspace: "/tmp/agent",
       session: { mode: "per-message", idleTimeoutMs: 1_800_000 },

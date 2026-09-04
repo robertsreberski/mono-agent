@@ -3,69 +3,58 @@ import { describe, expect, it } from "vitest";
 import {
   configuredRuntimeFallbackModels,
   configuredRuntimeModels,
-  runtimeUsesFallbackRouter,
   hasConfiguredRuntimeFallbacks,
+  runtimeUsesFallbackRouter,
 } from "../runtime-routes.js";
-import { historyToolRouteSupport } from "../app-controller-utils.js";
 import { runtimeRouteSupportsMcpApps } from "../app-controller-utils.js";
 
-const primary = { sdk: "codex", model: "gpt-5.6-terra", reference: "codex:gpt-5.6-terra" };
-const legacy = { sdk: "pi", provider: "ollama", model: "qwen3", reference: "pi:ollama:qwen3" };
-const canonical = { sdk: "claude", model: "claude-sonnet-5", reference: "claude:claude-sonnet-5" };
+const primary = {
+  provider: "openai-codex",
+  model: "gpt-5.6-terra",
+  reference: "openai-codex:gpt-5.6-terra",
+};
+const local = { provider: "ollama", model: "qwen3", reference: "ollama:qwen3" };
+const fallback = {
+  provider: "anthropic",
+  model: "claude-sonnet-5",
+  reference: "anthropic:claude-sonnet-5",
+};
 
 describe("configured runtime routes", () => {
-  it("preserves RunHistory but suppresses SessionHistory on a direct ACP route", () => {
-    const config = {
-      runtime: {
-        model: { sdk: "acp", provider: "personal-agent", model: "personal-agent", reference: "acp:personal-agent" },
-      },
-    } as never;
-    expect(historyToolRouteSupport(config)).toEqual({
-      runHistory: true,
-      sessionHistory: false,
-    });
-  });
-
-  it("uses structured fallbacks when present and keeps their effort out of model-only consumers", () => {
+  it("uses structured fallbacks and keeps their effort out of model-only consumers", () => {
     const runtime = {
       model: primary,
-      fallbackModels: [legacy],
-      fallbacks: [{ model: canonical, effort: "high" as const }],
+      fallbacks: [{ model: fallback, effort: "high" as const }],
     };
-    expect(configuredRuntimeFallbackModels(runtime)).toEqual([canonical]);
-    expect(configuredRuntimeModels(runtime)).toEqual([primary, canonical]);
+    expect(configuredRuntimeFallbackModels(runtime)).toEqual([fallback]);
+    expect(configuredRuntimeModels(runtime)).toEqual([primary, fallback]);
     expect(hasConfiguredRuntimeFallbacks(runtime)).toBe(true);
   });
 
-  it("preserves legacy configs when the structured list is absent or empty", () => {
-    expect(configuredRuntimeFallbackModels({ fallbackModels: [legacy] })).toEqual([legacy]);
-    expect(configuredRuntimeFallbackModels({ fallbackModels: [legacy], fallbacks: [] })).toEqual([legacy]);
-    expect(hasConfiguredRuntimeFallbacks({ fallbackModels: [], fallbacks: [] })).toBe(false);
+  it("returns an empty fallback list when no structured routes are configured", () => {
+    expect(configuredRuntimeFallbackModels({})).toEqual([]);
+    expect(configuredRuntimeFallbackModels({ fallbacks: [] })).toEqual([]);
+    expect(hasConfiguredRuntimeFallbacks({ fallbacks: [] })).toBe(false);
   });
 
-  it("advertises MCP Apps only when every possible runtime route supports them", () => {
+  it("advertises MCP Apps for every provider route", () => {
     expect(runtimeRouteSupportsMcpApps({
-      runtime: { model: legacy, fallbackModels: [], fallbacks: [] },
+      runtime: { model: local, fallbacks: [] },
     } as never)).toBe(true);
     expect(runtimeRouteSupportsMcpApps({
-      runtime: { model: legacy, fallbackModels: [], fallbacks: [{ model: { ...legacy, model: "backup" } }] },
+      runtime: { model: local, fallbacks: [{ model: primary }] },
     } as never)).toBe(true);
-    expect(runtimeRouteSupportsMcpApps({
-      runtime: { model: legacy, fallbackModels: [], fallbacks: [{ model: primary }] },
-    } as never)).toBe(false);
-    expect(runtimeRouteSupportsMcpApps({
-      runtime: { model: primary, fallbackModels: [legacy], fallbacks: [] },
-    } as never)).toBe(false);
   });
+});
 
 describe("runtimeUsesFallbackRouter", () => {
-  const base = { model: { sdk: "pi", model: "m", reference: "pi:m" } };
+  const base = { model: { provider: "ollama", model: "m", reference: "ollama:m" } };
 
   it("is true when backups are configured", () => {
     expect(runtimeUsesFallbackRouter({
       ...base,
-      fallbacks: [{ model: { sdk: "claude", model: "c", reference: "claude:c" } }],
-    } as never)).toBe(true);
+      fallbacks: [{ model: fallback }],
+    })).toBe(true);
   });
 
   it("is true for a retry-only chain with no backups", () => {
@@ -75,15 +64,14 @@ describe("runtimeUsesFallbackRouter", () => {
     expect(runtimeUsesFallbackRouter({
       ...base,
       retry: { primaryAttempts: 2, backoffMs: 1_000, maxBackoffMs: 15_000 },
-    } as never)).toBe(true);
+    })).toBe(true);
   });
 
   it("is false only when nothing routes", () => {
     expect(runtimeUsesFallbackRouter({
       ...base,
       retry: { primaryAttempts: 1, backoffMs: 1_000, maxBackoffMs: 15_000 },
-    } as never)).toBe(false);
-    expect(runtimeUsesFallbackRouter(base as never)).toBe(false);
+    })).toBe(false);
+    expect(runtimeUsesFallbackRouter({ ...base, fallbacks: [] })).toBe(false);
   });
-});
 });

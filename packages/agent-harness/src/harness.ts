@@ -2,7 +2,6 @@ import type { RuntimeEventLike } from "@mono-agent/observability";
 import type { AgentLiveInputOffer, AgentLiveInputRequest } from "@mono-agent/agent-contracts";
 import {
   monoRuntimeSupportsSessionResume,
-  type RuntimeExecutionMode,
   type RuntimeResult,
 } from "@mono-agent/runtime-adapter";
 
@@ -391,7 +390,6 @@ export class MonoAgentHarness implements AgentHarness {
       const beginProviderSessionTurn = historyStore?.beginProviderSessionTurn?.bind(historyStore);
       const durableProviderSessionsEnabled = !isolated
         && this.sessionsEnabled()
-        && this.options.model.sdk === "pi"
         && this.options.piSessionsRoot !== undefined
         && historyStore?.providerSessionRetirement === "fail-closed"
         && beginProviderSessionTurn !== undefined;
@@ -1057,10 +1055,7 @@ export class MonoAgentHarness implements AgentHarness {
         this.supportsResumeCache = override;
       } else {
         try {
-          this.supportsResumeCache = monoRuntimeSupportsSessionResume(
-            this.options.model,
-            this.options.executionMode as RuntimeExecutionMode | undefined,
-          );
+          this.supportsResumeCache = monoRuntimeSupportsSessionResume();
         } catch {
           this.supportsResumeCache = false;
         }

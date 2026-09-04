@@ -203,3 +203,91 @@ describe("ModelSelector", () => {
     });
   });
 });
+
+describe("ModelSelector provider grouping", () => {
+  const providerModels: readonly ModelSelectorOption[] = [
+    { id: "", name: "Default model", description: "Use the agent default", efforts },
+    {
+      id: "provider:codex",
+      name: "Codex θ",
+      provider: "codex",
+      providerLabel: "Codex",
+      efforts,
+    },
+    {
+      id: "provider:codex:old",
+      name: "Codex θ older",
+      provider: "codex",
+      providerLabel: "Codex",
+      efforts: efforts.slice(0, 2),
+    },
+    {
+      id: "provider:anthropic:opus",
+      name: "Opus 5",
+      provider: "anthropic",
+      providerLabel: "Anthropic",
+      efforts: efforts.slice(0, 2),
+    },
+  ];
+
+  const renderSelector = (overrides: Partial<Parameters<typeof ModelSelector>[0]> = {}) =>
+    render(
+      <ModelSelector
+        models={providerModels}
+        value=""
+        effort=""
+        onValueChange={vi.fn()}
+        onEffortChange={vi.fn()}
+        {...overrides}
+      />,
+    );
+
+  it("renders provider headings and a chip row only when more than one provider is present", async () => {
+    renderSelector();
+    fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+    const popup = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
+
+    expect(
+      within(popup).getByText("Codex", { selector: "[cmdk-group-heading]" }),
+    ).toBeVisible();
+    expect(
+      within(popup).getByText("Anthropic", { selector: "[cmdk-group-heading]" }),
+    ).toBeVisible();
+
+    const providers = within(popup).getByRole("radiogroup", { name: "Filter by provider" });
+    expect(within(providers).getAllByRole("radio")).toHaveLength(3);
+    expect(within(providers).getByRole("radio", { name: "All" })).toBeChecked();
+  });
+
+  it("filters the list per provider while the automatic row stays reachable", async () => {
+    renderSelector();
+    fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+    const popup = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
+    const providers = within(popup).getByRole("radiogroup", { name: "Filter by provider" });
+
+    fireEvent.click(within(providers).getByRole("radio", { name: "Anthropic" }));
+
+    expect(within(popup).queryByRole("option", { name: /Codex θ/u })).toBeNull();
+    expect(within(popup).getByRole("option", { name: /Opus 5/u })).toBeVisible();
+    expect(within(popup).getByRole("option", { name: /Default model/u })).toBeVisible();
+  });
+
+  it("requests a provider page when its chip is tapped", async () => {
+    const onProviderRequest = vi.fn();
+    renderSelector({ onProviderRequest });
+    fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+    const popup = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
+    const providers = within(popup).getByRole("radiogroup", { name: "Filter by provider" });
+
+    fireEvent.click(within(providers).getByRole("radio", { name: "Anthropic" }));
+
+    expect(onProviderRequest).toHaveBeenCalledWith("anthropic");
+  });
+
+  it("shows an empty state when no models are offered", async () => {
+    renderSelector({ models: [] });
+    fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+    const popup = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
+    expect(within(popup).getByText("No models found.")).toBeVisible();
+  });
+});

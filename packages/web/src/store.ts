@@ -21,6 +21,7 @@ import {
   WEB_MAX_LIVE_INPUTS_PER_THREAD,
   WEB_MAX_TURN_ATTACHMENT_BYTES,
   WEB_MAX_TURN_TEXT_CHARACTERS,
+  type WebAgentProvider,
   type WebAgentSummary,
   type WebAttachment,
   type WebMessage,
@@ -48,6 +49,14 @@ import { WebConsoleError } from "./errors.js";
 import { webPushPreview } from "./push-preview.js";
 import { prepareWebStatePaths, type WebStatePathOptions, type WebStatePaths } from "./state-paths.js";
 
+/** The mutable fields of one conversation. */
+interface ThreadPatch {
+  readonly title?: string;
+  readonly archived?: boolean;
+  readonly model?: string | null;
+  readonly effort?: string | null;
+}
+
 interface AgentRow {
   source_id: string;
   label: string;
@@ -60,6 +69,7 @@ interface AgentRow {
   default_effort: string | null;
   efforts_json: string | null;
   model_options_json: string | null;
+  providers_json: string | null;
   cron_read: number;
   cron_actions: number;
   ask_by_id: number;
@@ -81,6 +91,8 @@ interface ThreadRow {
   can_send: number;
   can_upload: number;
   message_count: number;
+  run_model: string | null;
+  run_effort: string | null;
 }
 
 interface NotificationDeliveryRow {
@@ -431,7 +443,7 @@ export function escapeLikeTerm(raw: string): string {
   return raw.replaceAll(/[\\%_]/gu, (character) => `\\${character}`);
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 10;
+const WEB_STORAGE_SCHEMA_VERSION = 12;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
 export const WEB_MESSAGE_PAGE_MAX = 100;
@@ -546,6 +558,14 @@ export class WebStore {
   private readonly database: DatabaseSync;
   private readonly clock: () => Date;
   private closed = false;
+  /**
+   * The agent PROCESS generation each live summary was built from, by source
+   * id. Deliberately not a column: it describes the process behind a source id
+   * right now, so a value read back from disk after a console restart would be
+   * a claim about a process nobody probed. `replaceAgents` is the only writer,
+   * and it drops ids discovery no longer reports.
+   */
+  private readonly agentGenerations = new Map<string, string>();
 
   private constructor(database: DatabaseSync, paths: WebStatePaths, clock: () => Date) {
     this.database = database;
@@ -595,23 +615,73 @@ export class WebStore {
     this.database.close();
   }
 
+  /**
+   * Persist the discovered agent list. Returns whether the change is worth
+   * telling clients about.
+   *
+   * `updatedAt` is a heartbeat timestamp that moves on every discovery poll, so
+   * comparing it made this return `true` roughly once every five seconds --- and
+   * `agents.changed` carries the whole agent list, every model, every model
+   * option and every provider. Measured against a 67-agent fleet that was 60 KB
+   * per event and 99.5% of all SSE traffic: ~42 MiB/hour to an idle console with
+   * nobody using it, which is a real cost on a metered phone.
+   *
+   * So the two questions are separated. Any difference at all is still written,
+   * because the store should hold the freshest heartbeat; only a difference that
+   * survives normalizing `updatedAt` is broadcast. Nothing in the console reads
+   * an agent's `updatedAt` --- it stays on the wire for clients that want it, it
+   * just no longer triggers a fleet-sized frame on its own. `agentGeneration()`
+   * already excludes it for the same reason.
+   */
   replaceAgents(agents: readonly WebAgentSummary[]): boolean {
     const current = this.listAgents();
     const currentById = new Map(current.map((agent) => [agent.sourceId, agent]));
     const incomingIds = new Set(agents.map((agent) => agent.sourceId));
-    const changed = agents.some((agent) => {
+    const departed = current.some((agent) => !incomingIds.has(agent.sourceId) && agent.status !== "offline");
+    const differs = (agent: WebAgentSummary, ignoreHeartbeat: boolean): boolean => {
       const prior = currentById.get(agent.sourceId);
-      return prior === undefined || !isDeepStrictEqual(prior, { ...agent, pinned: prior.pinned });
-    }) || current.some((agent) => !incomingIds.has(agent.sourceId) && agent.status !== "offline");
-    if (!changed) return false;
+      if (prior === undefined) return true;
+      // `pinned` is store-owned and never arrives from discovery; normalizing it
+      // keeps a locally pinned agent from looking like an incoming change.
+      const next = { ...agent, pinned: prior.pinned };
+      if (!ignoreHeartbeat) return !isDeepStrictEqual(prior, next);
+      return !isDeepStrictEqual({ ...prior, updatedAt: "" }, { ...next, updatedAt: "" });
+    };
+    const changed = agents.some((agent) => differs(agent, false)) || departed;
+    const notable = agents.some((agent) => differs(agent, true)) || departed;
+    // After `current` is read (it carries the PREVIOUS generations) and after
+    // both comparisons, so a restart behind an otherwise identical summary
+    // still reads as a change and still reaches the browser.
+    //
+    // And only once the row it describes is actually on disk. Advancing before
+    // the transaction made the map a claim the database had not agreed to: a
+    // transaction that threw left the NEW generation stitched onto the OLD row,
+    // so the retry compared the new summary against a prior that already
+    // carried its generation, found only `updatedAt` different, and returned
+    // `notable === false`. The restart broadcast was then lost permanently ---
+    // not deferred --- and an open console stayed stale until it reconnected.
+    const adoptGenerations = (): void => {
+      this.agentGenerations.clear();
+      for (const agent of agents) {
+        if (agent.generation !== undefined) this.agentGenerations.set(agent.sourceId, agent.generation);
+      }
+    };
+    if (!changed) {
+      // Nothing to persist, so there is nothing for the adoption to outrun:
+      // every incoming generation already equals the one it is replacing, or
+      // `changed` would be true. The map is still swept so a departed agent
+      // does not leave one behind.
+      adoptGenerations();
+      return false;
+    }
     this.transaction(() => {
       this.database.prepare("UPDATE agents SET status = 'offline'").run();
       const statement = this.database.prepare(`
         INSERT INTO agents (
           source_id, label, status, health, supports_attachments, models_json,
           default_model, default_effort, efforts_json, model_options_json,
-          cron_read, cron_actions, ask_by_id, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          providers_json, cron_read, cron_actions, ask_by_id, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_id) DO UPDATE SET
           label = excluded.label,
           status = excluded.status,
@@ -622,6 +692,7 @@ export class WebStore {
           default_effort = excluded.default_effort,
           efforts_json = excluded.efforts_json,
           model_options_json = excluded.model_options_json,
+          providers_json = excluded.providers_json,
           cron_read = excluded.cron_read,
           cron_actions = excluded.cron_actions,
           ask_by_id = excluded.ask_by_id,
@@ -639,6 +710,7 @@ export class WebStore {
           agent.defaultEffort ?? null,
           stringifyOptional(agent.efforts),
           stringifyOptional(agent.modelOptions),
+          stringifyOptional(agent.providers),
           agent.cron?.read === true ? 1 : 0,
           agent.cron?.actions === true ? 1 : 0,
           agent.supportsAskById === true ? 1 : 0,
@@ -646,17 +718,24 @@ export class WebStore {
         );
       }
     });
-    return true;
+    adoptGenerations();
+    return notable;
   }
 
   listAgents(): WebAgentSummary[] {
     const rows = this.database.prepare(agentSelectSql("ORDER BY pinned DESC, a.label COLLATE NOCASE, a.source_id")).all() as unknown as AgentRow[];
-    return rows.map(mapAgent);
+    return rows.map((row) => this.withGeneration(mapAgent(row)));
   }
 
   getAgent(sourceId: string): WebAgentSummary | undefined {
     const row = this.database.prepare(agentSelectSql("WHERE a.source_id = ?")).get(sourceId) as unknown as AgentRow | undefined;
-    return row === undefined ? undefined : mapAgent(row);
+    return row === undefined ? undefined : this.withGeneration(mapAgent(row));
+  }
+
+  /** Stitch the live generation onto a row read back from disk. */
+  private withGeneration(agent: WebAgentSummary): WebAgentSummary {
+    const generation = this.agentGenerations.get(agent.sourceId);
+    return generation === undefined ? agent : { ...agent, generation };
   }
 
   setAgentPinned(sourceId: string, pinned: boolean): WebAgentSummary {
@@ -1917,15 +1996,50 @@ export class WebStore {
     this.setSetting("current_thread_id", resolved);
   }
 
-  patchThread(id: string, patch: { readonly title?: string; readonly archived?: boolean }): WebThread {
+  patchThread(id: string, patch: ThreadPatch): WebThread {
+    return this.transaction(() => this.writeThreadPatch(id, patch));
+  }
+
+  /**
+   * Compare-and-set: apply `patch` only while the conversation still carries no
+   * run override, and report which way it went.
+   *
+   * The console's one-time adoption of a browser-local override is the caller.
+   * Read and write are ONE `BEGIN IMMEDIATE` here rather than two statements
+   * either side of a service-level check: the process lease
+   * (`state-paths.ts`) is held on a different database file for the service
+   * lifetime, so it makes this process the only *service* writing, not this
+   * statement the only writer of `web.sqlite`. Any other connection to the
+   * state DB -- a maintenance script, a second console pointed at the same
+   * state dir -- could land between a bare read and a bare write, and did in a
+   * probe.
+   */
+  patchThreadIfRunConfigUnset(id: string, patch: ThreadPatch): {
+    readonly applied: boolean;
+    readonly thread: WebThread;
+  } {
+    return this.transaction(() => {
+      const resolved = this.resolveThreadId(id);
+      const current = this.requireThread(resolved);
+      if (current.runModel !== null || current.runEffort !== null) {
+        return { applied: false, thread: { ...current, sourceId: current.sourceId } };
+      }
+      return { applied: true, thread: this.writeThreadPatch(resolved, patch) };
+    });
+  }
+
+  /** The body of {@link patchThread}. Assumes an open transaction. */
+  private writeThreadPatch(id: string, patch: ThreadPatch): WebThread {
     id = this.resolveThreadId(id);
     const current = this.requireThread(id);
     const now = this.now();
     const title = patch.title === undefined ? undefined : normalizeTitle(patch.title);
     const archivedAt = patch.archived === undefined ? undefined : patch.archived ? now : null;
-    this.transaction(() => {
-      const sets = ["updated_at = ?", "revision = revision + 1"];
-      const values: Array<string | null> = [now];
+    const runModel = patch.model === undefined ? undefined : patch.model;
+    const runEffort = patch.effort === undefined ? undefined : patch.effort;
+    {
+      const sets: string[] = [];
+      const values: Array<string | null> = [];
       if (title !== undefined) {
         sets.push("title = ?", "title_manual = 1");
         values.push(title);
@@ -1934,13 +2048,38 @@ export class WebStore {
         sets.push("archived_at = ?");
         values.push(archivedAt);
       }
+      if (runModel !== undefined) {
+        sets.push("run_model = ?");
+        values.push(runModel);
+      }
+      if (runEffort !== undefined) {
+        sets.push("run_effort = ?");
+        values.push(runEffort);
+      }
+      // A model/effort-only patch must not reorder the sidebar, so `updated_at`
+      // only advances when title or archived state actually changes.
+      if (title !== undefined || archivedAt !== undefined) {
+        sets.push("updated_at = ?");
+        values.push(now);
+      }
+      sets.push("revision = revision + 1");
       values.push(id);
       this.database.prepare(`UPDATE threads SET ${sets.join(", ")} WHERE id = ?`).run(...values);
-      this.recordThreadRevision(id, title !== undefined ? "title_changed" : patch.archived ? "archived" : "unarchived", now);
+      this.recordThreadRevision(
+        id,
+        title !== undefined
+          ? "title_changed"
+          : archivedAt !== undefined
+            ? patch.archived
+              ? "archived"
+              : "unarchived"
+            : "run_config_changed",
+        now,
+      );
       if (patch.archived === true && this.currentThreadId() === id) {
         this.database.prepare("DELETE FROM settings WHERE key = 'current_thread_id'").run();
       }
-    });
+    }
     return { ...this.requireThread(id), sourceId: current.sourceId };
   }
 
@@ -3056,6 +3195,7 @@ export class WebStore {
         default_effort TEXT,
         efforts_json TEXT,
         model_options_json TEXT,
+        providers_json TEXT,
         cron_read INTEGER NOT NULL DEFAULT 0,
         cron_actions INTEGER NOT NULL DEFAULT 0,
         ask_by_id INTEGER NOT NULL DEFAULT 0,
@@ -3071,6 +3211,8 @@ export class WebStore {
         archived_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
+        run_model TEXT,
+        run_effort TEXT,
         revision INTEGER NOT NULL DEFAULT 1
       );
       CREATE TABLE IF NOT EXISTS turns (
@@ -3328,6 +3470,29 @@ export class WebStore {
             this.database.exec(
               "ALTER TABLE attachments ADD COLUMN origin TEXT NOT NULL DEFAULT 'upload' CHECK (origin IN ('upload', 'reply'))",
             );
+          }
+        }
+        // Per-conversation model/effort overrides are server-persisted columns.
+        // Guard on PRAGMA table_info so the ALTER is skipped when the columns
+        // already exist, keeping the migration re-runnable.
+        if (versionRow.user_version < 11) {
+          const columns = new Set((this.database.prepare("PRAGMA table_info(threads)").all() as Array<{ name: string }>)
+            .map((column) => column.name));
+          if (!columns.has("run_model")) {
+            this.database.exec("ALTER TABLE threads ADD COLUMN run_model TEXT");
+          }
+          if (!columns.has("run_effort")) {
+            this.database.exec("ALTER TABLE threads ADD COLUMN run_effort TEXT");
+          }
+        }
+        // The provider summary an agent advertises. Guarded on PRAGMA
+        // table_info so the ALTER is skipped when the column already exists,
+        // keeping the migration re-runnable after an interrupted upgrade.
+        if (versionRow.user_version < 12) {
+          const columns = new Set((this.database.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
+            .map((column) => column.name));
+          if (!columns.has("providers_json")) {
+            this.database.exec("ALTER TABLE agents ADD COLUMN providers_json TEXT");
           }
         }
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
@@ -3749,6 +3914,8 @@ export class WebStore {
       runState,
       canSend: row.can_send === 1,
       canUpload: row.can_upload === 1,
+      runModel: row.run_model,
+      runEffort: row.run_effort,
     };
   }
 
@@ -4079,6 +4246,7 @@ function isValidVapidKeyPair(publicKey: string, privateKey: string): boolean {
 function threadSelectSql(suffix: string): string {
   return `
     SELECT t.id, t.source_id, t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
+           t.run_model, t.run_effort,
            cc.job_id AS cron_job_id, cc.configured AS cron_configured,
            CASE WHEN t.trigger_kind = 'cron' THEN 0
                 WHEN a.status = 'online' OR a.status = 'degraded' THEN 1 ELSE 0 END AS can_send,
@@ -4438,6 +4606,7 @@ function mapAgent(row: AgentRow): WebAgentSummary {
   const models = parseStringArray(row.models_json);
   const efforts = parseStringArray(row.efforts_json);
   const modelOptions = parseRecord(row.model_options_json);
+  const providers = parseProviderSummary(row.providers_json);
   return {
     sourceId: row.source_id,
     label: row.label,
@@ -4450,6 +4619,7 @@ function mapAgent(row: AgentRow): WebAgentSummary {
     ...(row.default_effort === null ? {} : { defaultEffort: row.default_effort }),
     ...(efforts === undefined ? {} : { efforts }),
     ...(modelOptions === undefined ? {} : { modelOptions }),
+    ...(providers === undefined ? {} : { providers }),
     ...(row.cron_read === 1
       ? { cron: { read: true, actions: row.cron_actions === 1 } }
       : {}),
@@ -5678,6 +5848,34 @@ function parseStringArray(value: string | null): readonly string[] | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Malformed stored JSON must degrade to "this agent advertises no providers",
+ * never throw: `mapAgent` runs on every bootstrap and discovery read, so a
+ * throw here would take the whole console down over one bad row.
+ */
+function parseProviderSummary(value: string | null): WebAgentSummary["providers"] | undefined {
+  if (value === null) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed)) return undefined;
+  const result: WebAgentProvider[] = [];
+  for (const raw of parsed) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.id !== "string" || entry.id.length === 0) continue;
+    result.push({
+      id: entry.id,
+      label: typeof entry.label === "string" && entry.label.length > 0 ? entry.label : entry.id,
+      ...(entry.configured === true ? { configured: true } : {}),
+    });
+  }
+  return result.length === 0 ? undefined : result;
 }
 
 function parseRecord(value: string | null): WebAgentSummary["modelOptions"] | undefined {

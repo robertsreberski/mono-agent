@@ -3,14 +3,12 @@ import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import {
   createMonoRuntime,
   createPiOAuthApiKeyResolver,
-  isRuntimeExecutionMode,
   PI_TRANSPORTS,
 } from "@mono-agent/runtime-adapter";
 import type {
   CreateMonoRuntimeOptions,
   MonoRuntimeLike,
   PiTransport,
-  RuntimeExecutionMode,
   RuntimeEventLike,
   RuntimeModelReference,
   RuntimeResult,
@@ -41,7 +39,6 @@ export interface ReadinessWorkerData {
   readonly cwd: string;
   readonly runtime: {
     readonly model: RuntimeModelReference;
-    readonly executionMode?: RuntimeExecutionMode;
     readonly effort?: string;
     readonly workspace: string;
     readonly artifactDir: string;
@@ -118,7 +115,6 @@ export function readWorkerData(value: unknown): ReadinessWorkerData | undefined 
   const runtime = record.runtime;
   if (
     !isRuntimeModelReference(runtime.model)
-    || (runtime.executionMode !== undefined && !isRuntimeExecutionMode(runtime.executionMode))
     || (runtime.effort !== undefined && typeof runtime.effort !== "string")
     || typeof runtime.workspace !== "string"
     || typeof runtime.artifactDir !== "string"
@@ -131,7 +127,6 @@ export function readWorkerData(value: unknown): ReadinessWorkerData | undefined 
     cwd: record.cwd,
     runtime: {
       model: runtime.model,
-      ...(runtime.executionMode === undefined ? {} : { executionMode: runtime.executionMode }),
       ...(runtime.effort === undefined ? {} : { effort: runtime.effort }),
       workspace: runtime.workspace,
       artifactDir: runtime.artifactDir,
@@ -146,11 +141,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isRuntimeModelReference(value: unknown): value is RuntimeModelReference {
-  if (!isRecord(value) || typeof value.sdk !== "string" || typeof value.model !== "string") {
+  if (!isRecord(value) || typeof value.provider !== "string" || typeof value.model !== "string") {
     return false;
   }
-  return (value.provider === undefined || typeof value.provider === "string")
-    && (value.reference === undefined || typeof value.reference === "string");
+  return typeof value.reference === "string";
 }
 
 function exactEnvironment(
@@ -300,7 +294,6 @@ export async function runReadinessProbeWorker(input: {
     let firstToolAction: string | undefined;
     const runOptions: RuntimeRunOptions = {
       model: data.runtime.model,
-      ...(data.runtime.executionMode === undefined ? {} : { executionMode: data.runtime.executionMode }),
       ...(data.runtime.effort === undefined ? {} : { effort: data.runtime.effort }),
       messages: [{ role: "user", content: "Reply with a short readiness acknowledgement." }],
       abortSignal: controller.signal,
@@ -310,7 +303,6 @@ export async function runReadinessProbeWorker(input: {
       allowedTools: [],
       disallowedTools: [],
       mcpServers: {},
-      codexNoToolsProbe: true,
       onEvent: (event) => {
         const action = toolActionInEvent(event);
         if (action !== undefined && firstToolAction === undefined) {

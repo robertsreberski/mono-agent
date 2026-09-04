@@ -107,7 +107,7 @@ describe("agent host composition helpers", () => {
       return {
         text: "Final answer",
         model: options.model.model,
-        sdk: options.model.sdk,
+        sdk: options.model.provider,
         capabilitiesUsed: ["agent-host"],
         cost: { totalUsd: 0 },
       };
@@ -572,8 +572,7 @@ describe("agent host composition helpers", () => {
       },
       memoryLlm: {
         provider: "agent-host",
-        model: "pi:openai-codex:gpt-5.5",
-        executionMode: "sdk",
+        model: "openai-codex:gpt-5.5",
       },
       artifactDir,
     });
@@ -604,7 +603,7 @@ describe("agent host composition helpers", () => {
       // the locked-down per-call shape.
       expect(memoryRuntime.calls).toHaveLength(1);
       for (const call of memoryRuntime.calls) {
-        expect(call.options.model).toMatchObject({ sdk: "pi", provider: "openai-codex", model: "gpt-5.5" });
+        expect(call.options.model).toMatchObject({ provider: "openai-codex", model: "gpt-5.5" });
         expect(call.options.allowedTools).toEqual([]);
         expect(call.options.disallowedTools).toEqual([]);
         expect(call.options.mcpServers).toEqual({});
@@ -889,7 +888,7 @@ describe("agent host composition helpers", () => {
     }
   });
 
-  it("lets host runtimeOptions override config flags and carry code-only provider controls", async () => {
+  it("lets host runtimeOptions override config flags and carry code-only runtime controls", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
@@ -901,7 +900,7 @@ describe("agent host composition helpers", () => {
       runtime: fake.runtime,
       runtimeOptions: {
         permissionMode: "bypassPermissions",
-        codexSandboxNetworkAccess: true,
+        piMaxRetries: 5,
       },
     });
     await responder.respond(
@@ -910,7 +909,7 @@ describe("agent host composition helpers", () => {
     );
 
     expect(fake.calls[0]?.options.permissionMode).toBe("bypassPermissions");
-    expect(fake.calls[0]?.options.codexSandboxNetworkAccess).toBe(true);
+    expect(fake.calls[0]?.options.piMaxRetries).toBe(5);
   });
 
   it("keeps the configured Pi transport authoritative over request extensions", async () => {
@@ -1034,11 +1033,12 @@ describe("agent host composition helpers", () => {
       runtime: {
         ...base.runtime,
         maxTurns: 0,
-        fallbackModels: [{
-          sdk: "opencode",
-          provider: "github-copilot",
-          model: "gpt-5.1",
-          reference: "opencode:github-copilot:gpt-5.1",
+        fallbacks: [{
+          model: {
+            provider: "openai-codex",
+            model: "gpt-5.6-sol",
+            reference: "openai-codex:gpt-5.6-sol",
+          },
         }],
         session: {
           mode: "continuous",
@@ -1154,7 +1154,7 @@ describe("agent host composition helpers", () => {
     }
   });
 
-  it("overrides config model and executionMode when supplied at composition time", async () => {
+  it("overrides the config model when supplied at composition time", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
@@ -1164,8 +1164,7 @@ describe("agent host composition helpers", () => {
     const harness = await createConfiguredAgentHarness({
       config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: fake.runtime,
-      model: { sdk: "claude", model: "claude-opus-4-7" },
-      executionMode: "cli",
+      model: { provider: "anthropic", model: "claude-opus-4-7", reference: "anthropic:claude-opus-4-7" },
     });
 
     await harness.run({
@@ -1174,11 +1173,14 @@ describe("agent host composition helpers", () => {
       abortSignal: new AbortController().signal,
     });
 
-    expect(fake.calls[0]?.options.model).toEqual({ sdk: "claude", model: "claude-opus-4-7" });
-    expect(fake.calls[0]?.options.executionMode).toBe("cli");
+    expect(fake.calls[0]?.options.model).toEqual({
+      provider: "anthropic",
+      model: "claude-opus-4-7",
+      reference: "anthropic:claude-opus-4-7",
+    });
   });
 
-  it("falls back to config model and executionMode when no override is supplied", async () => {
+  it("falls back to the config model when no override is supplied", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
@@ -1196,8 +1198,7 @@ describe("agent host composition helpers", () => {
       abortSignal: new AbortController().signal,
     });
 
-    expect(fake.calls[0]?.options.model.sdk).toBe("pi");
-    expect(fake.calls[0]?.options.executionMode).toBe("sdk");
+    expect(fake.calls[0]?.options.model.provider).toBe("ollama");
   });
 
   it("threads resolved WebSearch and WebFetch config into each runtime run", async () => {
@@ -1389,9 +1390,9 @@ describe("agent host composition helpers", () => {
     });
 
     await harness.run({ conversationId: "telegram:42", userMessage: "TELEGRAM_FIRST", abortSignal: new AbortController().signal });
-    await harness.run({ conversationId: "openai-api:request-1", userMessage: "OPENAI_API_FIRST", abortSignal: new AbortController().signal });
+    await harness.run({ conversationId: "openai-arequest-1", userMessage: "OPENAI_API_FIRST", abortSignal: new AbortController().signal });
     await harness.run({ conversationId: "telegram:42", userMessage: "TELEGRAM_SECOND", abortSignal: new AbortController().signal });
-    await harness.run({ conversationId: "openai-api:request-1", userMessage: "OPENAI_API_SECOND", abortSignal: new AbortController().signal });
+    await harness.run({ conversationId: "openai-arequest-1", userMessage: "OPENAI_API_SECOND", abortSignal: new AbortController().signal });
 
     expect(fake.calls.map((call) => call.options.sessionId)).toEqual([
       undefined,
@@ -1428,11 +1429,12 @@ describe("agent host composition helpers", () => {
         runtime: {
           ...base.runtime,
           maxTurns: 0,
-          fallbackModels: [{
-            sdk: "opencode",
-            provider: "github-copilot",
-            model: "gpt-5.1",
-            reference: "opencode:github-copilot:gpt-5.1",
+          fallbacks: [{
+            model: {
+              provider: "openai-codex",
+              model: "gpt-5.6-sol",
+              reference: "openai-codex:gpt-5.6-sol",
+            },
           }],
           session: { mode: "continuous", idleTimeoutMs: 60_000 },
         },
@@ -1472,9 +1474,9 @@ describe("agent host composition helpers", () => {
           ...base.runtime,
           fallbacks: [{
             model: {
-              sdk: "claude",
+              provider: "anthropic",
               model: "claude-sonnet-4-6",
-              reference: "claude:claude-sonnet-4-6",
+              reference: "anthropic:claude-sonnet-4-6",
             },
           }],
           session: { mode: "continuous", idleTimeoutMs: 60_000 },
@@ -1920,8 +1922,7 @@ function monoConfig(input: {
 }): MonoAgentConfig {
   return {
     runtime: {
-      model: { sdk: "pi", provider: "ollama", model: "qwen3:8b", reference: "pi:ollama:qwen3:8b" },
-      executionMode: "sdk",
+      model: { provider: "ollama", model: "qwen3:8b", reference: "ollama:qwen3:8b" },
       maxTurns: 4,
       workspace: input.dir,
       session: { mode: "per-message", idleTimeoutMs: 1_800_000 },

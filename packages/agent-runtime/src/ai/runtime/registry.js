@@ -1,6 +1,6 @@
 // @ts-check
 
-import { COMMON_CAPABILITIES, runtimeCapabilities } from "./capabilities.js";
+import { runtimeCapabilities } from "./capabilities.js";
 
 /**
  * `RuntimeModelRef` is referenced inline (not aliased with a top-level
@@ -20,64 +20,19 @@ import { COMMON_CAPABILITIES, runtimeCapabilities } from "./capabilities.js";
  * @property {(options?: Object) => Promise<RuntimeBridge>} load
  */
 
-// CLI bridges are checked first when execution_mode='cli'. Without that flag
-// the resolver falls through to the SDK bridges below, preserving the
-// pre-Phase-2 behaviour for any agent that hasn't opted in.
 /** @type {Object<string, BridgeSpec>} */
 const builtinBridgeSpecs = {
-  "acp-stdio": {
-    id: "acp-stdio",
-    supports: (ref, options) => ref?.sdk === "acp" && options?.executionMode === "acp",
-    capabilities: () => runtimeCapabilities("acp"),
-    load: async () => (await import("../providers/acp.js")).acpRuntimeBridge,
-  },
-  "claude-code": {
-    id: "claude-code",
-    supports: (ref, options) => ref?.sdk === "claude" && options?.executionMode === "cli",
-    // The claude CLI resumes prior sessions via `--resume <sessionId>`.
-    capabilities: () => ({
-      kind: "claude-code",
-      runtime: "cli",
-      ...COMMON_CAPABILITIES,
-      supports_session_resume: true,
-      // The one-shot CLI bridge has no bidirectional stdin steering channel.
-      supports_live_input: false,
-    }),
-    load: async () => (await import("../providers/claude-cli.js")).claudeCodeRuntimeBridge,
-  },
-  "codex-app": {
-    id: "codex-app",
-    supports: (ref, options) => ref?.sdk === "codex" && options?.executionMode === "cli",
-    // The codex-app bridge keeps the app-server subprocess + thread alive
-    // across turns when options.sessionKeepAlive is set.
-    capabilities: () => {
-      const { kind: _sdkKind, ...capabilities } = runtimeCapabilities("codex");
-      return { kind: "codex-app", ...capabilities };
-    },
-    load: async () => (await import("../providers/codex-app.js")).codexAppRuntimeBridge,
-  },
-  "opencode-app": {
-    id: "opencode-app",
-    supports: (ref, options) => ref?.sdk === "opencode" && options?.executionMode === "cli",
-    capabilities: () => {
-      const { kind: _sdkKind, ...capabilities } = runtimeCapabilities("opencode");
-      return { kind: "opencode-app", ...capabilities };
-    },
-    load: async () => (await import("../providers/opencode-app.js")).opencodeAppRuntimeBridge,
-  },
-  claude: {
-    id: "claude",
-    supports: (ref) => ref?.sdk === "claude",
-    capabilities: () => runtimeCapabilities("claude"),
-    load: async () => (await import("../providers/claude-sdk.js")).claudeRuntimeBridge,
-  },
   pi: {
     id: "pi",
-    supports: (ref) => ref?.sdk === "pi",
-    capabilities: () => runtimeCapabilities("pi"),
-    // The pi-native AgentHarness bridge is the sole pi runtime path. The
-    // hand-rolled pi-sdk bridge was removed once native reached parity.
-    load: async () => (await import("../providers/pi-native.js")).piNativeRuntimeBridge,
+    supports: () => true,
+    capabilities: () => runtimeCapabilities(),
+    load: async () => {
+      const { piNativeRuntimeBridge } = await import("../providers/pi-native.js");
+      // JavaScript widens the bridge object's `id` property to string. Keep the
+      // literal-safe registry contract here so the Pi provider module remains
+      // untouched by this bridge-removal work package.
+      return /** @type {RuntimeBridge} */ (piNativeRuntimeBridge);
+    },
   },
 };
 
@@ -98,10 +53,21 @@ export function listRuntimeBridges() {
  * @returns {Promise<RuntimeBridge>}
  */
 export async function resolveRuntimeBridge(modelRef, options = {}) {
+  // Direct kernel callers may bypass the parser, so malformed references must
+  // still fail before the sole bridge receives them.
+  if (
+    typeof modelRef?.provider !== "string"
+    || modelRef.provider.length === 0
+    || typeof modelRef.model !== "string"
+    || modelRef.model.length === 0
+    || modelRef.reference !== `${modelRef.provider}:${modelRef.model}`
+  ) {
+    throw new Error("unsupported model reference: expected <provider>:<model>");
+  }
   for (const spec of Object.values(builtinBridgeSpecs)) {
     if (spec.supports(modelRef, options)) return spec.load(options);
   }
-  throw new Error(`unsupported sdk: ${modelRef?.sdk || "unknown"}`);
+  throw new Error(`unsupported model reference: ${modelRef.reference}`);
 }
 
 export { RUNTIME_CAPABILITIES, runtimeCapabilities } from "./capabilities.js";

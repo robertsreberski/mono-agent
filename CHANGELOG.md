@@ -4,6 +4,58 @@
 
 - Remove the repository-owned final-agent and SearXNG demos together with their
   root commands, build provenance, verification, CI, and documentation wiring.
+- **Breaking: mono-agent runs only its Pi implementation.** The `claude-sdk`,
+  `claude-code-cli`, `codex-app-cli`, `opencode-app-cli` and `acp-stdio` runtime
+  bridges are removed, along with the backend dispatch table. The ACP *server*
+  bridge, `install-skill --target claude|codex`, `docs-mcp-pairing` and the Codex
+  web-search backend are unaffected.
+- **Breaking: model references are `<provider>:<model>`,** split at the first
+  colon only. A leading `pi:` is canonicalized away; `codex:`, `claude:`,
+  `claude-code:`, `codex-cli:`, `acp:` and `vercel:` are rejected at load with
+  the replacement named.
+- **Breaking: `runtime.executionMode`, `memory.llm.executionMode`,
+  `runtime.routeSafety` and `runtime.fallbackModels` are retired,** together with
+  their environment twins `MONO_AGENT_EXECUTION_MODE`,
+  `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`, `MONO_AGENT_ROUTE_SAFETY` and
+  `MONO_AGENT_FALLBACK_MODELS`. Each now fails at load with the exact repair for
+  the surface it was set on — the environment variables name an environment
+  repair (`MONO_AGENT_FALLBACK_MODELS` -> `MONO_AGENT_FALLBACKS_JSON`), not a JSON
+  key the operator may not have — rather than a generic unknown-key error. One
+  load names every retired key in one message, and every retired variable in one
+  message, instead of one per run; a config carrying both stops at the key and
+  names the variable on the next run. An empty assignment (`KEY=`) is still
+  treated as unset.
+- **New `providers` config map** declaring which providers an agent supports,
+  widening selection to those providers' advertised catalogs instead of just
+  `runtime.model` and its fallbacks. Each provider advertises at most
+  `maxAdvertisedModels` models (default 100) unless it declares an explicit
+  `models` allowlist. `ollama` and `lmstudio` are zero-config autodiscovered.
+  Agents advertise it additively — a slim `providers` array on `/v1/info` plus a
+  lazy `GET /v1/models` — with no wire-schema bump.
+- **Per-conversation model and effort overrides persist server-side** (web store
+  v10 → v12: v11 adds per-thread `run_model`/`run_effort`, v12 adds
+  `agents.providers_json`), so a choice made on the desktop shows up on the phone
+  instead of living in one browser's localStorage. The console selector groups
+  and filters by provider.
+- **Retired config keys, retired environment variables and non-Pi model
+  references are migrated by hand.** Each fails at load naming its own repair —
+  including the concrete replacement for a rejected model reference, which the
+  parser knew and earlier builds discarded before it reached `doctor`, `validate`
+  or the startup error. The load stops at the first failing class, so expect a few
+  `mono-agent validate` passes per agent rather than one. See
+  `packages/agent-runtime/MIGRATION.md` for the per-config checklist (config file,
+  environment, and trigger frontmatter) and the deployment order, and
+  `docs/reference/deprecations.md` for the retired-surface reference.
+  `configVersion: 1` files are outside that checklist: that schema was never
+  accepted by the shipped loader and is rejected whole, so re-author them.
+- **Operator-authored text is bounded wherever a diagnostic quotes it back.**
+  `doctor` and `validate` truncate every model, provider and reason they echo, so
+  a mistyped megabyte in `runtime.model` no longer produces a megabyte of report.
+  Webhook endpoint `name` and `path` are held to 255 bytes of printable
+  single-line text — the cap POSIX already puts on a `webhook/<name>.md` file, so
+  nothing authorable as a file is refused — and rejected rather than truncated,
+  because silently shortening an identity changes which route a request reaches.
+
 - Upgrade the exact-pinned Pi AI catalog and TUI to 0.84.3, including GitHub
   Copilot support for Gemini 3.7 Flash and Grok 4.6, provider-required OAuth
   cancellation signals, and the current GPT-5.6 Terra pricing metadata. Keep

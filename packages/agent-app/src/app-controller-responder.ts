@@ -1,12 +1,10 @@
 import { resolve } from "node:path";
 
-import { loadToolPolicyFromJsonFileSync } from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import { failClosedSandboxPolicy, modelReferenceKey } from "@mono-agent/runtime-adapter";
 import type {
   MonoRuntimeLike,
-  RuntimeExecutionMode,
   RuntimeModelReference,
   SandboxEngine,
 } from "@mono-agent/runtime-adapter";
@@ -46,9 +44,6 @@ import { createReplyPartBudget } from "./reply-part-budget.js";
 import {
   createRequestModelOverrideRuntimeExtension,
   requestModelOverrideRoutesOnlyPiNative,
-  requestModelOverrideTargetsDirectOpenCode,
-  requestModelOverrideTargetsUnsupportedHistoryTool,
-  requestModelOverrideTargetsPiNative,
 } from "./request-model-override.js";
 import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
 import { configuredRuntimeFallbackModels, runtimeUsesFallbackRouter } from "./runtime-routes.js";
@@ -58,8 +53,6 @@ import {
   isInteractionToolName,
   historyToolRouteSupport,
   reasonOf,
-  runtimeRouteContainsDirectOpenCode,
-  runtimeRouteContainsUnsupportedHistoryTool,
   runtimeRouteSupportsMcpApps,
 } from "./app-controller-utils.js";
 import type { ChannelId, MonoAgentAppLogger } from "./channels.js";
@@ -119,17 +112,13 @@ export interface ResponderControllerPort {
   }>;
   requestModelOverrideRuntimeOptions(
     coreConfig: MonoAgentConfig,
-    compatibility: { readonly mcpSources: readonly string[]; readonly indexSkillsActive: boolean },
   ): {
     readonly extension: RuntimeOptionsExtension;
-    readonly targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean;
-    readonly targetsUnsupportedHistoryTool: (metadata: Record<string, unknown> | undefined) => boolean;
-    readonly targetsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
     readonly targetsProcessJobsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
   };
   buildRuntimeForModel(
     coreConfig: MonoAgentConfig,
-  ): (model: RuntimeModelReference, executionMode?: RuntimeExecutionMode) => MonoRuntimeLike;
+  ): (model: RuntimeModelReference) => MonoRuntimeLike;
   observabilityContext(): Promise<{
     readonly sourceId?: string;
     readonly sourceLabel?: string;
@@ -215,7 +204,7 @@ export async function buildResponder(
   const memoryBackend = await controller.memoryStore(coreConfig);
   const memoryRetrieval = controller.ensureSharedMemoryRetrieval(coreConfig, memoryBackend);
   const memory = memoryRetrieval ?? memoryBackend;
-  const memoryRecallEnabled = controller.reportMemoryRecallStatus(coreConfig, memoryRetrieval);
+  controller.reportMemoryRecallStatus(coreConfig, memoryRetrieval);
   const supermemoryMcp = controller.supermemoryMcpRuntimeOptions(coreConfig);
   const adapterSendTools = await controller.adapterSendToolsRuntimeOptions(coreConfig);
   const historyToolSupport = historyToolRouteSupport(coreConfig);
@@ -265,11 +254,9 @@ export async function buildResponder(
     : undefined;
   const mcpAppsBase = mcpApps?.createExtension;
   const conversationTitleBase = isSetConversationTitleToolAllowed(coreConfig.tools)
-    && !runtimeRouteContainsDirectOpenCode(coreConfig)
     ? createSetConversationTitleRuntimeExtension()
     : undefined;
   const replyArtifactsBase = isPublishReplyFileToolAllowed(coreConfig.tools)
-    && !runtimeRouteContainsDirectOpenCode(coreConfig)
     ? replyArtifacts.createExtension
     : undefined;
   const runHistoryBase = isRunHistoryToolAllowed(coreConfig.tools)
@@ -302,53 +289,15 @@ export async function buildResponder(
     : undefined;
   // Always active: a no-op for interactive turns (which carry no cron/webhook
   // metadata), it applies the per-trigger model/effort override otherwise.
-  const mcpSources: string[] = [];
-  if (coreConfig.tools.mcpConfigPath !== undefined) {
-    try {
-      const names = Object.keys(loadToolPolicyFromJsonFileSync(coreConfig.tools.mcpConfigPath).mcpServers ?? {});
-      if (names.length > 0) mcpSources.push(`tools.mcpConfigPath (${names.join(", ")})`);
-    } catch {
-      // Responder construction owns the missing/malformed policy error.
-    }
-  }
-  if (memoryRecallEnabled) mcpSources.push("memory.recallTool");
-  if (supermemoryMcp !== undefined) mcpSources.push("memory.supermemory.exposeMcpServer");
-  if (adapterSendTools.blockingToolNames.length > 0) {
-    mcpSources.push(`adapter send tools (${adapterSendTools.blockingToolNames.join(", ")})`);
-  }
-  const requestModelOverride = controller.requestModelOverrideRuntimeOptions(modelBoundaryConfig, {
-    mcpSources,
-    indexSkillsActive: coreConfig.context.skillDisclosure === "index"
-      && coreConfig.context.skillsRoot !== undefined,
-  });
+  const requestModelOverride = controller.requestModelOverrideRuntimeOptions(modelBoundaryConfig);
   const adapterSendToolsExtension = adapterSendTools.createExtension?.(
-    requestModelOverride.targetsDirectOpenCode,
+    () => false,
   );
-  const conversationTitleExtension: RuntimeOptionsExtension | undefined = conversationTitleBase === undefined
-    ? undefined
-    : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
-      ? { runtimeOptions: {}, cleanup: async () => {} }
-      : await conversationTitleBase(requestInput);
-  const mcpAppsExtension: RuntimeOptionsExtension | undefined = mcpAppsBase === undefined
-    ? undefined
-    : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
-      ? { runtimeOptions: {}, cleanup: async () => {} }
-      : await mcpAppsBase(requestInput);
-  const replyArtifactsExtension: RuntimeOptionsExtension | undefined = replyArtifactsBase === undefined
-    ? undefined
-    : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
-      ? { runtimeOptions: {}, cleanup: async () => {} }
-      : await replyArtifactsBase(requestInput);
-  const runHistoryExtension: RuntimeOptionsExtension | undefined = runHistoryBase === undefined
-    ? undefined
-    : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
-      ? { runtimeOptions: {}, cleanup: async () => {} }
-      : await runHistoryBase(requestInput);
-  const sessionHistoryExtension: RuntimeOptionsExtension | undefined = sessionHistoryBase === undefined
-    ? undefined
-    : async (requestInput) => requestModelOverride.targetsUnsupportedHistoryTool(requestInput.request.metadata)
-      ? { runtimeOptions: {}, cleanup: async () => {} }
-      : await sessionHistoryBase(requestInput);
+  const conversationTitleExtension = conversationTitleBase;
+  const mcpAppsExtension = mcpAppsBase;
+  const replyArtifactsExtension = replyArtifactsBase;
+  const runHistoryExtension = runHistoryBase;
+  const sessionHistoryExtension = sessionHistoryBase;
   const localConfigurationExtension = createLocalConfigurationRuntimeExtension({
     cwd: controller.cwd,
     configPath: controller.configPath,
@@ -467,12 +416,8 @@ export async function buildResponder(
 export function requestModelOverrideRuntimeOptions(
   controller: ResponderControllerPort,
   coreConfig: MonoAgentConfig,
-  compatibility: { readonly mcpSources: readonly string[]; readonly indexSkillsActive: boolean },
 ): {
   readonly extension: RuntimeOptionsExtension;
-  readonly targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean;
-  readonly targetsUnsupportedHistoryTool: (metadata: Record<string, unknown> | undefined) => boolean;
-  readonly targetsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
   readonly targetsProcessJobsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
 } {
   const options = {
@@ -482,19 +427,11 @@ export function requestModelOverrideRuntimeOptions(
       ? {}
       : { fallbackModels: configuredRuntimeFallbackModels(coreConfig.runtime) }),
     ...(coreConfig.runtime.effort === undefined ? {} : { baseEffort: coreConfig.runtime.effort }),
-    ...(coreConfig.runtime.maxTurns === undefined ? {} : { baseMaxTurns: coreConfig.runtime.maxTurns }),
-    ...(compatibility.mcpSources.length === 0 ? {} : { mcpSources: compatibility.mcpSources }),
-    ...(compatibility.indexSkillsActive ? { indexSkillsActive: true } : {}),
-    ...(coreConfig.sandbox === undefined ? {} : { sandboxPolicy: coreConfig.sandbox }),
-    toolPolicy: coreConfig.tools,
     ...(coreConfig.providers?.local === undefined ? {} : { localProviders: coreConfig.providers.local }),
   };
   const extension = createRequestModelOverrideRuntimeExtension(options);
   return {
     extension: async (input) => extension({ request: input.request }),
-    targetsDirectOpenCode: (metadata) => requestModelOverrideTargetsDirectOpenCode(metadata, options),
-    targetsUnsupportedHistoryTool: (metadata) => requestModelOverrideTargetsUnsupportedHistoryTool(metadata, options),
-    targetsPiNative: (metadata) => requestModelOverrideTargetsPiNative(metadata, options),
     targetsProcessJobsPiNative: (metadata) => requestModelOverrideRoutesOnlyPiNative(metadata, options),
   };
 }
@@ -502,12 +439,12 @@ export function requestModelOverrideRuntimeOptions(
 export function buildRuntimeForModel(
   controller: ResponderControllerPort,
   coreConfig: MonoAgentConfig,
-): (model: RuntimeModelReference, executionMode?: RuntimeExecutionMode) => MonoRuntimeLike {
+): (model: RuntimeModelReference) => MonoRuntimeLike {
   const cache = new Map<string, MonoRuntimeLike>();
   const suppressSandboxEngine = controller.processJobsProtectionPosture?.suppressSyntheticSandbox === true;
   const sandboxEngine = suppressSandboxEngine ? undefined : controller.sandboxEngineFor(coreConfig);
-  return (model, executionMode) => {
-    const key = `${modelReferenceKey(model)}|${executionMode ?? ""}`;
+  return (model) => {
+    const key = modelReferenceKey(model);
     const cached = cache.get(key);
     if (cached !== undefined) {
       return cached;
@@ -516,7 +453,6 @@ export function buildRuntimeForModel(
       config: coreConfig,
       cwd: controller.cwd,
       model,
-      ...(executionMode === undefined ? {} : { executionMode }),
       ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
     }, {
       suppressSandboxEngine,
@@ -569,7 +505,7 @@ export async function adapterSendToolsRuntimeOptions(controller: ResponderContro
     allowedTools: coreConfig.tools.allowedTools,
     disallowedTools: coreConfig.tools.disallowedTools,
     logger: controller.logger,
-    suppressInteractionTools: runtimeRouteContainsDirectOpenCode(coreConfig),
+    suppressInteractionTools: false,
     ...(appOwnedInteraction === undefined ? {} : { interaction: appOwnedInteraction }),
   });
   if (settings === undefined) {

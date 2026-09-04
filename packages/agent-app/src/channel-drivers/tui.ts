@@ -2,17 +2,21 @@ import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import type { AgentMessageStream, ProcessJobOperator } from "@mono-agent/agent-contracts";
+import { MAX_INFO_BODY_BYTES, MAX_INFO_PROVIDER_ITEMS } from "@mono-agent/agent-contracts";
+import { resolveConfiguredProviders } from "@mono-agent/config";
 
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
   TuiAdapterConfig,
   TuiAdapterInfo,
   TuiAdapterOptions,
   TuiAdapterStartResult,
+  TuiModelCatalogProvider,
+  TuiModelOption,
+  TuiProviderInfo,
 } from "@mono-agent/operator-adapter";
 import {
-  discoverClaudeSdkModels,
   discoverLocalProviderModels,
+  discoverLocalProviders,
   modelReferenceKey,
   parseMonoRuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
@@ -30,21 +34,10 @@ import {
 
 import { buildChannelConfigView } from "../channel-config-view.js";
 import type { ChannelDriver, ChannelStartInput, RunningChannel } from "../channels.js";
-import {
-  codexModelDiscoveryEnvironment,
-  requestCodexModelList,
-  type CodexCatalogModel,
-} from "../codex-model-catalog.js";
-import {
-  resolveAdvertisedModelEffort,
-  type ClaudeEffortCatalogEntry,
-} from "../model-effort-capabilities.js";
 import { agentAppPackageVersion } from "../package-version.js";
-import {
-  configuredRuntimeFallbackModels,
-  configuredRuntimeModels,
-} from "../runtime-routes.js";
-import { createSkillRegistryMonitor } from "../skill-registry.js";
+import { buildProviderModelCatalog } from "../provider-model-catalog.js";
+import { configuredRuntimeModels } from "../runtime-routes.js";
+import { createSkillRegistryMonitor, MAX_SKILL_REGISTRY_BYTES } from "../skill-registry.js";
 import type { CronOperatorRegistry } from "../cron-operator-service.js";
 
 type TuiAdapterModule = typeof import("@mono-agent/operator-adapter");
@@ -53,52 +46,236 @@ let tuiModule: TuiAdapterModule | undefined;
 const loadTuiModule = async (): Promise<TuiAdapterModule> =>
   (tuiModule ??= await import("@mono-agent/operator-adapter"));
 
-const builtinModelCatalog = builtinModels();
-
-function positiveContextWindow(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
-    ? value
-    : undefined;
-}
-
-function resolveContextWindow(
-  ref: RuntimeModelReference,
-  providers: readonly LocalProviderDefinition[] | undefined,
-): number | undefined {
-  if (ref.sdk === "codex") {
-    return positiveContextWindow(
-      builtinModelCatalog.getModel("openai-codex", ref.model)?.contextWindow,
-    );
-  }
-  if (ref.sdk !== "pi" || ref.provider === undefined) return undefined;
-
-  const configuredProvider = providers?.find((provider) => provider.id === ref.provider);
-  if (configuredProvider !== undefined) {
-    const configuredModel = configuredProvider.models
-      ?.find((model) => model.name === ref.model || model.alias === ref.model);
-    return positiveContextWindow(configuredModel?.capabilities?.context_window)
-      ?? positiveContextWindow(configuredModel?.capabilities?.num_ctx);
-  }
-
-  return positiveContextWindow(
-    builtinModelCatalog.getModel(ref.provider, ref.model)?.contextWindow,
-  );
-}
-
 export interface TuiChannelOverrides {
   readonly adapterFactory?: (options: TuiAdapterOptions) => Promise<TuiAdapterStartResult>;
   /** Test seam: replaces the real local-provider model discovery call. */
   readonly discoverModels?: (
     providers: readonly LocalProviderDefinition[] | undefined,
   ) => Promise<readonly DiscoveredLocalModel[]>;
-  /** Test seam: replaces bounded Claude SDK catalog discovery at channel start. */
-  readonly discoverClaudeModels?: (
-    authoredModelRefs: readonly string[],
-  ) => Promise<readonly ClaudeEffortCatalogEntry[]>;
-  /** Test seam: replaces bounded Codex app-server model/list discovery at channel start. */
-  readonly discoverCodexModels?: () => Promise<readonly CodexCatalogModel[]>;
+  /**
+   * Test seam: replaces the zero-config local-provider probe. This one MUST be
+   * injectable — the real implementation reaches localhost:11434 and
+   * localhost:1234, so a developer with Ollama running would otherwise get
+   * different test results from one who does not.
+   */
+  readonly discoverProviders?: typeof discoverLocalProviders;
   /** Test/embedding seam for the owner-private local web ingress. */
   readonly deliverNotification?: typeof deliverWebNotification;
+}
+
+/**
+ * Producer-side payload budgets for `/v1/info`.
+ *
+ * `/v1/info` shares ONE 1 MiB body cap ({@link MAX_INFO_BODY_BYTES}) across
+ * every field it carries, and `sendBoundedInfo` in the operator adapter is what
+ * enforces it: it measures the exact string it is about to send, sheds whole
+ * optional fields largest-first, logs the shed at error level, and falls back to
+ * a fixed liveness body. That fence is TOTAL — no body leaves this process over
+ * the cap whatever these numbers say — so the fence, and only the fence, is what
+ * decides that something genuinely cannot ship.
+ *
+ * What a budget HERE is for is bounding the AGGREGATE growth of a contributor
+ * whose size nobody authored, so one such contributor cannot flood the body and
+ * cost an unrelated field its place at the fence:
+ *
+ *     discovered model refs   384 KiB  advisory: whatever a local endpoint said
+ *     provider summary        128 KiB  advisory tail behind the declared vendors
+ *     skills                  256 KiB  `MAX_SKILL_REGISTRY_BYTES`, skill-registry.ts
+ *
+ * Configured routes get NO budget here, and that is the correction to a defect
+ * this file carried through three review rounds. A budget is not an opinion
+ * about which content deserves to ship, and a fixed per-contributor slice
+ * becomes exactly that the moment one VALID item is bigger than the slice.
+ * Round 3 bounded the model projection at 128 KiB and dropped a valid
+ * configured fallback; round 4 kept the rule and raised the constant to
+ * 512 KiB, and a then-valid 270,000-byte OpenRouter fallback was still dropped —
+ * from a body that would have been 540,778 bytes against a 1,048,576-byte cap.
+ * No constant was the right one; the shape was wrong. Dropping an authored
+ * route served neither purpose a budget has (the body fit, and nothing was
+ * being starved), and it cost real function: the TUI never calls `/v1/models`
+ * and rebuilds its picker from `info.models` alone, so a withheld route is an
+ * unselectable primary or fallback in the operator's own console.
+ *
+ * Nor is a single reference bounded. Two rounds put a byte ceiling in the
+ * reference parser so that no ONE item could be pathological, and both numbers
+ * refused a model that really exists — 96 bytes a Hugging Face GGUF repo Ollama
+ * serves, 160 bytes an `ollama:<model>:<tag>` reference whose two halves Ollama
+ * itself validates at 80 bytes each. A grammar layer does not get to decide what
+ * a provider calls a model, so the ceiling is gone and a single reference can be
+ * any size again. That changes nothing here, because the rule was never about
+ * item size: nothing bounds how MANY routes an operator may declare or how many
+ * rows a local `/v1/models` may report either, so a per-contributor slice would
+ * still be an opinion about authored content, and configured routes still get
+ * none. What it does mean is that the fence below is load-bearing for a case it
+ * briefly was not — one authored route larger than the whole cap — which
+ * `tui-info-wire.test.ts` drives over a real socket.
+ *
+ * So every configured route is admitted, and a result that cannot fit is the
+ * fence's call, made loudly. Advisory discovery then spends its own aggregate
+ * budget on top — but never room the body no longer has
+ * ({@link INFO_NON_MODEL_RESERVE_BYTES}) — so discovery can never be the reason
+ * the fence fires.
+ *
+ * The discovery budget is exported because it is the whole contract between
+ * authored routes and advisory content, and a test that keeps its own copy of a
+ * constant cannot notice that constant changing.
+ */
+export const MAX_DISCOVERED_INFO_MODEL_BYTES = 384 * 1024;
+const MAX_INFO_PROVIDER_BYTES = 128 * 1024;
+
+/**
+ * Room the model projections leave for the rest of the body when deciding how
+ * much ADVISORY discovery may spend.
+ *
+ * Reserving against the other contributors' own budgets is sound here precisely
+ * because it constrains discovery alone: no authored content is ever measured
+ * against it, so a conservative reserve costs at worst a few discovered refs
+ * nobody declared. Measuring the real rest-of-body instead is not available —
+ * `skills` is re-snapshotted per request while these projections are resolved
+ * once at start — and it is not needed, because the fence measures the real
+ * thing.
+ *
+ * The trailing 64 KiB covers the `schema`/`pid`/`capabilities` half of the
+ * body: a fixed shape carrying no operator-authored data beyond a short cron
+ * status, so it is headroom rather than a budget anything can spend.
+ */
+const INFO_NON_MODEL_RESERVE_BYTES = MAX_INFO_PROVIDER_BYTES + MAX_SKILL_REGISTRY_BYTES + 64 * 1024;
+
+/**
+ * JSON framing each projection costs before a single entry is admitted, charged
+ * once against the running total exactly as `boundSkillItems`
+ * (`skill-registry.ts`) charges its prefix and suffix.
+ */
+const INFO_MODEL_FRAME_BYTES = Buffer.byteLength('"models":[],"modelOptions":{},', "utf8");
+const INFO_PROVIDER_FRAME_BYTES = Buffer.byteLength('"providers":[],', "utf8");
+
+interface InfoModelProjection {
+  readonly keys: string[];
+  readonly seen: Set<string>;
+  readonly options: Record<string, TuiModelOption>;
+  /**
+   * Serialized bytes already committed to `models` + `modelOptions`, carried
+   * ACROSS admission passes. One running total is what lets the discovery pass
+   * see what the configured pass already spent: a per-pass counter cannot
+   * express "advisory refs may not spend room the body no longer has", which is
+   * the only thing either pass is still bounded by.
+   */
+  bytes: number;
+}
+
+/**
+ * The REAL serialized cost of publishing one ref in BOTH `/v1/info` model
+ * projections: its JSON string as a `models` element, and its `modelOptions`
+ * entry (that same string again as a key, a colon, the materialized option),
+ * plus one separating comma in each collection.
+ *
+ * Measured from the payload that will actually be sent, never estimated ahead
+ * of it. An arithmetic estimate over the raw ref is not an upper bound here for
+ * two independent, separately proven reasons:
+ *  - JSON escaping is invisible to it. One C0 byte serializes to six (`\u0000`)
+ *    in both projections, so a ref of control bytes costs 12x its length while
+ *    a `4 x length + 512` estimate charges roughly 4x.
+ *  - The option is not materialized yet. `effortLevels` comes from a local
+ *    provider's `capabilities.reasoning_levels`; the catalog now bounds it, but
+ *    only measurement can charge what the bound actually left behind.
+ */
+function infoModelEntryBytes(key: string, option: TuiModelOption | undefined): number {
+  const keyBytes = Buffer.byteLength(JSON.stringify(key), "utf8");
+  // `models` element + comma.
+  const arrayBytes = keyBytes + 1;
+  // `modelOptions` key + colon + value + comma.
+  const optionBytes = option === undefined
+    ? 0
+    : keyBytes + 1 + Buffer.byteLength(JSON.stringify(option), "utf8") + 1;
+  return arrayBytes + optionBytes;
+}
+
+/**
+ * Admit refs into the `/v1/info` model projections, measuring each candidate's
+ * materialized payload against the running total.
+ *
+ * `budgetBytes` is a ceiling on that RUNNING TOTAL and it is OPTIONAL. Omitting
+ * it admits every ref, which is what configured routes get: see the budget note
+ * above — the fence adjudicates an oversized body, this function does not.
+ *
+ * `continue`, not `break`, where a ceiling does apply: one pathological entry
+ * must cost only itself. The TUI never calls `/v1/models` — there is no call
+ * site under `packages/tui/`, and `applyAgentInfo` builds the model picker from
+ * `/v1/info.models` alone — so a ref withheld here is UNSELECTABLE, not merely
+ * un-paginated. Breaking would delete every runnable ref sitting behind one
+ * oversized row.
+ */
+function admitInfoModels(
+  refs: readonly RuntimeModelReference[],
+  describe: (ref: RuntimeModelReference) => TuiModelOption | undefined,
+  into: InfoModelProjection,
+  budgetBytes: number = Number.POSITIVE_INFINITY,
+): void {
+  for (const ref of refs) {
+    const key = modelReferenceKey(ref);
+    if (into.seen.has(key)) continue;
+    const option = describe(ref);
+    const cost = infoModelEntryBytes(key, option);
+    if (into.bytes + cost > budgetBytes) continue;
+    into.bytes += cost;
+    into.seen.add(key);
+    into.keys.push(key);
+    if (option !== undefined) into.options[key] = option;
+  }
+}
+
+/**
+ * Project the `/v1/info` provider summary onto its own measured slice, with the
+ * providers the agent's OWN routes use placed where every consumer can see
+ * them.
+ *
+ * Two independent cuts land on this list, and the catalog's order is wrong for
+ * both. Route providers sit LAST in it (declared providers, then route
+ * providers, then discovered ones), while the byte slice and the console's
+ * {@link MAX_INFO_PROVIDER_ITEMS} parse window are both PREFIX cuts. Admitting
+ * routes first but emitting in catalog order — which is what this did — put the
+ * prioritized entry at position 71 of 71 and let the console throw it away at
+ * 64: a probe really did receive `anthropic` and parse 64 vendors without it.
+ * Prioritizing at the producer only means something if it survives to the
+ * consumer, so the priority has to be expressed as ORDER on the wire.
+ *
+ * Reordering is not subtractive — no entry is removed and no field changes — so
+ * it is legal at a wire schema compared with `!==`. It is also confined to the
+ * case that needs it: a catalog that fits both the slice and the window is
+ * emitted exactly as the catalog built it, frozen identity included, because
+ * `/v1/info` is polled every 5 s and hands back the very same object each time.
+ *
+ * Unlike the model projections, an aggregate slice is the right shape HERE: one
+ * entry's id and label are bounded by the shared wire contract
+ * (`MAX_INFO_PROVIDER_ID_BYTES`/`..._LABEL_BYTES`), so no single valid provider
+ * can be larger than the slice and the cut can only ever fall on the advisory
+ * tail — never on a route provider, which is admitted first.
+ */
+function projectInfoProviders(
+  providers: readonly TuiProviderInfo[],
+  routeProviderIds: ReadonlySet<string>,
+): readonly TuiProviderInfo[] {
+  const costs = providers.map(
+    (provider) => Buffer.byteLength(JSON.stringify(provider), "utf8") + 1,
+  );
+  const total = costs.reduce((sum, cost) => sum + cost, INFO_PROVIDER_FRAME_BYTES);
+  if (total <= MAX_INFO_PROVIDER_BYTES && providers.length <= MAX_INFO_PROVIDER_ITEMS) {
+    return providers;
+  }
+
+  const admitted: TuiProviderInfo[] = [];
+  let bytes = INFO_PROVIDER_FRAME_BYTES;
+  for (const routesFirst of [true, false]) {
+    for (const [index, provider] of providers.entries()) {
+      if (routeProviderIds.has(provider.id) !== routesFirst) continue;
+      const cost = costs[index]!;
+      // `continue`, not `break`: an entry that does not fit costs only itself.
+      if (bytes + cost > MAX_INFO_PROVIDER_BYTES) continue;
+      bytes += cost;
+      admitted.push(provider);
+    }
+  }
+  return Object.freeze(admitted);
 }
 
 const APP_OWNED_TUI_START = Symbol("app-owned-tui-start");
@@ -164,10 +341,7 @@ export function createTuiChannelDriver(
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
       const deliverNotification = overrides.deliverNotification ?? deliverWebNotification;
       const discoverModels = overrides.discoverModels ?? discoverLocalProviderModels;
-      const discoverClaudeModels = overrides.discoverClaudeModels
-        ?? ((authoredModelRefs: readonly string[]) => discoverClaudeSdkModels({ authoredModelRefs }));
-      const discoverCodexModels = overrides.discoverCodexModels
-        ?? (() => requestCodexModelList(1_200, codexModelDiscoveryEnvironment()));
+      const discoverProviders = overrides.discoverProviders ?? discoverLocalProviders;
       const localProviders = input.coreConfig.providers?.local;
       const skillRegistry = createSkillRegistryMonitor({
         ...(input.coreConfig.context.skillsRoot === undefined
@@ -185,83 +359,148 @@ export function createTuiChannelDriver(
       await skillRegistry.prime();
 
       const configuredRefs = [...configuredRuntimeModels(input.coreConfig.runtime)];
-      const configModelKeys: string[] = [];
-      for (const ref of configuredRefs) {
-        const key = modelReferenceKey(ref);
-        if (!configModelKeys.includes(key)) {
-          configModelKeys.push(key);
-        }
-      }
-      const directOpenCodeInFallbacks = configuredRuntimeFallbackModels(input.coreConfig.runtime)
-        .some((ref) => ref.sdk === "opencode");
-      const claudeRefs = configuredRefs
-        .filter((ref) => ref.sdk === "claude")
-        .map((ref) => modelReferenceKey(ref));
-      const needsCodex = configuredRefs.some((ref) => ref.sdk === "codex");
-      let claudeCatalog: readonly ClaudeEffortCatalogEntry[] = [];
-      let codexCatalog: readonly CodexCatalogModel[] = [];
-      const [claudeResult, codexResult] = await Promise.allSettled([
-        claudeRefs.length > 0 ? discoverClaudeModels(claudeRefs) : Promise.resolve([]),
-        needsCodex ? discoverCodexModels() : Promise.resolve([]),
-      ]);
-      if (claudeResult.status === "fulfilled") claudeCatalog = claudeResult.value;
-      if (codexResult.status === "fulfilled") codexCatalog = codexResult.value;
       let discoveredModels: readonly DiscoveredLocalModel[] = [];
+      let discoveredLocalProviders: readonly LocalProviderDefinition[] = [];
       try {
-        discoveredModels = await discoverModels(localProviders);
+        // Two discovery paths, both advisory. `discoverModels` covers every
+        // explicitly configured local provider, including custom
+        // openai_compat endpoints. `discoverLocalProviders` is the zero-config
+        // half: it probes localhost:11434 and localhost:1234 even when nothing
+        // is declared, which is the only way `runtime.model: "ollama:..."`
+        // works without a `providers` entry. Without it that route validates,
+        // advertises nothing, and dies at turn time with `pi model not found`.
+        const [configuredModels, probed] = await Promise.all([
+          discoverModels(localProviders).catch(() => []),
+          discoverProviders({ configured: resolveConfiguredProviders(input.coreConfig).entries })
+            .catch(() => []),
+        ]);
+        discoveredLocalProviders = probed.map(({ models: _models, ...definition }) => definition);
+        const byRef = new Map<string, DiscoveredLocalModel>();
+        for (const model of configuredModels) byRef.set(model.ref, model);
+        for (const provider of probed) {
+          for (const model of provider.models) {
+            const ref = `${provider.id}:${model.name}`;
+            if (byRef.has(ref)) continue;
+            byRef.set(ref, {
+              ref,
+              label: model.displayName ?? model.alias ?? model.name,
+              providerId: provider.id,
+            });
+          }
+        }
+        discoveredModels = [...byRef.values()];
       } catch {
         // Provider discovery is advisory. A failed startup snapshot must not
         // make /v1/info block or expand unknown capabilities later.
       }
 
-      const buildInfo = async (): Promise<TuiAdapterInfo> => {
-        const labelByRef = new Map(discoveredModels.map((model) => [model.ref, model.label]));
-        const models = [...configModelKeys];
-        for (const model of discoveredModels) {
-          if (!models.includes(model.ref)) {
-            models.push(model.ref);
-          }
-        }
+      // The provider-widened catalog is precomputed once here. `/v1/info` reads
+      // the frozen provider list and the configured-route shortlist from memory
+      // only; the lazy `/v1/models` endpoint slices already-frozen pages.
+      const catalog = buildProviderModelCatalog({
+        providers: resolveConfiguredProviders(input.coreConfig).entries,
+        ...(localProviders === undefined && discoveredLocalProviders.length === 0
+          ? {}
+          : { localProviders: [...(localProviders ?? []), ...discoveredLocalProviders] }),
+        configuredRoutes: configuredRefs,
+        discoveredModels,
+      });
 
-        const modelOptions: Record<string, {
-          effortLevels?: readonly string[];
-          reasoning?: boolean;
-          reasoningMode?: string;
-          label?: string;
-          contextWindow?: number;
-        }> = {};
-        for (const ref of models) {
-          let parsedRef;
-          try {
-            parsedRef = parseMonoRuntimeModelReference(ref);
-          } catch {
-            continue;
-          }
-          const resolved = resolveAdvertisedModelEffort(parsedRef, {
-            ...(localProviders === undefined ? {} : { localProviders }),
-            claudeCatalog,
-            codexCatalog,
-            suppressExplicitEffort: parsedRef.sdk === "opencode" || directOpenCodeInFallbacks,
+      // `/v1/info.models` must keep listing live-discovered local models
+      // alongside the configured routes. Narrowing it to configured routes was
+      // a SUBTRACTIVE wire change at an unchanged schema: a console that only
+      // reads `models` (every client predating `/v1/models`) silently lost the
+      // `ollama:*` entry it used to offer, with no skew error to explain it.
+      //
+      // Bound this projection on its OWN payload budget, never on catalog
+      // membership. The catalog's `MAX_CATALOG_ID_BYTES` is a display/paging
+      // bound, not a validity bound, and the two answer different questions: a
+      // reference that clears the parser is runnable whether or not any page
+      // would show it, so gating `models` on `catalog.resolve()` deleted a
+      // runnable model from every schema-1 client — subtractive at a schema that
+      // cannot be bumped (`TUI_WIRE_SCHEMA` is compared with `!==`).
+      // Both divergences are reachable: the per-provider advertised cap, which
+      // strands hundreds of live rows outside the page, and an id past
+      // `MAX_CATALOG_ID_BYTES`, which a local endpoint can report now that the
+      // reference parser has no length rule to refuse it first. Every one of
+      // those refs stays selectable here.
+      // What genuinely must stay bounded is the ONE 1 MiB body `/v1/info` shares
+      // across every field, and `sendBoundedInfo` is what enforces it. So the
+      // only reasons a DISCOVERED ref is withheld here are that it names nothing
+      // a turn could route to (it does not parse), or that advisory discovery
+      // has spent its aggregate budget. A configured route is withheld for
+      // neither reason: see the budget note at the top of this file.
+      const discoveredRefs: RuntimeModelReference[] = [];
+      for (const model of discoveredModels) {
+        try {
+          discoveredRefs.push(parseMonoRuntimeModelReference(model.ref));
+        } catch {
+          // A provider that reports an unparseable ref is skipped, not fatal.
+        }
+      }
+
+      // Resolve both /v1/info projections once, here. `/v1/info` is polled every
+      // 5s per connected console, and a throwing or slow info provider returns
+      // 500 for the WHOLE response — showing the agent offline rather than
+      // degraded. Neither projection may run per request.
+      const describeModelOption = (ref: RuntimeModelReference): TuiModelOption | undefined =>
+        catalog.describe([ref])[modelReferenceKey(ref)];
+      const projection: InfoModelProjection = {
+        keys: [],
+        seen: new Set(),
+        options: {},
+        bytes: INFO_MODEL_FRAME_BYTES,
+      };
+      // Every configured route, unconditionally. These are the operator's
+      // declared routes; a route the picker cannot offer is a route nobody can
+      // run, and no producer-side number gets to decide that a valid one is too
+      // big to mention. If the whole body then will not fit, `sendBoundedInfo`
+      // sheds a field and logs it — one loud, visible degradation instead of a
+      // silent hole in the middle of the picker.
+      admitInfoModels(configuredRefs, describeModelOption, projection);
+      // Advisory discovery on top: its own aggregate budget, and never room the
+      // body no longer has. When authored routes have already spent past the
+      // reserve this ceiling sits below the running total and discovery admits
+      // nothing, which is the correct order of yielding.
+      admitInfoModels(
+        discoveredRefs,
+        describeModelOption,
+        projection,
+        Math.min(
+          projection.bytes + MAX_DISCOVERED_INFO_MODEL_BYTES,
+          MAX_INFO_BODY_BYTES - INFO_NON_MODEL_RESERVE_BYTES,
+        ),
+      );
+      const infoModelKeys: readonly string[] = Object.freeze(projection.keys);
+      const infoModelOptions = Object.freeze(projection.options);
+      const infoProviders = projectInfoProviders(
+        catalog.listProviders(),
+        new Set(configuredRefs.map((ref) => ref.provider)),
+      );
+
+      const modelCatalog: TuiModelCatalogProvider = (request) => {
+        if (request.provider !== undefined) {
+          return catalog.listModels(request.provider, {
+            ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+            limit: request.limit,
           });
-          const contextWindow = resolveContextWindow(parsedRef, localProviders);
-          const label = labelByRef.get(ref);
-          const entry = {
-            ...(resolved.effortLevels === undefined ? {} : { effortLevels: resolved.effortLevels }),
-            reasoning: resolved.reasoning,
-            ...(resolved.reasoningMode === undefined ? {} : { reasoningMode: resolved.reasoningMode }),
-            ...(label === undefined ? {} : { label }),
-            ...(contextWindow === undefined ? {} : { contextWindow }),
-          };
-          if (Object.keys(entry).length > 0) {
-            modelOptions[ref] = entry;
-          }
         }
+        if (request.query !== undefined) {
+          return {
+            models: catalog.searchModels(request.query, request.limit),
+            truncated: false,
+          };
+        }
+        return { models: [], truncated: false };
+      };
 
+      const buildInfo = async (): Promise<TuiAdapterInfo> => {
         return {
           model: modelReferenceKey(input.coreConfig.runtime.model),
           ...(input.coreConfig.runtime.effort === undefined ? {} : { effort: input.coreConfig.runtime.effort }),
-          models,
-          ...(Object.keys(modelOptions).length === 0 ? {} : { modelOptions }),
+          models: infoModelKeys,
+          modelOptions: infoModelOptions,
+          providers: infoProviders,
           skills: skillRegistry.snapshot(),
         };
       };
@@ -289,6 +528,7 @@ export function createTuiChannelDriver(
         ...(input.interaction === undefined ? {} : { interaction: input.interaction }),
         ...(cronOperator?.configured === true ? { cron: cronOperator } : {}),
         info: buildInfo,
+        modelCatalog,
         onServerError: (reason) => input.onFailure(reason),
         ...(input.logger === undefined ? {} : { logger: input.logger }),
       });

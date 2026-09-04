@@ -26,7 +26,11 @@ const { createRouterRuntime } = await import("../../ai/runtime/router.js");
 describe("createRouterRuntime — inner runtime delegation", () => {
   it("delegates configureTools, syncSession, refreshSession, retireDurableSession, disposeSession, invalidateSession, and disposeAllSessions", async () => {
     const router = createRouterRuntime({
-      chain: [{ sdk: "claude", model: "claude-sonnet-4-6" }],
+      chain: [{
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        reference: "anthropic:claude-sonnet-4-6",
+      }],
     });
 
     router.configureTools({ workspace: "/tmp/w" });

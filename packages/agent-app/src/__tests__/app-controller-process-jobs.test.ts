@@ -74,7 +74,7 @@ describe("process-job lifecycle surface routing", () => {
     temporaryDirectories.push(cwd);
     const configReadPath = join(cwd, "mono-agent.config.json");
     await writeFile(configReadPath, JSON.stringify({
-      runtime: { model: "pi:openai-codex:gpt-5.6-sol", workspace: "." },
+      runtime: { model: "openai-codex:gpt-5.6-sol", workspace: "." },
       context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
       artifacts: { dir: ".config-state/artifacts" },
@@ -124,7 +124,7 @@ describe("process-job lifecycle surface routing", () => {
     temporaryDirectories.push(cwd);
     const configReadPath = join(cwd, "mono-agent.config.json");
     await writeFile(configReadPath, JSON.stringify({
-      runtime: { model: "pi:openai-codex:gpt-5.6-sol", workspace: "." },
+      runtime: { model: "openai-codex:gpt-5.6-sol", workspace: "." },
       context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
       artifacts: { dir: "./artifacts" },
@@ -170,7 +170,7 @@ describe("process-job lifecycle surface routing", () => {
     temporaryDirectories.push(cwd);
     const configReadPath = join(cwd, "mono-agent.config.json");
     await writeFile(configReadPath, JSON.stringify({
-      runtime: { model: "pi:openai-codex:gpt-5.6-sol", workspace: "." },
+      runtime: { model: "openai-codex:gpt-5.6-sol", workspace: "." },
       context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
       artifacts: { dir: "./artifacts" },
@@ -232,7 +232,7 @@ describe("process-job lifecycle surface routing", () => {
     await mkdir(stateDir, { recursive: true });
     await chmod(stateDir, 0o755);
     const config = (enabled: boolean) => ({
-      runtime: { model: "pi:openai-codex:gpt-5.6-sol", workspace: "." },
+      runtime: { model: "openai-codex:gpt-5.6-sol", workspace: "." },
       context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
       artifacts: { dir: "./artifacts" },
@@ -281,7 +281,7 @@ describe("process-job lifecycle surface routing", () => {
     temporaryDirectories.push(cwd);
     const configReadPath = join(cwd, "mono-agent.config.json");
     const config = (input: { readonly enabled: boolean; readonly unsafe: boolean }) => ({
-      runtime: { model: "pi:openai-codex:gpt-5.6-sol", workspace: "." },
+      runtime: { model: "openai-codex:gpt-5.6-sol", workspace: "." },
       context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
       artifacts: { dir: "./artifacts" },
@@ -348,7 +348,7 @@ describe("process-job lifecycle surface routing", () => {
     temporaryDirectories.push(cwd);
     const configReadPath = join(cwd, "mono-agent.config.json");
     await writeFile(configReadPath, JSON.stringify({
-      runtime: { model: "pi:openai-codex:gpt-5.6-sol", workspace: "." },
+      runtime: { model: "openai-codex:gpt-5.6-sol", workspace: "." },
       context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
       artifacts: { dir: "./artifacts" },
@@ -479,10 +479,9 @@ function startInput<T>(cwd: string, config: T): ChannelStartInput<T> {
     coreConfig: {
       runtime: {
         model: {
-          sdk: "pi",
           provider: "openai-codex",
           model: "gpt-5.6-sol",
-          reference: "pi:openai-codex:gpt-5.6-sol",
+          reference: "openai-codex:gpt-5.6-sol",
         },
       },
       tools: { allowedTools: [], disallowedTools: [] },

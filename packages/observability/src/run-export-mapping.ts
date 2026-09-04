@@ -107,7 +107,7 @@ export function normalizeFailoverHistory(value: unknown): FailoverAttempt[] | un
 
 /**
  * Render a failover history into a compact, single-line `model → reason (req id)`
- * list (e.g. "pi:openai-codex:gpt-5.5 → timeout, pi:opencode-go:kimi-k2.6 →
+ * list (e.g. "openai-codex:gpt-5.5 → timeout, opencode-go:kimi-k2.6 →
  * server_error (req abc123)"). `reason` prefers the retryable subkind, then the
  * raw failure kind.
  */

@@ -188,7 +188,7 @@ tools enabled and add their local-first settings:
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5",
+    "model": "openai-codex:gpt-5.5",
     "workspace": "."
   },
   "context": {

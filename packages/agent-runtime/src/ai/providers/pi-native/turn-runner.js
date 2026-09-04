@@ -127,7 +127,6 @@ export async function buildTurnTools(runState, {
       // pins a model; the tool closure reads these to build each child request.
       subagentContext: {
         model: options.model,
-        executionMode: options.executionMode,
         cwd: options.cwd,
         parentRunId: runCtx?.runId,
         // Same policy + engine this turn's own tools are confined by, so a

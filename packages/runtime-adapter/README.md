@@ -16,7 +16,7 @@ Catalog responsibility: Wraps @mono-agent/agent-runtime behind runtime contracts
 
 ## Responsibility
 
-Typed runtime facade over `@mono-agent/agent-runtime`. It parses runtime model references, selects or validates execution mode, exposes the available backend matrix, owns sandbox policy/process wrapping, bridges the kernel's structural process-job controller to a typed neutral host interface, creates a runtime wrapper, and exposes a small structural runtime contract to the harness.
+Typed runtime facade over `@mono-agent/agent-runtime`. It parses and validates canonical `<provider>:<model>` runtime model references, describes the single Pi backend and its capabilities, owns sandbox policy/process wrapping, bridges the kernel's structural process-job controller to a typed neutral host interface, creates a runtime wrapper, and exposes a small structural runtime contract to the harness.
 
 ## Install / Usage
 
@@ -32,11 +32,10 @@ import {
   parseMonoRuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
 
-const model = parseMonoRuntimeModelReference("pi:openai:gpt-5.5");
+const model = parseMonoRuntimeModelReference("openai:gpt-5.5");
 const runtime = createMonoRuntime({ workspace: process.cwd() });
 const result = await runtime.run("You are a concise assistant.", {
   model,
-  executionMode: "sdk",
   messages: [{ role: "user", content: "Summarize README.md." }],
   abortSignal: new AbortController().signal,
   cwd: process.cwd(),
@@ -55,37 +54,29 @@ tool must serialize, or leave the default `"safe-parallel"` mode to overlap
 only independent read-only built-ins. Stateful, mutating, and MCP tools remain
 sequential in the default mode.
 
-Provider-owned project discovery is opt-in at this facade. For Claude SDK runs,
-`RuntimeRunOptions.settingSources` accepts `"user"`, `"project"`, and `"local"`;
-omitted/empty disables those filesystem sources while Anthropic managed
-settings remain in force. Each opted-in source may configure executable hooks
-and plugins. Enable only sources whose settings you trust, and avoid opting in
-while running in an untrusted checkout. For Codex app-server runs,
-`RuntimeRunOptions.codexLoadProjectDocs: true` restores Codex's native project
-document defaults; omitted/false disables automatic discovery with
-`project_doc_max_bytes=0`. Explicit `codexAppServerArgs` remain authoritative.
-`RuntimeRunOptions.codexSandboxNetworkAccess` is also code-only: strict `true`
-enables Codex's native network access for plan/read-only and
-default/acceptEdits/workspace-write turns, including retained threads. Omitted
-or any other runtime value keeps network access disabled. The dedicated
-no-tools probe always remains read-only with network disabled, while
-bypassPermissions remains danger-full-access regardless of this field.
-This provider-native control is unrelated to `RuntimeRunOptions.sandboxPolicy`,
-which governs mono-agent's own sandbox and is not consumed by Codex's tool loop.
-Workspace-write plus network access grants repository read and network egress
-in the same turn; prefer plan for read-only browsing.
-Codex owns its native collaboration agents and their profiles: the facade
-normalizes their activity but does not inject `nativeSubagents` definitions.
-`RuntimeRunOptions.nativeSubagents` is the typed Claude-native `Task` profile
-contract; a non-empty list on a direct Codex attempt returns a capability
-mismatch so a fallback router can continue. Use `codexLoadProjectDocs` to let
-Codex and its own agents load repository instructions.
+Provider-owned project discovery no longer applies: the Pi runtime does not read
+another tool's filesystem settings, hooks, or project documents. The five
+options that carried that behaviour on the deleted bridges —
+`settingSources`, `codexLoadProjectDocs`, `codexSandboxNetworkAccess`,
+`fastMode`, and `nativeSubagents` — are declared `?: never` on
+`RuntimeRunOptions`, so passing one is a compile error rather than a silently
+ignored field. There is no replacement for project-document loading; put
+repository instructions in the system prompt the host builds.
 
-For heterogeneous fallback chains, `resolveAttempt().policyOptions` may project
-only `allowedTools`, `disallowedTools`, and `permissionMode` for the runtime
-actually being attempted. Other logical request fields, including
-`codexSandboxNetworkAccess`, remain protected and cannot be replaced through
-`resolveAttempt().options`.
+The supported equivalents are:
+
+- Filesystem and network containment: `RuntimeRunOptions.sandboxPolicy`
+  (with `sandboxEngine`). `sandboxPolicy.network.mode` is `none`, `localhost`,
+  `allowlist`, or `all`, and a request-scoped policy can only tighten the
+  configured one.
+- Delegation: the in-process `Agent` tool, which the host configures through
+  the kernel's `subagents` run option that the facade forwards, rather than
+  caller-defined native teammate profiles.
+
+For fallback chains, `resolveAttempt().policyOptions` may project only
+`allowedTools`, `disallowedTools`, and `permissionMode` for the route actually
+being attempted. Every other logical request field remains protected and cannot
+be replaced through `resolveAttempt().options`.
 
 `RuntimeRunOptions.toolLifecycleSink` is the typed incremental persistence seam
 for managed tools. It receives an invocation with stable call id/name,
@@ -105,7 +96,8 @@ provider kernel:
 
 ### Data flow
 
-1. Model helpers parse and validate a canonical reference and execution mode.
+1. Model helpers parse a `<provider>:<model>` reference and assert its parsed
+   shape and canonical spelling.
 2. `createMonoRuntime()` injects the mono-agent sandbox implementation exactly
    once, then constructs either one runtime or an ordered fallback router.
 3. `MonoRuntimeLike` exposes `run()`, acknowledged live-input messages, an
@@ -134,7 +126,6 @@ provider kernel:
 | API | Use it for |
 | --- | --- |
 | `createMonoRuntime()` | Construct the typed runtime facade and inject mono-agent's sandbox implementation |
-| `probeAcpProfile()` / ACP management helpers | Operate a host-resolved ACP profile while injecting the same sandbox implementation |
 | `parseMonoRuntimeModelReference()` | Parse and validate a canonical model string |
 | `listMonoRuntimeBackends()` / `describeMonoRuntimeSupport()` / `monoRuntimeSupportsLiveInput()` | Present backend capabilities and compatibility without starting a provider |
 | `createSandboxPolicy()` / `failClosedSandboxPolicy()` | Build explicit filesystem and network policy data |
@@ -154,16 +145,15 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/runtime-adapter`**
 
 ```text
-AcpCallbackContext
-AcpInteractionRequest
-AcpProfileDescriptor
 AgentRuntimeCustomModel
 AgentRuntimeCustomProvider
 CodedError
 CreateMonoRuntimeOptions
 DEFAULT_DENY_WRITE
 DiscoverLocalProviderModelsOptions
+DiscoverLocalProvidersInput
 DiscoveredLocalModel
+DiscoveredProvider
 LocalProviderCapabilities
 LocalProviderDefinition
 LocalProviderModelDefinition
@@ -171,13 +161,9 @@ LocalProviderPricing
 LocalProviderRuntimeOptions
 LocalProviderType
 MANAGED_SRT_TREE_SHA256
+MODEL_REFERENCE_ECHO_MAX_BYTES
+MODEL_REFERENCE_REASON_MAX_BYTES
 ModelEffortLevels
-MonoAcpControlOptions
-MonoAcpInteractionHandler
-MonoAcpInteractionRequest
-MonoAcpListSessionsRequest
-MonoAcpProfileResolver
-MonoAcpSessionControlOptions
 MonoRuntimeApprovalDecision
 MonoRuntimeApprovalRequest
 MonoRuntimeAttemptContext
@@ -185,8 +171,6 @@ MonoRuntimeAttemptResolution
 MonoRuntimeAttemptResolver
 MonoRuntimeBackendCapabilities
 MonoRuntimeBackendDescriptor
-MonoRuntimeBackendId
-MonoRuntimeBackendTransport
 MonoRuntimeCompactionRecord
 MonoRuntimeFallbackChainEntry
 MonoRuntimeHostOptions
@@ -194,9 +178,7 @@ MonoRuntimeLike
 MonoRuntimeParsedPricingModel
 MonoRuntimePricing
 MonoRuntimeRetryPolicy
-MonoRuntimeRouteSafetyMode
 MonoRuntimeSandboxEngine
-MonoRuntimeSelectionEntry
 MonoRuntimeSupportDescription
 NormalizedMcpServer
 NormalizedMcpTransport
@@ -210,20 +192,18 @@ ProcessJobProcessResult
 ProcessJobStartRequest
 ProcessJobStartResult
 ProcessJobsController
+ProviderDefinition
 RuntimeAdapterError
 RuntimeAdapterErrorCode
 RuntimeAdapterErrorDetails
 RuntimeCompactionPolicy
 RuntimeEventLike
-RuntimeExecutionMode
 RuntimeLiveInputMessage
 RuntimeMcpAppConnection
 RuntimeMcpAppHost
 RuntimeMcpAppRegistration
 RuntimeMessage
 RuntimeModelReference
-RuntimeNativeSubagentDefinition
-RuntimeNativeSubagentsOptions
 RuntimePolicies
 RuntimePromptOverrides
 RuntimeResult
@@ -260,31 +240,29 @@ SrtFilesystemSettings
 SrtNetworkSettings
 SrtSandboxEngineOptions
 SrtSettings
-assertExecutionModeCompatible
 assertParsedRuntimeModelReference
-authenticateAcpProfile
 bridgeProcessJobsController
 createMonoRuntime
 createPiOAuthApiKeyResolver
 createSandboxPolicy
 createSrtSandboxEngine
-defaultExecutionModeForModel
-deleteAcpSession
 describeMonoRuntimeSupport
+describePiBuiltinProvider
 describeSandboxEffectiveState
-discoverClaudeSdkModels
 discoverLocalProviderModels
+discoverLocalProviders
 failClosedSandboxPolicy
 inspectCodexSubscriptionSearch
+isAutodiscoverableProviderId
 isCodedError
+isPiBuiltinProvider
 isPlainObject
 isPrivateBaseUrl
-isRuntimeExecutionMode
 isRuntimeSubagentActivityEvent
 isValidMcpServerName
-listAcpSessions
 listMonoRuntimeBackends
-logoutAcpProfile
+listPiBuiltinProviders
+localProviderDefinitionFor
 managedSrtInstallRoot
 mergeSandboxPolicies
 modelReferenceKey
@@ -295,7 +273,6 @@ networkPolicyAllowsUrl
 parseMcpServers
 parseMonoRuntimeModelReference
 prepareSandboxedCommand
-probeAcpProfile
 protectSandboxRoots
 resolveModelEffortLevels
 resolveRuntimePolicies
@@ -305,29 +282,22 @@ runtimeOptionsForLocalProvider
 sandboxEffectiveStateWarning
 sandboxPolicyToRuntimeOptions
 sandboxRequired
-selectMonoRuntimeBackendId
+sanitizeModelReferenceText
 srtSettingsForPolicy
 validateLocalProviderDefinition
+validateProviderBaseUrl
+validateProviderDefinition
 ```
 
 <!-- public-api-inventory:end -->
 
-Supported backend seams are exposed as data:
+There is exactly one runtime seam:
 
-| Backend | Model refs | Execution mode | Boundary |
-| --- | --- | --- | --- |
-| ACP v1 stdio | `acp:<profile-id>` | `acp` | Strict bounded ACP client through `@mono-agent/agent-runtime` |
-| Claude SDK | `claude:<model>` | `sdk` | Claude SDK through `@mono-agent/agent-runtime` |
-| Claude Code CLI | `claude:<model>` | `cli` | Claude Code CLI bridge through `@mono-agent/agent-runtime` |
-| Codex app CLI | `codex:<model>` | `cli` | Codex app-server bridge through `@mono-agent/agent-runtime` |
-| OpenCode app CLI | `opencode:<provider>:<model>` | `cli` | OpenCode app-server bridge through `@mono-agent/agent-runtime` |
-| Pi SDK provider | `pi:<provider>:<model>` | `sdk` | Pi SDK gateway, including provider ids such as `openai-codex` or Copilot-style provider ids |
+| Runtime | Model refs | Boundary |
+| --- | --- | --- |
+| Pi provider | `<provider>:<model>` | Pi gateway through `@mono-agent/agent-runtime`, including provider ids such as `openai-codex`, `anthropic`, `github-copilot` and `opencode-go` |
 
-Claude Code CLI settings discovery is provider-owned and does not consume
-`settingSources`. Claude-native teammate definitions add `Task` to an explicit
-allowlist automatically; callers using only filesystem `.claude/agents`
-profiles must include `Task` themselves. The kernel's in-process delegation
-surface similarly requires `Agent`. Direct Codex accepts only an effective
+The kernel's in-process delegation surface requires `Agent` in an effective
 allow-all policy, so restrictive named allowlists fail before provider startup.
 
 Native and in-process delegation paths emit the exact
@@ -341,110 +311,10 @@ parent answer text or a tool completion. `RuntimeEventLike` remains permissive
 for other provider telemetry; use `isRuntimeSubagentActivityEvent()` to narrow
 an open event before consuming the required normalized fields.
 
-### ACP v1 profiles
+### ACP
 
-ACP is a dedicated transport mode, not a CLI alias: persist and pass the tuple
-`sdk: "acp"`, model `acp:<profile-id>`, and `executionMode: "acp"`. Supply a
-typed `resolveAcpProfile` callback to `createMonoRuntime()` or the individual
-run. `onAcpInteractionRequest` handles host permission and elicitation requests
-when a profile-specific callback is absent. Bind one host-owned exact 32-byte
-binary `acpSessionTokenKey` at `createMonoRuntime()` (or on each ACP run) and
-keep it stable across restarts. The key is required for every ACP task run and
-for every operation that emits or consumes a session handle.
-
-The exported `probeAcpProfile`, `authenticateAcpProfile`, `logoutAcpProfile`,
-`listAcpSessions`, and `deleteAcpSession` wrappers accept the same resolver and
-policy context. `listAcpSessions` and `deleteAcpSession` require
-`MonoAcpSessionControlOptions`, including `acpSessionTokenKey`; probe,
-authentication, and logout do not consume handles and leave the key optional.
-The confidential authenticated v2 handles must be preserved byte-for-byte and
-must not be compared for equality. Legacy v1 handles are rejected. The wrappers
-deliberately do not accept a caller-provided sandbox implementation:
-runtime-adapter injects its owned implementation before calling the
-product-neutral kernel. The underlying agent service is never managed or
-stopped; only the operation-owned stdio bridge process is reaped.
-
-### Local Pi providers
-
-`runtimeOptionsForLocalProvider()` converts host config into the custom-provider context expected by `@mono-agent/agent-runtime`'s Pi adapter. It only returns options when the parsed model is `pi:<provider>:<model>` and `<provider>` matches a configured local provider. Built-in Pi providers such as `pi:openai-codex:gpt-5.5` return `{}`.
-
-Built-in Pi OAuth providers still need credentials. Use
-`createPiOAuthApiKeyResolver({ path })` and pass it to `createMonoRuntime()` as
-`resolvePiApiKey` when the host owns an auth JSON file such as
-`~/.pi/agent/auth.json`.
-
-Ollama example:
-
-```ts
-import {
-  parseMonoRuntimeModelReference,
-  runtimeOptionsForLocalProvider,
-} from "@mono-agent/runtime-adapter";
-
-const model = parseMonoRuntimeModelReference("pi:ollama:qwen3:8b");
-const runtimeOptions = runtimeOptionsForLocalProvider(model, [
-  {
-    id: "ollama",
-    type: "ollama",
-    baseUrl: "http://localhost:11434",
-    enabled: true,
-    models: [
-      { name: "qwen3:8b", capabilities: { context_window: 32768 } },
-    ],
-  },
-]);
-```
-
-Private HTTP(S) URLs such as `localhost`, RFC1918 addresses, and Tailscale CGNAT addresses are allowed. Public hosts require `https://` plus `trustPublicUrl: true`; invalid local-provider config throws `RuntimeAdapterError` instead of falling back to a hosted provider.
-
-### Route safety and managed SRT
-
-`uniform` fallback safety reuses one monotonic runtime contract and fails closed
-when a route cannot represent a required capability. Explicit
-`per-route-native` creates isolated provider runtimes: Pi retains mono-agent
-tool policy and uses SRT only when an effective native sandbox policy is active
-(otherwise telemetry says `disabled` and subprocess tools are unsandboxed),
-Claude drops only the unrepresentable mono-agent SRT layer, and direct
-Codex/OpenCode use provider-native safety with an effective allow-all policy
-(allowlist omitted or containing `"*"`, empty denylist). That projection is
-available only when the effective internal `sandboxPolicy.protectedRoots` is
-empty: a provider-native non-Pi route carrying protected roots is rejected as
-`safety_unavailable` before its resolver or provider runs. This also covers a
-named `Agent` child that inherits a protected parent policy. Capability-bearing
-inputs are never silently discarded; an unsupported route is skipped with
-bounded, credential-free safety telemetry.
-
-On macOS, the default SRT resolver prefers the integrity-verified managed copy in
-the private mono-agent cache. It revalidates the managed tree against an
-independently pinned digest before each launch. A present but corrupt managed
-install fails closed and never downgrades to an external `srt`; the external
-command is considered only when the managed path is absent. External and
-explicit commands are canonicalized to absolute trusted files, pinned by content
-and filesystem identity after their functional proof, and revalidated before
-use. Generated filesystem policy denies global reads first, then reopens only
-configured roots, reviewed immutable OS paths, and narrowly derived runtime
-dependencies; relative deny-write globs stay anchored to the policy root.
-
-Application hosts can pass `trustedReadRoots` to `createSrtSandboxEngine` for
-host-owned execution state such as the active managed agent-app closure. Those
-roots are canonicalized once, remain readable after request-policy
-intersection, are never widened to their parent directory, and are always
-added to `denyWrite`. This is not a config surface for model- or user-supplied
-paths.
-
-The Node executable that starts a managed or explicit SRT CLI must also be
-single-link, executable without setuid/setgid privilege bits, current-user- or
-root-owned, and not group/world-writable. This is a path-sandbox invariant, not
-only a cross-principal ownership check: an unseen hardlink alias inside a writable
-root could expose a user-owned launcher inode to the same-UID sandboxed workload,
-while no portable API can enumerate all aliases.
-NVM, Homebrew Cellar, system Node, and hosted toolcache paths are accepted without
-path allowlisting when their selected executable satisfies that contract. A
-multiple-link rejection names the observed link count and directs the operator
-to a single-link Node installation. Managed cache files and standalone SRT
-executables retain the same single-link rule independently. Explicit Node+CLI
-resolution fails closed on Windows or another platform without POSIX uid
-ownership checks instead of treating POSIX-looking mode bits as NTFS authority.
+The ACP *client* runtime backend was removed in 0.21.0. `mono-agent bridge acp`
+— serving ACP to clients — is unaffected and remains supported.
 
 ## Dependency Boundary
 

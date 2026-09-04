@@ -5,7 +5,6 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import {
   failClosedSandboxPolicy,
   mergeSandboxPolicies,
-  modelReferenceKey,
   protectSandboxRoots,
   type RuntimeModelReference,
   type SandboxEngine,
@@ -88,13 +87,6 @@ export function createProcessJobsRuntimeExtension(
       result = options.next === undefined
         ? { runtimeOptions: {}, cleanup: async () => {} }
         : await options.next(input);
-      const effectiveModel = runtimeModel(result.runtimeOptions?.model) ?? options.baseModel;
-      if (retainedRoots && effectiveModel.sdk !== "pi") {
-        throw new Error(
-          `${PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR} The effective turn model ${
-            modelReferenceKey(effectiveModel)} is not Pi-native.`,
-        );
-      }
       let runtimeOptions = result.runtimeOptions ?? {};
       if (protectedRoots.length > 0 && options.protectionPosture?.suppressSyntheticSandbox !== true) {
         if (!await sandboxEngineAvailable(options.sandboxEngine)) {
@@ -195,14 +187,6 @@ function protectedRootContainsWorkspace(protectedRoot: string, workspace: string
     || (workspaceFromRoot !== ".."
       && !workspaceFromRoot.startsWith(`..${sep}`)
       && !isAbsolute(workspaceFromRoot));
-}
-
-function runtimeModel(value: unknown): RuntimeModelReference | undefined {
-  return typeof value === "object" && value !== null
-    && typeof (value as { sdk?: unknown }).sdk === "string"
-    && typeof (value as { model?: unknown }).model === "string"
-    ? value as RuntimeModelReference
-    : undefined;
 }
 
 async function sandboxEngineAvailable(engine: SandboxEngine | undefined): Promise<boolean> {

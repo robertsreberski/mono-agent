@@ -23,6 +23,7 @@ import {
   type AgentStreamWireFrame,
   type ChannelAskSubmission,
   type ChannelInteractionHub,
+  MAX_INFO_BODY_BYTES,
 } from "@mono-agent/agent-contracts";
 
 import {
@@ -754,6 +755,103 @@ describe("startTuiAdapter", () => {
     const info = (await (await fetch(running.infoUrl)).json()) as Record<string, unknown>;
 
     expect("modelOptions" in info).toBe(false);
+  });
+
+  it("passes the provider catalog through /v1/info and gates modelCatalog on the supplied service", async () => {
+    const providers = [{
+      id: "anthropic",
+      label: "Anthropic",
+      modelCount: 13,
+      source: "builtin",
+      configured: true,
+    }] as const;
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: { model: "claude-fable-5", providers },
+    });
+
+    const info = await (await fetch(running.infoUrl)).json() as {
+      providers: unknown;
+      capabilities: Record<string, unknown>;
+    };
+    expect(info.providers).toEqual(providers);
+    expect(info.capabilities).not.toHaveProperty("modelCatalog");
+
+    await running.stop();
+    running = undefined;
+
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: { model: "claude-fable-5" },
+      modelCatalog: () => ({ models: [], truncated: false }),
+    });
+    const withCatalog = await (await fetch(running.infoUrl)).json() as {
+      capabilities: Record<string, unknown>;
+    };
+    expect(withCatalog.capabilities).toMatchObject({ modelCatalog: { version: 1, maxPageSize: 200 } });
+  });
+
+  it("validates, authorizes, and serves the /v1/models catalog through the injected provider", async () => {
+    const requests: unknown[] = [];
+    running = await startTuiAdapter({
+      apiKey: "fixture-secret",
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      modelCatalog: (request) => {
+        requests.push(request);
+        return {
+          models: [{
+            id: "claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6",
+            provider: "anthropic",
+            providerLabel: "Anthropic",
+          }],
+          nextCursor: "claude-sonnet-4-6",
+          truncated: true,
+        };
+      },
+    });
+    const headers = { authorization: "Bearer fixture-secret" };
+
+    expect((await fetch(`${running.baseUrl}/v1/models?provider=anthropic`)).status).toBe(401);
+
+    const ok = await fetch(`${running.baseUrl}/v1/models?provider=anthropic&limit=10`, { headers });
+    expect(ok.status).toBe(200);
+    await expect(ok.json()).resolves.toEqual({
+      models: [{
+        id: "claude-sonnet-4-6",
+        name: "Claude Sonnet 4.6",
+        provider: "anthropic",
+        providerLabel: "Anthropic",
+      }],
+      nextCursor: "claude-sonnet-4-6",
+      truncated: true,
+    });
+    expect(requests).toEqual([{ provider: "anthropic", limit: 10 }]);
+
+    // Missing provider/q, and out-of-range limit, are client errors.
+    expect((await fetch(`${running.baseUrl}/v1/models`, { headers })).status).toBe(400);
+    expect((await fetch(`${running.baseUrl}/v1/models?provider=anthropic&limit=999`, { headers })).status).toBe(400);
+
+    const search = await fetch(`${running.baseUrl}/v1/models?q=claude&limit=5`, { headers });
+    expect(search.status).toBe(200);
+    expect(requests).toContainEqual({ query: "claude", limit: 5 });
+
+    // The two listing modes are mutually exclusive: suppliers service
+    // `provider` and ignore `q`, so accepting both would answer a search with a
+    // provider-scoped page. Reject it instead of silently answering the wrong
+    // question, and never reach the supplier.
+    const both = await fetch(`${running.baseUrl}/v1/models?provider=anthropic&q=claude&limit=10`, { headers });
+    expect(both.status).toBe(400);
+    await expect(both.json()).resolves.toMatchObject({
+      error: { code: "invalid_request", message: "provider and q are mutually exclusive." },
+    });
+    expect(requests).not.toContainEqual({ provider: "anthropic", query: "claude", limit: 10 });
+  });
+
+  it("404s /v1/models when no catalog service is supplied", async () => {
+    running = await startTuiAdapter({ responder: scriptedResponder(async () => ({ text: "ok" })) });
+
+    expect((await fetch(`${running.baseUrl}/v1/models?provider=anthropic`)).status).toBe(404);
   });
 
   it("accepts an info PROVIDER function and resolves it fresh on every /v1/info request", async () => {
@@ -1897,6 +1995,255 @@ describe("startTuiAdapter", () => {
     expect(contentSerializations).toBe(1);
   });
 });
+
+/**
+ * The producer-side `/v1/info` fence.
+ *
+ * The console reads at most 1 MiB of this body and rejects a larger one
+ * WHOLESALE: `info()` throws `operator_info_too_large` and the agent renders
+ * OFFLINE, not degraded, on a 5 s poll behind a debug-level log. Before this
+ * fence the only enforcement of that cap lived in the consumer, so any
+ * producer-side miss took the agent down. The invariant pinned here is
+ * therefore not "this fixture is handled" but: **every `/v1/info` response is a
+ * 200 carrying a schema-1 JSON body of at most 1 MiB, whatever the info
+ * provider returns.**
+ */
+describe("startTuiAdapter /v1/info payload fence", () => {
+
+  async function readInfo(url: string): Promise<{
+    readonly status: number;
+    readonly contentType: string | null;
+    readonly bytes: number;
+    readonly body: Record<string, unknown>;
+  }> {
+    const response = await fetch(url);
+    const text = await response.text();
+    return {
+      status: response.status,
+      contentType: response.headers.get("content-type"),
+      bytes: Buffer.byteLength(text, "utf8"),
+      body: JSON.parse(text) as Record<string, unknown>,
+    };
+  }
+
+  it("sheds only the oversized field and keeps the body under the console read cap", async () => {
+    // ~1.6 MiB of skills: over the cap on its own, with every other field tiny.
+    const items = Array.from({ length: 3_000 }, (_unused, index) => ({
+      name: `skill-${String(index)}`,
+      description: "d".repeat(512),
+      availability: "inlined" as const,
+    }));
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: {
+        label: "fenced",
+        model: "anthropic:claude-fable-5",
+        effort: "high",
+        models: ["anthropic:claude-fable-5", "ollama:qwen3.6"],
+        modelOptions: { "anthropic:claude-fable-5": { reasoning: true } },
+        providers: [{ id: "anthropic", label: "Anthropic", modelCount: 1, source: "builtin" }],
+        skills: { status: "ready", items, total: items.length },
+      },
+    });
+
+    const info = await readInfo(running.infoUrl);
+
+    expect(info.status).toBe(200);
+    expect(info.contentType).toContain("application/json");
+    expect(info.bytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
+    // Schema 1 survives shedding: the console compares it with `!==`.
+    expect(info.body.schema).toBe(1);
+    expect(info.body.capabilities).toEqual({ attachments: true });
+    // Only the offending field is gone. Shedding in a fixed least-important
+    // order would have taken modelOptions, models and providers with it, so a
+    // 1.6 MiB skill registry would have cost the console its model picker too.
+    expect("skills" in info.body).toBe(false);
+    expect(info.body.label).toBe("fenced");
+    expect(info.body.model).toBe("anthropic:claude-fable-5");
+    expect(info.body.effort).toBe("high");
+    expect(info.body.models).toEqual(["anthropic:claude-fable-5", "ollama:qwen3.6"]);
+    expect(info.body.modelOptions).toEqual({ "anthropic:claude-fable-5": { reasoning: true } });
+    expect(info.body.providers).toEqual([
+      { id: "anthropic", label: "Anthropic", modelCount: 1, source: "builtin" },
+    ]);
+  });
+
+  it("sheds an oversized model reference rather than the whole body", async () => {
+    // The pathological field is the one field a fixed order would shed LAST.
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: {
+        model: `anthropic:${"m".repeat(2 * 1024 * 1024)}`,
+        effort: "high",
+        models: ["ollama:qwen3.6"],
+        skills: { status: "ready", items: [], total: 0 },
+      },
+    });
+
+    const info = await readInfo(running.infoUrl);
+
+    expect(info.status).toBe(200);
+    expect(info.bytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
+    expect(info.body.schema).toBe(1);
+    expect("model" in info.body).toBe(false);
+    expect(info.body.effort).toBe("high");
+    expect(info.body.models).toEqual(["ollama:qwen3.6"]);
+    expect(info.body.skills).toEqual({ status: "ready", items: [], total: 0 });
+  });
+
+  it("stays online when a field cannot be serialized at all", async () => {
+    // A non-serializable value used to throw inside the response literal, land
+    // in the route's `.catch`, and answer 500 — which the console reads as the
+    // agent being unreachable rather than as one missing projection.
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: {
+        model: "anthropic:claude-fable-5",
+        models: ["anthropic:claude-fable-5"],
+        skills: { status: "ready", items: [], total: 1n } as never,
+      },
+    });
+
+    const info = await readInfo(running.infoUrl);
+
+    expect(info.status).toBe(200);
+    expect(info.body.schema).toBe(1);
+    expect("skills" in info.body).toBe(false);
+    expect(info.body.model).toBe("anthropic:claude-fable-5");
+    expect(info.body.models).toEqual(["anthropic:claude-fable-5"]);
+  });
+
+  it("sends a body that fits byte-for-byte, shedding nothing", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: {
+        label: "small",
+        model: "anthropic:claude-fable-5",
+        effort: "high",
+        models: ["anthropic:claude-fable-5"],
+        modelOptions: { "anthropic:claude-fable-5": { reasoning: true } },
+        providers: [{ id: "anthropic", label: "Anthropic", modelCount: 1, source: "builtin" }],
+        skills: { status: "ready", items: [], total: 0 },
+      },
+    });
+
+    const info = await readInfo(running.infoUrl);
+
+    // A fence that sheds when it does not have to is as wrong as no fence.
+    expect(info.bytes).toBe(Buffer.byteLength(JSON.stringify(info.body), "utf8"));
+    expect(Object.keys(info.body).sort()).toEqual([
+      "capabilities",
+      "effort",
+      "label",
+      "model",
+      "modelOptions",
+      "models",
+      "pid",
+      "providers",
+      "schema",
+      "skills",
+    ]);
+  });
+});
+
+/**
+ * The producer-side `/v1/info` ERROR fence.
+ *
+ * The success path is bounded by shedding fields, but a rejecting `info`
+ * provider never reaches it: it lands in the route's `.catch` and answers
+ * through the shared JSON error responder, which serialized whatever message
+ * the rejection carried. A real loopback probe returned a 1,052,696-byte 500
+ * against a 1,048,576-byte contract. This is not reachable through
+ * mono-agent's own info provider — its overflow stays on the bounded success
+ * path — but the adapter is PUBLISHED, and any embedder whose `info` throws
+ * large reaches it. Bounding success and not failure is not a defensible wire
+ * contract, so the invariant pinned here is: **no `/v1/info` response of any
+ * status exceeds `MAX_INFO_BODY_BYTES`.**
+ */
+describe("startTuiAdapter /v1/info error fence", () => {
+  async function readRaw(url: string): Promise<{
+    readonly status: number;
+    readonly contentType: string | null;
+    readonly bytes: number;
+    readonly text: string;
+  }> {
+    const response = await fetch(url);
+    const text = await response.text();
+    return {
+      status: response.status,
+      contentType: response.headers.get("content-type"),
+      bytes: Buffer.byteLength(text, "utf8"),
+      text,
+    };
+  }
+
+  it("clamps an oversized rejection instead of serializing it whole", async () => {
+    const detail = "D".repeat(2 * 1024 * 1024);
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: () => {
+        throw new CodedError("info_provider_failed", `Discovery failed: ${detail}`);
+      },
+    });
+
+    const raw = await readRaw(running.infoUrl);
+
+    expect(raw.status).toBe(500);
+    expect(raw.contentType).toContain("application/json");
+    expect(raw.bytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
+    // Still a valid, still a CODED error envelope: the console and the TUI
+    // switch on `code`, so clamping must not cost it.
+    const body = JSON.parse(raw.text) as { error?: { message?: unknown; code?: unknown } };
+    expect(body.error?.code).toBe("info_provider_failed");
+    expect(typeof body.error?.message).toBe("string");
+    // A clamped message still names what failed, and says it was clamped, so a
+    // reader is never handed a truncated diagnostic as if it were the whole one.
+    expect(String(body.error?.message).startsWith("Discovery failed: ")).toBe(true);
+    expect(String(body.error?.message).endsWith("[truncated]")).toBe(true);
+  });
+
+  it("clamps against the SERIALIZED envelope, not the raw message", async () => {
+    // Every unit here escapes to six bytes (\u0007 -> "\\u0007"), so a clamp
+    // that budgeted the raw string would hand back a body six times the cap.
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: () => {
+        throw new CodedError("info_provider_failed", `bell:${"\u0007".repeat(1024 * 1024)}`);
+      },
+    });
+
+    const raw = await readRaw(running.infoUrl);
+
+    expect(raw.status).toBe(500);
+    expect(raw.bytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
+    const body = JSON.parse(raw.text) as { error?: { message?: unknown; code?: unknown } };
+    expect(body.error?.code).toBe("info_provider_failed");
+    expect(String(body.error?.message).startsWith("bell:\u0007")).toBe(true);
+    expect(String(body.error?.message).endsWith("[truncated]")).toBe(true);
+  });
+
+  it("passes an ordinary rejection through byte-for-byte", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: async () => {
+        await Promise.resolve();
+        throw new CodedError("info_provider_failed", "Ollama endpoint refused the connection.");
+      },
+    });
+
+    const raw = await readRaw(running.infoUrl);
+
+    expect(raw.status).toBe(500);
+    // A fence that clamps when it does not have to is as wrong as no fence.
+    expect(JSON.parse(raw.text)).toEqual({
+      error: {
+        message: "Ollama endpoint refused the connection.",
+        code: "info_provider_failed",
+      },
+    });
+  });
+});
+
 
 function wildcardNonLoopbackLookup(
   _hostname: string,

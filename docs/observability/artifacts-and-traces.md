@@ -14,7 +14,7 @@ This page covers where artifacts land, the latency-attribution events inside the
 Each agent run writes two files into `artifacts.dir`:
 
 - `run-<id>.events.jsonl` — the latest successfully replaced snapshot of sensitive-key-redacted, credential-scanned, bounded events that reached the recorder's in-memory buffer, one event per line (assistant deltas, tool calls/results, timing, usage/cost).
-- `run-<id>.summary.json` — a private local roll-up of the run (final `status`, aggregate usage/cost, model, and the compiled `systemPrompt` when captured). See [Run status](#run-status-and-stale-run-reconciliation) for the status values. Routed runs preserve normalized `failoverHistory` (model, failure, subkind, and request id when available). The companion events JSONL records bounded `provider_route_safety` events with each uniform or provider-native contract/status. Credentials and private resolver options are never copied into either artifact.
+- `run-<id>.summary.json` — a private local roll-up of the run (final `status`, aggregate usage/cost, model, and the compiled `systemPrompt` when captured). See [Run status](#run-status-and-stale-run-reconciliation) for the status values. Routed runs preserve normalized `failoverHistory` (model, failure, subkind, and request id when available). The companion events JSONL records the bounded `provider_retry_started`, `provider_failover_started` and `provider_failover_completed` events. These mark transitions, not attempts: a retry event precedes each same-model retry, a failover event marks each route change, and a completion event is written only when a *different* model than the configured route ultimately answered. A run whose primary route succeeds first time emits none of the three — its `failoverHistory` is the record of what happened. Credentials and private resolver options are never copied into either artifact.
 
 Memory-maintenance runs (`mem-*`, used by BuJo capture and rituals) write the same two-file shape under `artifacts.dir/memory/`. Keeping them in a separate namespace lets operator surfaces default to human-facing agent runs while still allowing explicit memory export, audit, and metrics flows.
 
@@ -167,9 +167,7 @@ cursors, and a maximum of 10 previews; `get` returns a selected invocation or
 result in chunks of at most 8 KiB. Current-run and foreign-conversation records
 are opaque, daily rollover buckets remain one logical scope, isolated/proactive
 runs require `includeIsolated: true`, nested history-tool result bodies are
-omitted, and every result is marked untrusted. Direct OpenCode and ACP routes
-still persist and cold-project lifecycle records but cannot expose this host
-tool because they have no request-scoped host-tool seam. See [MCP
+omitted, and every result is marked untrusted. Lifecycle records persist and cold-project for every route, and the pi-native runtime exposes this host tool through its request-scoped host-tool seam. See [MCP
 servers](/tools/mcp/#sessionhistory-retained-tool-lifecycles) and [Tool
 policy](/tools/policy/#sessionhistory).
 

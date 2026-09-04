@@ -11,6 +11,20 @@ import { initMonoAgentFolder } from "../init.js";
 import { answersFromCli } from "../wizard/from-flags.js";
 import { findPreset, presetAnswers, presetIds } from "../wizard/presets.js";
 
+/**
+ * A pi auth store path that is guaranteed to hold nothing. Provider credential
+ * detection falls back to `~/.pi/agent/auth.json` when no path is supplied, so
+ * without this a populated developer store — not the value under test — decides
+ * the outcome, and the test passes locally while failing on a clean runner.
+ */
+async function emptyPiAuthStore(): Promise<{ readonly piAuthPath: string; readonly cleanup: () => Promise<void> }> {
+  const dir = await mkdtemp(join(tmpdir(), "cli-presets-pi-auth-"));
+  return {
+    piAuthPath: join(dir, "auth.json"),
+    cleanup: () => rm(dir, { recursive: true, force: true }),
+  };
+}
+
 describe("parseCliArgs preset flags & alias normalization", () => {
   it("collects positionals for `presets show <id>`", () => {
     expect(parseCliArgs(["presets", "show", "code-sandbox"])).toMatchObject({
@@ -95,7 +109,7 @@ describe("init provider setup gate", () => {
   it("does not execute provider setup during dry-run even with --auth", async () => {
     const execute = vi.fn(async () => []);
     const status = await runProviderSetupBeforeInit({
-      modelRefs: ["codex:gpt-5.6-terra"],
+      modelRefs: ["openai-codex:gpt-5.6-terra"],
       cwd: "/agent",
       auth: true,
       dryRun: true,
@@ -107,10 +121,11 @@ describe("init provider setup gate", () => {
 
   it("reports provider setup failures as failed", async () => {
     const status = await runProviderSetupBeforeInit({
-      modelRefs: ["codex:gpt-5.6-terra"],
+      modelRefs: ["openai-codex:gpt-5.6-terra"],
       cwd: "/agent",
       auth: true,
       dryRun: false,
+      forceAuthentication: true,
       execute: async (plan) => [
         {
           action: plan.actions[0]!,
@@ -124,29 +139,62 @@ describe("init provider setup gate", () => {
 
   it("skips direct provider login when durable dotenv credentials are detected", async () => {
     const execute = vi.fn(async () => []);
-    const status = await runProviderSetupBeforeInit({
-      modelRefs: ["codex:gpt-5.6-sol", "claude:claude-sonnet-5"],
-      cwd: "/agent",
-      auth: true,
-      dryRun: false,
-      persistedEnv: {
-        OPENAI_API_KEY: "durable-openai-key",
-        CLAUDE_CODE_OAUTH_TOKEN: "durable-claude-token",
-      },
-      execute,
-    });
+    // An empty store keeps this machine's ~/.pi/agent/auth.json out of the
+    // decision, so only the durable dotenv value can suppress the login.
+    const { piAuthPath, cleanup } = await emptyPiAuthStore();
+    try {
+      const status = await runProviderSetupBeforeInit({
+        modelRefs: ["opencode-go:kimi-k2.6"],
+        cwd: "/agent",
+        auth: true,
+        dryRun: false,
+        piAuthPath,
+        persistedEnv: { OPENCODE_API_KEY: "durable-opencode-key" },
+        execute,
+      });
 
-    expect(status).toBe("skipped");
-    expect(execute).not.toHaveBeenCalled();
+      expect(status).toBe("skipped");
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("still runs the provider login when the durable dotenv credential is absent", async () => {
+    // The negative half of the pair above: without it, a detector that reported
+    // every provider as credentialed would pass the suppression test silently.
+    const plannedActionIds: string[][] = [];
+    const execute = vi.fn(async (plan: { readonly actions: readonly { readonly id: string }[] }) => {
+      plannedActionIds.push(plan.actions.map((action) => action.id));
+      return [];
+    });
+    const { piAuthPath, cleanup } = await emptyPiAuthStore();
+    try {
+      const status = await runProviderSetupBeforeInit({
+        modelRefs: ["opencode-go:kimi-k2.6"],
+        cwd: "/agent",
+        auth: true,
+        dryRun: false,
+        piAuthPath,
+        persistedEnv: { OPENCODE_API_KEY: "   " },
+        execute,
+      });
+
+      expect(status).toBe("ok");
+      expect(execute).toHaveBeenCalledOnce();
+      expect(plannedActionIds).toEqual([["pi-api-key:opencode-go"]]);
+    } finally {
+      await cleanup();
+    }
   });
 
   it("does not fail non-interactive setup when an API-key action is skipped", async () => {
     const status = await runProviderSetupBeforeInit({
-      modelRefs: ["pi:opencode-go:kimi-k2.6"],
+      modelRefs: ["opencode-go:kimi-k2.6"],
       cwd: "/agent",
       auth: true,
       dryRun: false,
-      credentialStates: { "pi:opencode-go": "auth_required" },
+      credentialStates: { "opencode-go": "auth_required" },
       execute: async (plan) => [
         {
           action: plan.actions[0]!,
@@ -164,7 +212,7 @@ describe("init provider setup gate", () => {
     const execute = vi.fn(async () => []);
 
     const status = await runProviderSetupBeforeInit({
-      modelRefs: ["codex:gpt-5.6-terra"],
+      modelRefs: ["openai-codex:gpt-5.6-terra"],
       cwd: "/agent",
       auth: true,
       dryRun: false,
@@ -189,22 +237,35 @@ describe("answersFromCli", () => {
   });
 
   it("maps --memory to a module id and lets --model/--effort override the preset runtime", () => {
-    const answers = answersFromCli({ presetId: "local-private", model: "codex:gpt-5.6-terra", effort: "high", memory: "lite" });
-    expect(answers.model).toBe("codex:gpt-5.6-terra");
+    const answers = answersFromCli({ presetId: "local-private", model: "openai-codex:gpt-5.6-terra", effort: "high", memory: "lite" });
+    expect(answers.model).toBe("openai-codex:gpt-5.6-terra");
     expect(answers.effort).toBe("high");
     expect(answers.memory).toBe("memory:lite");
   });
 
-  it("preserves exact --model and canonical --fallback refs from non-interactive flags", () => {
+  it("canonicalizes a legacy pi: ref so local-provider detection still fires", () => {
+    // The parser accepts `pi:<provider>:<model>`, but every downstream check
+    // matches the literal ref text — storing it raw skipped `provider:ollama`
+    // and billed the route as a credentialed cloud model.
     const answers = answersFromCli({
       model: "pi:ollama:gemma4:31b",
-      fallbacks: [{ model: "codex:gpt-5.6-terra" }, { model: "pi:lmstudio:qwen/qwen3-8b" }],
+      fallbacks: [{ model: "pi:openai-codex:gpt-5.6-terra" }],
     });
 
-    expect(answers.model).toBe("pi:ollama:gemma4:31b");
+    expect(answers.model).toBe("ollama:gemma4:31b");
+    expect(answers.fallbacks?.map((fallback) => fallback.model)).toEqual(["openai-codex:gpt-5.6-terra"]);
+  });
+
+  it("preserves exact --model and canonical --fallback refs from non-interactive flags", () => {
+    const answers = answersFromCli({
+      model: "ollama:gemma4:31b",
+      fallbacks: [{ model: "openai-codex:gpt-5.6-terra" }, { model: "lmstudio:qwen/qwen3-8b" }],
+    });
+
+    expect(answers.model).toBe("ollama:gemma4:31b");
     expect(answers.fallbacks).toEqual([
-      { model: "codex:gpt-5.6-terra" },
-      { model: "pi:lmstudio:qwen/qwen3-8b" },
+      { model: "openai-codex:gpt-5.6-terra" },
+      { model: "lmstudio:qwen/qwen3-8b" },
     ]);
   });
 
@@ -212,33 +273,31 @@ describe("answersFromCli", () => {
     expect(answersFromCli({ name: "  Research Companion  " }).name).toBe("Research Companion");
   });
 
-  it("forwards canonical per-route fallbacks and route safety", () => {
+  it("forwards canonical per-route fallbacks", () => {
     const answers = answersFromCli({
-      model: "pi:ollama:qwen3:8b",
+      model: "ollama:qwen3:8b",
       fallbacks: [
-        { model: "codex:gpt-5.6-sol", effort: "minimal" },
-        { model: "claude:claude-sonnet-5", effort: "max" },
+        { model: "openai-codex:gpt-5.6-sol", effort: "minimal" },
+        { model: "anthropic:claude-sonnet-5", effort: "max" },
       ],
-      routeSafety: "per-route-native",
     });
     expect(answers.fallbacks).toEqual([
-      { model: "codex:gpt-5.6-sol", effort: "minimal" },
-      { model: "claude:claude-sonnet-5", effort: "max" },
+      { model: "openai-codex:gpt-5.6-sol", effort: "minimal" },
+      { model: "anthropic:claude-sonnet-5", effort: "max" },
     ]);
-    expect(answers.routeSafety).toBe("per-route-native");
   });
 
   it("rejects duplicate canonical routes and invalid public names", () => {
     expect(() => answersFromCli({
-      model: "codex:gpt-5.6-sol",
-      fallbacks: [{ model: "codex:gpt-5.6-sol" }],
+      model: "openai-codex:gpt-5.6-sol",
+      fallbacks: [{ model: "openai-codex:gpt-5.6-sol" }],
     })).toThrow("Duplicate model route");
     expect(() => answersFromCli({ name: "line one\nline two" })).toThrow("single-line");
   });
 
   it("rejects wizard sentinel values from non-interactive model flags", () => {
     expect(() => answersFromCli({ model: "__other__" })).toThrow("Wizard model sentinel");
-    expect(() => answersFromCli({ fallbacks: [{ model: "__done__" }, { model: "pi:ollama:gemma4:31b" }] }))
+    expect(() => answersFromCli({ fallbacks: [{ model: "__done__" }, { model: "ollama:gemma4:31b" }] }))
       .toThrow("Wizard model sentinel");
   });
 

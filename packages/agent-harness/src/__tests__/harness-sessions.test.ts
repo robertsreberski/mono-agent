@@ -162,7 +162,7 @@ describe("AgentHarness continuous sessions", () => {
     const identityPath = await identityFixture();
     const historyStore = await primedHistoryStore("conv-1");
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     const first = await harness.run(request("conv-1", "first question"));
     expect(first.text).toBe("answer");
@@ -195,7 +195,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       historyStore,
       session,
     });
@@ -223,7 +222,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       historyStore,
       session,
     });
@@ -270,7 +268,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       historyStore,
       session,
       recorderFactory,
@@ -298,7 +295,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       historyStore,
       session,
       runtimeOptions: { mcpServers: { control: { command: "a8c-control" } } },
@@ -343,7 +339,7 @@ describe("AgentHarness continuous sessions", () => {
   it("releases an acquired session when boundary event callbacks throw before runtime", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-boundary", "first"));
     const failed = await harness.run({
@@ -376,7 +372,7 @@ describe("AgentHarness continuous sessions", () => {
       },
     };
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", memory, session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, memory, session });
 
     await harness.run(request("conv-mem", "first question"));
     await harness.run(request("conv-mem", "second question"));
@@ -406,7 +402,7 @@ describe("AgentHarness continuous sessions", () => {
       providerSessionId: options.sessionId as string,
     }));
     const harness = createAgentHarness({
-      identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session,
+      identityPath, runtime: fake.runtime, model, historyStore, session,
       piSessionsRoot,
     });
 
@@ -459,7 +455,7 @@ describe("AgentHarness continuous sessions", () => {
       providerSessionId: options.sessionId as string,
     }));
     const harness = createAgentHarness({
-      identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session,
+      identityPath, runtime: fake.runtime, model, historyStore, session,
       piSessionsRoot: join(durableRoot, "pi-sessions"),
     });
 
@@ -491,7 +487,7 @@ describe("AgentHarness continuous sessions", () => {
     }));
 
     await createAgentHarness({
-      identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session,
+      identityPath, runtime: fake.runtime, model, historyStore, session,
       piSessionsRoot: join(durableRoot, "pi-sessions"),
     }).run(request("conv-forged", "next"));
 
@@ -518,7 +514,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fakeA.runtime,
       model,
-      executionMode: "sdk",
       historyStore: createCoordinatedDurableHistoryStore({ root: historyRoot }),
       session,
       piSessionsRoot,
@@ -527,7 +522,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fakeB.runtime,
       model,
-      executionMode: "sdk",
       historyStore: createCoordinatedDurableHistoryStore({ root: historyRoot }),
       session,
       piSessionsRoot,
@@ -567,7 +561,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fakeA.runtime,
       model,
-      executionMode: "sdk",
       historyStore: createCoordinatedDurableHistoryStore({ root: historyRoot }),
       session,
       piSessionsRoot,
@@ -579,7 +572,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fakeB.runtime,
       model,
-      executionMode: "sdk",
       historyStore: createCoordinatedDurableHistoryStore({ root: historyRoot }),
       session,
       piSessionsRoot,
@@ -593,7 +585,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fakeA.runtime,
       model,
-      executionMode: "sdk",
       historyStore: createCoordinatedDurableHistoryStore({ root: historyRoot }),
       session,
       piSessionsRoot,
@@ -618,7 +609,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       historyStore,
       session,
       piSessionsRoot: "/tmp/configured-root",
@@ -655,7 +645,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       historyStore,
       session,
       piSessionsRoot: join(root, "pi"),
@@ -702,7 +691,6 @@ describe("AgentHarness continuous sessions", () => {
         identityPath,
         runtime: fake.runtime,
         model,
-        executionMode: "sdk",
         historyStore,
         session,
         piSessionsRoot: join(root, "pi"),
@@ -735,7 +723,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       historyStore,
       session,
       piSessionsRoot: join(root, "pi"),
@@ -757,7 +744,7 @@ describe("AgentHarness continuous sessions", () => {
     const identityPath = await identityFixture();
     const ids = ["ps-1", "ps-2", "ps-3"];
     const fake = createSessionFakeRuntime(async (_p, _o, call) => ({ text: "ok", providerSessionId: ids[call - 1] ?? null }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-1"));
     await harness.run(request("conv-1"));
@@ -778,7 +765,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "recovered", providerSessionId: "ps-next" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     const first = await harness.run(request("conv-1"));
     expect(first.text).toBe("recovered");
@@ -808,7 +795,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "recovered", providerSessionId: "ps-next" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     const first = await harness.run(request("conv-1"));
     expect(first.text).toBe("recovered");
@@ -831,7 +818,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "recovered", providerSessionId: "ps-next" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     await harness.run(request("conv-1"));
     const second = await harness.run(request("conv-1", "again"));
@@ -851,7 +838,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "recovered", providerSessionId: "ps-next" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-1"));
     const second = await harness.run(request("conv-1"));
@@ -869,7 +856,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "ok", providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-1"));
     const second = await harness.run(request("conv-1"));
@@ -884,7 +871,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       session: { ...session, supportsResume: false },
     });
 
@@ -903,7 +889,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       runtimeOptions: {
         piSessionsRoot: "/tmp/static-root",
         sessionKeepAlive: true,
@@ -937,7 +922,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       session: { mode: "per-message", idleTimeoutMs: 60_000, supportsResume: true },
     });
 
@@ -953,7 +937,7 @@ describe("AgentHarness continuous sessions", () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     await harness.run(request("conv-1", "first"));
     await harness.run(request("conv-1", "second"));
@@ -975,7 +959,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       historyStore,
       skillsCache,
       session,
@@ -1003,7 +986,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       historyStore,
       session,
     });
@@ -1030,7 +1012,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       historyStore,
       session,
       toolHistory: {
@@ -1073,7 +1054,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       historyStore,
       session,
       toolHistory: {
@@ -1110,7 +1090,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: `answer-${call}`, providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     await harness.run(request("conv-1", "seed"));
     const inFlight = harness.run(request("conv-1", "long"));
@@ -1126,7 +1106,7 @@ describe("AgentHarness continuous sessions", () => {
   it("dispose retires this harness's tracked sessions, latches admission, and leaves process-global registries alone", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "ok", providerSessionId: "ps-1" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-1"));
     await harness.dispose?.();
@@ -1147,7 +1127,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "ok", providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-1"));
     await harness.run(request("conv-1"));
@@ -1169,7 +1149,7 @@ describe("AgentHarness continuous sessions", () => {
         ? { failureKind: "session_not_found", error: "gone" }
         : { failureKind: "provider_unavailable", error: "still down" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-1"));
     const second = await harness.run(request("conv-1"));
@@ -1186,7 +1166,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "ok", providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     await harness.run(request("conv-1"));
     const second = await harness.run(request("conv-1", "again"));
@@ -1211,7 +1191,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "ok", providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-1"));
     const second = await harness.run(request("conv-1"));
@@ -1228,7 +1208,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "ok", providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     await harness.run(request("conv-1"));
     const second = await harness.run(request("conv-1"));
@@ -1247,7 +1227,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       session,
       runtimeOptionsForRequest: () => ({
         runtimeOptions: { sessionId: "hijacked", sessionKeepAlive: false } as Record<string, unknown>,
@@ -1270,7 +1249,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "ok", providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(request("conv-1"));
     await harness.run({ ...request("conv-1"), onEvent: (event) => events.push(event) });
@@ -1298,7 +1277,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       session,
       historyStore: history.store,
       memory: memory.store,
@@ -1338,7 +1316,7 @@ describe("AgentHarness continuous sessions", () => {
       }
       return { text: "answer", providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session });
 
     await harness.run(request("conv-1", "first"));
     expect(fake.calls[0]?.options.sessionId).toBeUndefined();
@@ -1403,7 +1381,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       session,
       historyStore: history.store,
       memory: memory.store,
@@ -1450,7 +1427,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       historyStore,
       toolHistory: toolHistoryStatusSpy(identityPath, toolHistoryStatuses),
     });
@@ -1508,7 +1484,6 @@ describe("AgentHarness continuous sessions", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       session,
       historyStore: history.store,
       memory: memory.store,

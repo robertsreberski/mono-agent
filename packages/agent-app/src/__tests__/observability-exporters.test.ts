@@ -29,7 +29,7 @@ function inputFor(configPath: string, env: Record<string, string | undefined> = 
 
 describe("resolveAppObservabilityExporters", () => {
   it("returns [] when no exporter is configured", async () => {
-    const configPath = await writeConfig({ runtime: { model: "pi:openai-codex:gpt-5.5", workspace: "." } });
+    const configPath = await writeConfig({ runtime: { model: "openai-codex:gpt-5.5", workspace: "." } });
     const exporters = await resolveAppObservabilityExporters(inputFor(configPath));
     expect(exporters).toEqual([]);
   });

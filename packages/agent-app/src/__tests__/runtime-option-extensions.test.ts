@@ -25,7 +25,7 @@ describe("composeRuntimeOptionExtensions", () => {
     const extension = createClearSessionsRuntimeExtension(inner, {
       cwd: "/agent",
       workspace: "/agent/workspace",
-      baseModel: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
+      baseModel: { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" },
       assertRecoveryResolved: async () => { throw new Error("generic unresolved recovery"); },
       registryRoot: () => "/agent/.mono-agent/clear-sessions-v1",
     });
@@ -39,7 +39,7 @@ describe("composeRuntimeOptionExtensions", () => {
     const extension = createClearSessionsRuntimeExtension(undefined, {
       cwd: "/agent",
       workspace: "/agent/workspace",
-      baseModel: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
+      baseModel: { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" },
       assertRecoveryResolved: assertion,
       registryRoot: () => "/agent/.mono-agent/clear-sessions-v1",
     });
@@ -60,8 +60,8 @@ describe("composeRuntimeOptionExtensions", () => {
     const options = {
       cwd: "/agent",
       workspace: "/agent/workspace",
-      baseModel: { sdk: "pi" as const, provider: "openai-codex", model: "gpt-5.6-sol" },
-      fallbackModels: [{ sdk: "pi" as const, provider: "ollama", model: "qwen3:8b" }],
+      baseModel: { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" },
+      fallbackModels: [{ provider: "ollama", model: "qwen3:8b", reference: "ollama:qwen3:8b" }],
       suppressSyntheticSandbox: true,
       assertRecoveryResolved: assertion,
       registryRoot: () => "/agent/.mono-agent/clear-sessions-v1",
@@ -74,57 +74,6 @@ describe("composeRuntimeOptionExtensions", () => {
       cleanup: expect.any(Function),
     });
     expect(assertion).toHaveBeenCalledWith("/agent");
-  });
-
-  it("keeps a clean accepted direct override free of Pi-only registry policy", async () => {
-    const directModel = { sdk: "opencode" as const, provider: "github-copilot", model: "gpt-5.1" };
-    const inner = vi.fn(async () => ({
-      runtimeOptions: { model: directModel },
-      cleanup: async () => {},
-    }));
-    const extension = createClearSessionsRuntimeExtension(inner, {
-      cwd: "/agent",
-      workspace: "/agent/workspace",
-      baseModel: { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
-      assertRecoveryResolved: async () => {},
-      registryRoot: () => "/agent/.mono-agent/clear-sessions-v1",
-    });
-
-    const result = await extension(INPUT);
-
-    expect(result.runtimeOptions).toMatchObject({ model: directModel });
-    expect(result.runtimeOptions).not.toHaveProperty("sandboxPolicy");
-  });
-
-  it("protects a reachable Pi fallback without adding policy to a non-Pi-only route", async () => {
-    const registryRoot = "/agent/.mono-agent/clear-sessions-v1";
-    const nonPiPrimary = { sdk: "claude" as const, model: "claude-opus-4-8" };
-    const piFallback = { sdk: "pi" as const, provider: "openai-codex", model: "gpt-5.6-sol" };
-    const fallbackExtension = createClearSessionsRuntimeExtension(undefined, {
-      cwd: "/agent",
-      workspace: "/agent/workspace",
-      baseModel: nonPiPrimary,
-      fallbackModels: [piFallback],
-      assertRecoveryResolved: async () => {},
-      registryRoot: () => registryRoot,
-    });
-    const directExtension = createClearSessionsRuntimeExtension(undefined, {
-      cwd: "/agent",
-      workspace: "/agent/workspace",
-      baseModel: nonPiPrimary,
-      assertRecoveryResolved: async () => {},
-      registryRoot: () => registryRoot,
-    });
-
-    await expect(fallbackExtension(INPUT)).resolves.toMatchObject({
-      runtimeOptions: {
-        sandboxPolicy: { protectedRoots: [registryRoot] },
-      },
-    });
-    await expect(directExtension(INPUT)).resolves.toEqual({
-      runtimeOptions: {},
-      cleanup: expect.any(Function),
-    });
   });
 
   it("merges sandbox policies monotonically so later extensions cannot erase protected roots", async () => {

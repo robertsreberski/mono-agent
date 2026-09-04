@@ -1,30 +1,19 @@
 import {
-  authenticateAcpProfile as authenticateKernelAcpProfile,
   createPiOAuthApiKeyResolver,
   createRouterRuntime,
   createRuntime,
-  deleteAcpSession as deleteKernelAcpSession,
-  listAcpSessions as listKernelAcpSessions,
-  logoutAcpProfile as logoutKernelAcpProfile,
-  probeAcpProfile as probeKernelAcpProfile,
 } from "@mono-agent/agent-runtime";
-import { executionModeIncompatibilityReason, parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
+import { parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
 import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
 import { bridgeProcessJobsController } from "./process-jobs.js";
 import { monoSandboxImpl } from "./sandbox-impl.js";
 
 import type {
-  MonoAcpControlOptions,
-  MonoAcpListSessionsRequest,
-  MonoAcpSessionControlOptions,
   MonoRuntimeBackendCapabilities,
   MonoRuntimeBackendDescriptor,
-  MonoRuntimeBackendId,
   MonoRuntimeHostOptions,
   MonoRuntimeLike,
-  MonoRuntimeSelectionEntry,
   MonoRuntimeSupportDescription,
-  RuntimeExecutionMode,
   RuntimeModelReference,
   RuntimeResult,
   RuntimeRunOptions,
@@ -39,8 +28,6 @@ type KernelToolOptions = Parameters<KernelRuntimeInstance["configureTools"]>[0];
 
 export type RuntimeAdapterErrorCode =
   | "invalid_model_reference"
-  | "invalid_execution_mode"
-  | "incompatible_execution_mode"
   | "runtime_backend_unavailable"
   | "invalid_runtime_options"
   | "invalid_local_provider";
@@ -62,6 +49,104 @@ export class RuntimeAdapterError extends Error {
   }
 }
 
+/**
+ * A model reference is operator-supplied and otherwise unbounded: nothing stops a token, an
+ * API key, or a URL with credentials being pasted into a model field by mistake. Whatever
+ * lands there is echoed back by `mono-agent validate`, `doctor`, the daemon log and launchd's
+ * captured stdout -- all durable and routinely shared. Those surfaces are also line-oriented,
+ * so an embedded newline lets one config value forge diagnostic lines that read as the
+ * loader's own.
+ *
+ * The rule, therefore, is not "trim model ids": it is that no operator-supplied text reaches a
+ * diagnostic without being reduced to printable single-line text AND bounded.
+ *
+ * This is a DISPLAY budget, and it is the ONLY bound a model reference has left, because it is
+ * the only kind of bound that costs nobody a working model. Two rounds tried to make the parser
+ * share it, or share something like it: first as `MAX_MODEL_REFERENCE_BYTES` = 96 on the rule "a
+ * reference is accepted exactly when every operator surface can quote it whole", which duly
+ * refused a Hugging Face GGUF repo Ollama serves today at 100 bytes; then at 160, derived from a
+ * sampled distribution, which refused an `ollama:<model>:<tag>` reference whose two halves Ollama
+ * itself validates at 80 bytes each. The parser now has no length rule at all -- what a model may
+ * be called is decided by providers -- and this number stayed exactly where it was.
+ *
+ * That asymmetry is the point, not an accident of which side moved. An echo is bounded by
+ * TRUNCATING it, which `sanitizeModelReferenceText` does, marking the cut; a reference cannot be
+ * truncated into validity, so a ceiling there can only ever refuse. Truncating an echo costs a
+ * diagnostic some characters. Refusing a reference costs an operator a route that runs.
+ *
+ * Keeping this at 96 therefore costs nothing real. Every consumer is on a REJECTION path --
+ * `modelReferenceEcho` in @mono-agent/config, `echoValue` in agent-app's request-model-override,
+ * `echo` in its trigger-overrides -- so it never truncates a reference that parsed. It stays
+ * large enough to show a mistyped one in full: 96 bytes covers every reference in Pi's
+ * 1312-entry built-in catalog (longest 77) and every ref this machine's Ollama and LM Studio
+ * discovery returns (longest 52), and a longer value is shown as much of itself as fits, plus
+ * the marker. A reference that DID parse and is genuinely longer than this -- which is now
+ * possible at any size -- is clamped here rather than refused there; the model-reference bound
+ * suite asserts that at 100, 168, 400, 70,000 and 270,000 bytes.
+ */
+export const MODEL_REFERENCE_ECHO_MAX_BYTES = 96;
+
+/** Longest fixed repair sentence the kernel parser emits, 127 bytes (the ACP one), rounded up. */
+const MODEL_REFERENCE_REPAIR_MAX_BYTES = 128;
+
+/**
+ * A parser reason is one fixed repair sentence plus at most one echo of the operator's value,
+ * so its budget is the sum. Deriving it rather than picking a number is what keeps the repair
+ * -- the actionable half an operator actually needs -- from ever being clamped away.
+ */
+export const MODEL_REFERENCE_REASON_MAX_BYTES =
+  MODEL_REFERENCE_ECHO_MAX_BYTES + MODEL_REFERENCE_REPAIR_MAX_BYTES;
+
+/**
+ * Control (`Cc`), format (`Cf`), line- and paragraph-separator code points. Every one of them
+ * either moves the cursor or is invisible, which is exactly what makes a value able to
+ * restyle or extend the diagnostic that quotes it.
+ */
+const DIAGNOSTIC_UNSAFE_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+
+const UTF8_ENCODER = new TextEncoder();
+
+function escapeDiagnosticCharacter(character: string): string {
+  if (character === "\n") return "\\n";
+  if (character === "\r") return "\\r";
+  if (character === "\t") return "\\t";
+  const code = character.codePointAt(0) ?? 0;
+  return `\\u${code.toString(16).toUpperCase().padStart(4, "0")}`;
+}
+
+/**
+ * Escape, then clamp: escaping expands, so clamping last is what makes the returned byte
+ * length an actual bound. Clamping walks code points (never splitting one) on a UTF-8 byte
+ * budget, the same convention as `clampUtf8Bytes` in agent-harness and `clampUtf8` in the
+ * agent-app skill registry, and marks the cut so a clamped echo is distinguishable from a
+ * short value. Escaping is idempotent and clamping is monotone, so applying this twice --
+ * which happens when config re-bounds a reason the adapter already bounded -- is a no-op.
+ */
+export function sanitizeModelReferenceText(value: string, maxBytes: number): string {
+  if (!Number.isInteger(maxBytes) || maxBytes < 1) {
+    throw new RangeError("maxBytes must be a positive integer.");
+  }
+  const escaped = value.replace(DIAGNOSTIC_UNSAFE_CHARACTERS, escapeDiagnosticCharacter);
+  if (UTF8_ENCODER.encode(escaped).length <= maxBytes) {
+    return escaped;
+  }
+  const marker = "…";
+  const markerBytes = UTF8_ENCODER.encode(marker).length;
+  // The bound is the contract; the marker is a courtesy. A budget too small to hold the
+  // marker still has to be honoured rather than overrun by it.
+  const keepMarker = maxBytes >= markerBytes;
+  const budget = keepMarker ? maxBytes - markerBytes : maxBytes;
+  let kept = "";
+  let used = 0;
+  for (const character of escaped) {
+    const width = UTF8_ENCODER.encode(character).length;
+    if (used + width > budget) break;
+    kept += character;
+    used += width;
+  }
+  return keepMarker ? `${kept}${marker}` : kept;
+}
+
 export function parseMonoRuntimeModelReference(value: string): RuntimeModelReference {
   if (typeof value !== "string" || value.trim().length === 0 || value.trim() !== value) {
     throw new RuntimeAdapterError("invalid_model_reference", "Model reference must be a non-empty trimmed string.");
@@ -70,179 +155,63 @@ export function parseMonoRuntimeModelReference(value: string): RuntimeModelRefer
   try {
     return normalizeRuntimeModelReference(parseRuntimeModelReference(value));
   } catch (error) {
-    throw new RuntimeAdapterError("invalid_model_reference", "Invalid runtime model reference.", {
-      reason: error instanceof Error ? error.message : String(error),
+    // The kernel parser is the only layer that knows the concrete repair for a retired
+    // backend (`codex:x` -> `openai-codex:x`, `vercel:p:m` -> `p:m`, ...). Every operator
+    // surface renders `message` and nothing else, so the repair has to travel in the
+    // message; `details.reason` keeps the unprefixed text for programmatic callers.
+    // The parser interpolates the operator's own model id into that repair, so the reason
+    // is operator-supplied text and is bounded here, at the one place it is derived.
+    const reason = sanitizeModelReferenceText(
+      error instanceof Error ? error.message : String(error),
+      MODEL_REFERENCE_REASON_MAX_BYTES,
+    );
+    throw new RuntimeAdapterError("invalid_model_reference", `Invalid runtime model reference: ${reason}`, {
+      reason,
     });
   }
 }
 
-export function isRuntimeExecutionMode(value: unknown): value is RuntimeExecutionMode {
-  return value === "sdk" || value === "cli" || value === "acp";
-}
-
-export function defaultExecutionModeForModel(model: RuntimeModelReference): RuntimeExecutionMode {
-  assertParsedRuntimeModelReference(model);
-  if (model.sdk === "acp") return "acp";
-  return model.sdk === "codex" || model.sdk === "opencode" ? "cli" : "sdk";
-}
-
-function acpControlOptions(options: MonoAcpControlOptions): any {
-  if (!options || typeof options !== "object" || typeof options.resolveAcpProfile !== "function") {
-    throw new RuntimeAdapterError(
-      "invalid_runtime_options",
-      "ACP control operations require resolveAcpProfile.",
-    );
-  }
-  return {
-    ...withoutCallerSandbox(options as unknown as Readonly<Record<string, unknown>>),
-    sandbox: monoSandboxImpl,
-  };
-}
-
-export async function probeAcpProfile(profileId: string, options: MonoAcpControlOptions) {
-  return probeKernelAcpProfile(profileId, acpControlOptions(options));
-}
-
-export async function authenticateAcpProfile(
-  profileId: string,
-  methodId: string,
-  options: MonoAcpControlOptions,
-) {
-  return authenticateKernelAcpProfile(profileId, methodId, acpControlOptions(options));
-}
-
-export async function logoutAcpProfile(profileId: string, options: MonoAcpControlOptions) {
-  return logoutKernelAcpProfile(profileId, acpControlOptions(options));
-}
-
-export function listAcpSessions(
-  profileId: string,
-  options: MonoAcpSessionControlOptions,
-): ReturnType<typeof listKernelAcpSessions>;
-export function listAcpSessions(
-  profileId: string,
-  request: MonoAcpListSessionsRequest,
-  options: MonoAcpSessionControlOptions,
-): ReturnType<typeof listKernelAcpSessions>;
-export function listAcpSessions(
-  profileId: string,
-  requestOrOptions: MonoAcpListSessionsRequest | MonoAcpSessionControlOptions,
-  maybeOptions?: MonoAcpSessionControlOptions,
-) {
-  const twoArgumentForm = maybeOptions === undefined;
-  const request = twoArgumentForm ? {} : requestOrOptions;
-  const options = twoArgumentForm ? requestOrOptions as MonoAcpSessionControlOptions : maybeOptions;
-  return listKernelAcpSessions(profileId, request, acpControlOptions(options));
-}
-
-export async function deleteAcpSession(
-  providerSessionId: string,
-  options: MonoAcpSessionControlOptions,
-) {
-  return deleteKernelAcpSession(providerSessionId, acpControlOptions(options));
-}
-
-/**
- * Stable canonical string for a model reference — its authored `reference` when
- * present, else `sdk[:provider]:model`. The one place this format lives, so
- * callers comparing/caching/keying by model (harness override selection, app
- * runtime cache, host/doctor display ids) stay in agreement.
- */
+/** Stable canonical string used for model comparison, caching, and display. */
 export function modelReferenceKey(model: RuntimeModelReference): string {
-  return model.reference ?? `${model.sdk}:${model.provider === undefined ? "" : `${model.provider}:`}${model.model}`;
+  return model.reference;
 }
 
 export function listMonoRuntimeBackends(): readonly MonoRuntimeBackendDescriptor[] {
-  return RUNTIME_BACKEND_DEFINITIONS.map((definition) => buildBackendDescriptor(definition));
+  return MONO_RUNTIME_BACKENDS;
 }
 
 export function runtimeBackendForModel(
   model: RuntimeModelReference,
-  executionMode?: RuntimeExecutionMode,
 ): MonoRuntimeBackendDescriptor {
   assertParsedRuntimeModelReference(model);
-  const resolvedExecutionMode = executionMode ?? defaultExecutionModeForModel(model);
-  assertExecutionModeCompatible(model, resolvedExecutionMode);
-  return backendById(backendIdForModel(model, resolvedExecutionMode));
+  return PI_RUNTIME_BACKEND;
 }
 
-export function monoRuntimeSupportsSessionResume(
-  model: RuntimeModelReference,
-  executionMode?: RuntimeExecutionMode,
-): boolean {
-  return runtimeBackendForModel(model, executionMode).capabilities.supports_session_resume === true;
+export function monoRuntimeSupportsSessionResume(): boolean {
+  return PI_RUNTIME_BACKEND.capabilities.supports_session_resume === true;
 }
 
-export function monoRuntimeSupportsLiveInput(
-  model: RuntimeModelReference,
-  executionMode?: RuntimeExecutionMode,
-): boolean {
-  return runtimeBackendForModel(model, executionMode).capabilities.supports_live_input === true;
+export function monoRuntimeSupportsLiveInput(): boolean {
+  return PI_RUNTIME_BACKEND.capabilities.supports_live_input === true;
 }
 
-export function monoRuntimeSupportsMcpApps(
-  model: RuntimeModelReference,
-  executionMode?: RuntimeExecutionMode,
-): boolean {
-  return runtimeBackendForModel(model, executionMode).capabilities.supports_mcp_apps === true;
+export function monoRuntimeSupportsMcpApps(): boolean {
+  return PI_RUNTIME_BACKEND.capabilities.supports_mcp_apps === true;
 }
 
 export function describeMonoRuntimeSupport(
   model: RuntimeModelReference,
-  executionMode?: RuntimeExecutionMode,
 ): MonoRuntimeSupportDescription {
   assertParsedRuntimeModelReference(model);
-  const resolvedExecutionMode = executionMode ?? defaultExecutionModeForModel(model);
-  if (!isRuntimeExecutionMode(resolvedExecutionMode)) {
-    return {
-      model,
-      executionMode: resolvedExecutionMode,
-      compatible: false,
-      incompatibilityReason: "Execution mode must be sdk, cli, or acp.",
-    };
-  }
-
-  const incompatibilityReason = executionModeIncompatibilityReason(model, resolvedExecutionMode);
-  if (typeof incompatibilityReason === "string" && incompatibilityReason.length > 0) {
-    return {
-      model,
-      executionMode: resolvedExecutionMode,
-      compatible: false,
-      incompatibilityReason,
-    };
-  }
-
   return {
     model,
-    executionMode: resolvedExecutionMode,
     compatible: true,
-    backend: runtimeBackendForModel(model, resolvedExecutionMode),
+    backend: PI_RUNTIME_BACKEND,
   };
-}
-
-export function assertExecutionModeCompatible(
-  model: RuntimeModelReference,
-  executionMode: string,
-): void {
-  assertParsedRuntimeModelReference(model);
-  if (!isRuntimeExecutionMode(executionMode)) {
-    throw new RuntimeAdapterError("invalid_execution_mode", "Execution mode must be sdk, cli, or acp.", {
-      executionMode,
-    });
-  }
-
-  const reason = executionModeIncompatibilityReason(model, executionMode);
-  if (typeof reason === "string" && reason.length > 0) {
-    throw new RuntimeAdapterError("incompatible_execution_mode", reason, {
-      executionMode,
-      model: redactedModelReference(model),
-    });
-  }
 }
 
 export interface MonoRuntimeFallbackChainEntry {
   readonly model: RuntimeModelReference;
-  readonly executionMode?: RuntimeExecutionMode;
   /** String pins this route, `null` selects the provider default, omitted inherits the run effort. */
   readonly effort?: string | null;
   /**
@@ -253,8 +222,6 @@ export interface MonoRuntimeFallbackChainEntry {
   readonly attempts?: number;
 }
 
-export type MonoRuntimeRouteSafetyMode = "uniform" | "per-route-native";
-
 export interface MonoRuntimeRetryPolicy {
   /** Delay before the first retry; doubles per retry. Defaults to 1000. */
   readonly backoffMs?: number;
@@ -264,12 +231,10 @@ export interface MonoRuntimeRetryPolicy {
 
 export interface MonoRuntimeAttemptContext {
   readonly model: RuntimeModelReference;
-  readonly executionMode: string | null;
   /** Index of this route in the chain. Stable across same-model retries. */
   readonly attemptIndex: number;
   /** 0 for the first try of a route, then 1, 2, … for each same-model retry. */
   readonly retryIndex: number;
-  readonly routeSafety: MonoRuntimeRouteSafetyMode;
 }
 
 export interface MonoRuntimeAttemptResolution {
@@ -279,8 +244,6 @@ export interface MonoRuntimeAttemptResolution {
   readonly options?: Readonly<Record<string, unknown>> & {
     /** The sandbox implementation is owned by createMonoRuntime. */
     readonly sandbox?: never;
-    /** Logical Codex network policy is caller-owned and resolver-protected. */
-    readonly codexSandboxNetworkAccess?: never;
     /** Attempt plugins cannot replace the host's durable process-job owner. */
     readonly processJobs?: never;
   };
@@ -304,12 +267,10 @@ export interface CreateMonoRuntimeOptions extends MonoRuntimeHostOptions {
    * the agent-runtime fallback router: the first entry is attempted first and
    * each retryable provider failure advances to the next entry, so callers
    * should put the primary model at index 0. The router overrides the per-run
-   * `model`/`executionMode` with chain entries; failover details are reported
-   * on the result as `failoverHistory`.
+   * `model` with chain entries; failover details are reported on the result as
+   * `failoverHistory`.
    */
   readonly fallbackChain?: readonly MonoRuntimeFallbackChainEntry[];
-  /** Compatibility-preserving uniform safety, or explicit isolated provider-native route contracts. */
-  readonly routeSafety?: MonoRuntimeRouteSafetyMode;
   /** Backoff shape for same-model retries. Per-route counts live on each chain entry's `attempts`. */
   readonly retry?: MonoRuntimeRetryPolicy;
   /** Private host seam for actual-model provider options and route-owned runtimes. */
@@ -317,14 +278,7 @@ export interface CreateMonoRuntimeOptions extends MonoRuntimeHostOptions {
 }
 
 export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoRuntimeLike {
-  const { fallbackChain, routeSafety = "uniform", retry, resolveAttempt, ...hostOptions } = options;
-  if (routeSafety !== "uniform" && routeSafety !== "per-route-native") {
-    throw new RuntimeAdapterError(
-      "invalid_runtime_options",
-      "Runtime route safety must be uniform or per-route-native.",
-      { routeSafety },
-    );
-  }
+  const { fallbackChain, retry, resolveAttempt, ...hostOptions } = options;
   const chain = normalizeFallbackChain(fallbackChain);
   const retryPolicy = normalizeRetryPolicy(retry);
   // agent-runtime's kernel ships only a fail-closed passthrough sandbox (see
@@ -343,7 +297,6 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
     : createRouterRuntime({
         host: hostWithSandbox,
         chain,
-        routeSafety,
         ...(retryPolicy === undefined ? {} : { retry: retryPolicy }),
         ...(protectedResolveAttempt === undefined
           ? {}
@@ -362,18 +315,12 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
       }
 
       assertParsedRuntimeModelReference(runOptions.model);
-      const executionMode = runOptions.executionMode ?? defaultExecutionModeForModel(runOptions.model);
-      assertExecutionModeCompatible(runOptions.model, executionMode);
-      if (chain === undefined) {
-        assertDirectAcpRunOptions(runOptions.model, runOptions);
-      }
 
       const result = await runtime.run(systemPrompt, {
         ...withoutCallerSandbox(runOptions),
         ...(runOptions.processJobs === undefined
           ? {}
           : { processJobs: bridgeProcessJobsController(runOptions.processJobs) }),
-        executionMode,
       } as unknown as KernelRunOptions);
       return result as RuntimeResult;
     },
@@ -415,21 +362,6 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
       await runtime.disposeAllSessions?.();
     },
   };
-}
-
-function assertDirectAcpRunOptions(
-  model: RuntimeModelReference,
-  runOptions: RuntimeRunOptions,
-): void {
-  if (model.sdk !== "acp") return;
-  const mcpServers = runOptions.mcpServers;
-  if (mcpServers === undefined || mcpServers === null) return;
-  if (isRecord(mcpServers) && !Array.isArray(mcpServers) && Object.keys(mcpServers).length === 0) return;
-  throw new RuntimeAdapterError(
-    "invalid_runtime_options",
-    "Direct ACP runs do not support request-scoped mcpServers; configure MCP ownership in the resolved ACP profile.",
-    { option: "mcpServers", model: redactedModelReference(model) },
-  );
 }
 
 /**
@@ -476,7 +408,6 @@ function normalizeFallbackChain(
   fallbackChain: readonly MonoRuntimeFallbackChainEntry[] | undefined,
 ): readonly {
   model: RuntimeModelReference;
-  executionMode: RuntimeExecutionMode;
   effort?: string | null;
   attempts?: number;
 }[] | undefined {
@@ -494,8 +425,6 @@ function normalizeFallbackChain(
       );
     }
     assertParsedRuntimeModelReference(entry.model);
-    const executionMode = entry.executionMode ?? defaultExecutionModeForModel(entry.model);
-    assertExecutionModeCompatible(entry.model, executionMode);
     if (
       entry.effort !== undefined
       && entry.effort !== null
@@ -517,7 +446,6 @@ function normalizeFallbackChain(
     }
     return {
       model: entry.model,
-      executionMode,
       ...(entry.effort === undefined ? {} : { effort: entry.effort }),
       ...(entry.attempts === undefined ? {} : { attempts: entry.attempts }),
     };
@@ -554,181 +482,29 @@ function normalizeRuntimeModelReference(value: unknown): RuntimeModelReference {
   if (!isRecord(value) || Array.isArray(value)) {
     throw new RuntimeAdapterError(
       "invalid_model_reference",
-      "Runtime model reference must be a parsed object with sdk and model.",
+      "Runtime model reference must be a parsed object with provider, model, and reference.",
     );
   }
 
-  const sdk = normalizedRequiredString(value.sdk, "sdk");
+  const provider = normalizedRequiredString(value.provider, "provider");
   const model = normalizedRequiredString(value.model, "model");
-  const normalized: { sdk: string; model: string; provider?: string; reference?: string } = { sdk, model };
-
-  if (value.provider !== undefined) {
-    normalized.provider = normalizedRequiredString(value.provider, "provider");
+  const reference = normalizedRequiredString(value.reference, "reference");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(provider)) {
+    throw new RuntimeAdapterError(
+      "invalid_model_reference",
+      "Runtime model reference provider has invalid characters.",
+      { field: "provider" },
+    );
   }
-  if (value.reference !== undefined) {
-    normalized.reference = normalizedRequiredString(value.reference, "reference");
+  if (reference !== `${provider}:${model}`) {
+    throw new RuntimeAdapterError(
+      "invalid_model_reference",
+      "Runtime model reference must use its canonical <provider>:<model> spelling.",
+      { field: "reference" },
+    );
   }
 
-  return normalized;
-}
-
-interface RuntimeBackendDefinition {
-  readonly id: MonoRuntimeBackendId;
-  /** Agent-runtime bridge id whose capabilities back this descriptor. */
-  readonly runtimeBridgeId: string;
-  readonly label: string;
-  readonly sdk: RuntimeModelReference["sdk"];
-  readonly executionMode: RuntimeExecutionMode;
-  readonly transport: "sdk" | "cli" | "acp";
-  readonly providerBoundary: string;
-  readonly modelReferenceExamples: readonly string[];
-  readonly acceptsProviderIds: boolean;
-}
-
-const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
-  {
-    id: "acp-stdio",
-    runtimeBridgeId: "acp-stdio",
-    label: "ACP v1 stdio agent",
-    sdk: "acp",
-    executionMode: "acp",
-    transport: "acp",
-    providerBoundary: "ACP v1 stdio bridge via @mono-agent/agent-runtime",
-    modelReferenceExamples: ["acp:personal-agent"],
-    acceptsProviderIds: false,
-  },
-  {
-    id: "claude-sdk",
-    runtimeBridgeId: "claude",
-    label: "Claude SDK",
-    sdk: "claude",
-    executionMode: "sdk",
-    transport: "sdk",
-    providerBoundary: "@anthropic-ai/claude-agent-sdk via @mono-agent/agent-runtime",
-    modelReferenceExamples: ["claude:claude-sonnet-4-6"],
-    acceptsProviderIds: false,
-  },
-  {
-    id: "claude-code-cli",
-    runtimeBridgeId: "claude-code",
-    label: "Claude Code CLI",
-    sdk: "claude",
-    executionMode: "cli",
-    transport: "cli",
-    providerBoundary: "Claude Code CLI bridge via @mono-agent/agent-runtime",
-    modelReferenceExamples: ["claude:claude-sonnet-4-6"],
-    acceptsProviderIds: false,
-  },
-  {
-    id: "codex-app-cli",
-    runtimeBridgeId: "codex-app",
-    label: "Codex app CLI",
-    sdk: "codex",
-    executionMode: "cli",
-    transport: "cli",
-    providerBoundary: "Codex app-server bridge via @mono-agent/agent-runtime",
-    modelReferenceExamples: ["codex:gpt-5.5"],
-    acceptsProviderIds: false,
-  },
-  {
-    id: "opencode-app-cli",
-    runtimeBridgeId: "opencode-app",
-    label: "OpenCode app CLI",
-    sdk: "opencode",
-    executionMode: "cli",
-    transport: "cli",
-    providerBoundary: "OpenCode app-server bridge via @mono-agent/agent-runtime",
-    modelReferenceExamples: ["opencode:github-copilot:gpt-4.1"],
-    acceptsProviderIds: true,
-  },
-  {
-    id: "pi-sdk",
-    runtimeBridgeId: "pi",
-    label: "Pi SDK provider",
-    sdk: "pi",
-    executionMode: "sdk",
-    transport: "sdk",
-    providerBoundary: "Pi SDK provider gateway via @mono-agent/agent-runtime",
-    modelReferenceExamples: ["pi:openai-codex:gpt-5.5", "pi:github-copilot:gpt-4.1"],
-    acceptsProviderIds: true,
-  },
-];
-
-/**
- * The additive (sdk, executionMode) -> backend selection table. This is a
- * internal routing table: it states which backend serves a given sdk under a
- * given execution mode. `sdkAliases[0]` is the canonical sdk id used by the
- * backend descriptor; later entries may be accepted legacy spellings.
- */
-const RUNTIME_SELECTION_TABLE: readonly MonoRuntimeSelectionEntry[] = [
-  { sdk: "acp", sdkAliases: ["acp"], executionMode: "acp", backendId: "acp-stdio" },
-  { sdk: "claude", sdkAliases: ["claude"], executionMode: "sdk", backendId: "claude-sdk" },
-  { sdk: "claude", sdkAliases: ["claude"], executionMode: "cli", backendId: "claude-code-cli" },
-  { sdk: "codex", sdkAliases: ["codex"], executionMode: "cli", backendId: "codex-app-cli" },
-  { sdk: "opencode", sdkAliases: ["opencode"], executionMode: "cli", backendId: "opencode-app-cli" },
-  { sdk: "pi", sdkAliases: ["pi"], executionMode: "sdk", backendId: "pi-sdk" },
-];
-
-/**
- * Resolves a backend id from the selection table by sdk (canonical or alias) and
- * execution mode. Returns undefined when no row matches, leaving the caller to
- * decide how to fail.
- */
-export function selectMonoRuntimeBackendId(
-  sdk: string,
-  executionMode: RuntimeExecutionMode,
-): MonoRuntimeBackendId | undefined {
-  const entry = RUNTIME_SELECTION_TABLE.find(
-    (candidate) => candidate.executionMode === executionMode && candidate.sdkAliases.includes(sdk),
-  );
-  return entry?.backendId;
-}
-
-function buildBackendDescriptor(
-  definition: RuntimeBackendDefinition,
-): MonoRuntimeBackendDescriptor {
-  const { runtimeBridgeId, ...rest } = definition;
-  return {
-    ...rest,
-    runtimeBridgeId,
-    capabilities: capabilitiesForRuntimeBridge(runtimeBridgeId),
-  };
-}
-
-function backendById(id: MonoRuntimeBackendId): MonoRuntimeBackendDescriptor {
-  const definition = RUNTIME_BACKEND_DEFINITIONS.find((candidate) => candidate.id === id);
-  if (definition === undefined) {
-    throw new RuntimeAdapterError("runtime_backend_unavailable", "Runtime backend is not registered.", { id });
-  }
-  return buildBackendDescriptor(definition);
-}
-
-function backendIdForModel(
-  model: RuntimeModelReference,
-  executionMode: RuntimeExecutionMode,
-): MonoRuntimeBackendId {
-  if (model.sdk === "acp" && executionMode === "acp") {
-    return "acp-stdio";
-  }
-  if (model.sdk === "claude" && executionMode === "cli") {
-    return "claude-code-cli";
-  }
-  if (model.sdk === "claude" && executionMode === "sdk") {
-    return "claude-sdk";
-  }
-  if (model.sdk === "codex" && executionMode === "cli") {
-    return "codex-app-cli";
-  }
-  if (model.sdk === "opencode" && executionMode === "cli") {
-    return "opencode-app-cli";
-  }
-  if (model.sdk === "pi" && executionMode === "sdk") {
-    return "pi-sdk";
-  }
-  throw new RuntimeAdapterError("runtime_backend_unavailable", "No runtime backend matches this model and execution mode.", {
-    model: redactedModelReference(model),
-    executionMode,
-  });
+  return { provider, model, reference };
 }
 
 function capabilitiesForRuntimeBridge(
@@ -749,6 +525,20 @@ function capabilitiesForRuntimeBridge(
   return { ...capabilities };
 }
 
+const PI_RUNTIME_BACKEND = Object.freeze<MonoRuntimeBackendDescriptor>({
+  id: "pi-sdk",
+  runtimeBridgeId: "pi",
+  label: "Pi SDK provider",
+  sdk: "pi",
+  transport: "sdk",
+  providerBoundary: "Pi SDK provider gateway via @mono-agent/agent-runtime",
+  modelReferenceExamples: Object.freeze(["openai-codex:gpt-5.5", "github-copilot:gpt-4.1"]),
+  acceptsProviderIds: true,
+  capabilities: Object.freeze(capabilitiesForRuntimeBridge("pi")),
+});
+
+const MONO_RUNTIME_BACKENDS = Object.freeze([PI_RUNTIME_BACKEND]);
+
 function normalizedRequiredString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim().length === 0 || value.trim() !== value) {
     throw new RuntimeAdapterError("invalid_model_reference", `Runtime model reference ${field} must be a non-empty trimmed string.`, {
@@ -756,15 +546,6 @@ function normalizedRequiredString(value: unknown, field: string): string {
     });
   }
   return value;
-}
-
-function redactedModelReference(model: RuntimeModelReference): Record<string, string | undefined> {
-  return {
-    sdk: model.sdk,
-    provider: model.provider,
-    model: model.model,
-    reference: model.reference,
-  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

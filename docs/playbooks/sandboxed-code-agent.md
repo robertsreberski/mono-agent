@@ -7,7 +7,7 @@ sidebar:
 
 This playbook builds a code-reading assistant that can run `Bash` and `NodeRepl` inside the native `srt` sandbox with loopback-only network access and protected secrets, while recalling prior context from local journal memory. Every capability here is `config`-driven — no code required.
 
-On macOS, mono-agent can install the exact pinned SRT runtime into its private user cache; no global `srt` or `PATH` mutation is required. This recipe uses `fallback: "fail-closed"`, so an absent, corrupt, or non-enforcing engine yields `sandbox_unavailable` instead of host execution.
+On macOS, mono-agent can install the exact pinned SRT runtime into its private user cache; no global `srt` or `PATH` mutation is required. This recipe uses `fallback: "fail-closed"`, so an absent, corrupt, or non-enforcing engine stops the command — a `sandbox_prepare_failed` tool result — instead of running it on the host.
 
 ## Who this is for
 
@@ -31,7 +31,7 @@ An agent that can read repos and run shell commands or run-scoped JavaScript ins
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.6-terra"
+    "model": "openai-codex:gpt-5.6-terra"
   },
   "tools": {
     "allowedTools": ["*"]
@@ -57,14 +57,13 @@ Keep `fallback` at `fail-closed`. Setting `fallback: "unsafe-host-process"` plus
 
 ## Steps
 
-1. `mono-agent init --model pi:openai-codex:gpt-5.6-terra --memory journal`
+1. `mono-agent init --model openai-codex:gpt-5.6-terra --memory journal`
 2. Run `mono-agent sandbox status`, then `mono-agent sandbox setup` on macOS. Setup installs in the private cache and runs the full functional check. Use `mono-agent sandbox check` to re-prove it later.
 3. Leave `tools.allowedTools` at the allow-all default (`["*"]`) — under allow-all the code tools (`Read`/`Write`/`Edit`/`Glob`/`Grep`/`Bash`/`NodeRepl`) are already available, and the **sandbox**, not an allowlist, is what constrains them. Configure `sandbox.mode` native + `network.mode` localhost + the deny-write defaults. (To harden further you *can* still narrow `allowedTools` to a specific set, but it is not what makes this agent safe.)
 4. Keep `fallback` at `fail-closed` (do NOT set `unsafe-host-process`).
 5. `mono-agent validate --preset code-sandbox`; the `Sandbox` section should be `ok`. If it is `waiting` with `sandbox_unavailable`, `start` will not silently relax the policy. A corrupt managed install never falls back to a `PATH` command.
 6. `mono-agent start`, then `mono-agent status`; confirm the sandbox line reports `effective: native`, the `srt` engine present, and `fallback active: no`.
 7. Ask the agent to inspect the repo, run a Bash command, and evaluate `const n = 40` followed by `n + 2` through `NodeRepl`; confirm REPL state persists for the run, external network calls are blocked while loopback still works, and it cannot write `.env`.
-8. Keep the default `runtime.routeSafety: "uniform"` and every route on Pi when this exact SRT contract must hold everywhere. Explicit `per-route-native` can include provider-owned routes only after acknowledging that the mono-agent roots/network policy does not apply to them.
 
 ## Smoke test
 
