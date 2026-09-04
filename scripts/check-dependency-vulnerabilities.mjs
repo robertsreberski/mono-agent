@@ -977,7 +977,7 @@ async function queryBulkAdvisoryRequest(inventory, options) {
     if (error === timeoutError) {
       throw new BulkAdvisoryTransientError(`bulk advisory request timed out after ${timeoutMs}ms.`);
     }
-    if (error instanceof BulkAdvisoryRouteError) {
+    if (error instanceof BulkAdvisoryTransientRouteError) {
       throw new BulkAdvisoryTransientError(error.message);
     }
     if (error === responseTooLargeError) {
@@ -1013,6 +1013,8 @@ class BulkAdvisoryTransientError extends Error {}
 
 class BulkAdvisoryRouteError extends Error {}
 
+class BulkAdvisoryTransientRouteError extends Error {}
+
 let preferredNpmRegistryAddress;
 
 async function fetchBulkAdvisoryEndpoint(endpoint, init, options) {
@@ -1039,12 +1041,14 @@ async function fetchBulkAdvisoryEndpoint(endpoint, init, options) {
   }
 
   let lastError;
+  let hadTransientRouteFailure = false;
   for (const address of uniqueAddresses) {
     try {
       const response = await requestAddress(endpoint, init, address);
       if (response.status >= 500) {
         await response.body?.cancel();
         lastError = new Error(`npm registry route ${address} returned HTTP ${response.status}`);
+        hadTransientRouteFailure = true;
         if (preferredNpmRegistryAddress === address) preferredNpmRegistryAddress = undefined;
         continue;
       }
@@ -1053,12 +1057,16 @@ async function fetchBulkAdvisoryEndpoint(endpoint, init, options) {
     } catch (error) {
       if (init.signal?.aborted) throw init.signal.reason ?? error;
       lastError = error;
+      if (error instanceof BulkAdvisoryTransientRouteError) {
+        hadTransientRouteFailure = true;
+      }
       if (preferredNpmRegistryAddress === address) preferredNpmRegistryAddress = undefined;
     }
   }
-  throw new BulkAdvisoryRouteError(
-    `npm registry IPv4 routes did not respond: ${reasonOf(lastError)}`,
-  );
+  const RouteError = hadTransientRouteFailure
+    ? BulkAdvisoryTransientRouteError
+    : BulkAdvisoryRouteError;
+  throw new RouteError(`npm registry IPv4 routes did not respond: ${reasonOf(lastError)}`);
 }
 
 async function requestNpmRegistryAddress(endpoint, init, address) {
@@ -1091,7 +1099,7 @@ async function requestNpmRegistryAddress(endpoint, init, address) {
     });
     request.once("error", rejectRequest);
     request.setTimeout(NPM_REGISTRY_ROUTE_TIMEOUT_MS, () => {
-      request.destroy(new Error(
+      request.destroy(new BulkAdvisoryTransientRouteError(
         `npm registry route ${address} timed out after ${NPM_REGISTRY_ROUTE_TIMEOUT_MS}ms`,
       ));
     });

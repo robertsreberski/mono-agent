@@ -1765,6 +1765,38 @@ describe("dependency vulnerability gate", () => {
     expect(requestedAddresses).toEqual(["192.0.2.1", "192.0.2.2", "192.0.2.3"]);
   });
 
+  it.each([
+    {
+      label: "DNS lookup",
+      options: {
+        resolveRegistryAddressesImpl: async () => {
+          throw new Error("fixture DNS failure");
+        },
+      },
+      expectedRequests: 0,
+    },
+    {
+      label: "every immediate connection",
+      options: {
+        resolveRegistryAddressesImpl: async () => ["192.0.2.1", "192.0.2.2"],
+      },
+      expectedRequests: 2,
+    },
+  ])("does not delay or retry non-transient $label failures", async ({ options, expectedRequests }) => {
+    const requestRegistryAddressImpl = vi.fn(async () => {
+      throw new Error("fixture connection refused");
+    });
+
+    await expect(queryBulkAdvisories({ ws: ["8.20.1"] }, {
+      ...options,
+      requestRegistryAddressImpl,
+      retryDelayMs: 0,
+      transientRetries: 2,
+    })).rejects.toThrow("bulk advisory request failed");
+
+    expect(requestRegistryAddressImpl).toHaveBeenCalledTimes(expectedRequests);
+  });
+
   it("retries timed-out and unavailable bulk requests within a bounded budget", async () => {
     vi.useFakeTimers();
     const requestSignals = [];
