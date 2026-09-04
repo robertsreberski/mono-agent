@@ -27,6 +27,7 @@ import {
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import {
+  cleanupSessionOnThrow,
   resolveDurableNativeSessionRepo,
   retireDurableNativeSession,
 } from "../../ai/providers/pi-native/session-lifecycle.js";
@@ -112,6 +113,21 @@ function findJsonlFiles(root) {
 describe("pi-native sessions", () => {
   const sessionsRoot = mkdtempSync(join(tmpdir(), "pi-native-sessions-"));
   afterAll(() => rmSync(sessionsRoot, { recursive: true, force: true }));
+
+  it("rolls back and closes a resumed handle after a setup throw", async () => {
+    const moveTo = vi.fn(async () => undefined);
+    const close = vi.fn(async () => undefined);
+    await cleanupSessionOnThrow({
+      session: { moveTo, close },
+      sessionEntry: { metadata: { id: "resumed" } },
+      reservation: null,
+      baselineLeafId: "baseline-leaf",
+    }, { durableRepo: null });
+
+    expect(moveTo).toHaveBeenCalledWith("baseline-leaf");
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(moveTo.mock.invocationCallOrder[0]).toBeLessThan(close.mock.invocationCallOrder[0]);
+  });
 
   it("retires every cold duplicate for an exact durable id and treats absence as success", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-retire-"));

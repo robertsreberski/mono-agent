@@ -74,6 +74,7 @@ import {
   runReactiveCompaction,
 } from "./pi-native/compaction-driver.js";
 import {
+  activateTurnHarness,
   buildTurnHarness,
   buildTurnTools,
   runHarnessPrompt,
@@ -83,9 +84,10 @@ import {
 import { resolvePiTransport } from "./pi-native/transport.js";
 
 /**
- * Pi 0.80.6 exposes per-tool execution markers but not AgentHarness's global
- * toolExecution option. Resolve mono-agent's programmatic mode once per run;
- * individual tool builders then mark stateful/mutating tools sequential.
+ * Resolve mono-agent's programmatic mode once per run. Tool builders mark
+ * stateful/mutating tools sequential; the Pi 0.85 harness adapter promotes any
+ * such marker to its global toolExecution setting because mixed scheduling is
+ * no longer available upstream.
  */
 export function resolvePiToolExecutionMode(options = {}) {
   const warnings = [];
@@ -501,14 +503,16 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       ? Number(options.maxRetryDelayMs)
       : 60_000;
     // Steering controls user follow-up delivery, not tool scheduling. Keep it
-    // independent from piToolExecutionMode; tools carry their own executionMode.
+    // independent from piToolExecutionMode; the adapter derives Pi 0.85's
+    // global scheduling mode from the tools' executionMode markers.
     const toolSteeringMode = "one-at-a-time";
 
     const piModels = buildRunModels(runtime, options, runtimeWarnings);
 
-    // Construct the harness, subscribe the stream normalizer, and wire the
-    // external abort handler (which sets runState.externalAbort and aborts the
-    // harness). Sets runState.harness + runState.removeAbortHandler.
+    // Construct the harness and recover any interrupted durable operation.
+    // Stream subscription and the external abort handler are activated only
+    // after prior transcript seeding, so manual append lifecycle events cannot
+    // surface as output from this run.
     harness = await buildTurnHarness(runState, {
       session: runState.session,
       piModels,
@@ -521,11 +525,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       maxRetries,
       maxRetryDelayMs,
       steeringMode: toolSteeringMode,
-      onEvent,
       options,
-      toolLimits,
-      sdk: "pi",
-      reference,
     });
 
     // Seed prior transcript (everything before the trailing user turn) into the
@@ -550,6 +550,15 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     if (requestedSessionId && !runState.createdOnMiss) {
       try { runState.baselineLeafId = await runState.session.getLeafId(); } catch { /* best-effort */ }
     }
+
+    activateTurnHarness(runState, {
+      harness,
+      onEvent,
+      options,
+      toolLimits,
+      sdk: "pi",
+      reference,
+    });
 
     // Live steering: consume follow-up messages and steer the harness mid-run.
     // The consumer is tied to run completion so it stops steering once the run

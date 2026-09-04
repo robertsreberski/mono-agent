@@ -161,6 +161,13 @@ const FORWARDED_EVENT_TYPES = [
 ];
 
 function legacyEvent(event) {
+  // appendMessage() emits runless lifecycle events for transcript seeding.
+  // They are persistence notifications, not output from the active provider
+  // run, and forwarding them would manufacture assistant boundaries/usage for
+  // prior history. Real run-owned message events always carry runId in Pi 0.85.
+  if ((event.type === "message_start" || event.type === "message_end") && !event.runId) {
+    return null;
+  }
   if (event.type === "message_update") {
     return { ...event, assistantMessageEvent: event.event };
   }
@@ -180,37 +187,60 @@ export async function createPiHarnessAdapter(session, options) {
   const originalTools = Array.isArray(options.tools) ? options.tools : [];
   const adaptedTools = originalTools.map(adaptTool);
   const activeToolNames = originalTools.map((tool) => tool.name);
-  const created = await AgentHarness.create({
-    ...options,
-    session: session.rawSession,
-    tools: adaptedTools,
-    activeToolNames,
-    toolExecution: "parallel",
-    // mono-agent owns proactive/reactive compaction policy. The permanent hook
-    // below also declines Pi's overflow recovery so one bridge never runs two
-    // competing policies.
-    compaction: { enabled: false, reserveTokens: 16_384, keepRecentTokens: 20_000 },
-  }, PI_CONTEXT);
-  const rawHarness = created.harness;
-  const lane = await rawHarness.lane("main", PI_CONTEXT);
-  session.attach(rawHarness, lane);
+  // Pi 0.85 removed mixed per-tool scheduling from AgentHarness: its runner
+  // consults only this global setting. Preserve the safety contract by
+  // serializing the batch whenever any offered tool is stateful, mutating, or
+  // MCP-backed. Read-only-only tool sets can still overlap in safe-parallel.
+  const toolExecution = originalTools.some((tool) => tool?.executionMode === "sequential")
+    ? "sequential"
+    : "parallel";
 
-  // A restored lane carries its prior configuration, so explicitly bind it to
-  // this run's model, effort, and available tools. Legacy v3 transcripts import
-  // with an empty active-tool list and are upgraded atomically by Pi on write.
-  await rawHarness.setTools(adaptedTools, PI_CONTEXT);
-  await lane.setModel({ provider: options.model.provider, modelId: options.model.id }, PI_CONTEXT);
-  await lane.setThinkingLevel(options.thinkingLevel ?? "off", PI_CONTEXT);
-  await lane.setActiveTools(activeToolNames, PI_CONTEXT);
+  /** @type {any} */
+  let created;
+  /** @type {any} */
+  let rawHarness;
+  /** @type {any} */
+  let lane;
+  try {
+    created = await AgentHarness.create({
+      ...options,
+      session: session.rawSession,
+      tools: adaptedTools,
+      activeToolNames,
+      toolExecution,
+      // mono-agent owns proactive/reactive compaction policy. The permanent hook
+      // below also declines Pi's overflow recovery so one bridge never runs two
+      // competing policies.
+      compaction: { enabled: false, reserveTokens: 16_384, keepRecentTokens: 20_000 },
+    }, PI_CONTEXT);
+    rawHarness = created.harness;
+    // Attach the harness before lane/configuration awaits so any later failure
+    // can close the partially constructed handle instead of wedging the repo.
+    session.attach(rawHarness, null);
+    lane = await rawHarness.lane("main", PI_CONTEXT);
+    session.attach(rawHarness, lane);
 
-  rawHarness.hooks.on("before_compaction", (event) => (
-    event.reason === "manual" ? undefined : { decline: true }
-  ), { id: "mono-agent-compaction-owner" });
+    // A restored lane carries its prior configuration, so explicitly bind it to
+    // this run's model, effort, and available tools. Legacy v3 transcripts import
+    // with an empty active-tool list and are upgraded atomically by Pi on write.
+    await rawHarness.setTools(adaptedTools, PI_CONTEXT);
+    await lane.setModel({ provider: options.model.provider, modelId: options.model.id }, PI_CONTEXT);
+    await lane.setThinkingLevel(options.thinkingLevel ?? "off", PI_CONTEXT);
+    await lane.setActiveTools(activeToolNames, PI_CONTEXT);
+
+    rawHarness.hooks.on("before_compaction", (event) => (
+      event.reason === "manual" ? undefined : { decline: true }
+    ), { id: "mono-agent-compaction-owner" });
+  } catch (error) {
+    try { await session.close(); } catch { /* preserve the construction error */ }
+    throw error;
+  }
 
   let closed = false;
   let currentModel = options.model;
   let currentThinkingLevel = options.thinkingLevel ?? "off";
   let currentActiveToolNames = [...activeToolNames];
+  const manuallyAppendedEntryIds = new Set();
 
   const adapter = {
     models: options.models,
@@ -224,8 +254,10 @@ export async function createPiHarnessAdapter(session, options) {
     async setCompactionSettings(settings) {
       await rawHarness.setCompactionSettings(settings, PI_CONTEXT);
     },
-    appendMessage(message) {
-      return lane.appendMessage(message, PI_CONTEXT);
+    async appendMessage(message) {
+      const entryId = await lane.appendMessage(message, PI_CONTEXT);
+      manuallyAppendedEntryIds.add(entryId);
+      return entryId;
     },
     async prompt(text, promptOptions) {
       return getOrThrow(await lane.prompt(text, promptOptions?.images, PI_CONTEXT));
@@ -279,7 +311,11 @@ export async function createPiHarnessAdapter(session, options) {
     subscribe(listener) {
       const removes = FORWARDED_EVENT_TYPES.map((type) => rawHarness.events.on(
         /** @type {any} */ (type),
-        (event) => listener(legacyEvent(event)),
+        (event) => {
+          if (event.type === "message_end" && manuallyAppendedEntryIds.has(event.entryId)) return;
+          const converted = legacyEvent(event);
+          if (converted) listener(converted);
+        },
       ));
       return () => removes.forEach((remove) => remove());
     },

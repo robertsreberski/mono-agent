@@ -292,10 +292,12 @@ This is distinct from provider-transport retries (`providers.piNative.piMaxRetri
 
 ## Tool scheduling (code-only)
 
-Pi defaults to safe parallelism: independent read-only tools may overlap, while
-`Write`, `Edit`, `Bash`, `Exec`, `NodeRepl`, every MCP tool, and other
-stateful/mutating built-ins carry a sequential execution marker. Force every
-tool to run sequentially only when a host needs globally deterministic ordering:
+Pi defaults to safe parallelism. With Pi 0.85, independent read-only tools may
+overlap only when the offered tool set contains no sequential tool. If `Write`,
+`Edit`, `Bash`, `Exec`, `NodeRepl`, any MCP tool, or another stateful/mutating
+built-in is available, the harness serializes the whole batch because upstream
+no longer exposes mixed per-tool scheduling. A host can also force every tool
+to run sequentially:
 
 ```ts
 const runtimeOptions = {

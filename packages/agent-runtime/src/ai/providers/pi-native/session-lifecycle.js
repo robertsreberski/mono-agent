@@ -525,7 +525,8 @@ export async function rollbackAbortedTurn(runState, { requestedSessionId, provid
  * Outer-catch session cleanup: drop a just-created fresh durable session, drop a
  * create-on-miss reservation placeholder, and roll a resumed session back to its
  * pre-turn leaf for host/runtime-side throws that landed after the harness
- * already mutated the live session.
+ * already mutated the live session. Resumed handles are always closed here so
+ * setup failures before a harness is returned cannot leave the repo wedged.
  * @param {any} runState
  * @param {{durableRepo: any}} params
  */
@@ -556,8 +557,14 @@ export async function cleanupSessionOnThrow(runState, { durableRepo }) {
   // harness already mutated the live session. Mirrors the success-path
   // rollback: move the live session back to the pre-turn leaf so the failed
   // turn never leaks into a later resume. Gated on `sessionEntry &&
-  // baselineLeafId` so it only fires for resumes that captured a baseline.
-  if (sessionEntry && baselineLeafId) {
-    try { await session.moveTo(baselineLeafId); } catch { /* best-effort */ }
+  // baselineLeafId` so rollback only fires for resumes that captured a baseline.
+  // Closing is independently gated on the resumed session existing: a failure
+  // may land before the baseline was readable, but that handle must still be
+  // released without deleting the user-owned transcript.
+  if (sessionEntry && session) {
+    if (baselineLeafId) {
+      try { await session.moveTo(baselineLeafId); } catch { /* best-effort */ }
+    }
+    try { await session.close(); } catch { /* best-effort */ }
   }
 }

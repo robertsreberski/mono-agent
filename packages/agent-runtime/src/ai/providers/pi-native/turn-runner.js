@@ -263,11 +263,7 @@ export async function buildTurnHarness(runState, {
   maxRetries,
   maxRetryDelayMs,
   steeringMode,
-  onEvent,
   options,
-  toolLimits,
-  sdk,
-  reference,
 }) {
   const harness = await createPiHarnessAdapter(session, {
     session,
@@ -305,6 +301,24 @@ export async function buildTurnHarness(runState, {
 
   runState.harness = harness;
 
+  return harness;
+}
+
+/**
+ * Subscribe only after prior history has been seeded. Pi emits message
+ * lifecycle events for manual appendMessage() calls; subscribing earlier makes
+ * restored assistant messages look like fresh output boundaries.
+ * @param {any} runState
+ * @param {{harness: any, onEvent: (event: any) => void, options: any, toolLimits: any, sdk: string, reference: string}} deps
+ */
+export function activateTurnHarness(runState, {
+  harness,
+  onEvent,
+  options,
+  toolLimits,
+  sdk,
+  reference,
+}) {
   harness.subscribe(createStreamSubscriber(runState, {
     onEvent,
     options,
@@ -322,7 +336,6 @@ export async function buildTurnHarness(runState, {
     options.abortSignal.addEventListener("abort", abortHandler, { once: true });
     runState.removeAbortHandler = () => options.abortSignal.removeEventListener?.("abort", abortHandler);
   }
-  return harness;
 }
 
 /**

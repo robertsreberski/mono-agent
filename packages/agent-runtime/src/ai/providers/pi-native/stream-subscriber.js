@@ -107,7 +107,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
           onEvent({ type: "assistant", message: { content: [{ type: "thinking", text: streamEvent.content }] } });
         }
       }
-    } else if (event.type === "message_end") {
+    } else if (event.type === "message_end" && event.message?.role === "assistant") {
       const contextUsage = contextUsageFromAssistantMessage(event.message);
       if (contextUsage) {
         const contextWindow = Number(harness?.getModel?.()?.contextWindow) || 0;

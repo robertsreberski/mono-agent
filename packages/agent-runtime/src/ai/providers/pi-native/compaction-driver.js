@@ -462,12 +462,15 @@ export async function tryCompact(harness, {
       : err;
     const message = effectiveError?.message || String(effectiveError);
     const code = effectiveError?.code;
-    const nothingToCompact = code === "compaction" && /nothing to compact/i.test(message);
+    const tag = effectiveError?._tag;
+    const nothingToCompact = tag === "NothingToCompact"
+      || (code === "compaction" && /nothing to compact/i.test(message));
+    const busy = tag === "LaneBusy" || code === "busy";
     const warningKind = nothingToCompact
       ? "context_compaction_nothing_to_compact"
       : code === "auth"
         ? "context_compaction_auth_failed"
-        : code === "busy"
+        : busy
           ? "context_compaction_busy"
           : "context_compaction_failed";
     runtimeWarnings?.push({ warning_kind: warningKind, source: "pi", trigger, message });
@@ -480,7 +483,7 @@ export async function tryCompact(harness, {
         ? "nothing_to_compact"
         : code === "auth"
           ? "authentication"
-          : code === "busy"
+          : busy
             ? "busy"
             : code === "aborted"
               ? "cancelled"
@@ -490,7 +493,7 @@ export async function tryCompact(harness, {
         : {
           message: code === "auth"
             ? "Compaction authentication failed."
-            : code === "busy"
+            : busy
               ? "Context was busy and could not be compacted."
               : code === "aborted"
                 ? "Compaction was cancelled."
