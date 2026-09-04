@@ -13,9 +13,11 @@ import { ReplayView } from "../ui/views/replay.js";
 import { stripAnsi, TestTerminal } from "./test-terminal.js";
 
 let dir: string;
+let viewForRefresh: ReplayView | undefined;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "tui-replay-view-"));
+  viewForRefresh = undefined;
 });
 
 afterEach(async () => {
@@ -24,12 +26,15 @@ afterEach(async () => {
 
 function setup(): ReplayView {
   const tui = new TuiMainScreen(new TestTerminal(100, 30));
-  return new ReplayView({ tui });
+  const view = new ReplayView({ tui });
+  viewForRefresh = view;
+  return view;
 }
 
-/** pi-tui coalesces nothing on its own render(); this just gives async fs reads a tick to settle. */
+/** Complete a fresh read instead of guessing how long a loaded runner needs. */
 async function flush(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  if (viewForRefresh === undefined) throw new Error("ReplayView was not initialized.");
+  await viewForRefresh.refresh();
 }
 
 function renderText(view: ReplayView): string {

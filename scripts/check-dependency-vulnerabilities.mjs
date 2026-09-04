@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
+import { resolve4 } from "node:dns/promises";
 import { readFile } from "node:fs/promises";
+import { request as httpsRequest } from "node:https";
 import { resolve } from "node:path";
+import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -16,6 +19,15 @@ const MAX_DIRECT_PRODUCTION_ENTRY_STEPS = 100_000;
 const MAX_PRODUCTION_PATHS_PER_PACKAGE_VERSION = 10_000;
 const MAX_PRODUCTION_SUBTREE_COUNT_STEPS = 100_000;
 const MAX_PRODUCTION_TRAVERSAL_STEPS = 100_000;
+const MAX_BULK_REQUEST_PACKAGES = 450;
+const MAX_CONCURRENT_BULK_REQUESTS = 1;
+const BULK_REQUEST_TRANSIENT_RETRIES = 2;
+const BULK_REQUEST_RETRY_DELAY_MS = 60_000;
+const NPM_REGISTRY_ROUTE_TIMEOUT_MS = 2_000;
+const MAX_OSV_BATCH_QUERIES = 1_000;
+const MAX_OSV_QUERIES = 10_000;
+const MAX_OSV_VULNERABILITIES = 1_000;
+const MAX_CONCURRENT_OSV_DETAIL_REQUESTS = 4;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_WHY_PATHS_PER_TARGET = 10_000;
 const MAX_WHY_TRAVERSAL_STEPS_PER_TARGET = 100_000;
@@ -53,6 +65,7 @@ const DEFAULT_ROOT_PACKAGE_NAMES = packageCatalog
   .sort();
 
 export const DEFAULT_AUDIT_REGISTRY_URL = "https://registry.npmjs.org/";
+export const DEFAULT_OSV_API_URL = "https://api.osv.dev/v1/";
 export const DEFAULT_DISPOSITIONS_PATH = fileURLToPath(
   new URL("./dependency-vulnerability-dispositions.json", import.meta.url),
 );
@@ -829,8 +842,304 @@ export function normalizeDispositions(input) {
 }
 
 export async function queryBulkAdvisories(inventory, options = {}) {
+  const transientRetries = options.transientRetries ?? BULK_REQUEST_TRANSIENT_RETRIES;
+  const retryDelayMs = options.retryDelayMs ?? BULK_REQUEST_RETRY_DELAY_MS;
+  if (!Number.isInteger(transientRetries) || transientRetries < 0) {
+    throw new Error("bulk advisory transient retries must be a non-negative integer.");
+  }
+  if (!Number.isFinite(retryDelayMs) || retryDelayMs < 0) {
+    throw new Error("bulk advisory retry delay must be a non-negative finite number.");
+  }
+  const entries = Object.entries(inventory);
+  const requestInventories = entries.length === 0
+    ? [inventory]
+    : Array.from(
+      { length: Math.ceil(entries.length / MAX_BULK_REQUEST_PACKAGES) },
+      (_unused, index) => Object.fromEntries(entries.slice(
+        index * MAX_BULK_REQUEST_PACKAGES,
+        (index + 1) * MAX_BULK_REQUEST_PACKAGES,
+      )),
+    );
+  const fallbackState = { useOsv: false };
+  const reports = await mapWithConcurrency(
+    requestInventories,
+    MAX_CONCURRENT_BULK_REQUESTS,
+    async (requestInventory) => await queryBulkAdvisoriesWithRetries(
+      requestInventory,
+      options,
+      transientRetries,
+      retryDelayMs,
+      fallbackState,
+    ),
+  );
+  const reportEntries = [];
+  const reportedPackages = new Set();
+  for (const report of reports) {
+    for (const [packageName, advisories] of Object.entries(report)) {
+      if (reportedPackages.has(packageName)) {
+        throw new Error(`bulk advisory endpoint returned duplicate package ${packageName} across requests.`);
+      }
+      reportedPackages.add(packageName);
+      reportEntries.push([packageName, advisories]);
+    }
+  }
+  return Object.fromEntries(reportEntries);
+}
+
+async function queryBulkAdvisoriesWithRetries(
+  inventory,
+  options,
+  transientRetries,
+  retryDelayMs,
+  fallbackState,
+) {
+  if (fallbackState.useOsv) {
+    return await queryOsvAdvisories(inventory, options);
+  }
+  for (let attempt = 0; attempt <= transientRetries; attempt += 1) {
+    try {
+      return await queryBulkAdvisoryRequest(inventory, options);
+    } catch (error) {
+      if (error instanceof BulkAdvisoryTransientError && canUseOsvFallback(options)) {
+        fallbackState.useOsv = true;
+        try {
+          return await queryOsvAdvisories(inventory, options);
+        } catch (fallbackError) {
+          throw new Error(
+            `${error.message}; OSV fallback failed: ${reasonOf(fallbackError)}`,
+          );
+        }
+      }
+      if (!(error instanceof BulkAdvisoryTransientError) || attempt === transientRetries) {
+        throw error;
+      }
+      await wait(retryDelayMs * (attempt + 1));
+    }
+  }
+  throw new Error("bulk advisory retry loop ended without a verdict.");
+}
+
+export async function queryOsvAdvisories(inventory, options = {}) {
+  const queries = Object.entries(inventory).flatMap(([packageName, versions]) => (
+    versions.map((version) => ({
+      packageName,
+      version,
+      query: {
+        package: { ecosystem: "npm", name: packageName },
+        version,
+      },
+    }))
+  ));
+  if (queries.length > MAX_OSV_QUERIES) {
+    throw new Error(`OSV fallback inventory exceeded ${MAX_OSV_QUERIES} exact package versions.`);
+  }
+
+  const vulnerabilities = new Map();
+  for (let offset = 0; offset < queries.length; offset += MAX_OSV_BATCH_QUERIES) {
+    const batch = queries.slice(offset, offset + MAX_OSV_BATCH_QUERIES);
+    const document = await requestOsvDocument("querybatch", {
+      method: "POST",
+      body: JSON.stringify({ queries: batch.map(({ query }) => query) }),
+    }, options);
+    if (!isRecord(document) || !Array.isArray(document.results)
+      || document.results.length !== batch.length) {
+      throw new Error("OSV querybatch returned a result count that does not match its queries.");
+    }
+    for (const [index, result] of document.results.entries()) {
+      if (!isRecord(result)) {
+        throw new Error("OSV querybatch returned a malformed result.");
+      }
+      const resultVulnerabilities = Object.hasOwn(result, "vulns") ? result.vulns : [];
+      if (!Array.isArray(resultVulnerabilities)) {
+        throw new Error("OSV querybatch returned a malformed vulnerability list.");
+      }
+      for (const vulnerability of resultVulnerabilities) {
+        if (!isRecord(vulnerability) || !isCanonicalNonEmptyString(vulnerability.id)) {
+          throw new Error("OSV querybatch returned a vulnerability without an id.");
+        }
+        const { packageName, version } = batch[index];
+        const key = `${packageName}\0${vulnerability.id}`;
+        const owned = vulnerabilities.get(key) ?? {
+          id: vulnerability.id,
+          packageName,
+          versions: new Set(),
+        };
+        owned.versions.add(version);
+        vulnerabilities.set(key, owned);
+        if (vulnerabilities.size > MAX_OSV_VULNERABILITIES) {
+          throw new Error(`OSV fallback exceeded ${MAX_OSV_VULNERABILITIES} vulnerabilities.`);
+        }
+      }
+    }
+  }
+
+  const advisories = await mapWithConcurrency(
+    [...vulnerabilities.values()],
+    MAX_CONCURRENT_OSV_DETAIL_REQUESTS,
+    async (owned) => osvVulnerabilityToBulkAdvisory(
+      await requestOsvDocument(`vulns/${encodeURIComponent(owned.id)}`, { method: "GET" }, options),
+      owned,
+    ),
+  );
+  const report = new Map();
+  for (const { packageName, advisory } of advisories) {
+    const packageAdvisories = report.get(packageName) ?? [];
+    packageAdvisories.push(advisory);
+    report.set(packageName, packageAdvisories);
+  }
+  return Object.fromEntries(
+    [...report.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([packageName, packageAdvisories]) => [
+        packageName,
+        packageAdvisories.sort((left, right) => String(left.id).localeCompare(String(right.id))),
+      ]),
+  );
+}
+
+function canUseOsvFallback(options) {
+  if (options.fetchImpl !== undefined) return false;
   const registryUrl = options.registryUrl ?? DEFAULT_AUDIT_REGISTRY_URL;
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  try {
+    return new URL(registryUrl).href === new URL(DEFAULT_AUDIT_REGISTRY_URL).href;
+  } catch {
+    return false;
+  }
+}
+
+async function requestOsvDocument(path, request, options) {
+  const fetchImpl = options.osvFetchImpl ?? globalThis.fetch;
+  const timeoutMs = options.osvTimeoutMs ?? REQUEST_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("OSV fallback timeout must be a positive finite number.");
+  }
+  let endpoint;
+  try {
+    endpoint = new URL(path, options.osvApiUrl ?? DEFAULT_OSV_API_URL);
+  } catch {
+    throw new Error("OSV fallback API URL is invalid.");
+  }
+  if (endpoint.protocol !== "https:" || endpoint.username.length > 0 || endpoint.password.length > 0) {
+    throw new Error("OSV fallback API URL must be credential-free HTTPS.");
+  }
+
+  const controller = new AbortController();
+  const timeoutError = new Error(`OSV fallback request timed out after ${timeoutMs}ms.`);
+  const responseTooLargeError = new Error(
+    `OSV fallback response exceeded ${MAX_RESPONSE_BYTES} bytes.`,
+  );
+  let timeout;
+  let response;
+  let source;
+  try {
+    const fetchRequest = Promise.resolve().then(async () => {
+      const fetched = await fetchImpl(endpoint, {
+        method: request.method,
+        headers: {
+          accept: "application/json",
+          ...(request.body === undefined ? {} : { "content-type": "application/json" }),
+          "user-agent": "mono-agent-dependency-vulnerability-gate",
+        },
+        ...(request.body === undefined ? {} : { body: request.body }),
+        signal: controller.signal,
+      });
+      if (typeof fetched?.ok !== "boolean" || typeof fetched.status !== "number"
+        || (fetched.body !== null
+          && (!isRecord(fetched.body) || typeof fetched.body.getReader !== "function"))) {
+        throw new Error("OSV fallback returned a malformed HTTP response");
+      }
+      const responseSource = await readBoundedResponseBody(
+        fetched.body,
+        MAX_RESPONSE_BYTES,
+        responseTooLargeError,
+        () => controller.abort(responseTooLargeError),
+      );
+      return { response: fetched, source: responseSource };
+    });
+    const timedOut = new Promise((_, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort(timeoutError);
+        reject(timeoutError);
+      }, timeoutMs);
+    });
+    ({ response, source } = await Promise.race([fetchRequest, timedOut]));
+  } catch (error) {
+    if (error === timeoutError || error === responseTooLargeError) throw error;
+    throw new Error(`OSV fallback request failed: ${reasonOf(error)}`);
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) {
+    throw new Error(
+      `OSV fallback returned HTTP ${response.status}: `
+      + boundedSingleLine(source, MAX_DIAGNOSTIC_CHARS),
+    );
+  }
+  try {
+    return JSON.parse(source);
+  } catch (error) {
+    throw new Error(`OSV fallback response was not valid JSON: ${reasonOf(error)}`);
+  }
+}
+
+function osvVulnerabilityToBulkAdvisory(document, owned) {
+  if (!isRecord(document) || document.id !== owned.id
+    || !isCanonicalNonEmptyString(document.summary)) {
+    throw new Error(`OSV vulnerability ${owned.id} returned malformed details.`);
+  }
+  if (!Array.isArray(document.affected) || !document.affected.some((affected) => (
+    isRecord(affected)
+    && isRecord(affected.package)
+    && affected.package.ecosystem === "npm"
+    && affected.package.name === owned.packageName
+  ))) {
+    throw new Error(
+      `OSV vulnerability ${owned.id} does not identify affected npm package ${owned.packageName}.`,
+    );
+  }
+  const severity = normalizeOsvSeverity(document.database_specific?.severity, owned.id);
+  const versions = [...owned.versions].sort();
+  return {
+    packageName: owned.packageName,
+    advisory: {
+      id: owned.id,
+      severity,
+      title: document.summary,
+      url: owned.id.startsWith("GHSA-")
+        ? `https://github.com/advisories/${owned.id}`
+        : `https://osv.dev/vulnerability/${encodeURIComponent(owned.id)}`,
+      vulnerable_versions: versions.join(" || "),
+    },
+  };
+}
+
+function normalizeOsvSeverity(value, vulnerabilityId) {
+  if (typeof value === "string") {
+    const severity = value.toLowerCase();
+    if (severity === "medium") return "moderate";
+    if (isKnownSeverity(severity)) return severity;
+  }
+  throw new Error(`OSV vulnerability ${vulnerabilityId} has no recognized severity.`);
+}
+
+async function mapWithConcurrency(values, concurrency, mapper) {
+  const results = new Array(values.length);
+  let nextIndex = 0;
+  await Promise.all(Array.from(
+    { length: Math.min(concurrency, values.length) },
+    async () => {
+      while (nextIndex < values.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await mapper(values[index], index);
+      }
+    },
+  ));
+  return results;
+}
+
+async function queryBulkAdvisoryRequest(inventory, options) {
+  const registryUrl = options.registryUrl ?? DEFAULT_AUDIT_REGISTRY_URL;
   let endpoint;
   try {
     if (typeof registryUrl !== "string") {
@@ -858,6 +1167,11 @@ export async function queryBulkAdvisories(inventory, options = {}) {
   let source;
   try {
     const request = Promise.resolve().then(async () => {
+      const fetchImpl = options.fetchImpl ?? ((url, init) => fetchBulkAdvisoryEndpoint(
+        url,
+        init,
+        options,
+      ));
       const fetched = await fetchImpl(endpoint, {
         method: "POST",
         headers: {
@@ -890,7 +1204,10 @@ export async function queryBulkAdvisories(inventory, options = {}) {
     ({ response, source } = await Promise.race([request, timedOut]));
   } catch (error) {
     if (error === timeoutError) {
-      throw new Error(`bulk advisory request timed out after ${timeoutMs}ms.`);
+      throw new BulkAdvisoryTransientError(`bulk advisory request timed out after ${timeoutMs}ms.`);
+    }
+    if (error instanceof BulkAdvisoryTransientRouteError) {
+      throw new BulkAdvisoryTransientError(error.message);
     }
     if (error === responseTooLargeError) {
       throw error;
@@ -901,10 +1218,14 @@ export async function queryBulkAdvisories(inventory, options = {}) {
   }
 
   if (!response.ok) {
-    throw new Error(
+    const error = new Error(
       `bulk advisory endpoint returned HTTP ${response.status}: `
       + boundedSingleLine(source, MAX_DIAGNOSTIC_CHARS),
     );
+    if (response.status === 429 || response.status >= 500) {
+      throw new BulkAdvisoryTransientError(error.message);
+    }
+    throw error;
   }
   try {
     const document = JSON.parse(source);
@@ -915,6 +1236,108 @@ export async function queryBulkAdvisories(inventory, options = {}) {
   } catch (error) {
     throw new Error(`bulk advisory response was not valid JSON: ${reasonOf(error)}`);
   }
+}
+
+class BulkAdvisoryTransientError extends Error {}
+
+class BulkAdvisoryRouteError extends Error {}
+
+class BulkAdvisoryTransientRouteError extends Error {}
+
+let preferredNpmRegistryAddress;
+
+async function fetchBulkAdvisoryEndpoint(endpoint, init, options) {
+  if (endpoint.protocol !== "https:" || endpoint.hostname !== "registry.npmjs.org") {
+    return await globalThis.fetch(endpoint, init);
+  }
+  const resolveAddresses = options.resolveRegistryAddressesImpl ?? resolve4;
+  const requestAddress = options.requestRegistryAddressImpl ?? requestNpmRegistryAddress;
+  let addresses;
+  try {
+    addresses = await resolveAddresses(endpoint.hostname);
+  } catch (error) {
+    throw new BulkAdvisoryRouteError(`npm registry IPv4 lookup failed: ${reasonOf(error)}`);
+  }
+  if (!Array.isArray(addresses) || addresses.length === 0
+    || addresses.some((address) => typeof address !== "string")) {
+    throw new BulkAdvisoryRouteError("npm registry IPv4 lookup returned no usable addresses.");
+  }
+  const uniqueAddresses = [...new Set(addresses)];
+  if (preferredNpmRegistryAddress !== undefined
+    && uniqueAddresses.includes(preferredNpmRegistryAddress)) {
+    uniqueAddresses.splice(uniqueAddresses.indexOf(preferredNpmRegistryAddress), 1);
+    uniqueAddresses.unshift(preferredNpmRegistryAddress);
+  }
+
+  let lastError;
+  let hadTransientRouteFailure = false;
+  for (const address of uniqueAddresses) {
+    try {
+      const response = await requestAddress(endpoint, init, address);
+      if (response.status >= 500) {
+        await response.body?.cancel();
+        lastError = new Error(`npm registry route ${address} returned HTTP ${response.status}`);
+        hadTransientRouteFailure = true;
+        if (preferredNpmRegistryAddress === address) preferredNpmRegistryAddress = undefined;
+        continue;
+      }
+      preferredNpmRegistryAddress = address;
+      return response;
+    } catch (error) {
+      if (init.signal?.aborted) throw init.signal.reason ?? error;
+      lastError = error;
+      if (error instanceof BulkAdvisoryTransientRouteError) {
+        hadTransientRouteFailure = true;
+      }
+      if (preferredNpmRegistryAddress === address) preferredNpmRegistryAddress = undefined;
+    }
+  }
+  const RouteError = hadTransientRouteFailure
+    ? BulkAdvisoryTransientRouteError
+    : BulkAdvisoryRouteError;
+  throw new RouteError(`npm registry IPv4 routes did not respond: ${reasonOf(lastError)}`);
+}
+
+async function requestNpmRegistryAddress(endpoint, init, address) {
+  return await new Promise((resolveRequest, rejectRequest) => {
+    const request = httpsRequest(endpoint, {
+      method: init.method,
+      headers: {
+        ...init.headers,
+        "content-length": Buffer.byteLength(init.body),
+      },
+      agent: false,
+      lookup: (_hostname, lookupOptions, callback) => {
+        if (lookupOptions.all) {
+          callback(null, [{ address, family: 4 }]);
+        } else {
+          callback(null, address, 4);
+        }
+      },
+    });
+    const abortRequest = () => request.destroy(init.signal.reason);
+    init.signal?.addEventListener("abort", abortRequest, { once: true });
+    request.once("response", (response) => {
+      request.setTimeout(0);
+      response.once("close", () => init.signal?.removeEventListener("abort", abortRequest));
+      resolveRequest({
+        ok: response.statusCode >= 200 && response.statusCode < 300,
+        status: response.statusCode,
+        body: Readable.toWeb(response),
+      });
+    });
+    request.once("error", rejectRequest);
+    request.setTimeout(NPM_REGISTRY_ROUTE_TIMEOUT_MS, () => {
+      request.destroy(new BulkAdvisoryTransientRouteError(
+        `npm registry route ${address} timed out after ${NPM_REGISTRY_ROUTE_TIMEOUT_MS}ms`,
+      ));
+    });
+    request.end(init.body);
+  });
+}
+
+function wait(milliseconds) {
+  return new Promise((resolveWait) => setTimeout(resolveWait, milliseconds));
 }
 
 async function readBoundedResponseBody(body, maxBytes, limitError, abortRequest) {
@@ -964,7 +1387,13 @@ async function readBoundedResponseBody(body, maxBytes, limitError, abortRequest)
   return Buffer.concat(chunks, totalBytes).toString("utf8");
 }
 
-export function evaluateDependencyVulnerabilities({ productionGraph, report, dispositions, now = new Date() }) {
+export function evaluateDependencyVulnerabilities({
+  productionGraph,
+  report,
+  dispositions,
+  advisoryVersions,
+  now = new Date(),
+}) {
   const normalizedGraph = normalizeProductionGraph(productionGraph);
   const normalizedInventory = normalizedGraph.inventory;
   const normalizedDispositions = normalizeDispositions(dispositions);
@@ -977,6 +1406,9 @@ export function evaluateDependencyVulnerabilities({ productionGraph, report, dis
     throw new Error("bulk advisory report must be an object keyed by package name.");
   }
   const normalizedReport = normalizeBulkAdvisoryReport(report, normalizedInventory);
+  const normalizedAdvisoryVersions = advisoryVersions === undefined
+    ? undefined
+    : normalizeAdvisoryVersions(advisoryVersions, normalizedInventory, normalizedReport);
 
   const active = [];
   const advisoryPathBudget = { steps: 0 };
@@ -984,7 +1416,8 @@ export function evaluateDependencyVulnerabilities({ productionGraph, report, dis
     for (const advisory of advisories) {
       const normalized = normalizeLiveAdvisory(
         packageName,
-        normalizedInventory[packageName],
+        normalizedAdvisoryVersions?.get(advisoryKey(packageName, advisory.id))
+          ?? normalizedInventory[packageName],
         normalizedGraph.dependencyPaths,
         advisory,
         advisoryPathBudget,
@@ -1101,6 +1534,7 @@ export async function runDependencyVulnerabilityCheck(options = {}) {
       productionGraph: graphWithPaths,
       report: normalizedReport,
       dispositions,
+      advisoryVersions: options.advisoryVersions,
       now: options.now,
     });
     renderEvaluation(evaluation, { stdout, stderr });
@@ -1236,7 +1670,7 @@ function highSeverityReportPackageNames(report) {
     .sort();
 }
 
-function normalizeBulkAdvisoryReport(report, inventory) {
+export function normalizeBulkAdvisoryReport(report, inventory) {
   if (!isRecord(report)) {
     throw new Error("bulk advisory report must be an object keyed by package name.");
   }
@@ -1291,6 +1725,47 @@ function normalizeBulkAdvisoryReport(report, inventory) {
   return normalizedReport;
 }
 
+function normalizeAdvisoryVersions(input, inventory, report) {
+  const document = snapshotDataRecord(input, "advisory version ownership");
+  const expected = new Set(Object.entries(report).flatMap(([packageName, advisories]) => (
+    advisories.map((advisory) => advisoryKey(packageName, advisory.id))
+  )));
+  const normalized = new Map();
+  for (const [packageName, packageInput] of Object.entries(document)) {
+    if (!Object.hasOwn(inventory, packageName)) {
+      throw new Error(`advisory version ownership returned package absent from inventory: ${packageName}.`);
+    }
+    const packageDocument = snapshotDataRecord(
+      packageInput,
+      `advisory version ownership for ${packageName}`,
+    );
+    for (const [advisoryId, inputVersions] of Object.entries(packageDocument)) {
+      const key = advisoryKey(packageName, advisoryId);
+      if (!expected.has(key)) {
+        throw new Error(`advisory version ownership contains unexpected advisory ${key}.`);
+      }
+      const versions = snapshotDataArray(
+        inputVersions,
+        `advisory version ownership for ${key}`,
+      );
+      if (versions.length === 0
+        || versions.some((version) => typeof version !== "string"
+          || !inventory[packageName].includes(version))) {
+        throw new Error(`advisory version ownership for ${key} must contain exact inventory versions.`);
+      }
+      if (new Set(versions).size !== versions.length) {
+        throw new Error(`advisory version ownership for ${key} contains duplicate exact versions.`);
+      }
+      normalized.set(key, [...versions].sort());
+    }
+  }
+  const missing = [...expected].filter((key) => !normalized.has(key));
+  if (missing.length > 0) {
+    throw new Error(`advisory version ownership is missing ${missing.join(", ")}.`);
+  }
+  return normalized;
+}
+
 function parseArgs(argv) {
   let help = false;
   for (const arg of argv) {
@@ -1308,7 +1783,8 @@ function usage() {
     "Usage:",
     "  pnpm run check:dependency-vulnerabilities",
     "",
-    "Audits the full publishable cross-platform production/optional dependency graph through npm's bulk advisory API.",
+    "Audits the full publishable cross-platform production/optional dependency graph through "
+      + "npm's bulk advisory API with an OSV outage fallback.",
     "Fails closed on registry errors and on unreviewed, expired, stale, or metadata/version/path-mismatched high/critical findings.",
     "Set MONO_AGENT_DEPENDENCY_AUDIT_REGISTRY only to use a compatible registry mirror.",
   ].join("\n");

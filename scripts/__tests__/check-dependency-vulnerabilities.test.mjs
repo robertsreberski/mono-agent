@@ -13,6 +13,7 @@ import {
   parsePnpmProductionInventory,
   parsePnpmWhyDependencyPaths,
   queryBulkAdvisories,
+  queryOsvAdvisories,
   runDependencyVulnerabilityCheck,
 } from "../check-dependency-vulnerabilities.mjs";
 
@@ -1636,6 +1637,7 @@ describe("dependency vulnerability gate", () => {
     })).rejects.toThrow("bulk advisory request failed: connection refused");
 
     await expect(queryBulkAdvisories(inventory, {
+      transientRetries: 0,
       fetchImpl: async () => httpResponse("registry unavailable", { status: 503, raw: true }),
     })).rejects.toThrow("returned HTTP 503: registry unavailable");
 
@@ -1651,6 +1653,7 @@ describe("dependency vulnerability gate", () => {
     expect(credentialFetch).not.toHaveBeenCalled();
 
     const hostileHttpError = await queryBulkAdvisories(inventory, {
+      transientRetries: 0,
       fetchImpl: async () => httpResponse(
         "registry unavailable\n::warning file=ci.yml::forged\u001b[31m",
         { status: 503, raw: true },
@@ -1734,6 +1737,7 @@ describe("dependency vulnerability gate", () => {
     let timeoutSignal;
     const pending = queryBulkAdvisories(inventory, {
       timeoutMs: 25,
+      transientRetries: 0,
       fetchImpl: async (_url, request) => {
         timeoutSignal = request.signal;
         return await new Promise(() => {});
@@ -1743,6 +1747,248 @@ describe("dependency vulnerability gate", () => {
     await vi.advanceTimersByTimeAsync(25);
     await rejection;
     expect(timeoutSignal.aborted).toBe(true);
+  });
+
+  it("rotates official npm registry IPv4 routes instead of retrying one black hole", async () => {
+    const requestedAddresses = [];
+    await expect(queryBulkAdvisories({ ws: ["8.20.1"] }, {
+      resolveRegistryAddressesImpl: async () => ["192.0.2.1", "192.0.2.2", "192.0.2.3"],
+      requestRegistryAddressImpl: async (_url, _request, address) => {
+        requestedAddresses.push(address);
+        if (address === "192.0.2.1") throw new Error("fixture route timed out");
+        if (address === "192.0.2.2") {
+          return httpResponse("registry unavailable", { status: 503, raw: true });
+        }
+        return httpResponse({ ws: [] });
+      },
+    })).resolves.toEqual({ ws: [] });
+
+    expect(requestedAddresses).toEqual(["192.0.2.1", "192.0.2.2", "192.0.2.3"]);
+  });
+
+  it("falls back once to OSV after every official npm route is unavailable", async () => {
+    const registryRequests = [];
+    const osvRequests = [];
+    const report = await queryBulkAdvisories({ ws: ["8.20.1", "8.21.1"] }, {
+      resolveRegistryAddressesImpl: async () => ["192.0.2.1", "192.0.2.2"],
+      requestRegistryAddressImpl: async (_url, _request, address) => {
+        registryRequests.push(address);
+        return httpResponse("registry unavailable", { status: 503, raw: true });
+      },
+      osvFetchImpl: async (url, request) => {
+        osvRequests.push({ url: url.href, request });
+        if (url.pathname.endsWith("/querybatch")) {
+          expect(JSON.parse(request.body)).toEqual({
+            queries: [
+              { package: { ecosystem: "npm", name: "ws" }, version: "8.20.1" },
+              { package: { ecosystem: "npm", name: "ws" }, version: "8.21.1" },
+            ],
+          });
+          return httpResponse({
+            results: [
+              { vulns: [{ id: "GHSA-fixture" }] },
+              {},
+            ],
+          });
+        }
+        expect(url.pathname).toMatch(/\/vulns\/GHSA-fixture$/u);
+        expect(request.body).toBeUndefined();
+        return httpResponse({
+          id: "GHSA-fixture",
+          summary: "fixture exact-version advisory",
+          database_specific: { severity: "MODERATE" },
+          affected: [{ package: { ecosystem: "npm", name: "ws" } }],
+        });
+      },
+    });
+
+    expect(registryRequests).toEqual(["192.0.2.1", "192.0.2.2"]);
+    expect(osvRequests).toHaveLength(2);
+    expect(report).toEqual({
+      ws: [{
+        id: "GHSA-fixture",
+        severity: "moderate",
+        title: "fixture exact-version advisory",
+        url: "https://github.com/advisories/GHSA-fixture",
+        vulnerable_versions: "8.20.1",
+      }],
+    });
+  });
+
+  it("keeps using OSV after the first registry outage in a chunked inventory", async () => {
+    const inventory = Object.fromEntries(Array.from(
+      { length: 451 },
+      (_unused, index) => [`package-${String(index).padStart(3, "0")}`, ["1.0.0"]],
+    ));
+    const registryRequest = vi.fn(async () => (
+      httpResponse("registry unavailable", { status: 503, raw: true })
+    ));
+    const osvBatchSizes = [];
+
+    await expect(queryBulkAdvisories(inventory, {
+      resolveRegistryAddressesImpl: async () => ["192.0.2.1"],
+      requestRegistryAddressImpl: registryRequest,
+      osvFetchImpl: async (url, request) => {
+        expect(url.pathname).toMatch(/\/querybatch$/u);
+        const queries = JSON.parse(request.body).queries;
+        osvBatchSizes.push(queries.length);
+        return httpResponse({ results: queries.map(() => ({})) });
+      },
+    })).resolves.toEqual({});
+
+    expect(registryRequest).toHaveBeenCalledTimes(1);
+    expect(osvBatchSizes).toEqual([450, 1]);
+  });
+
+  it("fails closed when OSV fallback details cannot support the advisory contract", async () => {
+    await expect(queryBulkAdvisories({ ws: ["8.20.1"] }, {
+      resolveRegistryAddressesImpl: async () => ["192.0.2.1"],
+      requestRegistryAddressImpl: async () => (
+        httpResponse("registry unavailable", { status: 503, raw: true })
+      ),
+      osvFetchImpl: async (url) => url.pathname.endsWith("/querybatch")
+        ? httpResponse({ results: [{ vulns: [{ id: "GHSA-fixture" }] }] })
+        : httpResponse({
+          id: "GHSA-fixture",
+          summary: "fixture advisory",
+          database_specific: {},
+          affected: [{ package: { ecosystem: "npm", name: "ws" } }],
+        }),
+    })).rejects.toThrow(
+      "OSV fallback failed: OSV vulnerability GHSA-fixture has no recognized severity",
+    );
+
+    await expect(queryOsvAdvisories({ ws: ["8.20.1"] }, {
+      osvFetchImpl: async () => httpResponse({ results: [] }),
+    })).rejects.toThrow("result count that does not match its queries");
+
+    await expect(queryOsvAdvisories({ ws: ["8.20.1"] }, {
+      osvFetchImpl: async () => httpResponse({ results: [{ vulns: null }] }),
+    })).rejects.toThrow("OSV querybatch returned a malformed vulnerability list");
+  });
+
+  it.each([
+    {
+      label: "DNS lookup",
+      options: {
+        resolveRegistryAddressesImpl: async () => {
+          throw new Error("fixture DNS failure");
+        },
+      },
+      expectedRequests: 0,
+    },
+    {
+      label: "every immediate connection",
+      options: {
+        resolveRegistryAddressesImpl: async () => ["192.0.2.1", "192.0.2.2"],
+      },
+      expectedRequests: 2,
+    },
+  ])("does not delay or retry non-transient $label failures", async ({ options, expectedRequests }) => {
+    const requestRegistryAddressImpl = vi.fn(async () => {
+      throw new Error("fixture connection refused");
+    });
+
+    await expect(queryBulkAdvisories({ ws: ["8.20.1"] }, {
+      ...options,
+      requestRegistryAddressImpl,
+      retryDelayMs: 0,
+      transientRetries: 2,
+    })).rejects.toThrow("bulk advisory request failed");
+
+    expect(requestRegistryAddressImpl).toHaveBeenCalledTimes(expectedRequests);
+  });
+
+  it("retries timed-out and unavailable bulk requests within a bounded budget", async () => {
+    vi.useFakeTimers();
+    const requestSignals = [];
+    const pending = queryBulkAdvisories({ ws: ["8.20.1"] }, {
+      timeoutMs: 25,
+      retryDelayMs: 5,
+      transientRetries: 2,
+      fetchImpl: async (_url, request) => {
+        requestSignals.push(request.signal);
+        if (requestSignals.length === 1) {
+          return await new Promise(() => {});
+        }
+        if (requestSignals.length === 2) {
+          return httpResponse("registry unavailable", { status: 503, raw: true });
+        }
+        return httpResponse({ ws: [] });
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(25);
+    await vi.advanceTimersByTimeAsync(5);
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(pending).resolves.toEqual({ ws: [] });
+    expect(requestSignals).toHaveLength(3);
+    expect(requestSignals[0].aborted).toBe(true);
+    expect(requestSignals[1].aborted).toBe(false);
+    expect(requestSignals[2].aborted).toBe(false);
+  });
+
+  it("paces default transient retries so the registry can recover", async () => {
+    vi.useFakeTimers();
+    let requests = 0;
+    const pending = queryBulkAdvisories({ ws: ["8.20.1"] }, {
+      fetchImpl: async () => {
+        requests += 1;
+        return requests === 1
+          ? httpResponse("registry unavailable", { status: 503, raw: true })
+          : httpResponse({ ws: [] });
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(requests).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toEqual({ ws: [] });
+    expect(requests).toBe(2);
+  });
+
+  it("queries large inventories through a bounded concurrent worker pool", async () => {
+    const inventory = Object.fromEntries(Array.from(
+      { length: 1_801 },
+      (_unused, index) => [`package-${String(index).padStart(4, "0")}`, ["1.0.0"]],
+    ));
+    const requestedPackages = [];
+    let activeRequests = 0;
+    let maxActiveRequests = 0;
+    const report = await queryBulkAdvisories(inventory, {
+      fetchImpl: async (_url, request) => {
+        const packageNames = Object.keys(JSON.parse(request.body));
+        requestedPackages.push(packageNames);
+        activeRequests += 1;
+        maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+        await Promise.resolve();
+        activeRequests -= 1;
+        return httpResponse({ [packageNames[0]]: [] });
+      },
+    });
+
+    expect(requestedPackages.map((packageNames) => packageNames.length))
+      .toEqual([450, 450, 450, 450, 1]);
+    expect(requestedPackages.flat()).toEqual(Object.keys(inventory));
+    expect(maxActiveRequests).toBe(1);
+    expect(Object.keys(report)).toEqual([
+      "package-0000",
+      "package-0450",
+      "package-0900",
+      "package-1350",
+      "package-1800",
+    ]);
+  });
+
+  it("fails closed when concurrent requests return the same package", async () => {
+    const inventory = Object.fromEntries(Array.from(
+      { length: 451 },
+      (_unused, index) => [`package-${String(index).padStart(3, "0")}`, ["1.0.0"]],
+    ));
+
+    await expect(queryBulkAdvisories(inventory, {
+      fetchImpl: async () => httpResponse({ "package-000": [] }),
+    })).rejects.toThrow("duplicate package package-000 across requests");
   });
 
   it.each(["constructor", "toString", "__proto__", "unknown-severity"])(
@@ -1784,6 +2030,35 @@ describe("dependency vulnerability gate", () => {
       expect(stderr.text).toContain(`package absent from inventory: ${packageName}`);
     },
   );
+
+  it("attributes a shared advisory only to its owned exact versions and paths", () => {
+    const advisory = wsAdvisory();
+    const productionGraph = {
+      inventory: { ws: ["8.20.1", "8.21.1"] },
+      dependencyPaths: {
+        "ws@8.20.1": ["fixture -> ws@8.20.1"],
+        "ws@8.21.1": ["fixture -> ws@8.21.1"],
+      },
+    };
+    const evaluation = evaluateDependencyVulnerabilities({
+      productionGraph,
+      report: { ws: [advisory] },
+      dispositions: emptyDispositions(),
+      advisoryVersions: { ws: { [String(advisory.id)]: ["8.20.1"] } },
+      now: NOW,
+    });
+
+    expect(evaluation.inventory.ws).toEqual(["8.20.1", "8.21.1"]);
+    expect(evaluation.active[0].versions).toEqual(["8.20.1"]);
+    expect(evaluation.active[0].dependencyPaths).toEqual(["fixture -> ws@8.20.1"]);
+    expect(() => evaluateDependencyVulnerabilities({
+      productionGraph,
+      report: { ws: [advisory] },
+      dispositions: emptyDispositions(),
+      advisoryVersions: { ws: { [String(advisory.id)]: ["9.0.0"] } },
+      now: NOW,
+    })).toThrow("must contain exact inventory versions");
+  });
 
   it("rejects malformed, duplicate, and over-budget live advisory reports before expansion", () => {
     const graph = graphFor("ws", "8.20.1", "fixture -> ws@8.20.1");
