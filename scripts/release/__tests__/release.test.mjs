@@ -346,10 +346,10 @@ describe("release graph validation", () => {
       throw new Error("validateRelease did not reject floating Pi dependencies");
     } catch (error) {
       expect(error.issues).toEqual([
-        "@mono-agent/agent-app dependencies.@earendil-works/pi-ai must pin known-compatible version 0.84.3 exactly; found ^0.80.6",
-        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-agent-core must pin known-compatible version 0.83.0 exactly; found ~0.80.6",
-        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-ai must pin known-compatible version 0.84.3 exactly; found 0.80.8",
-        "@mono-agent/tui dependencies.@earendil-works/pi-tui must pin known-compatible version 0.84.3 exactly; found ^0.79.1",
+        "@mono-agent/agent-app dependencies.@earendil-works/pi-ai must pin known-compatible version 0.85.0 exactly; found ^0.80.6",
+        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-agent-core must pin known-compatible version 0.85.0 exactly; found ~0.80.6",
+        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-ai must pin known-compatible version 0.85.0 exactly; found 0.80.8",
+        "@mono-agent/tui dependencies.@earendil-works/pi-tui must pin known-compatible version 0.85.0 exactly; found ^0.79.1",
       ]);
     }
   });
@@ -664,7 +664,7 @@ describe("current launch manifest", () => {
     const piCore = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-agent-core"];
     const piTui = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-tui"];
 
-    expect(piCore).toBe("0.83.0");
+    expect(piCore).toBe("0.85.0");
     expect(guidance).toContain(
       `packages/agent-runtime\`: \`@earendil-works/pi-ai\` at \`${piAi}\`; \`pi-agent-core\` at \`${piCore}\``,
     );
@@ -674,10 +674,7 @@ describe("current launch manifest", () => {
     expect(piTui).toBe(piAi);
     expect(guidance).toContain("verify the console interactively");
     expect(migration).toContain(
-      `@earendil-works/pi-ai\` is now \`${piAi}\`; \`@earendil-works/pi-agent-core\` remains \`${piCore}\``,
-    );
-    expect(migration).toContain(
-      `The runtime exact-pins Pi AI at \`${piAi}\` and Pi Agent Core at \`${piCore}\``,
+      `The runtime exact-pins Pi AI and Pi Agent Core at \`${piAi}\``,
     );
     expect(migration).toContain(
       `exact Pi AI \`${piAi}\` and Pi Agent Core \`${piCore}\` compatibility pins inside the runtime`,
