@@ -59,6 +59,11 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   routes, and `mono-agent jobs` CLI at the app boundary. This
   local contract does not resist a hostile same-UID provider; use OS privilege
   separation when that is in the threat model.
+- Opt in to Pi-native host-owned watches through `monitors.*`. Telegram, Slack,
+  and existing web conversations receive coalesced event batches as exact-origin
+  tool-capable wake turns; web uses ordinary assistant turns rather than a
+  Monitor card, and shares one per-thread serialization lane with ProcessJobs
+  wakes and queued user follow-ups.
 - Drive each channel through a uniform driver contract with per-channel
   `disabled` / `waiting_for_config` / `running` / `degraded` / `failed` status.
   `degraded` means a temporarily unavailable transport owns its recovery while

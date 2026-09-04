@@ -12,7 +12,7 @@ import {
 } from "@mono-agent/agent-contracts";
 
 import { agentGeneration, WebService, WeightedTurnBudget } from "../service.js";
-import { fakeDiscoveredAgent, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
+import { fakeDiscoveredAgent, fakeMonitor, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
 
@@ -976,6 +976,308 @@ describe("WebService", () => {
         expect.objectContaining({ type: "text", text: "Worker result processed" }),
       ]) }),
     ]));
+    await service.stop();
+  });
+
+  it("runs one assistant-only Monitor wake in its exact web thread and durably suppresses replay", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => `${JSON.stringify({ kind: "finish", finalText: "The watched process is ready." })}\n`,
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const monitor = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 6 });
+    const input = {
+      sourceId: "agent-one",
+      triggerKind: "monitor" as const,
+      deliveryKey: `monitor:${monitor.monitorId}:6`,
+      threadId: thread.id,
+      monitor,
+      wakePrompt: "untrusted output credential-shape-value",
+    };
+
+    await expect(service.deliverNotification(input)).resolves.toMatchObject({
+      duplicate: false,
+      thread: { id: thread.id },
+      delivery: { delivered: true, disposition: "follow_up" },
+    });
+    await expect(service.deliverNotification(input)).resolves.toMatchObject({
+      duplicate: true,
+      delivery: { delivered: true, disposition: "follow_up" },
+    });
+    expect(turnBodies).toEqual([expect.objectContaining({
+      conversationId: `web:${thread.id}`,
+      text: input.wakePrompt,
+      processJobWakeDeliveryKey: input.deliveryKey,
+    })]);
+    expect(service.thread(thread.id).messages.some((message) => message.role === "user")).toBe(false);
+    expect(service.thread(thread.id).messages).toEqual([
+      expect.objectContaining({
+        role: "assistant",
+        parts: [expect.objectContaining({ type: "text", text: "The watched process is ready." })],
+      }),
+    ]);
+    const raw = new DatabaseSync(service.store.paths.database, { readOnly: true });
+    const turns = raw.prepare("SELECT text FROM turns").all() as Array<{ text: string }>;
+    const deliveries = raw.prepare("SELECT * FROM monitor_wake_deliveries").all();
+    raw.close();
+    expect(turns).toEqual([{ text: "[Monitor wake]" }]);
+    expect(JSON.stringify(deliveries)).not.toContain("credential-shape-value");
+    await service.stop();
+  });
+
+  it("rejects conflicting content while the same Monitor delivery key is still active", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
+    const input = {
+      sourceId: "agent-one",
+      triggerKind: "monitor" as const,
+      deliveryKey: `monitor:${monitor.monitorId}:1`,
+      threadId: thread.id,
+      monitor,
+      wakePrompt: "first content",
+    };
+    const first = service.deliverNotification(input);
+    await waitFor(() => stream !== undefined);
+    await expect(service.deliverNotification({ ...input, wakePrompt: "different content" }))
+      .rejects.toMatchObject({ code: "notification_idempotency_conflict", status: 409 });
+
+    stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+    stream?.close();
+    await expect(first).resolves.toMatchObject({ delivery: { delivered: true } });
+    await service.stop();
+  });
+
+  it("steers a Monitor wake into the exact active web turn", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const liveInputs: Array<{ conversationId: string; body: Record<string, unknown> }> = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+        onLiveInput(conversationId, body) {
+          liveInputs.push({ conversationId, body });
+          return { status: "applied", runId: "active-run" };
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Keep working" });
+    await waitFor(() => stream !== undefined);
+    const monitor = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 2 });
+    const deliveryKey = `monitor:${monitor.monitorId}:2`;
+
+    await expect(service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "monitor",
+      deliveryKey,
+      threadId: thread.id,
+      monitor,
+      wakePrompt: "Inspect the new event.",
+    })).resolves.toMatchObject({ delivery: { delivered: true, disposition: "steered" } });
+    expect(liveInputs).toEqual([{
+      conversationId: `web:${thread.id}`,
+      body: expect.objectContaining({ id: deliveryKey, deliveryKey, text: "Inspect the new event." }),
+    }]);
+
+    stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+    stream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    await service.stop();
+  });
+
+  it("rejects cross-thread origins and exact-key reuse before touching the operator", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({ onTurn(body) { turnBodies.push(body); } }),
+    });
+    const thread = service.createThread("agent-one");
+    const other = service.createThread("agent-one");
+    const monitor = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 5 });
+
+    await expect(service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "monitor",
+      deliveryKey: `monitor:${monitor.monitorId}:5`,
+      threadId: other.id,
+      monitor,
+      wakePrompt: "must not run",
+    })).rejects.toMatchObject({ code: "invalid_notification", status: 409 });
+    await expect(service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "monitor",
+      deliveryKey: `monitor:${monitor.monitorId}:4`,
+      threadId: thread.id,
+      monitor,
+      wakePrompt: "must not run",
+    })).rejects.toMatchObject({ code: "invalid_notification", status: 409 });
+
+    service.patchThread(thread.id, { archived: true });
+    await expect(service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "monitor",
+      deliveryKey: `monitor:${monitor.monitorId}:5`,
+      threadId: thread.id,
+      monitor,
+      wakePrompt: "must not run",
+    })).resolves.toMatchObject({
+      duplicate: false,
+      delivery: { delivered: false, code: "monitor_wake_failed", retryable: false },
+    });
+    await service.deleteThread(thread.id);
+    await expect(service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "monitor",
+      deliveryKey: `monitor:${monitor.monitorId}:5`,
+      threadId: thread.id,
+      monitor,
+      wakePrompt: "must not run",
+    })).resolves.toMatchObject({
+      duplicate: true,
+      tombstoned: true,
+      delivery: { delivered: false, code: "monitor_origin_mismatch", retryable: false },
+    });
+    expect(turnBodies).toEqual([]);
+    await service.stop();
+  });
+
+  it("suppresses Web Push for a silent Monitor follow-up", async () => {
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => `${JSON.stringify({ kind: "finish", finalText: "" })}\n`,
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
+    await expect(service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "monitor",
+      deliveryKey: `monitor:${monitor.monitorId}:1`,
+      threadId: thread.id,
+      monitor,
+      wakePrompt: "Nothing changed.",
+    })).resolves.toMatchObject({ delivery: { delivered: true } });
+
+    const raw = new DatabaseSync(service.store.paths.database, { readOnly: true });
+    const responsePushes = raw.prepare("SELECT COUNT(*) AS count FROM push_events WHERE kind = 'response.ready'")
+      .get() as { count: number };
+    raw.close();
+    expect(responsePushes.count).toBe(0);
+    await service.stop();
+  });
+
+  it("serializes process-job and Monitor follow-ups through one host-wake lane", async () => {
+    const encoder = new TextEncoder();
+    let firstStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => turnBodies.length === 1
+          ? new ReadableStream<Uint8Array>({ start(controller) { firstStream = controller; } })
+          : `${JSON.stringify({ kind: "finish", finalText: "Monitor handled" })}\n`,
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const job = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
+    const jobDelivery = service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: job.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: job,
+      wakePrompt: "Handle the job.",
+    });
+    await waitFor(() => firstStream !== undefined);
+    const monitorDelivery = service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "monitor",
+      deliveryKey: `monitor:${monitor.monitorId}:1`,
+      threadId: thread.id,
+      monitor,
+      wakePrompt: "Handle the monitor.",
+    });
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    expect(turnBodies).toHaveLength(1);
+
+    firstStream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Job handled" })}\n`));
+    firstStream?.close();
+    await expect(jobDelivery).resolves.toMatchObject({ delivery: { delivered: true } });
+    await expect(monitorDelivery).resolves.toMatchObject({ delivery: { delivered: true } });
+    expect(turnBodies.map((body) => body.processJobWakeDeliveryKey)).toEqual([
+      job.wake.deliveryKey,
+      `monitor:${monitor.monitorId}:1`,
+    ]);
+    await service.stop();
+  });
+
+  it("does not overlap process-job and Monitor steering calls on one active thread", async () => {
+    const encoder = new TextEncoder();
+    let activeStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let settleFirst: ((value: Record<string, unknown>) => void) | undefined;
+    const firstSettlement = new Promise<Record<string, unknown>>((resolvePromise) => {
+      settleFirst = resolvePromise;
+    });
+    const liveInputs: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        turns: () => new ReadableStream<Uint8Array>({ start(controller) { activeStream = controller; } }),
+        onLiveInput(_conversationId, body) {
+          liveInputs.push(body);
+          return liveInputs.length === 1
+            ? firstSettlement
+            : { status: "applied", runId: "active-run" };
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Keep working" });
+    await waitFor(() => activeStream !== undefined);
+    const job = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
+    const jobDelivery = service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: job.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: job,
+      wakePrompt: "Handle the job.",
+    });
+    const monitorDelivery = service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "monitor",
+      deliveryKey: `monitor:${monitor.monitorId}:1`,
+      threadId: thread.id,
+      monitor,
+      wakePrompt: "Handle the monitor.",
+    });
+    await waitFor(() => liveInputs.length > 0);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    expect(liveInputs).toHaveLength(1);
+
+    settleFirst?.({ status: "applied", runId: "active-run" });
+    await expect(jobDelivery).resolves.toMatchObject({ delivery: { delivered: true, disposition: "steered" } });
+    await expect(monitorDelivery).resolves.toMatchObject({ delivery: { delivered: true, disposition: "steered" } });
+    expect(liveInputs.map((body) => body.deliveryKey)).toEqual([
+      job.wake.deliveryKey,
+      `monitor:${monitor.monitorId}:1`,
+    ]);
+
+    activeStream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+    activeStream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
     await service.stop();
   });
 

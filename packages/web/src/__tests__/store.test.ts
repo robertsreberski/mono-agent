@@ -15,7 +15,7 @@ import {
   WEB_THREAD_SEARCH_MIN_QUERY,
   WebStore,
 } from "../store.js";
-import { fakeProcessJob, temporaryRoot } from "./helpers.js";
+import { fakeMonitor, fakeProcessJob, temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
 
@@ -1827,6 +1827,99 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("can keep an assistant-only Monitor prompt out of durable web state", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const secretPrompt = "monitor output contains credential-shape-value";
+
+    const started = store.beginAssistantTurn({
+      threadId: thread.id,
+      prompt: secretPrompt,
+      storedPrompt: "[Monitor wake]",
+    });
+    expect(started.text).toBe(secretPrompt);
+    const raw = new DatabaseSync(store.paths.database, { readOnly: true });
+    const row = raw.prepare("SELECT text FROM turns WHERE id = ?").get(started.turnId) as { text: string };
+    raw.close();
+    expect(row.text).toBe("[Monitor wake]");
+    expect(row.text).not.toContain("credential-shape-value");
+    store.close();
+  });
+
+  it("persists completed and ambiguous Monitor wake claims without raw event text", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent(), agent("agent-two")]);
+    const thread = store.createThread("agent-one");
+    const otherThread = store.createThread("agent-two");
+    const monitor = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 3 });
+    const deliveryKey = `monitor:${monitor.monitorId}:3`;
+
+    expect(store.reserveMonitorWake({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      monitorId: monitor.monitorId,
+      deliveryKey,
+      payloadSha256: "a".repeat(64),
+    })).toEqual({ kind: "new" });
+    store.completeMonitorWake({
+      sourceId: "agent-one",
+      monitorId: monitor.monitorId,
+      deliveryKey,
+      disposition: "steered",
+    });
+    expect(store.reserveMonitorWake({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      monitorId: monitor.monitorId,
+      deliveryKey,
+      payloadSha256: "a".repeat(64),
+    })).toEqual({ kind: "completed", disposition: "steered" });
+    expect(() => store.reserveMonitorWake({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      monitorId: monitor.monitorId,
+      deliveryKey,
+      payloadSha256: "b".repeat(64),
+    })).toThrowError(expect.objectContaining({ code: "notification_idempotency_conflict" }));
+    expect(() => store.reserveMonitorWake({
+      sourceId: "agent-one",
+      threadId: otherThread.id,
+      monitorId: "other-monitor",
+      deliveryKey: "monitor:other-monitor:1",
+      payloadSha256: "c".repeat(64),
+    })).toThrowError(expect.objectContaining({ code: "invalid_notification" }));
+
+    const pendingKey = `monitor:${monitor.monitorId}:4`;
+    expect(store.reserveMonitorWake({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      monitorId: monitor.monitorId,
+      deliveryKey: pendingKey,
+      payloadSha256: "d".repeat(64),
+    })).toEqual({ kind: "new" });
+    const raw = new DatabaseSync(store.paths.database, { readOnly: true });
+    const rows = raw.prepare("SELECT * FROM monitor_wake_deliveries ORDER BY delivery_key").all();
+    raw.close();
+    expect(JSON.stringify(rows)).not.toContain("credential-shape-value");
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.reserveMonitorWake({
+      sourceId: "agent-one",
+      threadId: thread.id,
+      monitorId: monitor.monitorId,
+      deliveryKey: pendingKey,
+      payloadSha256: "d".repeat(64),
+    })).toEqual({ kind: "uncertain" });
+    reopened.close();
+  });
+
   it("persists completed and ambiguous process-job wake claims across reopen", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -1892,7 +1985,7 @@ describe("WebStore", () => {
     reopened.close();
   });
 
-  it("migrates a seeded schema v10 database to v12 keeping its thread rows", async () => {
+  it("migrates a seeded schema v10 database to v13 keeping its thread rows", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -1927,12 +2020,12 @@ describe("WebStore", () => {
     const agentColumns = new Set((inspected.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
       .map((column) => column.name));
     inspected.close();
-    expect(version.user_version).toBe(12);
+    expect(version.user_version).toBe(13);
     expect(agentColumns.has("providers_json")).toBe(true);
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(["run_model", "run_effort"]));
   });
 
-  it("re-runs the v11/v12 migrations without failing when the new columns already exist", async () => {
+  it("re-runs the v11-v13 migrations without failing when current columns and tables already exist", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -1953,7 +2046,29 @@ describe("WebStore", () => {
     reopened.close();
     expect(
       new DatabaseSync(databasePath, { readOnly: true }).prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 12 });
+    ).toMatchObject({ user_version: 13 });
+  });
+
+  it("migrates schema v12 by creating the Monitor wake ledger", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const initial = await WebStore.open({ stateDir });
+    const databasePath = initial.paths.database;
+    initial.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec("DROP TABLE monitor_wake_deliveries; PRAGMA user_version = 12");
+    legacy.close();
+
+    const migrated = await WebStore.open({ stateDir });
+    migrated.close();
+    const inspected = new DatabaseSync(databasePath, { readOnly: true });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 13 });
+    expect(inspected.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'monitor_wake_deliveries'",
+    ).get()).toBeDefined();
+    inspected.close();
   });
 
   it("sets, merges, and clears per-thread model and effort overrides", async () => {
@@ -2056,7 +2171,7 @@ describe("WebStore", () => {
     const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
     const processJobCards = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'").get();
     inspected.close();
-    expect(version.user_version).toBe(12);
+    expect(version.user_version).toBe(13);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
     expect(liveInputs).toBeDefined();
@@ -2083,7 +2198,7 @@ describe("WebStore", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'",
     ).get();
     inspected.close();
-    expect(version.user_version).toBe(12);
+    expect(version.user_version).toBe(13);
     expect(processJobCards).toBeDefined();
   });
 
@@ -2096,7 +2211,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 13");
+    future.exec("PRAGMA user_version = 14");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 
@@ -3151,7 +3266,7 @@ describe("WebStore conversation search", () => {
     expect(
       new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true })
         .prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 12 });
+    ).toMatchObject({ user_version: 13 });
     reopened.close();
   });
 });

@@ -84,7 +84,7 @@ export const WEB_MAX_LIVE_INPUTS_PER_THREAD = AGENT_LIVE_INPUT_MAX_MESSAGES;
 
 export type WebAgentStatus = "online" | "offline" | "degraded";
 export type WebThreadNotificationTriggerKind = "cron" | "webhook";
-export type WebNotificationTriggerKind = WebThreadNotificationTriggerKind | "job";
+export type WebNotificationTriggerKind = WebThreadNotificationTriggerKind | "job" | "monitor";
 
 export type WebThreadTrigger =
   | { readonly kind: "webhook" }

@@ -37,13 +37,14 @@ Availability matches process jobs with one narrowing: a turn gets `Monitor` and
 - both `Monitor` and `MonitorStop` pass `tools.allowedTools`/`disallowedTools` —
   denying the stop tool denies the start tool too, because a watch the model
   cannot stop is a capacity leak it cannot repair, and
-- the conversation is a Telegram chat or a Slack thread.
+- the conversation is a Telegram chat, a Slack thread, or an existing
+  user-created web conversation.
 
-Cron, webhook, TUI-direct, and A2A turns never see the tools. **The web console
-is also excluded in this release**: it renders background jobs as durable cards
-through its own notification ingress and has no monitor card yet, so a
-web-origin monitor would start with nowhere to report. Offering a watch whose
-events cannot land is the worse failure, so the gate refuses it outright.
+Cron, webhook, `web:new`, TUI-direct, and A2A turns never see the tools. A web
+Monitor belongs to the exact existing thread that started it. Its batches arrive
+as ordinary assistant wake turns; this release intentionally adds no Monitor
+card and no browser-side stop control. The model can use `MonitorStop` in a turn,
+and the owner can use `mono-agent monitors cancel <monitor-id>` from the CLI.
 
 ## Configuration
 
@@ -99,6 +100,14 @@ conversation — steered into a run already in flight when there is one, queued 
 its own turn when the conversation is idle. It consumes no provider slot while
 waiting.
 
+For web conversations, the managed web service must remain running so the
+owner-private loopback ingress can accept wakes. The browser tab may be closed:
+the service still runs the turn, persists any visible assistant reply in the
+thread, and sends the normal response-ready Web Push when configured. A silent
+`NOTHING_TO_REPORT` result completes delivery without a Web Push. Web SQLite
+retains only the Monitor delivery identity and payload hash for duplicate
+suppression; the fenced event text remains memory-only.
+
 The envelope states three things the schema alone cannot: the turn was raised by
 the host and not by the user, the fenced content is bounded, redacted, untrusted
 command output that must never be followed as instruction, and a batch that
@@ -138,6 +147,12 @@ running — is re-offered with the same batch under a fresh sequence number. Eve
 other failure is treated as possibly delivered and is never replayed; its batch
 is dropped and counted. Ambiguity always fails closed, because a duplicated
 event turn is worse than a missing one.
+
+On web, a missing local ingress or an offline source discovered before any
+operator call is retryable. A deleted, archived, or mismatched thread is a
+permanent refusal. Once live-input or a fallback turn reaches the operator, a
+timeout, malformed receipt, connection loss, or failed turn is ambiguous and is
+never retried automatically.
 
 On restart, every live monitor becomes `interrupted` and is owed exactly one
 recovery wake. A watched process group whose recorded incarnation still matches

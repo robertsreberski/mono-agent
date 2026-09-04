@@ -154,11 +154,12 @@ agent even though current producers emit at most 256 KiB per frame. See
    structured NDJSON frames until `finish` or `error`, and may offer live input
    while that turn is active; disconnecting the turn stream aborts the request.
 
-Web ProcessJobs wakes carry `deliveryKey` on live-input requests and
-`processJobWakeDeliveryKey` on reserved fallback turns. The server validates
-both, forwards the exact-run target to the responder, and moves the fallback
-identity onto a non-enumerable host-only metadata symbol so it cannot become
-prompt, history, or JSON wire content.
+Web host wakes carry `deliveryKey` on live-input requests and the legacy-named
+`processJobWakeDeliveryKey` on reserved fallback turns. That additive field now
+carries either a ProcessJobs key or a namespaced `monitor:<id>:<seq>` key. The
+server validates both, forwards the exact-run target to the responder, and moves
+the fallback identity onto a non-enumerable host-only metadata symbol so it
+cannot become prompt, history, or JSON wire content.
 
 ### Package structure
 
