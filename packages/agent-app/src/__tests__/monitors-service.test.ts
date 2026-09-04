@@ -661,8 +661,9 @@ describe("monitors service", () => {
     // An ambiguous failure may have posted, so its batch is dropped rather than
     // replayed under a new sequence number.
     wakeResult = () => ({ delivered: false, code: "monitor_wake_failed", retryable: false, ambiguous: true });
+    const ambiguousOfferCount = wakes.length + 1;
     fake.process().emit("ambiguous-line\n");
-    await settle();
+    await waitForWakes(ambiguousOfferCount);
     const before = wakes.length;
     await pause(200);
     expect(wakes).toHaveLength(before);
@@ -854,7 +855,8 @@ describe("monitors service", () => {
     await chmod(stateDir, 0o500);
     try {
       fake.process().emit("gated\n");
-      await pause(TEST_COALESCE_MS * 8);
+      await waitUntil(() => warnings.some((warning) =>
+        warning.includes("withheld because its state could not be persisted")));
       expect(wakes).toHaveLength(0);
       // The failure must be the WRITE, not some unrelated refusal.
       expect(warnings.join(" ")).toContain("withheld because its state could not be persisted");
@@ -1223,7 +1225,7 @@ describe("monitors service", () => {
     // One enormous line, delivered in several chunks, then a normal line.
     for (let chunk = 0; chunk < 6; chunk += 1) fake.process().emit("alpha beta gamma delta ");
     fake.process().emit("\nsecond line\n");
-    await settle();
+    await waitForWakes(1);
 
     const events = wakes.flatMap((wake) => JSON.parse(fenced(wake.prompt)).events as string[]);
     // Exactly two events: the clamped head of the long line, then the next line.
@@ -1622,7 +1624,7 @@ describe("monitors service", () => {
     const fake = fakeRequest({ description: "Watching the deploy log" });
     await handle.controller(origin(), 0).start(fake.request);
     fake.process().emit("secret operational detail\n");
-    await settle();
+    await waitForWakes(1);
 
     const projection = await handle.get("mon-1");
     expect(JSON.stringify(projection)).not.toContain("secret operational detail");
