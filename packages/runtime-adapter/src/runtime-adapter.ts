@@ -5,6 +5,7 @@ import {
 } from "@mono-agent/agent-runtime";
 import { parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
 import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
+import { bridgeMonitorsController } from "./monitors.js";
 import { bridgeProcessJobsController } from "./process-jobs.js";
 import { monoSandboxImpl } from "./sandbox-impl.js";
 
@@ -246,6 +247,8 @@ export interface MonoRuntimeAttemptResolution {
     readonly sandbox?: never;
     /** Attempt plugins cannot replace the host's durable process-job owner. */
     readonly processJobs?: never;
+    /** Attempt plugins cannot replace the host's durable monitor owner. */
+    readonly monitors?: never;
   };
   /** Provider-specific projection of the logical tool policy for this attempt. */
   readonly policyOptions?: Readonly<Pick<
@@ -321,6 +324,9 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
         ...(runOptions.processJobs === undefined
           ? {}
           : { processJobs: bridgeProcessJobsController(runOptions.processJobs) }),
+        ...(runOptions.monitors === undefined
+          ? {}
+          : { monitors: bridgeMonitorsController(runOptions.monitors) }),
       } as unknown as KernelRunOptions);
       return result as RuntimeResult;
     },
@@ -397,8 +403,8 @@ function protectAttemptResolver(
 
 function withoutProtectedAttemptOptions<T extends Readonly<Record<string, unknown>>>(
   input: T,
-): Omit<T, "sandbox" | "processJobs"> {
-  const { sandbox: _callerSandbox, processJobs: _processJobs, ...rest } = input;
+): Omit<T, "sandbox" | "processJobs" | "monitors"> {
+  const { sandbox: _callerSandbox, processJobs: _processJobs, monitors: _monitors, ...rest } = input;
   return rest;
 }
 

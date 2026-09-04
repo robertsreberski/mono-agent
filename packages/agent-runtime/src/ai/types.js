@@ -223,6 +223,7 @@
  * @property {Object} [settings] DEPRECATED. Legacy flat settings bag; consumed only as a per-group FALLBACK when the corresponding typed object (`toolLimits` / `compaction`) is absent. Consuming any key emits one `deprecated_settings_option` runtime_warning per run. Migrate via resolveRuntimePolicies (@mono-agent/runtime-adapter).
  * @property {RuntimeSubagentsOptions} [subagents] In-process `Agent` built-in: profiles, caps, and the nested-run callback.
  * @property {import('../agent/tools/shared/process-jobs.js').ProcessJobsController} [processJobs] Pi-native-only structural process-job controller. When absent, Exec/Bash schemas and foreground behavior are unchanged.
+ * @property {import('../agent/tools/shared/monitors.js').MonitorsController} [monitors] Pi-native-only structural monitor controller. When absent, the Monitor and MonitorStop tools are not registered at all.
  * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when
  *   failing over mid-chain; a host-level coordinator may relay it forward (see agent/transcript.js), not read by any
  *   bridge in this package today.

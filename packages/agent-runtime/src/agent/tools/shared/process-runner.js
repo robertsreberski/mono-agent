@@ -164,7 +164,15 @@ export function runPreparedProcess(
  * descendant in the owned group is still alive.
  *
  * @param {{command: string, args?: string[], cwd?: string, env?: Record<string, string|undefined>}} commandSpec
- * @param {{timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, input?: string|Buffer, waitForProcessGroup?: boolean, exactEnvironment?: boolean, onStdout?: (chunk: Buffer) => void, onStderr?: (chunk: Buffer) => void}} [options]
+ * `outputMode` selects how output is handled. "buffer" (default) accumulates it
+ * under `maxBufferBytes` and terminates the process when that bound is crossed —
+ * the right contract for a job whose whole output is the result. "stream" hands
+ * every chunk to `onStdout`/`onStderr` and stores NEITHER, so an indefinitely
+ * long watch is never killed for producing output and the caller owns the only
+ * copy. Buffering stderr as well would hand a streaming caller two overlapping
+ * views of it: the runner's bounded PREFIX plus the caller's own tail.
+ *
+ * @param {{timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, input?: string|Buffer, waitForProcessGroup?: boolean, exactEnvironment?: boolean, outputMode?: "buffer"|"stream", onStdout?: (chunk: Buffer) => void, onStderr?: (chunk: Buffer) => void}} [options]
  * For process jobs, `release()` is the persistence fence: the target cannot
  * spawn until the host has durably recorded the returned ownership metadata.
  * Foreground handles expose a harmless no-op release for one structural shape.
@@ -180,6 +188,7 @@ export function startPreparedProcess(
     input,
     waitForProcessGroup = false,
     exactEnvironment = false,
+    outputMode = "buffer",
     onStdout,
     onStderr,
   } = {},
@@ -436,10 +445,16 @@ export function startPreparedProcess(
       });
     }
 
-    function append(target, chunk, observe) {
+    function append(target, chunk, observe, mode = "buffer") {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       try { observe?.(buffer); } catch { /* observers cannot break process ownership */ }
       state.bytes += buffer.length;
+      if (mode === "discard") {
+        // Streamed output is the caller's to bound. Storing it, or killing the
+        // process once a cumulative byte total is crossed, would cap a watch's
+        // lifetime at its output volume rather than at its runtime budget.
+        return;
+      }
       const remaining = Math.max(0, maxBufferBytes - state.storedBytes);
       if (remaining > 0) {
         const stored = buffer.length > remaining ? buffer.subarray(0, remaining) : buffer;
@@ -447,8 +462,8 @@ export function startPreparedProcess(
         state.storedBytes += stored.length;
       }
       if (buffer.length > remaining) {
-        state.bufferExceeded = true;
         state.truncated = true;
+        state.bufferExceeded = true;
         terminate();
       }
     }
@@ -468,8 +483,11 @@ export function startPreparedProcess(
     if (signal?.aborted) onAbort();
     else signal?.addEventListener?.("abort", onAbort, { once: true });
 
-    child.stdout?.on("data", (chunk) => append(stdout, chunk, onStdout));
-    child.stderr?.on("data", (chunk) => append(stderr, chunk, onStderr));
+    const streaming = outputMode === "stream";
+    child.stdout?.on("data", (chunk) =>
+      append(stdout, chunk, onStdout, streaming ? "discard" : "buffer"));
+    child.stderr?.on("data", (chunk) =>
+      append(stderr, chunk, onStderr, streaming ? "discard" : "buffer"));
     child.once("error", (error) => {
       state.spawnError = error;
     });

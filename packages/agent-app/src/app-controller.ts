@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type {
   AgentResponder,
+  MonitorProjection,
   NotifyDeliveryContext,
   ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
@@ -53,8 +54,11 @@ import * as maintenanceOperations from "./app-controller-maintenance.js";
 import * as channelsOperations from "./app-controller-channels.js";
 import * as responderOperations from "./app-controller-responder.js";
 import * as memoryOperations from "./app-controller-memory.js";
+import * as monitorsOperations from "./app-controller-monitors.js";
 import * as processJobsOperations from "./app-controller-process-jobs.js";
 import { assertUniqueProcessJobChannelSchemes } from "./process-job-channel-routing.js";
+import type { MonitorsServiceHandle } from "./monitors-service.js";
+import type { MonitorsSettings } from "./monitors-config.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import {
   acquireAgentRootOwnership,
@@ -137,6 +141,9 @@ export interface MonoAgentApp {
   listProcessJobs?(): Promise<readonly ProcessJobProjection[]>;
   getProcessJob?(id: string): Promise<ProcessJobProjection | undefined>;
   cancelProcessJob?(id: string): Promise<ProcessJobProjection>;
+  listMonitors?(): Promise<readonly MonitorProjection[]>;
+  getMonitor?(id: string): Promise<MonitorProjection | undefined>;
+  cancelMonitor?(id: string): Promise<MonitorProjection>;
   resolveContinuationDelivery?(
     id: string,
     outcome: { readonly kind: "delivered"; readonly deliveryId?: string } | { readonly kind: "not_delivered" } | { readonly kind: "dead_lettered" },
@@ -210,6 +217,7 @@ async function startMonoAgentAppInternal(
 
     const processJobsPreparationStartedAt = performance.now();
     await startedController.prepareProcessJobsProtection("startup:prepare");
+    await startedController.prepareMonitors();
     const processJobsPreparationDuration = performance.now() - processJobsPreparationStartedAt;
     await measure("sandbox", () => startedController.refreshSandboxStatus("startup"));
     await measure("traceability", () => startedController.startTraceability("startup"));
@@ -217,6 +225,7 @@ async function startMonoAgentAppInternal(
       await startedController.startExporters("startup");
       await startedController.startContinuationServiceIfConfigured("startup");
       await startedController.startProcessJobsIfConfigured("startup");
+      await startedController.startMonitorsIfConfigured();
     });
     startupPhases.services = roundedMilliseconds(
       (startupPhases.services ?? 0) + processJobsPreparationDuration,
@@ -226,6 +235,7 @@ async function startMonoAgentAppInternal(
       () => Promise.all(drivers.map((driver) => startedController.startChannelIfConfigured(driver.id, "startup"))),
     );
     await startedController.activateProcessJobWakes();
+    await startedController.activateMonitorWakes();
     await measure("memoryRituals", () => startedController.startMemoryRitualsIfConfigured("startup"));
     const memoryHealthStartedAt = performance.now();
     await startedController.refreshMemoryHealthAfterLifecycle("startup-complete", () => {
@@ -380,6 +390,15 @@ export class MonoAgentAppController implements MonoAgentApp {
   processJobsService: ProcessJobsServiceHandle | undefined;
   processJobsServiceStart: Promise<ProcessJobsServiceHandle | undefined> | undefined;
   processJobsServiceStartFlight: symbol | undefined;
+  monitorsService: MonitorsServiceHandle | undefined;
+  monitorsServiceStart: Promise<MonitorsServiceHandle | undefined> | undefined;
+  monitorsServiceStartFlight: symbol | undefined;
+  monitorsSettings: MonitorsSettings | undefined;
+  monitorsDegradation: { readonly reason: string } | undefined;
+
+  get monitorsStateDir(): string | undefined {
+    return this.monitorsService?.stateDir;
+  }
   /** Configured private root; retained even when the durable store cannot open. */
   processJobsStateDir: string | undefined;
   processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
@@ -498,6 +517,19 @@ export class MonoAgentAppController implements MonoAgentApp {
     return await this.processJobsService.cancel(id);
   }
 
+  async listMonitors(): Promise<readonly MonitorProjection[]> {
+    return await this.monitorsService?.list() ?? [];
+  }
+
+  async getMonitor(id: string): Promise<MonitorProjection | undefined> {
+    return await this.monitorsService?.get(id);
+  }
+
+  async cancelMonitor(id: string): Promise<MonitorProjection> {
+    if (this.monitorsService === undefined) throw new Error("Monitor controller is not running.");
+    return await this.monitorsService.cancel(id);
+  }
+
   async resolveContinuationDelivery(
     id: string,
     outcome: { readonly kind: "delivered"; readonly deliveryId?: string } | { readonly kind: "not_delivered" } | { readonly kind: "dead_lettered" },
@@ -601,6 +633,22 @@ export class MonoAgentAppController implements MonoAgentApp {
 
   async stopProcessJobsService(): Promise<void> {
     return processJobsOperations.stopProcessJobsService(this);
+  }
+
+  async prepareMonitors(): Promise<void> {
+    return monitorsOperations.prepareMonitors(this);
+  }
+
+  async startMonitorsIfConfigured(): Promise<void> {
+    return monitorsOperations.startMonitorsIfConfigured(this);
+  }
+
+  async activateMonitorWakes(): Promise<void> {
+    return monitorsOperations.activateMonitorWakes(this);
+  }
+
+  async stopMonitorsService(): Promise<void> {
+    return monitorsOperations.stopMonitorsService(this);
   }
 
   requireContinuationService(): ContinuationServiceHandle { return continuationOperations.requireContinuationService(this); }

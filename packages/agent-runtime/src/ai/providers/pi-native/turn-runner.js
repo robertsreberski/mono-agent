@@ -121,6 +121,7 @@ export async function buildTurnTools(runState, {
       nodeReplController,
       webController,
       processJobsController: options.processJobs,
+      monitorsController: options.monitors,
       toolExecutionMode,
       subagents: options.subagents,
       // The child inherits the parent's route and workspace unless its profile

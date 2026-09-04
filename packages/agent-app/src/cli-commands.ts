@@ -312,6 +312,17 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.json === true ? { json: true } : {}),
       });
     }
+    case "monitors": {
+      const { runMonitorsCommand } = await import("./monitors-command.js");
+      return await runMonitorsCommand({
+        cwd: process.cwd(),
+        configPath: resolve(process.cwd(), args.configPath ?? "mono-agent.config.json"),
+        env: process.env,
+        positionals: args.positionals,
+        ...(args.agent === undefined ? {} : { agent: args.agent }),
+        ...(args.json === true ? { json: true } : {}),
+      });
+    }
     case "backfill":
       return await runBackfill({
         ...(args.configPath === undefined ? {} : { configPath: args.configPath }),

@@ -7,6 +7,7 @@ import {
   APP_TOOL_NAMES,
   type CapabilityModule,
   DEFAULT_MODEL,
+  DEFAULT_SAFE_TOOLS,
   isAllowAllTools,
   isKnownToolName,
   isMcpToolName,
@@ -105,10 +106,21 @@ describe("baseConfig", () => {
 });
 
 describe("known-tools", () => {
-  it("lists all eleven built-in tools", () => {
-    expect(BUILTIN_TOOL_NAMES).toHaveLength(11);
-    for (const name of ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec", "NodeRepl", "WebFetch", "WebSearch", "Agent"]) {
+  it("lists all thirteen built-in tools", () => {
+    expect(BUILTIN_TOOL_NAMES).toHaveLength(13);
+    for (const name of [
+      "Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec", "NodeRepl",
+      "Monitor", "MonitorStop", "WebFetch", "WebSearch", "Agent",
+    ]) {
       expect(BUILTIN_TOOL_NAMES).toContain(name);
+    }
+  });
+
+  it("keeps conditionally registered built-ins out of the safe defaults", () => {
+    // Monitor runs an arbitrary command and holds host capacity after the turn;
+    // Agent deploys subagents. Neither belongs in a new agent's pre-checked set.
+    for (const name of ["Monitor", "MonitorStop", "Agent"]) {
+      expect(DEFAULT_SAFE_TOOLS as readonly string[]).not.toContain(name);
     }
   });
 

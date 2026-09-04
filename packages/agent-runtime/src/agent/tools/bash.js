@@ -14,22 +14,12 @@ import {
   DEFAULT_PROCESS_BUFFER_BYTES,
   runPreparedProcess,
 } from "./shared/process-runner.js";
+import { cleanBashEnvironment } from "./shared/bash-environment.js";
 import { handOffProcessJob } from "./shared/process-jobs.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { requestToolProcessEnvironment, resolveSandboxPolicy } from "./shared/tool-context.js";
 
 const DEFAULT_BASH_TIMEOUT_MS = 120_000;
-const BASH_STARTUP_ENV_KEYS = new Set([
-  "BASHOPTS",
-  "BASH_COMPAT",
-  "BASH_XTRACEFD",
-  "CDPATH",
-  "GLOBIGNORE",
-  "POSIXLY_CORRECT",
-  "PROMPT_COMMAND",
-  "PS4",
-  "SHELLOPTS",
-]);
 
 /**
  * Legacy Bash timeout normalization. Values up to 600 are seconds; larger
@@ -258,19 +248,6 @@ export async function bashToolRun(
   }
 
   return completed(partial, baseOutcome, maxChars, "Bash", resolvedCtx);
-}
-
-function cleanBashEnvironment() {
-  const env = {
-    BASH_ENV: "/dev/null",
-    ENV: "/dev/null",
-  };
-  for (const key of Object.keys(process.env)) {
-    if (BASH_STARTUP_ENV_KEYS.has(key) || key.startsWith("BASH_FUNC_")) {
-      env[key] = undefined;
-    }
-  }
-  return env;
 }
 
 function finitePositiveInteger(value, fallback) {

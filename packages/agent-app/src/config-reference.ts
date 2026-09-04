@@ -135,6 +135,71 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     description: "Aggregate retained terminal output artifact budget (compiled cap 1 GiB).",
   },
   {
+    jsonPath: "monitors.enabled", env: "--", type: "boolean",
+    defaultLabel: "false", defaultValue: false, example: true,
+    description: "Opt in to the Pi-native Monitor/MonitorStop tools. Monitors are a streaming class of the process-job substrate and additionally require processJobs.enabled; wake delivery is Telegram and Slack only.",
+  },
+  {
+    jsonPath: "monitors.maxActive", env: "--", type: "integer",
+    defaultLabel: "8", defaultValue: 8, example: 8,
+    description: "Maximum simultaneously running monitors across every conversation, counted independently of processJobs.maxConcurrent (compiled cap 32).",
+  },
+  {
+    jsonPath: "monitors.maxActivePerConversation", env: "--", type: "integer",
+    defaultLabel: "2", defaultValue: 2, example: 3,
+    description: "Maximum simultaneously running monitors for one conversation (compiled cap 8).",
+  },
+  {
+    jsonPath: "monitors.maxRuntimeMs", env: "--", type: "integer",
+    defaultLabel: "3600000", defaultValue: 3_600_000, example: 3_600_000,
+    description: "Ceiling for a timed monitor; Monitor.timeout_ms may lower it, never raise it (compiled cap 1 hour).",
+  },
+  {
+    jsonPath: "monitors.persistentMaxRuntimeMs", env: "--", type: "integer",
+    defaultLabel: "86400000", defaultValue: 86_400_000, example: 43_200_000,
+    description: "Ceiling for a persistent monitor, which ignores timeout_ms (compiled cap 24 hours).",
+  },
+  {
+    jsonPath: "monitors.coalesceMs", env: "--", type: "integer",
+    defaultLabel: "200", defaultValue: 200, example: 200,
+    description: "Window over which stdout lines are batched into one event wake (compiled cap 5000).",
+  },
+  {
+    jsonPath: "monitors.maxBatchLines", env: "--", type: "integer",
+    defaultLabel: "200", defaultValue: 200, example: 200,
+    description: "Maximum lines carried by one event batch; older lines are dropped and counted (compiled cap 2000).",
+  },
+  {
+    jsonPath: "monitors.maxBatchBytes", env: "--", type: "integer",
+    defaultLabel: "65536", defaultValue: 65_536, example: 65_536,
+    description: "Maximum bytes carried by one event batch; older lines are dropped and counted (compiled cap 1 MiB).",
+  },
+  {
+    jsonPath: "monitors.maxLineBytes", env: "--", type: "integer",
+    defaultLabel: "4096", defaultValue: 4_096, example: 4_096,
+    description: "Per-event line clamp applied after redaction (compiled cap 64 KiB).",
+  },
+  {
+    jsonPath: "monitors.maxChainDepth", env: "--", type: "integer",
+    defaultLabel: "4", defaultValue: 4, example: 4,
+    description: "Maximum host-owned monitor wake chain depth (compiled cap 8).",
+  },
+  {
+    jsonPath: "monitors.rateLimit.windowMs", env: "--", type: "integer",
+    defaultLabel: "1000", defaultValue: 1_000, example: 1_000,
+    description: "Length of one rate-limit accounting window (compiled cap 60000).",
+  },
+  {
+    jsonPath: "monitors.rateLimit.maxLinesPerWindow", env: "--", type: "integer",
+    defaultLabel: "200", defaultValue: 200, example: 200,
+    description: "Lines per window above which a window counts as over budget (compiled cap 20000).",
+  },
+  {
+    jsonPath: "monitors.rateLimit.sustainedWindows", env: "--", type: "integer",
+    defaultLabel: "5", defaultValue: 5, example: 5,
+    description: "Consecutive over-budget windows that stop a monitor with rate_limited and one terminal wake (compiled cap 60).",
+  },
+  {
     jsonPath: "interaction.bridge.host",
     env: "MONO_AGENT_INTERACTION_BRIDGE_HOST",
     type: "string",
@@ -455,6 +520,7 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
   setRequired(root, ["context"], ["identityPath"]);
   setMemoryTierSchema(root);
   setProcessJobsSchema(root);
+  setMonitorsSchema(root);
   setContinuationSchema(root);
   setStructuredAppSchemas(root);
   setRemovedConfigSchemas(root);
@@ -510,6 +576,34 @@ function setProcessJobsSchema(root: Record<string, JsonSchema>): void {
           maxRecords: { type: "integer", minimum: 1, maximum: 10_000, default: 1_000 },
           maxAgeMs: { type: "integer", minimum: 1, maximum: 2_592_000_000, default: 604_800_000 },
           artifactMaxBytes: { type: "integer", minimum: 1, maximum: 1_073_741_824, default: 268_435_456 },
+        },
+      },
+    },
+  };
+}
+
+function setMonitorsSchema(root: Record<string, JsonSchema>): void {
+  root.monitors = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      enabled: { type: "boolean", default: false },
+      maxActive: { type: "integer", minimum: 1, maximum: 32, default: 8 },
+      maxActivePerConversation: { type: "integer", minimum: 1, maximum: 8, default: 2 },
+      maxRuntimeMs: { type: "integer", minimum: 1, maximum: 3_600_000, default: 3_600_000 },
+      persistentMaxRuntimeMs: { type: "integer", minimum: 1, maximum: 86_400_000, default: 86_400_000 },
+      coalesceMs: { type: "integer", minimum: 1, maximum: 5_000, default: 200 },
+      maxBatchLines: { type: "integer", minimum: 1, maximum: 2_000, default: 200 },
+      maxBatchBytes: { type: "integer", minimum: 1, maximum: 1_048_576, default: 65_536 },
+      maxLineBytes: { type: "integer", minimum: 1, maximum: 65_536, default: 4_096 },
+      maxChainDepth: { type: "integer", minimum: 1, maximum: 8, default: 4 },
+      rateLimit: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          windowMs: { type: "integer", minimum: 1, maximum: 60_000, default: 1_000 },
+          maxLinesPerWindow: { type: "integer", minimum: 1, maximum: 20_000, default: 200 },
+          sustainedWindows: { type: "integer", minimum: 1, maximum: 60, default: 5 },
         },
       },
     },

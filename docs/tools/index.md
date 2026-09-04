@@ -101,6 +101,7 @@ approximated.
 - **[Reply files and MCP Apps](/tools/rich-replies/)** — opaque file publication, native Slack/Telegram delivery, browser sandboxing, limits, retention, and fallback policy.
 - **[Documentation MCP companion](/tools/documentation-mcp/)** — offline semantic and exact-identifier search for the composer and other MCP clients.
 - **[Background process jobs](/tools/background-process-jobs/)** — opt-in durable ownership, bounded output, exact-thread wake, cancellation, and restart recovery for Pi-native Exec/Bash.
+- **[Monitors](/tools/monitors/)** — opt-in streaming watches that wake the originating conversation per batch of events, with coalescing, backpressure, rate-limit stop, and restart recovery.
 - **[Durable continuations](/tools/durable-continuations/)** — trusted claim capabilities, immutable later results, tool-free synthesis, native delivery, and recovery.
 - **[Sandbox](/tools/sandbox/)** — native srt confinement, filesystem scopes, network modes, and the fail-closed vs unsafe-host-process fallback.
 
