@@ -1783,7 +1783,8 @@ function usage() {
     "Usage:",
     "  pnpm run check:dependency-vulnerabilities",
     "",
-    "Audits the full publishable cross-platform production/optional dependency graph through npm's bulk advisory API.",
+    "Audits the full publishable cross-platform production/optional dependency graph through "
+      + "npm's bulk advisory API with an OSV outage fallback.",
     "Fails closed on registry errors and on unreviewed, expired, stale, or metadata/version/path-mismatched high/critical findings.",
     "Set MONO_AGENT_DEPENDENCY_AUDIT_REGISTRY only to use a compatible registry mirror.",
   ].join("\n");
