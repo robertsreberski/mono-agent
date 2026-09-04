@@ -15,15 +15,8 @@ import {
 import type { ProcessJobOriginRecord } from "./process-jobs-store.js";
 import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 
-/**
- * Channel schemes whose adapters can actually deliver a monitor wake today.
- *
- * The web console renders background jobs as durable cards through its own
- * notification ingress; monitors have no such card yet, so a web-origin monitor
- * would start happily and then have nowhere to report. Offering the tool where
- * its wakes cannot land is the worse failure, so the gate refuses it outright.
- */
-export const MONITOR_WAKE_CAPABLE_SCHEMES: ReadonlySet<string> = new Set(["telegram", "slack"]);
+/** Channel schemes whose adapters can deliver a monitor wake to an exact conversation. */
+export const MONITOR_WAKE_CAPABLE_SCHEMES: ReadonlySet<string> = new Set(["telegram", "slack", "web"]);
 
 export interface MonitorsRuntimeExtensionOptions {
   readonly next?: RuntimeOptionsExtension;

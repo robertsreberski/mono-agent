@@ -137,7 +137,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
   {
     jsonPath: "monitors.enabled", env: "--", type: "boolean",
     defaultLabel: "false", defaultValue: false, example: true,
-    description: "Opt in to the Pi-native Monitor/MonitorStop tools. Monitors are a streaming class of the process-job substrate and additionally require processJobs.enabled; wake delivery is Telegram and Slack only.",
+    description: "Opt in to the Pi-native Monitor/MonitorStop tools. Monitors are a streaming class of the process-job substrate and additionally require processJobs.enabled; wake delivery supports Telegram, Slack, and existing web conversations.",
   },
   {
     jsonPath: "monitors.maxActive", env: "--", type: "integer",

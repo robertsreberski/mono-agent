@@ -54,6 +54,10 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   ingress, update one durable job card in place without a verbatim-history
   append, and proxy thread job refreshes through the agent's independent owner
   operator capability.
+- Accept exact-source/thread Monitor wakes through that private ingress, steer
+  them into the active run or serialize one assistant-only follow-up, and retain
+  only delivery identity plus a payload hash for fail-closed duplicate handling.
+  Monitor wakes deliberately have no web card or browser-side stop control.
 
 ## Install / Usage
 
@@ -306,7 +310,7 @@ cross-resource requests fail. See
 1. `server.ts` accepts the versioned browser API, staged uploads, and SSE
    subscriptions, then delegates stateful work to `WebConsoleService`.
 2. The service discovers agents from the trace-source registry, persists agent,
-   thread, message, part, process-job card, turn, live-input, upload, preference,
+   thread, message, part, process-job card, Monitor wake claim, turn, live-input, upload, preference,
    Web Push subscription/event/delivery, notification, and cron projection
    records through the SQLite store, and
    drives each agent over its loopback operator endpoint.
@@ -323,7 +327,9 @@ cross-resource requests fail. See
    first appends the result to agent history, then atomically exposes an
    idempotent assistant-only thread. A process-job delivery instead updates one
    source/thread-bound durable card; its normal wake turn owns the single agent
-   history entry.
+   history entry. A Monitor delivery creates no card: it is steered into an
+   active run or becomes an assistant-only follow-up in the exact existing web
+   thread. The browser may be closed, but the web service must remain running.
 
 ### Package structure
 
@@ -333,7 +339,7 @@ cross-resource requests fail. See
 | [`service.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/service.ts) | Application lifecycle for discovery, threads, turns, agent-authored automatic titles, live-input delivery/fallback, attachments, `AskUser` snapshots/submission, cancellation, notifications, and invalidation. |
 | [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence, including race-safe automatic-title updates that never overwrite a user rename. |
 | [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, and owner-authenticated process-job reads/cancel over the operator protocol. |
-| [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook thread delivery and source/thread-bound process-job card updates. |
+| [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook delivery, source/thread-bound process-job cards, and Monitor wake turns. |
 | [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including atomic `AskUser` forms, tests, and its own dependency lockfile. |
 
 ## Public API
@@ -345,7 +351,7 @@ cross-resource requests fail. See
 | `startWebServer` | Start the persistent browser service and receive the actual bound URL plus idempotent stop methods. |
 | `prepareWebState` / `prepareWebStatePaths` | Create and validate the owner-private state layout before starting a custom service. |
 | `resetWebState` | Perform the explicit whole-store reset used by host lifecycle commands. |
-| `deliverWebNotification` | Deliver one idempotent cron/webhook result or source/thread-bound process-job card update through the private loopback ingress. |
+| `deliverWebNotification` | Deliver one idempotent cron/webhook result, source/thread-bound process-job card update, or Monitor wake through the private loopback ingress. |
 | `discoverAcpBridgeAgents` | Discover Worklab-importable ACP sources through a credential-free, versioned ownership contract. |
 | `discoverOperatorAgents` | Read trusted operator endpoints from trace-source manifests. |
 | `WebBootstrap`, `WebThreadDetail`, `WebEvent`, and related `Web*` DTOs | Build another client against the versioned browser API. |
@@ -371,6 +377,7 @@ CreateWebUploadInput
 DEFAULT_WEB_HOST
 DEFAULT_WEB_PORT
 DEFAULT_WEB_THEME
+DeliverWebMonitorNotificationInput
 DeliverWebNotificationInput
 DeliverWebNotificationOptions
 DeliverWebNotificationResult

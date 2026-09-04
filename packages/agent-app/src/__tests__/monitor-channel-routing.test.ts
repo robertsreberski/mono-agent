@@ -83,6 +83,10 @@ describe("routeMonitorWake", () => {
     const { wake, args } = input({ deliveryKey: "monitor:mon-2:1" });
     expect(await routeMonitorWake(args)).toMatchObject({ code: "monitor_origin_mismatch" });
     expect(wake).not.toHaveBeenCalled();
+
+    const stale = input({ deliveryKey: "monitor:mon-1:2" });
+    expect(await routeMonitorWake(stale.args)).toMatchObject({ code: "monitor_origin_mismatch" });
+    expect(stale.wake).not.toHaveBeenCalled();
   });
 
   it("fails closed when no channel or several channels claim the scheme", async () => {
@@ -128,17 +132,23 @@ describe("routeMonitorWake", () => {
     });
   });
 
-  it("never routes a web-console origin, which has no monitor surface", async () => {
+  it("routes a web-console origin through the app-owned TUI Monitor surface", async () => {
     const webMonitor: MonitorProjection = {
       ...MONITOR,
       origin: { ...MONITOR.origin, conversationId: "web:thread-1", channel: "web", bucket: null },
     };
+    const wake = vi.fn(async (): Promise<HostWakeDeliveryResult> => ({ delivered: true, disposition: "follow_up" }));
     const { args } = input({
       projection: webMonitor,
       conversationId: "web:thread-1",
       drivers: [driver("tui", "web")],
-      running: new Map<ChannelId, RunningChannel>([["tui", running(undefined)]]),
+      running: new Map<ChannelId, RunningChannel>([["tui", running({ wake })]]),
     });
-    expect(await routeMonitorWake(args)).toMatchObject({ code: "monitor_unsupported_channel" });
+    expect(await routeMonitorWake(args)).toEqual({ delivered: true, disposition: "follow_up" });
+    expect(wake).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: "web:thread-1",
+      deliveryKey: "monitor:mon-1:1",
+      monitor: webMonitor,
+    }));
   });
 });

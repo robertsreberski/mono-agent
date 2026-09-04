@@ -2,7 +2,7 @@ import { realpath } from "node:fs/promises";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentMessageStream, AgentReplyPart, AgentRequestBase, AgentResponder, ProcessJobOperator, ProcessJobProjection, RunningChannel } from "@mono-agent/agent-contracts";
+import type { AgentMessageStream, AgentReplyPart, AgentRequestBase, AgentResponder, MonitorProjection, ProcessJobOperator, ProcessJobProjection, RunningChannel } from "@mono-agent/agent-contracts";
 import { MAX_INFO_BODY_BYTES, MAX_INFO_PROVIDER_ITEMS } from "@mono-agent/agent-contracts";
 import type { EffortLevel, MonoAgentConfig } from "@mono-agent/config";
 import type { DiscoveredLocalModel, DiscoveredProvider, LocalProviderDefinition } from "@mono-agent/runtime-adapter";
@@ -1213,7 +1213,10 @@ describe("tui channel driver — process jobs", () => {
         wake: { ...PROCESS_JOB.wake, deliveryKey: `${PROCESS_JOB.wake.deliveryKey}:bounded` },
       },
     })).resolves.toMatchObject({ delivered: true });
-    const boundedText = deliverNotification.mock.calls.at(-1)?.[0].text;
+    const boundedNotification = deliverNotification.mock.calls.at(-1)?.[0];
+    const boundedText = boundedNotification?.triggerKind === "job"
+      ? boundedNotification.text
+      : undefined;
     expect(boundedText).toHaveLength(8_000);
     expect(boundedText).toMatch(/… \[response truncated\]$/u);
 
@@ -1284,6 +1287,32 @@ const PROCESS_JOB: ProcessJobProjection = {
   exitCode: 0,
   signal: null,
   durationMs: 1_000,
+  cancelRequested: false,
+  lastError: null,
+};
+
+const MONITOR: MonitorProjection = {
+  schema: "mono-agent.monitor-projection.v1",
+  monitorId: "22222222-2222-4222-8222-222222222222",
+  state: "running",
+  description: "Watching a local process",
+  persistent: false,
+  origin: {
+    conversationId: "web:thread-1#2026-09-04",
+    channel: "web",
+    runId: "run-1",
+    bucket: "2026-09-04",
+  },
+  timestamps: {
+    startedAt: "2026-09-04T09:00:00.000Z",
+    runtimeDeadlineAt: "2026-09-04T09:30:00.000Z",
+    lastEventAt: "2026-09-04T09:00:01.000Z",
+    completedAt: null,
+  },
+  limits: { maxRuntimeMs: 1_800_000, coalesceMs: 200, maxBatchLines: 200, maxBatchBytes: 65_536, chainDepth: 0 },
+  counters: { seq: 3, batchesDelivered: 2, linesObserved: 4, linesDelivered: 3, droppedLines: 0, pendingLines: 0 },
+  exitCode: null,
+  signal: null,
   cancelRequested: false,
   lastError: null,
 };
@@ -1398,5 +1427,79 @@ describe("web process-job wake classification", () => {
       channelId: "tui",
       historyRecorded: true,
     });
+  });
+});
+
+describe("web Monitor wake classification", () => {
+  const wakeInput = {
+    conversationId: "web:thread-1",
+    text: "bounded fenced Monitor envelope",
+    deliveryKey: `monitor:${MONITOR.monitorId}:3`,
+    monitor: MONITOR,
+  };
+
+  it("delivers the exact origin and key through the owner-authenticated web ingress", async () => {
+    const deliver = vi.fn(async () => ({
+      threadId: "thread-1",
+      duplicate: false,
+      delivery: { delivered: true as const, disposition: "follow_up" as const },
+    }));
+    const running = await runningWebChannel(deliver);
+
+    await expect(running.monitors?.wake(wakeInput)).resolves.toMatchObject({
+      delivered: true,
+      code: "delivered",
+      disposition: "follow_up",
+      channelId: "tui",
+      historyRecorded: true,
+    });
+    expect(deliver).toHaveBeenCalledWith({
+      sourceId: "agent-one",
+      triggerKind: "monitor",
+      deliveryKey: wakeInput.deliveryKey,
+      threadId: "thread-1",
+      monitor: MONITOR,
+      wakePrompt: wakeInput.text,
+    });
+  });
+
+  it("retries only when the local ingress provably received nothing", async () => {
+    const unavailable = await runningWebChannel(async () => {
+      throw new WebConsoleError("notification_ingress_unavailable", "console is down", 503);
+    });
+    await expect(unavailable.monitors?.wake(wakeInput)).resolves.toMatchObject({
+      delivered: false,
+      code: "destination_channel_unavailable",
+      retryable: true,
+    });
+
+    for (const code of ["notification_ingress_timeout", "notification_delivery_failed", "invalid_notification_response"]) {
+      const ambiguous = await runningWebChannel(async () => {
+        throw new WebConsoleError(code, `failed: ${code}`, 502);
+      });
+      await expect(ambiguous.monitors?.wake(wakeInput)).resolves.toMatchObject({
+        delivered: false,
+        code: "monitor_wake_failed",
+        retryable: false,
+        ambiguous: true,
+      });
+    }
+  });
+
+  it("treats a missing receipt as ambiguous and rejects mismatched ownership before ingress", async () => {
+    const deliver = vi.fn(async () => ({ threadId: "thread-1", duplicate: false }));
+    const running = await runningWebChannel(deliver);
+    await expect(running.monitors?.wake(wakeInput)).resolves.toMatchObject({
+      delivered: false,
+      code: "monitor_wake_failed",
+      retryable: false,
+      ambiguous: true,
+    });
+
+    await expect(running.monitors?.wake({ ...wakeInput, conversationId: "web:thread-2" }))
+      .resolves.toMatchObject({ delivered: false, code: "monitor_origin_mismatch", retryable: false });
+    await expect(running.monitors?.wake({ ...wakeInput, deliveryKey: `monitor:${MONITOR.monitorId}:2` }))
+      .resolves.toMatchObject({ delivered: false, code: "monitor_origin_mismatch", retryable: false });
+    expect(deliver).toHaveBeenCalledTimes(1);
   });
 });

@@ -7,9 +7,11 @@ import {
   close,
   listen,
   MAX_AGENT_REPLY_PARTS,
+  parseMonitorProjection,
   parseProcessJobProjection,
   readAuthorizationBearer,
   type AgentReplyPart,
+  type MonitorProjection,
   type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
@@ -21,8 +23,9 @@ import type { WebService, WebServiceLogger } from "./service.js";
 const INGRESS_SCHEMA = 1;
 const INGRESS_HOST = "127.0.0.1";
 const INGRESS_PATH = "/internal/v1/notifications";
-const MAX_INGRESS_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_INGRESS_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_INGRESS_RECORD_BYTES = 64 * 1024;
+const MAX_MONITOR_WAKE_PROMPT_BYTES = 3 * 1024 * 1024;
 
 export interface WebNotificationIngressRecord {
   readonly schema: typeof INGRESS_SCHEMA;
@@ -50,19 +53,21 @@ export async function startWebNotificationIngress(
   let stopPromise: Promise<void> | undefined;
 
   server.headersTimeout = 10_000;
-  // A terminal process-job wake may run a genuine provider turn. Keep the
+  // A process-job or Monitor wake may run a genuine provider turn. Keep the
   // owner-authenticated ingress bounded, but do not cut it off at the ordinary
   // five-second lifecycle-update deadline.
   server.requestTimeout = 10 * 60 * 1_000;
   server.keepAliveTimeout = 1_000;
   app.disable("x-powered-by");
 
-  app.post(INGRESS_PATH, express.json({ limit: MAX_INGRESS_BODY_BYTES, strict: true }), (req, res, next) => {
+  app.post(INGRESS_PATH, (req, res, next) => {
     const presented = readAuthorizationBearer(req.header("authorization"));
     if (presented === undefined || !bearerTokensEqual(presented, token)) {
       res.status(401).json({ error: { code: "unauthorized", message: "Unauthorized." } });
       return;
     }
+    next();
+  }, express.json({ limit: MAX_INGRESS_BODY_BYTES, strict: true }), (req, res, next) => {
     let input: ReturnType<typeof parseNotificationRequest>;
     try {
       input = parseNotificationRequest(req.body);
@@ -163,6 +168,13 @@ type ParsedNotificationRequest = {
   readonly wakePrompt?: string;
   readonly text?: string;
   readonly parts?: readonly AgentReplyPart[];
+} | {
+  readonly sourceId: string;
+  readonly triggerKind: "monitor";
+  readonly deliveryKey: string;
+  readonly threadId: string;
+  readonly monitor: MonitorProjection;
+  readonly wakePrompt: string;
 };
 
 export function parseNotificationRequest(body: unknown): ParsedNotificationRequest {
@@ -172,12 +184,30 @@ export function parseNotificationRequest(body: unknown): ParsedNotificationReque
   const record = body as Record<string, unknown>;
   const allowed = record.triggerKind === "job"
     ? new Set(["sourceId", "triggerKind", "deliveryKey", "threadId", "processJob", "wakePrompt", "text", "parts"])
+    : record.triggerKind === "monitor"
+      ? new Set(["sourceId", "triggerKind", "deliveryKey", "threadId", "monitor", "wakePrompt"])
     : new Set(["sourceId", "triggerKind", "deliveryKey", "text", "jobId", "runId"]);
   if (Object.keys(record).some((key) => !allowed.has(key))) {
     throw new WebConsoleError("invalid_notification", "Notification body contains unsupported fields.", 400);
   }
   const sourceId = normalizedField(record.sourceId, "sourceId", 512);
   const deliveryKey = normalizedField(record.deliveryKey, "deliveryKey", 1_024);
+  if (record.triggerKind === "monitor") {
+    const threadId = normalizedField(record.threadId, "threadId", 512);
+    let monitor: MonitorProjection;
+    try {
+      monitor = parseMonitorProjection(record.monitor);
+    } catch {
+      throw new WebConsoleError("invalid_notification", "monitor must be a strict Monitor projection.", 400);
+    }
+    if (typeof record.wakePrompt !== "string" || record.wakePrompt.trim().length === 0) {
+      throw new WebConsoleError("invalid_notification", "wakePrompt must contain a Monitor wake prompt.", 400);
+    }
+    if (Buffer.byteLength(record.wakePrompt, "utf8") > MAX_MONITOR_WAKE_PROMPT_BYTES) {
+      throw new WebConsoleError("invalid_notification", "Monitor wakePrompt exceeds its byte limit.", 413);
+    }
+    return { sourceId, triggerKind: "monitor", deliveryKey, threadId, monitor, wakePrompt: record.wakePrompt };
+  }
   if (record.triggerKind === "job") {
     const threadId = normalizedField(record.threadId, "threadId", 512);
     let processJob: ProcessJobProjection;
@@ -211,7 +241,7 @@ export function parseNotificationRequest(body: unknown): ParsedNotificationReque
     };
   }
   if (record.triggerKind !== "cron" && record.triggerKind !== "webhook") {
-    throw new WebConsoleError("invalid_notification", "triggerKind must be 'cron', 'webhook', or 'job'.", 400);
+    throw new WebConsoleError("invalid_notification", "triggerKind must be 'cron', 'webhook', 'job', or 'monitor'.", 400);
   }
   const jobId = record.jobId === undefined ? undefined : normalizedField(record.jobId, "jobId", 512);
   const runId = record.runId === undefined ? undefined : normalizedField(record.runId, "runId", 1_024);

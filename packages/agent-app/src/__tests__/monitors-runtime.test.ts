@@ -67,7 +67,11 @@ async function inject(options: {
     channelId: (options.channelId ?? "telegram") as never,
     ...(options.routesOnlyPiNative === undefined ? {} : { routesOnlyPiNative: options.routesOnlyPiNative }),
   });
-  const result = await extension(request(options.conversationId ?? "telegram:42"));
+  const conversationId = options.conversationId ?? "telegram:42";
+  const result = await extension(request(
+    conversationId,
+    options.channelId === "tui" && conversationId.startsWith("web:") ? { source: "web" } : {},
+  ));
   await result.settleCleanup?.();
   return (result.runtimeOptions ?? {}) as Record<string, unknown>;
 }
@@ -85,8 +89,10 @@ describe("monitors runtime extension", () => {
     await expect(inject({ routesOnlyPiNative: () => false })).rejects.toThrow(/Pi-native/u);
   });
 
-  it("injects nothing for a web-console origin, which cannot receive monitor wakes", async () => {
-    expect(await inject({ channelId: "tui", conversationId: "web:thread-1" })).not.toHaveProperty("monitors");
+  it("injects the controller for an existing web-console thread", async () => {
+    expect(await inject({ channelId: "tui", conversationId: "web:thread-1" })).toHaveProperty("monitors");
+    expect(await inject({ channelId: "tui", conversationId: "web:new" })).not.toHaveProperty("monitors");
+    expect(await inject({ channelId: "tui", conversationId: "tui:direct" })).not.toHaveProperty("monitors");
   });
 
   it("injects nothing for cron and webhook turns, which have no origin channel", async () => {
@@ -163,7 +169,14 @@ describe("monitorsAvailableForRequest", () => {
   it("agrees with the injection gate so prompt guidance cannot drift", () => {
     const options = { service: service(), coreConfig: config(), channelId: "telegram" as never };
     expect(monitorsAvailableForRequest(request("telegram:42"), options)).toBe(true);
-    expect(monitorsAvailableForRequest(request("web:thread-1"), { ...options, channelId: "tui" as never })).toBe(false);
+    expect(monitorsAvailableForRequest(request("web:thread-1", { source: "web" }), {
+      ...options,
+      channelId: "tui" as never,
+    })).toBe(true);
+    expect(monitorsAvailableForRequest(request("web:new", { source: "web" }), {
+      ...options,
+      channelId: "tui" as never,
+    })).toBe(false);
     expect(monitorsAvailableForRequest(request("telegram:42"), { ...options, service: undefined })).toBe(false);
     expect(monitorsAvailableForRequest(request("telegram:42"), {
       ...options,

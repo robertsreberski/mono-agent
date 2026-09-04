@@ -443,7 +443,7 @@ export function escapeLikeTerm(raw: string): string {
   return raw.replaceAll(/[\\%_]/gu, (character) => `\\${character}`);
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 12;
+const WEB_STORAGE_SCHEMA_VERSION = 14;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
 export const WEB_MESSAGE_PAGE_MAX = 100;
@@ -494,6 +494,11 @@ export interface BeginStoredAssistantTurnResult {
 export type StoredTurnExecution = BeginStoredTurnResult | BeginStoredAssistantTurnResult;
 
 export type ProcessJobWakeReservation =
+  | { readonly kind: "new" }
+  | { readonly kind: "completed"; readonly disposition: "steered" | "follow_up" }
+  | { readonly kind: "uncertain" };
+
+export type MonitorWakeReservation =
   | { readonly kind: "new" }
   | { readonly kind: "completed"; readonly disposition: "steered" | "follow_up" }
   | { readonly kind: "uncertain" };
@@ -1687,6 +1692,104 @@ export class WebStore {
     `).run(input.sourceId, input.jobId, input.deliveryKey);
   }
 
+  /** Durably claim one Monitor wake before touching the operator. */
+  reserveMonitorWake(input: {
+    readonly sourceId: string;
+    readonly threadId: string;
+    readonly monitorId: string;
+    readonly deliveryKey: string;
+    readonly payloadSha256: string;
+  }): MonitorWakeReservation {
+    const thread = this.database.prepare("SELECT source_id, archived_at, trigger_kind FROM threads WHERE id = ?")
+      .get(input.threadId) as unknown as {
+        source_id: string;
+        archived_at: string | null;
+        trigger_kind: string | null;
+      } | undefined;
+    if (thread === undefined || thread.source_id !== input.sourceId) {
+      throw new WebConsoleError("invalid_notification", "The Monitor wake does not match its web thread.", 409);
+    }
+    if (thread.archived_at !== null || thread.trigger_kind !== null) {
+      throw new WebConsoleError("thread_archived", "The Monitor wake destination is not an active web conversation.", 409);
+    }
+    const existing = this.database.prepare(`
+      SELECT monitor_id, thread_id, payload_sha256, state, disposition
+      FROM monitor_wake_deliveries WHERE source_id = ? AND delivery_key = ?
+    `).get(input.sourceId, input.deliveryKey) as unknown as {
+      monitor_id: string;
+      thread_id: string | null;
+      payload_sha256: string;
+      state: "accepted" | "completed";
+      disposition: "steered" | "follow_up" | null;
+    } | undefined;
+    if (existing !== undefined) {
+      if (existing.monitor_id !== input.monitorId
+        || existing.thread_id !== input.threadId
+        || existing.payload_sha256 !== input.payloadSha256) {
+        throw new WebConsoleError(
+          "notification_idempotency_conflict",
+          "The Monitor delivery key was already used for a different wake.",
+          409,
+        );
+      }
+      if (existing.state === "completed"
+        && (existing.disposition === "steered" || existing.disposition === "follow_up")) {
+        return { kind: "completed", disposition: existing.disposition };
+      }
+      return { kind: "uncertain" };
+    }
+    this.database.prepare(`
+      INSERT INTO monitor_wake_deliveries (
+        source_id, monitor_id, delivery_key, thread_id, payload_sha256,
+        state, disposition, turn_id, created_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, 'accepted', NULL, NULL, ?, NULL)
+    `).run(
+      input.sourceId,
+      input.monitorId,
+      input.deliveryKey,
+      input.threadId,
+      input.payloadSha256,
+      this.now(),
+    );
+    return { kind: "new" };
+  }
+
+  completeMonitorWake(input: {
+    readonly sourceId: string;
+    readonly monitorId: string;
+    readonly deliveryKey: string;
+    readonly disposition: "steered" | "follow_up";
+    readonly turnId?: string;
+  }): void {
+    const result = this.database.prepare(`
+      UPDATE monitor_wake_deliveries
+      SET state = 'completed', disposition = ?, turn_id = ?, completed_at = ?
+      WHERE source_id = ? AND monitor_id = ? AND delivery_key = ? AND state = 'accepted'
+    `).run(
+      input.disposition,
+      input.turnId ?? null,
+      this.now(),
+      input.sourceId,
+      input.monitorId,
+      input.deliveryKey,
+    );
+    if (result.changes !== 1) {
+      throw new WebConsoleError("notification_reservation_lost", "The Monitor wake reservation was lost.", 409);
+    }
+  }
+
+  /** Release a Monitor reservation only before any operator delivery begins. */
+  abandonMonitorWake(input: {
+    readonly sourceId: string;
+    readonly monitorId: string;
+    readonly deliveryKey: string;
+  }): void {
+    this.database.prepare(`
+      DELETE FROM monitor_wake_deliveries
+      WHERE source_id = ? AND monitor_id = ? AND delivery_key = ? AND state = 'accepted'
+    `).run(input.sourceId, input.monitorId, input.deliveryKey);
+  }
+
   /** Exact retained binding used before proxying a single operator job. */
   processJobCardBelongsToThread(sourceId: string, threadId: string, jobId: string): boolean {
     return this.database.prepare(`
@@ -2432,7 +2535,12 @@ export class WebStore {
   }
 
   /** Begin one host-owned assistant-only follow-up without inventing a user row. */
-  beginAssistantTurn(input: { readonly threadId: string; readonly prompt: string }): BeginStoredAssistantTurnResult {
+  beginAssistantTurn(input: {
+    readonly threadId: string;
+    readonly prompt: string;
+    /** Monitor output stays memory-only; callers may retain only a non-secret marker. */
+    readonly storedPrompt?: string;
+  }): BeginStoredAssistantTurnResult {
     const threadId = this.resolveThreadId(input.threadId);
     const thread = this.requireThread(threadId);
     if (thread.archivedAt !== null) {
@@ -2458,7 +2566,7 @@ export class WebStore {
           id, thread_id, status, text, model, effort, assistant_message_id,
           started_at, finished_at, error_code, error_message
         ) VALUES (?, ?, 'running', ?, NULL, NULL, ?, ?, NULL, NULL, NULL)
-      `).run(turnId, threadId, input.prompt, assistantMessageId, now);
+      `).run(turnId, threadId, input.storedPrompt ?? input.prompt, assistantMessageId, now);
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
         VALUES (?, ?, ?, 'assistant', '[]', ?, ?, 'running')
@@ -2730,9 +2838,19 @@ export class WebStore {
     finalText?: string,
     metadata?: Readonly<Record<string, unknown>>,
     replyParts?: readonly AgentReplyPart[],
+    options: { readonly suppressResponsePush?: boolean } = {},
   ): WebThreadDetail {
     const runtime = runtimeMetadata(metadata);
-    return this.finishTurn(turnId, "complete", finalText, undefined, undefined, runtime, replyParts);
+    return this.finishTurn(
+      turnId,
+      "complete",
+      finalText,
+      undefined,
+      undefined,
+      runtime,
+      replyParts,
+      options.suppressResponsePush === true,
+    );
   }
 
   failTurn(turnId: string, error: { readonly message: string; readonly code?: string; readonly cancelled?: boolean }): WebThreadDetail {
@@ -3316,6 +3434,21 @@ export class WebStore {
       );
       CREATE INDEX IF NOT EXISTS process_job_wake_deliveries_by_thread
         ON process_job_wake_deliveries(thread_id, created_at);
+      CREATE TABLE IF NOT EXISTS monitor_wake_deliveries (
+        source_id TEXT NOT NULL REFERENCES agents(source_id),
+        monitor_id TEXT NOT NULL,
+        delivery_key TEXT NOT NULL,
+        thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL,
+        payload_sha256 TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('accepted', 'completed')),
+        disposition TEXT CHECK (disposition IN ('steered', 'follow_up')),
+        turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        PRIMARY KEY (source_id, delivery_key)
+      );
+      CREATE INDEX IF NOT EXISTS monitor_wake_deliveries_by_thread
+        ON monitor_wake_deliveries(thread_id, created_at);
       CREATE TABLE IF NOT EXISTS cron_channels (
         source_id TEXT NOT NULL REFERENCES agents(source_id),
         job_id TEXT NOT NULL,
@@ -3496,6 +3629,10 @@ export class WebStore {
             this.database.exec("ALTER TABLE agents ADD COLUMN providers_json TEXT");
           }
         }
+        // Schema v13 tied the Monitor idempotency ledger to the conversation
+        // with ON DELETE CASCADE. That erased the tombstone and allowed a
+        // delivery key to name different content after thread deletion.
+        if (versionRow.user_version === 13) this.migrateMonitorWakeDeliveries();
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
       } catch (error) {
         if (this.database.isTransaction) this.database.exec("ROLLBACK");
@@ -3506,6 +3643,36 @@ export class WebStore {
       if (error instanceof WebConsoleError) throw error;
       throw new WebConsoleError("storage_corrupt", `Unable to initialize web state: ${error instanceof Error ? error.message : String(error)}`, 500);
     }
+  }
+
+  /** Preserve Monitor delivery tombstones while making deleted threads threadless. */
+  private migrateMonitorWakeDeliveries(): void {
+    this.database.exec(`
+      CREATE TABLE monitor_wake_deliveries_v14 (
+        source_id TEXT NOT NULL REFERENCES agents(source_id),
+        monitor_id TEXT NOT NULL,
+        delivery_key TEXT NOT NULL,
+        thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL,
+        payload_sha256 TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('accepted', 'completed')),
+        disposition TEXT CHECK (disposition IN ('steered', 'follow_up')),
+        turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        PRIMARY KEY (source_id, delivery_key)
+      );
+      INSERT INTO monitor_wake_deliveries_v14 (
+        source_id, monitor_id, delivery_key, thread_id, payload_sha256,
+        state, disposition, turn_id, created_at, completed_at
+      ) SELECT
+        source_id, monitor_id, delivery_key, thread_id, payload_sha256,
+        state, disposition, turn_id, created_at, completed_at
+      FROM monitor_wake_deliveries;
+      DROP TABLE monitor_wake_deliveries;
+      ALTER TABLE monitor_wake_deliveries_v14 RENAME TO monitor_wake_deliveries;
+      CREATE INDEX monitor_wake_deliveries_by_thread
+        ON monitor_wake_deliveries(thread_id, created_at);
+    `);
   }
 
   /**
@@ -3683,6 +3850,8 @@ export class WebStore {
       "revisions",
       "settings",
       "notification_deliveries",
+      "process_job_wake_deliveries",
+      "monitor_wake_deliveries",
       "cron_channels",
       "cron_channel_deletions",
       "cron_overviews",
@@ -3793,13 +3962,23 @@ export class WebStore {
     errorMessage?: string,
     runtime?: { readonly model?: string; readonly effort?: string },
     replyParts?: readonly AgentReplyPart[],
+    suppressResponsePush = false,
   ): WebThreadDetail {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") {
       return this.requireThreadDetail(turn.thread_id);
     }
     this.transaction(() => {
-      this.finishTurnInTransaction(turnId, status, finalText, errorCode, errorMessage, runtime, replyParts);
+      this.finishTurnInTransaction(
+        turnId,
+        status,
+        finalText,
+        errorCode,
+        errorMessage,
+        runtime,
+        replyParts,
+        suppressResponsePush,
+      );
     });
     return this.requireThreadDetail(turn.thread_id);
   }
@@ -3812,6 +3991,7 @@ export class WebStore {
     errorMessage?: string,
     runtime?: { readonly model?: string; readonly effort?: string },
     replyParts?: readonly AgentReplyPart[],
+    suppressResponsePush = false,
   ): void {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") return;
@@ -3851,7 +4031,9 @@ export class WebStore {
     // Projected cron turns are agent-owned scheduler state. Restart recovery
     // still settles the local projection, but only web-owned turns may emit a
     // Web Push terminal notification from this service.
-    if (thread.trigger?.kind !== "cron" && recentEnoughForRecoveredInterruption) {
+    if (thread.trigger?.kind !== "cron"
+      && recentEnoughForRecoveredInterruption
+      && !(status === "complete" && suppressResponsePush)) {
       const kind: WebPushEventKind = status === "complete"
         ? "response.ready"
         : status === "cancelled"
