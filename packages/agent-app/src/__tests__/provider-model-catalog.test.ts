@@ -35,7 +35,11 @@ describe("provider-model-catalog", () => {
     const openrouter = catalog.listProviders().find((provider) => provider.id === "openrouter");
     const full = listPiBuiltinModels("openrouter").length;
 
-    expect(full).toBe(351);
+    // Pi's generated provider catalog changes independently of mono-agent. The
+    // contract here is that an oversized upstream catalog is reported exactly
+    // while only the first 100 models are advertised, not its release-specific
+    // total.
+    expect(full).toBeGreaterThan(100);
     expect(openrouter?.modelCount).toBe(100);
     expect(openrouter?.totalModelCount).toBe(full);
 

@@ -145,6 +145,15 @@ describe("createStreamSubscriber — exact context snapshots", () => {
     expect(emitted.some((event) => event.type === "assistant_message_boundary")).toBe(false);
   });
 
+  it("ignores Pi 0.85 message_end events for the user prompt", () => {
+    const { emitted, handler } = driver();
+    handler({
+      type: "message_end",
+      message: { role: "user", content: [{ type: "text", text: "current turn" }] },
+    });
+    expect(emitted).toEqual([]);
+  });
+
   it("emits an assistant boundary for a reasoning-only native message", () => {
     const { emitted, handler } = driver();
     handler({

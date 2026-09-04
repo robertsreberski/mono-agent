@@ -76,8 +76,8 @@ function toolResultOutcome(result) {
 
 /**
  * Build the harness subscribe handler. `harness` is passed for the maxTurns
- * abort; it is already constructed when this is wired (subscribe follows the
- * AgentHarness constructor).
+ * abort; it is already constructed when this is wired (subscribe follows
+ * AgentHarness.create()).
  * @param {StreamSubscriberState} runState
  * @param {{onEvent: (event: any) => void, options: any, toolLimits: any, harness: any, sdk: string, model: string}} deps
  * @returns {(event: any) => void}
@@ -107,7 +107,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
           onEvent({ type: "assistant", message: { content: [{ type: "thinking", text: streamEvent.content }] } });
         }
       }
-    } else if (event.type === "message_end") {
+    } else if (event.type === "message_end" && event.message?.role === "assistant") {
       const contextUsage = contextUsageFromAssistantMessage(event.message);
       if (contextUsage) {
         const contextWindow = Number(harness?.getModel?.()?.contextWindow) || 0;
@@ -216,7 +216,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       });
     } else if (event.type === "turn_end") {
       runState.turnCount += 1;
-      // NON-DELEGABLE (verified against @earendil-works/pi-agent-core 0.80.3).
+      // NON-DELEGABLE (verified against @earendil-works/pi-agent-core 0.85.0).
       // pi's only after-turn stop hook is `shouldStopAfterTurn` on the LOW-LEVEL
       // `AgentLoopConfig` (dist/types.d.ts) — the config passed to the raw
       // `agentLoop`. It is NOT surfaced on `AgentHarnessOptions`
@@ -235,7 +235,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
         && runState.turnCount >= Number(options.maxTurns)
         && event.message?.stopReason === "toolUse") {
         runState.maxTurnsHit = true;
-        harness.abort();
+        void Promise.resolve(harness.abort()).catch(() => {});
       }
     }
   };

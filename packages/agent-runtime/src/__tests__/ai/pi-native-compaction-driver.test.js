@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildSessionContext, estimateTokens } from "@earendil-works/pi-agent-core";
+import { estimateTokens } from "@earendil-works/pi-agent-core";
 import {
   estimateCurrentContextTokens,
   piSummaryReserveTokens,
@@ -8,6 +8,7 @@ import {
   runReactiveCompaction,
   tryCompact,
 } from "../../ai/providers/pi-native/compaction-driver.js";
+import { buildPiSessionContext } from "../../ai/providers/pi-native/harness-adapter.js";
 
 // A session double whose buildContext / getEntries / (message count) are
 // scriptable, so the trigger math is exercised deterministically.
@@ -99,14 +100,16 @@ function hookHarness({ sourceMessages = reducibleMessages(), summary = "short su
         type: "compaction",
         id: "compaction-1",
         parentId: branchEntries.at(-1)?.id || null,
-        timestamp: new Date().toISOString(),
+        timestamp: Date.now(),
         summary: result.summary,
-        firstKeptEntryId: result.firstKeptEntryId,
+        retainedTail: result.retainedTail,
         tokensBefore: result.tokensBefore,
         details: result.details,
+        usage: result.usage,
         fromHook: true,
       };
-      messages.splice(0, messages.length, ...buildSessionContext([...branchEntries, compactedEntry]).messages);
+      const context = buildPiSessionContext([...branchEntries, compactedEntry]);
+      messages.splice(0, messages.length, ...context);
       return result;
     }),
   };
@@ -280,9 +283,9 @@ describe("tryCompact", () => {
     expect(fixture.handlerCount()).toBe(0);
   });
 
-  it("classifies a nothing-to-compact failure as a warning, not a throw", async () => {
+  it("classifies Pi 0.85 NothingToCompact as a warning, not a throw", async () => {
     const warnings = [];
-    const err = Object.assign(new Error("nothing to compact"), { code: "compaction" });
+    const err = Object.assign(new Error("No eligible compaction boundary"), { _tag: "NothingToCompact" });
     const fixture = hookHarness({ compactError: err });
     const res = await tryCompact(fixture.harness, { trigger: "proactive", onEvent: () => {}, runtimeWarnings: warnings });
     expect(res).toEqual({
@@ -293,6 +296,21 @@ describe("tryCompact", () => {
       nothingToCompact: true,
     });
     expect(warnings[0].warning_kind).toBe("context_compaction_nothing_to_compact");
+  });
+
+  it("maps Pi 0.85 LaneBusy to the busy warning and lifecycle reason", async () => {
+    const warnings = [];
+    const events = [];
+    const fixture = hookHarness({
+      compactError: Object.assign(new Error("Lane main is active"), { _tag: "LaneBusy" }),
+    });
+    await tryCompact(fixture.harness, {
+      trigger: "reactive_overflow",
+      onEvent: (event) => events.push(event),
+      runtimeWarnings: warnings,
+    });
+    expect(warnings[0].warning_kind).toBe("context_compaction_busy");
+    expect(events.at(-1)).toMatchObject({ status: "failed", reason: "busy" });
   });
 
   it("maps auth/busy/other error codes to distinct warning kinds", async () => {
