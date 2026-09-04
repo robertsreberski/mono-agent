@@ -127,9 +127,12 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       const hasVisibleContent = Array.isArray(event.message?.content)
         && event.message.content.some((block) => block
           && typeof block === "object"
-          && (block.type === "text" || block.type === "thinking")
-          && typeof block.text === "string"
-          && block.text.length > 0);
+          && ((block.type === "text"
+            && typeof block.text === "string"
+            && block.text.length > 0)
+            || (block.type === "thinking"
+              && ((typeof block.thinking === "string" && block.thinking.length > 0)
+                || (typeof block.text === "string" && block.text.length > 0)))));
       if (hasVisibleContent) {
         const messageId = typeof event.message?.id === "string" && event.message.id.trim().length > 0
           ? event.message.id

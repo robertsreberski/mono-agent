@@ -145,6 +145,17 @@ describe("createStreamSubscriber — exact context snapshots", () => {
     expect(emitted.some((event) => event.type === "assistant_message_boundary")).toBe(false);
   });
 
+  it("emits an assistant boundary for a reasoning-only native message", () => {
+    const { emitted, handler } = driver();
+    handler({
+      type: "message_end",
+      message: completedAssistant({ content: [{ type: "thinking", thinking: "Working it through" }] }),
+    });
+    expect(emitted.filter((event) => event.type === "assistant_message_boundary")).toEqual([
+      { type: "assistant_message_boundary", messageId: "assistant-1" },
+    ]);
+  });
+
   it.each(["error", "aborted"])("does not report a %s assistant message as exact context", (stopReason) => {
     const { emitted, handler } = driver();
 
