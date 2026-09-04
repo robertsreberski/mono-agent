@@ -20,7 +20,7 @@
     "check:secrets": "node scripts/check-secrets.mjs",
     "check:oss-hygiene": "node scripts/check-oss-hygiene.mjs",
     "check:licenses": "node scripts/check-license-consistency.mjs && pnpm --dir packages/web/webapp install --frozen-lockfile && node scripts/check-webapp-dependency-licenses.mjs",
-    "check:dependency-vulnerabilities": "node scripts/check-dependency-vulnerabilities.mjs && node scripts/check-isolated-dependency-vulnerabilities.mjs",
+    "check:dependency-vulnerabilities": "node scripts/check-all-dependency-vulnerabilities.mjs",
     "check:codex-discoverability": "node scripts/check-codex-discoverability.mjs",
     "check:consumer-docs-consistency": "node scripts/check-consumer-docs-consistency.mjs",
     "check:getting-started-version-pins": "node scripts/check-getting-started-version-pins.mjs",

@@ -1636,6 +1636,7 @@ describe("dependency vulnerability gate", () => {
     })).rejects.toThrow("bulk advisory request failed: connection refused");
 
     await expect(queryBulkAdvisories(inventory, {
+      transientRetries: 0,
       fetchImpl: async () => httpResponse("registry unavailable", { status: 503, raw: true }),
     })).rejects.toThrow("returned HTTP 503: registry unavailable");
 
@@ -1651,6 +1652,7 @@ describe("dependency vulnerability gate", () => {
     expect(credentialFetch).not.toHaveBeenCalled();
 
     const hostileHttpError = await queryBulkAdvisories(inventory, {
+      transientRetries: 0,
       fetchImpl: async () => httpResponse(
         "registry unavailable\n::warning file=ci.yml::forged\u001b[31m",
         { status: 503, raw: true },
@@ -1734,6 +1736,7 @@ describe("dependency vulnerability gate", () => {
     let timeoutSignal;
     const pending = queryBulkAdvisories(inventory, {
       timeoutMs: 25,
+      transientRetries: 0,
       fetchImpl: async (_url, request) => {
         timeoutSignal = request.signal;
         return await new Promise(() => {});
@@ -1743,6 +1746,84 @@ describe("dependency vulnerability gate", () => {
     await vi.advanceTimersByTimeAsync(25);
     await rejection;
     expect(timeoutSignal.aborted).toBe(true);
+  });
+
+  it("retries timed-out and unavailable bulk requests within a bounded budget", async () => {
+    vi.useFakeTimers();
+    const requestSignals = [];
+    const pending = queryBulkAdvisories({ ws: ["8.20.1"] }, {
+      timeoutMs: 25,
+      retryDelayMs: 5,
+      transientRetries: 2,
+      fetchImpl: async (_url, request) => {
+        requestSignals.push(request.signal);
+        if (requestSignals.length === 1) {
+          return await new Promise(() => {});
+        }
+        if (requestSignals.length === 2) {
+          return httpResponse("registry unavailable", { status: 503, raw: true });
+        }
+        return httpResponse({ ws: [] });
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(25);
+    await vi.advanceTimersByTimeAsync(5);
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(pending).resolves.toEqual({ ws: [] });
+    expect(requestSignals).toHaveLength(3);
+    expect(requestSignals[0].aborted).toBe(true);
+    expect(requestSignals[1].aborted).toBe(false);
+    expect(requestSignals[2].aborted).toBe(false);
+  });
+
+  it("paces default transient retries so the registry can recover", async () => {
+    vi.useFakeTimers();
+    let requests = 0;
+    const pending = queryBulkAdvisories({ ws: ["8.20.1"] }, {
+      fetchImpl: async () => {
+        requests += 1;
+        return requests === 1
+          ? httpResponse("registry unavailable", { status: 503, raw: true })
+          : httpResponse({ ws: [] });
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(requests).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toEqual({ ws: [] });
+    expect(requests).toBe(2);
+  });
+
+  it("queries large inventories through concurrent bounded requests", async () => {
+    const inventory = Object.fromEntries(Array.from(
+      { length: 901 },
+      (_unused, index) => [`package-${String(index).padStart(3, "0")}`, ["1.0.0"]],
+    ));
+    const requestedPackages = [];
+    const report = await queryBulkAdvisories(inventory, {
+      fetchImpl: async (_url, request) => {
+        const packageNames = Object.keys(JSON.parse(request.body));
+        requestedPackages.push(packageNames);
+        return httpResponse({ [packageNames[0]]: [] });
+      },
+    });
+
+    expect(requestedPackages.map((packageNames) => packageNames.length)).toEqual([450, 450, 1]);
+    expect(requestedPackages.flat()).toEqual(Object.keys(inventory));
+    expect(Object.keys(report)).toEqual(["package-000", "package-450", "package-900"]);
+  });
+
+  it("fails closed when concurrent requests return the same package", async () => {
+    const inventory = Object.fromEntries(Array.from(
+      { length: 451 },
+      (_unused, index) => [`package-${String(index).padStart(3, "0")}`, ["1.0.0"]],
+    ));
+
+    await expect(queryBulkAdvisories(inventory, {
+      fetchImpl: async () => httpResponse({ "package-000": [] }),
+    })).rejects.toThrow("duplicate package package-000 across requests");
   });
 
   it.each(["constructor", "toString", "__proto__", "unknown-severity"])(

@@ -16,6 +16,9 @@ const MAX_DIRECT_PRODUCTION_ENTRY_STEPS = 100_000;
 const MAX_PRODUCTION_PATHS_PER_PACKAGE_VERSION = 10_000;
 const MAX_PRODUCTION_SUBTREE_COUNT_STEPS = 100_000;
 const MAX_PRODUCTION_TRAVERSAL_STEPS = 100_000;
+const MAX_BULK_REQUEST_PACKAGES = 450;
+const BULK_REQUEST_TRANSIENT_RETRIES = 2;
+const BULK_REQUEST_RETRY_DELAY_MS = 60_000;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_WHY_PATHS_PER_TARGET = 10_000;
 const MAX_WHY_TRAVERSAL_STEPS_PER_TARGET = 100_000;
@@ -829,6 +832,61 @@ export function normalizeDispositions(input) {
 }
 
 export async function queryBulkAdvisories(inventory, options = {}) {
+  const transientRetries = options.transientRetries ?? BULK_REQUEST_TRANSIENT_RETRIES;
+  const retryDelayMs = options.retryDelayMs ?? BULK_REQUEST_RETRY_DELAY_MS;
+  if (!Number.isInteger(transientRetries) || transientRetries < 0) {
+    throw new Error("bulk advisory transient retries must be a non-negative integer.");
+  }
+  if (!Number.isFinite(retryDelayMs) || retryDelayMs < 0) {
+    throw new Error("bulk advisory retry delay must be a non-negative finite number.");
+  }
+  const entries = Object.entries(inventory);
+  const requestInventories = entries.length === 0
+    ? [inventory]
+    : Array.from(
+      { length: Math.ceil(entries.length / MAX_BULK_REQUEST_PACKAGES) },
+      (_unused, index) => Object.fromEntries(entries.slice(
+        index * MAX_BULK_REQUEST_PACKAGES,
+        (index + 1) * MAX_BULK_REQUEST_PACKAGES,
+      )),
+    );
+  const reports = await Promise.all(requestInventories.map(async (requestInventory) => (
+    await queryBulkAdvisoriesWithRetries(
+      requestInventory,
+      options,
+      transientRetries,
+      retryDelayMs,
+    )
+  )));
+  const reportEntries = [];
+  const reportedPackages = new Set();
+  for (const report of reports) {
+    for (const [packageName, advisories] of Object.entries(report)) {
+      if (reportedPackages.has(packageName)) {
+        throw new Error(`bulk advisory endpoint returned duplicate package ${packageName} across requests.`);
+      }
+      reportedPackages.add(packageName);
+      reportEntries.push([packageName, advisories]);
+    }
+  }
+  return Object.fromEntries(reportEntries);
+}
+
+async function queryBulkAdvisoriesWithRetries(inventory, options, transientRetries, retryDelayMs) {
+  for (let attempt = 0; attempt <= transientRetries; attempt += 1) {
+    try {
+      return await queryBulkAdvisoryRequest(inventory, options);
+    } catch (error) {
+      if (!(error instanceof BulkAdvisoryTransientError) || attempt === transientRetries) {
+        throw error;
+      }
+      await wait(retryDelayMs * (attempt + 1));
+    }
+  }
+  throw new Error("bulk advisory retry loop ended without a verdict.");
+}
+
+async function queryBulkAdvisoryRequest(inventory, options) {
   const registryUrl = options.registryUrl ?? DEFAULT_AUDIT_REGISTRY_URL;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   let endpoint;
@@ -890,7 +948,7 @@ export async function queryBulkAdvisories(inventory, options = {}) {
     ({ response, source } = await Promise.race([request, timedOut]));
   } catch (error) {
     if (error === timeoutError) {
-      throw new Error(`bulk advisory request timed out after ${timeoutMs}ms.`);
+      throw new BulkAdvisoryTransientError(`bulk advisory request timed out after ${timeoutMs}ms.`);
     }
     if (error === responseTooLargeError) {
       throw error;
@@ -901,10 +959,14 @@ export async function queryBulkAdvisories(inventory, options = {}) {
   }
 
   if (!response.ok) {
-    throw new Error(
+    const error = new Error(
       `bulk advisory endpoint returned HTTP ${response.status}: `
       + boundedSingleLine(source, MAX_DIAGNOSTIC_CHARS),
     );
+    if (response.status === 429 || response.status >= 500) {
+      throw new BulkAdvisoryTransientError(error.message);
+    }
+    throw error;
   }
   try {
     const document = JSON.parse(source);
@@ -915,6 +977,12 @@ export async function queryBulkAdvisories(inventory, options = {}) {
   } catch (error) {
     throw new Error(`bulk advisory response was not valid JSON: ${reasonOf(error)}`);
   }
+}
+
+class BulkAdvisoryTransientError extends Error {}
+
+function wait(milliseconds) {
+  return new Promise((resolveWait) => setTimeout(resolveWait, milliseconds));
 }
 
 async function readBoundedResponseBody(body, maxBytes, limitError, abortRequest) {
@@ -1236,7 +1304,7 @@ function highSeverityReportPackageNames(report) {
     .sort();
 }
 
-function normalizeBulkAdvisoryReport(report, inventory) {
+export function normalizeBulkAdvisoryReport(report, inventory) {
   if (!isRecord(report)) {
     throw new Error("bulk advisory report must be an object keyed by package name.");
   }
