@@ -27,19 +27,43 @@ describe("combined dependency vulnerability gate", () => {
     });
   });
 
-  it("filters a shared report to packages owned by one graph", () => {
-    expect(filterBulkAdvisoryReport({ root: [], shared: [], isolated: [] }, {
-      root: ["1.0.0"],
-      shared: ["1.0.0"],
-    })).toEqual({ root: [], shared: [] });
+  it("filters a shared report to the exact vulnerable versions owned by one graph", () => {
+    const advisory = {
+      id: 123,
+      severity: "high",
+      title: "fixture advisory",
+      url: "https://example.invalid/advisory/123",
+      vulnerable_versions: "<2.0.0",
+    };
+
+    expect(filterBulkAdvisoryReport({ shared: [advisory] }, {
+      shared: ["1.5.0"],
+    })).toEqual({ shared: [advisory] });
+    expect(filterBulkAdvisoryReport({ shared: [advisory] }, {
+      shared: ["2.0.0"],
+    })).toEqual({});
+    expect(() => filterBulkAdvisoryReport({
+      shared: [{ ...advisory, vulnerable_versions: "not a range" }],
+    }, {
+      shared: ["1.5.0"],
+    })).toThrow("invalid vulnerable_versions range");
   });
 
   it("queries the registry once and evaluates every graph independently", async () => {
     const stdout = sink();
-    const queryAdvisories = vi.fn(async () => ({ shared: [] }));
+    const advisory = {
+      id: 123,
+      severity: "high",
+      title: "fixture advisory",
+      url: "https://example.invalid/advisory/123",
+      vulnerable_versions: "<2.0.0",
+    };
+    const queryAdvisories = vi.fn(async () => ({ shared: [advisory] }));
+    const graphReports = [];
     const runCheck = vi.fn(async (options) => {
       const report = await options.queryAdvisories(options.productionGraph.inventory);
-      return { exitCode: Object.hasOwn(report, "shared") ? 0 : 1 };
+      graphReports.push(report);
+      return { exitCode: 0 };
     });
     const result = await runAllDependencyVulnerabilityChecks({
       repoRoot: "/repo",
@@ -77,6 +101,7 @@ describe("combined dependency vulnerability gate", () => {
       shared: ["1.0.0", "2.0.0"],
     });
     expect(runCheck).toHaveBeenCalledTimes(2);
+    expect(graphReports).toEqual([{ shared: [advisory] }, {}]);
     expect(stdout.text).toBe("Auditing isolated web console production graph.\n");
   });
 

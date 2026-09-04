@@ -1796,23 +1796,37 @@ describe("dependency vulnerability gate", () => {
     expect(requests).toBe(2);
   });
 
-  it("queries large inventories through concurrent bounded requests", async () => {
+  it("queries large inventories through a bounded concurrent worker pool", async () => {
     const inventory = Object.fromEntries(Array.from(
-      { length: 901 },
-      (_unused, index) => [`package-${String(index).padStart(3, "0")}`, ["1.0.0"]],
+      { length: 1_801 },
+      (_unused, index) => [`package-${String(index).padStart(4, "0")}`, ["1.0.0"]],
     ));
     const requestedPackages = [];
+    let activeRequests = 0;
+    let maxActiveRequests = 0;
     const report = await queryBulkAdvisories(inventory, {
       fetchImpl: async (_url, request) => {
         const packageNames = Object.keys(JSON.parse(request.body));
         requestedPackages.push(packageNames);
+        activeRequests += 1;
+        maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+        await Promise.resolve();
+        activeRequests -= 1;
         return httpResponse({ [packageNames[0]]: [] });
       },
     });
 
-    expect(requestedPackages.map((packageNames) => packageNames.length)).toEqual([450, 450, 1]);
+    expect(requestedPackages.map((packageNames) => packageNames.length))
+      .toEqual([450, 450, 450, 450, 1]);
     expect(requestedPackages.flat()).toEqual(Object.keys(inventory));
-    expect(Object.keys(report)).toEqual(["package-000", "package-450", "package-900"]);
+    expect(maxActiveRequests).toBe(3);
+    expect(Object.keys(report)).toEqual([
+      "package-0000",
+      "package-0450",
+      "package-0900",
+      "package-1350",
+      "package-1800",
+    ]);
   });
 
   it("fails closed when concurrent requests return the same package", async () => {

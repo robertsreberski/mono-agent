@@ -17,6 +17,7 @@ const MAX_PRODUCTION_PATHS_PER_PACKAGE_VERSION = 10_000;
 const MAX_PRODUCTION_SUBTREE_COUNT_STEPS = 100_000;
 const MAX_PRODUCTION_TRAVERSAL_STEPS = 100_000;
 const MAX_BULK_REQUEST_PACKAGES = 450;
+const MAX_CONCURRENT_BULK_REQUESTS = 3;
 const BULK_REQUEST_TRANSIENT_RETRIES = 2;
 const BULK_REQUEST_RETRY_DELAY_MS = 60_000;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
@@ -850,14 +851,16 @@ export async function queryBulkAdvisories(inventory, options = {}) {
         (index + 1) * MAX_BULK_REQUEST_PACKAGES,
       )),
     );
-  const reports = await Promise.all(requestInventories.map(async (requestInventory) => (
-    await queryBulkAdvisoriesWithRetries(
+  const reports = await mapWithConcurrency(
+    requestInventories,
+    MAX_CONCURRENT_BULK_REQUESTS,
+    async (requestInventory) => await queryBulkAdvisoriesWithRetries(
       requestInventory,
       options,
       transientRetries,
       retryDelayMs,
-    )
-  )));
+    ),
+  );
   const reportEntries = [];
   const reportedPackages = new Set();
   for (const report of reports) {
@@ -884,6 +887,22 @@ async function queryBulkAdvisoriesWithRetries(inventory, options, transientRetri
     }
   }
   throw new Error("bulk advisory retry loop ended without a verdict.");
+}
+
+async function mapWithConcurrency(values, concurrency, mapper) {
+  const results = new Array(values.length);
+  let nextIndex = 0;
+  await Promise.all(Array.from(
+    { length: Math.min(concurrency, values.length) },
+    async () => {
+      while (nextIndex < values.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await mapper(values[index], index);
+      }
+    },
+  ));
+  return results;
 }
 
 async function queryBulkAdvisoryRequest(inventory, options) {

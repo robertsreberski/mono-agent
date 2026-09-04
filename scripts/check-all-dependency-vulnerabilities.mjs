@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import semver from "semver";
+
 import {
   DEFAULT_AUDIT_REGISTRY_URL,
   collectProductionGraph,
@@ -51,12 +53,26 @@ export function mergeProductionInventories(productionGraphs) {
 }
 
 export function filterBulkAdvisoryReport(report, inventory) {
-  // npm reports an advisory when any submitted exact version is vulnerable.
-  // Keep that advisory for every graph containing the package: when graphs use
-  // different versions this can over-fail, but it cannot hide a vulnerability.
-  return Object.fromEntries(
-    Object.entries(report).filter(([packageName]) => Object.hasOwn(inventory, packageName)),
-  );
+  const filteredEntries = [];
+  for (const [packageName, advisories] of Object.entries(report)) {
+    if (!Object.hasOwn(inventory, packageName)) continue;
+    const relevantAdvisories = advisories.filter((advisory) => {
+      const range = advisory.vulnerable_versions;
+      if (semver.validRange(range) === null) {
+        throw new Error(`bulk advisory for ${packageName} has an invalid vulnerable_versions range.`);
+      }
+      return inventory[packageName].some((version) => {
+        if (semver.valid(version) === null) {
+          throw new Error(`production dependency inventory has an invalid version for ${packageName}.`);
+        }
+        return semver.satisfies(version, range, { includePrerelease: true });
+      });
+    });
+    if (relevantAdvisories.length > 0) {
+      filteredEntries.push([packageName, relevantAdvisories]);
+    }
+  }
+  return Object.fromEntries(filteredEntries);
 }
 
 export async function runAllDependencyVulnerabilityChecks(options = {}) {
