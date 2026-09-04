@@ -2643,15 +2643,27 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
       }
 
       await expect(writer.stats()).resolves.toMatchObject({ calls: 1, records: 1, writeFailures: 0 });
-      await expect(writer.persist(binding("unrelated-write"), {
-        phase: "invocation", toolCallId: "unrelated-call", toolName: "Read", arguments: {},
-      })).resolves.toMatchObject({ persistence: "persisted" });
-      await expect(writer.persist(binding("slow-run"), {
-        phase: "invocation", toolCallId: "slow-call", toolName: "Read", arguments: {},
-      })).resolves.toMatchObject({ persistence: "persisted", sequence: 1 });
-      await expect(writer.stats()).resolves.toMatchObject({ writeFailures: 0 });
     } finally {
       await writer.close();
+    }
+
+    const recoveryWriter = await ToolHistoryWriter.open({
+      root,
+      // The default writer above deliberately proves the production 250 ms
+      // fail-soft ceiling. These recovery assertions are about the committed
+      // record, not host scheduling latency after reopening the worker.
+      persistenceCeilingMs: 5_000,
+    });
+    try {
+      await expect(recoveryWriter.persist(binding("unrelated-write"), {
+        phase: "invocation", toolCallId: "unrelated-call", toolName: "Read", arguments: {},
+      })).resolves.toMatchObject({ persistence: "persisted" });
+      await expect(recoveryWriter.persist(binding("slow-run"), {
+        phase: "invocation", toolCallId: "slow-call", toolName: "Read", arguments: {},
+      })).resolves.toMatchObject({ persistence: "persisted", sequence: 1 });
+      await expect(recoveryWriter.stats()).resolves.toMatchObject({ writeFailures: 0 });
+    } finally {
+      await recoveryWriter.close();
     }
     expect(new ToolHistoryReader(root).stats()).toMatchObject({ writeFailures: 0 });
   }, 10_000);
