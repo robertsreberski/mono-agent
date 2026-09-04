@@ -21,7 +21,14 @@ import {
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import { useConsoleStore } from "../console-store";
-import type { AskAnswer, AskSnapshot, ProcessJobProjection, ProcessJobState, ToolCallArtifact } from "../types";
+import type {
+  AskAnswer,
+  AskSnapshot,
+  MonitorProjection,
+  ProcessJobProjection,
+  ProcessJobState,
+  ToolCallArtifact,
+} from "../types";
 import { UserMessageAttachments } from "./Attachments";
 import {
   ACTIVITY_DATA_PARTS,
@@ -912,6 +919,70 @@ function NotePart({ data }: DataMessagePartProps) {
   return <p className="activity-note">{text.trim()}</p>;
 }
 
+const monitorStateLabel = (state: string): string => state.replaceAll("_", " ");
+
+const monitorActivityStatus = (monitors: readonly MonitorProjection[]): ActivityStatus => {
+  if (monitors.some((monitor) => monitor.state === "starting" || monitor.state === "running")) return "running";
+  return monitors.some((monitor) => monitor.lastError !== null) ? "failed" : "complete";
+};
+
+/** One compact row for every Monitor wake applied to this assistant run. */
+function MonitorActivityPart({ data }: DataMessagePartProps) {
+  const payload = asRecord(data);
+  const entries = Array.isArray(payload.monitors)
+    ? payload.monitors.flatMap((raw) => {
+        const entry = asRecord(raw);
+        const projection = asRecord(entry.projection) as unknown as MonitorProjection;
+        const deliveryKeys = Array.isArray(entry.deliveryKeys)
+          ? entry.deliveryKeys.filter((key): key is string => typeof key === "string")
+          : [];
+        return projection.schema === "mono-agent.monitor-projection.v1"
+          ? [{ projection, updateCount: deliveryKeys.length }]
+          : [];
+      })
+    : [];
+  const legacyUpdateCount = typeof payload.legacyUpdateCount === "number"
+    && Number.isSafeInteger(payload.legacyUpdateCount)
+    && payload.legacyUpdateCount > 0
+    ? payload.legacyUpdateCount
+    : 0;
+  const updateCount = entries.reduce((total, entry) => total + entry.updateCount, 0) + legacyUpdateCount;
+  if (updateCount === 0) return null;
+  const projections = entries.map((entry) => entry.projection);
+  const summary = projections.length === 1
+    ? projections[0]?.description || monitorStateLabel(projections[0]?.state ?? "updated")
+    : projections.length > 1 ? `${String(projections.length)} monitors` : "Historical monitor activity";
+  return (
+    <ActivityRow
+      status={monitorActivityStatus(projections)}
+      label={updateCount === 1 ? "Monitor update" : `Monitor updates ×${String(updateCount)}`}
+      summary={summary}
+    >
+      {entries.length === 0 ? (
+        <p className="monitor-activity-legacy">Details were not retained for these earlier Monitor updates.</p>
+      ) : (
+        <div className="activity-steps">
+          {entries.map(({ projection, updateCount: count }) => (
+            <ActivityStep
+              key={projection.monitorId}
+              toolName={projection.description || "Monitor"}
+              summary={`${String(count)} ${count === 1 ? "update" : "updates"} · ${monitorStateLabel(projection.state)}`}
+              failed={projection.lastError === null ? undefined : monitorStateLabel(projection.lastError.code)}
+            >
+              <dl className="monitor-activity-facts">
+                <div><dt>State</dt><dd>{monitorStateLabel(projection.state)}</dd></div>
+                <div><dt>Observed</dt><dd>{projection.counters.linesObserved}</dd></div>
+                <div><dt>Delivered</dt><dd>{projection.counters.linesDelivered}</dd></div>
+                <div><dt>Dropped</dt><dd>{projection.counters.droppedLines}</dd></div>
+              </dl>
+            </ActivityStep>
+          ))}
+        </div>
+      )}
+    </ActivityRow>
+  );
+}
+
 const asRecord = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -1118,6 +1189,7 @@ const parts = {
       "mcp-app": McpAppPart,
       "reply-failure": ReplyFailurePart,
       "process-job": ProcessJobPart,
+      "monitor-activity": MonitorActivityPart,
     },
   },
 } as const;
@@ -1219,6 +1291,7 @@ function AssistantParts() {
             if (part.name === "mcp-app") return <McpAppPart {...part} />;
             if (part.name === "reply-failure") return <ReplyFailurePart {...part} />;
             if (part.name === "process-job") return <ProcessJobPart {...part} />;
+            if (part.name === "monitor-activity") return <MonitorActivityPart {...part} />;
             return part.dataRendererUI;
           case "indicator":
             return <RunningText status={{ type: "running" }} />;

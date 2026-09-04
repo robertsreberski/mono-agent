@@ -84,6 +84,56 @@ export interface ProcessJobProjection {
   readonly cancelRequested: boolean;
   readonly lastError: { readonly code: string; readonly message: string } | null;
 }
+
+export type MonitorState =
+  | "starting"
+  | "running"
+  | "exited"
+  | "timed_out"
+  | "cancelled"
+  | "spawn_failed"
+  | "rate_limited"
+  | "interrupted";
+
+/** Secret-free Monitor state retained by the Web console for activity display. */
+export interface MonitorProjection {
+  readonly schema: "mono-agent.monitor-projection.v1";
+  readonly monitorId: string;
+  readonly state: MonitorState;
+  readonly description: string;
+  readonly persistent: boolean;
+  readonly origin: {
+    readonly conversationId: string;
+    readonly channel: string;
+    readonly runId: string;
+    readonly bucket: string | null;
+  };
+  readonly timestamps: {
+    readonly startedAt: string;
+    readonly runtimeDeadlineAt: string | null;
+    readonly lastEventAt: string | null;
+    readonly completedAt: string | null;
+  };
+  readonly limits: {
+    readonly maxRuntimeMs: number;
+    readonly coalesceMs: number;
+    readonly maxBatchLines: number;
+    readonly maxBatchBytes: number;
+    readonly chainDepth: number;
+  };
+  readonly counters: {
+    readonly seq: number;
+    readonly batchesDelivered: number;
+    readonly linesObserved: number;
+    readonly linesDelivered: number;
+    readonly droppedLines: number;
+    readonly pendingLines: number;
+  };
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  readonly cancelRequested: boolean;
+  readonly lastError: { readonly code: string; readonly message: string } | null;
+}
 export type RunStatus =
   | "idle"
   | "running"
@@ -312,6 +362,13 @@ export type MessagePart =
       readonly type: "process-job";
       readonly job: ProcessJobProjection;
       readonly responseText?: string;
+    }
+  | {
+      readonly type: "monitor-activity";
+      readonly monitors: readonly {
+        readonly projection: MonitorProjection;
+        readonly deliveryKeys: readonly string[];
+      }[];
     }
   | { readonly type: "telemetry"; readonly event: string; readonly data?: unknown }
   | { readonly type: "error"; readonly code?: string; readonly message: string }

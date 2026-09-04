@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import { convertWebMessage } from "../runtime";
 import type { WebMessage } from "../types";
-import { processJob } from "../test/fixtures";
+import { monitor, processJob } from "../test/fixtures";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
 
 afterEach(() => {
@@ -201,6 +201,55 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.queryByText("done")).toBeNull();
     fireEvent.click(toolName.closest("summary")!);
     expect(screen.getByText('"Applied to current run"')).toBeVisible();
+  });
+
+  it("renders one compact secret-free activity row for a run's Monitor wakes", () => {
+    const first = monitor();
+    const second = monitor({
+      monitorId: "33333333-3333-4333-8333-333333333333",
+      description: "Watch the indexer",
+      state: "exited",
+      timestamps: {
+        ...first.timestamps,
+        completedAt: "2026-07-17T10:00:05.000Z",
+      },
+      counters: {
+        ...first.counters,
+        seq: 1,
+        batchesDelivered: 1,
+        linesObserved: 3,
+        linesDelivered: 2,
+        droppedLines: 1,
+      },
+      exitCode: 0,
+    });
+    render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      parts: [
+        {
+          type: "monitor-activity",
+          monitors: [
+            { projection: first, deliveryKeys: ["monitor:secret-delivery-one", "monitor:secret-delivery-two"] },
+            { projection: second, deliveryKeys: ["monitor:secret-delivery-three"] },
+          ],
+        },
+        { type: "text", text: "Both watches were handled." },
+      ],
+    }} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(screen.getByText("Monitor updates ×3")).toBeVisible();
+    expect(screen.getByText("2 monitors")).toBeVisible();
+    expect(screen.queryByText(/secret-delivery/u)).toBeNull();
+    expect(screen.queryByText(first.monitorId)).toBeNull();
+
+    fireEvent.click(screen.getByText("Monitor updates ×3").closest("summary")!);
+    expect(screen.getByText("Watch the worker queue")).toBeVisible();
+    expect(screen.getByText("Watch the indexer")).toBeVisible();
+    expect(screen.getByText("2 updates · running")).toBeVisible();
+    expect(screen.getByText("1 update · exited")).toBeVisible();
+    expect(screen.getAllByText("Observed")).toHaveLength(2);
+    expect(screen.getByText("Both watches were handled.")).toBeVisible();
   });
 
   it("uses the canonical terminal state but keeps successful persistence bookkeeping out of the transcript", () => {

@@ -759,6 +759,95 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("groups exact Monitor steering receipts without splitting assistant messages", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
+    const first = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 1 });
+    const second = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 2 });
+    for (const [monitor, deliveryKey] of [
+      [first, `monitor:${first.monitorId}:1`],
+      [second, `monitor:${second.monitorId}:2`],
+    ] as const) {
+      expect(store.reserveMonitorWake({
+        sourceId: "agent-one",
+        threadId: thread.id,
+        monitorId: monitor.monitorId,
+        deliveryKey,
+        payloadSha256: deliveryKey.endsWith(":1") ? "a".repeat(64) : "b".repeat(64),
+        monitor,
+      })).toEqual({ kind: "new" });
+    }
+    const monitorEvent = (type: "tool_call_started" | "tool_call_completed", deliveryKey: string) => ({
+      kind: "event" as const,
+      event: {
+        type,
+        id: `live-input:${deliveryKey}`,
+        name: "↪️ Steered: “A monitor you started…”",
+        ...(type === "tool_call_completed" ? { content: "Applied to current run" } : {}),
+        metadata: { liveInput: true, synthetic: true, inputId: deliveryKey },
+      },
+    });
+    const firstKey = `monitor:${first.monitorId}:1`;
+    const secondKey = `monitor:${second.monitorId}:2`;
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "append", delta: "Monitor started. Await" },
+      monitorEvent("tool_call_started", firstKey),
+      monitorEvent("tool_call_completed", firstKey),
+      { kind: "append", delta: "ing updates." },
+      {
+        kind: "event",
+        // Older agents emitted context_usage at message_end but not the
+        // explicit boundary. The store must preserve that rollout-safe split
+        // before replacing the legacy Steered row with compact activity.
+        event: {
+          type: "runtime_telemetry",
+          kind: "context_usage",
+          data: { tokens: { input: 10, output: 2, total: 12 } },
+        },
+      },
+      { kind: "append", delta: "Event wake one." },
+      monitorEvent("tool_call_started", secondKey),
+      monitorEvent("tool_call_completed", secondKey),
+      {
+        kind: "event",
+        event: { type: "runtime_telemetry", kind: "assistant_message_boundary", data: { messageId: "a2" } },
+      },
+      { kind: "append", delta: "Event wake two." },
+    ] as never);
+    expect(store.completeMonitorWake({
+      sourceId: "agent-one",
+      monitorId: first.monitorId,
+      deliveryKey: firstKey,
+      disposition: "steered",
+      turnId: turn.turnId,
+    })).toBeUndefined();
+    expect(store.completeMonitorWake({
+      sourceId: "agent-one",
+      monitorId: second.monitorId,
+      deliveryKey: secondKey,
+      disposition: "steered",
+      turnId: turn.turnId,
+    })).toBeUndefined();
+    const detail = store.completeTurn(turn.turnId, "Event wake two.");
+    const parts = detail.messages.at(-1)?.parts ?? [];
+    expect(parts.filter((part) => part.type === "tool-call")).toEqual([]);
+    expect(parts.filter((part) => part.type === "text")).toEqual([
+      { type: "text", text: "Monitor started. Awaiting updates." },
+      { type: "text", text: "Event wake one." },
+      { type: "text", text: "Event wake two." },
+    ]);
+    expect(parts.filter((part) => part.type === "monitor-activity")).toEqual([{
+      type: "monitor-activity",
+      monitors: [{ projection: second, deliveryKeys: [firstKey, secondKey] }],
+    }]);
+    expect(JSON.stringify(parts)).not.toContain("A monitor you started");
+    store.close();
+  });
+
   // An MCP tool's structuredContent is the only machine-readable record of its outcome:
   // `content` is the model-facing sentence. AskUser depends on this surviving the store —
   // the console reads interactionId/answered from the persisted part to re-render an
@@ -1866,6 +1955,7 @@ describe("WebStore", () => {
       monitorId: monitor.monitorId,
       deliveryKey,
       payloadSha256: "a".repeat(64),
+      monitor,
     })).toEqual({ kind: "new" });
     store.completeMonitorWake({
       sourceId: "agent-one",
@@ -1879,6 +1969,7 @@ describe("WebStore", () => {
       monitorId: monitor.monitorId,
       deliveryKey,
       payloadSha256: "a".repeat(64),
+      monitor,
     })).toEqual({ kind: "completed", disposition: "steered" });
     expect(() => store.reserveMonitorWake({
       sourceId: "agent-one",
@@ -1886,6 +1977,7 @@ describe("WebStore", () => {
       monitorId: monitor.monitorId,
       deliveryKey,
       payloadSha256: "b".repeat(64),
+      monitor,
     })).toThrowError(expect.objectContaining({ code: "notification_idempotency_conflict" }));
     expect(() => store.reserveMonitorWake({
       sourceId: "agent-one",
@@ -1893,6 +1985,7 @@ describe("WebStore", () => {
       monitorId: "other-monitor",
       deliveryKey: "monitor:other-monitor:1",
       payloadSha256: "c".repeat(64),
+      monitor: fakeMonitor({ monitorId: "other-monitor", conversationId: `web:${otherThread.id}` }),
     })).toThrowError(expect.objectContaining({ code: "invalid_notification" }));
 
     const pendingKey = `monitor:${monitor.monitorId}:4`;
@@ -1902,6 +1995,7 @@ describe("WebStore", () => {
       monitorId: monitor.monitorId,
       deliveryKey: pendingKey,
       payloadSha256: "d".repeat(64),
+      monitor,
     })).toEqual({ kind: "new" });
     const raw = new DatabaseSync(store.paths.database, { readOnly: true });
     const rows = raw.prepare("SELECT * FROM monitor_wake_deliveries ORDER BY delivery_key").all();
@@ -1916,6 +2010,7 @@ describe("WebStore", () => {
       monitorId: monitor.monitorId,
       deliveryKey: pendingKey,
       payloadSha256: "d".repeat(64),
+      monitor,
     })).toEqual({ kind: "uncertain" });
     reopened.close();
   });
@@ -1936,6 +2031,7 @@ describe("WebStore", () => {
       monitorId: monitor.monitorId,
       deliveryKey,
       payloadSha256,
+      monitor,
     })).toEqual({ kind: "new" });
     store.completeMonitorWake({
       sourceId: "agent-one",
@@ -1961,6 +2057,7 @@ describe("WebStore", () => {
       monitorId: monitor.monitorId,
       deliveryKey,
       payloadSha256,
+      monitor,
     })).toThrowError(expect.objectContaining({ code: "notification_idempotency_conflict" }));
     store.close();
   });
@@ -2030,7 +2127,7 @@ describe("WebStore", () => {
     reopened.close();
   });
 
-  it("migrates a seeded schema v10 database to v14 keeping its thread rows", async () => {
+  it("migrates a seeded schema v10 database to v15 keeping its thread rows", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -2065,12 +2162,12 @@ describe("WebStore", () => {
     const agentColumns = new Set((inspected.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
       .map((column) => column.name));
     inspected.close();
-    expect(version.user_version).toBe(14);
+    expect(version.user_version).toBe(15);
     expect(agentColumns.has("providers_json")).toBe(true);
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(["run_model", "run_effort"]));
   });
 
-  it("re-runs the v11-v14 migrations without failing when current columns and tables already exist", async () => {
+  it("re-runs the v11-v15 migrations without failing when current columns and tables already exist", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -2091,7 +2188,7 @@ describe("WebStore", () => {
     reopened.close();
     expect(
       new DatabaseSync(databasePath, { readOnly: true }).prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 14 });
+    ).toMatchObject({ user_version: 15 });
   });
 
   it("migrates schema v12 by creating the Monitor wake ledger", async () => {
@@ -2109,7 +2206,7 @@ describe("WebStore", () => {
     const migrated = await WebStore.open({ stateDir });
     migrated.close();
     const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 14 });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 15 });
     expect(inspected.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'monitor_wake_deliveries'",
     ).get()).toBeDefined();
@@ -2131,6 +2228,7 @@ describe("WebStore", () => {
       monitorId: monitor.monitorId,
       deliveryKey,
       payloadSha256: "f".repeat(64),
+      monitor,
     })).toEqual({ kind: "new" });
     seeded.completeMonitorWake({
       sourceId: "agent-one",
@@ -2158,8 +2256,13 @@ describe("WebStore", () => {
         completed_at TEXT,
         PRIMARY KEY (source_id, delivery_key)
       );
-      INSERT INTO monitor_wake_deliveries
-      SELECT * FROM monitor_wake_deliveries_v14_source;
+      INSERT INTO monitor_wake_deliveries (
+        source_id, monitor_id, delivery_key, thread_id, payload_sha256,
+        state, disposition, turn_id, created_at, completed_at
+      ) SELECT
+        source_id, monitor_id, delivery_key, thread_id, payload_sha256,
+        state, disposition, turn_id, created_at, completed_at
+      FROM monitor_wake_deliveries_v14_source;
       DROP TABLE monitor_wake_deliveries_v14_source;
       PRAGMA user_version = 13;
     `);
@@ -2167,12 +2270,16 @@ describe("WebStore", () => {
 
     const migrated = await WebStore.open({ stateDir });
     const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 14 });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 15 });
     const threadForeignKey = (inspected.prepare("PRAGMA foreign_key_list(monitor_wake_deliveries)").all() as Array<{
       from: string;
       on_delete: string;
     }>).find((foreignKey) => foreignKey.from === "thread_id");
     expect(threadForeignKey?.on_delete).toBe("SET NULL");
+    const monitorColumns = (inspected.prepare("PRAGMA table_info(monitor_wake_deliveries)").all() as Array<{
+      name: string;
+    }>).map((column) => column.name);
+    expect(monitorColumns).toContain("projection_json");
     inspected.close();
 
     migrated.patchThread(thread.id, { archived: true });
@@ -2290,7 +2397,7 @@ describe("WebStore", () => {
     const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
     const processJobCards = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'").get();
     inspected.close();
-    expect(version.user_version).toBe(14);
+    expect(version.user_version).toBe(15);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
     expect(liveInputs).toBeDefined();
@@ -2317,7 +2424,7 @@ describe("WebStore", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'",
     ).get();
     inspected.close();
-    expect(version.user_version).toBe(14);
+    expect(version.user_version).toBe(15);
     expect(processJobCards).toBeDefined();
   });
 
@@ -2330,7 +2437,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 15");
+    future.exec("PRAGMA user_version = 16");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 
@@ -3385,7 +3492,7 @@ describe("WebStore conversation search", () => {
     expect(
       new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true })
         .prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 14 });
+    ).toMatchObject({ user_version: 15 });
     reopened.close();
   });
 });

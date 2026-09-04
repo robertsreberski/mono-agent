@@ -22,6 +22,7 @@ export async function buildSuccessfulTurn(
   readonly messages: readonly HistoryMessage[];
   readonly userMemoryText: string;
 }> {
+    const userLiveInputs = liveInputs.filter((input) => !input.deliveryKey?.startsWith("monitor:"));
     const capturedAt = options.now?.().toISOString() ?? new Date().toISOString();
     let assistantHistoryText = assistantText;
     try {
@@ -37,7 +38,7 @@ export async function buildSuccessfulTurn(
     const senderName = senderLabel(sender);
     return {
       capturedAt,
-      userMemoryText: composeUserMemoryText(userMessage, liveInputs),
+      userMemoryText: composeUserMemoryText(userMessage, userLiveInputs),
       messages: [
         {
           role: "user",
@@ -48,7 +49,7 @@ export async function buildSuccessfulTurn(
         },
         // Live follow-ups deliberately carry NO name: AppliedLiveInput has no
         // identity of its own, and assuming "same speaker" is wrong in a group.
-        ...liveInputs.map((input) => ({
+        ...userLiveInputs.map((input) => ({
           role: "user" as const,
           content: input.text,
           timestamp: input.receivedAt,

@@ -468,6 +468,7 @@ export interface StreamEventContext {
  * stream as before.
  */
 const RUNTIME_TELEMETRY_KINDS = new Set([
+  "assistant_message_boundary",
   "cache_hit",
   "cache_miss",
   "capabilities_resolved",

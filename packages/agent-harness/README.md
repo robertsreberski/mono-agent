@@ -74,11 +74,15 @@ through `ReadSkill`; full disclosure does not emit guidance for that tool.
 `createAgentResponder()` exposes `offerLiveInput()` for an ordinary active turn.
 Its bounded mailbox delivers follow-ups only when the selected backend supports
 native steering. The provider acknowledges each message only after its native
-steering boundary accepts it; applied follow-ups are then recorded as ordered
-user history and included in memory persistence. The responder correlates that
-acknowledgement to the pending human message and emits one completed synthetic
-tool lifecycle named `↪️ Steered: “<safe preview>”`; the full follow-up remains
-only the human message. Unsupported, failed, or
+steering boundary accepts it. Applied human follow-ups and ProcessJob wakes are
+then recorded as ordered user history and included in memory persistence.
+Host-owned Monitor inputs, identified by their `monitor:` delivery key, are
+applied to the provider run but excluded from canonical user history and memory
+persistence. The responder
+correlates the acknowledgement to the pending input and emits one completed
+synthetic tool lifecycle; human follow-ups use
+`↪️ Steered: “<safe preview>”`, while consumers correlate host-owned receipts by
+their exact delivery key. Unsupported, failed, or
 end-of-turn races settle as `requeue`, allowing Slack, Telegram, and the web
 console to run the reserved message as the next normal turn instead of losing it.
 

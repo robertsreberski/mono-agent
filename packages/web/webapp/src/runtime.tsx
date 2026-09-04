@@ -111,6 +111,27 @@ const isContextCompactionPart = (part: Extract<MessagePart, { type: "telemetry" 
   return false;
 };
 
+const isAssistantMessageBoundaryPart = (part: Extract<MessagePart, { type: "telemetry" }>): boolean => {
+  let current = part.data;
+  const seen = new Set<object>();
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (current === null || typeof current !== "object" || Array.isArray(current) || seen.has(current)) {
+      return false;
+    }
+    seen.add(current);
+    const record = current as Record<string, unknown>;
+    // context_usage was the only reliable message-end marker retained by older
+    // Pi runs. Keep it as a read-time compatibility boundary; new runs carry
+    // the explicit content-free marker even when usage is unavailable.
+    if (record.kind === "assistant_message_boundary" || record.kind === "context_usage") return true;
+    current = record.data;
+  }
+  return false;
+};
+
+const isLegacyMonitorToolPart = (part: MessagePart): boolean =>
+  part.type === "tool-call" && part.toolCallId.startsWith("live-input:monitor:");
+
 type ConvertedPart = Exclude<ThreadMessageLike["content"], string>[number];
 
 /**
@@ -155,6 +176,8 @@ const convertPart = (part: MessagePart): ConvertedPart | null => {
       return { type: "data-subagent", data: jsonObject(part) };
     case "process-job":
       return { type: "data-process-job", data: jsonObject(part) };
+    case "monitor-activity":
+      return { type: "data-monitor-activity", data: jsonObject(part) };
     case "telemetry":
       // Most telemetry remains store-only for chrome such as ContextDisplay.
       // Compaction is user-visible activity, so expose that one canonical kind
@@ -162,6 +185,9 @@ const convertPart = (part: MessagePart): ConvertedPart | null => {
       // provider diagnostics into the transcript.
       if (isContextCompactionPart(part)) {
         return { type: "data-context-compaction", data: jsonObject(part.data) };
+      }
+      if (isAssistantMessageBoundaryPart(part)) {
+        return { type: "data-assistant-message-boundary", data: {} };
       }
       return part.event === "cron_run"
         ? { type: "data-cron-run", data: jsonObject(part.data) }
@@ -212,10 +238,14 @@ const completeAttachment = (attachment: WebAttachment): CompleteAttachment => {
  */
 const joinAdjacentText = (parts: readonly ConvertedPart[]): ConvertedPart[] =>
   parts.reduce<ConvertedPart[]>((joined, part) => {
-    const previous = joined.at(-1);
-    if (part.type === "text" && previous?.type === "text") {
-      joined[joined.length - 1] = { ...previous, text: `${previous.text}${part.text}` };
-      return joined;
+    if (part.type === "text") {
+      let previousIndex = joined.length - 1;
+      while (joined[previousIndex]?.type === "data-monitor-activity") previousIndex -= 1;
+      const previous = joined[previousIndex];
+      if (previous?.type === "text") {
+        joined[previousIndex] = { ...previous, text: `${previous.text}${part.text}` };
+        return joined;
+      }
     }
     joined.push(part);
     return joined;
@@ -227,6 +257,7 @@ const ACTIVITY_PART_TYPES: ReadonlySet<string> = new Set([
   "tool-call",
   "data-subagent",
   "data-context-compaction",
+  "data-monitor-activity",
   "data-process-job",
 ]);
 
@@ -269,7 +300,20 @@ const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] =
 };
 
 export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
-  const converted = joinAdjacentText(message.parts.flatMap((part) => {
+  const hasMonitorActivity = message.parts.some((part) => part.type === "monitor-activity");
+  const legacyMonitorUpdates = hasMonitorActivity
+    ? 0
+    : message.parts.filter(isLegacyMonitorToolPart).length;
+  let legacyMonitorInserted = false;
+  const joined = joinAdjacentText(message.parts.flatMap((part) => {
+    if (isLegacyMonitorToolPart(part)) {
+      if (hasMonitorActivity || legacyMonitorInserted) return [];
+      legacyMonitorInserted = true;
+      return [{
+        type: "data-monitor-activity" as const,
+        data: { type: "monitor-activity", monitors: [], legacyUpdateCount: legacyMonitorUpdates },
+      }];
+    }
     // The service worker precaches this bundle, so a console left open across a
     // server upgrade can be handed a part type it does not know yet. `== null`
     // covers that `undefined` too: pushing it into content breaks the whole
@@ -277,6 +321,7 @@ export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
     const convertedPart = convertPart(part);
     return convertedPart == null ? [] : [convertedPart];
   }));
+  const converted = joined.filter((part) => part.type !== "data-assistant-message-boundary");
   // Only a COMPLETED turn is known to have an answer. Streaming is still
   // writing one, and a cancelled/failed/interrupted turn was stopped with none
   // (the store finalizes all three with no final text), so its last prose is

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { canSendInConsole, canUploadInConsole, convertWebMessage } from "./runtime";
-import { agent, attachment, processJob, thread } from "./test/fixtures";
+import { agent, attachment, monitor, processJob, thread } from "./test/fixtures";
 import type { WebMessage } from "./types";
 
 const message = (overrides: Partial<WebMessage> = {}): WebMessage => ({
@@ -171,6 +171,106 @@ describe("convertWebMessage", () => {
 
     if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
     expect(converted.content).toEqual([{ type: "text", text: "I'm really sorry" }]);
+  });
+
+  it("keeps Monitor activity compact without splitting one streamed word", () => {
+    const projection = monitor();
+    const converted = convertWebMessage(message({
+      role: "assistant",
+      status: "complete",
+      parts: [
+        { type: "text", text: "The worker is re" },
+        {
+          type: "monitor-activity",
+          monitors: [{ projection, deliveryKeys: ["monitor:one", "monitor:two"] }],
+        },
+        { type: "text", text: "ady." },
+      ],
+    }));
+
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content).toEqual([
+      {
+        type: "data-monitor-activity",
+        data: {
+          type: "monitor-activity",
+          monitors: [{ projection, deliveryKeys: ["monitor:one", "monitor:two"] }],
+        },
+      },
+      { type: "text", text: "The worker is ready." },
+    ]);
+  });
+
+  it("uses assistant message boundaries to keep Monitor wake responses separate", () => {
+    const boundary = {
+      type: "telemetry" as const,
+      event: "runtime_telemetry",
+      data: { type: "runtime_telemetry", kind: "assistant_message_boundary" },
+    };
+    const converted = convertWebMessage(message({
+      role: "assistant",
+      status: "complete",
+      parts: [
+        { type: "text", text: "Initial response." },
+        boundary,
+        {
+          type: "monitor-activity",
+          monitors: [{ projection: monitor(), deliveryKeys: ["monitor:one", "monitor:two"] }],
+        },
+        { type: "text", text: "First update." },
+        boundary,
+        { type: "text", text: "Second update." },
+      ],
+    }));
+
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content.map((part) => part.type)).toEqual([
+      "data-note",
+      "data-monitor-activity",
+      "data-note",
+      "text",
+    ]);
+    expect(converted.content[0]).toEqual({ type: "data-note", data: { text: "Initial response." } });
+    expect(converted.content[2]).toEqual({ type: "data-note", data: { text: "First update." } });
+    expect(converted.content[3]).toEqual({ type: "text", text: "Second update." });
+  });
+
+  it("collapses legacy Monitor steering rows and uses context usage as their response boundary", () => {
+    const converted = convertWebMessage(message({
+      role: "assistant",
+      status: "cancelled",
+      parts: [
+        { type: "text", text: "First update." },
+        {
+          type: "tool-call",
+          toolCallId: "live-input:monitor:first",
+          toolName: "Steered: Monitor update",
+          status: "complete",
+        },
+        {
+          type: "telemetry",
+          event: "runtime_telemetry",
+          data: { type: "runtime_telemetry", kind: "context_usage" },
+        },
+        { type: "text", text: "Second update." },
+        {
+          type: "tool-call",
+          toolCallId: "live-input:monitor:second",
+          toolName: "Steered: Monitor update",
+          status: "complete",
+        },
+      ],
+    }));
+
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content).toEqual([
+      { type: "text", text: "First update." },
+      {
+        type: "data-monitor-activity",
+        data: { type: "monitor-activity", monitors: [], legacyUpdateCount: 2 },
+      },
+      { type: "text", text: "Second update." },
+    ]);
   });
 
   it("keeps text either side of a delegation apart", () => {

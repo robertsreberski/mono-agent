@@ -6,12 +6,15 @@ import { isDeepStrictEqual } from "node:util";
 
 import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
+  AGENT_LIVE_INPUT_MAX_MESSAGES,
   MAX_AGENT_REPLY_PARTS,
   classifyNotifySuppression,
   type AgentReplyPart,
+  parseMonitorProjection,
   parseProcessJobProjection,
   type AgentStreamEvent,
   type AgentStreamWireFrame,
+  type MonitorProjection,
   type ProcessJobProjection,
   type ProcessJobState,
 } from "@mono-agent/agent-contracts";
@@ -443,7 +446,7 @@ export function escapeLikeTerm(raw: string): string {
   return raw.replaceAll(/[\\%_]/gu, (character) => `\\${character}`);
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 14;
+const WEB_STORAGE_SCHEMA_VERSION = 15;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
 export const WEB_MESSAGE_PAGE_MAX = 100;
@@ -1699,7 +1702,12 @@ export class WebStore {
     readonly monitorId: string;
     readonly deliveryKey: string;
     readonly payloadSha256: string;
+    readonly monitor: MonitorProjection;
   }): MonitorWakeReservation {
+    const monitor = parseMonitorProjection(input.monitor);
+    if (monitor.monitorId !== input.monitorId) {
+      throw new WebConsoleError("invalid_notification", "The Monitor projection does not match its delivery identity.", 409);
+    }
     const thread = this.database.prepare("SELECT source_id, archived_at, trigger_kind FROM threads WHERE id = ?")
       .get(input.threadId) as unknown as {
         source_id: string;
@@ -1740,15 +1748,16 @@ export class WebStore {
     }
     this.database.prepare(`
       INSERT INTO monitor_wake_deliveries (
-        source_id, monitor_id, delivery_key, thread_id, payload_sha256,
+        source_id, monitor_id, delivery_key, thread_id, payload_sha256, projection_json,
         state, disposition, turn_id, created_at, completed_at
-      ) VALUES (?, ?, ?, ?, ?, 'accepted', NULL, NULL, ?, NULL)
+      ) VALUES (?, ?, ?, ?, ?, ?, 'accepted', NULL, NULL, ?, NULL)
     `).run(
       input.sourceId,
       input.monitorId,
       input.deliveryKey,
       input.threadId,
       input.payloadSha256,
+      JSON.stringify(monitor),
       this.now(),
     );
     return { kind: "new" };
@@ -1760,21 +1769,74 @@ export class WebStore {
     readonly deliveryKey: string;
     readonly disposition: "steered" | "follow_up";
     readonly turnId?: string;
-  }): void {
-    const result = this.database.prepare(`
-      UPDATE monitor_wake_deliveries
-      SET state = 'completed', disposition = ?, turn_id = ?, completed_at = ?
-      WHERE source_id = ? AND monitor_id = ? AND delivery_key = ? AND state = 'accepted'
-    `).run(
-      input.disposition,
-      input.turnId ?? null,
-      this.now(),
-      input.sourceId,
-      input.monitorId,
-      input.deliveryKey,
-    );
-    if (result.changes !== 1) {
-      throw new WebConsoleError("notification_reservation_lost", "The Monitor wake reservation was lost.", 409);
+  }): WebMessage | undefined {
+    let messageId: string | undefined;
+    this.transaction(() => {
+      const result = this.database.prepare(`
+        UPDATE monitor_wake_deliveries
+        SET state = 'completed', disposition = ?, turn_id = ?, completed_at = ?
+        WHERE source_id = ? AND monitor_id = ? AND delivery_key = ? AND state = 'accepted'
+      `).run(
+        input.disposition,
+        input.turnId ?? null,
+        this.now(),
+        input.sourceId,
+        input.monitorId,
+        input.deliveryKey,
+      );
+      if (result.changes !== 1) {
+        throw new WebConsoleError("notification_reservation_lost", "The Monitor wake reservation was lost.", 409);
+      }
+      if (input.turnId === undefined) return;
+      const turn = this.requireTurn(input.turnId);
+      const reservation = this.database.prepare(`
+        SELECT thread_id, projection_json FROM monitor_wake_deliveries
+        WHERE source_id = ? AND monitor_id = ? AND delivery_key = ?
+      `).get(input.sourceId, input.monitorId, input.deliveryKey) as unknown as {
+        thread_id: string | null;
+        projection_json: string | null;
+      } | undefined;
+      if (reservation?.thread_id !== turn.thread_id) {
+        throw new WebConsoleError("monitor_origin_mismatch", "The Monitor activity does not belong to this turn.", 409);
+      }
+      if (reservation.projection_json === null) return;
+      let projection: MonitorProjection;
+      try {
+        projection = parseMonitorProjection(JSON.parse(reservation.projection_json) as unknown);
+        if (projection.monitorId !== input.monitorId) throw new TypeError("Monitor identity mismatch.");
+      } catch {
+        throw new WebConsoleError("storage_corrupt", "A retained Monitor wake projection is invalid.", 500);
+      }
+      const message = this.requireMessage(turn.assistant_message_id);
+      const parts = [...message.parts];
+      if (!upsertMonitorActivity(parts, projection, input.deliveryKey)) return;
+      const now = this.now();
+      this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ? WHERE id = ?")
+        .run(serializeParts(parts), now, message.id);
+      messageId = message.id;
+    });
+    return messageId === undefined ? undefined : this.requireMessage(messageId);
+  }
+
+  /** Resolve only an exact Monitor live-input receipt belonging to this turn. */
+  private monitorWakeProjection(turnId: string, deliveryKey: string): MonitorProjection | undefined {
+    const row = this.database.prepare(`
+      SELECT deliveries.monitor_id, deliveries.projection_json
+      FROM monitor_wake_deliveries AS deliveries
+      JOIN turns ON turns.id = ? AND turns.thread_id = deliveries.thread_id
+      JOIN threads ON threads.id = turns.thread_id AND threads.source_id = deliveries.source_id
+      WHERE deliveries.delivery_key = ?
+    `).get(turnId, deliveryKey) as unknown as {
+      monitor_id: string;
+      projection_json: string | null;
+    } | undefined;
+    if (row === undefined || row.projection_json === null) return undefined;
+    try {
+      const projection = parseMonitorProjection(JSON.parse(row.projection_json) as unknown);
+      if (projection.monitorId !== row.monitor_id) throw new TypeError("Monitor identity mismatch.");
+      return projection;
+    } catch {
+      throw new WebConsoleError("storage_corrupt", "A retained Monitor wake projection is invalid.", 500);
     }
   }
 
@@ -2810,7 +2872,7 @@ export class WebStore {
       } else if (frame.kind === "replace") {
         replaceWholeText(parts, frame.text);
       } else if (frame.kind === "event") {
-        applyEvent(parts, frame.event);
+        applyEvent(parts, frame.event, (deliveryKey) => this.monitorWakeProjection(turnId, deliveryKey));
         if (frame.event.type === "runtime_telemetry" && frame.event.kind === "run_config") {
           if (typeof frame.event.data?.model === "string") actualModel = frame.event.data.model;
           if (typeof frame.event.data?.effort === "string") actualEffort = frame.event.data.effort;
@@ -3440,6 +3502,7 @@ export class WebStore {
         delivery_key TEXT NOT NULL,
         thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL,
         payload_sha256 TEXT NOT NULL,
+        projection_json TEXT,
         state TEXT NOT NULL CHECK (state IN ('accepted', 'completed')),
         disposition TEXT CHECK (disposition IN ('steered', 'follow_up')),
         turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
@@ -3633,6 +3696,13 @@ export class WebStore {
         // with ON DELETE CASCADE. That erased the tombstone and allowed a
         // delivery key to name different content after thread deletion.
         if (versionRow.user_version === 13) this.migrateMonitorWakeDeliveries();
+        if (versionRow.user_version < 15) {
+          const columns = new Set((this.database.prepare("PRAGMA table_info(monitor_wake_deliveries)").all() as Array<{ name: string }>)
+            .map((column) => column.name));
+          if (!columns.has("projection_json")) {
+            this.database.exec("ALTER TABLE monitor_wake_deliveries ADD COLUMN projection_json TEXT");
+          }
+        }
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
       } catch (error) {
         if (this.database.isTransaction) this.database.exec("ROLLBACK");
@@ -3654,6 +3724,7 @@ export class WebStore {
         delivery_key TEXT NOT NULL,
         thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL,
         payload_sha256 TEXT NOT NULL,
+        projection_json TEXT,
         state TEXT NOT NULL CHECK (state IN ('accepted', 'completed')),
         disposition TEXT CHECK (disposition IN ('steered', 'follow_up')),
         turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
@@ -3662,10 +3733,10 @@ export class WebStore {
         PRIMARY KEY (source_id, delivery_key)
       );
       INSERT INTO monitor_wake_deliveries_v14 (
-        source_id, monitor_id, delivery_key, thread_id, payload_sha256,
+        source_id, monitor_id, delivery_key, thread_id, payload_sha256, projection_json,
         state, disposition, turn_id, created_at, completed_at
       ) SELECT
-        source_id, monitor_id, delivery_key, thread_id, payload_sha256,
+        source_id, monitor_id, delivery_key, thread_id, payload_sha256, NULL,
         state, disposition, turn_id, created_at, completed_at
       FROM monitor_wake_deliveries;
       DROP TABLE monitor_wake_deliveries;
@@ -3875,6 +3946,19 @@ export class WebStore {
         parseParts(message.parts_json);
       } catch {
         throw new WebConsoleError("storage_corrupt", `Message ${message.id} contains invalid persisted parts.`, 500);
+      }
+    }
+    const monitorProjections = this.database.prepare(`
+      SELECT monitor_id, projection_json
+      FROM monitor_wake_deliveries
+      WHERE projection_json IS NOT NULL
+    `).all() as unknown as Array<{ monitor_id: string; projection_json: string }>;
+    for (const row of monitorProjections) {
+      try {
+        const projection = parseMonitorProjection(JSON.parse(row.projection_json) as unknown);
+        if (projection.monitorId !== row.monitor_id) throw new TypeError("Monitor identity mismatch.");
+      } catch {
+        throw new WebConsoleError("storage_corrupt", "A retained Monitor wake projection is invalid.", 500);
       }
     }
   }
@@ -4854,12 +4938,35 @@ export function toWebAttachment(attachment: StoredAttachment): WebAttachment {
   };
 }
 
-function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
+type MonitorWakeProjectionResolver = (deliveryKey: string) => MonitorProjection | undefined;
+
+function appliedMonitorWake(
+  event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
+  resolveMonitorWake: MonitorWakeProjectionResolver | undefined,
+): { readonly deliveryKey: string; readonly projection: MonitorProjection } | undefined {
+  if (resolveMonitorWake === undefined
+    || event.metadata?.liveInput !== true
+    || event.metadata?.synthetic !== true
+    || typeof event.metadata.inputId !== "string") {
+    return undefined;
+  }
+  const projection = resolveMonitorWake(event.metadata.inputId);
+  return projection === undefined
+    ? undefined
+    : { deliveryKey: event.metadata.inputId, projection };
+}
+
+function applyEvent(
+  parts: WebMessagePart[],
+  event: AgentStreamEvent,
+  resolveMonitorWake?: MonitorWakeProjectionResolver,
+): void {
   if (event.type === "assistant_thought") {
     appendTextPart(parts, "reasoning", event.text);
     return;
   }
   if (event.type === "tool_call_started") {
+    if (appliedMonitorWake(event, resolveMonitorWake) !== undefined) return;
     const historyUpdate = canonicalEventHistoryUpdate(event.history);
     const subagent = subagentOf(event);
     if (subagent !== undefined) {
@@ -4901,6 +5008,11 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
     return;
   }
   if (event.type === "tool_call_completed") {
+    const monitorWake = appliedMonitorWake(event, resolveMonitorWake);
+    if (monitorWake !== undefined) {
+      upsertMonitorActivity(parts, monitorWake.projection, monitorWake.deliveryKey);
+      return;
+    }
     const status = event.isError === true ? "failed" : "complete";
     const historyUpdate = canonicalEventHistoryUpdate(event.history);
     const executionMs = canonicalExecutionMs(event.executionMs);
@@ -4960,6 +5072,38 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
     return;
   }
   parts.push({ type: "telemetry", event: event.type, data: event });
+}
+
+type MonitorActivityPart = Extract<WebMessagePart, { readonly type: "monitor-activity" }>;
+
+function upsertMonitorActivity(
+  parts: WebMessagePart[],
+  projection: MonitorProjection,
+  deliveryKey: string,
+): boolean {
+  const index = parts.findIndex((part) => part.type === "monitor-activity");
+  const previous = index < 0 ? undefined : parts[index] as MonitorActivityPart;
+  const monitors = previous?.monitors ?? [];
+  const monitorIndex = monitors.findIndex((entry) => entry.projection.monitorId === projection.monitorId);
+  const prior = monitorIndex < 0 ? undefined : monitors[monitorIndex];
+  // The stream receipt and the durable delivery settlement can race. Once an
+  // exact key is present, settlement is bookkeeping only: replacing its newer
+  // projection with the reservation's older snapshot would make the activity
+  // row move backwards and emit a duplicate invalidation.
+  if (prior?.deliveryKeys.includes(deliveryKey) === true) return false;
+  const deliveryKeys = prior === undefined ? [deliveryKey] : [...prior.deliveryKeys, deliveryKey];
+  const entry = { projection, deliveryKeys };
+  const nextMonitors = monitorIndex < 0
+    ? [...monitors, entry]
+    : monitors.map((value, at) => at === monitorIndex ? entry : value);
+  const next: MonitorActivityPart = { type: "monitor-activity", monitors: nextMonitors };
+  if (index < 0) {
+    parts.push(next);
+    return true;
+  }
+  if (isDeepStrictEqual(previous, next)) return false;
+  parts[index] = next;
+  return true;
 }
 
 function contextCompactionOperationId(value: unknown): string | undefined {
@@ -5158,17 +5302,23 @@ function upsertToolCall(
 }
 
 /**
- * Whether a stored part reaches the transcript at all. The console renders
- * exactly one kind of telemetry — context compaction — and drops the rest in
- * `convertPart`, so every other telemetry part is invisible between two runs of
- * prose.
+ * Whether a stored part marks a semantic boundary between streamed text runs.
+ * Most telemetry remains invisible; compaction and the content-free assistant
+ * message marker intentionally keep adjacent provider responses separate.
  */
-function isRenderedPart(part: WebMessagePart): boolean {
+function separatesStreamedText(part: WebMessagePart): boolean {
+  // A Monitor acknowledgement may arrive while the provider is still flushing
+  // the preceding message's final text delta. Its compact activity row must not
+  // split that word; the explicit message boundary below separates responses.
+  if (part.type === "monitor-activity") return false;
   if (part.type !== "telemetry") return true;
   const event = part.data;
   if (event === null || typeof event !== "object" || Array.isArray(event)) return false;
   const record = event as Record<string, unknown>;
-  return record.type === "runtime_telemetry" && record.kind === "context_compaction";
+  return record.type === "runtime_telemetry"
+    && (record.kind === "context_compaction"
+      || record.kind === "context_usage"
+      || record.kind === "assistant_message_boundary");
 }
 
 /**
@@ -5187,7 +5337,7 @@ function appendTextPart(parts: WebMessagePart[], type: "text" | "reasoning", del
   for (let index = parts.length - 1; index >= 0; index -= 1) {
     const part = parts[index];
     if (part === undefined) break;
-    if (!isRenderedPart(part)) continue;
+    if (!separatesStreamedText(part)) continue;
     if (part.type !== type) break;
     parts[index] = { type, text: `${part.text}${delta}` };
     return;
@@ -5626,6 +5776,9 @@ function parseParts(value: string): WebMessagePart[] {
   if (!Array.isArray(parts) || !parts.every(isWebMessagePart)) {
     throw new WebConsoleError("storage_corrupt", "Persisted message parts have an invalid shape.", 500);
   }
+  if (parts.filter((part) => part.type === "monitor-activity").length > 1) {
+    throw new WebConsoleError("storage_corrupt", "Persisted Monitor activity is duplicated.", 500);
+  }
   quoteFromParts(parts);
   return parts;
 }
@@ -5882,6 +6035,48 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
     } catch {
       return false;
     }
+  }
+  if (part.type === "monitor-activity") {
+    if (!hasOnlyKeys(part, new Set(["type", "monitors"]))
+      || !Array.isArray(part.monitors)
+      || part.monitors.length === 0
+      || part.monitors.length > AGENT_LIVE_INPUT_MAX_MESSAGES) {
+      return false;
+    }
+    const monitorIds = new Set<string>();
+    let deliveryCount = 0;
+    for (const raw of part.monitors) {
+      if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
+      const entry = raw as Record<string, unknown>;
+      if (!hasOnlyKeys(entry, new Set(["projection", "deliveryKeys"])) || !Array.isArray(entry.deliveryKeys)) {
+        return false;
+      }
+      let projection: MonitorProjection;
+      try {
+        projection = parseMonitorProjection(entry.projection);
+      } catch {
+        return false;
+      }
+      if (monitorIds.has(projection.monitorId)
+        || entry.deliveryKeys.length === 0
+        || entry.deliveryKeys.length > AGENT_LIVE_INPUT_MAX_MESSAGES) {
+        return false;
+      }
+      monitorIds.add(projection.monitorId);
+      const keys = new Set<string>();
+      for (const key of entry.deliveryKeys) {
+        if (typeof key !== "string"
+          || key.length === 0
+          || key.length > 1_024
+          || /[\u0000-\u001f\u007f]/u.test(key)
+          || keys.has(key)) {
+          return false;
+        }
+        keys.add(key);
+      }
+      deliveryCount += entry.deliveryKeys.length;
+    }
+    return deliveryCount <= AGENT_LIVE_INPUT_MAX_MESSAGES;
   }
   if (part.type === "telemetry") return typeof part.event === "string";
   if (part.type === "error") return typeof part.message === "string" && (part.code === undefined || typeof part.code === "string");
