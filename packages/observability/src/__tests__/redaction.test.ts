@@ -82,6 +82,19 @@ describe("redactJsonValue", () => {
     });
   });
 
+  it("keeps only the closed numeric token-usage envelope visible", () => {
+    const usage = { input: 100, output: 20, cacheRead: 8, cacheCreation: 2, total: 130, reasoning: 4 };
+    expect(redactJsonValue({ tokens: usage })).toEqual({ tokens: usage });
+    expect(redactJsonValue({ tokens: { input_tokens: 100, cache_write_tokens: 2, totalTokens: 102 } }))
+      .toEqual({ tokens: { input_tokens: 100, cache_write_tokens: 2, totalTokens: 102 } });
+    expect(redactJsonValue({ tokens: { input: 100, providerToken: "secret" } }))
+      .toEqual({ tokens: "[redacted]" });
+    expect(redactJsonValue({ tokens: { input: 100, unknown: 2 } }))
+      .toEqual({ tokens: "[redacted]" });
+    expect(redactJsonValue({ tokens: { input: -1 } }))
+      .toEqual({ tokens: "[redacted]" });
+  });
+
   it("keeps generic key and URL fields visible while redacting only credential-bearing compound keys", () => {
     const safe = {
       PUBLIC_KEY: "public-material",

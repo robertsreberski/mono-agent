@@ -124,6 +124,24 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
           tokens: contextUsage,
         });
       }
+      const hasVisibleContent = Array.isArray(event.message?.content)
+        && event.message.content.some((block) => block
+          && typeof block === "object"
+          && ((block.type === "text"
+            && typeof block.text === "string"
+            && block.text.length > 0)
+            || (block.type === "thinking"
+              && ((typeof block.thinking === "string" && block.thinking.length > 0)
+                || (typeof block.text === "string" && block.text.length > 0)))));
+      if (hasVisibleContent) {
+        const messageId = typeof event.message?.id === "string" && event.message.id.trim().length > 0
+          ? event.message.id
+          : undefined;
+        onEvent({
+          type: "assistant_message_boundary",
+          ...(messageId === undefined ? {} : { messageId }),
+        });
+      }
     } else if (event.type === "tool_execution_start") {
       if (event.toolName) runState.lastToolName = event.toolName;
       if (event.toolCallId) runState.toolStartTimes.set(event.toolCallId, Date.now());

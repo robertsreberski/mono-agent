@@ -169,6 +169,87 @@ describe("AgentHarness", () => {
     ]);
   });
 
+  it("excludes a Monitor wake while preserving a ProcessJob wake in history and memory", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const memoryTurns: MemoryCompletedTurn[] = [];
+    const memory: MemoryStore = {
+      load: async () => undefined,
+      appendHostSummary: async (conversationId) => ({ conversationId, source: "unused", bytesWritten: 0 }),
+      persistCompletedTurn: async (turn) => {
+        memoryTurns.push(turn);
+        return {
+          id: "memory-host-wake",
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          source: "test",
+          bytesWritten: 0,
+          admissionStatus: "admitted",
+        };
+      },
+    };
+    let runtimeStarted!: () => void;
+    const started = new Promise<void>((resolve) => { runtimeStarted = resolve; });
+    const fake = createFakeRuntime(async (_prompt, options) => {
+      runtimeStarted();
+      const iterator = options.liveInput?.[Symbol.asyncIterator]();
+      if (iterator === undefined) throw new Error("Monitor wake mailbox was not available.");
+      const monitorWake = await iterator.next();
+      if (monitorWake.done !== false) throw new Error("Monitor wake was not delivered.");
+      monitorWake.value.acknowledge?.();
+      const processJobWake = await iterator.next();
+      if (processJobWake.done !== false) throw new Error("ProcessJob wake was not delivered.");
+      processJobWake.value.acknowledge?.();
+      return { text: "Wake handled" };
+    });
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      historyStore,
+      memory,
+      memoryWriteMode: "capture",
+      createRunId: () => "run-host-wake",
+    });
+    const running = harness.run({
+      conversationId: "web:thread",
+      userMessage: "Initial request",
+      abortSignal: new AbortController().signal,
+    });
+    await started;
+    const offered = harness.offerLiveInput?.({
+      conversationId: "web:thread",
+      id: "monitor:one:1",
+      text: "A monitor you started says credential-shaped output",
+      receivedAt: "2026-09-04T09:00:00.000Z",
+      deliveryKey: "monitor:one:1",
+    });
+    expect(offered?.status).toBe("accepted");
+    const processJob = harness.offerLiveInput?.({
+      conversationId: "web:thread",
+      id: "process-job:one:1",
+      text: "A ProcessJob finished successfully",
+      receivedAt: "2026-09-04T09:00:01.000Z",
+      deliveryKey: "process-job:one:1",
+    });
+    expect(processJob?.status).toBe("accepted");
+    await expect(running).resolves.toMatchObject({ text: "Wake handled" });
+    expect(await historyStore.load("web:thread")).toMatchObject([
+      { role: "user", content: "Initial request" },
+      { role: "user", content: "A ProcessJob finished successfully" },
+      { role: "assistant", content: "Wake handled" },
+    ]);
+    expect(memoryTurns).toHaveLength(1);
+    expect(memoryTurns[0]?.summary).toContain("User: Initial request");
+    expect(memoryTurns[0]?.summary).toContain("A ProcessJob finished successfully");
+    expect(memoryTurns[0]?.summary).not.toContain("monitor you started");
+    expect(memoryTurns[0]?.captureText).toContain("A ProcessJob finished successfully");
+    expect(memoryTurns[0]?.captureText).not.toContain("monitor you started");
+  });
+
   it("preserves an explicit request runtime live-input source", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

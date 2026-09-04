@@ -35,6 +35,20 @@ describe("live input mailbox", () => {
     ]);
   });
 
+  it("retains a host delivery key only as applied-input metadata", async () => {
+    const mailbox = createLiveInputMailbox("run-host");
+    const offered = mailbox.offer({ ...request("host", "Private wake"), deliveryKey: "monitor:one:1" });
+    expect(offered.status).toBe("accepted");
+    const item = await mailbox[Symbol.asyncIterator]().next();
+    item.value?.acknowledge?.();
+    expect(mailbox.applied()).toEqual([{
+      id: "host",
+      text: "Private wake",
+      receivedAt: "2026-07-21T10:00:00.000Z",
+      deliveryKey: "monitor:one:1",
+    }]);
+  });
+
   it("replays every message to a replacement provider iterator without duplicating settlement", async () => {
     const mailbox = createLiveInputMailbox("run-2");
     const offered = mailbox.offer(request("same", "Steer this"));
