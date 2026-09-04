@@ -124,6 +124,31 @@ describe("AgentHarness proactive session isolation", () => {
     expect(fake.calls[1]?.options.sessionId).toBe("ps-shared");
   });
 
+  it("keeps a monitor wake on the warm conversation session despite isolateProactive", async () => {
+    // A monitor wake arrives as an ordinary channel turn: it carries the
+    // channel's own metadata and no `metadata.cron`, so `isProactiveIsolated`
+    // does not fire. If that ever changed, every event turn would start cold
+    // and lose the very conversation it was raised to continue.
+    const identityPath = await identityFixture();
+    const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-warm" }));
+    const harness = createAgentHarness({
+      identityPath, runtime: fake.runtime, model, session: isolatingSession,
+    });
+
+    await harness.run(request("telegram:morgan", "start a monitor"));
+    expect(fake.calls[0]?.options.sessionKeepAlive).toBe(true);
+
+    const monitorWake = {
+      conversationId: "telegram:morgan",
+      userMessage: "A monitor you started in this conversation emitted new events.",
+      abortSignal: new AbortController().signal,
+      metadata: { telegram: { chat: { id: 1 }, message: { id: 0 }, updateId: 0 } },
+    };
+    const response = await harness.run(monitorWake);
+    expect(fake.calls[1]?.options.sessionId).toBe("ps-warm");
+    expect(response.metadata.summary).not.toMatchObject({ isolated: true });
+  });
+
   it("with isolateProactive on, an interactive (non-cron) turn is byte-for-byte unchanged", async () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });

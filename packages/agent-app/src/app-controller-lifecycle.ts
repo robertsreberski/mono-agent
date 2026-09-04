@@ -14,6 +14,7 @@ export interface LifecycleControllerPort {
   stopChannel(id: ChannelId, reason: string): Promise<void>;
   stopContinuationService(): Promise<void>;
   stopProcessJobsService(): Promise<void>;
+  stopMonitorsService(): Promise<void>;
   stopInteractionBridge(): Promise<void>;
   stopMemoryRituals(): void;
   stopArtifactRetentionScheduler(): void;
@@ -26,6 +27,9 @@ export interface LifecycleControllerPort {
   prepareProcessJobsProtection(reason: string): Promise<void>;
   startProcessJobsIfConfigured(reason: string): Promise<void>;
   activateProcessJobWakes(): Promise<void>;
+  prepareMonitors(): Promise<void>;
+  startMonitorsIfConfigured(): Promise<void>;
+  activateMonitorWakes(): Promise<void>;
   startChannelIfConfigured(id: ChannelId, reason: string): Promise<ChannelStatus>;
   startMemoryRitualsIfConfigured(reason: string): Promise<void>;
   refreshMemoryHealthAfterLifecycle(reason: string, beforePublish?: () => void): Promise<void>;
@@ -52,7 +56,11 @@ export async function applyConfigChange(controller: LifecycleControllerPort, rea
     // Publish the durable A+B protection generation before stopping admission.
     // Store/secret creation remains behind the post-drain mutation gate below.
     await controller.prepareProcessJobsProtection(`${reason}:prepare`);
+    // Monitors own live watcher process groups, so they are torn down before
+    // the process-job store that owns their shared protected state root.
+    await controller.stopMonitorsService();
     await controller.stopProcessJobsService();
+    await controller.prepareMonitors();
     await Promise.all(controller.drivers.map(
       (driver) => controller.stopChannel(driver.id, `${reason}:reload`),
     ));
@@ -70,8 +78,10 @@ export async function applyConfigChange(controller: LifecycleControllerPort, rea
     await controller.startExporters(reason);
     await controller.startContinuationServiceIfConfigured(reason);
     await controller.startProcessJobsIfConfigured(reason);
+    await controller.startMonitorsIfConfigured();
     await Promise.all(controller.drivers.map((driver) => controller.startChannelIfConfigured(driver.id, reason)));
     await controller.activateProcessJobWakes();
+    await controller.activateMonitorWakes();
     await controller.startMemoryRitualsIfConfigured(reason);
     await controller.refreshMemoryHealthAfterLifecycle(`${reason}:complete`);
     return controller.applyResult();
@@ -126,6 +136,7 @@ export async function stop(controller: LifecycleControllerPort): Promise<void> {
   // Stop the periodic audit before the first teardown await. Already-entered
   // computation is generation-fenced and must never delay shutdown.
   controller.invalidateMemoryHealthRefresh();
+  await controller.stopMonitorsService();
   await controller.stopProcessJobsService();
   await Promise.all(controller.drivers.map((driver) => controller.stopChannel(driver.id, "stop")));
   await controller.stopContinuationService();

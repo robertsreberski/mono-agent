@@ -63,6 +63,8 @@ describe("app channel capability composition", () => {
         stopped: false,
         traceabilityStatusValue: {} as never,
         processJobsService,
+        monitorsService: undefined,
+        monitorsStateDir: undefined,
         processJobsDegradation: undefined,
         setStatus(channelId, status) {
           statuses.set(channelId, status);

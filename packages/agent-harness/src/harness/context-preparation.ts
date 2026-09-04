@@ -57,6 +57,10 @@ export async function prepareHarnessContext(
           request,
           runId: contextOptions.turnId,
         }) === true,
+        monitors: options.monitorsAvailable?.({
+          request,
+          runId: contextOptions.turnId,
+        }) === true,
       }),
       ...(options.soulPath === undefined ? {} : { soulPath: options.soulPath }),
       ...(history.length === 0 || contextOptions.historyMode !== "prompt" ? {} : { history }),

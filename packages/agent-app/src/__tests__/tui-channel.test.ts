@@ -1091,7 +1091,7 @@ describe("tui channel driver — process jobs", () => {
       cancel: async () => { throw new Error("must not run"); },
     };
 
-    expect(startAppOwnedTuiChannel(impostor, baseInput(), processJobs)).toBeUndefined();
+    expect(startAppOwnedTuiChannel(impostor, baseInput(), processJobs, undefined)).toBeUndefined();
     expect(start).not.toHaveBeenCalled();
   });
 
@@ -1127,7 +1127,7 @@ describe("tui channel driver — process jobs", () => {
       ...baseInput(),
       responder: { respond, deliverVerbatim },
       sourceId: "agent-one",
-    }, processJobs);
+    }, processJobs, undefined);
     if (start === undefined) throw new Error("expected the app-owned TUI start path");
     const running = await start;
     expect(captured?.processJobs).toBe(processJobs);
@@ -1318,7 +1318,7 @@ async function runningWebChannel(
     list: async () => [],
     get: async () => undefined,
     cancel: async () => { throw new Error("not used"); },
-  });
+  }, undefined);
   if (start === undefined) throw new Error("expected the app-owned TUI start path");
   return await start;
 }
