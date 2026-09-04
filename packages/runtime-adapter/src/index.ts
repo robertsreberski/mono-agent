@@ -37,6 +37,17 @@ export {
 } from "./runtime-helpers.js";
 export { parseMcpServers } from "./mcp-servers.js";
 export type { NormalizedMcpServer, NormalizedMcpTransport } from "./mcp-servers.js";
+export { bridgeMonitorsController } from "./monitors.js";
+export type {
+  MonitorControllerLimits,
+  MonitorLaunchOptions,
+  MonitorProcessHandle,
+  MonitorProcessResult,
+  MonitorStartRequest,
+  MonitorStartResult,
+  MonitorStopResult,
+  MonitorsController,
+} from "./monitors.js";
 export { bridgeProcessJobsController } from "./process-jobs.js";
 export type {
   ProcessJobLaunchOptions,

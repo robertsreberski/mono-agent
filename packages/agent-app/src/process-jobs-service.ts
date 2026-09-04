@@ -26,7 +26,13 @@ import {
   attestProcessJobsRootRegistration,
   type ProcessJobsRootRegistrationProof,
 } from "./process-jobs-root-registry.js";
-import { isSensitiveEnvironmentName, redactSecrets } from "./redact-secrets.js";
+import {
+  processDescriptionSecrets,
+  processOutputSecrets,
+  redactProcessOutput as redactOutput,
+} from "./process-output-redaction.js";
+import { redactSecrets } from "./redact-secrets.js";
+import { cleanupPersistedSandboxSettings } from "./sandbox-settings-cleanup.js";
 import {
   currentProcessIncarnation,
   isSameProcessIncarnation,
@@ -2031,56 +2037,6 @@ function neutralizeProcessJobWakeFence(value: string): string {
     .replaceAll("</untrusted_process_job_result>", "[/untrusted_process_job_result>");
 }
 
-function redactOutput(text: string, secrets: readonly string[], truncatedAtEnd = false): string {
-  const orderedSecrets = [...new Set(secrets)]
-    .filter((secret) => secret.length > 0)
-    .sort((left, right) => right.length - left.length);
-  let redacted = text
-    .replace(/\bBearer\s+[^\s,;]+/giu, "Bearer [REDACTED]")
-    .replace(/\b(api[ _-]?key|(?:access|auth|refresh|session)[ _-]?token|authorization|client[ _-]?secret|password|secret|token)(["']?\s*[=:]\s*["']?)(?!\[REDACTED\])([^\s,;}\]"']+)/giu,
-      (_match, label: string, separator: string) => `${label}${separator}[REDACTED]`)
-    .replace(/\b([a-z][a-z0-9+.-]{0,63}:\/\/)([^/\s]+)@/giu, "$1[REDACTED]@");
-  // Never run later replacements across a marker produced by an earlier
-  // replacement. Short explicit environment values such as "R" or "E" must
-  // not recursively amplify "[REDACTED]" before the byte bound is applied.
-  // If the ordinary marker itself contains a secret, omission is the only
-  // literal representation that cannot reproduce that value.
-  const literalMarker = orderedSecrets.some((secret) => "[REDACTED]".includes(secret))
-    ? ""
-    : "[REDACTED]";
-  redacted = replaceSecretLiterals(redacted, orderedSecrets, literalMarker);
-  if (truncatedAtEnd) {
-    for (const secret of orderedSecrets) {
-      const maximumPrefix = Math.min(secret.length - 1, redacted.length);
-      for (let length = maximumPrefix; length > 0; length -= 1) {
-        if (redacted.endsWith(secret.slice(0, length))) {
-          redacted = `${redacted.slice(0, -length)}${literalMarker}`;
-          break;
-        }
-      }
-    }
-  }
-  return redacted;
-}
-
-function replaceSecretLiterals(text: string, secrets: readonly string[], marker: string): string {
-  if (secrets.length === 0) return text;
-  // Reserve one UTF-16 code unit absent from both source text and every secret.
-  // Sequential native literal replacements can then use that sentinel without
-  // letting later rules rescan or amplify earlier redaction markers.
-  const used = new Uint8Array(65_536);
-  for (let index = 0; index < text.length; index += 1) used[text.charCodeAt(index)] = 1;
-  for (const secret of secrets) {
-    for (let index = 0; index < secret.length; index += 1) used[secret.charCodeAt(index)] = 1;
-  }
-  const sentinelCode = used.indexOf(0);
-  if (sentinelCode < 0) return marker;
-  const sentinel = String.fromCharCode(sentinelCode);
-  let redacted = text;
-  for (const secret of secrets) redacted = redacted.replaceAll(secret, sentinel);
-  return redacted.replaceAll(sentinel, marker);
-}
-
 function boundOutput(text: string, maxBytes: number): { readonly text: string; readonly truncated: boolean } {
   const bytes = Buffer.from(text, "utf8");
   if (bytes.byteLength <= maxBytes) return { text, truncated: false };
@@ -2127,46 +2083,6 @@ function effectiveEnvironmentKeys(overrides: Readonly<Record<string, string | un
     totalBytes += bytes;
   }
   return bounded;
-}
-
-function processOutputSecrets(
-  overrides: Readonly<Record<string, string | undefined>> | undefined,
-): readonly string[] {
-  const effective = new Map(Object.entries(process.env));
-  const explicitNames = new Set(Object.keys(overrides ?? {}));
-  for (const [name, value] of Object.entries(overrides ?? {})) {
-    if (value === undefined) effective.delete(name);
-    else effective.set(name, value);
-  }
-  const values: string[] = [];
-  for (const [name, value] of effective) {
-    if (typeof value === "string"
-      && value.length > 0
-      && (explicitNames.has(name) || value.length >= 4 || isSensitiveEnvironmentName(name))) {
-      values.push(value);
-    }
-  }
-  return [...new Set(values)].sort((left, right) => right.length - left.length);
-}
-
-function processDescriptionSecrets(
-  overrides: Readonly<Record<string, string | undefined>> | undefined,
-): readonly string[] {
-  const effective = new Map(Object.entries(process.env));
-  const explicitNames = new Set(Object.keys(overrides ?? {}));
-  for (const [name, value] of Object.entries(overrides ?? {})) {
-    if (value === undefined) effective.delete(name);
-    else effective.set(name, value);
-  }
-  const values: string[] = [];
-  for (const [name, value] of effective) {
-    if (typeof value === "string"
-      && value.length > 0
-      && (explicitNames.has(name) || isSensitiveEnvironmentName(name))) {
-      values.push(value);
-    }
-  }
-  return [...new Set(values)].sort((left, right) => right.length - left.length);
 }
 
 function isWakeCapableOrigin(origin: ProcessJobOriginRecord): boolean {
@@ -2238,52 +2154,6 @@ async function cancelMalformedHandle(handle: ProcessJobProcessHandle | undefined
   if (handle === undefined || handle === null || typeof handle !== "object") return;
   try { if (typeof handle.cancel === "function") handle.cancel(); } catch { /* best-effort kernel closure */ }
   try { await handle.completion; } catch { /* rejection is represented by the launch failure */ }
-}
-
-async function cleanupPersistedSandboxSettings(path: string | null): Promise<boolean> {
-  if (path === null) return true;
-  const directory = dirname(path);
-  if (resolve(path) !== path
-    || basename(path) !== "settings.json"
-    || !/^mono-agent-srt-settings-[A-Za-z0-9_-]{6,}$/u.test(basename(directory))) {
-    return false;
-  }
-  try {
-    const canonicalDirectory = await realpath(directory);
-    if (canonicalDirectory !== directory || !await isAllowedSandboxSettingsDirectory(canonicalDirectory)) return false;
-    const directoryInfo = await lstat(directory);
-    if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) return false;
-    if (typeof process.getuid === "function" && directoryInfo.uid !== process.getuid()) return false;
-    if (process.platform !== "win32" && (directoryInfo.mode & 0o077) !== 0) return false;
-    const entries = await readdir(directory, { withFileTypes: true });
-    if (entries.some((entry) => entry.name !== "settings.json")) return false;
-    const settings = entries.find((entry) => entry.name === "settings.json");
-    if (settings !== undefined) {
-      const info = await lstat(path);
-      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) return false;
-      if (typeof process.getuid === "function" && info.uid !== process.getuid()) return false;
-      if (process.platform !== "win32" && (info.mode & 0o077) !== 0) return false;
-    }
-    await rm(directory, { recursive: true, force: true });
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
-    try {
-      await lstat(directory);
-      return false;
-    } catch (directoryError) {
-      return (directoryError as NodeJS.ErrnoException).code === "ENOENT";
-    }
-  }
-}
-
-async function isAllowedSandboxSettingsDirectory(directory: string): Promise<boolean> {
-  for (const base of [tmpdir(), resolve(homedir(), ".cache")]) {
-    try {
-      if (dirname(directory) === await realpath(base)) return true;
-    } catch { /* unavailable fallback root */ }
-  }
-  return false;
 }
 
 function safeProcessError(_error: unknown, fallback: string, _secrets: readonly string[]): string {

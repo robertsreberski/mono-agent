@@ -4,6 +4,7 @@ import type {
   AgentToolEnvironment,
 } from "@mono-agent/agent-contracts";
 import type { PreparedSandboxCommand, SandboxCommandSpec, SandboxPolicy } from "./sandbox.js";
+import type { MonitorsController } from "./monitors.js";
 import type { ProcessJobsController } from "./process-jobs.js";
 
 export interface MonoRuntimeSandboxEngine {
@@ -378,6 +379,8 @@ export interface RuntimeRunOptions {
   readonly toolEnvironment?: AgentToolEnvironment;
   /** Host-only Pi-native process-job controller; never model/provider visible. */
   readonly processJobs?: ProcessJobsController;
+  /** Host-only Pi-native monitor controller; never model/provider visible. */
+  readonly monitors?: MonitorsController;
   readonly onEvent?: (event: RuntimeEventLike) => void;
   /** Host-owned, incremental durable tool-lifecycle writer for this run. */
   readonly toolLifecycleSink?: RuntimeToolLifecycleSink;

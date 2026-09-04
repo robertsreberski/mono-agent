@@ -90,6 +90,19 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `memory.supermemory.exposeMcpServer` | `boolean` | `MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER` | false | `true` | Configures supermemory.exposeMcpServer for the memory section. |
 | `memory.supermemory.timeoutMs` | `integer` | `MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS` | 10000 | `10000` | Configures supermemory.timeoutMs for the memory section. |
 | `memory.writeMode` | `string` | `MONO_AGENT_MEMORY_WRITE_MODE` | disabled | `disabled` | Configures writeMode for the memory section. |
+| `monitors.coalesceMs` | `integer` | `--` | 200 | `200` | Window over which stdout lines are batched into one event wake (compiled cap 5000). |
+| `monitors.enabled` | `boolean` | `--` | false | `true` | Opt in to the Pi-native Monitor/MonitorStop tools. Monitors are a streaming class of the process-job substrate and additionally require processJobs.enabled; wake delivery is Telegram and Slack only. |
+| `monitors.maxActive` | `integer` | `--` | 8 | `8` | Maximum simultaneously running monitors across every conversation, counted independently of processJobs.maxConcurrent (compiled cap 32). |
+| `monitors.maxActivePerConversation` | `integer` | `--` | 2 | `3` | Maximum simultaneously running monitors for one conversation (compiled cap 8). |
+| `monitors.maxBatchBytes` | `integer` | `--` | 65536 | `65536` | Maximum bytes carried by one event batch; older lines are dropped and counted (compiled cap 1 MiB). |
+| `monitors.maxBatchLines` | `integer` | `--` | 200 | `200` | Maximum lines carried by one event batch; older lines are dropped and counted (compiled cap 2000). |
+| `monitors.maxChainDepth` | `integer` | `--` | 4 | `4` | Maximum host-owned monitor wake chain depth (compiled cap 8). |
+| `monitors.maxLineBytes` | `integer` | `--` | 4096 | `4096` | Per-event line clamp applied after redaction (compiled cap 64 KiB). |
+| `monitors.maxRuntimeMs` | `integer` | `--` | 3600000 | `3600000` | Ceiling for a timed monitor; Monitor.timeout_ms may lower it, never raise it (compiled cap 1 hour). |
+| `monitors.persistentMaxRuntimeMs` | `integer` | `--` | 86400000 | `43200000` | Ceiling for a persistent monitor, which ignores timeout_ms (compiled cap 24 hours). |
+| `monitors.rateLimit.maxLinesPerWindow` | `integer` | `--` | 200 | `200` | Lines per window above which a window counts as over budget (compiled cap 20000). |
+| `monitors.rateLimit.sustainedWindows` | `integer` | `--` | 5 | `5` | Consecutive over-budget windows that stop a monitor with rate_limited and one terminal wake (compiled cap 60). |
+| `monitors.rateLimit.windowMs` | `integer` | `--` | 1000 | `1000` | Length of one rate-limit accounting window (compiled cap 60000). |
 | `observability.exporters` | `array` | `MONO_AGENT_OBSERVABILITY_EXPORTERS` | unset | `[]` | Configures exporters for the observability section. |
 | `openaiApi.allowNonLoopback` | `boolean` | `MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK` | false | `true` | Configures allowNonLoopback for the openaiApi section. |
 | `openaiApi.apiKey` | `string` | `MONO_AGENT_OPENAI_API_KEY` | unset | `env:MONO_AGENT_OPENAI_API_KEY` | Secret value for openaiApi.apiKey; prefer the env override. |

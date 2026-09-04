@@ -15,11 +15,14 @@ import {
   createChannelUserCancelReason,
   decodeAgentAttachmentText,
   isAgentResponseCancelledError,
+  parseMonitorProjection,
+  parseMonitorProjections,
   parseProcessJobProjection,
   parseProcessJobProjections,
   serializeAgentStreamFrame,
   type AgentAttachment,
   type AgentMessageStream,
+  type MonitorOperator,
   type AgentReplyAttachmentPart,
   type AgentReplyPart,
   type AgentLiveInputOffer,
@@ -232,6 +235,10 @@ export interface TuiAdapterOptions {
   readonly processJobs?: ProcessJobOperator;
   /** Independent owner bearer for process-job routes. Required with processJobs. */
   readonly processJobsBearer?: string;
+  /** Owner-authorized monitor control plane; omitted when unavailable. */
+  readonly monitors?: MonitorOperator;
+  /** Independent owner bearer for monitor routes. Required with monitors. */
+  readonly monitorsBearer?: string;
 }
 
 export interface TuiAdapterStartResult {
@@ -287,6 +294,13 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       "processJobs and processJobsBearer must be configured together.",
     );
   }
+  const monitorsBearer = normalizeOptionalString(options.monitorsBearer);
+  if ((options.monitors === undefined) !== (monitorsBearer === undefined)) {
+    throw new TuiAdapterError(
+      "invalid_config",
+      "monitors and monitorsBearer must be configured together.",
+    );
+  }
   if (options.requestToolEnvironment !== undefined && !isLoopbackHost(host)) {
     throw new TuiAdapterError(
       "unsafe_host",
@@ -326,6 +340,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const jobsPath = `${basePath}/v1/jobs`;
   const jobPath = `${basePath}/v1/jobs/:jobId`;
   const jobCancelPath = `${basePath}/v1/jobs/:jobId/cancel`;
+  const monitorsPath = `${basePath}/v1/monitors`;
+  const monitorPath = `${basePath}/v1/monitors/:monitorId`;
+  const monitorCancelPath = `${basePath}/v1/monitors/:monitorId/cancel`;
 
   app.get(infoPath, (req, res) => {
     if (!authorize(req, res, apiKey)) {
@@ -383,6 +400,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                     },
                   }),
             ...(options.processJobs === undefined || processJobsBearer === undefined ? {} : { jobs: true }),
+            ...(options.monitors === undefined || monitorsBearer === undefined ? {} : { monitors: true }),
             ...(options.requestToolEnvironment === undefined ? {} : { toolEnvironment: true }),
             ...(options.modelCatalog === undefined
               ? {}
@@ -489,6 +507,70 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         if (code === "process_job_not_found") {
           res.status(404).json({ error: { code, message: errorToMessage(error) } });
         } else if (code === "process_job_conflict") {
+          res.status(409).json({ error: { code, message: errorToMessage(error) } });
+        } else {
+          next(error);
+        }
+      });
+  });
+
+  app.get(monitorsPath, (req, res, next) => {
+    if (!authorize(req, res, monitorsBearer)) return;
+    if (options.monitors === undefined || monitorsBearer === undefined) {
+      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Monitors are unavailable."));
+      return;
+    }
+    void options.monitors.list()
+      .then((monitors) => {
+        res.status(200).json({ monitors: parseMonitorProjections(monitors) });
+      })
+      .catch(next);
+  });
+
+  app.get(monitorPath, (req, res, next) => {
+    if (!authorize(req, res, monitorsBearer)) return;
+    if (options.monitors === undefined || monitorsBearer === undefined) {
+      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Monitors are unavailable."));
+      return;
+    }
+    const monitorId = boundedMonitorId(req.params.monitorId);
+    if (monitorId === undefined) {
+      sendJsonError(res, 400, new TuiAdapterError("invalid_request", "A bounded monitorId is required."));
+      return;
+    }
+    void options.monitors.get(monitorId)
+      .then((monitor) => {
+        if (monitor === undefined) {
+          res.status(404).json({ error: { code: "monitor_not_found", message: "Monitor was not found." } });
+        } else {
+          res.status(200).json(parseMonitorProjection(monitor));
+        }
+      })
+      .catch(next);
+  });
+
+  app.post(monitorCancelPath, (req, res, next) => {
+    if (!authorize(req, res, monitorsBearer)) return;
+    if (options.monitors === undefined || monitorsBearer === undefined) {
+      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Monitors are unavailable."));
+      return;
+    }
+    const monitorId = boundedMonitorId(req.params.monitorId);
+    if (monitorId === undefined) {
+      sendJsonError(res, 400, new TuiAdapterError("invalid_request", "A bounded monitorId is required."));
+      return;
+    }
+    void options.monitors.cancel(monitorId)
+      .then((monitor) => {
+        res.status(200).json(parseMonitorProjection(monitor));
+      })
+      .catch((error: unknown) => {
+        const code = typeof error === "object" && error !== null
+          ? (error as { code?: unknown }).code
+          : undefined;
+        if (code === "monitor_not_found") {
+          res.status(404).json({ error: { code, message: errorToMessage(error) } });
+        } else if (code === "monitor_conflict") {
           res.status(409).json({ error: { code, message: errorToMessage(error) } });
         } else {
           next(error);
@@ -2266,4 +2348,9 @@ function normalizeBasePath(basePath: string): string {
     throw new TuiAdapterError("invalid_config", "basePath must start with '/'.");
   }
   return basePath.length === 1 ? "" : basePath.replace(/\/+$/u, "");
+}
+
+function boundedMonitorId(value: unknown): string | undefined {
+  const monitorId = normalizeOptionalString(typeof value === "string" ? value : undefined);
+  return monitorId === undefined || monitorId.length > 256 ? undefined : monitorId;
 }

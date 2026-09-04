@@ -1,4 +1,5 @@
 import type { AgentResponder } from "./index.js";
+import type { MonitorProjection } from "./monitors.js";
 import type { ProcessJobProjection } from "./process-jobs.js";
 
 /**
@@ -69,7 +70,18 @@ export interface NotifyDeliveryResult {
   readonly historyErrorCode?: string;
 }
 
-export type ProcessJobWakeDisposition = "steered" | "follow_up";
+/**
+ * How one host-originated wake actually reached the conversation: injected into
+ * the run that was already in flight, or delivered as its own follow-up turn.
+ */
+export type HostWakeDisposition = "steered" | "follow_up";
+
+/** Delivery receipt distinguishing an in-flight steer from a fallback turn. */
+export interface HostWakeDeliveryResult extends NotifyDeliveryResult {
+  readonly disposition?: HostWakeDisposition;
+}
+
+export type ProcessJobWakeDisposition = HostWakeDisposition;
 
 /** One durable background-job completion routed to its exact origin. */
 export interface ProcessJobWakeDeliveryInput {
@@ -80,8 +92,29 @@ export interface ProcessJobWakeDeliveryInput {
 }
 
 /** Delivery receipt distinguishes an in-flight steer from a fallback turn. */
-export interface ProcessJobWakeDeliveryResult extends NotifyDeliveryResult {
-  readonly disposition?: ProcessJobWakeDisposition;
+export type ProcessJobWakeDeliveryResult = HostWakeDeliveryResult;
+
+/**
+ * One coalesced batch of monitor events, or one monitor terminal transition,
+ * routed to its exact origin conversation. `text` is the fenced, untrusted
+ * envelope the host composed; the projection carries only secret-free lifecycle
+ * facts so an adapter can validate the origin without seeing event content.
+ */
+export interface MonitorWakeDeliveryInput {
+  readonly conversationId: string;
+  readonly text: string;
+  readonly deliveryKey: string;
+  readonly monitor: MonitorProjection;
+}
+
+/**
+ * Explicit monitor surface owned by an opted-in addressable conversation
+ * adapter. Routing reuses the driver's declared
+ * {@link ChannelDriver.processJobs} conversation scheme: that declaration names
+ * the channel's addressable scheme, not a job-specific capability.
+ */
+export interface RunningMonitorChannel {
+  wake(input: MonitorWakeDeliveryInput): Promise<HostWakeDeliveryResult>;
 }
 
 /**
@@ -176,6 +209,8 @@ export interface RunningChannel {
   }): Promise<NotifyDeliveryResult>;
   /** Adapter-owned durable background-job lifecycle and completion delivery. */
   readonly processJobs?: RunningProcessJobChannel;
+  /** Adapter-owned monitor event/terminal wake delivery. */
+  readonly monitors?: RunningMonitorChannel;
 }
 
 export interface ChannelAskOption {

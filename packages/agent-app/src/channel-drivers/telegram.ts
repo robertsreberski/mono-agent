@@ -142,6 +142,32 @@ export function createTelegramChannelDriver(
             return settleProcessJobWake(outcome);
           },
         },
+        monitors: {
+          wake: async ({ conversationId, text, deliveryKey, monitor }) => {
+            if (monitor.origin.channel !== "telegram"
+              || conversationId !== baseConversationId(monitor.origin.conversationId)) {
+              return {
+                delivered: false,
+                code: "monitor_origin_mismatch",
+                reason: "The monitor origin does not match the Telegram destination.",
+                retryable: false,
+              };
+            }
+            const chatId = telegramChatIdFromConversation(conversationId);
+            if (chatId === undefined
+              || (!input.config.allowAllChats && !input.config.allowedChatIds.includes(String(chatId)))) {
+              return { delivered: false, reason: "telegram chat is not in the adapter allowlist" };
+            }
+            const silent = input.config.quietHours !== undefined
+              && adapter.isWithinQuietHours(new Date(), input.config.quietHours);
+            const outcome = await result.notify(chatId, text, {
+              deliveryKey,
+              steerActive: true,
+              ...(silent ? { silent: true } : {}),
+            });
+            return settleProcessJobWake(outcome);
+          },
+        },
         notify: async (request) => {
           const { conversationId, text, verbatim, deliveryKey, processJob } = request;
           if (processJob !== undefined

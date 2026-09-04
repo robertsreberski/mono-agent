@@ -18,6 +18,13 @@ export {
   normalizeProcessTimeoutMs,
 } from "./bash.js";
 export { execToolImpl, execToolRun } from "./exec.js";
+export {
+  DEFAULT_MONITOR_TIMEOUT_MS,
+  MIN_MONITOR_TIMEOUT_MS,
+  monitorStopToolRun,
+  monitorToolRun,
+  normalizeMonitorTimeoutMs,
+} from "./monitor.js";
 export { webFetchToolImpl, performWebFetch } from "./web-fetch.js";
 export { webSearchToolImpl, performWebSearch } from "./web-search.js";
 export {

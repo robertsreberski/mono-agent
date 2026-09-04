@@ -330,6 +330,18 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "The command refuses remote endpoints and never reads job records or artifacts directly.",
     ],
   },
+  {
+    command: "monitors",
+    group: "Maintain",
+    short: "monitors list|get|cancel",
+    summary: "Inspect or cancel live monitors watching a command for a conversation.",
+    json: true,
+    signature: "mono-agent monitors [list|get <monitor-id>|cancel <monitor-id>] [--agent <label|sourceId>] [--json]",
+    lines: [
+      "Discover one running local agent and use its owner-authenticated monitor routes.",
+      "The command refuses remote endpoints and never reveals a monitor's command or event text.",
+    ],
+  },
 ];
 
 const HELP_COMMANDS_BY_KEY = new Map(HELP_COMMANDS.map((entry) => [entry.command, entry]));

@@ -436,6 +436,15 @@ export interface AgentHarnessOptions {
   readonly backgroundProcessJobsAvailable?: (
     input: { readonly request: AgentHarnessRequest; readonly runId: string },
   ) => boolean;
+  /**
+   * Whether this turn will carry the `Monitor`/`MonitorStop` tools. Answered by
+   * the same host predicate that injects the controller, for the same reason:
+   * a session block that offers a watch the model cannot start is worse than
+   * one that says nothing.
+   */
+  readonly monitorsAvailable?: (
+    input: { readonly request: AgentHarnessRequest; readonly runId: string },
+  ) => boolean;
   /** Best-effort enrichment applied only to the assistant history entry. */
   readonly turnHistoryEnricher?: AgentHarnessTurnHistoryEnricher;
   readonly toolPolicy?: ToolPolicy;

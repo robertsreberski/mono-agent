@@ -247,6 +247,29 @@ export function createSlackChannelDriver(
             ));
           },
         },
+        monitors: {
+          wake: async ({ conversationId, text, deliveryKey, monitor }) => {
+            if (monitor.origin.channel !== "slack"
+              || conversationId !== baseConversationId(monitor.origin.conversationId)) {
+              return {
+                delivered: false,
+                code: "monitor_origin_mismatch",
+                reason: "The monitor origin does not match the Slack destination.",
+                retryable: false,
+              };
+            }
+            const target = slackTargetFromConversation(conversationId);
+            if (target === undefined || !slackTargetAllowed(target.channelId, input.config)) {
+              return { delivered: false, reason: "slack channel is not in the adapter allowlist" };
+            }
+            return settleProcessJobWake(await result.adapter.notify(
+              target.channelId,
+              target.threadTs,
+              text,
+              { deliveryKey, steerActive: true },
+            ));
+          },
+        },
         notify: async (request) => {
           const { conversationId, text, verbatim, deliveryKey, processJob } = request;
           if (processJob !== undefined

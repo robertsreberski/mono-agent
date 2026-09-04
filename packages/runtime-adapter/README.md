@@ -164,6 +164,14 @@ MANAGED_SRT_TREE_SHA256
 MODEL_REFERENCE_ECHO_MAX_BYTES
 MODEL_REFERENCE_REASON_MAX_BYTES
 ModelEffortLevels
+MonitorControllerLimits
+MonitorLaunchOptions
+MonitorProcessHandle
+MonitorProcessResult
+MonitorStartRequest
+MonitorStartResult
+MonitorStopResult
+MonitorsController
 MonoRuntimeApprovalDecision
 MonoRuntimeApprovalRequest
 MonoRuntimeAttemptContext
@@ -241,6 +249,7 @@ SrtNetworkSettings
 SrtSandboxEngineOptions
 SrtSettings
 assertParsedRuntimeModelReference
+bridgeMonitorsController
 bridgeProcessJobsController
 createMonoRuntime
 createPiOAuthApiKeyResolver

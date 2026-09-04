@@ -1710,6 +1710,94 @@
         }
       }
     },
+    "monitors": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "maxActive": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32,
+          "default": 8
+        },
+        "maxActivePerConversation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8,
+          "default": 2
+        },
+        "maxRuntimeMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600000,
+          "default": 3600000
+        },
+        "persistentMaxRuntimeMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000,
+          "default": 86400000
+        },
+        "coalesceMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5000,
+          "default": 200
+        },
+        "maxBatchLines": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000,
+          "default": 200
+        },
+        "maxBatchBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576,
+          "default": 65536
+        },
+        "maxLineBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536,
+          "default": 4096
+        },
+        "maxChainDepth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8,
+          "default": 4
+        },
+        "rateLimit": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "windowMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 60000,
+              "default": 1000
+            },
+            "maxLinesPerWindow": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20000,
+              "default": 200
+            },
+            "sustainedWindows": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 60,
+              "default": 5
+            }
+          }
+        }
+      }
+    },
     "interaction": {
       "type": "object",
       "additionalProperties": false,

@@ -231,6 +231,18 @@ function processJobWakeFlightForOffer(deliveryKey: string | undefined): ProcessJ
   return flights.length === 1 ? flights[0] : undefined;
 }
 
+/**
+ * The live host-wake depth for a conversation's single active run, when it has
+ * exactly one. Exported so a second host-owned wake feature can read the depth
+ * this registry already tracks instead of registering a competing target: the
+ * registry admits a steer only when exactly one candidate matches, so a
+ * duplicate registration would silently disable steering for both.
+ */
+export function processJobSteeringDepth(conversationId: string): number | undefined {
+  const candidates = steeringTargetsByConversation.get(baseConversationId(conversationId)) ?? [];
+  return candidates.length === 1 ? effectiveSteeringDepth(candidates[0]!) : undefined;
+}
+
 function effectiveSteeringDepth(target: ActiveProcessJobSteeringTarget): number {
   let depth = target.baseChainDepth;
   for (const wakeDepth of target.wakeDepths.values()) depth = Math.max(depth, wakeDepth);

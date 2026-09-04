@@ -300,6 +300,8 @@ inferSkillsRoot
 
 ```text
 DEFAULT_CODEX_SEARCH_MODEL
+DEFAULT_MONITOR_TIMEOUT_MS
+MIN_MONITOR_TIMEOUT_MS
 bashToolImpl
 bashToolRun
 createWebToolController
@@ -311,9 +313,12 @@ grepToolImpl
 inspectCodexSubscriptionSearch
 isPathAllowed
 isWorkdirAllowed
+monitorStopToolRun
+monitorToolRun
 normalizeBackgroundBashTimeoutMs
 normalizeBackgroundTimeoutMs
 normalizeBashTimeoutMs
+normalizeMonitorTimeoutMs
 normalizeProcessTimeoutMs
 performWebFetch
 performWebSearch
