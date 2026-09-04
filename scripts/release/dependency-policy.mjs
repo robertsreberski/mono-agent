@@ -4,9 +4,9 @@ import path from "node:path";
 import { DEPENDENCY_SECTIONS } from "./package-graph.mjs";
 
 export const PINNED_RUNTIME_DEPENDENCIES = Object.freeze({
-  "@earendil-works/pi-agent-core": "0.83.0",
-  "@earendil-works/pi-ai": "0.84.3",
-  "@earendil-works/pi-tui": "0.84.3",
+  "@earendil-works/pi-agent-core": "0.85.0",
+  "@earendil-works/pi-ai": "0.85.0",
+  "@earendil-works/pi-tui": "0.85.0",
 });
 
 export function releaseDependencyPinIssues(packages) {
@@ -77,10 +77,9 @@ function assertResolvedVersion({
     );
   }
 
-  // pi-agent-core 0.83 declares pi-ai with a ^0.83 range, which deliberately
-  // resolves to its own 0.83 compatibility copy while agent-runtime owns the
-  // direct 0.84 catalog/provider copy. Verify both exact paths so neither a
-  // host package nor a newly-published 0.83 patch can silently rewire Core.
+  // pi-agent-core declares pi-ai with a floating compatible-minor range while
+  // agent-runtime owns the exact known-compatible copy. Verify resolution from
+  // both paths so a host package or later Pi patch cannot silently rewire Core.
   if (name === "@earendil-works/pi-agent-core") {
     const piAi = "@earendil-works/pi-ai";
     assertResolvedVersion({

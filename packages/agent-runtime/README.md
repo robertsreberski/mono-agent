@@ -651,7 +651,7 @@ Per-call options (a non-exhaustive selection):
 | `sandboxPolicy` | `SandboxPolicy` | Optional fail-closed sandbox policy for built-in tools and stdio MCP process startup. |
 | `webSearchConfig` | `{ backend?, endpoint?, codex?: { model? } }` | Run-scoped local SearXNG, ChatGPT-subscription Codex, and keyless WebSearch backend selection. |
 | `webFetchConfig` | `{ render?, browserCommand? }` | Run-scoped static extraction and optional isolated browser-render policy. |
-| `piToolExecutionMode` | `"safe-parallel" \| "sequential"` | Pi built-in scheduling. Safe parallelism is the default; stateful/mutating and MCP tools stay sequential. |
+| `piToolExecutionMode` | `"safe-parallel" \| "sequential"` | Pi built-in scheduling. Safe parallelism is the default; read-only tools may overlap only when the offered tool set contains no stateful/mutating or MCP tool. Otherwise Pi 0.85 serializes the whole batch. |
 | `maxTurns` | `number` | Hard cap on agent turns. |
 | `outputSchema` | `JSONSchema` | Requests structured JSON; see “Structured output” below. |
 | `abortSignal` | `AbortSignal` | Cancel the run. |

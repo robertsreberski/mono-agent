@@ -13,7 +13,7 @@
 // and `piResolvedModels` seams (the faux provider is not in pi's builtin
 // catalog, so it is reachable only through an explicit collection).
 
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -27,8 +27,13 @@ import {
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import {
+  cleanupSessionOnThrow,
+  commitSession,
+  discardUncommittedSession,
   resolveDurableNativeSessionRepo,
+  resolveSession,
   retireDurableNativeSession,
+  rollbackAbortedTurn,
 } from "../../ai/providers/pi-native/session-lifecycle.js";
 import {
   disposeProviderSession,
@@ -112,6 +117,95 @@ function findJsonlFiles(root) {
 describe("pi-native sessions", () => {
   const sessionsRoot = mkdtempSync(join(tmpdir(), "pi-native-sessions-"));
   afterAll(() => rmSync(sessionsRoot, { recursive: true, force: true }));
+
+  it("rolls back and closes a resumed handle after a setup throw", async () => {
+    const moveTo = vi.fn(async () => undefined);
+    const close = vi.fn(async () => undefined);
+    await cleanupSessionOnThrow({
+      session: { moveTo, close },
+      sessionEntry: { metadata: { id: "resumed" } },
+      reservation: null,
+      baselineLeafId: "baseline-leaf",
+    }, { durableRepo: null });
+
+    expect(moveTo).toHaveBeenCalledWith("baseline-leaf");
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(moveTo.mock.invocationCallOrder[0]).toBeLessThan(close.mock.invocationCallOrder[0]);
+  });
+
+  it("releases a claimed liveness entry when reopening its session fails", async () => {
+    const id = `open-failure-${Date.now()}`;
+    const metadata = { id, path: `/tmp/${id}.jsonl` };
+    const rawSession = {
+      metadata,
+      close: vi.fn(async () => undefined),
+    };
+    const repo = {
+      list: vi.fn()
+        .mockResolvedValueOnce([metadata])
+        .mockResolvedValueOnce([]),
+      open: vi.fn().mockRejectedValue(new Error("open failed")),
+      create: vi.fn(async () => rawSession),
+      delete: vi.fn(async () => undefined),
+    };
+    const params = {
+      requestedSessionId: id,
+      providerSessionId: id,
+      durableRepo: repo,
+      sessionTtlMs: undefined,
+      cwd: "/tmp",
+      resolved: { provider: "faux", model: "faux-model", reference: "faux:faux-model" },
+      options: {},
+      events: [],
+      runtimeWarnings: [],
+      start: Date.now(),
+      piTransport: "auto",
+    };
+
+    const failedState = {};
+    await expect(resolveSession(failedState, params)).rejects.toThrow("open failed");
+    expect(failedState.sessionEntry).toBeNull();
+
+    const retryState = {};
+    await expect(resolveSession(retryState, params)).resolves.toEqual({ done: false });
+    expect(repo.list).toHaveBeenCalledTimes(2);
+    expect(repo.create).toHaveBeenCalledTimes(1);
+    await cleanupSessionOnThrow(retryState, { durableRepo: repo });
+  });
+
+  it.each([
+    ["pre-request discard", (runState, repo) => discardUncommittedSession(runState, { durableRepo: repo })],
+    ["lifecycle commit", (runState, repo) => commitSession(runState, {
+      options: { sessionKeepAlive: false },
+      requestedSessionId: null,
+      providerSessionId: "close-failure-commit",
+      durableRepo: repo,
+      sessionTtlMs: undefined,
+      externalAbort: false,
+      errorMessage: null,
+      onEvent: vi.fn(),
+    })],
+    ["final abort rollback", (runState, repo) => rollbackAbortedTurn(runState, {
+      requestedSessionId: null,
+      providerSessionId: "close-failure-abort",
+      durableRepo: repo,
+    })],
+    ["outer throw cleanup", (runState, repo) => cleanupSessionOnThrow(runState, { durableRepo: repo })],
+  ])("%s still deletes a fresh transcript when close rejects", async (_label, cleanup) => {
+    const metadata = { id: "close-failure", path: "/tmp/close-failure.jsonl" };
+    const close = vi.fn().mockRejectedValue(new Error("close failed"));
+    const repo = { delete: vi.fn(async () => undefined) };
+    const runState = {
+      session: { getMetadata: vi.fn(async () => metadata), close },
+      sessionEntry: null,
+      reservation: null,
+      baselineLeafId: null,
+    };
+
+    await expect(cleanup(runState, repo)).resolves.toBeUndefined();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(repo.delete).toHaveBeenCalledWith(metadata, expect.anything());
+  });
 
   it("retires every cold duplicate for an exact durable id and treats absence as success", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-retire-"));
@@ -444,6 +538,84 @@ describe("pi-native sessions", () => {
     ]);
   });
 
+  it("resumes a Pi 0.84 legacy v3 JSONL and lets Pi upgrade it atomically to v4", async () => {
+    const model = setup();
+    const root = mkdtempSync(join(tmpdir(), "pi-native-v3-upgrade-"));
+    const directory = join(root, "legacy-workspace");
+    const sessionId = "legacy-pi-084-session";
+    const path = join(directory, `2026-09-04T00-00-00-000Z_${sessionId}.jsonl`);
+    const timestamp = Date.now() - 10_000;
+    const usage = {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(path, `${[
+      {
+        type: "session",
+        version: 3,
+        id: sessionId,
+        timestamp: new Date(timestamp).toISOString(),
+        cwd: process.cwd(),
+      },
+      {
+        type: "message",
+        id: "legacy-user",
+        parentId: null,
+        timestamp: new Date(timestamp + 1).toISOString(),
+        message: { role: "user", content: [{ type: "text", text: "legacy-turn" }], timestamp: timestamp + 1 },
+      },
+      {
+        type: "message",
+        id: "legacy-assistant",
+        parentId: "legacy-user",
+        timestamp: new Date(timestamp + 2).toISOString(),
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "legacy-reply" }],
+          api: "openai-completions",
+          provider: "faux",
+          model: "faux-model",
+          usage,
+          stopReason: "stop",
+          timestamp: timestamp + 2,
+        },
+      },
+    ].map((record) => JSON.stringify(record)).join("\n")}\n`);
+
+    try {
+      let resumedContext = null;
+      faux.setResponses([
+        (context) => { resumedContext = context; return fauxAssistantMessage([fauxText("new-reply")]); },
+      ]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "new-turn" }],
+        sessionKeepAlive: true,
+        sessionId,
+        piSessionsRoot: root,
+      }));
+
+      expect(result.error).toBeNull();
+      expect(transcriptOf(resumedContext)).toEqual([
+        "user:legacy-turn",
+        "assistant:legacy-reply",
+        "user:new-turn",
+      ]);
+      expect(JSON.parse(readFileSync(path, "utf8").split("\n", 1)[0])).toMatchObject({
+        v: 4,
+        kind: "header",
+        id: sessionId,
+      });
+    } finally {
+      await invalidateProviderSession(sessionId).catch(() => {});
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("invalidates both live and durable transcript state rejected by the host", async () => {
     const model = setup();
     const sessionId = "host-rejected-stable-id";
@@ -561,10 +733,10 @@ describe("pi-native sessions", () => {
       expect(first.error).toBeNull();
       expect(findJsonlFiles(root)).toHaveLength(1);
 
-      repo.delete = vi.fn(async (metadata) => {
+      repo.delete = vi.fn(async (metadata, context) => {
         deleteStarted();
         await deleteGate;
-        return originalDelete.call(repo, metadata);
+        return originalDelete.call(repo, metadata, context);
       });
       const invalidation = invalidateProviderSession(sessionId);
       await started;

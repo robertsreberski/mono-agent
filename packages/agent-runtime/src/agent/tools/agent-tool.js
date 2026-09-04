@@ -291,9 +291,10 @@ export function createAgentTool(subagents, context = {}) {
     label: "Agent",
     description: toolDescription(subagents, definitions, ceiling),
     parameters,
-    // MUST stay undefined. pi-agent-core's agent loop makes the ENTIRE batch
-    // sequential when any tool in it declares executionMode "sequential"
-    // (dist/agent-loop.js:289), which would serialize every parallel Agent call.
+    // MUST stay undefined. Agent-only batches can overlap when the offered tool
+    // set contains no sequential tool. Pi 0.85 exposes only a global harness
+    // mode, however, so offering Bash/Write/MCP/etc. serializes Agent calls too;
+    // see the documented provider limitation rather than marking Agent itself.
     executionMode: undefined,
     /**
      * @param {string} toolCallId

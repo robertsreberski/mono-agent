@@ -80,8 +80,11 @@ console as its own entry, named `<profile>▸<tool>` and bracketed by the
 subagent's own start/finish rows. The subagent's thinking and prose stay
 internal — only its final answer reaches the parent, through the tool result.
 
-**Limits.** `maxConcurrent` (default 5) bounds simultaneous subagents;
-`maxPerTurn` (default 20) bounds the total per parent turn and is the real
+**Limits.** `maxConcurrent` (default 5) is an upper bound on simultaneous
+subagents; the provider may schedule fewer. In particular, Pi 0.85 exposes only
+a global tool-execution mode, so any offered stateful/mutating or MCP tool makes
+the whole harness sequential, including an otherwise parallel batch of `Agent`
+calls. `maxPerTurn` (default 20) bounds the total per parent turn and is the real
 runaway guard, since a delegation loop can spend budget serially without ever
 hitting the concurrency cap. Each subagent gets `maxTurns` (default 100) and
 `timeoutMs` (default 5 minutes), and its timeout starts only once it actually
@@ -292,10 +295,12 @@ This is distinct from provider-transport retries (`providers.piNative.piMaxRetri
 
 ## Tool scheduling (code-only)
 
-Pi defaults to safe parallelism: independent read-only tools may overlap, while
-`Write`, `Edit`, `Bash`, `Exec`, `NodeRepl`, every MCP tool, and other
-stateful/mutating built-ins carry a sequential execution marker. Force every
-tool to run sequentially only when a host needs globally deterministic ordering:
+Pi defaults to safe parallelism. With Pi 0.85, independent read-only tools may
+overlap only when the offered tool set contains no sequential tool. If `Write`,
+`Edit`, `Bash`, `Exec`, `NodeRepl`, any MCP tool, or another stateful/mutating
+built-in is available, the harness serializes the whole batch because upstream
+no longer exposes mixed per-tool scheduling. A host can also force every tool
+to run sequentially:
 
 ```ts
 const runtimeOptions = {

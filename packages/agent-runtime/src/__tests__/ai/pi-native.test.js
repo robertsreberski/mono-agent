@@ -25,6 +25,7 @@ import {
   fauxThinking,
   fauxToolCall,
 } from "@earendil-works/pi-ai";
+import { MemorySessionRepo } from "@earendil-works/pi-agent-core";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -33,6 +34,11 @@ import {
   resolvePiToolExecutionMode,
   splitPromptMessages,
 } from "../../ai/providers/pi-native.js";
+import {
+  createPiHarnessAdapter,
+  createPiSessionAdapter,
+  PI_CONTEXT,
+} from "../../ai/providers/pi-native/harness-adapter.js";
 import { failureKindForPiError, withSubagentUsage } from "../../ai/providers/pi-native/result-builder.js";
 import { startLiveInput } from "../../ai/providers/pi-native/turn-runner.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
@@ -465,6 +471,56 @@ describe("pi-native AgentHarness bridge", () => {
     expect(textBlocks.join("")).toContain("hello world");
   });
 
+  it("does not emit assistant boundaries for seeded prior history", async () => {
+    const model = setup();
+    faux.setResponses([fauxAssistantMessage([fauxText("current reply")])]);
+    const onEvent = vi.fn();
+
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [
+        { role: "user", content: "prior turn" },
+        { role: "assistant", content: "prior reply" },
+        { role: "user", content: "current turn" },
+      ],
+      onEvent,
+    }));
+
+    expect(result.error).toBeNull();
+    expect(result.text).toBe("current reply");
+    expect(onEvent.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event?.type === "assistant_message_boundary"))
+      .toHaveLength(1);
+  });
+
+  it("closes a partially constructed harness when adapter setup fails", async () => {
+    const model = setup();
+    const repo = new MemorySessionRepo();
+    const rawSession = await repo.create({ id: "adapter-setup-failure" }, PI_CONTEXT);
+    const metadata = rawSession.metadata;
+    const session = createPiSessionAdapter(rawSession);
+    const attach = session.attach.bind(session);
+    session.attach = (harness, lane) => {
+      attach(harness, lane);
+      throw new Error("attach failed");
+    };
+
+    await expect(createPiHarnessAdapter(session, {
+      models: fauxModels,
+      model,
+      thinkingLevel: "off",
+      systemPrompt: "system",
+      tools: [],
+      streamOptions: { transport: "auto", maxRetries: 0, maxRetryDelayMs: 1 },
+      steeringMode: "one-at-a-time",
+      followUpMode: "one-at-a-time",
+    })).rejects.toThrow("attach failed");
+
+    const reopened = await repo.open(metadata, PI_CONTEXT);
+    await reopened.close(PI_CONTEXT);
+    await repo.close(PI_CONTEXT);
+  });
+
   it("forwards the requested transport to Pi and reports it in diagnostics", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("over sse")])]);
@@ -487,10 +543,9 @@ describe("pi-native AgentHarness bridge", () => {
   });
 
   it("delivers final-turn images to the model as image content blocks (not dropped)", async () => {
-    // Regression: AgentHarness.prompt takes images under an options object
-    // (`{ images }`). Passing a bare ImageContent[] as the second positional arg
-    // makes `options?.images` undefined, so the image is silently dropped and
-    // never reaches the model. Assert the image block survives to the provider.
+    // Regression: the mono-agent wrapper accepts images under `{ images }` and
+    // translates them to Pi 0.85's lane prompt signature. Passing the wrapper
+    // object through would silently drop the image before the provider call.
     const model = setup({ input: ["text", "image"] });
 
     let capturedMessages = null;
@@ -561,6 +616,50 @@ describe("pi-native AgentHarness bridge", () => {
       expect(toolTiming.name).toBe("Read");
       expect(typeof toolTiming.execution_ms).toBe("number");
       expect(toolTiming.execution_ms).toBeGreaterThanOrEqual(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("serializes a Pi 0.85 batch when any offered tool requires sequential execution", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-native-sequential-tools-"));
+    try {
+      const model = setup();
+      faux.setResponses([
+        fauxAssistantMessage([
+          fauxToolCall("Bash", { command: "sleep 0.15; echo first", workdir: root }, { id: "bash-1" }),
+          fauxToolCall("Bash", { command: "echo second", workdir: root }, { id: "bash-2" }),
+        ]),
+        fauxAssistantMessage([fauxText("done")]),
+      ]);
+      const onEvent = vi.fn();
+
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        cwd: root,
+        allowedTools: ["Bash"],
+        messages: [{ role: "user", content: "run both" }],
+        onEvent,
+        toolContext: createToolContext({ workspace: root }),
+      }));
+
+      expect(result.error).toBeNull();
+      const blocks = onEvent.mock.calls
+        .map(([event]) => event?.message?.content?.[0])
+        .filter((block) => block?.type === "tool_use" || block?.type === "tool_result");
+      const lifecycle = blocks
+        .map((block) => block.type === "tool_use"
+          ? `start:${block.id}`
+          : `end:${block.tool_use_id}`);
+      expect(lifecycle).toEqual([
+        "start:bash-1",
+        "end:bash-1",
+        "start:bash-2",
+        "end:bash-2",
+      ]);
+      expect(blocks.filter((block) => block.type === "tool_result")).toEqual([
+        expect.objectContaining({ tool_use_id: "bash-1", is_error: false, content: expect.stringContaining("first") }),
+        expect.objectContaining({ tool_use_id: "bash-2", is_error: false, content: expect.stringContaining("second") }),
+      ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

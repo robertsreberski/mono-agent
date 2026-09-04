@@ -24,7 +24,7 @@
 // on the caller-owned runState.compaction.
 
 import {
-  buildSessionContext,
+  BACKGROUND_CONTEXT,
   calculateContextTokens,
   compact as compactPreparedContext,
   estimateContextTokens,
@@ -45,6 +45,7 @@ import {
   parseContextLimitFromError,
 } from "../pi-errors.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
+import { buildPiSessionContext } from "./harness-adapter.js";
 import { runHarnessPrompt } from "./turn-runner.js";
 
 // Per-process cache of real context-window ceilings discovered from overflow
@@ -157,9 +158,10 @@ async function estimateSessionMessageTokens(session) {
   }
 }
 
-function estimateBuiltContextTokens(branchEntries) {
+async function estimateBuiltContextTokens(branchEntries) {
   try {
-    return buildSessionContext(branchEntries).messages.reduce(
+    const messages = buildPiSessionContext(branchEntries);
+    return messages.reduce(
       (total, message) => total + (Number(estimateTokens(message)) || 0),
       0,
     );
@@ -190,16 +192,17 @@ export function piSummaryReserveTokens(summaryMaxTokens, isSplitTurn) {
   return reserve;
 }
 
-function previewCompactedContext(branchEntries, result) {
+async function previewCompactedContext(branchEntries, result) {
   const previewEntry = {
     type: "compaction",
     id: "mono-agent-compaction-preview",
     parentId: branchEntries.at(-1)?.id || null,
-    timestamp: new Date().toISOString(),
+    timestamp: Date.now(),
     summary: result.summary,
-    firstKeptEntryId: result.firstKeptEntryId,
+    retainedTail: result.retainedTail,
     tokensBefore: result.tokensBefore,
     details: result.details,
+    usage: result.usage,
     fromHook: true,
   };
   return estimateBuiltContextTokens([...branchEntries, previewEntry]);
@@ -273,7 +276,7 @@ export async function tryCompact(harness, {
     model,
   });
   let effectivePolicy = policy || {};
-  /** @type {null | {kind: string, tokensBefore?: number|null, tokensAfter?: number|null, savings?: number|null, error?: any}} */
+  /** @type {null | {kind: string, tokensBefore?: number|null, tokensAfter?: number|null, savings?: number|null, firstKeptEntryId?: string|null, error?: any}} */
   let hookDecision = null;
   let removeHook = null;
   try {
@@ -281,16 +284,20 @@ export async function tryCompact(harness, {
       contextWindow: typeof harness?.getModel === "function" ? harness.getModel()?.contextWindow : undefined,
     });
     effectivePolicy = { ...adaptivePolicy, ...(policy || {}) };
+    const compactionSettings = {
+      enabled: true,
+      reserveTokens: piSummaryReserveTokens(effectivePolicy.summaryMaxTokens, false),
+      keepRecentTokens: effectivePolicy.keepRecentTokens,
+    };
+    if (typeof harness?.setCompactionSettings === "function") {
+      await harness.setCompactionSettings(compactionSettings);
+    }
     if (typeof harness?.on !== "function") {
       throw new Error("Pi AgentHarness does not expose session_before_compact hooks");
     }
     removeHook = harness.on("session_before_compact", async (event) => {
       try {
-        let settings = {
-          enabled: true,
-          reserveTokens: piSummaryReserveTokens(effectivePolicy.summaryMaxTokens, false),
-          keepRecentTokens: effectivePolicy.keepRecentTokens,
-        };
+        let settings = compactionSettings;
         let prepared = prepareCompaction(event.branchEntries, settings);
         if (prepared.ok === false) {
           hookDecision = { kind: "failed", error: prepared.error };
@@ -320,16 +327,22 @@ export async function tryCompact(harness, {
           harness.models,
           harness.getModel(),
           event.customInstructions,
-          event.signal,
           typeof harness.getThinkingLevel === "function" ? harness.getThinkingLevel() : undefined,
+          undefined,
+          undefined,
+          event.context || BACKGROUND_CONTEXT,
         );
         if (compacted.ok === false) {
           hookDecision = { kind: "failed", error: compacted.error };
           return { cancel: true };
         }
-        const tokensBefore = estimateBuiltContextTokens(event.branchEntries);
-        const tokensAfter = previewCompactedContext(event.branchEntries, compacted.value);
+        const tokensBefore = await estimateBuiltContextTokens(event.branchEntries);
+        const tokensAfter = await previewCompactedContext(event.branchEntries, compacted.value);
         const savings = tokensBefore === null || tokensAfter === null ? null : tokensBefore - tokensAfter;
+        const firstRetainedMessage = prepared.value.retainedTail[0];
+        const firstKeptEntryId = firstRetainedMessage
+          ? event.branchEntries.find((entry) => entry?.type === "message" && entry.message === firstRetainedMessage)?.id || null
+          : null;
         if (savings === null || savings <= 0) {
           hookDecision = { kind: "not_reducible", tokensBefore, tokensAfter, savings };
           return { cancel: true };
@@ -338,7 +351,7 @@ export async function tryCompact(harness, {
           hookDecision = { kind: "insufficient_savings", tokensBefore, tokensAfter, savings };
           return { cancel: true };
         }
-        hookDecision = { kind: "accepted", tokensBefore, tokensAfter, savings };
+        hookDecision = { kind: "accepted", tokensBefore, tokensAfter, savings, firstKeptEntryId };
         return { compaction: compacted.value };
       } catch (error) {
         hookDecision = { kind: "failed", error };
@@ -379,7 +392,10 @@ export async function tryCompact(harness, {
           model: model || null,
           tokens_before: tokensBefore,
           summary: result?.summary || "",
-          first_kept_entry_id: result?.firstKeptEntryId || null,
+          // Pi 0.85 returns retained messages rather than their entry ids. The
+          // preparation still retains object identity, so preserve this legacy
+          // diagnostic when its first retained message came from a real entry.
+          first_kept_entry_id: hookDecision?.firstKeptEntryId || null,
           status: "succeeded",
           created_at: Date.now(),
         });
@@ -446,12 +462,15 @@ export async function tryCompact(harness, {
       : err;
     const message = effectiveError?.message || String(effectiveError);
     const code = effectiveError?.code;
-    const nothingToCompact = code === "compaction" && /nothing to compact/i.test(message);
+    const tag = effectiveError?._tag;
+    const nothingToCompact = tag === "NothingToCompact"
+      || (code === "compaction" && /nothing to compact/i.test(message));
+    const busy = tag === "LaneBusy" || code === "busy";
     const warningKind = nothingToCompact
       ? "context_compaction_nothing_to_compact"
       : code === "auth"
         ? "context_compaction_auth_failed"
-        : code === "busy"
+        : busy
           ? "context_compaction_busy"
           : "context_compaction_failed";
     runtimeWarnings?.push({ warning_kind: warningKind, source: "pi", trigger, message });
@@ -464,7 +483,7 @@ export async function tryCompact(harness, {
         ? "nothing_to_compact"
         : code === "auth"
           ? "authentication"
-          : code === "busy"
+          : busy
             ? "busy"
             : code === "aborted"
               ? "cancelled"
@@ -474,7 +493,7 @@ export async function tryCompact(harness, {
         : {
           message: code === "auth"
             ? "Compaction authentication failed."
-            : code === "busy"
+            : busy
               ? "Context was busy and could not be compacted."
               : code === "aborted"
                 ? "Compaction was cancelled."
@@ -484,6 +503,15 @@ export async function tryCompact(harness, {
     return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact };
   } finally {
     removeHook?.();
+    if (typeof harness?.setCompactionSettings === "function") {
+      try {
+        await harness.setCompactionSettings({
+          enabled: false,
+          reserveTokens: 16_384,
+          keepRecentTokens: 20_000,
+        });
+      } catch { /* best-effort */ }
+    }
   }
 }
 
