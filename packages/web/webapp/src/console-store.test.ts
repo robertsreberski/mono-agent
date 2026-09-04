@@ -64,6 +64,17 @@ describe("resolveBootstrapSelection", () => {
       resolveBootstrapSelection(payload, "a", null, { a: "removed" }).threadId,
     ).toBe("active-new");
   });
+
+  it("falls back to a discovered agent when the selected agent leaves bootstrap", () => {
+    const payload = bootstrap(
+      [agent("remaining")],
+      [thread("remaining-thread", "remaining")],
+    );
+
+    expect(
+      resolveBootstrapSelection(payload, "removed", "removed-thread", { removed: "removed-thread" }),
+    ).toEqual({ agentId: "remaining", threadId: "remaining-thread" });
+  });
 });
 
 describe("sortAgentsPinnedFirst", () => {
