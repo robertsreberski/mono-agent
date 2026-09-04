@@ -489,7 +489,7 @@ describe("monitors service", () => {
     const fake = fakeRequest();
     await handle.controller(origin(), 0).start(fake.request);
     fake.process().emit("y".repeat(64));
-    await settle();
+    await waitForWakes(1);
     expect(wakes).toHaveLength(1);
   });
 

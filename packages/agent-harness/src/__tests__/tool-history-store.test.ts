@@ -1772,7 +1772,12 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("resolves only the result incident durably closed by finalization and upgrades that synthetic result in place", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await ToolHistoryWriter.open({
+      root,
+      // Preserve recovery assertions under loaded workspace CI; the production
+      // fail-soft persistence ceiling has its own explicit contract test.
+      persistenceCeilingMs: 5_000,
+    });
     const recoveredRun = binding("finalized-result-recovery");
     const unrelatedRun = binding("unrelated-result-recovery");
     const invalidResult = (toolCallId: string) => ({
@@ -2539,7 +2544,12 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
 
   it.skipIf(process.platform === "win32")("keeps a live DELETE journal owner-only for doctor and concurrent acquisition", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await ToolHistoryWriter.open({
+      root,
+      // This test deliberately holds SQLite's journal lock while it checks
+      // ownership; it is not a test of the production host wait ceiling.
+      persistenceCeilingMs: 5_000,
+    });
     const contentPath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
     const journalPath = `${contentPath}-journal`;
     const blocker = new DatabaseSync(contentPath);
