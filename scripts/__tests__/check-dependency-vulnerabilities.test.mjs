@@ -1861,6 +1861,10 @@ describe("dependency vulnerability gate", () => {
     await expect(queryOsvAdvisories({ ws: ["8.20.1"] }, {
       osvFetchImpl: async () => httpResponse({ results: [] }),
     })).rejects.toThrow("result count that does not match its queries");
+
+    await expect(queryOsvAdvisories({ ws: ["8.20.1"] }, {
+      osvFetchImpl: async () => httpResponse({ results: [{ vulns: null }] }),
+    })).rejects.toThrow("OSV querybatch returned a malformed vulnerability list");
   });
 
   it.each([

@@ -949,7 +949,7 @@ export async function queryOsvAdvisories(inventory, options = {}) {
       if (!isRecord(result)) {
         throw new Error("OSV querybatch returned a malformed result.");
       }
-      const resultVulnerabilities = result.vulns ?? [];
+      const resultVulnerabilities = Object.hasOwn(result, "vulns") ? result.vulns : [];
       if (!Array.isArray(resultVulnerabilities)) {
         throw new Error("OSV querybatch returned a malformed vulnerability list.");
       }
