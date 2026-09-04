@@ -1396,7 +1396,98 @@ describe("web HTTP server", () => {
     expect(reconnected.status).toBe(200);
     await reconnected.body?.cancel();
   }, 15_000);
+
+  it("keeps one SSE stream open across compact invalidations for a model-rich agent", async () => {
+    const models = Array.from(
+      { length: 300 },
+      (_unused, index) => `provider/model-${String(index).padStart(3, "0")}-${"m".repeat(64)}`,
+    );
+    const modelOptions = Object.fromEntries(models.map((model) => [model, {
+      label: `Model ${model} ${"l".repeat(64)}`,
+      reasoning: true,
+      effortLevels: ["low", "medium", "high", "xhigh"],
+      contextWindow: 131_072,
+    }]));
+    const fallbackFetch = operatorFetch();
+    const { baseUrl } = await start({
+      fetchImpl: async (input, init) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/v1/info")) {
+          return Response.json({
+            schema: 1,
+            label: "Agent One",
+            model: models[0],
+            effort: "high",
+            models,
+            modelOptions,
+            capabilities: { attachments: true, askUser: false, liveInput: false },
+          });
+        }
+        return fallbackFetch(input, init);
+      },
+    });
+    const bootstrap = await (await fetch(`${baseUrl}/api/v1/bootstrap`)).json() as { agents: unknown[] };
+    expect(Buffer.byteLength(JSON.stringify({ agents: bootstrap.agents }), "utf8")).toBeGreaterThan(16 * 1024);
+
+    const stream = await fetch(`${baseUrl}/api/v1/events`);
+    const reader = stream.body?.getReader();
+    if (reader === undefined) throw new Error("Expected an SSE response body.");
+    const nextEvent = sseEventReader(reader);
+    expect(await nextEvent()).toMatchObject({ type: "ready" });
+
+    for (const pinned of [true, false]) {
+      const patch = await fetch(`${baseUrl}/api/v1/agents/agent-one`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pinned }),
+      });
+      expect(patch.status).toBe(200);
+      const event = await nextEvent();
+      expect(event).toMatchObject({ type: "agents.changed" });
+      expect(event).not.toHaveProperty("payload");
+    }
+    await reader.cancel();
+  });
 });
+
+function sseEventReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): () => Promise<Record<string, unknown>> {
+  const decoder = new TextDecoder();
+  let buffered = "";
+  return async () => {
+    for (;;) {
+      const boundary = buffered.indexOf("\n\n");
+      if (boundary >= 0) {
+        const frame = buffered.slice(0, boundary);
+        buffered = buffered.slice(boundary + 2);
+        const data = frame.split("\n").find((line) => line.startsWith("data: "));
+        if (data !== undefined) return JSON.parse(data.slice(6)) as Record<string, unknown>;
+        continue;
+      }
+      const chunk = await readSseChunk(reader);
+      if (chunk.done) throw new Error("SSE stream ended before the next event.");
+      buffered += decoder.decode(chunk.value, { stream: true });
+    }
+  };
+}
+
+async function readSseChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs = 2_000,
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Timed out waiting for the next SSE event.")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 /** Reconnect until the server has reaped the cancelled streams, or give up and let the caller assert. */
 async function waitForFreeSseSlot(baseUrl: string, timeoutMs = 5_000): Promise<Response> {

@@ -1303,9 +1303,7 @@ describe("WebService", () => {
 
     expect(service.patchAgent("agent-one", { pinned: true })).toMatchObject({ sourceId: "agent-one", pinned: true });
     expect((await service.bootstrap()).agents[0]).toMatchObject({ sourceId: "agent-one", pinned: true });
-    expect(events).toEqual([
-      { agents: [expect.objectContaining({ sourceId: "agent-one", pinned: true })] },
-    ]);
+    expect(events).toEqual([undefined]);
     await service.refreshAgents();
     expect((await service.bootstrap()).agents[0]).toMatchObject({ sourceId: "agent-one", pinned: true });
     expect(() => service.patchAgent("missing", { pinned: true })).toThrowError(expect.objectContaining({ code: "agent_not_found" }));

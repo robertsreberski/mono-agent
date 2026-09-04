@@ -620,11 +620,12 @@ export class WebStore {
    * telling clients about.
    *
    * `updatedAt` is a heartbeat timestamp that moves on every discovery poll, so
-   * comparing it made this return `true` roughly once every five seconds --- and
-   * `agents.changed` carries the whole agent list, every model, every model
+   * comparing it made this return `true` roughly once every five seconds. At the
+   * time, `agents.changed` carried the whole agent list, every model, every model
    * option and every provider. Measured against a 67-agent fleet that was 60 KB
    * per event and 99.5% of all SSE traffic: ~42 MiB/hour to an idle console with
-   * nobody using it, which is a real cost on a metered phone.
+   * nobody using it. The event is now a compact invalidation, but a heartbeat is
+   * still not a state change worth making every browser re-bootstrap for.
    *
    * So the two questions are separated. Any difference at all is still written,
    * because the store should hold the freshest heartbeat; only a difference that

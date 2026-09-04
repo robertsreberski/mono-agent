@@ -525,6 +525,7 @@ export interface WebEvent {
   readonly type: WebEventType;
   readonly at: string;
   readonly threadId?: string;
+  /** Event-specific detail. `agents.changed` omits this and invalidates the bootstrap snapshot. */
   readonly payload?: unknown;
 }
 

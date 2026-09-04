@@ -116,10 +116,10 @@ describe("WebStore agent broadcast suppression", () => {
 
     expect(store.replaceAgents([agent()])).toBe(true);
 
-    // Only `updatedAt` moved. `agents.changed` carries the entire agent list, so
-    // returning true here rebroadcasts every model and provider of every agent
-    // on each five-second discovery poll. The store must still take the fresher
-    // timestamp; it just must not call it newsworthy.
+    // Only `updatedAt` moved. `agents.changed` formerly carried the entire agent
+    // list, and even as a compact invalidation it makes every browser refresh.
+    // The store must still take the fresher timestamp; it just must not call it
+    // newsworthy on each five-second discovery poll.
     const beat = { ...agent(), updatedAt: "2026-08-14T10:00:05.000Z" };
     expect(store.replaceAgents([beat])).toBe(false);
     expect(store.listAgents()[0]?.updatedAt).toBe("2026-08-14T10:00:05.000Z");
