@@ -23,7 +23,6 @@ import {
   isPermanentDeliveryReason,
   normalizeContinuationOrigin,
   reasonOf,
-  runtimeRouteContainsDirectOpenCode,
 } from "./app-controller-utils.js";
 import type { ContinuationRunningChannel } from "./app-controller-utils.js";
 import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
@@ -64,9 +63,8 @@ export interface ContinuationControllerPort {
 
 export function ensureInteractionBridge(controller: ContinuationControllerPort, coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined> {
   controller.interactionBridgeStart ??= (async () => {
-    const directOpenCodeRoute = runtimeRouteContainsDirectOpenCode(coreConfig);
     const settings = await loadInteractionSettings({ env: controller.env, configPath: controller.configReadPath });
-    const askUserAllowed = !directOpenCodeRoute && isAdapterSendToolAllowed("AskUser", {
+    const askUserAllowed = isAdapterSendToolAllowed("AskUser", {
       allowedTools: coreConfig.tools.allowedTools,
       disallowedTools: coreConfig.tools.disallowedTools,
     });

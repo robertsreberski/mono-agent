@@ -97,9 +97,9 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-const RUNTIME_MODEL = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
-const FALLBACK_MODEL = { sdk: "pi", provider: "opencode-go", model: "kimi-k2.6", reference: "pi:opencode-go:kimi-k2.6" } as const;
-const MEMORY_MODEL_REF = "pi:opencode-go:deepseek-v4-pro";
+const RUNTIME_MODEL = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" } as const;
+const FALLBACK_MODEL = { provider: "opencode-go", model: "kimi-k2.6", reference: "opencode-go:kimi-k2.6" } as const;
+const MEMORY_MODEL_REF = "opencode-go:deepseek-v4-pro";
 
 describe("memory LLM honours config.memory.llm.model", () => {
   it("runs the memory LLM on config.memory.llm.model even when runtime.model differs and fallbackModels is non-empty", async () => {
@@ -119,7 +119,7 @@ describe("memory LLM honours config.memory.llm.model", () => {
     // Every memory run targets the configured memory model — NOT the runtime
     // model and NOT the fallback model. This is the core regression assertion.
     for (const call of runCalls) {
-      expect(call.options.model).toMatchObject({ sdk: "pi", provider: "opencode-go", model: "deepseek-v4-pro" });
+      expect(call.options.model).toMatchObject({ provider: "opencode-go", model: "deepseek-v4-pro" });
       expect(call.options.model).not.toMatchObject({ provider: "openai-codex", model: "gpt-5.5" });
     }
 
@@ -165,7 +165,7 @@ describe("memory LLM honours config.memory.llm.model", () => {
     expect(createSrtSandboxEngineMock).not.toHaveBeenCalled();
     expect(runCalls.length).toBeGreaterThanOrEqual(1);
     for (const call of runCalls) {
-      expect(call.options.model.sdk).toBe("pi");
+      expect(call.options.model.provider).toBe("opencode-go");
       expect(call.options.sandboxEngine).toBeUndefined();
       expect(call.options.sandboxPolicy?.protectedRoots ?? []).toHaveLength(0);
       expect(call.options.allowedTools).toEqual([]);
@@ -182,8 +182,7 @@ function memoryModelConfig(
   return {
     runtime: {
       model: { ...RUNTIME_MODEL },
-      fallbackModels: [{ ...FALLBACK_MODEL }],
-      executionMode: "sdk",
+      fallbacks: [{ model: { ...FALLBACK_MODEL } }],
       maxTurns: 4,
       workspace,
       session: { mode: "per-message", idleTimeoutMs: 1_800_000 },
@@ -195,7 +194,7 @@ function memoryModelConfig(
       writeMode: "disabled",
       maxBytes: 8_000,
       embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
-      llm: { provider: "agent-host", model: MEMORY_MODEL_REF, executionMode: "sdk" },
+      llm: { provider: "agent-host", model: MEMORY_MODEL_REF },
     },
     tools: { allowedTools: [], disallowedTools: [] },
     artifacts: {

@@ -133,12 +133,26 @@ export function ModelControls() {
   const {
     usage, selectorModels, model, effort, setModel, setEffort,
     agentDefaultModel, hasRunOverride, resetRunOverride, disabled, hasSettings,
+    catalogStatusByProvider, openCatalog, requestProvider, agentProviders,
   } = useRunControls();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // `openCatalog` closes over the agent's providers and the shortlist, so its
+  // identity changes as those load. Reading it through a ref keeps the window
+  // listener registered exactly once while still preloading with the current
+  // agent's routes.
+  const openCatalogRef = useRef(openCatalog);
+  useEffect(() => { openCatalogRef.current = openCatalog; }, [openCatalog]);
 
-  // The composer's slash command opens the same picker the header does.
+  // The composer's slash command opens the same picker the header does, so it
+  // has to preload the same catalog pages. Opening by setting state directly
+  // bypasses `onOpenChange`, and with a single provider the chip row is hidden
+  // too -- nothing else would ever trigger the fetch, leaving the operator on
+  // the shortlist until they reopened the picker from the header.
   useEffect(() => {
-    const openSettings = () => { setSettingsOpen(true); };
+    const openSettings = () => {
+      setSettingsOpen(true);
+      openCatalogRef.current();
+    };
     window.addEventListener("mono-agent:run-settings", openSettings);
     return () => { window.removeEventListener("mono-agent:run-settings", openSettings); };
   }, []);
@@ -155,15 +169,23 @@ export function ModelControls() {
       {hasSettings && (
         <ModelSelector
           models={selectorModels}
+          agentProviders={agentProviders}
           value={model}
           effort={effort}
           onValueChange={setModel}
           onEffortChange={setEffort}
           open={settingsOpen}
-          onOpenChange={setSettingsOpen}
+          onOpenChange={(next) => {
+            setSettingsOpen(next);
+            // Fetch the shortlist providers' first catalog pages so the groups
+            // and chips are useful the moment the picker opens.
+            if (next) openCatalog();
+          }}
           disabled={disabled}
           badge={hasRunOverride ? "custom" : "default"}
           agentDefaultId={agentDefaultModel}
+          providerStatus={catalogStatusByProvider}
+          onProviderRequest={requestProvider}
           {...(hasRunOverride ? { onReset: resetRunOverride } : {})}
         />
       )}

@@ -11,7 +11,7 @@ import {
   type AgentReplyPart,
 } from "@mono-agent/agent-contracts";
 
-import { WebService, WeightedTurnBudget } from "../service.js";
+import { agentGeneration, WebService, WeightedTurnBudget } from "../service.js";
 import { fakeDiscoveredAgent, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
@@ -60,6 +60,74 @@ function operatorCronOverview(overrides: Record<string, unknown> = {}): Record<s
     ...overrides,
   };
 }
+
+describe("agentGeneration", () => {
+  it("does not collide two different processes onto one generation", () => {
+    // The tuple was joined with a delimiter that can occur inside its own
+    // fields, so two DIFFERENT `(baseUrl, pid, startedAt)` tuples flattened to
+    // one string and hashed to one token. Two live processes sharing a
+    // generation is exactly the state the token exists to make impossible: the
+    // console would go on serving one process's `/v1/models` pages to the
+    // other. Neither tuple below is one a first-party agent produces --- that
+    // is why this is robustness and not a fleet regression --- but a digest
+    // whose only defence is what its inputs happen to look like is not a
+    // digest of three fields, it is a digest of one string.
+    const left = fakeDiscoveredAgent({
+      baseUrl: "http://127.0.0.1:45123/gui|1",
+      source: { ...fakeDiscoveredAgent().source, pid: 2, startedAt: "2026-07-17T08:00:00.000Z" },
+    });
+    const right = fakeDiscoveredAgent({
+      baseUrl: "http://127.0.0.1:45123/gui",
+      source: { ...fakeDiscoveredAgent().source, pid: 1, startedAt: "2|2026-07-17T08:00:00.000Z" },
+    });
+    // Both flatten to the identical `|`-joined string, and did hash alike.
+    expect([left.baseUrl, left.source.pid, left.source.startedAt].join("|"))
+      .toBe([right.baseUrl, right.source.pid, right.source.startedAt].join("|"));
+    expect(agentGeneration(left)).not.toBe(agentGeneration(right));
+  });
+
+  it("does not collide two fields that differ only where UTF-8 cannot say so", () => {
+    // The length prefix fixed the delimiter, but the DIGEST still read the
+    // joined string as UTF-8, and UTF-8 has no encoding for an unpaired
+    // surrogate: a lone high surrogate and a lone low surrogate both become the
+    // replacement character, so two distinct one-character fields hashed alike.
+    // Same failure as the delimiter, one layer down -- the digest defended by
+    // what its inputs happen to look like rather than by what it reads. No
+    // first-party ISO timestamp can trigger it; a digest that is only correct
+    // for well-formed input is not a digest of the input.
+    const base = fakeDiscoveredAgent().source;
+    const high = fakeDiscoveredAgent({ source: { ...base, startedAt: "\uD800" } });
+    const low = fakeDiscoveredAgent({ source: { ...base, startedAt: "\uDC00" } });
+    // Both are one UTF-16 code unit, so the length prefix cannot separate them,
+    // and both UTF-8-encode to the very same three bytes.
+    expect(high.source.startedAt.length).toBe(low.source.startedAt.length);
+    expect([...Buffer.from(high.source.startedAt, "utf8")])
+      .toEqual([...Buffer.from(low.source.startedAt, "utf8")]);
+    expect(agentGeneration(high)).not.toBe(agentGeneration(low));
+  });
+
+  it("is stable for one process and different once it is replaced", () => {
+    const base = fakeDiscoveredAgent();
+    expect(agentGeneration(base)).toBe(agentGeneration(fakeDiscoveredAgent()));
+    expect(agentGeneration(base)).toHaveLength(16);
+    // And it never carries the endpoint or pid it is built from.
+    expect(agentGeneration(base)).not.toContain("45123");
+    expect(agentGeneration(base)).not.toContain("123");
+    const restarted = fakeDiscoveredAgent({
+      source: { ...base.source, pid: 124, startedAt: "2026-07-17T08:30:00.000Z" },
+    });
+    expect(agentGeneration(restarted)).not.toBe(agentGeneration(base));
+
+    // The heartbeat must NOT move it. `updatedAt` changes on every discovery
+    // poll, so folding it in would retire the browser's per-agent caches every
+    // five seconds and make the token mean nothing. A previous round mutated
+    // exactly this and all 170 backend tests stayed green.
+    const beating = fakeDiscoveredAgent({
+      source: { ...base.source, updatedAt: "2026-07-17T09:00:05.000Z" },
+    });
+    expect(agentGeneration(beating)).toBe(agentGeneration(base));
+  });
+});
 
 describe("WebService", () => {
   it("delegates conversation search to the store and emits nothing for it", async () => {
@@ -1981,6 +2049,603 @@ describe("WebService", () => {
 
     expect(turnAbortReason).toMatchObject({ name: "WebTurnCancellation", kind: "shutdown" });
     expect(isChannelUserCancelReason(turnAbortReason)).toBe(false);
+  });
+
+  it("proxies the agent model catalog, forwarding bounded params and seeding tier-2 admission", async () => {
+    const requests: string[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        modelsPage: {
+          models: [
+            { id: "onlycatalog", name: "Catalog Only", provider: "provider", providerLabel: "Provider" },
+          ],
+          truncated: true,
+        },
+        onModelsRequest: (url) => { requests.push(url); },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await expect(service.startTurn(thread.id, { text: "proto", model: "onlycatalog" })).rejects.toMatchObject({ code: "invalid_model" });
+
+    const page = await service.agentModels("agent-one", { provider: "provider", q: "catalog", cursor: "w1", limit: 77 });
+    expect(page).toEqual({
+      models: [{ id: "onlycatalog", name: "Catalog Only", provider: "provider", providerLabel: "Provider" }],
+      truncated: true,
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toContain("provider=provider");
+    expect(requests[0]).toContain("q=catalog");
+    expect(requests[0]).toContain("cursor=w1");
+    expect(requests[0]).toContain("limit=77");
+
+    const admitted = service.createThread("agent-one");
+    await expect(service.startTurn(admitted.id, { text: "catalog", model: "onlycatalog" })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+
+
+  it("carries the agent's advertised providers through to the bootstrap summary", async () => {
+    // The gap this covers: `/v1/info.providers` was parsed nowhere, so the
+    // console never learned which providers existed. The selector's chips and
+    // groups are built from that list, so a provider declared purely to widen
+    // selection was unreachable -- its catalog page could never be requested.
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "provider/default",
+        models: ["provider/default"],
+        providers: [
+          { id: "provider", label: "Provider", modelCount: 2, source: "builtin", configured: true },
+          { id: "anthropic", label: "Anthropic", modelCount: 13, source: "builtin", configured: true },
+          { id: "bad", modelCount: 1, source: "builtin" },
+          { label: "no id", modelCount: 1, source: "builtin" },
+        ],
+        capabilities: { attachments: true },
+      });
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+
+    const service = await createService({ fetchImpl });
+    const summary = (await service.bootstrap()).agents[0];
+    expect(summary?.providers?.map((provider) => provider.id))
+      .toEqual(["provider", "anthropic", "bad"]);
+    // A missing label falls back to the id rather than dropping the provider,
+    // and a malformed entry is skipped instead of throwing -- a throw here
+    // becomes a 500 for the whole /v1/info response and shows the agent offline.
+    expect(summary?.providers?.find((provider) => provider.id === "bad")?.label).toBe("bad");
+  });
+
+  it("accepts efforts for a catalog-widened model the shortlist never described", async () => {
+    // `modelOptions` covers only the configured shortlist, so a model reached
+    // through the catalog had no entry and every effort the selector offered
+    // for it came back 400 invalid_effort.
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "provider/default",
+        models: ["provider/default"],
+        modelOptions: { "provider/default": { effortLevels: ["low"], reasoning: true } },
+        capabilities: { attachments: true },
+      });
+      if (/\/v1\/models(?:\?|$)/u.test(url)) {
+        return Response.json({
+          models: [{ id: "widened", name: "Widened", provider: "anthropic", providerLabel: "Anthropic" }],
+          truncated: false,
+        });
+      }
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    await service.agentModels("agent-one", { provider: "anthropic", limit: 50 });
+
+    // The shortlist model keeps its narrow advertised ladder.
+    const narrow = service.createThread("agent-one");
+    await expect(service.startTurn(narrow.id, { text: "narrow", model: "provider/default", effort: "max" }))
+      .rejects.toMatchObject({ code: "invalid_effort" });
+
+    // A catalog model the shortlist never described accepts the global ladder.
+    const widened = service.createThread("agent-one");
+    await expect(service.startTurn(widened.id, { text: "widened", model: "anthropic:widened", effort: "high" }))
+      .resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+
+  it("judges a catalog model's effort against the ladder its own page advertised", async () => {
+    // The page carries reasoning metadata that tier-2 admission threw away --
+    // it kept only the reference -- so effort validation had nothing to judge
+    // against and forwarded a grade the model does not support in the turn.
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "provider/default",
+        models: ["provider/default"],
+        modelOptions: { "provider/default": { effortLevels: ["low"], reasoning: true } },
+        capabilities: { attachments: true },
+      });
+      if (/\/v1\/models(?:\?|$)/u.test(url)) {
+        return Response.json({
+          models: [
+            {
+              id: "graded",
+              name: "Graded",
+              provider: "anthropic",
+              providerLabel: "Anthropic",
+              reasoning: true,
+              effortLevels: ["low", "high"],
+            },
+            {
+              id: "instant",
+              name: "Instant",
+              provider: "anthropic",
+              providerLabel: "Anthropic",
+              reasoning: false,
+            },
+            { id: "quiet", name: "Quiet", provider: "anthropic", providerLabel: "Anthropic" },
+          ],
+          truncated: false,
+        });
+      }
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    await service.agentModels("agent-one", { provider: "anthropic", limit: 50 });
+
+    // An advertised grade still starts, addressed by the canonical reference
+    // every selection surface speaks.
+    const graded = service.createThread("agent-one");
+    await expect(service.startTurn(graded.id, { text: "graded", model: "anthropic:graded", effort: "high" }))
+      .resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+
+    // A grade the page did not list is rejected instead of forwarded.
+    const ungraded = service.createThread("agent-one");
+    await expect(service.startTurn(ungraded.id, { text: "ungraded", model: "anthropic:graded", effort: "ultra" }))
+      .rejects.toMatchObject({ code: "invalid_effort" });
+
+    // A non-reasoning catalog model takes no effort at all.
+    const instant = service.createThread("agent-one");
+    await expect(service.startTurn(instant.id, { text: "instant", model: "anthropic:instant", effort: "low" }))
+      .rejects.toMatchObject({ code: "invalid_effort" });
+
+    // A page that advertised no reasoning metadata keeps the permissive floor:
+    // silence is not a claim that the model rejects every grade.
+    const quiet = service.createThread("agent-one");
+    await expect(service.startTurn(quiet.id, { text: "quiet", model: "anthropic:quiet", effort: "ultra" }))
+      .resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+
+  it("applies a conditional run-config patch only while the conversation has no override", async () => {
+    // The console adopts a browser-local override into the thread exactly once,
+    // and it decides to on a projection it read a round trip earlier. Another
+    // tab (or another device) can set a real override in that window, and an
+    // unconditional write then makes the adopting tab's stale value final.
+    // Only the server can rule on it, so the write carries the precondition.
+    const service = await createService({});
+    const thread = service.createThread("agent-one");
+
+    expect(service.patchThread(thread.id, { model: "anthropic:opus-5", ifRunConfigUnset: true }))
+      .toMatchObject({ runModel: "anthropic:opus-5", runEffort: null });
+
+    // A second adopter finds the conversation already configured: nothing is
+    // written, and it is handed the value that won so it can adopt it.
+    const contested = service.patchThread(thread.id, {
+      model: "anthropic:sonnet-5",
+      effort: "high",
+      ifRunConfigUnset: true,
+    });
+    expect(contested).toMatchObject({ runModel: "anthropic:opus-5", runEffort: null });
+    expect(service.thread(thread.id)?.thread)
+      .toMatchObject({ runModel: "anthropic:opus-5", runEffort: null });
+
+    // The operator's own writes are unconditional and still replace it.
+    expect(service.patchThread(thread.id, { model: "anthropic:sonnet-5" }))
+      .toMatchObject({ runModel: "anthropic:sonnet-5" });
+
+    // A cleared conversation is adoptable again, so the precondition cannot
+    // permanently lock the legacy path out.
+    service.patchThread(thread.id, { model: null, effort: null });
+    expect(service.patchThread(thread.id, { effort: "low", ifRunConfigUnset: true }))
+      .toMatchObject({ runModel: null, runEffort: "low" });
+
+    expect(() => service.patchThread("missing-thread", { model: "x", ifRunConfigUnset: true }))
+      .toThrowError(/not found/iu);
+    await service.stop();
+  });
+
+  it("drops catalog metadata that belonged to a replaced generation of the agent", async () => {
+    // A source id is stable across restarts by design, so it cannot scope what
+    // the running process told us. Reconfigure an agent and restart it and the
+    // NEW process advertises a different catalog under the SAME id -- and the
+    // old generation's ladder went on rejecting grades the running agent
+    // accepts, with no way to clear it short of restarting the console.
+    let generation = 1;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "provider/default",
+        models: ["provider/default"],
+        modelOptions: { "provider/default": { effortLevels: ["low"], reasoning: true } },
+        capabilities: { attachments: true },
+      });
+      if (/\/v1\/models(?:\?|$)/u.test(url)) {
+        return Response.json({
+          models: generation === 1
+            ? [
+                {
+                  id: "evolving",
+                  name: "Evolving",
+                  provider: "localx",
+                  providerLabel: "Local X",
+                  reasoning: true,
+                  effortLevels: ["low"],
+                },
+                { id: "retired", name: "Retired", provider: "localx", providerLabel: "Local X" },
+              ]
+            : [{ id: "evolving", name: "Evolving", provider: "localx", providerLabel: "Local X" }],
+          truncated: false,
+        });
+      }
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+
+    const first = fakeDiscoveredAgent();
+    const second = fakeDiscoveredAgent({
+      baseUrl: "http://127.0.0.1:45124/gui",
+      source: { ...first.source, pid: 456, startedAt: "2026-07-18T08:00:00.000Z" },
+    });
+    let discovered = [first];
+    const service = await createService({
+      fetchImpl,
+      discoverImpl: async () => discovered,
+    });
+    await service.agentModels("agent-one", { provider: "localx", limit: 50 });
+
+    const stale = service.createThread("agent-one");
+    await expect(service.startTurn(stale.id, { text: "gen1", model: "localx:evolving", effort: "high" }))
+      .rejects.toMatchObject({ code: "invalid_effort" });
+
+    generation = 2;
+    discovered = [second];
+    await service.refreshAgents();
+
+    // Generation 1's admissions are gone with it: a bare id the new page never
+    // served fails the syntactic floor and is no longer selectable.
+    const retired = service.createThread("agent-one");
+    await expect(service.startTurn(retired.id, { text: "retired", model: "retired" }))
+      .rejects.toMatchObject({ code: "invalid_model" });
+
+    // And generation 2's silence about `evolving` restores the permissive
+    // floor rather than inheriting generation 1's low-only ladder.
+    await service.agentModels("agent-one", { provider: "localx", limit: 50 });
+    const fresh = service.createThread("agent-one");
+    await expect(service.startTurn(fresh.id, { text: "gen2", model: "localx:evolving", effort: "high" }))
+      .resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+
+    // A source discovery stops reporting takes its refs with it, so a retired
+    // agent cannot hold them for the life of the console process. The bare id
+    // proves it: nothing but the cache ever admitted that one.
+    const bare = service.createThread("agent-one");
+    await expect(service.startTurn(bare.id, { text: "bare", model: "evolving" })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    discovered = [];
+    await service.refreshAgents();
+    discovered = [second];
+    await service.refreshAgents();
+    const readmitted = service.createThread("agent-one");
+    await expect(service.startTurn(readmitted.id, { text: "bare", model: "evolving" }))
+      .rejects.toMatchObject({ code: "invalid_model" });
+    await service.stop();
+  });
+
+  it("never admits a page fetched under one generation into the generation that replaced it", async () => {
+    // The page is proxied across an await. A discovery refresh can retire this
+    // agent's generation inside that window, and keyed by source id alone the
+    // reply -- from a process that no longer exists -- was written straight
+    // into the freshly reconciled map, where `source: "page"` overwrites
+    // unconditionally. Generation 1's ladder then judged generation 2's turns.
+    let heldModelsPage: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => { heldModelsPage = resolve; });
+    let modelPages = 0;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "provider/default",
+        models: ["provider/default"],
+        modelOptions: { "provider/default": { effortLevels: ["low"], reasoning: true } },
+        capabilities: { attachments: true },
+      });
+      if (/\/v1\/models(?:\?|$)/u.test(url)) {
+        modelPages += 1;
+        if (modelPages === 1) await held;
+        return Response.json({
+          models: [{
+            id: "strict",
+            name: "Strict",
+            provider: "localx",
+            providerLabel: "Local X",
+            reasoning: true,
+            effortLevels: ["low"],
+          }],
+          truncated: false,
+        });
+      }
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+
+    const first = fakeDiscoveredAgent();
+    const second = fakeDiscoveredAgent({
+      baseUrl: "http://127.0.0.1:45124/gui",
+      source: { ...first.source, pid: 456, startedAt: "2026-07-18T08:00:00.000Z" },
+    });
+    let discovered = [first];
+    const service = await createService({ fetchImpl, discoverImpl: async () => discovered });
+
+    const stalePage = service.agentModels("agent-one", { provider: "localx", limit: 50 });
+    await waitFor(() => modelPages === 1);
+    discovered = [second];
+    await service.refreshAgents();
+    heldModelsPage?.();
+    await stalePage;
+
+    // Generation 2 has said nothing about `localx:strict`, so the permissive
+    // floor applies. If generation 1's page were admitted here, its low-only
+    // ladder would reject the grade the running agent accepts.
+    const contaminated = service.createThread("agent-one");
+    await expect(service.startTurn(contaminated.id, {
+      text: "gen2",
+      model: "localx:strict",
+      effort: "high",
+    })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+
+    // The other half of the invariant: a page fetched WITHIN generation 2 is
+    // still admitted, so this is dropping stale writes rather than all of them.
+    await service.agentModels("agent-one", { provider: "localx", limit: 50 });
+    const current = service.createThread("agent-one");
+    await expect(service.startTurn(current.id, {
+      text: "gen2-fresh",
+      model: "localx:strict",
+      effort: "high",
+    })).rejects.toMatchObject({ code: "invalid_effort" });
+    await expect(service.startTurn(current.id, {
+      text: "gen2-fresh",
+      model: "localx:strict",
+      effort: "low",
+    })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+
+  it("judges a blank selection against the route the picker offers for it", async () => {
+    // A payload that advertises a shortlist but no default. The browser fell
+    // back to `models[0]` while this stopped at `defaultModel` and judged
+    // against the global ladder, so the picker offered no grade at all while
+    // the server accepted every one of them.
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        models: ["local:ungraded", "local:graded"],
+        modelOptions: {
+          "local:ungraded": { reasoning: false },
+          "local:graded": { reasoning: true, effortLevels: ["low"] },
+        },
+        capabilities: { attachments: true },
+      });
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+
+    const blank = service.createThread("agent-one");
+    await expect(service.startTurn(blank.id, { text: "blank", effort: "high" }))
+      .rejects.toMatchObject({ code: "invalid_effort" });
+    // And the explicit route still governs itself.
+    await expect(service.startTurn(blank.id, { text: "explicit", model: "local:graded", effort: "low" }))
+      .resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+
+  it("leaves a lost conditional patch entirely without effect", async () => {
+    // The loser must write nothing and announce nothing: an event for a write
+    // that did not happen makes every other tab refetch a thread that has not
+    // moved, and a revision bump makes it look as if it had.
+    const service = await createService({});
+    const thread = service.createThread("agent-one");
+    // Effort-only, which the precondition has to cover as much as a model.
+    service.patchThread(thread.id, { effort: "low" });
+    const before = service.thread(thread.id)?.thread;
+
+    const events: string[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event.type); });
+    const refused = service.patchThread(thread.id, {
+      model: "anthropic:opus-5",
+      effort: "high",
+      ifRunConfigUnset: true,
+    });
+    unsubscribe();
+
+    expect(refused).toMatchObject({ runModel: null, runEffort: "low" });
+    expect(service.thread(thread.id)?.thread).toEqual(before);
+    expect(service.thread(thread.id)?.thread.revision).toBe(before?.revision);
+    expect(events).toEqual([]);
+    await service.stop();
+  });
+
+  it("lets a re-fetched page replace the ladder an earlier page advertised", async () => {
+    // Within one generation the newest page is the live word on what it
+    // serves. Refusing to replace known metadata with later silence pinned the
+    // first page's ladder for the life of the process.
+    let graded = true;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "provider/default",
+        models: ["provider/default"],
+        modelOptions: { "provider/default": { effortLevels: ["low"], reasoning: true } },
+        capabilities: { attachments: true },
+      });
+      if (/\/v1\/models(?:\?|$)/u.test(url)) {
+        return Response.json({
+          models: [{
+            id: "shifting",
+            name: "Shifting",
+            provider: "localx",
+            providerLabel: "Local X",
+            ...(graded ? { reasoning: true, effortLevels: ["low"] } : {}),
+          }],
+          truncated: false,
+        });
+      }
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    await service.agentModels("agent-one", { provider: "localx", limit: 50 });
+    const narrow = service.createThread("agent-one");
+    await expect(service.startTurn(narrow.id, { text: "narrow", model: "localx:shifting", effort: "high" }))
+      .rejects.toMatchObject({ code: "invalid_effort" });
+
+    graded = false;
+    await service.agentModels("agent-one", { provider: "localx", limit: 50 });
+    const widened = service.createThread("agent-one");
+    await expect(service.startTurn(widened.id, { text: "widened", model: "localx:shifting", effort: "high" }))
+      .resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+
+  it("applies the thread's persisted override to a turn that omits model and effort", async () => {
+    // The override is server state, so a turn this server starts -- a
+    // process-job follow-up, any assistant-owned wake -- must honour the
+    // selection made in that conversation rather than the agent default.
+    const service = await createService({});
+    const thread = service.createThread("agent-one");
+    service.patchThread(thread.id, { model: "anthropic:claude-sonnet-5", effort: "high" });
+
+    await service.startTurn(thread.id, { text: "no explicit model" });
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+
+    const stored = service.store.getThread(thread.id);
+    expect(stored?.runModel).toBe("anthropic:claude-sonnet-5");
+    expect(stored?.runEffort).toBe("high");
+    await service.stop();
+  });
+
+  it("keeps the syntactic floor no looser than the runtime parser", async () => {
+    const service = await createService({});
+    for (const model of ["bad provider:model", "UPPER:model", "provider: model", "provider:  "]) {
+      const thread = service.createThread("agent-one");
+      await expect(service.startTurn(thread.id, { text: "floor", model }))
+        .rejects.toMatchObject({ code: "invalid_model" });
+    }
+    await service.stop();
+  });
+
+  it("validates model selection across shortlist, catalog cache, and provider-prefix tiers", async () => {
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "provider/default",
+        models: ["provider/default"],
+        modelOptions: { "provider/default": { effortLevels: ["low", "medium", "high"], reasoning: true } },
+        capabilities: { attachments: true },
+      });
+      if (/\/v1\/models(?:\?|$)/u.test(url)) {
+        return Response.json({
+          models: [
+            { id: "provider/catalog-widened", name: "Widened", provider: "provider", providerLabel: "Provider" },
+            { id: "catalogonly", name: "Catalog Only", provider: "provider", providerLabel: "Provider" },
+          ],
+          truncated: false,
+        });
+      }
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+
+    // Tier 1: the configured shortlist is unchanged and always allowed.
+    const shortlist = service.createThread("agent-one");
+    await expect(service.startTurn(shortlist.id, { text: "tier1", model: "provider/default" })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+
+    // Tier 3: a well-formed but never-seen provider ref passes the floor.
+    const floor = service.createThread("agent-one");
+    await expect(service.startTurn(floor.id, { text: "floor", model: "anthropic:claude-sonnet-5" })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+
+    // Before any catalog proxy the cache-only model is rejected (no shortlist
+    // entry, no cache entry, and no colon for the floor).
+    const proto = service.createThread("agent-one");
+    await expect(service.startTurn(proto.id, { text: "proto", model: "catalogonly" })).rejects.toMatchObject({ code: "invalid_model" });
+
+    const page = await service.agentModels("agent-one", { limit: 50 });
+    expect(page.models.map((model) => model.id)).toEqual(["provider/catalog-widened", "catalogonly"]);
+
+    // Tier 2: both proxied models are now selectable, including the no-colon
+    // one that only the catalog cache can have admitted.
+    const widened = service.createThread("agent-one");
+    await expect(service.startTurn(widened.id, { text: "catalog", model: "provider/catalog-widened" })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    const cacheOnly = service.createThread("agent-one");
+    await expect(service.startTurn(cacheOnly.id, { text: "cache", model: "catalogonly" })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+
+  it("rejects malformed provider-prefix refs that cannot reach any validation tier", async () => {
+    const service = await createService({});
+    for (const model of ["no-colon", ":leading", "trailing:", ""]) {
+      const thread = service.createThread("agent-one");
+      await expect(service.startTurn(thread.id, { text: `model ${model}`, model })).rejects.toMatchObject({ code: "invalid_model" });
+    }
+    await service.stop();
+  });
+
+  it("evicts the oldest catalog-admitted model at the 2048 cap and keeps the newest", async () => {
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "provider/default",
+        models: ["provider/default"],
+        modelOptions: { "provider/default": { effortLevels: ["low", "high"], reasoning: true } },
+        capabilities: { attachments: true },
+      });
+      if (/\/v1\/models(?:\?|$)/u.test(url)) {
+        return Response.json({
+          models: Array.from({ length: 2_049 }, (_, index) => ({
+            id: `pmodel-${String(index)}`,
+            name: `Model ${String(index)}`,
+            provider: "provider",
+            providerLabel: "Provider",
+          })),
+          truncated: false,
+        });
+      }
+      return operatorFetch()(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    const page = await service.agentModels("agent-one", { limit: 200 });
+    expect(page.models).toHaveLength(2_049);
+
+    const newest = service.createThread("agent-one");
+    await expect(service.startTurn(newest.id, { text: "newest", model: "pmodel-2048" })).resolves.toBeDefined();
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    const evicted = service.createThread("agent-one");
+    await expect(service.startTurn(evicted.id, { text: "evicted", model: "pmodel-0" })).rejects.toMatchObject({ code: "invalid_model" });
+    await service.stop();
   });
 
   it("keeps thread selection read-only and validates advertised model/effort semantics", async () => {

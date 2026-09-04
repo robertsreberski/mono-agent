@@ -20,8 +20,7 @@
 //     so the router is a drop-in replacement for createRuntime(host).
 //
 //   chain entries:
-//     { model: ModelRef, executionMode?: "sdk" | "cli" | "acp", effort?: string|null,
-//       requires?: Capabilities }
+//     { model: ModelRef, effort?: string|null, requires?: Capabilities }
 //   shorthand: a bare ModelRef is also accepted (no requirements).
 //   effort string = fixed for that route, undefined = inherit the legacy run
 //   effort, null = omit effort so the provider chooses its default.
@@ -55,10 +54,8 @@ import { instrumentLiveInputAppliedEvents } from "./live-input-events.js";
 /**
  * @typedef {Object} RouterChainEntryInput
  * A chain entry as accepted by createRouterRuntime: either the shorthand bare
- * RuntimeModelRef, or the full `{model, executionMode?, effort?, requires?,
- * attempts?}` form.
+ * RuntimeModelRef, or the full `{model, effort?, requires?, attempts?}` form.
  * @property {RuntimeModelRef} model
- * @property {string} [executionMode]
  * @property {string|null} [effort]
  * @property {Object<string, *>} [requires]
  * @property {number} [attempts]
@@ -67,7 +64,6 @@ import { instrumentLiveInputAppliedEvents } from "./live-input-events.js";
 /**
  * @typedef {Object} RouterChainEntry
  * @property {RuntimeModelRef} model
- * @property {string|null} executionMode
  * @property {string|null|undefined} effort
  * @property {Object<string, *>|null} requires
  * @property {number} attempts Total attempts on this route including the first.
@@ -91,18 +87,16 @@ import { instrumentLiveInputAppliedEvents } from "./live-input-events.js";
  * @property {() => (void|Promise<void>)} [cleanup]
  */
 
-const ROUTE_SAFETY_MODES = new Set(["uniform", "per-route-native"]);
 const ATTEMPT_SCOPED_OPTION_KEYS = ["customProvider", "customModel", "modelCapabilities", "isPrivateProvider"];
 const ROUTER_TOOL_CONTEXT_KEYS = [
   "workspace", "repoRoot", "ripgrepPath", "qaOutputDir", "sandboxPolicy", "sandboxEngine",
 ];
 const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
-  "model", "executionMode", "effort", "messages", "abortSignal", "onEvent",
+  "model", "effort", "messages", "abortSignal", "onEvent",
   "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
   "allowedTools", "disallowedTools", "permissionMode", "mcpServers", "mcpApps", "skills",
-  "outputSchema", "nativeSubagents", "liveInput", "fastMode", "toolEnvironment",
-  "codexSandboxNetworkAccess",
+  "outputSchema", "liveInput", "toolEnvironment",
 ]);
 
 class ResolverProtectedOptionError extends Error {
@@ -117,16 +111,12 @@ class ResolverProtectedOptionError extends Error {
  * @param {Object} [options]
  * @param {AgentRuntimeHostOptions} [options.host]
  * @param {ReadonlyArray<RuntimeModelRef|RouterChainEntryInput>} [options.chain]
- * @param {"uniform"|"per-route-native"} [options.routeSafety]
- * @param {(input: {model: RuntimeModelRef, executionMode: string|null, attemptIndex: number, retryIndex: number, routeSafety: "uniform"|"per-route-native"}) => (RouterAttemptResolution|Promise<RouterAttemptResolution>)} [options.resolveAttempt]
+ * @param {(input: {model: RuntimeModelRef, attemptIndex: number, retryIndex: number}) => (RouterAttemptResolution|Promise<RouterAttemptResolution>)} [options.resolveAttempt]
  * @param {Partial<RouterRetryPolicy>} [options.retry] Backoff shape for same-model
  *   retries. Per-route retry counts live on each chain entry's `attempts`.
  * @returns {AgentRuntimeInstance & {chain: () => Array<RouterChainEntry>}}
  */
-export function createRouterRuntime({ host = {}, chain = [], routeSafety = "uniform", resolveAttempt, retry } = {}) {
-  if (!ROUTE_SAFETY_MODES.has(routeSafety)) {
-    throw new Error("createRouterRuntime routeSafety must be uniform or per-route-native");
-  }
+export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, retry } = {}) {
   const retryPolicy = normalizeRetryPolicy(retry);
   const entries = normaliseChain(chain);
   if (entries.length === 0) {
@@ -134,8 +124,6 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
   }
   assertUniqueEntries(entries);
   const inner = createRuntime(host);
-  /** @type {Map<string, AgentRuntimeInstance>} */
-  const routeRuntimes = new Map();
   /** @type {import('../types.js').AgentRuntimeToolOptions|undefined} */
   let configuredTools;
   // The router builds transcript-tail snapshots outside the inner runtime's
@@ -148,8 +136,8 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
     /**
      * @param {string} systemPrompt
      * @param {Partial<RuntimeRunOptions>} [options] Optional so a bare `{}` call
-     *   is legal; the router always overrides `model`/`executionMode` per chain
-     *   entry (see AgentRuntimeInstance.run for the public, model-required contract).
+     *   is legal; the router always overrides `model` per chain entry (see
+     *   AgentRuntimeInstance.run for the public, model-required contract).
      * @returns {Promise<RuntimeResult>}
      */
     async run(systemPrompt, options = {}) {
@@ -169,7 +157,7 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
         };
       }
       try {
-      /** @type {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null|undefined), retryableSubkind?: (string|null|undefined), requirements?: (Object<string,*>|null), routeSafety?: import('../types.js').RuntimeRouteSafetyMode, safetyContract?: import('../types.js').RuntimeRouteSafetyContract}>} */
+      /** @type {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null|undefined), retryableSubkind?: (string|null|undefined), requirements?: (Object<string,*>|null), retryIndex?: number}>} */
       const failoverHistory = [];
       /** @type {RuntimeResult|null} */
       let lastResult = null;
@@ -178,46 +166,9 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
       const promptBase = systemPrompt;
       /** @type {*} */
       let pendingSnapshot = null;
-      /** @type {Array<{attemptIndex: number, model: RuntimeModelRef, routeSafety: import('../types.js').RuntimeRouteSafetyMode, safetyContract: import('../types.js').RuntimeRouteSafetyContract, status: string}>} */
-      const routeSafetyHistory = [];
-
       for (let i = 0; i < entries.length; i += 1) {
         const entry = entries[i];
         const effectiveToolOptions = effectiveRouterToolOptions(host, configuredTools);
-        const entrySafetyContract = routeSafetyContract(
-          routeSafety,
-          entry,
-          entry.model.sdk === "pi"
-            ? effectivePiSandboxPolicy(effectiveToolOptions, options)
-            : undefined,
-        );
-        // Internal protected roots are enforced by mono-agent's Pi tool layer
-        // and SRT projection. Provider-native non-Pi routes deliberately drop
-        // that layer, so attempting one would turn the router into a confused
-        // deputy for private host state. Reject the route before resolution or
-        // provider construction; a later Pi entry may still satisfy the run.
-        if (
-          entry.model.sdk !== "pi"
-          && attemptCarriesProtectedRoots(effectiveToolOptions, options)
-        ) {
-          const failure = safetyUnavailableResult();
-          lastRouteSkip = failure;
-          failoverHistory.push({
-            model: entry.model,
-            failureKind: "safety_unavailable",
-            routeSafety,
-            safetyContract: entrySafetyContract,
-          });
-          const unavailableRecord = routeSafetyRecord(
-            i,
-            entry,
-            entrySafetyContract,
-            "safety_unavailable",
-          );
-          routeSafetyHistory.push(unavailableRecord);
-          emit(options, { type: "provider_route_safety", ...unavailableRecord });
-          continue;
-        }
         if (!entrySatisfiesRequirements(entry, options)) {
           lastRouteSkip = {
             text: null,
@@ -231,12 +182,7 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
             model: entry.model,
             failureKind: "skipped_capability_mismatch",
             requirements: entry.requires,
-            routeSafety,
-            safetyContract: entrySafetyContract,
           });
-          const skippedRecord = routeSafetyRecord(i, entry, entrySafetyContract, "skipped_capability_mismatch");
-          routeSafetyHistory.push(skippedRecord);
-          emit(options, { type: "provider_route_safety", ...skippedRecord });
           continue;
         }
 
@@ -249,7 +195,6 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
         const entryOptionsBase = {
           ...options,
           model: entry.model,
-          executionMode: entry.executionMode || options.executionMode,
         };
         // The legacy run-level custom-provider bag describes the primary
         // route. Without a route resolver there is no authoritative metadata
@@ -263,7 +208,6 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
         let terminalResult = null;
 
         for (let retryIndex = 0; retryIndex < entry.attempts; retryIndex += 1) {
-          let safetyContract = entrySafetyContract;
           /** @type {*} */
           let callOptions = { ...entryCallBase };
           /** @type {AgentRuntimeInstance} */
@@ -275,10 +219,8 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
               ? undefined
               : await resolveAttempt({
                   model: entry.model,
-                  executionMode: entry.executionMode,
                   attemptIndex: i,
                   retryIndex,
-                  routeSafety,
                 });
             const resolution = normalizeAttemptResolution(resolved);
             attemptCleanup = resolution?.cleanup;
@@ -286,50 +228,19 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
               callOptions = mergeAttemptOptions(callOptions, resolution?.options);
               callOptions = mergeAttemptPolicyOptions(callOptions, resolution?.policyOptions);
             }
-            if (routeSafety === "per-route-native") {
-              callOptions = projectPerRouteNativeOptions(entry, callOptions);
-              const key = routeRuntimeKey(entry, i);
-              const resolvedRuntime = resolution?.runtime;
-              if (resolvedRuntime !== undefined) {
-                assertRuntimeLike(resolvedRuntime);
-                const previousRuntime = routeRuntimes.get(key);
-                if (previousRuntime !== undefined && previousRuntime !== resolvedRuntime) {
-                  try { await previousRuntime.disposeAllSessions?.(); } catch { /* best-effort replacement */ }
-                }
-                routeRuntimes.set(key, resolvedRuntime);
-                if (entry.model.sdk !== "pi") {
-                  resolvedRuntime.configureTools?.(projectPerRouteNativeToolOptions(entry, configuredTools));
-                }
-              }
-              attemptRuntime = routeRuntimes.get(key) ?? createRouteRuntime(key, entry, host, routeRuntimes, configuredTools);
-              if (entry.model.sdk === "pi") {
-                projectPiRuntimeToolContext(attemptRuntime, effectiveToolOptions);
-                // Derive the attestation from the same complete base context and
-                // request-scoped inputs that the supplied/runtime-owned Pi
-                // bridge will actually receive. Resolver options cannot alter
-                // these protected fields.
-                safetyContract = routeSafetyContract(
-                  routeSafety,
-                  entry,
-                  effectivePiSandboxPolicy(effectiveToolOptions, callOptions),
-                );
-              }
-            } else if (resolution?.runtime !== undefined && resolution.runtime !== inner) {
-              throw new Error("uniform route safety cannot replace the shared monotonic runtime");
+            if (resolution?.runtime !== undefined) {
+              assertRuntimeLike(resolution.runtime);
+              attemptRuntime = resolution.runtime;
+              projectPiRuntimeToolContext(attemptRuntime, effectiveToolOptions);
             }
           } catch (error) {
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
-            const failure = safetyUnavailableResult(error);
-            lastRouteSkip = failure;
+            const failure = attemptResolutionFailureResult(error);
+            lastResult = failure;
             failoverHistory.push({
               model: entry.model,
-              failureKind: "safety_unavailable",
-              routeSafety,
-              safetyContract,
+              failureKind: failure.failureKind || null,
             });
-            const unavailableRecord = routeSafetyRecord(i, entry, safetyContract, "safety_unavailable");
-            routeSafetyHistory.push(unavailableRecord);
-            emit(callOptions, { type: "provider_route_safety", ...unavailableRecord });
             // A resolver fault is a config/credential problem, not a transient
             // provider blip: retrying the same route cannot fix it. Advance.
             break;
@@ -361,17 +272,6 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
               callOptions.systemPromptPrefix = rendered;
               attemptSystemPrompt = `${rendered}\n\n${promptBase}`;
             }
-          }
-
-          // The safety contract is a property of the route: resolver options can
-          // never reach the sandbox/tool policy (RESOLVER_PROTECTED_OPTION_KEYS)
-          // and effectivePiSandboxPolicy reads only protected fields, so every
-          // retry of one entry derives an identical contract. Record it once so
-          // the bounded safety telemetry stays one record per chain entry.
-          if (retryIndex === 0) {
-            const safetyRecord = routeSafetyRecord(i, entry, safetyContract, "attempted");
-            routeSafetyHistory.push(safetyRecord);
-            emit(callOptions, { type: "provider_route_safety", ...safetyRecord });
           }
 
           // A same-model retry is not a failover: only the first attempt of a new
@@ -433,7 +333,7 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
                 model: modelKey(entry.model),
               });
             }
-            return { ...result, failoverHistory, routeSafetyHistory };
+            return { ...result, failoverHistory };
           }
 
           failoverHistory.push({
@@ -442,8 +342,6 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
             requestId: retryability.requestId,
             retryableSubkind: retryability.subkind,
             ...(retryIndex > 0 ? { retryIndex } : {}),
-            routeSafety,
-            safetyContract,
           });
           if (result.failureKind === "skipped_capability_mismatch") {
             lastRouteSkip = result;
@@ -494,16 +392,16 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
             reason: retryability.subkind || result.failureKind || null,
           });
           if (callOptions.abortSignal?.aborted) {
-            return { ...result, cancelled: true, failoverHistory, routeSafetyHistory };
+            return { ...result, cancelled: true, failoverHistory };
           }
           await delay(backoffMs, callOptions.abortSignal);
           if (callOptions.abortSignal?.aborted) {
-            return { ...result, cancelled: true, failoverHistory, routeSafetyHistory };
+            return { ...result, cancelled: true, failoverHistory };
           }
         }
 
         if (terminalResult !== null) {
-          return { ...terminalResult, failoverHistory, routeSafetyHistory };
+          return { ...terminalResult, failoverHistory };
         }
         // Every other inner break falls through to the next chain entry.
       }
@@ -520,7 +418,6 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
         ...exhaustedResult,
         failureKind: lastResult ? "provider_unavailable_exhausted" : exhaustedResult.failureKind,
         failoverHistory,
-        routeSafetyHistory,
       };
       } finally {
         await liveInputHub?.flush();
@@ -529,65 +426,39 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
     chain: () => entries.slice(),
     configureTools(next = {}) {
       configuredTools = { ...(configuredTools || {}), ...next };
-      if (routeSafety === "uniform") {
-        inner.configureTools?.(next);
-        return;
-      }
-      entries.forEach((entry, index) => {
-        const runtime = routeRuntimes.get(routeRuntimeKey(entry, index));
-        runtime?.configureTools?.(projectPerRouteNativeToolOptions(entry, next));
-      });
-      // `inner` is deliberately not configured in per-route-native mode: all
-      // attempts use their isolated route runtime, and applying one route's
-      // policy to this shared standby would defeat that isolation.
+      inner.configureTools?.(next);
     },
     async syncSession(providerSessionId) {
-      let synced = false;
-      for (const runtime of allRuntimes(inner, routeRuntimes)) {
-        synced = Boolean(await runtime.syncSession?.(providerSessionId)) || synced;
-      }
-      return synced;
+      return Boolean(await inner.syncSession?.(providerSessionId));
     },
     async refreshSession(providerSessionId) {
-      for (const runtime of allRuntimes(inner, routeRuntimes)) {
-        if (typeof runtime.refreshSession !== "function") {
-          throw new Error("A routed runtime cannot guarantee a cold provider-session reopen");
-        }
-        await runtime.refreshSession(providerSessionId);
+      if (typeof inner.refreshSession !== "function") {
+        throw new Error("A routed runtime cannot guarantee a cold provider-session reopen");
       }
+      await inner.refreshSession(providerSessionId);
     },
     async retireDurableSession(providerSessionId, sessionsRoot) {
-      for (const runtime of allRuntimes(inner, routeRuntimes)) {
-        if (typeof runtime.retireDurableSession !== "function") {
-          throw new Error("A routed runtime cannot retire durable provider-session state");
-        }
-        await runtime.retireDurableSession(providerSessionId, sessionsRoot);
+      if (typeof inner.retireDurableSession !== "function") {
+        throw new Error("A routed runtime cannot retire durable provider-session state");
       }
+      await inner.retireDurableSession(providerSessionId, sessionsRoot);
     },
     async disposeSession(providerSessionId) {
-      let disposed = false;
-      for (const runtime of allRuntimes(inner, routeRuntimes)) {
-        disposed = Boolean(await runtime.disposeSession?.(providerSessionId)) || disposed;
-      }
-      return disposed;
+      return Boolean(await inner.disposeSession?.(providerSessionId));
     },
     async invalidateSession(providerSessionId) {
-      let invalidated = false;
-      for (const runtime of allRuntimes(inner, routeRuntimes)) {
-        invalidated = Boolean(await runtime.invalidateSession?.(providerSessionId)) || invalidated;
-      }
-      return invalidated;
+      return Boolean(await inner.invalidateSession?.(providerSessionId));
     },
     async disposeAllSessions() {
-      await Promise.all(allRuntimes(inner, routeRuntimes).map(async (runtime) => runtime.disposeAllSessions?.()));
+      await inner.disposeAllSessions?.();
     },
   };
 }
 
 /**
  * @param {ReadonlyArray<*>} chain ReadonlyArray<RuntimeModelRef|RouterChainEntryInput>, loosened
- *   here because distinguishing the two shapes is a runtime duck-type check
- *   (`entry.sdk && entry.model`), not something a union type narrows cleanly.
+ *   here because distinguishing the two shapes is a runtime duck-type check,
+ *   not something a union type narrows cleanly.
  * @returns {Array<RouterChainEntry>}
  */
 function normaliseChain(chain) {
@@ -595,14 +466,13 @@ function normaliseChain(chain) {
   return /** @type {Array<RouterChainEntry>} */ (chain
     .map((entry) => {
       if (!entry) return null;
-      if (entry.sdk && entry.model) {
-        // ModelRef shorthand: { sdk, model, ... }
-        return { model: entry, executionMode: null, effort: undefined, requires: null, attempts: 1 };
+      if (typeof entry.provider === "string" && typeof entry.model === "string") {
+        // ModelRef shorthand: { provider, model, reference }
+        return { model: entry, effort: undefined, requires: null, attempts: 1 };
       }
       if (entry.model) {
         return {
           model: entry.model,
-          executionMode: typeof entry.executionMode === "string" ? entry.executionMode : null,
           effort: normalizeChainEffort(entry.effort),
           requires: entry.requires && typeof entry.requires === "object" ? entry.requires : null,
           attempts: normalizeChainAttempts(entry.attempts),
@@ -692,87 +562,7 @@ function assertUniqueEntries(entries) {
 
 /** @param {RuntimeModelRef} model */
 function modelKey(model) {
-  const provider = typeof model.provider === "string" && model.provider.length > 0 ? `${model.provider}:` : "";
-  return `${model.sdk}:${provider}${model.model}`;
-}
-
-/**
- * A small fixed vocabulary keeps safety telemetry bounded and prevents route
- * credentials/options from accidentally entering events or persisted results.
- * @param {"uniform"|"per-route-native"} mode
- * @param {RouterChainEntry} entry
- * @param {Object<string, *>|undefined} piSandboxPolicy
- * @returns {import('../types.js').RuntimeRouteSafetyContract}
- */
-function routeSafetyContract(mode, entry, piSandboxPolicy) {
-  if (mode === "uniform") {
-    return {
-      mode,
-      sandbox: "mono-agent-monotonic",
-      tools: "mono-agent-monotonic",
-    };
-  }
-  switch (entry.model.sdk) {
-    case "pi":
-      return {
-        mode,
-        sandbox: piSandboxContract(piSandboxPolicy),
-        tools: "mono-agent-policy",
-      };
-    case "claude":
-      return { mode, sandbox: "provider-native", tools: "provider-representable" };
-    case "codex":
-      return { mode, sandbox: "codex-native", tools: "exact-allow-all" };
-    case "opencode":
-      return { mode, sandbox: "provider-native", tools: "exact-allow-all" };
-    case "acp":
-      return { mode, sandbox: "provider-native", tools: "exact-allow-all" };
-    default:
-      return { mode, sandbox: "unsupported", tools: "unsupported" };
-  }
-}
-
-/**
- * Describe the Pi sandbox posture without claiming that SRT is enforced when
- * the effective policy explicitly permits an unavailable engine to fall back
- * to an unsandboxed host process. Both fields are required because the runtime
- * adapter treats an unsafe fallback without its explicit opt-in as fail-closed.
- *
- * @param {Object<string, *>|undefined} policy
- * @returns {import('../types.js').RuntimeRouteSandboxContract}
- */
-function piSandboxContract(policy) {
-  if (policy === undefined) return "disabled";
-  if (policy.fallback === "unsafe-host-process" && policy.unsafeAllowHostProcess === true) {
-    return "mono-agent-srt-unsafe-host-fallback";
-  }
-  return "mono-agent-srt";
-}
-
-/**
- * Describe the policy Pi tools actually receive after host/configure/run
- * precedence. A request-scoped `off` policy cannot weaken an active host
- * policy, while an active request policy can tighten an absent/off host.
- * `configureTools({ sandboxPolicy: undefined })` explicitly clears the host
- * tool-context policy and must therefore be distinguished from an omitted key.
- *
- * @param {import('../types.js').AgentRuntimeToolOptions} toolOptions
- * @param {Object<string, *>} runOptions
- * @returns {Object<string, *>|undefined}
- */
-function effectivePiSandboxPolicy(toolOptions, runOptions) {
-  // Match the Pi turn runner's implementation precedence: a run-scoped
-  // RuntimeSandbox wins, followed by configureTools/host, then the kernel's
-  // fail-closed passthrough. Delegating the merge is essential here: the real
-  // adapter makes fail-closed dominate unsafe-host-process, so inspecting only
-  // the first non-off policy would produce false safety telemetry.
-  const sandbox = runOptions.sandbox
-    ?? toolOptions.sandbox
-    ?? passthroughSandbox;
-  const policy = sandbox.mergePolicies(toolOptions.sandboxPolicy, runOptions.sandboxPolicy);
-  return policy && typeof policy === "object" && policy.mode !== "off"
-    ? policy
-    : undefined;
+  return model.reference;
 }
 
 /**
@@ -802,67 +592,19 @@ function effectiveRouterToolOptions(host, configuredTools) {
 }
 
 /**
- * A protected-root policy is host-internal and intentionally has no public
- * provider-native projection. Treat a present malformed value or an accessor
- * failure as protected so untrusted option shapes cannot turn this gate into a
- * fail-open boundary. Empty arrays preserve ordinary provider-native routing.
- *
- * @param {unknown} policy
- * @returns {boolean}
- */
-function sandboxPolicyHasProtectedRoots(policy) {
-  if (policy === null || typeof policy !== "object") return false;
-  try {
-    if (!("protectedRoots" in policy)) return false;
-    const protectedRoots = /** @type {{protectedRoots?: unknown}} */ (policy).protectedRoots;
-    if (protectedRoots === undefined) return false;
-    return !Array.isArray(protectedRoots) || protectedRoots.length > 0;
-  } catch {
-    return true;
-  }
-}
-
-/**
- * @param {import('../types.js').AgentRuntimeToolOptions} toolOptions
- * @param {Object<string, *>} runOptions
- * @returns {boolean}
- */
-function attemptCarriesProtectedRoots(toolOptions, runOptions) {
-  return sandboxPolicyHasProtectedRoots(toolOptions.sandboxPolicy)
-    || sandboxPolicyHasProtectedRoots(runOptions.sandboxPolicy);
-}
-
-/**
  * A resolver-supplied Pi runtime is allowed to own credentials/provider
- * lifecycle, never the route's safety posture. Replace its complete mutable
- * ToolContext before every execution so a blank, stale, or weaker runtime
- * cannot diverge from the router's host/configured/run policy or telemetry.
+ * lifecycle, never the router-owned tool context. Replace its complete mutable
+ * ToolContext before every execution so a blank or stale runtime cannot diverge
+ * from the router's host/configured/run policy or telemetry.
  *
  * @param {AgentRuntimeInstance} runtime
  * @param {import('../types.js').AgentRuntimeToolOptions} toolOptions
  */
 function projectPiRuntimeToolContext(runtime, toolOptions) {
   if (typeof runtime.configureTools !== "function") {
-    throw new Error("per-route-native Pi runtime must expose configureTools() for safety projection");
+    throw new Error("route attempt runtime must expose configureTools() for tool-context projection");
   }
   runtime.configureTools(toolOptions);
-}
-
-/**
- * @param {number} attemptIndex
- * @param {RouterChainEntry} entry
- * @param {import('../types.js').RuntimeRouteSafetyContract} contract
- * @param {string} status
- * @returns {{attemptIndex: number, model: RuntimeModelRef, routeSafety: import('../types.js').RuntimeRouteSafetyMode, safetyContract: import('../types.js').RuntimeRouteSafetyContract, status: string}}
- */
-function routeSafetyRecord(attemptIndex, entry, contract, status) {
-  return {
-    attemptIndex,
-    model: entry.model,
-    routeSafety: contract.mode,
-    safetyContract: contract,
-    status,
-  };
 }
 
 /** @param {RouterAttemptResolution|undefined} value */
@@ -947,89 +689,6 @@ function withoutAttemptScopedOptions(options) {
   return projected;
 }
 
-/**
- * Explicit mixed-route projection. Capability-bearing inputs (MCP, skills,
- * schema, live input, native subagents) are never removed here; the capability
- * gate either proves support or skips the route before execution.
- * @param {RouterChainEntry} entry
- * @param {Object<string, *>} options
- */
-function projectPerRouteNativeOptions(entry, options) {
-  const projected = { ...options };
-  switch (entry.model.sdk) {
-    case "pi":
-      return projected;
-    case "claude":
-      delete projected.sandboxPolicy;
-      delete projected.sandboxEngine;
-      return projected;
-    case "codex":
-    case "opencode":
-    case "acp":
-      delete projected.sandboxPolicy;
-      delete projected.sandboxEngine;
-      projected.allowedTools = ["*"];
-      projected.disallowedTools = [];
-      return projected;
-    default:
-      throw new Error(`per-route-native safety has no contract for sdk ${entry.model.sdk}`);
-  }
-}
-
-/**
- * @param {string} key
- * @param {RouterChainEntry} entry
- * @param {AgentRuntimeHostOptions} host
- * @param {Map<string, AgentRuntimeInstance>} runtimes
- * @param {import('../types.js').AgentRuntimeToolOptions|undefined} configuredTools
- */
-function createRouteRuntime(key, entry, host, runtimes, configuredTools) {
-  const runtime = createRuntime(projectPerRouteNativeHost(entry, host));
-  if (configuredTools !== undefined) {
-    runtime.configureTools?.(projectPerRouteNativeToolOptions(entry, configuredTools));
-  }
-  runtimes.set(key, runtime);
-  return runtime;
-}
-
-/**
- * Provider-native routes retain the injected sandbox implementation seam, but
- * must never inherit mono-agent policy data or a concrete srt engine. Assigning
- * explicit `undefined` values (rather than deleting the keys) also clears a
- * previously configured runtime when configureTools is called again.
- * @param {RouterChainEntry} entry
- * @param {import('../types.js').AgentRuntimeToolOptions|undefined} configuredTools
- * @returns {import('../types.js').AgentRuntimeToolOptions}
- */
-function projectPerRouteNativeToolOptions(entry, configuredTools = {}) {
-  const projected = { ...configuredTools };
-  if (entry.model.sdk !== "pi") {
-    projected.sandboxPolicy = undefined;
-    projected.sandboxEngine = undefined;
-  }
-  return projected;
-}
-
-/**
- * Host-level policy must be isolated alongside request-level policy. The
- * sandbox implementation itself remains available; only enforcing policy data
- * and its route-specific engine are removed for provider-native bridges.
- * @param {RouterChainEntry} entry
- * @param {AgentRuntimeHostOptions} host
- */
-function projectPerRouteNativeHost(entry, host) {
-  if (entry.model.sdk === "pi") return host;
-  const projected = { ...host };
-  delete projected.sandboxPolicy;
-  delete projected.sandboxEngine;
-  return projected;
-}
-
-/** @param {RouterChainEntry} entry @param {number} index */
-function routeRuntimeKey(entry, index) {
-  return `${index}:${modelKey(entry.model)}:${entry.executionMode ?? "default"}`;
-}
-
 /** @param {AgentRuntimeInstance} runtime */
 function assertRuntimeLike(runtime) {
   if (runtime === null || typeof runtime !== "object" || typeof runtime.run !== "function") {
@@ -1047,7 +706,7 @@ function applyEntryEffort(options, effort) {
 }
 
 /** @param {unknown} error @returns {RuntimeResult} */
-function safetyUnavailableResult(error) {
+function attemptResolutionFailureResult(error) {
   // Host resolvers may handle credentials. Never echo their exception text
   // into persisted results or route telemetry. ResolverProtectedOptionError is
   // constructed only from a repository-owned allowlist key, so it is safe and
@@ -1056,8 +715,8 @@ function safetyUnavailableResult(error) {
     text: null,
     error: error instanceof ResolverProtectedOptionError
       ? error.message
-      : "The route safety contract could not be established before execution.",
-    failureKind: "safety_unavailable",
+      : "The route attempt could not be resolved before execution.",
+    failureKind: "provider_unavailable",
     events: [],
     cancelled: false,
     usage: {},
@@ -1068,14 +727,6 @@ function safetyUnavailableResult(error) {
 function isMidTurnSafetyFailure(failureKind) {
   return typeof failureKind === "string"
     && (failureKind.startsWith("sandbox_") || failureKind.startsWith("safety_"));
-}
-
-/**
- * @param {AgentRuntimeInstance} inner
- * @param {Map<string, AgentRuntimeInstance>} routeRuntimes
- */
-function allRuntimes(inner, routeRuntimes) {
-  return [...new Set([inner, ...routeRuntimes.values()])];
 }
 
 /**
@@ -1166,17 +817,6 @@ function entrySatisfiesRequirements(entry, options) {
   if (options.toolEnvironment !== undefined) {
     effectiveRequires.supports_request_tool_environment = true;
   }
-  if (options.fastMode === true) {
-    effectiveRequires.supports_fast_mode = true;
-  }
-  // Native teammates likewise require a capable route; Pi/OpenCode must skip
-  // rather than silently dropping them.
-  if (
-    Array.isArray(options.nativeSubagents?.teammates)
-    && options.nativeSubagents.teammates.length > 0
-  ) {
-    effectiveRequires.supports_native_subagents = true;
-  }
   if (Object.keys(effectiveRequires).length === 0) return true;
   let caps;
   try {
@@ -1191,10 +831,10 @@ function entrySatisfiesRequirements(entry, options) {
 }
 
 /**
- * Session identifiers belong to the bridge that created them. Never forward
- * one into a bridge that declares no resume support (notably isolated
- * per-run OpenCode), including when that bridge is reached through fallback.
- * Unknown SDKs retain the existing fail-later behavior.
+ * Session identifiers belong to the route that created them. Never forward one
+ * into a route whose capabilities declare no resume support, including when
+ * that route is reached through fallback. Unknown model references retain the
+ * existing fail-later behavior.
  * @param {RouterChainEntry} entry
  * @returns {boolean}
  */

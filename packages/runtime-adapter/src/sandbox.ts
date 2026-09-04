@@ -576,7 +576,7 @@ export function describeSandboxEffectiveState(state: SandboxEffectiveState): str
     return `Sandbox is effective with native engine "${state.engine ?? "unknown"}"; commands run sandboxed.`;
   }
   if (state.effective === "blocked") {
-    return `Sandbox engine "${state.engine ?? "unknown"}" is unavailable; commands fail closed with sandbox_unavailable.`;
+    return `Sandbox engine "${state.engine ?? "unknown"}" is unavailable (sandbox_unavailable); commands fail closed with sandbox_prepare_failed.`;
   }
   return `Sandbox unsafe-host-process fallback is active because engine "${state.engine ?? "unknown"}" is unavailable; ${UNSAFE_HOST_PROCESS_CONSEQUENCE}.`;
 }

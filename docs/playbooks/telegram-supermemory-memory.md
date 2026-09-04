@@ -53,7 +53,7 @@ Select the backend with `memory.backend` and point it at your instance. `mode` a
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6"
+    "model": "anthropic:claude-sonnet-4-6"
   },
   "telegram": {
     "enabled": true,

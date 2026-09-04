@@ -1,5 +1,7 @@
 import net from "node:net";
 
+import { listPiBuiltinModels } from "@mono-agent/agent-runtime";
+
 import { RuntimeAdapterError } from "./runtime-adapter.js";
 import { isPlainObject } from "./runtime-helpers.js";
 import type { RuntimeModelReference } from "./types.js";
@@ -39,15 +41,24 @@ export interface LocalProviderModelDefinition {
   readonly pricing?: LocalProviderPricing;
 }
 
-export interface LocalProviderDefinition {
+/** One provider selected into an agent's model catalog. */
+export interface ProviderDefinition {
   readonly id: string;
-  readonly type: LocalProviderType;
+  /** Present only for a self-hosted/OpenAI-compatible endpoint. */
+  readonly type?: LocalProviderType;
   readonly baseUrl?: string;
   readonly enabled?: boolean;
   readonly trustPublicUrl?: boolean;
   readonly apiKey?: string;
   readonly apiKeyEnv?: string;
   readonly models?: readonly LocalProviderModelDefinition[];
+  /** Bound the provider's contribution to operator-facing model catalogs. */
+  readonly maxAdvertisedModels?: number;
+}
+
+/** Backward-compatible narrowed shape for callers that require a local endpoint. */
+export interface LocalProviderDefinition extends ProviderDefinition {
+  readonly type: LocalProviderType;
 }
 
 export interface AgentRuntimeCustomProvider {
@@ -90,6 +101,13 @@ const OLLAMA_EFFORT_REASONING_HINTS = ["gpt-oss"];
 const OLLAMA_EFFORT_REASONING_LEVELS = ["low", "medium", "high"];
 const OLLAMA_TOGGLE_REASONING_HINTS = ["deepseek", "qwen", "qwq", "thinking", "reasoning"];
 const OPENAI_COMPAT_REASONING_LEVELS = ["none", "low", "medium", "high", "xhigh"];
+const DEFAULT_MAX_ADVERTISED_MODELS = 100;
+const MAX_ADVERTISED_MODELS = 200;
+const AUTODISCOVERABLE_PROVIDER_TYPES = new Map<string, LocalProviderType>([
+  ["lmstudio", "lmstudio"],
+  ["ollama", "ollama"],
+]);
+const piBuiltinProviderCache = new Map<string, boolean>();
 
 /** One model discovered live from a local provider's OpenAI-compatible `/v1/models` endpoint. */
 export interface DiscoveredLocalModel {
@@ -155,7 +173,7 @@ async function discoverProviderModels(
     const models: DiscoveredLocalModel[] = [];
     for (const entry of body.data) {
       if (isPlainObject(entry) && typeof entry.id === "string" && entry.id.length > 0) {
-        models.push({ ref: `pi:${normalized.id}:${entry.id}`, label: entry.id, providerId: normalized.id });
+        models.push({ ref: `${normalized.id}:${entry.id}`, label: entry.id, providerId: normalized.id });
       }
     }
     return models;
@@ -171,7 +189,7 @@ async function discoverProviderModels(
  * appended unless the configured baseUrl already ends in a version segment
  * (e.g. a gateway pre-configured with `.../v1`).
  */
-function modelsEndpointForProvider(provider: LocalProviderDefinition): string {
+export function modelsEndpointForProvider(provider: LocalProviderDefinition): string {
   const baseUrl = provider.baseUrl as string;
   const versioned = provider.type === "ollama"
     ? `${baseUrl.replace(/\/(api|v1)$/u, "")}/v1`
@@ -195,10 +213,10 @@ export interface ModelEffortLevels {
 
 /**
  * Resolves the reasoning support + effort levels for a parsed model reference.
- * Local provider models (`ref.sdk === "pi"` with a configured local provider)
- * get precise levels via the same capability resolution `runtimeOptionsForLocalProvider`
- * uses for execution. Everything else (cloud pi/claude/codex, or a local ref
- * whose provider isn't configured here) deliberately degrades to
+ * Models whose provider matches a configured local provider get precise levels
+ * via the same capability resolution `runtimeOptionsForLocalProvider`
+ * uses for execution. Everything else (a cloud provider, or a local ref whose
+ * provider isn't configured here) deliberately degrades to
  * `{ reasoning: true }` with `effortLevels` left undefined — resolving cloud
  * reasoning levels precisely would require reaching into the pi-ai model
  * registry from this package, which would cycle back through config; the TUI
@@ -209,7 +227,7 @@ export function resolveModelEffortLevels(
   providers: readonly LocalProviderDefinition[] | undefined,
 ): ModelEffortLevels {
   try {
-    if (ref.sdk === "pi" && ref.provider !== undefined && providers !== undefined) {
+    if (providers !== undefined) {
       const provider = providers.find((candidate) => candidate.id === ref.provider);
       if (provider !== undefined) {
         const normalized = validateLocalProviderDefinition(provider);
@@ -231,7 +249,7 @@ export function runtimeOptionsForLocalProvider(
   model: RuntimeModelReference,
   providers: readonly LocalProviderDefinition[] | undefined,
 ): LocalProviderRuntimeOptions {
-  if (model.sdk !== "pi" || model.provider === undefined || providers === undefined || providers.length === 0) {
+  if (providers === undefined || providers.length === 0) {
     return {};
   }
 
@@ -258,22 +276,92 @@ export function runtimeOptionsForLocalProvider(
 }
 
 export function validateLocalProviderDefinition(provider: LocalProviderDefinition): LocalProviderDefinition {
+  const normalized = validateProviderDefinition(provider);
+  if (normalized.type === undefined) {
+    throw new RuntimeAdapterError("invalid_local_provider", "Local provider type is required.", {
+      providerId: normalized.id,
+    });
+  }
+  return normalized as LocalProviderDefinition;
+}
+
+/**
+ * Validate the shared provider shape without doing network I/O. Entries with
+ * no `type` declare or narrow a Pi built-in; the two local autodiscovery ids
+ * may also omit it because their endpoint kind is intrinsic to the id.
+ */
+export function validateProviderDefinition(provider: ProviderDefinition): ProviderDefinition {
   const id = normalizeProviderId(provider.id);
-  const type = normalizeProviderType(provider.type);
-  const baseUrl = normalizeBaseUrl(provider.baseUrl ?? defaultBaseUrlForType(type));
+  const type = provider.type === undefined ? undefined : normalizeProviderType(provider.type);
+  const inferredLocalType = type ?? AUTODISCOVERABLE_PROVIDER_TYPES.get(id);
+  if (provider.baseUrl !== undefined && inferredLocalType === undefined) {
+    throw new RuntimeAdapterError(
+      "invalid_local_provider",
+      "Provider baseUrl requires type=openai_compat unless the provider is ollama or lmstudio.",
+      { providerId: id },
+    );
+  }
+  const baseUrl = inferredLocalType === undefined
+    ? undefined
+    : normalizeBaseUrl(provider.baseUrl ?? defaultBaseUrlForType(inferredLocalType));
   const trustPublicUrl = provider.trustPublicUrl === true;
-  validateProviderBaseUrl(baseUrl, { trustPublicUrl });
+  if (baseUrl !== undefined) {
+    validateProviderBaseUrl(baseUrl, { trustPublicUrl });
+  }
+  const maxAdvertisedModels = provider.maxAdvertisedModels ?? DEFAULT_MAX_ADVERTISED_MODELS;
+  if (
+    !Number.isInteger(maxAdvertisedModels)
+    || maxAdvertisedModels < 1
+    || maxAdvertisedModels > MAX_ADVERTISED_MODELS
+  ) {
+    throw new RuntimeAdapterError(
+      "invalid_local_provider",
+      `Provider maxAdvertisedModels must be an integer between 1 and ${MAX_ADVERTISED_MODELS}.`,
+      { providerId: id, maxAdvertisedModels },
+    );
+  }
 
   return {
     id,
-    type,
-    baseUrl,
+    ...(type === undefined ? {} : { type }),
+    ...(baseUrl === undefined ? {} : { baseUrl }),
     enabled: provider.enabled ?? true,
     trustPublicUrl,
     ...(normalizeOptionalString(provider.apiKey) === undefined ? {} : { apiKey: normalizeOptionalString(provider.apiKey) as string }),
     ...(normalizeOptionalString(provider.apiKeyEnv) === undefined ? {} : { apiKeyEnv: normalizeOptionalString(provider.apiKeyEnv) as string }),
     ...(provider.models === undefined ? {} : { models: provider.models.map((model) => validateLocalProviderModelDefinition(model)) }),
+    maxAdvertisedModels,
   };
+}
+
+/** True when Pi's version-pinned, in-process catalog owns the provider id. */
+export function isPiBuiltinProvider(providerId: string): boolean {
+  const cached = piBuiltinProviderCache.get(providerId);
+  if (cached !== undefined) {
+    return cached;
+  }
+  try {
+    const builtin = listPiBuiltinModels(providerId).length > 0;
+    piBuiltinProviderCache.set(providerId, builtin);
+    return builtin;
+  } catch {
+    piBuiltinProviderCache.set(providerId, false);
+    return false;
+  }
+}
+
+/** Local ids whose default endpoints can be checked without configuration. */
+export function isAutodiscoverableProviderId(providerId: string): boolean {
+  return AUTODISCOVERABLE_PROVIDER_TYPES.has(providerId);
+}
+
+/** Resolve an endpoint-bearing definition for one autodiscoverable/configured local provider. */
+export function localProviderDefinitionFor(provider: ProviderDefinition): LocalProviderDefinition | undefined {
+  const inferredType = provider.type ?? AUTODISCOVERABLE_PROVIDER_TYPES.get(provider.id);
+  if (inferredType === undefined) {
+    return undefined;
+  }
+  return validateLocalProviderDefinition({ ...provider, type: inferredType });
 }
 
 export function isPrivateBaseUrl(value: string): boolean {
@@ -414,7 +502,7 @@ function validateLocalProviderModelDefinition(model: LocalProviderModelDefinitio
   };
 }
 
-function validateProviderBaseUrl(
+export function validateProviderBaseUrl(
   baseUrl: string,
   options: { readonly trustPublicUrl: boolean },
 ): void {

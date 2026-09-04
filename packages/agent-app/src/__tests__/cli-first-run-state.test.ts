@@ -32,6 +32,30 @@ function nextAnswer(queue: unknown[], name: string): unknown {
   return queue.shift();
 }
 
+/**
+ * A queued select answer has to be one the prompt actually OFFERED.
+ *
+ * A mock that returns whatever it is handed cannot fail on an answer no
+ * recovery menu contains, so a queued `"browser"` -- a value no `p.select` in
+ * this CLI has ever offered -- sat in this file for months looking like
+ * coverage while the run took the menu's default path instead. Validating the
+ * answer against `options[].value` is what makes a dead answer a failing test
+ * rather than a silent no-op.
+ */
+function nextSelectAnswer(prompt: Record<string, unknown>): unknown {
+  const answer = nextAnswer(mocks.selectAnswers, "select");
+  const offered = (prompt.options as readonly { readonly value?: unknown }[] | undefined ?? [])
+    .map((option) => option.value);
+  if (!offered.includes(answer)) {
+    throw new Error(
+      `Queued select answer ${JSON.stringify(answer)} is not offered by `
+      + `${JSON.stringify(prompt.message)}; it offers `
+      + `${offered.map((value) => JSON.stringify(value)).join(", ")}.`,
+    );
+  }
+  return answer;
+}
+
 vi.mock("@clack/prompts", () => ({
   cancel: vi.fn(),
   confirm: vi.fn(async () => nextAnswer(mocks.confirmAnswers, "confirm")),
@@ -47,7 +71,7 @@ vi.mock("@clack/prompts", () => ({
   password: vi.fn(async () => nextAnswer(mocks.passwordAnswers, "password")),
   select: vi.fn(async (options: Record<string, unknown>) => {
     mocks.selectCalls.push(options);
-    return nextAnswer(mocks.selectAnswers, "select");
+    return nextSelectAnswer(options);
   }),
   spinner: vi.fn(() => ({
     cancel: vi.fn(),
@@ -138,7 +162,11 @@ vi.mock("../init.js", async (importOriginal) => {
 });
 
 import { runCli } from "../cli.js";
+import { DEFAULT_MODEL } from "../modules/index.js";
 import { defaultAnswers } from "../wizard/answers.js";
+
+/** Provider id of the route `defaultAnswers()` selects, e.g. `openai-codex`. */
+const DEFAULT_ROUTE_PROVIDER = DEFAULT_MODEL.slice(0, DEFAULT_MODEL.indexOf(":"));
 
 const originalCwd = process.cwd();
 const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
@@ -240,6 +268,14 @@ afterEach(async () => {
   if (originalPiAuthPath === undefined) delete process.env.MONO_AGENT_PI_AUTH_PATH;
   else process.env.MONO_AGENT_PI_AUTH_PATH = originalPiAuthPath;
   await Promise.all(temporaryDirectories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  // Every queued answer has to have been ASKED FOR. An answer left over is a
+  // prompt the run never reached, so the test proved a path it never took --
+  // the other half of how a dead `"browser"` answer survived here unnoticed.
+  expect({
+    confirm: mocks.confirmAnswers,
+    password: mocks.passwordAnswers,
+    select: mocks.selectAnswers,
+  }).toEqual({ confirm: [], password: [], select: [] });
 });
 
 describe("guided init state transitions", () => {
@@ -251,7 +287,6 @@ describe("guided init state transitions", () => {
       providerSetupSecrets: {},
       runProviderSetup: false,
     });
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -283,7 +318,6 @@ describe("guided init state transitions", () => {
       providerSetupSecrets: {},
       runProviderSetup: false,
     });
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -329,7 +363,6 @@ describe("guided init state transitions", () => {
       providerSetupSecrets: {},
       runProviderSetup: false,
     });
-    mocks.confirmAnswers.push(false);
     mocks.ensureBackgroundReady.mockResolvedValue({ ok: false, action: "start", reason: "timeout" });
 
     await expect(runCli(["init"])).resolves.toBe(1);
@@ -349,7 +382,6 @@ describe("guided init state transitions", () => {
       providerSetupSecrets: {},
       runProviderSetup: false,
     });
-    mocks.confirmAnswers.push(false);
     mocks.resolveInstanceTarget.mockRejectedValue(new Error("trace registry resolution failed"));
 
     await expect(runCli(["init"])).resolves.toBe(1);
@@ -377,7 +409,6 @@ describe("guided init state transitions", () => {
       providerSetupSecrets: {},
       runProviderSetup: false,
     });
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -406,7 +437,6 @@ describe("guided init state transitions", () => {
       providerSetupSecrets: {},
       runProviderSetup: false,
     });
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -426,7 +456,6 @@ describe("guided init state transitions", () => {
       credentialStates: { codex: "credential_detected" },
       runProviderSetup: false,
     });
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -458,7 +487,6 @@ describe("guided init state transitions", () => {
     if (successfulSetup === undefined) throw new Error("expected default managed-SRT setup mock");
     mocks.setupManagedSrt.mockImplementationOnce(successfulSetup);
     mocks.selectAnswers.push("resume");
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -487,7 +515,6 @@ describe("guided init state transitions", () => {
     if (successfulSetup === undefined) throw new Error("expected default managed-SRT setup mock");
     mocks.setupManagedSrt.mockImplementationOnce(successfulSetup);
     mocks.selectAnswers.push("retry");
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -512,10 +539,9 @@ describe("guided init state transitions", () => {
     await expect(runCli(["init"])).resolves.toBe(1);
 
     await expect(access(join(process.cwd(), "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
-    expect(mocks.confirmAnswers).toEqual([]);
   });
 
-  it("returns to recovery after failed auth setup without rerunning the live probe", async () => {
+  it("returns to recovery after failed auth setup and reruns the affected live probe", async () => {
     mocks.runInitWizard.mockResolvedValue({
       status: "answers",
       answers: defaultAnswers(),
@@ -528,14 +554,25 @@ describe("guided init state transitions", () => {
       kind: "provider_failed",
       message: "Authentication failed.",
     });
-    mocks.selectAnswers.push("auth", "browser", "cancel");
+    // The retried setup is a no-op only because the route's provider now holds a
+    // credential. Pin that observation: reading it from the real store makes the
+    // outcome depend on whichever provider logins the machine happens to hold.
+    mocks.detectProviderCredentialStatesOverride = async () => ({
+      [DEFAULT_ROUTE_PROVIDER]: "credential_detected",
+    });
+    mocks.selectAnswers.push("auth", "retry", "cancel");
     mocks.executeProviderSetupPlan.mockImplementation(async (plan: { actions: readonly Record<string, unknown>[] }) =>
       plan.actions.map((action) => ({ action, status: "failed", detail: "login failed" })));
 
     await expect(runCli(["init"])).resolves.toBe(1);
 
-    expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledOnce();
+    expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledTimes(2);
     expect(mocks.executeProviderSetupPlan).toHaveBeenCalledOnce();
+    expect(mocks.selectCalls.map((call) => call.message)).toEqual([
+      "Runtime readiness did not pass. What would you like to do?",
+      "Provider setup did not pass. What would you like to do?",
+      "Runtime readiness did not pass. What would you like to do?",
+    ]);
     const providerRecovery = mocks.selectCalls.find(
       (call) => call.message === "Runtime readiness did not pass. What would you like to do?",
     );
@@ -545,6 +582,40 @@ describe("guided init state transitions", () => {
       "Edit model routes",
       "Save incomplete",
       "Cancel without writing",
+    ]);
+    await expect(access(join(process.cwd(), "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("retries provider setup instead of the live probe while the credential is still missing", async () => {
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers(),
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      runProviderSetup: false,
+    });
+    mocks.runAllRouteReadinessProbe.mockResolvedValue({
+      ok: false,
+      kind: "provider_failed",
+      message: "Authentication failed.",
+    });
+    mocks.detectProviderCredentialStatesOverride = async () => ({
+      [DEFAULT_ROUTE_PROVIDER]: "auth_required",
+    });
+    mocks.selectAnswers.push("auth", "retry", "cancel");
+    mocks.executeProviderSetupPlan.mockImplementation(async (plan: { actions: readonly Record<string, unknown>[] }) =>
+      plan.actions.map((action) => ({ action, status: "failed", detail: "login failed" })));
+
+    await expect(runCli(["init"])).resolves.toBe(1);
+
+    // Retrying must not fall through to a model turn that is guaranteed to fail
+    // on the same missing credential.
+    expect(mocks.executeProviderSetupPlan).toHaveBeenCalledTimes(2);
+    expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledOnce();
+    expect(mocks.selectCalls.map((call) => call.message)).toEqual([
+      "Runtime readiness did not pass. What would you like to do?",
+      "Provider setup did not pass. What would you like to do?",
+      "Provider setup did not pass. What would you like to do?",
     ]);
     await expect(access(join(process.cwd(), "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -589,12 +660,11 @@ describe("guided init state transitions", () => {
 
     expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledOnce();
     await expect(access(join(process.cwd(), "mono-agent.config.json"))).resolves.toBeUndefined();
-    expect(mocks.confirmAnswers).toEqual([]);
   });
 
   it("atomically refuses a config created after the wizard started", async () => {
     const configPath = join(process.cwd(), "mono-agent.config.json");
-    const concurrent = '{"runtime":{"model":"pi:ollama:concurrent"}}\n';
+    const concurrent = '{"runtime":{"model":"ollama:concurrent"}}\n';
     mocks.runInitWizard.mockResolvedValue({
       status: "answers",
       answers: defaultAnswers(),
@@ -609,7 +679,6 @@ describe("guided init state transitions", () => {
     await expect(runCli(["init"])).resolves.toBe(1);
 
     expect(await readFile(configPath, "utf8")).toBe(concurrent);
-    expect(mocks.confirmAnswers).toEqual([]);
   });
 
   it("withdraws readiness when the committed config changes during full validation", async () => {
@@ -623,15 +692,14 @@ describe("guided init state transitions", () => {
     });
     mocks.validateMonoAgentFolder.mockImplementation(async (options: { readonly cwd: string }) => {
       if (options.cwd === process.cwd()) {
-        await writeFile(configPath, '{"runtime":{"model":"pi:ollama:changed"}}\n', { mode: 0o600 });
+        await writeFile(configPath, '{"runtime":{"model":"ollama:changed"}}\n', { mode: 0o600 });
       }
       return readyReport();
     });
 
     await expect(runCli(["init"])).resolves.toBe(1);
 
-    expect(mocks.confirmAnswers).toEqual([]);
-    expect(await readFile(configPath, "utf8")).toContain("pi:ollama:changed");
+    expect(await readFile(configPath, "utf8")).toContain("ollama:changed");
   });
 
   it("withdraws readiness when the committed provider dotenv becomes tracked during validation", async () => {
@@ -654,7 +722,6 @@ describe("guided init state transitions", () => {
 
     await expect(runCli(["init"])).resolves.toBe(1);
 
-    expect(mocks.confirmAnswers).toEqual([]);
     await expect(execFilePromise("git", ["ls-files", "--error-unmatch", ".env"], process.cwd()))
       .resolves.toBeUndefined();
   });
@@ -662,12 +729,12 @@ describe("guided init state transitions", () => {
   it("re-prompts an API key during explicit authentication repair", async () => {
     mocks.runInitWizard.mockResolvedValue({
       status: "answers",
-      answers: defaultAnswers({ model: "pi:opencode-go:kimi-k2.6" }),
+      answers: defaultAnswers({ model: "opencode-go:kimi-k2.6" }),
       moduleSecrets: {},
       providerSetupSecrets: { "pi-api-key:opencode-go": "rejected-key-one" },
       providerEnvironmentSecrets: {},
       piApiKeyPersistenceByProvider: { "opencode-go": "secure-store" },
-      credentialStates: { "pi:opencode-go": "credential_detected" },
+      credentialStates: { "opencode-go": "credential_detected" },
       runProviderSetup: false,
     });
     mocks.runAllRouteReadinessProbe
@@ -683,7 +750,6 @@ describe("guided init state transitions", () => {
       setupApiKeys = options.apiKeys;
       return plan.actions.map((action) => ({ action, status: "ok", detail: "stored" }));
     });
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -698,12 +764,12 @@ describe("guided init state transitions", () => {
     await writeFile(envPath, `MONO_AGENT_PI_AUTH_PATH=${authPath}\n`, { mode: 0o600 });
     mocks.runInitWizard.mockResolvedValue({
       status: "answers",
-      answers: defaultAnswers({ model: "pi:opencode-go:kimi-k2.6" }),
+      answers: defaultAnswers({ model: "opencode-go:kimi-k2.6" }),
       moduleSecrets: {},
       providerSetupSecrets: {},
       providerEnvironmentSecrets: { OPENCODE_API_KEY: "environment-only-secret" },
       piApiKeyPersistenceByProvider: { "opencode-go": "environment" },
-      credentialStates: { "pi:opencode-go": "auth_required" },
+      credentialStates: { "opencode-go": "auth_required" },
       runProviderSetup: true,
     });
     let setupAction: Record<string, unknown> | undefined;
@@ -716,7 +782,6 @@ describe("guided init state transitions", () => {
       setupApiKeys = options.apiKeys;
       return plan.actions.map((action) => ({ action, status: "ok", detail: "environment verified" }));
     });
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -773,9 +838,8 @@ describe("guided init state transitions", () => {
     mocks.runInitWizard.mockResolvedValue({
       status: "answers",
       answers: defaultAnswers({
-        model: "codex:gpt-5.6-terra",
-        fallbacks: [{ model: "claude:claude-sonnet-5", effort: "high" }],
-        routeSafety: "per-route-native",
+        model: "openai-codex:gpt-5.6-terra",
+        fallbacks: [{ model: "anthropic:claude-sonnet-5", effort: "high" }],
       }),
       moduleSecrets: {},
       providerSetupSecrets: {},
@@ -791,20 +855,19 @@ describe("guided init state transitions", () => {
         interrupted: true,
         planFingerprint: "route-plan",
         routes: [
-          { key: "primary-key", index: 0, model: "codex:gpt-5.6-terra", status: "verified" },
-          { key: "fallback-key", index: 1, model: "claude:claude-sonnet-5", effort: "high", status: "interrupted" },
+          { key: "primary-key", index: 0, model: "openai-codex:gpt-5.6-terra", status: "verified" },
+          { key: "fallback-key", index: 1, model: "anthropic:claude-sonnet-5", effort: "high", status: "interrupted" },
         ],
       })
       .mockResolvedValueOnce({
         ok: true,
         planFingerprint: "route-plan",
         routes: [
-          { key: "primary-key", index: 0, model: "codex:gpt-5.6-terra", status: "skipped_verified" },
-          { key: "fallback-key", index: 1, model: "claude:claude-sonnet-5", effort: "high", status: "verified" },
+          { key: "primary-key", index: 0, model: "openai-codex:gpt-5.6-terra", status: "skipped_verified" },
+          { key: "fallback-key", index: 1, model: "anthropic:claude-sonnet-5", effort: "high", status: "verified" },
         ],
       });
     mocks.selectAnswers.push("resume");
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -813,23 +876,23 @@ describe("guided init state transitions", () => {
       resume: { planFingerprint: "route-plan", successfulRouteKeys: ["primary-key"] },
     });
     const rendered = vi.mocked(process.stdout.write).mock.calls.flat().join("");
-    expect(rendered).toContain("Route 1/2: codex:gpt-5.6-terra");
-    expect(rendered).toContain("Route 2/2: claude:claude-sonnet-5");
+    expect(rendered).toContain("Route 1/2: openai-codex:gpt-5.6-terra");
+    expect(rendered).toContain("Route 2/2: anthropic:claude-sonnet-5");
     expect(rendered).toContain("effort: high");
   });
 
   it("interrupts provider authentication safely and resumes through the shared preflight recovery menu", async () => {
     mocks.runInitWizard.mockResolvedValue({
       status: "answers",
-      answers: defaultAnswers({ model: "pi:opencode-go:kimi-k2.6" }),
+      answers: defaultAnswers({ model: "opencode-go:kimi-k2.6" }),
       moduleSecrets: {},
       providerSetupSecrets: { "pi-api-key:opencode-go": "entered-key" },
       providerEnvironmentSecrets: {},
       piApiKeyPersistenceByProvider: { "opencode-go": "secure-store" },
-      credentialStates: { "pi:opencode-go": "auth_required" },
+      credentialStates: { "opencode-go": "auth_required" },
       runProviderSetup: true,
     });
-    mocks.detectProviderCredentialStatesOverride = () => ({ "pi:opencode-go": "auth_required" });
+    mocks.detectProviderCredentialStatesOverride = () => ({ "opencode-go": "auth_required" });
     let setupAttempt = 0;
     const sigintListenersBefore = process.listenerCount("SIGINT");
     mocks.executeProviderSetupPlan.mockImplementation(async (
@@ -846,7 +909,6 @@ describe("guided init state transitions", () => {
       return plan.actions.map((action) => ({ action, status: "ok", detail: "stored" }));
     });
     mocks.selectAnswers.push("resume");
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -863,15 +925,15 @@ describe("guided init state transitions", () => {
   it("retries failed provider setup before any runtime route and labels recovery accurately", async () => {
     mocks.runInitWizard.mockResolvedValue({
       status: "answers",
-      answers: defaultAnswers({ model: "pi:opencode-go:kimi-k2.6" }),
+      answers: defaultAnswers({ model: "opencode-go:kimi-k2.6" }),
       moduleSecrets: {},
       providerSetupSecrets: { "pi-api-key:opencode-go": "entered-key" },
       providerEnvironmentSecrets: {},
       piApiKeyPersistenceByProvider: { "opencode-go": "secure-store" },
-      credentialStates: { "pi:opencode-go": "auth_required" },
+      credentialStates: { "opencode-go": "auth_required" },
       runProviderSetup: true,
     });
-    mocks.detectProviderCredentialStatesOverride = () => ({ "pi:opencode-go": "auth_required" });
+    mocks.detectProviderCredentialStatesOverride = () => ({ "opencode-go": "auth_required" });
     let setupAttempt = 0;
     mocks.executeProviderSetupPlan.mockImplementation(async (plan) => {
       setupAttempt += 1;
@@ -882,7 +944,6 @@ describe("guided init state transitions", () => {
       }));
     });
     mocks.selectAnswers.push("retry");
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -905,12 +966,12 @@ describe("guided init state transitions", () => {
     async (recovery) => {
       mocks.runInitWizard.mockResolvedValue({
         status: "answers",
-        answers: defaultAnswers({ model: "pi:opencode-go:kimi-k2.6" }),
+        answers: defaultAnswers({ model: "opencode-go:kimi-k2.6" }),
         moduleSecrets: {},
         providerSetupSecrets: { "pi-api-key:opencode-go": "entered-key" },
         providerEnvironmentSecrets: {},
         piApiKeyPersistenceByProvider: { "opencode-go": "secure-store" },
-        credentialStates: { "pi:opencode-go": "auth_required" },
+        credentialStates: { "opencode-go": "auth_required" },
         runProviderSetup: true,
       });
       const order: string[] = [];
@@ -923,7 +984,7 @@ describe("guided init state transitions", () => {
           process.stdin.emit("keypress", "", { name: "escape" });
           expect(options.abortSignal?.aborted).toBe(true);
         }
-        return { "pi:opencode-go": "auth_required" };
+        return { "opencode-go": "auth_required" };
       };
       mocks.executeProviderSetupPlan.mockImplementation(async (plan) => {
         order.push("setup");
@@ -934,7 +995,6 @@ describe("guided init state transitions", () => {
         return { ok: true };
       });
       mocks.selectAnswers.push(recovery);
-      mocks.confirmAnswers.push(false);
 
       await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -959,15 +1019,14 @@ describe("guided init state transitions", () => {
         message: "interrupted",
         interrupted: true,
         planFingerprint: "route-plan",
-        routes: [{ key: "primary-key", index: 0, model: "codex:gpt-5.6-terra", status: "verified" }],
+        routes: [{ key: "primary-key", index: 0, model: "openai-codex:gpt-5.6-terra", status: "verified" }],
       })
       .mockResolvedValueOnce({
         ok: true,
         planFingerprint: "route-plan",
-        routes: [{ key: "primary-key", index: 0, model: "codex:gpt-5.6-terra", status: "verified" }],
+        routes: [{ key: "primary-key", index: 0, model: "openai-codex:gpt-5.6-terra", status: "verified" }],
       });
     mocks.selectAnswers.push("restart");
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -978,9 +1037,8 @@ describe("guided init state transitions", () => {
     mocks.runInitWizard.mockResolvedValue({
       status: "answers",
       answers: defaultAnswers({
-        model: "codex:gpt-5.6-terra",
-        fallbacks: [{ model: "claude:claude-sonnet-5" }],
-        routeSafety: "per-route-native",
+        model: "openai-codex:gpt-5.6-terra",
+        fallbacks: [{ model: "anthropic:claude-sonnet-5" }],
       }),
       moduleSecrets: {},
       providerSetupSecrets: {},
@@ -996,22 +1054,21 @@ describe("guided init state transitions", () => {
         message: "fallback auth failed",
         planFingerprint: "route-plan",
         routes: [
-          { key: "primary-key", index: 0, model: "codex:gpt-5.6-terra", status: "verified" },
-          { key: "fallback-key", index: 1, model: "claude:claude-sonnet-5", status: "failed", kind: "provider_failed" },
+          { key: "primary-key", index: 0, model: "openai-codex:gpt-5.6-terra", status: "verified" },
+          { key: "fallback-key", index: 1, model: "anthropic:claude-sonnet-5", status: "failed", kind: "provider_failed" },
         ],
       })
       .mockResolvedValueOnce({
         ok: true,
         planFingerprint: "route-plan-after-auth",
         routes: [
-          { key: "primary-key", index: 0, model: "codex:gpt-5.6-terra", status: "verified" },
-          { key: "fallback-key", index: 1, model: "claude:claude-sonnet-5", status: "verified" },
+          { key: "primary-key", index: 0, model: "openai-codex:gpt-5.6-terra", status: "verified" },
+          { key: "fallback-key", index: 1, model: "anthropic:claude-sonnet-5", status: "verified" },
         ],
       });
-    mocks.selectAnswers.push("auth", "browser");
+    mocks.selectAnswers.push("auth");
     mocks.executeProviderSetupPlan.mockImplementation(async (plan: { actions: readonly Record<string, unknown>[] }) =>
       plan.actions.map((action) => ({ action, status: "ok", detail: "repaired" })));
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -1040,7 +1097,6 @@ describe("guided init state transitions", () => {
       order.push("route");
       return { ok: true };
     });
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -1320,9 +1376,8 @@ describe("guided init state transitions", () => {
 
   it("keeps route progress when interrupted setup repair changes only capabilities", async () => {
     const answers = defaultAnswers({
-      model: "codex:gpt-5.6-terra",
-      fallbacks: [{ model: "claude:claude-sonnet-5", effort: "high" }],
-      routeSafety: "per-route-native",
+      model: "openai-codex:gpt-5.6-terra",
+      fallbacks: [{ model: "anthropic:claude-sonnet-5", effort: "high" }],
     });
     const baseOutcome = {
       status: "answers" as const,
@@ -1354,20 +1409,19 @@ describe("guided init state transitions", () => {
         interrupted: true,
         planFingerprint: "route-plan",
         routes: [
-          { key: "primary-key", index: 0, model: "codex:gpt-5.6-terra", status: "verified" },
-          { key: "fallback-key", index: 1, model: "claude:claude-sonnet-5", effort: "high", status: "interrupted" },
+          { key: "primary-key", index: 0, model: "openai-codex:gpt-5.6-terra", status: "verified" },
+          { key: "fallback-key", index: 1, model: "anthropic:claude-sonnet-5", effort: "high", status: "interrupted" },
         ],
       })
       .mockResolvedValueOnce({
         ok: true,
         planFingerprint: "route-plan",
         routes: [
-          { key: "primary-key", index: 0, model: "codex:gpt-5.6-terra", status: "skipped_verified" },
-          { key: "fallback-key", index: 1, model: "claude:claude-sonnet-5", effort: "high", status: "verified" },
+          { key: "primary-key", index: 0, model: "openai-codex:gpt-5.6-terra", status: "skipped_verified" },
+          { key: "fallback-key", index: 1, model: "anthropic:claude-sonnet-5", effort: "high", status: "verified" },
         ],
       });
     mocks.selectAnswers.push("edit");
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 
@@ -1378,7 +1432,7 @@ describe("guided init state transitions", () => {
   });
 
   it("retains progress through model edits so the route fingerprint invalidates it", async () => {
-    const initialAnswers = defaultAnswers({ model: "codex:gpt-5.6-terra" });
+    const initialAnswers = defaultAnswers({ model: "openai-codex:gpt-5.6-terra" });
     mocks.runInitWizard.mockResolvedValue({
       status: "answers",
       answers: initialAnswers,
@@ -1391,7 +1445,7 @@ describe("guided init state transitions", () => {
     });
     mocks.runSetupRepairWizard.mockResolvedValue({
       status: "answers",
-      answers: defaultAnswers({ model: "codex:gpt-5.6-sol" }),
+      answers: defaultAnswers({ model: "openai-codex:gpt-5.6-sol" }),
       moduleSecrets: {},
       providerSetupSecrets: {},
       providerEnvironmentSecrets: { OPENAI_API_KEY: "ephemeral-provider-key" },
@@ -1405,11 +1459,10 @@ describe("guided init state transitions", () => {
         kind: "provider_failed",
         message: "route failed",
         planFingerprint: "old-route-plan",
-        routes: [{ key: "old-primary", index: 0, model: "codex:gpt-5.6-terra", status: "verified" }],
+        routes: [{ key: "old-primary", index: 0, model: "openai-codex:gpt-5.6-terra", status: "verified" }],
       })
       .mockResolvedValueOnce({ ok: true, planFingerprint: "new-route-plan" });
     mocks.selectAnswers.push("model");
-    mocks.confirmAnswers.push(false);
 
     await expect(runCli(["init"])).resolves.toBe(0);
 

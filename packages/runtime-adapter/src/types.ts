@@ -3,8 +3,6 @@ import type {
   AgentReplyPartFailure,
   AgentToolEnvironment,
 } from "@mono-agent/agent-contracts";
-import type { AcpCallbackContext, AcpInteractionRequest, AcpProfileDescriptor } from "@mono-agent/agent-runtime";
-
 import type { PreparedSandboxCommand, SandboxCommandSpec, SandboxPolicy } from "./sandbox.js";
 import type { ProcessJobsController } from "./process-jobs.js";
 
@@ -14,99 +12,11 @@ export interface MonoRuntimeSandboxEngine {
   prepareCommand(command: SandboxCommandSpec, policy: SandboxPolicy): Promise<PreparedSandboxCommand>;
 }
 
-export type RuntimeExecutionMode = "sdk" | "cli" | "acp";
-
 export interface RuntimeModelReference {
-  readonly sdk: string;
+  readonly provider: string;
   readonly model: string;
-  readonly provider?: string;
-  readonly reference?: string;
+  readonly reference: string;
 }
-
-/** One caller-defined Claude native `Task` profile. */
-export interface RuntimeNativeSubagentDefinition {
-  readonly name: string;
-  readonly displayName?: string;
-  readonly description?: string;
-  readonly helperSystemPrompt?: string;
-  readonly instructions?: string;
-  readonly allowedTools?: readonly string[];
-  readonly disallowedTools?: readonly string[];
-  readonly modelRef?: string | RuntimeModelReference;
-  readonly model?: RuntimeModelReference;
-  readonly effort?: string;
-  readonly mcpServers?: Readonly<Record<string, object>>;
-}
-
-/**
- * Caller-defined native profiles are a Claude-only request contract. Codex
- * owns its collaboration agents; codexLoadProjectDocs controls whether they
- * receive repository instructions.
- */
-export interface RuntimeNativeSubagentsOptions {
-  readonly provider: "claude";
-  readonly teammates: readonly RuntimeNativeSubagentDefinition[];
-}
-
-export type MonoRuntimeBackendId =
-  | "claude-sdk"
-  | "claude-code-cli"
-  | "codex-app-cli"
-  | "opencode-app-cli"
-  | "pi-sdk"
-  | "acp-stdio";
-
-export type MonoAcpProfileResolver = (
-  profileId: string,
-  context?: Readonly<Record<string, unknown>>,
-) => AcpProfileDescriptor | null | undefined | Promise<AcpProfileDescriptor | null | undefined>;
-
-export type MonoAcpInteractionRequest = AcpInteractionRequest;
-
-export type MonoAcpInteractionHandler = (
-  request: MonoAcpInteractionRequest,
-  context?: AcpCallbackContext,
-) => unknown | Promise<unknown>;
-
-export interface MonoAcpControlOptions {
-  readonly resolveAcpProfile: MonoAcpProfileResolver;
-  readonly onAcpInteractionRequest?: MonoAcpInteractionHandler;
-  /** Optional for probe/auth/logout; handle-bearing operations require it. */
-  readonly acpSessionTokenKey?: Uint8Array;
-  readonly sandboxPolicy?: SandboxPolicy;
-  readonly sandboxEngine?: MonoRuntimeSandboxEngine;
-  readonly cwd?: string;
-  readonly signal?: AbortSignal;
-  readonly context?: Readonly<Record<string, unknown>>;
-  /** The sandbox implementation is owned and injected by runtime-adapter. */
-  readonly sandbox?: never;
-}
-
-export interface MonoAcpSessionControlOptions extends MonoAcpControlOptions {
-  /** Host-owned exact 32-byte key for confidential authenticated ACP handles. */
-  readonly acpSessionTokenKey: Uint8Array;
-}
-
-export interface MonoAcpListSessionsRequest {
-  readonly cwd?: string | null;
-  readonly cursor?: string | null;
-}
-
-/**
- * One row of the additive (sdk, executionMode) -> backend selection table. This
- * is a declarative building block exported alongside the backend descriptors; it
- * does not itself perform routing. `sdkAliases` lists every accepted spelling of
- * the sdk id for that backend (canonical first), so a runtime's fail-closed
- * `model.sdk` guard and the table share one vocabulary.
- */
-export interface MonoRuntimeSelectionEntry {
-  readonly sdk: string;
-  readonly sdkAliases: readonly string[];
-  readonly executionMode: RuntimeExecutionMode;
-  readonly backendId: MonoRuntimeBackendId;
-}
-
-export type MonoRuntimeBackendTransport = "sdk" | "cli" | "acp";
 
 export interface MonoRuntimeBackendCapabilities {
   readonly kind?: string;
@@ -128,24 +38,21 @@ export interface MonoRuntimeBackendCapabilities {
 }
 
 export interface MonoRuntimeBackendDescriptor {
-  readonly id: MonoRuntimeBackendId;
-  readonly runtimeBridgeId: string;
-  readonly label: string;
-  readonly sdk: RuntimeModelReference["sdk"];
-  readonly executionMode: RuntimeExecutionMode;
-  readonly transport: MonoRuntimeBackendTransport;
-  readonly providerBoundary: string;
+  readonly id: "pi-sdk";
+  readonly runtimeBridgeId: "pi";
+  readonly label: "Pi SDK provider";
+  readonly sdk: "pi";
+  readonly transport: "sdk";
+  readonly providerBoundary: "Pi SDK provider gateway via @mono-agent/agent-runtime";
   readonly modelReferenceExamples: readonly string[];
-  readonly acceptsProviderIds: boolean;
+  readonly acceptsProviderIds: true;
   readonly capabilities: MonoRuntimeBackendCapabilities;
 }
 
 export interface MonoRuntimeSupportDescription {
   readonly model: RuntimeModelReference;
-  readonly executionMode: RuntimeExecutionMode;
-  readonly compatible: boolean;
-  readonly backend?: MonoRuntimeBackendDescriptor;
-  readonly incompatibilityReason?: string;
+  readonly compatible: true;
+  readonly backend: MonoRuntimeBackendDescriptor;
 }
 
 export interface RuntimeMessage {
@@ -471,7 +378,6 @@ export interface RuntimeRunOptions {
   readonly toolEnvironment?: AgentToolEnvironment;
   /** Host-only Pi-native process-job controller; never model/provider visible. */
   readonly processJobs?: ProcessJobsController;
-  readonly executionMode?: RuntimeExecutionMode;
   readonly onEvent?: (event: RuntimeEventLike) => void;
   /** Host-owned, incremental durable tool-lifecycle writer for this run. */
   readonly toolLifecycleSink?: RuntimeToolLifecycleSink;
@@ -480,11 +386,7 @@ export interface RuntimeRunOptions {
   readonly maxTurns?: number;
   readonly allowedTools?: readonly string[];
   readonly disallowedTools?: readonly string[];
-  /**
-   * Request-scoped MCP servers. Direct ACP runs reject a non-empty map because
-   * ACP MCP ownership belongs to the resolved profile descriptor; routed ACP
-   * entries are capability-skipped instead of silently dropping these servers.
-   */
+  /** Request-scoped MCP servers. */
   readonly mcpServers?: Record<string, unknown>;
   /** Exact-connection MCP Apps host. Currently consumed by Pi-native routes. */
   readonly mcpApps?: RuntimeMcpAppHost;
@@ -493,46 +395,33 @@ export interface RuntimeRunOptions {
   readonly sandboxEngine?: MonoRuntimeSandboxEngine;
   /** The sandbox implementation is owned by createMonoRuntime; callers supply policy/engine data only. */
   readonly sandbox?: never;
+  /**
+   * Withdrawn in 0.21.0 with the runtime bridges that honored them. Left as
+   * `never` rather than simply deleted: the Pi runtime ignores these, so a
+   * caller that kept passing one would otherwise get silently different
+   * behavior from the contract it was written against. Failing to compile says
+   * so out loud.
+   */
+  readonly settingSources?: never;
+  readonly codexLoadProjectDocs?: never;
+  readonly codexSandboxNetworkAccess?: never;
+  /**
+   * Also withdrawn: no surviving bridge reads either. `fastMode` was a Claude
+   * concept, and native teammate definitions were projected only by the deleted
+   * Claude bridges -- the Pi bridge hardcodes an empty `nativeSubagentsUsed`.
+   * In-process delegation is the `Agent` tool, configured by the host.
+   */
+  readonly fastMode?: never;
+  readonly nativeSubagents?: never;
   /** Typed tool-output limits (supported replacement for the `settings` tool keys). */
   readonly toolLimits?: RuntimeToolLimits;
   /** Typed compaction policy (supported replacement for the `settings` compaction keys). */
   readonly compaction?: RuntimeCompactionPolicy;
   /** Per-run prompt-fragment overrides. */
   readonly prompts?: RuntimePromptOverrides;
-  /** Per-run ACP profile resolution; preferred when profile config is worker/request scoped. */
-  readonly resolveAcpProfile?: MonoAcpProfileResolver;
-  /** Per-run permission/elicitation callback; wins over the host default. */
-  readonly onAcpInteractionRequest?: MonoAcpInteractionHandler;
-  /** Host-owned exact 32-byte key required for ACP task runs. */
-  readonly acpSessionTokenKey?: Uint8Array;
   /** In-flight user guidance consumed by a provider's native steering API. */
   readonly liveInput?: AsyncIterable<RuntimeLiveInputMessage>;
-  /**
-   * Claude Agent SDK filesystem setting sources. Omitted/empty disables user,
-   * project, and local sources; Anthropic managed settings still apply. These
-   * sources may execute configured hooks and plugins, so enable only trusted
-   * settings and avoid opting in while running in an untrusted checkout.
-   */
-  readonly settingSources?: readonly ("user" | "project" | "local")[];
-  /**
-   * Restore Codex app-server's native project-document loading defaults.
-   * Omitted/false disables automatic discovery; explicit app-server args win.
-   */
-  readonly codexLoadProjectDocs?: boolean;
-  /**
-   * Code-only Codex app-server network control. Only strict `true` enables
-   * network access for plan/read-only and default/acceptEdits/workspace-write
-   * turns. No-tool probes and danger-full-access retain their fixed behavior.
-   * This is unrelated to RuntimeRunOptions.sandboxPolicy, which controls
-   * mono-agent's own sandbox and is not consumed by Codex's provider-owned tool
-   * loop. Default/acceptEdits workspace-write plus network true grants
-   * repository read and network egress in the same turn; prefer plan when only
-   * read-only browsing is needed.
-   */
-  readonly codexSandboxNetworkAccess?: boolean;
-  /** Caller-defined Claude native `Task` profiles. Direct Codex rejects these definitions. */
-  readonly nativeSubagents?: RuntimeNativeSubagentsOptions;
-  // Pi-native provider knobs (optional; ignored by other bridges).
+  // Pi-native provider knobs (all optional; Pi is the only bridge).
   readonly piTransport?: PiTransport;
   readonly piMaxRetries?: number;
   readonly maxRetryDelayMs?: number;
@@ -591,8 +480,7 @@ export interface RuntimeToolOptions {
 
 /** A parsed model reference as agent-runtime's pricing resolvers receive it (see ai/cost.js's ParsedModelReference). */
 export interface MonoRuntimeParsedPricingModel {
-  readonly sdk: string | null;
-  readonly provider?: string;
+  readonly provider: string;
   readonly model: string;
 }
 
@@ -642,12 +530,6 @@ export interface MonoRuntimeHostOptions extends RuntimeToolOptions {
   readonly prompts?: RuntimePromptOverrides;
   readonly resolveCustomPricing?: (parsed: MonoRuntimeParsedPricingModel) => MonoRuntimePricing | null;
   readonly resolvePiApiKey?: (provider: string) => Promise<string | undefined>;
-  /** Optional default; a per-run resolver wins. */
-  readonly resolveAcpProfile?: MonoAcpProfileResolver;
-  /** Optional default; a per-run interaction callback wins. */
-  readonly onAcpInteractionRequest?: MonoAcpInteractionHandler;
-  /** Optional default host-owned exact 32-byte key for ACP task runs. */
-  readonly acpSessionTokenKey?: Uint8Array;
   readonly persistArtifact?: (artifact: {
     readonly filename: string;
     readonly buffer: Buffer;

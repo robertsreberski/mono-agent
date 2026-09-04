@@ -1,6 +1,10 @@
 import {
   AgentResponseCancelledError,
   frameFeedingMessageStream,
+  MAX_INFO_BODY_BYTES,
+  MAX_INFO_PROVIDER_ID_BYTES,
+  MAX_INFO_PROVIDER_ITEMS,
+  MAX_INFO_PROVIDER_LABEL_BYTES,
   parseAgentStreamFrame,
   type AgentMessageStream,
   type AgentRequestBase,
@@ -15,6 +19,25 @@ export interface RemoteAgentResponderOptions {
   readonly baseUrl: string;
   readonly apiKey?: string;
   readonly fetchImpl?: typeof fetch;
+}
+
+/**
+ * Bounded provider summary from `/v1/info` — mirrors the operator-adapter's
+ * `TuiProviderInfo` without importing it, so the TUI stays dependency-free.
+ * Older agents that omit `providers` degrade to the flat model shortlist.
+ *
+ * The BOUNDS are not mirrored: they come from `@mono-agent/agent-contracts`, the
+ * one place the producer and both consumers read them from. A local copy here
+ * is how the console showed 64 vendors for the same agent this client showed 71
+ * of — two clients disagreeing about one wire, with no error to explain it.
+ */
+export interface RemoteProviderInfo {
+  readonly id: string;
+  readonly label: string;
+  readonly modelCount: number;
+  readonly totalModelCount?: number;
+  readonly source: "builtin" | "custom" | "discovered";
+  readonly configured?: true;
 }
 
 export class RemoteAgentResponderError extends Error {
@@ -63,9 +86,16 @@ export class RemoteAgentResponder implements AgentResponder {
     effort?: string;
     models?: readonly string[];
     modelOptions?: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; reasoningMode?: string; label?: string }>;
+    providers?: readonly RemoteProviderInfo[];
   }> {
     const response = await this.request(`${this.baseUrl}/v1/info`, { headers: this.headers(false) });
-    const body = (await response.json()) as {
+    // Read under the SHARED cap rather than `response.json()`. `/v1/info` is
+    // polled for the life of the session, and the producer's own fence
+    // guarantees a body at or under `MAX_INFO_BODY_BYTES`; a body over it is
+    // either not this contract or an agent bounded nowhere else either, and
+    // either way buffering it whole is an unbounded allocation per poll. The
+    // console's `OperatorClient` already reads to exactly this bound.
+    const body = JSON.parse(await readBoundedBody(response, "reject")) as {
       schema: number;
       pid?: number;
       label?: string;
@@ -73,9 +103,11 @@ export class RemoteAgentResponder implements AgentResponder {
       effort?: unknown;
       models?: unknown;
       modelOptions?: unknown;
+      providers?: unknown;
     };
-    const { effort, models, modelOptions, ...rest } = body;
+    const { effort, models, modelOptions, providers, ...rest } = body;
     const parsedModelOptions = parseModelOptions(modelOptions);
+    const parsedProviders = parseProviders(providers);
     return {
       ...rest,
       // Older agents may omit `effort` entirely, or send a malformed value; either
@@ -90,6 +122,10 @@ export class RemoteAgentResponder implements AgentResponder {
       // the same ref strings as `models`. Parsed defensively per-entry so one
       // malformed entry never poisons the well-formed rest.
       ...(parsedModelOptions === undefined ? {} : { modelOptions: parsedModelOptions }),
+      // Older agents omit `providers`; the picker falls back to the flat model
+      // shortlist when this is absent. Parsed defensively so one malformed entry
+      // never poisons the rest.
+      ...(parsedProviders === undefined ? {} : { providers: parsedProviders }),
     };
   }
 
@@ -178,7 +214,13 @@ export class RemoteAgentResponder implements AgentResponder {
       );
     }
     if (!response.ok && response.headers.get("content-type")?.includes("application/x-ndjson") !== true) {
-      const detail = await response.text().catch(() => "");
+      // Bounded like every other body this client reads. A non-2xx response is
+      // exactly the case a bound exists for — a hostile or broken peer — and it
+      // used to be the one case that had none. A diagnostic tail is echoed
+      // truncated anyway, so here the overflow is dropped rather than raised:
+      // losing the status behind a size error would be a worse diagnostic than
+      // a clipped detail.
+      const detail = await readBoundedBody(response, "truncate").catch(() => "");
       throw new RemoteAgentResponderError(
         `Agent responded ${response.status} at ${url}${detail.length > 0 ? `: ${detail.slice(0, 300)}` : "."}`,
         response.status === 401 ? "unauthorized" : "http_error",
@@ -186,6 +228,48 @@ export class RemoteAgentResponder implements AgentResponder {
     }
     return response;
   }
+}
+
+/**
+ * Buffer a response under {@link MAX_INFO_BODY_BYTES}, stopping as soon as the
+ * stream passes it rather than after the whole body has landed.
+ *
+ * Both of this client's response bodies read through here, whatever the status.
+ * `"reject"` is for a body that must be PARSED — a clipped `/v1/info` body is
+ * not JSON, so overflow is a failure. `"truncate"` is for a body that is only
+ * ECHOED — an error detail is clipped for display regardless, so overflow just
+ * ends the read and the status still reaches the caller.
+ */
+async function readBoundedBody(
+  response: globalThis.Response,
+  onOverflow: "reject" | "truncate",
+): Promise<string> {
+  if (response.body === null) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (total + value.byteLength > MAX_INFO_BODY_BYTES) {
+        if (onOverflow === "reject") {
+          throw new RemoteAgentResponderError(
+            `Agent /v1/info body exceeds the ${String(MAX_INFO_BODY_BYTES)}-byte wire limit.`,
+            "info_too_large",
+          );
+        }
+        chunks.push(value.subarray(0, MAX_INFO_BODY_BYTES - total));
+        total = MAX_INFO_BODY_BYTES;
+        break;
+      }
+      total += value.byteLength;
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total).toString("utf8");
 }
 
 function assertRemoteFrameSize(frame: string): void {
@@ -228,4 +312,51 @@ function parseModelOptions(
     }
   }
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+/**
+ * Defensively parses `/v1/info`'s `providers` field: tolerates absence (an
+ * older agent that advertises only the flat `models` shortlist), a non-array
+ * payload, and per-entry shape mismatches — a malformed entry is dropped rather
+ * than surfacing garbage or throwing. Never returns an empty array; an
+ * all-malformed/all-empty payload degrades to `undefined`, same as an agent
+ * that never sent the field.
+ */
+function parseProviders(value: unknown): readonly RemoteProviderInfo[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const result: RemoteProviderInfo[] = [];
+  for (const raw of value) {
+    // The item cap is a PREFIX window, and the producer knows its size: it
+    // orders the providers its own routes use into the front of the list
+    // precisely so this cut cannot reach them. Reading from any other order —
+    // sorting, filtering or reversing before this loop — throws that away.
+    if (result.length >= MAX_INFO_PROVIDER_ITEMS) break;
+    if (typeof raw !== "object" || raw === null) {
+      continue;
+    }
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.id !== "string" || entry.id.length === 0 || typeof entry.label !== "string" || typeof entry.modelCount !== "number") {
+      continue;
+    }
+    if (Buffer.byteLength(entry.id, "utf8") > MAX_INFO_PROVIDER_ID_BYTES) {
+      continue;
+    }
+    if (entry.source !== "builtin" && entry.source !== "custom" && entry.source !== "discovered") {
+      continue;
+    }
+    const parsed: RemoteProviderInfo = {
+      id: entry.id,
+      // An over-long label costs the label, never the provider: the id alone
+      // still selects a working route.
+      label: Buffer.byteLength(entry.label, "utf8") > MAX_INFO_PROVIDER_LABEL_BYTES ? entry.id : entry.label,
+      modelCount: entry.modelCount,
+      ...(typeof entry.totalModelCount === "number" ? { totalModelCount: entry.totalModelCount } : {}),
+      source: entry.source,
+      ...(entry.configured === true ? { configured: true as const } : {}),
+    };
+    result.push(parsed);
+  }
+  return result.length > 0 ? result : undefined;
 }

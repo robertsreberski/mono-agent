@@ -27,7 +27,7 @@ Run an agent locally with the TUI, attempt a best-effort terminal-batched Phoeni
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6"
+    "model": "anthropic:claude-sonnet-4-6"
   },
   "artifacts": {
     "dir": ".mono-agent/artifacts"
@@ -61,7 +61,7 @@ With `includeSensitiveData: false`, exported spans are metadata-only and raw pro
 ## Steps
 
 1. Start Phoenix locally (listening on `6006`).
-2. `mono-agent init --model claude:claude-sonnet-4-6`.
+2. `mono-agent init --model anthropic:claude-sonnet-4-6`.
 3. Add the `artifacts`, `traceability`, and `observability.exporters[]` phoenix entry to `mono-agent.config.json`.
 4. `mono-agent validate` (it POSTs an empty protobuf to confirm export-compatibility, not just reachability), then `mono-agent start` (it prints the Phoenix endpoint as the trace source).
 5. `mono-agent tui` (from any directory — it discovers the running agent) and complete a prompt.

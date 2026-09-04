@@ -66,22 +66,6 @@ afterEach(async () => {
 });
 
 describe("local TUI configured runtime boundary", () => {
-  it("rejects a non-Pi fallback before any provider run when process-job state is configured", async () => {
-    const fixture = await localFixture({ fallback: "claude:claude-opus-4-8" });
-    const session = await createLocalConfigurationSession({
-      cwd: fixture.cwd,
-      configPath: fixture.configPath,
-      env: {},
-    });
-    try {
-      await expect(session.responder.respond(localRequest(), { append: async () => undefined }))
-        .rejects.toThrow("Process-job private state requires a Pi-native runtime.");
-      expect(runtimeHooks.run).not.toHaveBeenCalled();
-    } finally {
-      await session.dispose();
-    }
-  });
-
   it("attests unresolved clear-sessions recovery before the local provider boundary", async () => {
     const fixture = await localFixture();
     await writeFile(join(fixture.registryRoot, "pending"), "unresolved\n", { mode: 0o600 });
@@ -134,7 +118,7 @@ describe("local TUI configured runtime boundary", () => {
   it("uses the validated unsafe posture without creating or injecting SRT while retaining host and MCP authority", async () => {
     const fixture = await localFixture({
       unsafe: true,
-      fallback: "pi:ollama:qwen3:8b",
+      fallback: "ollama:qwen3:8b",
     });
     const session = await createLocalConfigurationSession({
       cwd: fixture.cwd,
@@ -212,9 +196,8 @@ async function localFixture(options: {
   await writeFile(configPath, `${JSON.stringify({
     agent: { name: "Local boundary test" },
     runtime: {
-      model: "pi:openai-codex:gpt-5.5",
+      model: "openai-codex:gpt-5.5",
       ...(options.fallback === undefined ? {} : { fallbacks: [{ model: options.fallback }] }),
-      routeSafety: "per-route-native",
       retry: { primaryAttempts: 1, backoffMs: 0, maxBackoffMs: 0 },
       workspace: ".",
     },

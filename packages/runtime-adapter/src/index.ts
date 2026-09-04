@@ -1,25 +1,19 @@
 export {
-  assertExecutionModeCompatible,
   assertParsedRuntimeModelReference,
-  authenticateAcpProfile,
   createMonoRuntime,
   createPiOAuthApiKeyResolver,
-  defaultExecutionModeForModel,
-  deleteAcpSession,
   describeMonoRuntimeSupport,
-  isRuntimeExecutionMode,
-  listAcpSessions,
   listMonoRuntimeBackends,
-  logoutAcpProfile,
+  MODEL_REFERENCE_ECHO_MAX_BYTES,
+  MODEL_REFERENCE_REASON_MAX_BYTES,
   modelReferenceKey,
   monoRuntimeSupportsLiveInput,
   monoRuntimeSupportsMcpApps,
   monoRuntimeSupportsSessionResume,
   parseMonoRuntimeModelReference,
-  probeAcpProfile,
   runtimeBackendForModel,
   RuntimeAdapterError,
-  selectMonoRuntimeBackendId,
+  sanitizeModelReferenceText,
 } from "./runtime-adapter.js";
 export type {
   CreateMonoRuntimeOptions,
@@ -28,13 +22,14 @@ export type {
   MonoRuntimeAttemptResolver,
   MonoRuntimeFallbackChainEntry,
   MonoRuntimeRetryPolicy,
-  MonoRuntimeRouteSafetyMode,
   RuntimeAdapterErrorCode,
   RuntimeAdapterErrorDetails,
 } from "./runtime-adapter.js";
-export { discoverClaudeSdkModels } from "@mono-agent/agent-runtime";
 export { inspectCodexSubscriptionSearch } from "@mono-agent/agent-runtime/agent/tools/index.js";
-export type { AcpCallbackContext, AcpInteractionRequest, AcpProfileDescriptor } from "@mono-agent/agent-runtime";
+export {
+  describePiBuiltinProvider,
+  listPiBuiltinProviders,
+} from "@mono-agent/agent-runtime";
 export { CodedError, isCodedError } from "@mono-agent/agent-contracts";
 export {
   isPlainObject,
@@ -99,10 +94,15 @@ export type {
 } from "./sandbox.js";
 export {
   discoverLocalProviderModels,
+  isAutodiscoverableProviderId,
   isPrivateBaseUrl,
+  isPiBuiltinProvider,
+  localProviderDefinitionFor,
   resolveModelEffortLevels,
   runtimeOptionsForLocalProvider,
   validateLocalProviderDefinition,
+  validateProviderBaseUrl,
+  validateProviderDefinition,
 } from "./local-providers.js";
 export type {
   AgentRuntimeCustomModel,
@@ -116,39 +116,35 @@ export type {
   LocalProviderRuntimeOptions,
   LocalProviderType,
   ModelEffortLevels,
+  ProviderDefinition,
 } from "./local-providers.js";
+export {
+  discoverLocalProviders,
+} from "./provider-discovery.js";
 export type {
-  MonoAcpControlOptions,
-  MonoAcpInteractionHandler,
-  MonoAcpInteractionRequest,
-  MonoAcpListSessionsRequest,
-  MonoAcpProfileResolver,
-  MonoAcpSessionControlOptions,
+  DiscoveredProvider,
+  DiscoverLocalProvidersInput,
+} from "./provider-discovery.js";
+export type {
   MonoRuntimeApprovalDecision,
   MonoRuntimeApprovalRequest,
   MonoRuntimeBackendCapabilities,
   MonoRuntimeBackendDescriptor,
-  MonoRuntimeBackendId,
-  MonoRuntimeBackendTransport,
   MonoRuntimeCompactionRecord,
   MonoRuntimeHostOptions,
   MonoRuntimeLike,
   MonoRuntimeParsedPricingModel,
   MonoRuntimePricing,
   MonoRuntimeSandboxEngine,
-  MonoRuntimeSelectionEntry,
   MonoRuntimeSupportDescription,
   RuntimeCompactionPolicy,
   RuntimeEventLike,
-  RuntimeExecutionMode,
   RuntimeLiveInputMessage,
   RuntimeMessage,
   RuntimeMcpAppConnection,
   RuntimeMcpAppHost,
   RuntimeMcpAppRegistration,
   RuntimeModelReference,
-  RuntimeNativeSubagentDefinition,
-  RuntimeNativeSubagentsOptions,
   PiTransport,
   RuntimePolicies,
   RuntimePromptOverrides,

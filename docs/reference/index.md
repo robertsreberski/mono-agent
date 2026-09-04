@@ -44,7 +44,7 @@ Reference examples use real keys from the [config blueprint](/config/blueprint/)
 
 ```json
 {
-  "runtime": { "model": "codex:gpt-5.6-terra" }
+  "runtime": { "model": "openai-codex:gpt-5.6-terra" }
 }
 ```
 

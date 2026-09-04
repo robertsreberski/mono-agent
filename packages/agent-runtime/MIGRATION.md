@@ -6,14 +6,248 @@ current pre-1.0 contract. `createRuntime()` remains the package entry point;
 `@mono-agent/runtime-adapter`. Provider-session input/output uses
 `providerSessionId`, with `disposeSession()` and `disposeAllSessions()` retained.
 
-Review every section that matches your usage. The package now has an explicit
-exports map, a five-bridge lazy registry, typed policy objects, stricter sandbox
-behavior, and revised provider-session semantics even when Pi is not your
-primary route.
+Review every section that matches your usage. As of `0.21.0` the package runs
+exactly one runtime — Pi — behind an explicit exports map, with typed policy
+objects, stricter sandbox behavior, and revised provider-session semantics.
 
 Migration policy: every newly introduced fail-closed validation belongs in the
 first affected version section, even when it tightens behavior without changing
 the configuration schema.
+
+---
+
+## 0.21.0
+
+**This is the largest breaking change since `0.3.x`.** mono-agent shipped six
+runtime bridges behind a dispatch table; it now runs only its Pi implementation.
+Read the whole section before upgrading a live agent, and migrate its config
+before restarting one.
+
+### Deleted runtime bridges
+
+`claude-sdk`, `claude-code-cli`, `codex-app-cli`, `opencode-app-cli` and
+`acp-stdio` are gone. `pi-sdk` remains and is no longer *a* backend — it is the
+runtime. The backend descriptor table, the selection table and
+`MonoRuntimeBackendId` are removed with them.
+
+### What is NOT deleted
+
+Four surfaces share names with the deleted bridges and are unaffected. If you
+use any of them, nothing changes:
+
+- **The ACP *server* bridge** (`mono-agent bridge acp`) — mono-agent still
+  serves ACP to clients. Only the ACP *client* backend was removed.
+- **`install-skill --target claude|codex`** — writes skills into those tools'
+  directories.
+- **`docs-mcp-pairing`** — pairs the docs MCP with Claude Code and Codex.
+- **The Codex web-search backend** (`tools.web.search.backend: "codex"`) — it
+  drives a real Codex app-server through an extracted client.
+
+Note also that `openai-codex` and `opencode-go` are **Pi provider ids**, not
+references to the deleted bridges. Routes naming them keep working.
+
+### Model reference grammar
+
+Old: `<sdk>:[<provider>:]<model>`. New: **`<provider>:<model>`**, split at the
+first colon only.
+
+| before | after |
+| --- | --- |
+| `pi:openai-codex:gpt-5.6-sol` | `openai-codex:gpt-5.6-sol` |
+| `pi:anthropic:claude-opus-5` | `anthropic:claude-opus-5` |
+| `ollama:llama3.1:8b` | unchanged — only the first colon splits |
+| `codex:gpt-5.6-terra` | **rejected**; no mechanical replacement |
+
+A leading `pi:` is canonicalized away automatically, so those refs keep working
+and stripping the prefix is optional tidying rather than a migration step.
+`codex:`, `claude:`, `claude-code:`, `codex-cli:`, `acp:` and `vercel:` are
+rejected at load with the replacement named in the message `doctor`,
+`mono-agent validate`, `mono-agent config` and the startup error all print. They
+are **not** migrated automatically: `codex:gpt-5.6-terra` →
+`openai-codex:gpt-5.6-terra` looks mechanical but changes which auth store the
+agent reads, and refs paired with `executionMode: "cli"` have no Pi equivalent
+at all. A human has to choose.
+
+### Retired configuration keys
+
+Each has an environment twin, and both now fail at load with the repair for the
+surface they were set on, instead of a generic unknown-key error. A single load
+is exhaustive *within one class*: every retired key present is named in one
+message, and every retired variable set is named in one message — not one per
+run. It is not exhaustive *across* classes. A config carrying both a retired key
+and a retired variable stops at the key, and names the variable only on the next
+run; see [Migrating a config](#migrating-a-config) for the order the classes are
+checked in. An empty assignment (`KEY=`) is treated as unset and does not fail.
+
+| key | environment twin | replacement |
+| --- | --- | --- |
+| `runtime.executionMode` | `MONO_AGENT_EXECUTION_MODE` | delete it — only the Pi runtime remains |
+| `memory.llm.executionMode` | `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` | delete it, same reason |
+| `runtime.routeSafety` | `MONO_AGENT_ROUTE_SAFETY` | delete it — every route is Pi-native, so `per-route-native` has no meaning |
+| `runtime.fallbackModels` | `MONO_AGENT_FALLBACK_MODELS` | `runtime.fallbacks: [{ "model": "..." }]` for the key, `MONO_AGENT_FALLBACKS_JSON` for the variable |
+
+`runtime.fallbacks` stays uncapped: `runtime.model` plus its fallbacks are the
+default route and its backups, nothing more.
+
+### New: `providers`
+
+`providers` declares which providers the agent supports, and widens what is
+*selectable* to those providers' full catalogs — previously you could only pick
+`runtime.model` or a declared fallback, so trying a new model meant editing
+config and restarting. `ollama` and `lmstudio` are zero-config autodiscovered on
+`localhost:11434` and `localhost:1234`; an explicit entry only overrides
+endpoint or credentials. `providers.local[]` migrates on load.
+
+Agents advertise the catalog additively: a slim `providers` array on `/v1/info`
+plus a lazy `GET /v1/models`. `TUI_WIRE_SCHEMA` is **not** bumped, so existing
+consoles keep working.
+
+### Removed deep exports
+
+Subpath exports went from 26 to 17. The removed subpaths all belonged to deleted
+bridges; import the Pi equivalents from the package root.
+
+### Removed host options
+
+Three `createRuntime()` host options went with the ACP *client* backend that was
+their only consumer: `resolveAcpProfile`, `onAcpInteractionRequest` and
+`acpSessionTokenKey`. The `0.18.0` and `0.18.1` sections below still describe
+them as required — that is a correct record of what those releases needed, and
+those sections are deliberately unchanged. As of `0.21.0` the runtime no longer
+binds them, and passing them is inert.
+
+This does **not** affect the ACP *server* bridge (`mono-agent bridge acp`),
+which never used them; see [What is NOT deleted](#what-is-not-deleted).
+
+### Web console store
+
+Schema v10 → v12, in two guarded steps: v11 adds per-thread `run_model` /
+`run_effort`, and v12 adds `agents.providers_json`, the persisted summary of the
+providers an agent advertises. Each step is guarded on `PRAGMA table_info` and
+re-runnable, and adds columns only — no rows are rewritten. Per-conversation
+model and effort overrides now persist server-side, so they roam between devices
+instead of living in one browser's localStorage.
+
+### Migrating a config
+
+There is no codemod. `mono-agent migrate-config` was written for this release and
+then removed before it shipped: it rewrote a live agent's config while the agent
+itself could be writing the same file, and that race could not be closed — only
+narrowed. Migrating by hand is a few minutes per agent and cannot lose data.
+
+The loader does the finding for you. Every retired key, retired environment
+variable and rejected model reference fails at load naming its own repair, so an
+unmigrated agent refuses to start and tells you what to change:
+
+```text
+MonoAgentConfigError: invalid_json
+`runtime.executionMode` was removed; mono-agent runs only the Pi runtime (SDK).
+Delete the key.
+
+MonoAgentConfigError: invalid_env
+`MONO_AGENT_FALLBACK_MODELS` was replaced by `MONO_AGENT_FALLBACKS_JSON`, a JSON
+array of `{ "model": "..." }` objects. Remove the variable and re-express the
+chain there, or drop it into `runtime.fallbacks` in mono-agent.config.json.
+
+MonoAgentConfigError: invalid_model_reference
+runtime.model `codex:gpt-5.6-terra` is not a valid runtime model reference:
+codex is no longer a runtime backend; use openai-codex:gpt-5.6-terra
+```
+
+A model supplied through the environment is attributed to the variable
+(`MONO_AGENT_MODEL ...`) rather than the JSON path, so the message always names
+the place you edit to fix it.
+
+What it does *not* do is report everything at once. Within a class it is
+exhaustive — all retired JSON keys in one message, all retired environment
+variables in one message, all unknown keys in one message — but the load stops at
+the first failing class, in this order: retired JSON keys, unknown JSON keys,
+retired environment variables, model references, then the remaining shape checks.
+Expect to run `mono-agent validate` a few times per agent, not once.
+
+#### Required — the load fails until each of these is done
+
+In `mono-agent.config.json`:
+
+1. Delete `runtime.executionMode`, `memory.llm.executionMode` and
+   `runtime.routeSafety`.
+2. Convert `runtime.fallbackModels: ["a", "b"]` to
+   `runtime.fallbacks: [{ "model": "a" }, { "model": "b" }]`.
+3. Replace every `codex:`, `claude:`, `claude-code:`, `codex-cli:`, `acp:`,
+   `vercel:<provider>:<model>` and nested `opencode:<provider>:<model>` reference
+   — in `runtime.model`, every `runtime.fallbacks[].model`, every
+   `subagents.definitions[].model`, an `agent-host` `memory.llm.model`, and every
+   per-trigger `model` override. The `vercel:`/`opencode:` wrappers unwrap to the
+   inner pair; the rest do not — `codex:gpt-5.6-terra` becomes
+   `openai-codex:gpt-5.6-terra`, which is a different auth store, so that
+   substitution is a decision, not a rename. The load error names the exact
+   replacement for each form.
+
+In the environment — the shell, the `.env` the agent is started with, and any
+`EnvironmentVariables` block in its launchd plist:
+
+4. Remove `MONO_AGENT_EXECUTION_MODE`, `MONO_AGENT_ROUTE_SAFETY` and
+   `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`. There is no replacement variable.
+5. Remove `MONO_AGENT_FALLBACK_MODELS` and re-express the chain as
+   `MONO_AGENT_FALLBACKS_JSON` (a JSON array of `{ "model": "..." }` objects), or
+   move it into `runtime.fallbacks` in the config file. Pointing this one at the
+   JSON key alone is not a repair: an operator whose chain lives only in `.env`
+   has no `runtime.fallbackModels` key to rewrite.
+6. Apply step 3 to any model reference carried in `MONO_AGENT_MODEL`,
+   `MONO_AGENT_FALLBACKS_JSON`, `MONO_AGENT_SUBAGENTS_JSON` or
+   `MONO_AGENT_MEMORY_LLM_MODEL`.
+
+And in trigger frontmatter:
+
+7. The same step-3 fix to `model:` in every `*.md` under the cron and webhook
+   trigger folders (`cron.dir` / `webhook.dir` if renamed, resolved from the
+   agent root).
+
+An empty assignment (`KEY=`) is *not* a migration item: every reader here treats
+an empty environment value as unset, so an inert leftover line in a deployed
+`.env` neither configured anything before nor fails the load now.
+
+#### Optional — accepted either way
+
+8. A leading `pi:` on a runtime reference is canonicalized away at load, so
+   `pi:openai-codex:gpt-5.6-terra` loads today and resolves to
+   `openai-codex:gpt-5.6-terra`. Stripping it from `runtime.model` and
+   `runtime.fallbacks[].model` is cosmetic — do it if you want the file to match
+   what `mono-agent config` prints. `pi:codex:...` is still rejected: the inner
+   pair is checked after the wrapper comes off.
+9. Strip `pi:` from `memory.llm.model` **only** when `memory.llm.provider` is
+   `agent-host`. Under the default `ollama` provider that field is a raw service
+   model string, where the colon in `qwen3:8b` is a tag separator — rewriting it
+   would repoint memory at a model that does not exist.
+
+#### `configVersion: 1` files are not covered by this checklist
+
+`configVersion` belonged to an experimental schema (`runtimes`, `routing`,
+`policy`, `state`, `$use` dependency injection) that the shipped loader has never
+accepted. None of steps 1–9 apply, because none of those keys exist in such a
+file; it is rejected whole, as unknown keys:
+
+```text
+mono-agent.config.json contains unknown keys: agent.id, agent.instructions,
+agent.workspace, channels.operator, configVersion, context.skills, policy,
+routing, runtimes, session, state. Remove or correct them; unknown keys are not
+ignored.
+```
+
+Re-author such a config against the current schema (or `mono-agent init` a fresh
+one and port the values across); there is no `configVersion: 1` upgrade path.
+
+### Deployment order
+
+```text
+merge → release 0.21.0 → per agent: stop it, edit the config, mono-agent validate
+      → mono-agent start
+```
+
+Edit with the agent stopped. `mono-agent validate` runs the same load as startup
+without starting a turn or spending a model call, so it finds these problems for
+free — but it reports one failing class per run (see above), so re-run it after
+each edit until it comes back clean.
 
 ---
 
@@ -458,7 +692,7 @@ now a loud failure (guarded by `scripts/verify-deep-imports.mjs`).
 <!-- public-api-js-subpaths:start -->
 <!-- Generated by scripts/generate-public-api-docs.mjs. Do not edit by hand. -->
 
-The package exposes **22 named deep `.js` subpaths**:
+The package exposes **14 named deep `.js` subpaths**:
 
 ```text
 @mono-agent/agent-runtime/agent/allowlists.js
@@ -472,17 +706,9 @@ The package exposes **22 named deep `.js` subpaths**:
 @mono-agent/agent-runtime/ai/failure.js
 @mono-agent/agent-runtime/ai/file-change-stats.js
 @mono-agent/agent-runtime/ai/live-input-prompt.js
-@mono-agent/agent-runtime/ai/providers/acp.js
-@mono-agent/agent-runtime/ai/providers/claude-cli.js
-@mono-agent/agent-runtime/ai/providers/claude-sdk-discovery.js
-@mono-agent/agent-runtime/ai/providers/claude-sdk.js
-@mono-agent/agent-runtime/ai/providers/codex-app.js
-@mono-agent/agent-runtime/ai/providers/opencode-discovery.js
-@mono-agent/agent-runtime/ai/runtime/context-windows.js
-@mono-agent/agent-runtime/ai/runtime/fast-mode.js
+@mono-agent/agent-runtime/ai/providers/codex/app-server-client.js
 @mono-agent/agent-runtime/ai/runtime/model-refs.js
 @mono-agent/agent-runtime/ai/runtime/registry.js
-@mono-agent/agent-runtime/ai/streaming/codex-events.js
 ```
 <!-- public-api-js-subpaths:end -->
 

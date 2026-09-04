@@ -1,52 +1,29 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  assertExecutionModeCompatible,
   createPiOAuthApiKeyResolver,
   createMonoRuntime,
-  defaultExecutionModeForModel,
   describeMonoRuntimeSupport,
   listMonoRuntimeBackends,
   monoRuntimeSupportsLiveInput,
   monoRuntimeSupportsMcpApps,
   monoRuntimeSupportsSessionResume,
+  MODEL_REFERENCE_ECHO_MAX_BYTES,
+  MODEL_REFERENCE_REASON_MAX_BYTES,
   parseMonoRuntimeModelReference,
   runtimeOptionsForLocalProvider,
   runtimeBackendForModel,
   RuntimeAdapterError,
+  sanitizeModelReferenceText,
 } from "../index.js";
 
 describe("runtime adapter model references", () => {
-  it("parses canonical Pi model references", () => {
+  it("canonicalizes the legacy pi wrapper", () => {
     expect(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5")).toEqual({
-      sdk: "pi",
       provider: "openai-codex",
       model: "gpt-5.5",
-      reference: "pi:openai-codex:gpt-5.5",
+      reference: "openai-codex:gpt-5.5",
     });
-  });
-
-  it("parses Codex model references and defaults them to CLI", () => {
-    const model = parseMonoRuntimeModelReference("codex:gpt-5.5");
-    expect(model).toEqual({ sdk: "codex", model: "gpt-5.5", reference: "codex:gpt-5.5" });
-    expect(defaultExecutionModeForModel(model)).toBe("cli");
-  });
-
-  it("parses OpenCode model references and defaults them to CLI", () => {
-    const model = parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1");
-    expect(model).toEqual({
-      sdk: "opencode",
-      provider: "github-copilot",
-      model: "gpt-4.1",
-      reference: "opencode:github-copilot:gpt-4.1",
-    });
-    expect(defaultExecutionModeForModel(model)).toBe("cli");
-  });
-
-  it("parses ACP profile references and defaults them to the dedicated ACP transport", () => {
-    const model = parseMonoRuntimeModelReference("acp:personal-agent");
-    expect(model).toEqual({ sdk: "acp", model: "personal-agent", reference: "acp:personal-agent" });
-    expect(defaultExecutionModeForModel(model)).toBe("acp");
   });
 
   it("rejects raw or legacy-invalid model references with a stable error", () => {
@@ -58,147 +35,108 @@ describe("runtime adapter model references", () => {
     }
   });
 
-  it("rejects incompatible execution modes before calling the runtime", () => {
-    const model = parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5");
-    expect(() => assertExecutionModeCompatible(model, "cli")).toThrow(/only runs under SDK execution mode/u);
-    expect(() => assertExecutionModeCompatible(model, "other")).toThrow(/sdk, cli, or acp/u);
+  it("preserves the parser's concrete replacement in error details", () => {
+    try {
+      parseMonoRuntimeModelReference("codex:gpt-5.6-sol");
+      throw new Error("Expected the removed runtime reference to be rejected.");
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: "invalid_model_reference",
+        details: { reason: expect.stringContaining("openai-codex:gpt-5.6-sol") },
+      });
+    }
   });
 
-  it("accepts compatible execution modes", () => {
-    expect(() => assertExecutionModeCompatible(parseMonoRuntimeModelReference("acp:personal-agent"), "acp")).not.toThrow();
-    expect(() => assertExecutionModeCompatible(parseMonoRuntimeModelReference("acp:personal-agent"), "cli"))
-      .toThrow(/require ACP execution mode/i);
-    expect(() => assertExecutionModeCompatible(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli")).not.toThrow();
-    expect(() => assertExecutionModeCompatible(parseMonoRuntimeModelReference("codex:gpt-5.5"), "cli")).not.toThrow();
-    expect(() => assertExecutionModeCompatible(parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1"), "cli")).not.toThrow();
+  // Every operator surface (doctor, `mono-agent validate`, `config --json`, cron/webhook
+  // override issues) renders `error.message` and nothing else. A replacement that lives
+  // only in `details` is a replacement nobody is ever shown, so the message itself must
+  // name it for each retired runtime backend.
+  it.each([
+    ["codex:gpt-5.6-sol", "openai-codex:gpt-5.6-sol"],
+    ["claude:claude-sonnet-4-6", "anthropic:claude-sonnet-4-6"],
+    ["claude-code:claude-sonnet-4-6", "anthropic:claude-sonnet-4-6"],
+    ["codex-cli:gpt-5.6-sol", "openai-codex:gpt-5.6-sol"],
+    ["vercel:openai:gpt-5.5", "openai:gpt-5.5"],
+    ["opencode:openai:gpt-5.5", "openai:gpt-5.5"],
+  ])("names the replacement for %s in the message operators see", (reference, replacement) => {
+    try {
+      parseMonoRuntimeModelReference(reference);
+      throw new Error(`Expected ${reference} to be rejected.`);
+    } catch (error) {
+      expect(error).toBeInstanceOf(RuntimeAdapterError);
+      expect((error as RuntimeAdapterError).message).toContain(replacement);
+    }
   });
 
-  it("lists the runtime backend matrix exposed by agent-runtime", () => {
+  it("names the surviving ACP bridge in the message for an acp: reference", () => {
+    try {
+      parseMonoRuntimeModelReference("acp:some-agent");
+      throw new Error("Expected acp:some-agent to be rejected.");
+    } catch (error) {
+      expect((error as RuntimeAdapterError).message).toContain("mono-agent bridge acp");
+    }
+  });
+
+  it("names the tier-alias repair in the message, not only in details", () => {
+    try {
+      parseMonoRuntimeModelReference("anthropic:opus");
+      throw new Error("Expected a tier alias to be rejected.");
+    } catch (error) {
+      expect((error as RuntimeAdapterError).message).toContain("tier aliases are not valid model ids");
+    }
+  });
+
+  it("exposes one frozen Pi backend descriptor", () => {
+    const model = parseMonoRuntimeModelReference("github-copilot:gpt-4.1");
     const backends = listMonoRuntimeBackends();
-    expect(backends.map((backend) => backend.id)).toEqual([
-      "acp-stdio",
-      "claude-sdk",
-      "claude-code-cli",
-      "codex-app-cli",
-      "opencode-app-cli",
-      "pi-sdk",
-    ]);
-    expect(backends.find((backend) => backend.id === "acp-stdio")).toMatchObject({
-      runtimeBridgeId: "acp-stdio",
-      sdk: "acp",
-      executionMode: "acp",
-      transport: "acp",
-      capabilities: expect.objectContaining({
-        kind: "acp",
-        supports_session_resume: true,
-        supports_mcp: false,
-        tool_policy: "allow_all_only",
-      }),
-    });
-    expect(backends.find((backend) => backend.id === "claude-sdk")).toMatchObject({
-      runtimeBridgeId: "claude",
-      sdk: "claude",
-      executionMode: "sdk",
+
+    expect(backends).toHaveLength(1);
+    const backend = backends[0];
+    if (backend === undefined) {
+      throw new Error("Expected the sole Pi runtime backend.");
+    }
+    expect(backend).toMatchObject({
+      id: "pi-sdk",
+      runtimeBridgeId: "pi",
+      sdk: "pi",
       transport: "sdk",
-      capabilities: expect.objectContaining({ tool_policy: "projected" }),
-    });
-    expect(backends.find((backend) => backend.id === "codex-app-cli")?.capabilities).toMatchObject({
-      kind: "codex-app",
-      supports_mcp: true,
-      tool_policy: "allow_all_only",
-    });
-    expect(backends.find((backend) => backend.id === "opencode-app-cli")).toMatchObject({
-      runtimeBridgeId: "opencode-app",
-      sdk: "opencode",
-      executionMode: "cli",
-      transport: "cli",
       acceptsProviderIds: true,
       capabilities: expect.objectContaining({
-        kind: "opencode-app",
-        supports_mcp: false,
-        supports_session_resume: false,
-        tool_policy: "allow_all_only",
+        kind: "pi",
+        supports_session_resume: true,
+        supports_live_input: true,
+        supports_mcp_apps: true,
+        tool_policy: "projected",
       }),
     });
-    expect(backends.find((backend) => backend.id === "pi-sdk")).toMatchObject({
-      acceptsProviderIds: true,
-      capabilities: expect.objectContaining({ tool_policy: "projected" }),
-    });
+    expect(runtimeBackendForModel(model)).toBe(backend);
+    expect(Object.isFrozen(backends)).toBe(true);
+    expect(Object.isFrozen(backend)).toBe(true);
+    expect(Object.isFrozen(backend.capabilities)).toBe(true);
   });
 
-  it("resolves runtime backend support by model and execution mode", () => {
-    expect(runtimeBackendForModel(parseMonoRuntimeModelReference("acp:personal-agent")).id).toBe("acp-stdio");
-    expect(runtimeBackendForModel(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6")).id).toBe("claude-sdk");
-    expect(runtimeBackendForModel(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli").id).toBe("claude-code-cli");
-    expect(runtimeBackendForModel(parseMonoRuntimeModelReference("codex:gpt-5.5")).id).toBe("codex-app-cli");
-    expect(runtimeBackendForModel(parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1")).id).toBe("opencode-app-cli");
-    expect(runtimeBackendForModel(parseMonoRuntimeModelReference("pi:github-copilot:gpt-4.1")).id).toBe("pi-sdk");
-  });
-
-  it("describes OpenCode support through the registered CLI bridge", () => {
-    expect(describeMonoRuntimeSupport(
-      parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1"),
-    )).toMatchObject({
-      executionMode: "cli",
+  it("describes every parsed model through the sole Pi backend", () => {
+    const model = parseMonoRuntimeModelReference("ollama:qwen3:8b");
+    expect(describeMonoRuntimeSupport(model)).toEqual({
+      model,
       compatible: true,
-      backend: {
-        id: "opencode-app-cli",
-        runtimeBridgeId: "opencode-app",
-      },
+      backend: runtimeBackendForModel(model),
     });
-  });
-
-  it("describes incompatible runtime support without hiding the reason", () => {
-    expect(describeMonoRuntimeSupport(parseMonoRuntimeModelReference("codex:gpt-5.5"), "sdk")).toMatchObject({
-      compatible: false,
-      incompatibilityReason: "Codex CLI requires CLI execution mode.",
-    });
-    expect(describeMonoRuntimeSupport(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"), "cli")).toMatchObject({
-      compatible: false,
-      incompatibilityReason: "Provider `openai-codex` only runs under SDK execution mode; use codex:<model> for Codex CLI.",
-    });
-    expect(() => runtimeBackendForModel(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"), "cli"))
-      .toThrow(RuntimeAdapterError);
   });
 });
 
-describe("runtime adapter Pi auth exports", () => {
+describe("runtime adapter Pi exports and capabilities", () => {
   it("re-exports the Pi OAuth API key resolver factory", () => {
     expect(typeof createPiOAuthApiKeyResolver).toBe("function");
   });
-});
 
-describe("runtime adapter provider sessions", () => {
-  it("reports MCP Apps support only for the host-routed Pi runtime", () => {
-    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"))).toBe(true);
-    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "sdk")).toBe(false);
-    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli")).toBe(false);
-    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("codex:gpt-5.5"), "cli")).toBe(false);
-    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1"), "cli")).toBe(false);
-    expect(monoRuntimeSupportsMcpApps(parseMonoRuntimeModelReference("acp:personal-agent"), "acp")).toBe(false);
+  it("reads constant capabilities from the sole backend", () => {
+    expect(monoRuntimeSupportsMcpApps()).toBe(true);
+    expect(monoRuntimeSupportsLiveInput()).toBe(true);
+    expect(monoRuntimeSupportsSessionResume()).toBe(true);
   });
 
-  it("reports live-input support from the selected runtime backend", () => {
-    expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "sdk")).toBe(true);
-    expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli")).toBe(false);
-    expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("codex:gpt-5.5"), "cli")).toBe(true);
-    expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"))).toBe(true);
-    expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1"), "cli")).toBe(false);
-  });
-
-  it("reports session resume support for every backend", () => {
-    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "sdk")).toBe(true);
-    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli")).toBe(true);
-    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("codex:gpt-5.5"), "cli")).toBe(true);
-    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"))).toBe(true);
-  });
-
-  it("resolves the default execution mode when omitted", () => {
-    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"))).toBe(true);
-    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("codex:gpt-5.5"))).toBe(true);
-  });
-
-  it("exposes session sync, strict refresh, disposal, and invalidation on the mono runtime", async () => {
+  it("exposes session lifecycle on the mono runtime", async () => {
     const runtime = createMonoRuntime();
     expect(typeof runtime.syncSession).toBe("function");
     expect(typeof runtime.refreshSession).toBe("function");
@@ -215,75 +153,12 @@ describe("runtime adapter provider sessions", () => {
   });
 });
 
-describe("runtime adapter ACP run contracts", () => {
-  it("rejects request-scoped MCP servers before resolving a direct ACP profile", async () => {
-    const resolveAcpProfile = vi.fn();
-    const runtime = createMonoRuntime();
-
-    await expect(runtime.run("SYSTEM", {
-      model: parseMonoRuntimeModelReference("acp:personal-agent"),
-      messages: [{ role: "user", content: "hi" }],
-      abortSignal: new AbortController().signal,
-      resolveAcpProfile,
-      mcpServers: { filesystem: { command: "/absolute/mcp-server" } },
-    })).rejects.toMatchObject({
-      name: "RuntimeAdapterError",
-      code: "invalid_runtime_options",
-      details: expect.objectContaining({ option: "mcpServers" }),
-    });
-    expect(resolveAcpProfile).not.toHaveBeenCalled();
-  });
-
-  it("capability-skips an ACP-only route chain carrying request-scoped MCP servers", async () => {
-    const resolveAcpProfile = vi.fn();
-    const resolveAttempt = vi.fn(() => ({ options: { resolveAcpProfile } }));
-    const runtime = createMonoRuntime({
-      fallbackChain: [{ model: parseMonoRuntimeModelReference("acp:personal-agent") }],
-      resolveAttempt,
-    });
-
-    const result = await runtime.run("SYSTEM", {
-      model: parseMonoRuntimeModelReference("acp:personal-agent"),
-      messages: [{ role: "user", content: "hi" }],
-      abortSignal: new AbortController().signal,
-      mcpServers: { filesystem: { command: "/absolute/mcp-server" } },
-    });
-
-    expect(result.failureKind).toBe("skipped_capability_mismatch");
-    expect(resolveAttempt).not.toHaveBeenCalled();
-    expect(resolveAcpProfile).not.toHaveBeenCalled();
-  });
-});
-
-describe("runtime adapter OpenCode routing", () => {
-  it("routes an omitted execution mode to OpenCode CLI through createMonoRuntime", async () => {
-    const runtime = createMonoRuntime();
-    const result = await runtime.run("SYSTEM", {
-      model: parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1"),
-      messages: [{ role: "user", content: "hi" }],
-      abortSignal: new AbortController().signal,
-      // The direct OpenCode bridge deliberately rejects this policy before it
-      // starts a server, making the assertion deterministic while still proving
-      // the adapter selected and invoked the real registered bridge.
-      allowedTools: [],
-      disallowedTools: [],
-    });
-
-    expect(result).toMatchObject({
-      sdk: "opencode",
-      model: "opencode:github-copilot:gpt-4.1",
-      failureKind: "skipped_capability_mismatch",
-      diagnostics: { opencode_error_code: "opencode_tool_policy_unsupported" },
-    });
-  });
-});
-
 describe("runtime adapter fallback chain", () => {
-  it("builds a router-backed runtime that still exposes session lifecycle", async () => {
+  it("builds a Pi router that still exposes session lifecycle", async () => {
     const runtime = createMonoRuntime({
       fallbackChain: [
-        { model: parseMonoRuntimeModelReference("claude:claude-sonnet-4-6") },
         { model: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5") },
+        { model: parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6") },
       ],
     });
     expect(typeof runtime.run).toBe("function");
@@ -300,36 +175,11 @@ describe("runtime adapter fallback chain", () => {
     expect(() => createMonoRuntime({ fallbackChain: [] })).toThrow(RuntimeAdapterError);
   });
 
-  it("rejects chain entries with incompatible execution modes at construction", () => {
-    expect(() =>
-      createMonoRuntime({
-        fallbackChain: [
-          {
-            model: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"),
-            executionMode: "cli",
-          },
-        ],
-      }),
-    ).toThrow(RuntimeAdapterError);
-  });
-
-  it.each([
-    ["direct Codex primary", ["codex:gpt-5.6-terra", "pi:openai-codex:gpt-5.5"]],
-    ["direct Codex fallback", ["claude:claude-sonnet-4-6", "codex:gpt-5.6-terra"]],
-  ])("accepts a mixed runtime family with a %s under an explicit route contract", async (_label, references) => {
-    const runtime = createMonoRuntime({
-      fallbackChain: references.map((reference) => ({
-        model: parseMonoRuntimeModelReference(reference),
-      })),
-      routeSafety: "per-route-native",
-    });
-    expect(typeof runtime.run).toBe("function");
-    await expect(runtime.disposeAllSessions?.()).resolves.toBeUndefined();
-  });
-
-  it("forwards route safety, the actual attempted model, and exact effort tri-state", async () => {
+  it("forwards the actual attempted model and exact effort tri-state", async () => {
     const attempts: Array<{ model: string; effort: unknown }> = [];
+    const configureTools = vi.fn();
     const fakeRuntime = {
+      configureTools,
       async run(_systemPrompt: string, options: { model: { model: string }; effort?: string }) {
         attempts.push({
           model: options.model.model,
@@ -338,26 +188,27 @@ describe("runtime adapter fallback chain", () => {
         return { text: "ok", events: [], cancelled: false, usage: {} };
       },
     };
+    const model = parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6");
     const runtime = createMonoRuntime({
-      fallbackChain: [
-        { model: parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), effort: null },
-      ],
-      routeSafety: "per-route-native",
+      fallbackChain: [{ model, effort: null }],
       resolveAttempt: (context) => {
-        expect(context).toMatchObject({
+        expect(context).toEqual({
           attemptIndex: 0,
-          routeSafety: "per-route-native",
-          model: { model: "claude-sonnet-4-6" },
+          retryIndex: 0,
+          model,
         });
         return { runtime: fakeRuntime as never, options: { privateSentinel: "not-telemetry" } };
       },
     });
+
     const result = await runtime.run("SYSTEM", {
-      model: parseMonoRuntimeModelReference("claude:ignored-by-chain"),
+      model: parseMonoRuntimeModelReference("openai-codex:ignored-by-chain"),
       effort: "high",
       messages: [{ role: "user", content: "hi" }],
       abortSignal: new AbortController().signal,
     });
+
+    expect(configureTools).toHaveBeenCalledOnce();
     expect(attempts).toEqual([{
       model: "claude-sonnet-4-6",
       effort: "provider-default",
@@ -365,38 +216,25 @@ describe("runtime adapter fallback chain", () => {
     expect(JSON.stringify(result)).not.toContain("privateSentinel");
   });
 
-  it("rejects invalid route safety and malformed effort values", () => {
-    expect(() => createMonoRuntime({ routeSafety: "unsafe" as never })).toThrow(RuntimeAdapterError);
+  it("rejects malformed effort values", () => {
     expect(() => createMonoRuntime({
       fallbackChain: [{
-        model: parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"),
+        model: parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6"),
         effort: " high",
       }],
     })).toThrow(RuntimeAdapterError);
   });
 
-  it("accepts an all-direct-Codex fallback chain", async () => {
-    const runtime = createMonoRuntime({
-      fallbackChain: [
-        { model: parseMonoRuntimeModelReference("codex:gpt-5.6-terra") },
-        { model: parseMonoRuntimeModelReference("codex:gpt-5.5") },
-      ],
-    });
-
-    expect(typeof runtime.run).toBe("function");
-    await expect(runtime.disposeAllSessions?.()).resolves.toBeUndefined();
-  });
-
   it("rejects chain entries with unparsed model references", () => {
     expect(() =>
       createMonoRuntime({
-        fallbackChain: [{ model: { sdk: "", model: "" } }],
+        fallbackChain: [{ model: { provider: "", model: "", reference: "" } }],
       }),
     ).toThrow(RuntimeAdapterError);
   });
 
   it("rejects non-object chain entries with a typed error", () => {
-    for (const entry of [null, undefined, "claude:claude-sonnet-4-6", ["claude"]]) {
+    for (const entry of [null, undefined, "anthropic:claude-sonnet-4-6", ["anthropic"]]) {
       expect(() =>
         createMonoRuntime({
           fallbackChain: [entry as never],
@@ -404,12 +242,21 @@ describe("runtime adapter fallback chain", () => {
       ).toThrow(RuntimeAdapterError);
     }
   });
+
+  it("rejects duplicate routes authored with mixed pi-wrapper spellings", () => {
+    expect(() => createMonoRuntime({
+      fallbackChain: [
+        { model: parseMonoRuntimeModelReference("pi:anthropic:claude-sonnet-4-6") },
+        { model: parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6") },
+      ],
+    })).toThrow(/duplicate model anthropic:claude-sonnet-4-6/u);
+  });
 });
 
 describe("runtime adapter local providers", () => {
   it("maps Ollama provider config to agent-runtime custom Pi options", () => {
     const options = runtimeOptionsForLocalProvider(
-      parseMonoRuntimeModelReference("pi:ollama:qwen3:8b"),
+      parseMonoRuntimeModelReference("ollama:qwen3:8b"),
       [
         {
           id: "ollama",
@@ -449,7 +296,7 @@ describe("runtime adapter local providers", () => {
 
   it("preserves disabled local providers so agent-runtime can fail honestly", () => {
     const options = runtimeOptionsForLocalProvider(
-      parseMonoRuntimeModelReference("pi:ollama:llama3"),
+      parseMonoRuntimeModelReference("ollama:llama3"),
       [
         {
           id: "ollama",
@@ -467,7 +314,7 @@ describe("runtime adapter local providers", () => {
     });
   });
 
-  it("does nothing for built-in Pi providers and non-Pi model references", () => {
+  it("does nothing for providers that are not configured locally", () => {
     const localProviders = [
       {
         id: "ollama",
@@ -478,18 +325,18 @@ describe("runtime adapter local providers", () => {
     ];
 
     expect(runtimeOptionsForLocalProvider(
-      parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"),
+      parseMonoRuntimeModelReference("openai-codex:gpt-5.5"),
       localProviders,
     )).toEqual({});
     expect(runtimeOptionsForLocalProvider(
-      parseMonoRuntimeModelReference("codex:gpt-5.5"),
+      parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6"),
       localProviders,
     )).toEqual({});
   });
 
   it("rejects untrusted public HTTP local-provider URLs", () => {
     expect(() => runtimeOptionsForLocalProvider(
-      parseMonoRuntimeModelReference("pi:gateway:gpt-oss"),
+      parseMonoRuntimeModelReference("gateway:gpt-oss"),
       [
         {
           id: "gateway",
@@ -503,7 +350,7 @@ describe("runtime adapter local providers", () => {
 
   it("maps LM Studio and trusted OpenAI-compatible providers through the same custom-provider contract", () => {
     const lmStudio = runtimeOptionsForLocalProvider(
-      parseMonoRuntimeModelReference("pi:lmstudio:local-model"),
+      parseMonoRuntimeModelReference("lmstudio:local-model"),
       [
         {
           id: "lmstudio",
@@ -521,7 +368,7 @@ describe("runtime adapter local providers", () => {
     expect(lmStudio.isPrivateProvider).toBe(true);
 
     const gateway = runtimeOptionsForLocalProvider(
-      parseMonoRuntimeModelReference("pi:local-gateway:gpt-oss"),
+      parseMonoRuntimeModelReference("local-gateway:gpt-oss"),
       [
         {
           id: "local-gateway",
@@ -541,9 +388,10 @@ describe("runtime adapter local providers", () => {
     });
     expect(gateway.isPrivateProvider).toBe(false);
   });
+});
 
 describe("createMonoRuntime same-model retry options", () => {
-  const model = { sdk: "claude", model: "claude-sonnet-4-6", reference: "claude:claude-sonnet-4-6" } as const;
+  const model = { provider: "anthropic", model: "claude-sonnet-4-6", reference: "anthropic:claude-sonnet-4-6" } as const;
 
   it.each([0, 11, 1.5, "2" as unknown as number])("rejects a fallback attempts value of %s", (attempts) => {
     expect(() => createMonoRuntime({ fallbackChain: [{ model, attempts }] }))
@@ -565,4 +413,269 @@ describe("createMonoRuntime same-model retry options", () => {
     })).toThrow(/must be a non-negative finite number/u);
   });
 });
+
+/**
+ * A model reference is operator-supplied, unbounded and uninspected, and every diagnostic that
+ * quotes one lands somewhere durable and operator-shared: the terminal, `doctor`, the daemon
+ * log, launchd's captured stdout. So the parser's derived reason -- which interpolates the
+ * operator's own model id into the repair -- is bounded and de-controlled where it is derived,
+ * once, rather than at each of the five surfaces that render it.
+ */
+describe("sanitizeModelReferenceText", () => {
+  const utf8 = (value: string): number => new TextEncoder().encode(value).length;
+
+  it("escapes newlines so a value cannot forge an extra diagnostic line", () => {
+    const forged = sanitizeModelReferenceText("codex:gpt\n[ok]    Core config", MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(forged).toBe("codex:gpt\\n[ok]    Core config");
+    expect(forged).not.toContain("\n");
+  });
+
+  it.each([
+    ["carriage return", "a\rb", "a\\rb"],
+    ["tab", "a\tb", "a\\tb"],
+    ["NUL", "a\u0000b", "a\\u0000b"],
+    ["line separator", "a\u2028b", "a\\u2028b"],
+    ["paragraph separator", "a\u2029b", "a\\u2029b"],
+    ["right-to-left override", "a\u202Eb", "a\\u202Eb"],
+    ["zero-width space", "a\u200Bb", "a\\u200Bb"],
+  ])("escapes a %s", (_label, raw, expected) => {
+    expect(sanitizeModelReferenceText(raw, MODEL_REFERENCE_ECHO_MAX_BYTES)).toBe(expected);
+  });
+
+  it("clamps to the byte budget and marks the cut", () => {
+    const clamped = sanitizeModelReferenceText("x".repeat(500), MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(utf8(clamped)).toBeLessThanOrEqual(MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(clamped.endsWith("…")).toBe(true);
+  });
+
+  it("bounds by bytes, not characters, and never splits a code point", () => {
+    const clamped = sanitizeModelReferenceText("🧠".repeat(200), MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(utf8(clamped)).toBeLessThanOrEqual(MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(clamped).not.toContain("\uFFFD");
+    expect([...clamped].every((character) => character === "🧠" || character === "…")).toBe(true);
+  });
+
+  it("counts the escaped form against the budget, so escaping cannot blow the bound", () => {
+    const clamped = sanitizeModelReferenceText("\n".repeat(200), MODEL_REFERENCE_ECHO_MAX_BYTES);
+    expect(utf8(clamped)).toBeLessThanOrEqual(MODEL_REFERENCE_ECHO_MAX_BYTES);
+    // Clamping first would satisfy the byte bound and still emit raw newlines, so the order
+    // -- escape, then clamp -- is what is asserted here, not only the resulting length.
+    expect(clamped).not.toContain("\n");
+    expect(clamped.startsWith("\\n\\n")).toBe(true);
+  });
+
+  it("leaves every legitimate reference in Pi's built-in catalog untouched", () => {
+    const longest = "cloudflare-ai-gateway:workers-ai/@cf/mistralai/mistral-small-3.1-24b-instruct";
+    expect(utf8(longest)).toBe(77);
+    expect(sanitizeModelReferenceText(longest, MODEL_REFERENCE_ECHO_MAX_BYTES)).toBe(longest);
+  });
+
+  it("is idempotent, so re-bounding an already bounded reason is a no-op", () => {
+    const once = sanitizeModelReferenceText("a\nb".repeat(80), MODEL_REFERENCE_REASON_MAX_BYTES);
+    expect(sanitizeModelReferenceText(once, MODEL_REFERENCE_REASON_MAX_BYTES)).toBe(once);
+  });
+
+  it("honours a budget too small to hold the truncation marker", () => {
+    // The marker is 3 bytes. Emitting it unconditionally would overrun exactly the bound the
+    // function exists to enforce, so it is dropped rather than the bound.
+    for (const maxBytes of [1, 2, 3]) {
+      for (const value of ["x".repeat(40), "🧠".repeat(40), "\n".repeat(40)]) {
+        expect(utf8(sanitizeModelReferenceText(value, maxBytes))).toBeLessThanOrEqual(maxBytes);
+      }
+    }
+  });
+
+  it("rejects a non-positive-integer budget rather than silently disabling the bound", () => {
+    for (const maxBytes of [0, -1, 1.5, Number.NaN]) {
+      expect(() => sanitizeModelReferenceText("codex:gpt", maxBytes)).toThrow(RangeError);
+    }
+  });
+});
+
+describe("parseMonoRuntimeModelReference bounds the reason it derives", () => {
+  it("keeps the whole repair for every retired form", () => {
+    // The reason budget exists to bound the operator's value, never to clamp the repair --
+    // the ACP one is the longest fixed sentence the kernel parser emits.
+    expect(() => parseMonoRuntimeModelReference("acp:some-agent")).toThrow(/mono-agent bridge acp to serve mono-agent over ACP/u);
+    expect(() => parseMonoRuntimeModelReference("codex:gpt-5.6-sol")).toThrow(/use openai-codex:gpt-5\.6-sol/u);
+  });
+
+  it("bounds a reason built from an oversized model id", () => {
+    let thrown: unknown;
+    try {
+      parseMonoRuntimeModelReference(`codex:${"sk-live-AAAA".repeat(60)}`);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(RuntimeAdapterError);
+    const { message, details } = thrown as RuntimeAdapterError;
+    expect(new TextEncoder().encode(details.reason as string).length)
+      .toBeLessThanOrEqual(MODEL_REFERENCE_REASON_MAX_BYTES);
+    expect(message).toContain("use openai-codex:sk-live-AAAA");
+    expect(message.endsWith("…")).toBe(true);
+  });
+
+  it("escapes a newline the kernel parser interpolated into the repair", () => {
+    let thrown: unknown;
+    try {
+      parseMonoRuntimeModelReference("codex:gpt\n[ok]    Core config");
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(RuntimeAdapterError);
+    expect((thrown as RuntimeAdapterError).message).not.toContain("\n");
+    expect((thrown as RuntimeAdapterError).details.reason).toBe(
+      "codex is no longer a runtime backend; use openai-codex:gpt\\n[ok]    Core config",
+    );
+  });
+});
+
+/**
+ * Where a model reference is bounded, now that the parser does not bound its length at all.
+ *
+ * Two rounds put a byte ceiling in `parseRuntimeModelReference` and both numbers refused a model
+ * that really exists -- 96 refused a Hugging Face GGUF repo Ollama serves, 160 refused an
+ * `ollama:<model>:<tag>` reference whose halves Ollama validates at 80 bytes each. The ceiling
+ * is gone. What it was standing in for is not, and this suite is its new home:
+ *
+ *  - CONTENT stays coupled between the two layers, exactly. Neither may see a code point the
+ *    other would have to handle: the parser refuses control/formatting characters at the source,
+ *    the renderer escapes them in text that never parsed. The last case proves the two sets
+ *    agree code point by code point, which is what keeps two regexes in two packages honest.
+ *  - LENGTH is bounded HERE and only here, by truncation. Whatever the parser accepts -- and it
+ *    now accepts any length -- is clamped to {@link MODEL_REFERENCE_ECHO_MAX_BYTES} on its way
+ *    into a diagnostic, and a parse failure's reason is clamped to
+ *    {@link MODEL_REFERENCE_REASON_MAX_BYTES} however large the value that caused it.
+ *
+ * The sizes below are literal, not derived from either constant. The previous round's boundary
+ * cases computed their inputs from the ceiling they were checking and therefore survived changing
+ * it; a bound asserted against arithmetic on itself is not asserted at all.
+ */
+describe("a model reference is bounded where it is rendered, never where it is parsed", () => {
+  const utf8 = (value: string): number => new TextEncoder().encode(value).length;
+
+  /** A real Hugging Face GGUF repo served by Ollama, at 100 bytes: longer than the echo budget. */
+  const HF_GGUF_REFERENCE =
+    "ollama:hf.co/mradermacher/Qwen3.5-27B-HERETIC-Polaris-Advanced-Thinking-Alpha-uncensored-GGUF:Q4_K_M";
+
+  /** `ollama:` + an 80-byte model + `:` + an 80-byte tag: what Ollama's own limits permit. */
+  const OLLAMA_168_BYTE_REFERENCE =
+    "ollama:hf.co/unsloth/Qwen3.5-Coder-480B-A35B-Instruct-Thinking-2512-Turbo-Preview2-GGUF"
+    + ":UD-Q4_K_XL-imatrix-calibration-v3-longcontext-262144-rope-scaled-linear-tuned-v2";
+
+  const ACCEPTED_AT_EVERY_SIZE: readonly (readonly [string, string])[] = [
+    ["a 100-byte Hugging Face GGUF repo", HF_GGUF_REFERENCE],
+    ["a 168-byte Ollama model:tag reference", OLLAMA_168_BYTE_REFERENCE],
+    ["407 bytes", `openai:${"a".repeat(400)}`],
+    ["70,007 bytes", `openai:${"a".repeat(70_000)}`],
+    ["270,007 bytes", `openai:${"a".repeat(270_000)}`],
+  ];
+
+  it.each(ACCEPTED_AT_EVERY_SIZE)("parses %s rather than refusing it", (_label, reference) => {
+    const separator = reference.indexOf(":");
+    expect(parseMonoRuntimeModelReference(reference)).toEqual({
+      provider: reference.slice(0, separator),
+      model: reference.slice(separator + 1),
+      reference,
+    });
+  });
+
+  it("keeps the echo budget wide enough to quote a mistyped reference whole", () => {
+    // The budget is only useful if the values it exists to show fit inside it. Every reference in
+    // Pi's 1312-entry built-in catalog does; the longest is 77 bytes.
+    expect(MODEL_REFERENCE_ECHO_MAX_BYTES).toBeGreaterThanOrEqual(77);
+    // And a reason has room for the repair sentence ON TOP of a full echo, so the actionable
+    // half of the message can never be the part that gets clamped away.
+    expect(MODEL_REFERENCE_REASON_MAX_BYTES).toBeGreaterThan(MODEL_REFERENCE_ECHO_MAX_BYTES + 120);
+  });
+
+  it.each(ACCEPTED_AT_EVERY_SIZE)(
+    "bounds %s for a diagnostic by truncating it, not by refusing it",
+    (_label, reference) => {
+      // This is the whole reason the parser can afford to have no length rule. The renderer's
+      // answer to "too long to print" is a shorter string with the cut marked -- a lossy
+      // diagnostic, not a lost route -- and it holds at every size, not just near the budget.
+      const parsed = parseMonoRuntimeModelReference(reference).reference;
+      expect(utf8(parsed)).toBe(utf8(reference));
+      const echoed = sanitizeModelReferenceText(parsed, MODEL_REFERENCE_ECHO_MAX_BYTES);
+      expect(utf8(echoed)).toBeLessThanOrEqual(MODEL_REFERENCE_ECHO_MAX_BYTES);
+      expect(echoed.endsWith("…")).toBe(true);
+      expect(reference.startsWith(echoed.slice(0, -1))).toBe(true);
+    },
+  );
+
+  it("clamps on UTF-8 bytes, not code units, so a multibyte reference cannot outspend the budget", () => {
+    // Every candidate here parses -- there is no ceiling to stop them -- so the byte bound has
+    // to hold on the RENDERING side alone. A clamp counted in UTF-16 code units looks identical
+    // on the ASCII cases and lets these through at up to four times the intended byte cost.
+    const candidates = [
+      HF_GGUF_REFERENCE,
+      OLLAMA_168_BYTE_REFERENCE,
+      // The three that matter most sit in the gap a code-unit count opens and a byte count
+      // does not: each is under the budget in UTF-16 code units (47, 57, 67) and over it in
+      // UTF-8 bytes (127, 107, 127), so a clamp that measured code units would hand these
+      // back untouched, over budget, while every ASCII case above still looked correct.
+      `openai:${"中".repeat(40)}`,
+      `openai:${"\u{1F9E0}".repeat(25)}`,
+      `openai:${"é".repeat(60)}`,
+      `openai:${"\u{1F9E0}".repeat(400)}`,
+      `openai:${"é".repeat(600)}`,
+      `openai:${"中".repeat(500)}`,
+    ];
+    const violations = candidates.filter((candidate) => {
+      const reference = parseMonoRuntimeModelReference(candidate).reference;
+      const echoed = sanitizeModelReferenceText(reference, MODEL_REFERENCE_ECHO_MAX_BYTES);
+      return utf8(echoed) > MODEL_REFERENCE_ECHO_MAX_BYTES
+        || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(echoed);
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it.each([
+    ["a newline", "openai:foo\nbar"],
+    ["a newline inside 270,000 bytes", `openai:${"a".repeat(270_000)}\nbar`],
+    ["a retired backend named with 270,000 bytes", `codex:${"a".repeat(270_000)}`],
+    ["a retired backend named with a line separator", "vercel:anthropic:claude\u2028opus"],
+  ])("bounds the diagnostic for a value refused because of %s", (_label, value) => {
+    // The rejection path is where an operator's raw text is quoted back, and the kernel parser
+    // interpolates that text into the repair it names -- so an unbounded value produces an
+    // unbounded reason unless this layer clamps it. It does, at every size.
+    let thrown: unknown;
+    try {
+      parseMonoRuntimeModelReference(value);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(RuntimeAdapterError);
+    const error = thrown as RuntimeAdapterError;
+    expect(error.code).toBe("invalid_model_reference");
+    expect(error.message).not.toContain("\n");
+    expect(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(error.message)).toBe(false);
+    expect(utf8(error.message)).toBeLessThanOrEqual(
+      "Invalid runtime model reference: ".length + MODEL_REFERENCE_REASON_MAX_BYTES,
+    );
+  });
+
+  it("refuses exactly the code points the sanitizer would otherwise have to escape", () => {
+    // The CHARACTER half of the seam stays coupled where the LENGTH half never was. The kernel
+    // parser and this module each name the unsafe set with their own regex, in different
+    // packages and different languages; asserting the two agree code point by code point is what
+    // keeps that duplication honest, and a comment would not.
+    const disagreements: string[] = [];
+    for (let codePoint = 0; codePoint <= 0xffff; codePoint += 1) {
+      if (codePoint >= 0xd800 && codePoint <= 0xdfff) continue;
+      const value = `openai:a${String.fromCodePoint(codePoint)}b`;
+      const escapedByRenderer = sanitizeModelReferenceText(value, MODEL_REFERENCE_ECHO_MAX_BYTES) !== value;
+      let refusedByParser = false;
+      try {
+        parseMonoRuntimeModelReference(value);
+      } catch {
+        refusedByParser = true;
+      }
+      if (escapedByRenderer !== refusedByParser) {
+        disagreements.push(`U+${codePoint.toString(16).toUpperCase().padStart(4, "0")}`);
+      }
+    }
+    expect(disagreements).toEqual([]);
+  });
 });

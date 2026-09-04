@@ -65,7 +65,7 @@ describe("initMonoAgentFolder", () => {
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
     expect(config.$schema).toBe(MONO_AGENT_CONFIG_SCHEMA_URL);
-    expect(config.runtime.model).toBe("codex:gpt-5.6-terra");
+    expect(config.runtime.model).toBe("openai-codex:gpt-5.6-terra");
     expect(config.runtime.maxTurns).toBeUndefined();
     expect(config.context.identityPath).toBe("./IDENTITY.md");
     expect(config.context).toMatchObject({
@@ -95,13 +95,13 @@ describe("initMonoAgentFolder", () => {
       answers: defaultAnswers({
         name: "Atlas",
         purpose: "Coordinate research for this project.",
-        model: "pi:ollama:gemma4:31b",
+        model: "ollama:gemma4:31b",
         channels: ["channel:webhook", "channel:slack", "channel:cron"],
       }),
     });
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
-    expect(config.runtime.model).toBe("pi:ollama:gemma4:31b");
+    expect(config.runtime.model).toBe("ollama:gemma4:31b");
     expect(config.agent).toEqual({ name: "Atlas" });
     expect(config.slack).toEqual({ enabled: true });
     expect(config.cron).toEqual({ dir: "cron" });
@@ -115,16 +115,16 @@ describe("initMonoAgentFolder", () => {
     const result = await initMonoAgentFolder({
       dir,
       answers: defaultAnswers({
-        model: "claude:claude-sonnet-4-6",
+        model: "anthropic:claude-sonnet-4-6",
         effort: "medium",
-        fallbackModels: ["pi:ollama:gemma4:31b"],
+        fallbacks: [{ model: "ollama:gemma4:31b", effort: "medium" }],
         memory: "memory:journal",
       }),
     });
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
     expect(config.runtime.fallbacks).toEqual([{
-      model: "pi:ollama:gemma4:31b",
+      model: "ollama:gemma4:31b",
       effort: "medium",
     }]);
     expect(config.runtime.fallbackModels).toBeUndefined();
@@ -287,7 +287,7 @@ describe("initMonoAgentFolder", () => {
 
   it("never overwrites existing files", async () => {
     const configPath = join(dir, "mono-agent.config.json");
-    await writeFile(configPath, JSON.stringify({ runtime: { model: "codex:gpt-5.6-terra" } }));
+    await writeFile(configPath, JSON.stringify({ runtime: { model: "openai-codex:gpt-5.6-terra" } }));
     await writeFile(join(dir, "IDENTITY.md"), "# Mine\n");
 
     const result = await initMonoAgentFolder({ dir });
@@ -300,7 +300,7 @@ describe("initMonoAgentFolder", () => {
       status: "preserved",
     });
     const config = JSON.parse(await readFile(configPath, "utf8"));
-    expect(config.runtime.model).toBe("codex:gpt-5.6-terra");
+    expect(config.runtime.model).toBe("openai-codex:gpt-5.6-terra");
     expect(await readFile(result.identityPath, "utf8")).toBe("# Mine\n");
   });
 

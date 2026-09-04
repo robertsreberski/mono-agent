@@ -6,125 +6,42 @@ import {
 } from "../../ai/runtime/registry.js";
 
 describe("AI runtime bridge registry", () => {
-  it("registers SDK and CLI bridges for both provider families", () => {
-    expect(listRuntimeBridges().map((bridge) => bridge.id).sort())
-      .toEqual(["acp-stdio", "claude", "claude-code", "codex-app", "opencode-app", "pi"]);
-  });
+  it("exposes one self-consistent built-in bridge descriptor", () => {
+    const descriptors = listRuntimeBridges();
 
-  it("resolves canonical Pi and Claude model references to SDK bridges by default", async () => {
-    await expect(resolveRuntimeBridge({ sdk: "pi", provider: "openai", model: "gpt-5.5" }))
-      .resolves.toMatchObject({ id: "pi" });
-    await expect(resolveRuntimeBridge({ sdk: "claude", model: "claude-sonnet-4-6" }))
-      .resolves.toMatchObject({ id: "claude" });
-    await expect(resolveRuntimeBridge({ sdk: "codex", model: "gpt-5.5" }))
-      .rejects.toThrow(/unsupported sdk/i);
-  });
-
-  it("resolves the pi sdk to the native AgentHarness bridge as the sole pi path", async () => {
-    const { piNativeRuntimeBridge } = await import("../../ai/providers/pi-native.js");
-    const bridge = await resolveRuntimeBridge({ sdk: "pi", provider: "openai", model: "gpt-5.5" });
-    expect(bridge).toMatchObject({ id: "pi", execute: expect.any(Function) });
-    // The piEngine knob is gone: every resolution returns the native bridge.
-    expect(bridge.execute).toBe(piNativeRuntimeBridge.execute);
-    const ignoresKnob = await resolveRuntimeBridge(
-      { sdk: "pi", provider: "openai", model: "gpt-5.5" },
-      { piEngine: "legacy" },
-    );
-    expect(ignoresKnob.execute).toBe(piNativeRuntimeBridge.execute);
-  });
-
-  it("routes ACP profiles to ACP mode and CLI providers to CLI mode", async () => {
-    await expect(resolveRuntimeBridge({ sdk: "acp", model: "personal-agent" }, { executionMode: "acp" }))
-      .resolves.toMatchObject({ id: "acp-stdio" });
-    await expect(resolveRuntimeBridge({ sdk: "acp", model: "personal-agent" }, { executionMode: "cli" }))
-      .rejects.toThrow(/unsupported sdk/i);
-    await expect(resolveRuntimeBridge({ sdk: "claude", model: "claude-sonnet-4-6" }, { executionMode: "cli" }))
-      .resolves.toMatchObject({ id: "claude-code" });
-    await expect(resolveRuntimeBridge({ sdk: "codex", model: "gpt-5.5" }, { executionMode: "cli" }))
-      .resolves.toMatchObject({ id: "codex-app" });
-    await expect(resolveRuntimeBridge({ sdk: "pi", provider: "openai-codex", model: "gpt-5.5" }, { executionMode: "cli" }))
-      .resolves.toMatchObject({ id: "pi" });
-  });
-
-  it("rejects unrecognized sdk values regardless of execution mode", async () => {
-    await expect(resolveRuntimeBridge({ sdk: "claude-code", model: "claude-sonnet-4-6" }))
-      .rejects.toThrow(/unsupported sdk/i);
-    await expect(resolveRuntimeBridge({ sdk: "claude-code", model: "claude-sonnet-4-6" }, { executionMode: "cli" }))
-      .rejects.toThrow(/unsupported sdk/i);
-  });
-
-  it("exposes bridge-owned capabilities", () => {
-    expect(runtimeCapabilities("acp")).toMatchObject({
-      kind: "acp",
-      runtime: "acp-stdio",
-      structured_output: false,
-      supports_session_resume: true,
-      supports_mcp: false,
-      supports_builtin_tools: false,
-      tool_policy: "allow_all_only",
+    expect(descriptors).toHaveLength(1);
+    expect(descriptors[0]).toMatchObject({
+      id: "pi",
+      supports: expect.any(Function),
+      capabilities: expect.any(Function),
     });
-    expect(runtimeCapabilities("pi")).toMatchObject({
+    expect(descriptors[0].capabilities()).toEqual(runtimeCapabilities());
+  });
+
+  it("resolves Pi to the native AgentHarness bridge", async () => {
+    const { piNativeRuntimeBridge } = await import("../../ai/providers/pi-native.js");
+    const model = { provider: "openai", model: "gpt-5.5", reference: "openai:gpt-5.5" };
+    const bridge = await resolveRuntimeBridge(model);
+
+    expect(bridge).toMatchObject({ id: "pi", execute: expect.any(Function) });
+    expect(bridge.execute).toBe(piNativeRuntimeBridge.execute);
+  });
+
+  it("rejects a malformed model reference before loading the sole bridge", async () => {
+    await expect(resolveRuntimeBridge({ model: "x", reference: "missing:x" }))
+      .rejects.toThrow("unsupported model reference: expected <provider>:<model>");
+  });
+
+  it("exposes Pi-owned capabilities", () => {
+    expect(runtimeCapabilities()).toMatchObject({
       kind: "pi",
       runtime: "pi-agent",
-      tool_policy: "projected",
+      structured_output: true,
+      supports_session_resume: true,
+      supports_mcp: true,
+      supports_builtin_tools: true,
       supports_request_tool_environment: true,
-    });
-    expect(runtimeCapabilities("claude")).toMatchObject({
-      kind: "claude",
-      runtime: "sdk",
-      tool_policy: "projected",
-      supports_request_tool_environment: false,
-    });
-    expect(listRuntimeBridges().find((bridge) => bridge.id === "claude-code")?.capabilities()).toMatchObject({
-      kind: "claude-code",
       tool_policy: "projected",
     });
-    const opencode = runtimeCapabilities("opencode");
-    expect(opencode).toMatchObject({
-      kind: "opencode",
-      runtime: "cli",
-      structured_output: false,
-      supports_session_resume: false,
-      supports_mcp: false,
-      tool_policy: "allow_all_only",
-    });
-    const registered = listRuntimeBridges().find((bridge) => bridge.id === "opencode-app")?.capabilities();
-    expect(registered).toMatchObject({
-      kind: "opencode-app",
-      structured_output: opencode.structured_output,
-      supports_session_resume: opencode.supports_session_resume,
-      supports_mcp: opencode.supports_mcp,
-      tool_policy: "allow_all_only",
-    });
-    expect(runtimeCapabilities("codex")).toMatchObject({
-      supports_fast_mode: true,
-      tool_policy: "allow_all_only",
-    });
-    expect(listRuntimeBridges().find((bridge) => bridge.id === "codex-app")?.capabilities()).toMatchObject({
-      kind: "codex-app",
-      supports_fast_mode: true,
-      tool_policy: "allow_all_only",
-    });
-  });
-
-  it("keeps resolved bridge capability objects aligned with registry descriptors", async () => {
-    const resolved = await Promise.all([
-      resolveRuntimeBridge({ sdk: "claude", model: "claude-sonnet-4-6" }),
-      resolveRuntimeBridge({ sdk: "claude", model: "claude-sonnet-4-6" }, { executionMode: "cli" }),
-      resolveRuntimeBridge({ sdk: "pi", provider: "openai", model: "gpt-5.5" }),
-      resolveRuntimeBridge({ sdk: "codex", model: "gpt-5.6-terra" }, { executionMode: "cli" }),
-      resolveRuntimeBridge(
-        { sdk: "opencode", provider: "github-copilot", model: "gpt-5.1" },
-        { executionMode: "cli" },
-      ),
-    ]);
-
-    expect(resolved.map((bridge) => [bridge.id, bridge.capabilities.tool_policy])).toEqual([
-      ["claude", "projected"],
-      ["claude-code", "projected"],
-      ["pi", "projected"],
-      ["codex-app", "allow_all_only"],
-      ["opencode-app", "allow_all_only"],
-    ]);
   });
 });

@@ -13,13 +13,13 @@ import { thinkingLevelForEffort } from "../../ai/providers/pi-native/turn-runner
 
 describe("resolvePiRuntimeModel — unknown builtin model guard", () => {
   it("throws a clean 'pi model not found' error instead of a raw TypeError on a catalog miss", () => {
-    expect(() => resolvePiRuntimeModel({ sdk: "pi", provider: "ollama", model: "nope" }, {}))
+    expect(() => resolvePiRuntimeModel({ provider: "ollama", model: "nope", reference: "ollama:nope" }, {}))
       .toThrow("pi model not found: ollama:nope");
   });
 
-  it("rejects a non-pi sdk before reaching the catalog lookup", () => {
-    expect(() => resolvePiRuntimeModel({ sdk: "claude", provider: "anthropic", model: "claude-sonnet-4-6" }, {}))
-      .toThrow("unsupported pi sdk: claude");
+  it("rejects a malformed reference before reaching the catalog lookup", () => {
+    expect(() => resolvePiRuntimeModel({ provider: "", model: "claude-sonnet-4-6", reference: ":claude-sonnet-4-6" }, {}))
+      .toThrow("invalid pi model reference: provider and model are required");
   });
 });
 
@@ -71,9 +71,9 @@ describe("resolvePiRuntimeModel — OpenAI Codex GPT-5.6 metadata", () => {
   for (const [model, metadata] of Object.entries(expected)) {
     it(`resolves ${model} context, pricing tiers, and native max`, () => {
       const resolved = resolvePiRuntimeModel({
-        sdk: "pi",
         provider: "openai-codex",
         model,
+        reference: `openai-codex:${model}`,
       }, {});
 
       expect(resolved.model).toMatchObject({

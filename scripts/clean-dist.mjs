@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
 const WORKSPACE_PARENTS = ["packages", "extras"];
-const OUTPUT_DIRECTORIES = ["dist", path.join("webapp", "dist")];
+const OUTPUT_DIRECTORIES = ["dist", "types", path.join("webapp", "dist")];
 const RETIRED_OUTPUT_DIRECTORIES = [path.join("demos", "final-agent", "dist")];
 const RETIRED_PENDING_OUTPUT_NAME_PATTERN =
   /^\.dist\.cleaning-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
@@ -124,7 +124,8 @@ finish(0, "removed");
  *
  * `dist/` is gitignored, so a long-lived checkout accumulates output for sources that no
  * longer exist and `pnpm pack` ships it: @mono-agent/telegram-adapter@0.15.3 published
- * `dist/ask.js` two releases after `src/ask.ts` was removed.
+ * `dist/ask.js` two releases after `src/ask.ts` was removed. The declaration-only `types/`
+ * emit has the same stale-output risk even though most packages do not create that directory.
  *
  * Deliberately not wired into `pnpm run build`. It discards each package's
  * `dist/.tsbuildinfo`, which would turn every local and worktree build into a full rebuild of

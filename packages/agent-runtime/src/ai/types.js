@@ -8,62 +8,22 @@
 // via `import('./types.js').X` JSDoc syntax from the other seam files, or
 // transitively through the package root's generated declarations.
 //
-// A few fields below use the `"literal" | (string & {})` shape (a "branded
-// string union"). This keeps the known literal values available for
-// IDE/editor autocomplete while still accepting any plain `string`, since
-// hosts validate the real vocabulary at runtime (parseRuntimeModelReference,
-// resolveRuntimeBridge) rather than at the type level — the type only
-// documents the values active runtimes currently produce.
-
 /**
- * @typedef {"claude" | "pi" | "codex" | "opencode" | "acp" | (string & {})} RuntimeSdkId
- * Canonical active runtime id. See ACTIVE_RUNTIME_KINDS (model-refs.js) for
- * the enforced-at-runtime vocabulary.
+ * @typedef {"pi"} RuntimeSdkId
+ * Runtime-result and telemetry label. Model references no longer carry this
+ * field because Pi is the sole runtime bridge.
  */
 
 /**
- * @typedef {"claude" | "claude-code" | "codex-app" | "opencode-app" | "pi" | "acp-stdio" | (string & {})} RuntimeBridgeId
- * Registry bridge id (distinct from RuntimeSdkId: a single sdk can be served
- * by more than one bridge, e.g. sdk "claude" is served by both the "claude"
- * SDK bridge and the "claude-code" CLI bridge). See
- * src/ai/runtime/registry.js's builtinBridgeSpecs.
+ * @typedef {"pi"} RuntimeBridgeId
+ * Registry bridge id. See src/ai/runtime/registry.js's builtinBridgeSpecs.
  */
 
 /**
  * @typedef {Object} RuntimeModelRef
- * @property {RuntimeSdkId} sdk           Canonical active runtime id.
+ * @property {string} provider            Pi provider id.
  * @property {string} model               Provider model id.
- * @property {string} [reference]         Original canonical model reference; always set by
- *                                         parseRuntimeModelReference, but router.js's chain
- *                                         shorthand accepts bare {sdk, model} refs without one.
- * @property {string} [provider]          Pi/OpenCode provider id when sdk === "pi" | "opencode".
- */
-
-/**
- * @typedef {Object} RuntimeNativeSubagentDefinition
- * One caller-defined Claude native `Task` profile. Codex collaboration-agent
- * definitions are owned by Codex and are not represented by this type.
- * @property {string} name
- * @property {string} [displayName]
- * @property {string} [description]
- * @property {string} [helperSystemPrompt]
- * @property {string} [instructions]
- * @property {ReadonlyArray<string>} [allowedTools]
- * @property {ReadonlyArray<string>} [disallowedTools]
- * @property {string | RuntimeModelRef} [modelRef]
- * @property {RuntimeModelRef} [model]
- * @property {string} [effort]
- * @property {Object<string, Object>} [mcpServers]
- * @property {Object} [mcpApps] App-owned exact-connection MCP Apps registry (Pi-native only).
- */
-
-/**
- * @typedef {Object} RuntimeNativeSubagentsOptions
- * Caller-defined native profiles are supported only by the Claude bridges.
- * Codex owns its collaboration agents; use `codexLoadProjectDocs` when those
- * agents should receive repository instructions.
- * @property {"claude"} provider
- * @property {ReadonlyArray<RuntimeNativeSubagentDefinition>} teammates
+ * @property {string} reference           Canonical `<provider>:<model>` reference.
  */
 
 /**
@@ -166,32 +126,6 @@
  * @returns {Promise<RuntimeToolLifecyclePersistence|undefined>}
  */
 
-/** @typedef {"uniform"|"per-route-native"} RuntimeRouteSafetyMode */
-
-/**
- * @typedef {"mono-agent-monotonic"|"disabled"|"mono-agent-srt"|"mono-agent-srt-unsafe-host-fallback"|"provider-native"|"codex-native"|"unsupported"} RuntimeRouteSandboxContract
- * Fixed telemetry vocabulary for a route's sandbox posture. The
- * `mono-agent-srt-unsafe-host-fallback` describes a policy that prefers SRT but
- * explicitly permits host execution if unavailable; it does not claim which
- * branch ran for a particular command.
- */
-
-/**
- * @typedef {"mono-agent-monotonic"|"mono-agent-policy"|"provider-representable"|"exact-allow-all"|"unsupported"} RuntimeRouteToolsContract
- * `exact-allow-all` is a stable telemetry token. It describes an effective
- * unrestricted contract, including mixed allowlists that contain `"*"`;
- * it does not require the literal one-element array `["*"]`.
- */
-
-/**
- * @typedef {Object} RuntimeRouteSafetyContract
- * Bounded, credential-free description of the sandbox/tool contract applied
- * to one fallback route.
- * @property {RuntimeRouteSafetyMode} mode
- * @property {RuntimeRouteSandboxContract} sandbox
- * @property {RuntimeRouteToolsContract} tools
- */
-
 /**
  * @typedef {Object} RuntimeObserver
  * Per-call or host-level observer merged by createObserverHub (ai/observer.js).
@@ -254,10 +188,8 @@
  * @typedef {Object} RuntimeRunOptions
  * The options object a host passes to `createRuntime(host).run(systemPrompt, options)`.
  * @property {RuntimeModelRef} model                     Resolved model reference; see parseRuntimeModelReference.
- * @property {"sdk"|"cli"|"acp"} [executionMode]       "sdk" (default), "cli", or "acp"; selects which bridge variant handles the model.
  * @property {string} [sessionId]                         Host conversation/session key for resumable bridges.
  * @property {string} [providerSessionId]                 Provider-owned resume id for resumable bridges.
- * @property {typeof import("@anthropic-ai/claude-agent-sdk").query} [claudeAgentQuery] Advanced programmatic/test seam for the Claude SDK route; omitted runs use the runtime's pinned SDK query implementation.
  * @property {boolean} [sessionKeepAlive]                 Keep resumable provider state alive after the turn.
  * @property {number} [sessionIdleTimeoutMs]              Idle TTL for resumable provider state.
  * @property {AsyncIterable<{body: string, id?: string, receivedAt?: string, acknowledge?: () => void, reject?: (error?: unknown) => void}>} [liveInput] Stream of in-flight user messages for steering an active run. Providers acknowledge only after accepting a message into the active turn.
@@ -266,7 +198,6 @@
  * @property {RuntimeToolLifecycleSink} [toolLifecycleSink] Awaited host-owned incremental lifecycle persistence boundary.
  * @property {ReadonlyArray<Object>} [messages]
  * @property {string} [effort]
- * @property {boolean} [fastMode]
  * @property {string} [cwd]
  * @property {Object<string, Object>} [mcpServers]
  * @property {ReadonlyArray<{name: string, description?: string}>} [skills] Skills disclosed to this run, as `{name, description}`. Non-empty makes `supports_skills` a routing requirement (see router.js), so a chain entry that lacks it is skipped.
@@ -285,34 +216,11 @@
  * @property {RuntimeToolLimits} [toolLimits] Typed per-run tool-output limits (supported replacement for the deprecated `settings` tool keys).
  * @property {RuntimeCompactionPolicy} [compaction] Typed per-run compaction policy (supported replacement for the deprecated `settings` compaction keys).
  * @property {RuntimePromptOverrides} [prompts] Per-run prompt-fragment overrides (run wins over the host default).
- * @property {import('./providers/acp-client.js').AcpClientHostOptions["resolveAcpProfile"]} [resolveAcpProfile] Per-run ACP profile resolver; wins over the host default.
- * @property {import('./providers/acp-client.js').AcpClientHostOptions["onAcpInteractionRequest"]} [onAcpInteractionRequest] Per-run ACP permission/elicitation callback; wins over the host default.
- * @property {Uint8Array} [acpSessionTokenKey] Host-owned 32-byte key for confidential authenticated ACP session handles. Required for every ACP task run.
  * @property {{backend?: "auto"|"searxng"|"codex"|"keyless", endpoint?: string, codex?: {model?: string}}} [webSearchConfig] Run-scoped WebSearch backend configuration.
  * @property {{render?: "never"|"auto", browserCommand?: string}} [webFetchConfig] Run-scoped WebFetch extraction/render configuration.
  * @property {"sequential"|"safe-parallel"} [piToolExecutionMode] Pi built-in tool scheduling mode. Safe parallelism is the default.
  * @property {"one-at-a-time"|"all"} [piToolParallelismMode] DEPRECATED. Compatibility alias mapped to piToolExecutionMode.
  * @property {Object} [settings] DEPRECATED. Legacy flat settings bag; consumed only as a per-group FALLBACK when the corresponding typed object (`toolLimits` / `compaction`) is absent. Consuming any key emits one `deprecated_settings_option` runtime_warning per run. Migrate via resolveRuntimePolicies (@mono-agent/runtime-adapter).
- * @property {ReadonlyArray<"user" | "project" | "local">} [settingSources] Claude Agent SDK only. Filesystem
- *   settings the SDK may load for this run. Omitted/empty disables user, project, and local sources, including their
- *   CLAUDE.md, hooks, plugins, and on-disk agent profiles. Anthropic managed settings remain in force and may still
- *   configure hooks or plugins; this option is not a managed-policy bypass. Each opted-in source may execute configured
- *   hooks and plugins, so enable only trusted settings and avoid these sources in an untrusted checkout. Include
- *   `"project"`/`"user"` to let the native `Task` tool discover `.claude/agents` definitions. Unrecognized entries are
- *   dropped. The Claude Code CLI bridge does not take this option: that binary performs its own settings discovery and
- *   mono-agent passes no `--setting-sources`, so a CLI run already reads the host config regardless of this value.
- * @property {boolean} [codexLoadProjectDocs] Codex app-server only. Omitted/false starts the managed app-server with
- *   `project_doc_max_bytes=0`, preventing automatic repository-instruction discovery. True restores Codex's native
- *   project-doc loading defaults. An explicit `codexAppServerArgs` array wins over this convenience option.
- * @property {boolean} [codexSandboxNetworkAccess] Codex app-server only, code-only. Strict `true` enables native
- *   network access for plan/read-only and default/acceptEdits/workspace-write turns; omitted or any other runtime
- *   value denies it. No-tool probes always deny network access, and bypass/danger-full-access remains unchanged. This
- *   is unrelated to `RuntimeRunOptions.sandboxPolicy`, which controls mono-agent's own sandbox and is not consumed by
- *   Codex's provider-owned tool loop. Default/acceptEdits workspace-write plus network true grants repository read and
- *   network egress in the same turn; prefer plan when only read-only browsing is needed.
- * @property {RuntimeNativeSubagentsOptions} [nativeSubagents] Caller-defined Claude native `Task` profiles. Direct
- *   Codex owns its collaboration agents and rejects configured teammate definitions; `codexLoadProjectDocs` controls
- *   whether Codex loads repository instructions for its own agents.
  * @property {RuntimeSubagentsOptions} [subagents] In-process `Agent` built-in: profiles, caps, and the nested-run callback.
  * @property {import('../agent/tools/shared/process-jobs.js').ProcessJobsController} [processJobs] Pi-native-only structural process-job controller. When absent, Exec/Bash schemas and foreground behavior are unchanged.
  * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when
@@ -325,7 +233,7 @@
 
 /**
  * @typedef {RuntimeRunOptions
- *   & Pick<AgentRuntimeHostOptions, "resolveCustomPricing" | "resolvePiApiKey" | "resolveAcpProfile" | "onAcpInteractionRequest" | "acpSessionTokenKey" | "persistArtifact" | "onCompactionRecorded" | "onToolApprovalRequest" | "toolRiskTiers" | "approvalDefaultRiskTier" | "approvalTimeoutMs" | "approvalAlwaysAllowTools">
+ *   & Pick<AgentRuntimeHostOptions, "resolveCustomPricing" | "resolvePiApiKey" | "persistArtifact" | "onCompactionRecorded" | "onToolApprovalRequest" | "toolRiskTiers" | "approvalDefaultRiskTier" | "approvalTimeoutMs" | "approvalAlwaysAllowTools">
  *   & {runtimeBrand: import('../runtime-brand.js').RuntimeBrand, toolContext?: import('../agent/tools/shared/tool-context.js').ToolContext, observerHub: {emit: (event: RuntimeEvent) => void, flush: () => Promise<void>}}
  * } RuntimeRequest
  * The request shape a bridge's `execute(systemPrompt, req)` receives as its
@@ -407,8 +315,7 @@
  * @property {Array<Object>} [runtimeWarnings]
  * @property {Object} [diagnostics]
  * @property {Object} [capabilitiesUsed]
- * @property {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null), retryableSubkind?: (string|null), retryIndex?: number, requirements?: Object, routeSafety?: RuntimeRouteSafetyMode, safetyContract?: RuntimeRouteSafetyContract}>} [failoverHistory] Set by createRouterRuntime (ai/runtime/router.js) on every failed/skipped attempt.
- * @property {Array<{attemptIndex: number, model: RuntimeModelRef, routeSafety: RuntimeRouteSafetyMode, safetyContract: RuntimeRouteSafetyContract, status: string}>} [routeSafetyHistory] Bounded route-safety audit emitted by createRouterRuntime.
+ * @property {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null), retryableSubkind?: (string|null), retryIndex?: number, requirements?: Object}>} [failoverHistory] Set by createRouterRuntime (ai/runtime/router.js) on every failed/skipped attempt.
  */
 
 /**
@@ -428,8 +335,7 @@
  * @property {boolean} [supports_builtin_tools]
  * @property {boolean} [supports_live_input]
  * @property {boolean} [supports_native_subagents] Whether the bridge exposes provider-native subagent surfaces and
- *   normalized activity. This does not imply it accepts caller-defined `nativeSubagents`: Codex owns its collaboration
- *   agents, while only the Claude bridges project caller-defined profiles.
+ *   normalized activity. In-process delegation is the `Agent` tool, configured by the host.
  * @property {boolean} [supports_request_tool_environment]
  * @property {boolean} [supports_fast_mode]
  * @property {"projected"|"allow_all_only"} [tool_policy] Whether the bridge can
@@ -508,11 +414,8 @@
  * @property {RuntimePromptOverrides} [prompts] Host-level prompt-fragment override defaults; a per-run `options.prompts` field wins over these (see resolvePrompts, runtime.js).
  * @property {ReadonlyArray<*>} [observers] Observer instances (see RuntimeObserver); loose because observer.js is not a kernel seam file.
  * @property {*} [runtimeBrand] See resolveRuntimeBrand (runtime-brand.js); accepts a partial RuntimeBrand.
- * @property {(parsed: {sdk: (string|null), provider?: string, model: string}) => (import('./cost.js').NormalizedPricing|null)} [resolveCustomPricing] See resolvePricing (ai/cost.js).
+ * @property {(parsed: {provider: string, model: string}) => (import('./cost.js').NormalizedPricing|null)} [resolveCustomPricing] See resolvePricing (ai/cost.js).
  * @property {import('../pi-auth.js').PiApiKeyResolver} [resolvePiApiKey] See createPiOAuthApiKeyResolver (pi-auth.js) for a ready-made implementation.
- * @property {import('./providers/acp-client.js').AcpClientHostOptions["resolveAcpProfile"]} [resolveAcpProfile] Default ACP profile resolver; a per-run callback wins.
- * @property {import('./providers/acp-client.js').AcpClientHostOptions["onAcpInteractionRequest"]} [onAcpInteractionRequest] Default ACP interaction callback; a per-run callback wins.
- * @property {Uint8Array} [acpSessionTokenKey] Default host-owned 32-byte key for confidential authenticated ACP session handles.
  * @property {(artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: (string|null)}) => (string|null)} [persistArtifact]
  * @property {(record: CompactionRecordedPayload) => void} [onCompactionRecorded]
  * @property {(payload: ApprovalRequestPayload) => Promise<ApprovalDecision>} [onToolApprovalRequest]

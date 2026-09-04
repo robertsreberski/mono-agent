@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
+import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 const fakeRuntime = {
   run: vi.fn(),
@@ -26,54 +27,17 @@ beforeEach(() => {
 });
 
 describe("configured agent runtime fallback models", () => {
-  it("hosts an SRT engine when only a reachable fallback is Pi-native", () => {
-    const base = monoConfig([
-      { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" },
-    ]);
-    const config: MonoAgentConfig = {
-      ...base,
-      runtime: {
-        ...base.runtime,
-        model: { sdk: "claude", model: "claude-opus-4-8", reference: "claude:claude-opus-4-8" },
-      },
-    };
-
-    createConfiguredAgentRuntime(config);
-
-    expect(createSrtSandboxEngineMock).toHaveBeenCalledOnce();
-    expect(createMonoRuntimeMock).toHaveBeenCalledWith(expect.objectContaining({
-      sandboxEngine: fakeSandboxEngine,
-    }));
-  });
-
-  it("does not host a Pi-only engine for a clean direct non-Pi route", () => {
-    const base = monoConfig(undefined, { primaryAttempts: 1 });
-    const config: MonoAgentConfig = {
-      ...base,
-      runtime: {
-        ...base.runtime,
-        model: { sdk: "claude", model: "claude-opus-4-8", reference: "claude:claude-opus-4-8" },
-      },
-    };
-
-    createConfiguredAgentRuntime(config);
-
-    expect(createSrtSandboxEngineMock).not.toHaveBeenCalled();
-    expect(createMonoRuntimeMock.mock.calls[0]?.[0]).not.toHaveProperty("sandboxEngine");
-  });
-
   it("passes a fallback chain with the primary model first", () => {
     const config = monoConfig([
-      { sdk: "claude", model: "claude-sonnet-4-6", reference: "claude:claude-sonnet-4-6" },
+      { provider: "anthropic", model: "claude-sonnet-4-6", reference: "anthropic:claude-sonnet-4-6" },
     ]);
     createConfiguredAgentRuntime(config);
 
     expect(createMonoRuntimeMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        routeSafety: "uniform",
         fallbackChain: [
-          { model: config.runtime.model, executionMode: "sdk", attempts: 2 },
-          { model: config.runtime.fallbackModels?.[0] },
+          { model: config.runtime.model, attempts: 2 },
+          { model: config.runtime.fallbacks?.[0]?.model, effort: null },
         ],
         resolveAttempt: expect.any(Function),
       }),
@@ -87,11 +51,10 @@ describe("configured agent runtime fallback models", () => {
       runtime: {
         ...base.runtime,
         effort: "high",
-        routeSafety: "per-route-native",
         fallbacks: [
-          { model: { sdk: "codex", model: "gpt-5.6-sol", reference: "codex:gpt-5.6-sol" } },
+          { model: { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" } },
           {
-            model: { sdk: "claude", model: "claude-sonnet-4-6", reference: "claude:claude-sonnet-4-6" },
+            model: { provider: "anthropic", model: "claude-sonnet-4-6", reference: "anthropic:claude-sonnet-4-6" },
             effort: "ultra",
           },
         ],
@@ -101,9 +64,8 @@ describe("configured agent runtime fallback models", () => {
     createConfiguredAgentRuntime(config);
 
     expect(createMonoRuntimeMock).toHaveBeenCalledWith(expect.objectContaining({
-      routeSafety: "per-route-native",
       fallbackChain: [
-        { model: config.runtime.model, executionMode: "sdk", attempts: 2 },
+        { model: config.runtime.model, attempts: 2 },
         { model: config.runtime.fallbacks?.[0]?.model, effort: null },
         { model: config.runtime.fallbacks?.[1]?.model, effort: "ultra" },
       ],
@@ -112,13 +74,13 @@ describe("configured agent runtime fallback models", () => {
 
   it("resolves local-provider secrets only for the model actually attempted", () => {
     const base = monoConfig([
-      { sdk: "pi", provider: "openai", model: "gpt-5.5", reference: "pi:openai:gpt-5.5" },
+      { provider: "openai", model: "gpt-5.5", reference: "openai:gpt-5.5" },
     ]);
     const config: MonoAgentConfig = {
       ...base,
       runtime: {
         ...base.runtime,
-        model: { sdk: "pi", provider: "private-local", model: "local-model", reference: "pi:private-local:local-model" },
+        model: { provider: "private-local", model: "local-model", reference: "private-local:local-model" },
       },
       providers: {
         local: [{
@@ -141,7 +103,7 @@ describe("configured agent runtime fallback models", () => {
     expect(resolveAttempt).toEqual(expect.any(Function));
 
     const local = resolveAttempt?.({ model: config.runtime.model });
-    const cloud = resolveAttempt?.({ model: config.runtime.fallbackModels?.[0] as MonoAgentConfig["runtime"]["model"] });
+    const cloud = resolveAttempt?.({ model: config.runtime.fallbacks?.[0]?.model as MonoAgentConfig["runtime"]["model"] });
     expect(local?.options).toMatchObject({
       customProvider: { id: "private-local", api_key: "local-secret" },
       customModel: { provider_id: "private-local", model_name: "local-model" },
@@ -157,7 +119,7 @@ describe("configured agent runtime fallback models", () => {
 
     const options = createMonoRuntimeMock.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(options.fallbackChain).toEqual([
-      { model: config.runtime.model, executionMode: "sdk", attempts: 2 },
+      { model: config.runtime.model, attempts: 2 },
     ]);
     expect(options.retry).toEqual({ backoffMs: 1_000, maxBackoffMs: 15_000 });
   });
@@ -177,10 +139,10 @@ describe("configured agent runtime fallback models", () => {
         ...base.runtime,
         fallbacks: [
           {
-            model: { sdk: "codex", model: "gpt-5.6-sol", reference: "codex:gpt-5.6-sol" },
+            model: { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" },
             attempts: 3,
           },
-          { model: { sdk: "claude", model: "claude-sonnet-4-6", reference: "claude:claude-sonnet-4-6" } },
+          { model: { provider: "anthropic", model: "claude-sonnet-4-6", reference: "anthropic:claude-sonnet-4-6" } },
         ],
       },
     };
@@ -188,7 +150,7 @@ describe("configured agent runtime fallback models", () => {
 
     const options = createMonoRuntimeMock.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(options.fallbackChain).toEqual([
-      { model: config.runtime.model, executionMode: "sdk", attempts: 2 },
+      { model: config.runtime.model, attempts: 2 },
       { model: config.runtime.fallbacks?.[0]?.model, effort: null, attempts: 3 },
       { model: config.runtime.fallbacks?.[1]?.model, effort: null },
     ]);
@@ -206,16 +168,15 @@ describe("configured agent runtime fallback models", () => {
 });
 
 function monoConfig(
-  fallbackModels: MonoAgentConfig["runtime"]["fallbackModels"],
+  fallbackModels: readonly RuntimeModelReference[] | undefined,
   retry?: Partial<MonoAgentConfig["runtime"]["retry"]>,
 ): MonoAgentConfig {
   return {
     runtime: {
-      model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" },
-      ...(fallbackModels === undefined ? {} : { fallbackModels }),
+      model: { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" },
+      ...(fallbackModels === undefined ? {} : { fallbacks: fallbackModels.map((model) => ({ model })) }),
       // The loader always materializes these; mirror a real loaded config.
       retry: { primaryAttempts: 2, backoffMs: 1_000, maxBackoffMs: 15_000, ...retry },
-      executionMode: "sdk",
       maxTurns: 4,
       workspace: "/repo",
       session: { mode: "continuous", idleTimeoutMs: 1_800_000 },

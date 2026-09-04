@@ -50,11 +50,11 @@ describe("parseCliArgs", () => {
       parseCliArgs([
         "init",
         "--model",
-        "claude:claude-sonnet-4-6",
+        "anthropic:claude-sonnet-4-6",
         "--fallback",
-        "pi:ollama:gemma4:31b",
+        "ollama:gemma4:31b",
         "--fallback",
-        "codex:gpt-5.6-terra",
+        "openai-codex:gpt-5.6-terra",
         "--auth",
         "--effort",
         "high",
@@ -63,8 +63,8 @@ describe("parseCliArgs", () => {
       ]),
     ).toEqual({
       command: "init",
-      model: "claude:claude-sonnet-4-6",
-      fallbacks: [{ model: "pi:ollama:gemma4:31b" }, { model: "codex:gpt-5.6-terra" }],
+      model: "anthropic:claude-sonnet-4-6",
+      fallbacks: [{ model: "ollama:gemma4:31b" }, { model: "openai-codex:gpt-5.6-terra" }],
       auth: true,
       effort: "high",
       memory: "journal",
@@ -80,7 +80,7 @@ describe("parseCliArgs", () => {
 
   it("rejects the removed --recipe and --fallback-models flags with a replacement hint", () => {
     expect(() => parseCliArgs(["init", "--recipe", "minimal-webhook"])).toThrow(/`--recipe` was removed; use `--preset/u);
-    expect(() => parseCliArgs(["init", "--fallback-models", "codex:gpt-5.6-sol"]))
+    expect(() => parseCliArgs(["init", "--fallback-models", "openai-codex:gpt-5.6-sol"]))
       .toThrow(/`--fallback-models` was removed; repeat `--fallback/u);
   });
 
@@ -88,21 +88,17 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs([
       "init",
       "--name", "Research Partner",
-      "--fallback", "codex:gpt-5.6-sol",
+      "--fallback", "openai-codex:gpt-5.6-sol",
       "--fallback-effort", "provider-default",
-      "--fallback", "claude:claude-sonnet-5",
+      "--fallback", "anthropic:claude-sonnet-5",
       "--fallback-effort", "max",
-      "--route-safety", "per-route-native",
-      "--codex-auth", "device",
     ])).toMatchObject({
       command: "init",
       name: "Research Partner",
       fallbacks: [
-        { model: "codex:gpt-5.6-sol" },
-        { model: "claude:claude-sonnet-5", effort: "max" },
+        { model: "openai-codex:gpt-5.6-sol" },
+        { model: "anthropic:claude-sonnet-5", effort: "max" },
       ],
-      routeSafety: "per-route-native",
-      codexAuthMode: "device",
     });
   });
 
@@ -115,10 +111,10 @@ describe("parseCliArgs", () => {
 
   it("rejects ambiguous canonical fallback flags", () => {
     expect(() => parseCliArgs(["init", "--fallback-effort", "high"])).toThrow(/immediately follow/u);
-    expect(() => parseCliArgs(["init", "--fallback", "codex:gpt-5.6-sol", "--fallback", "codex:gpt-5.6-sol"]))
+    expect(() => parseCliArgs(["init", "--fallback", "openai-codex:gpt-5.6-sol", "--fallback", "openai-codex:gpt-5.6-sol"]))
       .toThrow(/Duplicate/u);
     expect(() => parseCliArgs([
-      "init", "--model", "codex:gpt-5.6-sol", "--fallback", "codex:gpt-5.6-sol",
+      "init", "--model", "openai-codex:gpt-5.6-sol", "--fallback", "openai-codex:gpt-5.6-sol",
     ])).toThrow(/cannot also be a fallback/u);
   });
 
@@ -127,16 +123,6 @@ describe("parseCliArgs", () => {
       command: "sandbox",
       positionals: ["status"],
     });
-  });
-
-  it("parses explicit headless Codex authentication", () => {
-    expect(parseCliArgs(["auth", "login", "codex", "--codex-auth", "device"])).toMatchObject({
-      command: "auth",
-      positionals: ["login", "codex"],
-      codexAuthMode: "device",
-    });
-    expect(() => parseCliArgs(["auth", "login", "codex", "--codex-auth", "automatic"]))
-      .toThrow(/browser or device/u);
   });
 
   it("normalizes setup to init and parses its preset/channel/dry-run flags", () => {
@@ -432,6 +418,15 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["install-skill", "--project", "--check", "--update"])).toThrow(/either/u);
   });
 
+  it("rejects the removed migrate-config command and its --write flag", () => {
+    // migrate-config was removed: it rewrote live agent config while an agent could be
+    // writing the same file, and the race could not be closed. Both the command and the
+    // --write flag that existed only for it must be unreachable, not merely undocumented.
+    expect(() => parseCliArgs(["migrate-config"])).toThrow();
+    expect(() => parseCliArgs(["validate", "--write"])).toThrow();
+    expect(() => parseCliArgs(["start", "--check"])).toThrow(/--check/iu);
+  });
+
   it("accepts --json on the read/status surfaces", () => {
     for (const argv of [
       ["validate", "--json"],
@@ -547,7 +542,7 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["validate", "--auth"])).toThrow(/--auth/u);
     expect(() => parseCliArgs(["init", "--memory", "vector"])).toThrow(/--memory/u);
     expect(() => parseCliArgs(["init", "--effort", "turbo"])).toThrow(/--effort/u);
-    expect(() => parseCliArgs(["status", "--model", "codex:gpt-5.5"])).toThrow(/--model.*mono-agent init/u);
+    expect(() => parseCliArgs(["status", "--model", "openai-codex:gpt-5.5"])).toThrow(/--model.*mono-agent init/u);
     expect(() => parseCliArgs(["presets", "list", "--config", "agent.json"])).toThrow(/--config/u);
     expect(() => parseCliArgs(["init", "--follow"])).toThrow(/--follow/u);
     expect(() => parseCliArgs(["web", "status", "--port", "5050"])).toThrow(/web start/u);
@@ -746,9 +741,8 @@ describe("parseCliArgs", () => {
     // The notes block carries the model-reference guidance.
     const notes = helpTopicText("notes");
     expect(notes).toContain("Guided Pi authentication");
-    expect(notes).toContain("Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go");
-    expect(notes).toContain("direct opencode:<provider>:<model>");
-    expect(notes).toContain("hand-authored runtime backend config");
+    expect(notes).toContain("Anthropic,\nGitHub Copilot, OpenAI Codex, and OpenCode-Go");
+    expect(notes).toContain("<provider>:<model>");
 
     // Removed commands print their replacement pointer as an informational topic.
     const recipes = renderHelpTopic("recipes");
@@ -794,7 +788,7 @@ describe("runCli validate --json", () => {
     try {
       const result = await captureCli(() => runCli([
         "status",
-        "--model", "codex:gpt-5.5",
+        "--model", "openai-codex:gpt-5.5",
         "--env-file", envPath,
       ]));
       expect(result.code).toBe(2);
@@ -809,7 +803,7 @@ describe("runCli validate --json", () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
     await writeFile(join(dir, "mono-agent.config.json"), JSON.stringify({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },
     }), "utf8");
 
@@ -899,7 +893,7 @@ describe("removed CLI surfaces", () => {
     ));
     const fallbackModelsFlag = await captureCli(() => withCwd(
       dir,
-      () => runCli(["init", "--fallback-models", "codex:gpt-5.6-sol", "--dry-run"]),
+      () => runCli(["init", "--fallback-models", "openai-codex:gpt-5.6-sol", "--dry-run"]),
     ));
 
     expect(recipeFlag.code).toBe(2);
@@ -933,7 +927,7 @@ describe("removed CLI surfaces", () => {
     const presets = await captureCli(() => runCli(["presets", "list"]));
     const fallbacks = await captureCli(() => withCwd(
       dir,
-      () => runCli(["init", "--fallback", "codex:gpt-5.6-sol", "--dry-run"]),
+      () => runCli(["init", "--fallback", "openai-codex:gpt-5.6-sol", "--dry-run"]),
     ));
 
     expect(presets.code).toBe(0);

@@ -54,7 +54,7 @@ const recorder = createJsonlRunRecorder({
 
 await recorder.start?.();
 recorder.onEvent({ type: "assistant", text: "Hello" });
-const summary = await recorder.finish({ model: "pi:openai:gpt-5" });
+const summary = await recorder.finish({ model: "openai:gpt-5" });
 console.log(summary.status, summary.artifactPaths);
 ```
 

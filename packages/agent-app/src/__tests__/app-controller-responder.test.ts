@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, truncate, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 
@@ -6,7 +6,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
   createMonoRuntime,
-  defaultExecutionModeForModel,
   parseMonoRuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
 import type {
@@ -79,140 +78,6 @@ describe("reply artifact responder composition", () => {
     );
   });
 
-  it("builds a disabled-MCP-Apps responder with the full physical reply-artifact budget", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "agent-app-responder-disabled-mcp-apps-"));
-    tempDirs.push(workspace);
-    const artifactDir = join(workspace, "artifacts");
-    const configPath = join(workspace, "mono-agent.config.json");
-    const identityPath = join(workspace, "IDENTITY.md");
-    const soulPath = join(workspace, "SOUL.md");
-    const sourcePath = join(workspace, "report.txt");
-    const fillerPath = join(artifactDir, "reply-files", "capacity-probe", "content");
-    const registryRoot = join(workspace, ".mono-agent", "clear-sessions-v1");
-    await Promise.all([
-      mkdir(dirname(fillerPath), { recursive: true }),
-      mkdir(registryRoot, { recursive: true, mode: 0o700 }),
-    ]);
-    await Promise.all([
-      chmod(join(workspace, ".mono-agent"), 0o700),
-      chmod(registryRoot, 0o700),
-    ]);
-    await Promise.all([
-      writeFile(identityPath, "Disabled MCP Apps composition test"),
-      writeFile(soulPath, "Keep the test deterministic"),
-      writeFile(sourcePath, "publish me"),
-      writeFile(fillerPath, ""),
-    ]);
-    await truncate(
-      fillerPath,
-      DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES - DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES + 1,
-    );
-    await writeFile(configPath, `${JSON.stringify({
-      agent: { name: "disabled-mcp-apps-composition" },
-      runtime: { model: "codex:gpt-5.6-terra", workspace: "." },
-      context: {
-        identityPath: "./IDENTITY.md",
-        soulPath: "./SOUL.md",
-        selectedSkills: [],
-      },
-      tools: { allowedTools: [PUBLISH_REPLY_FILE_TOOL_NAME], disallowedTools: [] },
-      artifacts: { dir: "./artifacts" },
-      continuations: { enabled: false },
-    }, null, 2)}\n`);
-    const coreConfig = await loadAppCoreConfig({ cwd: workspace, configPath, env: {} });
-    const security = await controllerSecurity(workspace, coreConfig.runtime.workspace);
-    let publicationResult: unknown;
-    let runtimeCalls = 0;
-    const runtime = {
-      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
-        runtimeCalls += 1;
-        expect(options.mcpApps).toBeUndefined();
-        const servers = options.mcpServers as Readonly<Record<string, { readonly url: string }>> | undefined;
-        const spec = servers?.[REPLY_ARTIFACT_MCP_SERVER_NAME];
-        if (spec === undefined) throw new Error("Reply artifact MCP server was not composed.");
-        const client = new Client({ name: "disabled-mcp-apps-budget-test", version: "1.0.0" });
-        try {
-          await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
-          publicationResult = await client.callTool({
-            name: PUBLISH_REPLY_FILE_TOOL_NAME,
-            arguments: { path: sourcePath },
-          });
-        } finally {
-          await client.close().catch(() => undefined);
-        }
-        return { text: "composition complete" };
-      },
-      async disposeAllSessions() {},
-    };
-    const memory = {
-      async load() { return undefined; },
-      async appendHostSummary(conversationId: string) {
-        return { conversationId, source: "composition-test", bytesWritten: 0 };
-      },
-    };
-    const controller: ResponderControllerPort = {
-      cwd: workspace,
-      configPath,
-      configReadPath: configPath,
-      env: {},
-      logger: undefined,
-      runtime,
-      activeRuntimes: [],
-      interactionBridge: undefined,
-      continuationService: undefined,
-      processJobsService: undefined,
-      processJobsStateDir: undefined,
-      agentRootOwnership: security.ownership,
-      processJobsRegistry: security.registry,
-      seenNotifyDestinations: createSeenNotifyDestinationCache(),
-      sandboxEngineFor: () => undefined,
-      memoryStore: async () => memory as never,
-      ensureSharedMemoryRetrieval: () => undefined,
-      reportMemoryRecallStatus: () => false,
-      supermemoryMcpRuntimeOptions: () => undefined,
-      adapterSendToolsRuntimeOptions: async () => ({ blockingToolNames: [] }),
-      requestModelOverrideRuntimeOptions: () => ({
-        extension: async () => ({ runtimeOptions: {}, cleanup: async () => {} }),
-        targetsDirectOpenCode: () => false,
-        targetsUnsupportedHistoryTool: () => false,
-        targetsPiNative: () => false,
-        targetsProcessJobsPiNative: () => false,
-      }),
-      buildRuntimeForModel: () => () => runtime,
-      observabilityContext: async () => ({}),
-      recordExporterWarning() {},
-      recordSessionEvent() {},
-    };
-
-    const responder = await buildResponder(controller, coreConfig, "telegram");
-    let response;
-    try {
-      response = await responder.respond({
-        conversationId: "composition-disabled-mcp-apps",
-        text: "Publish the report.",
-        abortSignal: new AbortController().signal,
-      }, { append: async () => {} });
-      await writeFile(join(registryRoot, "pending"), "unresolved", { mode: 0o600 });
-      await expect(responder.respond({
-        conversationId: "composition-disabled-mcp-apps",
-        text: "Do not call the provider.",
-        abortSignal: new AbortController().signal,
-      }, { append: async () => {} })).rejects.toThrow(
-        "Clear-sessions recovery is unresolved; run restart --clear-sessions before model execution.",
-      );
-    } finally {
-      await (responder as { dispose?: () => Promise<void> }).dispose?.();
-    }
-
-    expect(runtimeCalls).toBe(1);
-    expect(publicationResult).toMatchObject({
-      structuredContent: { published: true },
-    });
-    expect(response.parts).toEqual([
-      expect.objectContaining({ type: "attachment" }),
-    ]);
-  });
-
   it("refuses every configured host-private root, including relocated durable history", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "agent-app-responder-private-roots-"));
     tempDirs.push(workspace);
@@ -259,7 +124,7 @@ describe("reply artifact responder composition", () => {
 
     const rawConfig = {
       agent: { name: privateSentinel },
-      runtime: { model: "pi:openai-codex:gpt-5.5", workspace: "." },
+      runtime: { model: "openai-codex:gpt-5.5", workspace: "." },
       providers: {
         piAuthPath: "./host-f/provider-access.json",
         piNative: { piSessionsRoot: "./host-g" },
@@ -458,102 +323,9 @@ describe("reply artifact responder composition", () => {
   });
 });
 
-const PI_ROUTE = "pi:openai-codex:gpt-5.6-sol";
-const PI_FALLBACK_ROUTE = "pi:ollama:qwen3:8b";
-const NON_PI_ROUTES = [
-  ["Claude", "claude:claude-opus-4-8"],
-  ["Codex", "codex:gpt-5.6-sol"],
-  ["OpenCode", "opencode:github-copilot:gpt-5.1"],
-  ["ACP", "acp:personal-agent"],
-] as const;
-
+const PI_ROUTE = "openai-codex:gpt-5.6-sol";
+const PI_FALLBACK_ROUTE = "ollama:qwen3:8b";
 describe("process-job mixed fallback route guard", () => {
-  it("blocks a mixed fallback chain before either provider under uniform route safety", async () => {
-    const fixture = await createRouteGuardFixture(
-      PI_ROUTE,
-      NON_PI_ROUTES[0][1],
-      "live",
-      true,
-      "uniform",
-    );
-    try {
-      await expect(fixture.responder.respond({
-        conversationId: "slack:C1:1.1",
-        text: "do not invoke a provider",
-        abortSignal: new AbortController().signal,
-      }, { append: async () => {} })).rejects.toThrow(
-        "Process-job private state requires a Pi-native runtime.",
-      );
-      expect(fixture.providerRunCounts).toEqual([0, 0]);
-    } finally {
-      await fixture.dispose();
-    }
-  });
-
-  it.each(NON_PI_ROUTES)("blocks Pi to %s before either routed provider runs", async (_label, nonPiRoute) => {
-    const fixture = await createRouteGuardFixture(PI_ROUTE, nonPiRoute, "live");
-    try {
-      await expect(fixture.responder.respond({
-        conversationId: "slack:C1:1.1",
-        text: "do not invoke a provider",
-        abortSignal: new AbortController().signal,
-      }, { append: async () => {} })).rejects.toThrow(
-        "Process-job private state requires a Pi-native runtime.",
-      );
-      expect(fixture.providerRunCounts).toEqual([0, 0]);
-    } finally {
-      await fixture.dispose();
-    }
-  });
-
-  it.each(NON_PI_ROUTES)("blocks %s to Pi before either routed provider runs", async (_label, nonPiRoute) => {
-    const fixture = await createRouteGuardFixture(nonPiRoute, PI_ROUTE, "live");
-    try {
-      await expect(fixture.responder.respond({
-        conversationId: "slack:C1:1.1",
-        text: "do not invoke a provider",
-        abortSignal: new AbortController().signal,
-      }, { append: async () => {} })).rejects.toThrow(
-        "Process-job private state requires a Pi-native runtime.",
-      );
-      expect(fixture.providerRunCounts).toEqual([0, 0]);
-    } finally {
-      await fixture.dispose();
-    }
-  });
-
-  it.each(NON_PI_ROUTES)("blocks degraded Pi to %s before either routed provider runs", async (_label, nonPiRoute) => {
-    const fixture = await createRouteGuardFixture(PI_ROUTE, nonPiRoute, "degraded");
-    try {
-      await expect(fixture.responder.respond({
-        conversationId: "slack:C1:1.1",
-        text: "do not invoke a provider",
-        abortSignal: new AbortController().signal,
-      }, { append: async () => {} })).rejects.toThrow(
-        "Process-job private state requires a Pi-native runtime.",
-      );
-      expect(fixture.providerRunCounts).toEqual([0, 0]);
-    } finally {
-      await fixture.dispose();
-    }
-  });
-
-  it.each(NON_PI_ROUTES)("blocks degraded %s to Pi before either routed provider runs", async (_label, nonPiRoute) => {
-    const fixture = await createRouteGuardFixture(nonPiRoute, PI_ROUTE, "degraded");
-    try {
-      await expect(fixture.responder.respond({
-        conversationId: "slack:C1:1.1",
-        text: "do not invoke a provider",
-        abortSignal: new AbortController().signal,
-      }, { append: async () => {} })).rejects.toThrow(
-        "Process-job private state requires a Pi-native runtime.",
-      );
-      expect(fixture.providerRunCounts).toEqual([0, 0]);
-    } finally {
-      await fixture.dispose();
-    }
-  });
-
   it("keeps degraded all-Pi fallback turns protected without exposing a controller", async () => {
     const fixture = await createRouteGuardFixture(PI_ROUTE, PI_FALLBACK_ROUTE, "degraded");
     try {
@@ -592,7 +364,6 @@ describe("process-job mixed fallback route guard", () => {
       PI_FALLBACK_ROUTE,
       "live",
       true,
-      "per-route-native",
       true,
     );
     try {
@@ -640,36 +411,6 @@ describe("process-job mixed fallback route guard", () => {
     }
   });
 
-  it("does not project another private app root to a non-Pi fallback when process jobs are disabled", async () => {
-    const fixture = await createRouteGuardFixture(PI_ROUTE, NON_PI_ROUTES[0][1], "none");
-    try {
-      await expect(fixture.responder.respond({
-        conversationId: "slack:C1:1.1",
-        text: "do not drop the clear-sessions registry guard",
-        abortSignal: new AbortController().signal,
-      }, { append: async () => {} })).rejects.toThrow("Connection error.");
-      expect(fixture.providerRunCounts).toEqual([1, 0]);
-      expect(fixture.routeRunOptions[0]?.sandboxPolicy?.protectedRoots).not.toHaveLength(0);
-    } finally {
-      await fixture.dispose();
-    }
-  });
-
-  it("preserves a clean non-Pi route when process jobs are disabled and protected roots are empty", async () => {
-    const fixture = await createRouteGuardFixture(NON_PI_ROUTES[0][1], undefined, "none");
-    try {
-      const response = await fixture.responder.respond({
-        conversationId: "slack:C1:1.1",
-        text: "exercise a clean direct route",
-        abortSignal: new AbortController().signal,
-      }, { append: async () => {} });
-      expect(response.text).toContain("fallback route completed");
-      expect(fixture.providerRunCounts).toEqual([1]);
-      expect(fixture.routeRunOptions[0]?.sandboxPolicy?.protectedRoots ?? []).toHaveLength(0);
-    } finally {
-      await fixture.dispose();
-    }
-  });
 });
 
 async function createRouteGuardFixture(
@@ -677,7 +418,6 @@ async function createRouteGuardFixture(
   fallbackReference: string | undefined,
   processJobsMode: "live" | "degraded" | "none",
   sandboxEngineAvailable = true,
-  routeSafety: "uniform" | "per-route-native" = "per-route-native",
   unsafe = false,
 ): Promise<{
   readonly responder: Awaited<ReturnType<typeof buildResponder>>;
@@ -713,8 +453,7 @@ async function createRouteGuardFixture(
       // replaced below through the app's programmatic config seam so this one
       // integration matrix can cover ACP without weakening config validation.
       model: PI_ROUTE,
-      ...(fallbackReference === undefined ? {} : { fallbacks: [{ model: NON_PI_ROUTES[0][1] }] }),
-      routeSafety,
+      ...(fallbackReference === undefined ? {} : { fallbacks: [{ model: fallbackReference }] }),
       retry: { primaryAttempts: 1, backoffMs: 0, maxBackoffMs: 0 },
       workspace: ".",
     },
@@ -744,8 +483,6 @@ async function createRouteGuardFixture(
       ...loadedConfig.runtime,
       model: primaryModel,
       fallbacks: fallbackModel === undefined ? [] : [{ model: fallbackModel }],
-      executionMode: defaultExecutionModeForModel(primaryModel),
-      routeSafety,
     },
   };
   const security = await controllerSecurity(
@@ -788,7 +525,6 @@ async function createRouteGuardFixture(
   }));
   const runtime = createMonoRuntime({
     fallbackChain: routes.map((model) => ({ model })),
-    routeSafety,
     retry: { backoffMs: 0, maxBackoffMs: 0 },
     resolveAttempt: ({ attemptIndex }) => {
       const runtimeForAttempt = routeRuntimes[attemptIndex];
@@ -842,8 +578,8 @@ async function createRouteGuardFixture(
     reportMemoryRecallStatus: () => false,
     supermemoryMcpRuntimeOptions: () => undefined,
     adapterSendToolsRuntimeOptions: async () => ({ blockingToolNames: [] }),
-    requestModelOverrideRuntimeOptions(coreConfigInput, compatibility) {
-      return createRequestModelOverrideRuntimeOptions(controller, coreConfigInput, compatibility);
+    requestModelOverrideRuntimeOptions(coreConfigInput) {
+      return createRequestModelOverrideRuntimeOptions(controller, coreConfigInput);
     },
     buildRuntimeForModel: () => () => runtime,
     observabilityContext: async () => ({}),

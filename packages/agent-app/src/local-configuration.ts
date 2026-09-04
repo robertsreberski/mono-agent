@@ -67,7 +67,6 @@ import { validateMonoAgentFolder } from "./doctor.js";
 import { ADAPTER_SEND_TOOL_NAMES, canonicalToolName } from "./modules/known-tools.js";
 import { RUN_HISTORY_MCP_SERVER_NAME, RUN_HISTORY_TOOL_NAME } from "./run-history.js";
 import { SESSION_HISTORY_MCP_SERVER_NAME, SESSION_HISTORY_TOOL_NAME } from "./session-history.js";
-import { configuredRuntimeFallbackModels } from "./runtime-routes.js";
 import { loadProcessJobsSettings } from "./process-jobs-config.js";
 import { hasExactProcessJobStateMarkers } from "./process-jobs-store.js";
 
@@ -390,21 +389,18 @@ export function createLocalConfigurationRuntimeExtension(
       "Configuration proposal session",
     );
     const configReadPath = options.configReadPath ?? authenticated.configPath;
-    const config = await loadAppCoreConfig({
+    await loadAppCoreConfig({
       cwd: authenticated.cwd,
       configPath: configReadPath,
       env: options.env,
     });
-    const route = configurationRuntimeRoute(config);
-    const allRoutesUseDirectCodex = route.models.every((model) => model.sdk === "codex");
     const runtimeOptions = {
       permissionMode: "plan" as const,
-      ...(route.modelOverride === undefined ? {} : { model: route.modelOverride }),
     };
     if (request.phase === "invitation") {
       return {
         toolPolicyOverride: createToolPolicy({
-          allowedTools: allRoutesUseDirectCodex ? ["*"] : ["ReadSkill", "MemoryRecall", SESSION_HISTORY_TOOL_NAME],
+          allowedTools: ["ReadSkill", "MemoryRecall", SESSION_HISTORY_TOOL_NAME],
           disallowedTools: [],
           mcpServers: {},
         }),
@@ -420,7 +416,7 @@ export function createLocalConfigurationRuntimeExtension(
     }, authenticated.cwd);
     return {
       toolPolicyOverride: createToolPolicy({
-        allowedTools: allRoutesUseDirectCodex ? ["*"] : CONFIGURATION_READ_ONLY_TOOLS,
+        allowedTools: CONFIGURATION_READ_ONLY_TOOLS,
         disallowedTools: [],
         mcpServers: {
           [CONFIGURATION_PROPOSAL_MCP_SERVER_NAME]: proposalServer,
@@ -428,37 +424,6 @@ export function createLocalConfigurationRuntimeExtension(
       }),
       runtimeOptions,
     };
-  };
-}
-
-function configurationRuntimeRoute(config: MonoAgentConfig): {
-  readonly models: readonly MonoAgentConfig["runtime"]["model"][];
-  readonly modelOverride?: MonoAgentConfig["runtime"]["model"];
-} {
-  const fallbacks = configuredRuntimeFallbackModels(config.runtime);
-  const directOpenCodeFallbacks = fallbacks.filter((model) => model.sdk === "opencode");
-  if (config.runtime.model.sdk !== "opencode") {
-    if (directOpenCodeFallbacks.length > 0) {
-      throw new Error(
-        "Self-configuration is unavailable while the fallback chain contains direct OpenCode. " +
-        "Its provider-owned tool loop cannot receive the host-owned proposal MCP capability, so a failover could silently lose the proposal. " +
-        "Use a Pi route such as pi:opencode-go:<model>, or remove the direct opencode:* fallback before running /configure.",
-      );
-    }
-    return { models: [config.runtime.model, ...fallbacks] };
-  }
-
-  const supported = fallbacks.find((model) => model.sdk !== "opencode");
-  if (supported === undefined || directOpenCodeFallbacks.length > 0) {
-    throw new Error(
-      "Self-configuration cannot use direct OpenCode's provider-owned tool loop because it cannot receive the host-owned proposal MCP capability. " +
-      "Add a proposal-capable fallback such as pi:opencode-go:<model>, or switch the primary runtime before running /configure.",
-    );
-  }
-  const remaining = fallbacks.filter((model) => model !== supported);
-  return {
-    modelOverride: supported,
-    models: [supported, ...remaining],
   };
 }
 

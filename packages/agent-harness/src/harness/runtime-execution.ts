@@ -3,7 +3,6 @@ import {
   modelReferenceKey,
   monoRuntimeSupportsLiveInput,
   sandboxPolicyToRuntimeOptions,
-  type RuntimeExecutionMode,
   type RuntimeMessage,
   type RuntimeResult,
   type RuntimeRunOptions,
@@ -24,7 +23,6 @@ import type { AttachmentRequestContext } from "./attachments.js";
 import { AgentHarnessError } from "./error.js";
 import { injectMcpContinuationContext, injectMcpRequestContext } from "./mcp-context.js";
 import {
-  executionModeForOverride,
   isRuntimeModelReference,
   mergeRuntimeOptions,
   sameRuntimeModel,
@@ -230,22 +228,15 @@ export async function runHarnessRuntime(
       ) {
         // Context/session isolation must be decided before history assembly. A
         // model-changing extension that was not declared by the request's
-        // cron/webhook/TUI metadata arrives too late: a warm turn may already
-        // have omitted canonical history. Fail before provider execution rather
-        // than mixing model lineage or saving an id owned by another runtime.
+        // cron/webhook/web/TUI/Telegram/Slack metadata arrives too late: a warm
+        // turn may already have omitted canonical history. Fail before provider
+        // execution rather than mixing model lineage or saving an id owned by
+        // another runtime.
         throw new AgentHarnessError(
           "undeclared_model_override",
           "A model-changing runtimeOptionsForRequest result must be declared in request metadata before context assembly.",
         );
       }
-      // executionMode for an override turn: keep the host's configured mode when the
-      // override model supports it (so a host running e.g. claude in cli mode is not
-      // silently flipped to sdk for a same-family override), else fall back to that
-      // model's default mode (so a codex override under an sdk host correctly runs
-      // cli). executionMode is harness/runtime-owned — extensions cannot set it.
-      const effectiveExecutionMode = overrideModel === undefined
-        ? options.executionMode
-        : executionModeForOverride(overrideModel, options.executionMode);
       const overrideEffort = typeof merged.effort === "string" ? merged.effort : undefined;
       const effectiveEffort = overrideEffort ?? options.effort;
       const useManagedLiveInput = liveInputMailbox !== undefined && merged.liveInput === undefined;
@@ -253,10 +244,7 @@ export async function runHarnessRuntime(
       if (liveInputMailbox !== undefined) {
         if (useManagedLiveInput) {
           try {
-            supportsLiveInput = monoRuntimeSupportsLiveInput(
-              effectiveModel,
-              effectiveExecutionMode as RuntimeExecutionMode | undefined,
-            );
+            supportsLiveInput = monoRuntimeSupportsLiveInput();
           } catch {
             supportsLiveInput = false;
           }
@@ -272,7 +260,7 @@ export async function runHarnessRuntime(
         overrideModel !== undefined &&
         options.runtimeForModel !== undefined &&
         !sameRuntimeModel(overrideModel, options.model)
-          ? options.runtimeForModel(effectiveModel, effectiveExecutionMode)
+          ? options.runtimeForModel(effectiveModel)
           : options.runtime;
       // Speaker/group context wraps the user's words FIRST (it is chronologically
       // prior and identity-scoping); recalled memory still appends last. Composing
@@ -321,7 +309,6 @@ export async function runHarnessRuntime(
         ...(useManagedLiveInput && supportsLiveInput && liveInputMailbox !== undefined
           ? { liveInput: liveInputMailbox }
           : {}),
-        ...(effectiveExecutionMode === undefined ? {} : { executionMode: effectiveExecutionMode }),
         ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
         ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
         ...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
@@ -385,7 +372,7 @@ export async function runHarnessRuntime(
       // resume-retry's second runRuntime does not double-release.
       onProviderStart?.();
       // Synthetic run_config event: tells live/recorded consumers (TUI, replay)
-      // the per-run RESOLVED model/effort/executionMode — including per-request
+      // the per-run resolved model/effort — including per-request
       // overrides (cron job / webhook per-trigger model+effort) — so they never
       // have to re-derive it from scattered runtime_telemetry fields. Delivered
       // to both sinks the same way as the provider_bridge_latency event below.
@@ -393,7 +380,6 @@ export async function runHarnessRuntime(
         type: "run_config",
         model: modelReferenceKey(effectiveModel),
         ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
-        ...(effectiveExecutionMode === undefined ? {} : { executionMode: effectiveExecutionMode }),
         overridden: overrideModel !== undefined || overrideEffort !== undefined,
         timestamp: new Date().toISOString(),
       };

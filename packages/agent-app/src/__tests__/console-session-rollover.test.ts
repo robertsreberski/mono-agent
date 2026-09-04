@@ -86,8 +86,7 @@ describe("console conversations under daily rollover", () => {
 function monoConfig(dir: string, identityPath: string): MonoAgentConfig {
   return {
     runtime: {
-      model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" },
-      executionMode: "sdk",
+      model: { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" },
       maxTurns: 4,
       workspace: dir,
       session: { mode: "continuous", idleTimeoutMs: 1_800_000, rollover: "daily" },

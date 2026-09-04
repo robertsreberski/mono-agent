@@ -9,9 +9,62 @@ import {
   type AgentStreamEvent,
   type AgentStreamWireFrame,
 } from "@mono-agent/agent-contracts";
+import {
+  MAX_INFO_BODY_BYTES,
+  MAX_INFO_PROVIDER_ID_BYTES,
+  MAX_INFO_PROVIDER_ITEMS,
+  MAX_INFO_PROVIDER_LABEL_BYTES,
+} from "@mono-agent/agent-contracts";
 import { startTuiAdapter, type TuiAdapterStartResult } from "@mono-agent/operator-adapter";
 
 import { RemoteAgentResponder, RemoteAgentResponderError } from "../remote/client.js";
+
+/**
+ * Serve one fixed `/v1/info` body from a raw loopback server, so a payload the
+ * real adapter would never produce can still be put in front of the client.
+ */
+async function withRawInfoBody(
+  body: string,
+  run: (client: RemoteAgentResponder) => Promise<void>,
+): Promise<void> {
+  const { createServer } = await import("node:http");
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(body);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : 0;
+  try {
+    await run(new RemoteAgentResponder({ baseUrl: `http://127.0.0.1:${port}` }));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+/**
+ * Serve one fixed `/v1/info` response with an arbitrary STATUS, so the client's
+ * non-2xx path can be put in front of a real socket rather than only a double.
+ */
+async function withRawInfoResponse(
+  status: number,
+  body: string,
+  run: (client: RemoteAgentResponder) => Promise<void>,
+): Promise<void> {
+  const { createServer } = await import("node:http");
+  const server = createServer((_request, response) => {
+    response.writeHead(status, { "content-type": "application/json" });
+    response.end(body);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : 0;
+  try {
+    await run(new RemoteAgentResponder({ baseUrl: `http://127.0.0.1:${String(port)}` }));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
 
 /**
  * Round-trip tests against the real operator-adapter TUI server: the client half of the
@@ -147,17 +200,218 @@ describe("RemoteAgentResponder", () => {
     );
   });
 
+  it("surfaces the providers catalog from /v1/info when configured", async () => {
+    const adapter = await startTuiAdapter({
+      responder: { respond: async () => ({ text: "ok" }) },
+      info: {
+        model: "ollama:qwen3:8b",
+        providers: [
+          { id: "anthropic", label: "Anthropic", modelCount: 2, source: "builtin", configured: true },
+          { id: "openai-codex", label: "OpenAI Codex", modelCount: 1, totalModelCount: 12, source: "builtin" },
+          { id: "ollama", label: "Ollama", modelCount: 1, source: "discovered" },
+        ],
+      },
+    });
+    try {
+      const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
+      const info = await client.info();
+      expect(info.providers).toEqual([
+        { id: "anthropic", label: "Anthropic", modelCount: 2, source: "builtin", configured: true },
+        { id: "openai-codex", label: "OpenAI Codex", modelCount: 1, totalModelCount: 12, source: "builtin" },
+        { id: "ollama", label: "Ollama", modelCount: 1, source: "discovered" },
+      ]);
+    } finally {
+      await adapter.stop();
+    }
+  });
+
+  it("tolerates the absence of providers from an older agent's /v1/info", async () => {
+    await withAdapter(
+      { respond: async () => ({ text: "ok" }) },
+      async (adapter) => {
+        const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
+        const info = await client.info();
+        expect(info.providers).toBeUndefined();
+      },
+    );
+  });
+
+  it("drops malformed providers entries while keeping the well-formed ones", async () => {
+    const { createServer } = await import("node:http");
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          schema: 1,
+          model: "x",
+          providers: [
+            { id: "good", label: "Good", modelCount: 3, source: "builtin" },
+            { id: "bad-source", label: "Bad", modelCount: 1, source: "mystery" },
+            { label: "no id", modelCount: 1, source: "builtin" },
+            { id: "no-count", label: "No count" },
+            "not-an-object",
+            { id: "", label: "Empty id", modelCount: 1, source: "builtin" },
+          ],
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    try {
+      const client = new RemoteAgentResponder({ baseUrl: `http://127.0.0.1:${port}` });
+      const info = await client.info();
+      expect(info.providers).toEqual([{ id: "good", label: "Good", modelCount: 3, source: "builtin" }]);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("omits providers entirely when the payload's providers is not an array", async () => {
+    const { createServer } = await import("node:http");
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ schema: 1, model: "x", providers: "garbage" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    try {
+      const client = new RemoteAgentResponder({ baseUrl: `http://127.0.0.1:${port}` });
+      const info = await client.info();
+      expect(info.providers).toBeUndefined();
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  /**
+   * `/v1/info` has two consumers -- this client and the web console's
+   * `OperatorClient` -- and exactly one producer, which places the providers its
+   * own routes use inside the shared parse window precisely because it knows
+   * both consumers cut there. A client that reads a wider window than the other
+   * is not being generous; it is a second opinion about one wire, and the
+   * operator sees two different provider lists for one agent.
+   */
+  it("reads the same bounded provider window the console reads", async () => {
+    const providers = Array.from({ length: MAX_INFO_PROVIDER_ITEMS + 7 }, (_unused, index) => ({
+      id: `vendor-${String(index).padStart(5, "0")}`,
+      label: `Vendor ${String(index)}`,
+      modelCount: 1,
+      source: "builtin" as const,
+    }));
+
+    await withRawInfoBody(JSON.stringify({ schema: 1, model: "x", providers }), async (client) => {
+      const info = await client.info();
+      expect(info.providers?.length).toBe(MAX_INFO_PROVIDER_ITEMS);
+      expect(info.providers?.map((provider) => provider.id))
+        .toEqual(providers.slice(0, MAX_INFO_PROVIDER_ITEMS).map((provider) => provider.id));
+    });
+  });
+
+  it("agrees with the console on how long a provider id and label may be", async () => {
+    const atBound = `p${"i".repeat(MAX_INFO_PROVIDER_ID_BYTES - 1)}`;
+    const overBound = `p${"i".repeat(MAX_INFO_PROVIDER_ID_BYTES)}`;
+    const longLabel = "L".repeat(MAX_INFO_PROVIDER_LABEL_BYTES + 1);
+
+    await withRawInfoBody(
+      JSON.stringify({
+        schema: 1,
+        model: "x",
+        providers: [
+          { id: atBound, label: "At bound", modelCount: 1, source: "builtin" },
+          { id: overBound, label: "Over bound", modelCount: 1, source: "builtin" },
+          { id: "labelled", label: longLabel, modelCount: 1, source: "builtin" },
+        ],
+      }),
+      async (client) => {
+        const info = await client.info();
+        expect(info.providers?.map((provider) => provider.id)).toEqual([atBound, "labelled"]);
+        // An over-long label degrades to the id rather than costing the entry.
+        expect(info.providers?.at(-1)?.label).toBe("labelled");
+      },
+    );
+  });
+
+  it("refuses an oversized /v1/info body rather than parsing it whole", async () => {
+    // The producer's fence keeps a real body under this cap; a body over it is
+    // an agent this client cannot trust to be bounded anywhere else either, and
+    // reading it whole is how one 5 s poll turns into an unbounded allocation.
+    const body = JSON.stringify({ schema: 1, model: "x", label: "L".repeat(MAX_INFO_BODY_BYTES) });
+    expect(Buffer.byteLength(body, "utf8")).toBeGreaterThan(MAX_INFO_BODY_BYTES);
+
+    await withRawInfoBody(body, async (client) => {
+      const error = await client.info().then(() => undefined, (caught: unknown) => caught);
+      expect(error).toBeInstanceOf(RemoteAgentResponderError);
+      expect((error as RemoteAgentResponderError).code).toBe("info_too_large");
+    });
+  });
+
+  it("bounds an oversized NON-2xx body instead of buffering it whole", async () => {
+    // The bounded reader used to sit behind the 2xx check: a non-2xx response
+    // was read with `response.text()`, so the one case a bound exists for — a
+    // hostile or broken peer — was the one case that had no bound. The
+    // adapter's own error responder really did answer 1,052,696 bytes against
+    // this 1,048,576-byte contract, so this body is not a hypothetical.
+    const chunkBytes = 64 * 1024;
+    const totalBytes = 8 * MAX_INFO_BODY_BYTES;
+    let produced = 0;
+    const fetchImpl: typeof fetch = async () => new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (produced >= totalBytes) {
+            controller.close();
+            return;
+          }
+          const size = Math.min(chunkBytes, totalBytes - produced);
+          produced += size;
+          controller.enqueue(new Uint8Array(size).fill(0x45));
+        },
+      }),
+      { status: 500, headers: { "content-type": "application/json" } },
+    );
+
+    const client = new RemoteAgentResponder({ baseUrl: "http://127.0.0.1:1", fetchImpl });
+    const error = await client.info().then(() => undefined, (caught: unknown) => caught);
+
+    // The failure still reads as the HTTP failure it is...
+    expect(error).toBeInstanceOf(RemoteAgentResponderError);
+    expect((error as RemoteAgentResponderError).code).toBe("http_error");
+    expect((error as RemoteAgentResponderError).message).toContain("500");
+    // ...and the client stopped pulling at the shared cap while the peer still
+    // had 7 MiB queued. Counting what the peer was ASKED to produce is the only
+    // honest measure here: asserting on the thrown message alone would pass
+    // just as well while the client buffered every byte. The slack is the
+    // stream's own one-chunk prefetch, not the client's buffer.
+    expect(produced).toBeLessThan(MAX_INFO_BODY_BYTES + 4 * chunkBytes);
+  });
+
+  it("still reports the status and a detail prefix from an oversized error body", async () => {
+    // Bounding must not cost the diagnostic: a clamped read still has to name
+    // the status and echo the head of what the peer said.
+    const body = `{"error":{"message":"Discovery failed: ${"D".repeat(2 * MAX_INFO_BODY_BYTES)}"}}`;
+
+    await withRawInfoResponse(503, body, async (client) => {
+      const error = await client.info().then(() => undefined, (caught: unknown) => caught);
+      expect(error).toBeInstanceOf(RemoteAgentResponderError);
+      expect((error as RemoteAgentResponderError).code).toBe("http_error");
+      const message = (error as RemoteAgentResponderError).message;
+      expect(message).toContain("503");
+      expect(message).toContain("Discovery failed: DDD");
+    });
+  });
+
   it("surfaces modelOptions from /v1/info when configured", async () => {
     const adapter = await startTuiAdapter({
       responder: { respond: async () => ({ text: "ok" }) },
       info: {
-        model: "pi:ollama:qwen3.6",
-        models: ["pi:ollama:qwen3.6", "pi:lmstudio:qwen3-8b"],
+        model: "ollama:qwen3.6",
+        models: ["ollama:qwen3.6", "lmstudio:qwen3-8b"],
         modelOptions: {
           // reasoningMode passes through end to end: a toggle model (no levels)
           // and an effort model (mode + levels).
-          "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" },
-          "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, reasoningMode: "effort", label: "qwen3-8b" },
+          "ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" },
+          "lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, reasoningMode: "effort", label: "qwen3-8b" },
         },
       },
     });
@@ -165,8 +419,8 @@ describe("RemoteAgentResponder", () => {
       const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
       const info = await client.info();
       expect(info.modelOptions).toEqual({
-        "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" },
-        "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, reasoningMode: "effort", label: "qwen3-8b" },
+        "ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" },
+        "lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, reasoningMode: "effort", label: "qwen3-8b" },
       });
     } finally {
       await adapter.stop();

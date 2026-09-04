@@ -3,7 +3,7 @@ import { basename, join } from "node:path";
 import { emitKeypressEvents } from "node:readline";
 
 import * as p from "@clack/prompts";
-import type { EffortLevel, RouteSafetyMode } from "@mono-agent/config";
+import type { EffortLevel } from "@mono-agent/config";
 import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 import { findModule } from "../modules/catalog.js";
@@ -22,7 +22,6 @@ import {
   isAllowAllTools,
 } from "../modules/known-tools.js";
 import {
-  hasDurableProviderEnvironmentCredential,
   isProviderSetupPiApiKeyAction,
   planProviderSetup,
   providerSetupActionCommandLine,
@@ -43,19 +42,17 @@ import {
 import { findPreset, presetAnswers } from "./presets.js";
 import {
   assertConcreteWizardModelRef,
+  canonicalWizardModelRef,
   channelSelectOptions,
   creationReviewOptions,
   CUSTOM_PI_MODEL_OPTION,
   effortSelectOptions,
   fallbackModelSelectOptions,
-  formatRouteSafetyMatrix,
-  isMixedRouteChain,
   memorySelectOptions,
   MODEL_AUTOCOMPLETE_MAX_ITEMS,
   modelSelectOptions,
   piModelSelectOptions,
   presetSelectOptions,
-  ROUTE_SAFETY_OPTIONS,
   toolMultiselectOptions,
   validateWizardAgentName,
   validateWizardAgentPurpose,
@@ -68,6 +65,7 @@ import {
   discoverWizardModelCandidates,
   formatModelDiscoveryStatus,
   guidedPiProviderProblem,
+  hasDurablePiEnvironmentCredential,
   type ModelDiscoveryResult,
   type WizardModelCandidate,
 } from "./model-discovery.js";
@@ -119,7 +117,6 @@ interface DraftAnswers {
   model: string;
   fallbacks: Array<{ model: string; effort?: string }>;
   effort: string | undefined;
-  routeSafety: RouteSafetyMode;
   credentialStates: Record<string, ProviderCredentialState>;
   channels: string[];
   memory: string | undefined;
@@ -364,7 +361,18 @@ async function collectCustom(ctx: WizardRunContext): Promise<CollectedAnswers> {
   }));
 }
 
+/**
+ * Every accepted selection is stored CANONICALIZED. Validation accepts a legacy
+ * `pi:<provider>:<model>` because the parser strips the prefix, but storing the
+ * raw string made downstream literal-prefix checks (local-provider module
+ * selection, the credential/billing review) misclassify the route — see
+ * `canonicalWizardModelRef`.
+ */
 async function resolveModelSelection(model: string, opts: ModelResolutionOptions): Promise<string> {
+  return canonicalWizardModelRef(await selectModelRef(model, opts));
+}
+
+async function selectModelRef(model: string, opts: ModelResolutionOptions): Promise<string> {
   if (model === "__pi_other__") {
     return await promptPiModelSelection(opts);
   }
@@ -373,7 +381,7 @@ async function resolveModelSelection(model: string, opts: ModelResolutionOptions
     const resolved = (
       await textPrompt({
         message: opts.context === "primary" ? "Model reference" : "Fallback model reference",
-        placeholder: "pi:ollama:llama3.1:8b",
+        placeholder: "ollama:llama3.1:8b",
         validate: validateFullModelReference,
       })
     ).trim();
@@ -430,13 +438,13 @@ async function promptManualPiModelRef(): Promise<string> {
           : undefined,
     })
   ).trim();
-  return `pi:${provider}:${modelId}`;
+  return `${provider}:${modelId}`;
 }
 
 function validateFullModelReference(value: string | undefined): string | undefined {
   const trimmed = (value ?? "").trim();
   if (trimmed.length === 0) {
-    return "Enter a provider:model reference (e.g. pi:ollama:llama3.1:8b)";
+    return "Enter a provider:model reference (e.g. ollama:llama3.1:8b)";
   }
   if (trimmed.includes(",")) {
     return "Enter one model reference. Add more fallbacks one at a time.";
@@ -463,15 +471,7 @@ export function guidedModelRefProblem(model: string): string | undefined {
   } catch (error) {
     return error instanceof Error ? error.message : "Enter a concrete model reference.";
   }
-  if (parsed.sdk === "opencode") {
-    return "Direct OpenCode is scaffold/config-only. Choose pi:opencode-go:* for guided readiness.";
-  }
-  if (parsed.sdk === "pi" && parsed.provider !== undefined) {
-    return guidedPiProviderProblem(parsed.provider);
-  }
-  return parsed.sdk === "claude" || parsed.sdk === "codex"
-    ? undefined
-    : "Guided init supports Claude, Codex, supported Pi providers, and local Pi routes.";
+  return guidedPiProviderProblem(parsed.provider);
 }
 
 /**
@@ -559,7 +559,7 @@ function wizardStepHasInteractivePrompt(step: number, draft: DraftAnswers): bool
         .some((id) => !MANAGED_MEMORY_MODULE_IDS.has(id)
           && findModule(id)?.inputs.some((input) => input.secret !== true) === true);
     case 5:
-      return !selectedRuntimeModels(draft).every(hasFixedAllowAllToolPolicyRef);
+      return true;
     case 6:
       return safetyPolicyHasInteractivePrompt(draft);
     default:
@@ -568,20 +568,8 @@ function wizardStepHasInteractivePrompt(step: number, draft: DraftAnswers): bool
 }
 
 function safetyPolicyHasInteractivePrompt(draft: DraftAnswers): boolean {
-  const models = selectedRuntimeModels(draft);
-  const mixed = isMixedRouteChain(models);
-  if (mixed) return true;
-
-  const hasSandboxableTools = isAllowAllTools(draft.allowedTools)
+  return isAllowAllTools(draft.allowedTools)
     || draft.allowedTools.some((tool) => SANDBOXABLE_TOOLS.has(tool));
-  const hasPiRoute = models.some((model) => model.startsWith("pi:"));
-  const providerNative = models.some((model) => !model.startsWith("pi:"));
-  if (hasSandboxableTools && hasPiRoute) return true;
-  if (draft.routeSafety === "per-route-native" && providerNative) return true;
-  return hasSandboxableTools
-    && providerNative
-    && !models.every(isDirectCodexRef)
-    && isAllowAllTools(draft.allowedTools);
 }
 
 function previousInteractiveWizardStep(step: number, draft: DraftAnswers): number | undefined {
@@ -646,7 +634,6 @@ async function collectInteractiveFromSeed(
             && (
               previousFamilies !== nextFamilies
               || !isAllowAllTools(draft.allowedTools)
-              || hasInvalidUniformManagedSrtChain(draft)
             )
           ) {
             p.log.info("The runtime route changed, so tool and sandbox safety choices must be confirmed again.");
@@ -789,24 +776,9 @@ async function collectInteractiveFromSeed(
 }
 
 async function promptSafetyPolicy(draft: DraftAnswers): Promise<void> {
-  const models = selectedRuntimeModels(draft);
-  const mixed = isMixedRouteChain(models);
-  if (mixed) {
-    draft.routeSafety = await select({
-      message: "How should safety apply across this mixed fallback chain?",
-      options: [...ROUTE_SAFETY_OPTIONS],
-      initialValue: draft.routeSafety,
-    }) as RouteSafetyMode;
-  } else {
-    draft.routeSafety = "uniform";
-  }
-
   const hasSandboxableTools = isAllowAllTools(draft.allowedTools)
     || draft.allowedTools.some((tool) => SANDBOXABLE_TOOLS.has(tool));
-  const hasPiRoute = models.some((model) => model.startsWith("pi:"));
-  const providerNative = models.some((model) => !model.startsWith("pi:"));
-  const mixedPiProviderNativeChain = mixed && hasPiRoute && providerNative;
-  if (hasSandboxableTools && hasPiRoute) {
+  if (hasSandboxableTools) {
     draft.sandbox = await confirm({
       message: "Install and use managed SRT for Pi shell/file/Node REPL tools? (localhost-only network; setup verifies fail-closed enforcement)",
       initialValue: true,
@@ -815,88 +787,12 @@ async function promptSafetyPolicy(draft: DraftAnswers): Promise<void> {
     draft.sandbox = false;
   }
 
-  if (mixedPiProviderNativeChain && draft.routeSafety === "uniform" && draft.sandbox) {
-    p.note(
-      "Managed SRT applies to Pi routes only. A mixed Pi/provider-native chain therefore cannot promise one uniform managed-SRT contract.",
-      "Safety choice required",
-    );
-    const resolution = await select({
-      message: "How should this mixed chain resolve the managed-SRT mismatch?",
-      options: [
-        {
-          value: "per-route-native",
-          label: "Use per-route native safety",
-          hint: "keep managed SRT for Pi and show every provider's native contract",
-        },
-        {
-          value: "disable-managed-srt",
-          label: "Disable managed SRT",
-          hint: "keep the uniform contract without claiming SRT on provider-native routes",
-        },
-      ],
-      initialValue: "per-route-native",
-    });
-    if (resolution === "per-route-native") draft.routeSafety = "per-route-native";
-    else draft.sandbox = false;
-  }
-
-  if (draft.routeSafety === "per-route-native" && (mixed || providerNative)) {
-    p.note(
-      formatRouteSafetyMatrix(
-        { model: draft.model, ...(draft.effort === undefined ? {} : { effort: draft.effort }) },
-        draft.fallbacks,
-        draft.sandbox,
-      ),
-      "Per-route safety contract",
-    );
-    const accepted = await confirm({
-      message: "Use these per-route safety contracts? Provider-native routes cannot enforce every mono-agent capability.",
-      initialValue: false,
-    });
-    if (!accepted) {
-      draft.routeSafety = "uniform";
-      if (mixedPiProviderNativeChain && draft.sandbox) {
-        draft.sandbox = false;
-        p.log.info("Managed SRT disabled because this mixed chain kept the uniform compatibility contract.");
-      }
-      p.log.info("Per-route native safety was not accepted; restored the uniform compatibility contract.");
-    } else {
-      return;
-    }
-  }
-
-  if (hasSandboxableTools && hasPiRoute && isAllowAllTools(draft.allowedTools) && !draft.sandbox) {
+  if (hasSandboxableTools && isAllowAllTools(draft.allowedTools) && !draft.sandbox) {
     const accepted = await confirmHighRiskUnsandboxedAccess();
     if (!accepted) {
       draft.sandbox = true;
-      if (mixedPiProviderNativeChain && draft.routeSafety === "uniform") {
-        draft.routeSafety = "per-route-native";
-        p.note(
-          formatRouteSafetyMatrix(
-            { model: draft.model, ...(draft.effort === undefined ? {} : { effort: draft.effort }) },
-            draft.fallbacks,
-            draft.sandbox,
-          ),
-          "Per-route safety contract",
-        );
-        if (!await confirm({
-          message: "Use these per-route safety contracts? Provider-native routes cannot enforce every mono-agent capability.",
-          initialValue: false,
-        })) {
-          throw new WizardBack();
-        }
-      } else {
-        p.log.info("Managed SRT enabled because unsandboxed Pi allow-all access was not confirmed.");
-      }
+      p.log.info("Managed SRT enabled because unsandboxed Pi allow-all access was not confirmed.");
     }
-  } else if (
-    hasSandboxableTools
-    && providerNative
-    && !models.every(isDirectCodexRef)
-    && isAllowAllTools(draft.allowedTools)
-    && !await confirmHighRiskUnsandboxedAccess()
-  ) {
-    throw new WizardBack();
   }
 }
 
@@ -979,7 +875,7 @@ function selectedCredentialStates(
     const authState = candidates.get(model)?.authState;
     states[key] = authState === "verified"
       ? "verified"
-      : hasDurableProviderEnvironmentCredential(model, persistedEnv)
+      : hasDurablePiEnvironmentCredential(model, persistedEnv)
         ? "credential_detected"
         : authState === "credential_detected"
           ? "credential_detected"
@@ -989,11 +885,8 @@ function selectedCredentialStates(
 }
 
 function providerCredentialKey(model: string): string | undefined {
-  if (model.startsWith("codex:")) return "codex";
-  if (model.startsWith("claude:")) return "claude";
-  if (!model.startsWith("pi:")) return undefined;
-  const provider = model.split(":")[1];
-  return provider === undefined || provider === "ollama" || provider === "lmstudio" ? undefined : `pi:${provider}`;
+  const provider = model.split(":", 1)[0];
+  return provider === undefined || provider === "ollama" || provider === "lmstudio" ? undefined : provider;
 }
 
 async function promptEffortForModel(
@@ -1285,13 +1178,6 @@ async function promptTools(draft: DraftAnswers): Promise<void> {
   const alwaysOn = alwaysOnTools(toWizardAnswers(draft));
   p.note(toolSituationFraming(draft, alwaysOn), "Tools");
 
-  if (selectedRuntimeModels(draft).every(hasFixedAllowAllToolPolicyRef)) {
-    draft.allowedTools = [ALLOW_ALL_TOOLS];
-    p.log.info(
-      "Direct Codex uses its native app-server tool set and cannot enforce mono-agent per-tool allowlists. Tool policy is fixed to allow-all; use Pi or Claude for a restrictive tool list.",
-    );
-    return;
-  }
   const allowAll = await confirm({
       message: "Allow all tools? (shell/JavaScript execution, file changes, web access, and enabled-channel sends)",
       initialValue: true,
@@ -1392,7 +1278,7 @@ async function confirmSummary(
     piApiKeyPersistenceByProvider,
   );
 
-  if (setupModelRefs.some((model) => /^pi:(?:ollama|lmstudio):/u.test(model))) {
+  if (setupModelRefs.some((model) => /^(?:ollama|lmstudio):/u.test(model))) {
     p.note(
       "Local runtime or memory services are checked before readiness. The first load may take longer while models start.",
       "Local dependencies",
@@ -1471,16 +1357,7 @@ async function confirmSummary(
     ),
     `Capabilities: ${capabilities.length > 0 ? capabilities.join(", ") : "none"}`,
     `Tools:        ${toolsLine}`,
-    `Route safety: ${draft.routeSafety}`,
-    ...(draft.routeSafety === "per-route-native" || !isMixedRouteChain(runtimeRoutes.map((route) => route.model))
-      ? [formatRouteSafetyMatrix(
-          { model: draft.model, ...(draft.effort === undefined ? {} : { effort: draft.effort }) },
-          draft.fallbacks,
-          draft.sandbox,
-        )]
-      : [
-          "Uniform contract: every route must satisfy the same mono-agent tool/sandbox capabilities; an incompatible route is rejected or skipped, never silently weakened.",
-        ]),
+    `Managed SRT:  ${draft.sandbox ? "enabled" : "disabled"}`,
     ...(alwaysOn.length > 0 ? [`Always on:    ${alwaysOnDisplay(alwaysOn).join(", ")}`] : []),
     `Readiness:    ${runtimeRoutes.length} real model call(s), one per selected route; ${potentiallyBilledCalls} potentially billed`,
     `Verify refs:  ${setupModelRefs.join(", ")}`,
@@ -1583,34 +1460,12 @@ function sameOrderedValues(left: readonly string[], right: readonly string[]): b
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function hasFixedAllowAllToolPolicyRef(model: string): boolean {
-  return isDirectCodexRef(model) || isDirectOpenCodeRef(model);
-}
-
-function hasInvalidUniformManagedSrtChain(
-  draft: Pick<DraftAnswers, "model" | "fallbacks" | "routeSafety" | "sandbox">,
-): boolean {
-  if (draft.routeSafety !== "uniform" || !draft.sandbox) return false;
-  const models = selectedRuntimeModels(draft);
-  return isMixedRouteChain(models)
-    && models.some((model) => model.startsWith("pi:"))
-    && models.some((model) => !model.startsWith("pi:"));
-}
-
-function isDirectCodexRef(model: string): boolean {
-  return model.startsWith("codex:");
-}
-
-function isDirectOpenCodeRef(model: string): boolean {
-  return model.startsWith("opencode:");
-}
-
 function runtimeFamily(model: string): string {
   return model.split(":", 1)[0] ?? model;
 }
 
 function modelRefMayBill(model: string): boolean {
-  return !/^pi:(?:ollama|lmstudio):/u.test(model);
+  return !/^(?:ollama|lmstudio):/u.test(model);
 }
 
 /** Build a plan using the destination-derived context for honest review/setup. */
@@ -1773,7 +1628,6 @@ function draftFrom(answers: WizardAnswers): DraftAnswers {
     model: answers.model,
     fallbacks: effectiveFallbacks(answers).map((fallback) => ({ ...fallback })),
     effort: answers.effort,
-    routeSafety: answers.routeSafety,
     credentialStates: {},
     channels: [...answers.channels],
     memory: answers.memory,
@@ -1799,7 +1653,6 @@ function toWizardAnswers(draft: DraftAnswers): WizardAnswers {
     model: draft.model,
     fallbacks: draft.fallbacks.map((fallback) => ({ ...fallback })),
     ...(draft.effort === undefined ? {} : { effort: draft.effort }),
-    routeSafety: draft.routeSafety,
     channels: [...draft.channels],
     ...(draft.memory === undefined ? {} : { memory: draft.memory }),
     sandbox: draft.sandbox,

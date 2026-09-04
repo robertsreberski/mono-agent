@@ -564,7 +564,6 @@ describe("AgentHarness", () => {
       selectedSkills: ["research"],
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       cwd: dir,
       maxTurns: 3,
       memory,
@@ -941,7 +940,6 @@ describe("AgentHarness", () => {
       selectedSkills: ["research"],
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       cwd: dir,
     });
 
@@ -979,7 +977,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       cwd: dir,
       memory,
     });
@@ -1015,7 +1012,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       cwd: dir,
       memory,
     }).run({
@@ -1050,7 +1046,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       cwd: dir,
       memory,
       memoryWriteMode: "append-host-summary",
@@ -1080,7 +1075,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       createRunId: () => "run-fail",
     }).run({ conversationId: "c", userMessage: "hi", abortSignal: new AbortController().signal });
 
@@ -1100,7 +1094,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       runtimeOptions: {
         allowedTools: ["Read"],
         mcpServers: {
@@ -1157,7 +1150,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       sandboxPolicy: createSandboxPolicy({
         root: dir,
         network: { mode: "none" },
@@ -1206,7 +1198,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       memory,
       memoryWriteMode: "append-host-summary",
       createRunId: () => "run-summary",
@@ -1254,7 +1245,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: createFakeRuntime(async () => ({ text: "The build is green." })).runtime,
       model,
-      executionMode: "sdk",
       memory,
       memoryWriteMode: "capture",
       createRunId: () => "run-stable-idempotency-key",
@@ -1305,7 +1295,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: createFakeRuntime(async () => ({ text: "The build is green." })).runtime,
       model,
-      executionMode: "sdk",
       memory,
       memoryWriteMode: "capture",
       createRunId: () => "run-attributed",
@@ -1333,7 +1322,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: createFakeRuntime(async () => ({ text: "green" })).runtime,
       model,
-      executionMode: "sdk",
       historyStore,
     }).run({
       conversationId: "slack:C1:1.1",
@@ -1363,7 +1351,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: createFakeRuntime(async () => ({ text: "green" })).runtime,
       model,
-      executionMode: "sdk",
       historyStore,
     });
     await harness.run({
@@ -1411,7 +1398,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: createFakeRuntime(async () => ({ text: "Done." })).runtime,
       model,
-      executionMode: "sdk",
       memory,
       memoryWriteMode: "append-host-summary",
       createRunId: () => "run-summary-admission",
@@ -1525,7 +1511,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       memory,
       createRunId: () => "run-no-summary",
     }).run({ conversationId: "c", userMessage: "hi", abortSignal: new AbortController().signal });
@@ -1555,7 +1540,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       memory,
       memoryWriteMode: "capture",
       createRunId: () => "run-capture",
@@ -1597,7 +1581,6 @@ describe("AgentHarness", () => {
         identityPath,
         runtime: fake.runtime,
         model,
-        executionMode: "sdk",
         memory,
         memoryWriteMode: "capture",
         createRunId: () => `run-${label}-capture`,
@@ -1644,7 +1627,6 @@ describe("AgentHarness", () => {
           identityPath,
           runtime: fake.runtime,
           model,
-          executionMode: "sdk",
           memory,
           memoryWriteMode: mode,
           createRunId: () => `run-nothing-to-report-${mode}-${slug}`,
@@ -1683,7 +1665,6 @@ describe("AgentHarness", () => {
           identityPath,
           runtime: fake.runtime,
           model,
-          executionMode: "sdk",
           memory,
           memoryWriteMode: mode,
           createRunId: () => `run-trivial-${mode}-${probe}`,
@@ -1715,7 +1696,6 @@ describe("AgentHarness", () => {
         identityPath,
         runtime: fake.runtime,
         model,
-        executionMode: "sdk",
         memory,
         memoryWriteMode: mode,
         createRunId: () => `run-prefixed-trivial-${mode}`,
@@ -1752,7 +1732,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       memory,
       memoryWriteMode: "capture",
       createRunId: () => "run-short-meaningful",
@@ -1784,7 +1763,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       memory,
       memoryWriteMode: "capture",
       createRunId: () => "run-short-ack",
@@ -1816,7 +1794,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       memory,
       memoryWriteMode: "capture",
       createRunId: () => "run-test-meaningful",
@@ -1848,7 +1825,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       memory,
       memoryWriteMode: "append-host-summary",
       createRunId: () => "run-no-capture",
@@ -1868,7 +1844,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       // tool policy (first merge layer) seeds mcpServers + allowedTools
       toolPolicy: {
         allowedTools: ["Read"],
@@ -1916,7 +1891,6 @@ describe("AgentHarness", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       toolPolicy: {
         allowedTools: ["*"],
         disallowedTools: [],
@@ -1984,7 +1958,6 @@ describe("AgentHarness", () => {
         identityPath,
         runtime: fake.runtime,
         model,
-        executionMode: "sdk",
         createRunId: () => "run-trusted-context",
         runtimeOptionsForRequest: () => ({
           toolPolicyOverride: {
@@ -2593,7 +2566,6 @@ describe("AgentHarness", () => {
         identityPath,
         runtime: fake.runtime,
         model,
-        executionMode: "sdk",
         createRunId: () => runId,
         runtimeOptions: { mcpServers: { target: { type: "stdio", command: "target" } } },
         runtimeOptionsForRequest: () => ({
@@ -2621,7 +2593,7 @@ describe("AgentHarness", () => {
       throw new Error("runtime should not run");
     });
 
-    const response = await createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk" }).run({
+    const response = await createAgentHarness({ identityPath, runtime: fake.runtime, model }).run({
       conversationId: "c",
       userMessage: "hi",
       abortSignal: controller.signal,
@@ -2642,7 +2614,7 @@ describe("AgentHarness", () => {
       throw new Error("runtime should not run");
     });
 
-    const response = await createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk" }).run({
+    const response = await createAgentHarness({ identityPath, runtime: fake.runtime, model }).run({
       conversationId: "telegram:42",
       userMessage: "cancel me",
       abortSignal: controller.signal,
@@ -2713,7 +2685,6 @@ describe("AgentHarness", () => {
         identityPath,
         runtime: fake.runtime,
         model,
-        executionMode: "sdk",
       }).run({
         conversationId: `cancel:${testCase.name}`,
         userMessage: "cancel me",

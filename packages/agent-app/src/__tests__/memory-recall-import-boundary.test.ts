@@ -95,7 +95,7 @@ async function agentDir(memory: Record<string, unknown>): Promise<string> {
   tempDirs.push(dir);
   await writeFile(join(dir, "IDENTITY.md"), "# Test Agent\n", "utf8");
   await writeFile(join(dir, "mono-agent.config.json"), `${JSON.stringify({
-    runtime: { model: "pi:ollama:test-model" },
+    runtime: { model: "ollama:test-model" },
     context: { identityPath: "./IDENTITY.md" },
     memory,
   }, null, 2)}\n`, "utf8");

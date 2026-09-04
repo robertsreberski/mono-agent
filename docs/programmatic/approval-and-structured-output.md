@@ -55,7 +55,7 @@ const runtime = createMonoRuntime({
 });
 
 const result = await runtime.run("You are a careful repository assistant.", {
-  model: parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"),
+  model: parseMonoRuntimeModelReference("openai-codex:gpt-5.6-terra"),
   messages: [{ role: "user", content: "Inspect README.md." }],
   abortSignal: new AbortController().signal,
   cwd: process.cwd(),
@@ -63,29 +63,25 @@ const result = await runtime.run("You are a careful repository assistant.", {
 });
 ```
 
-Approval fallback is deterministic, but it is backend-specific:
+Approval fallback is deterministic:
 
-| Situation | Claude SDK and Pi managed tools | Direct OpenCode permission events |
-| --- | --- | --- |
-| No callback configured | No shared approval manager is installed; the backend's normal tool-permission behavior applies. | An explicit permission request is denied in `default` mode. `plan`, `acceptEdits`, and `bypassPermissions` apply their documented native rules. |
-| Low-risk request with a callback | The shared manager auto-approves it without calling the callback. | OpenCode's explicit permission request always reaches the callback. |
-| Callback times out or throws | Deny. | Deny. |
-| Callback returns an invalid value | Approve low/medium risk; deny high risk. | Deny at every risk tier. |
+| Situation | Pi managed tools |
+| --- | --- |
+| No callback configured | No shared approval manager is installed; the Pi runtime's normal tool-permission behavior applies. |
+| Low-risk request with a callback | The shared manager auto-approves it without calling the callback. |
+| Callback times out or throws | Deny. |
+| Callback returns an invalid value | Approve low/medium risk; deny high risk. |
 
 `{ decision: "always" }` approves the current call and adds that tool to the
 current run's allowlist. A timeout or callback exception for a gated call is
 always reported as `tool_approval_denied`; it never falls back to approval.
-When using the exported low-level `createApprovalManager()` directly without a
-callback, its own defaults are low/medium approve and high deny. The Pi and
-Claude SDK bridges do not construct that manager unless a callback is present,
-so those low-level no-callback defaults are not bridge policy.
+The Pi runtime only constructs the approval manager when a callback is present
+(`onToolApprovalRequest`), so the manager's no-callback defaults are not bridge
+policy.
 
-Bridge coverage is capability-specific. Claude SDK and Pi gate managed tool
-dispatch through the shared approval manager when a callback is present.
-Direct OpenCode translates its native permission events through an isolated
-provider server and deliberately rejects invalid callback answers. Claude CLI
-and Codex app-server use their backend-native permission or approval posture
-rather than the shared per-call gate.
+Bridge coverage is uniform: the Pi runtime gates managed tool dispatch through
+the shared approval manager when a callback is present. There are no separate
+backend-native approval seams.
 
 :::tip
 Use `approvalAlwaysAllowTools` for read-only tools so reviewers are only interrupted for genuinely risky actions. Pair it with `toolRiskTiers` so the bulk of your approval policy is declarative and `onToolApprovalRequest` only handles the cases that actually reach a human.
@@ -103,7 +99,7 @@ If you do not need interactive, per-call decisions, the config-level posture is 
 }
 ```
 
-Env var: `MONO_AGENT_PERMISSION_MODE` (`default` / `plan` / `acceptEdits` / `bypassPermissions`). This applies to CLI backends and is a static posture, not a callback. See [Execution effort & permissions](/runtime/execution-effort-permissions/).
+Env var: `MONO_AGENT_PERMISSION_MODE` (`default` / `plan` / `acceptEdits` / `bypassPermissions`). This is a static posture, but the Pi runtime does not consume it — supervision is driven by the direct tool policy and the per-call approval manager. See [Execution effort & permissions](/runtime/execution-effort-permissions/).
 
 ## Structured output
 
@@ -122,7 +118,7 @@ import {
 
 const runtime = createMonoRuntime();
 const result = await runtime.run("Return only the requested structured result.", {
-  model: parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"),
+  model: parseMonoRuntimeModelReference("openai-codex:gpt-5.6-terra"),
   messages: [{ role: "user", content: "Summarize the incident and assign low or high priority." }],
   abortSignal: new AbortController().signal,
   outputSchema: {
@@ -137,17 +133,19 @@ const result = await runtime.run("Return only the requested structured result.",
 });
 
 if (result.structuredResult === undefined) {
-  throw new Error("The selected bridge did not return captured structured output.");
+  throw new Error("The selected provider did not return captured structured output.");
 }
 console.log(result.structuredResult);
 ```
 
 :::caution
-Backend support varies. Claude SDK, Claude CLI, and Pi return captured JSON in
-`structuredResult`. Codex app-server enforces the schema but returns the JSON in
-`text`, so the host must parse it. Direct OpenCode rejects `outputSchema` with a
-typed capability mismatch. In every case, validate the value in host code before
-using it for state changes.
+The Pi runtime enforces `outputSchema` through its `StructuredOutput` tool and
+returns the captured JSON in `structuredResult` for every provider. A run that
+stops without text and without calling the tool is re-prompted once with only
+`StructuredOutput` enabled; `structuredResult` can still be absent after an
+external abort, when `maxTurns` is hit, after an error/aborted stop reason, or
+when explanatory text is produced. Validate the value in host code before using
+it for state changes.
 :::
 
 For per-request schemas in a hosted responder, set `outputSchema` from `runtimeOptionsForRequest` (the `harness.request-runtime-options` hook) so each request can carry its own schema. See [composition](/programmatic/composition/) for the responder wiring.
@@ -183,7 +181,7 @@ async function* steeringMessages(): AsyncIterable<RuntimeLiveInputMessage> {
 
 const runtime = createMonoRuntime();
 const result = await runtime.run("You are a careful analyst.", {
-  model: parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"),
+  model: parseMonoRuntimeModelReference("openai-codex:gpt-5.6-terra"),
   messages: [{ role: "user", content: "Analyze this incident." }],
   abortSignal: new AbortController().signal,
   liveInput: steeringMessages(),
@@ -192,9 +190,9 @@ const result = await runtime.run("You are a careful analyst.", {
 
 The generator above demonstrates the provider-facing shape. A custom host
 usually backs the iterable with a queue that its UI can push to during the run.
-A direct runtime call fails capability checks when its bridge cannot represent
-live input instead of silently dropping the stream. Claude SDK, Codex app-server,
-and Pi support it; the one-shot Claude CLI and direct OpenCode bridges do not.
+A direct runtime call fails capability checks when the active provider cannot
+represent live input instead of silently dropping the stream; the Pi runtime
+supports it on every provider.
 
 After a capable bridge calls `acknowledge()`, the runtime publishes exactly one
 metadata-only `live_input_applied` event containing `inputId` and optional
@@ -210,7 +208,7 @@ without adding a new channel-specific event type.
 The standard agent responder owns that queue for ordinary interactive turns.
 Slack and Telegram reserve the incoming message's normal per-conversation queue
 position before offering it; the web console persists the same fallback in
-SQLite. If the selected backend is unsupported, delivery fails, or the active
+SQLite. If the selected provider is unsupported, delivery fails, or the active
 turn closes first, the message becomes the next normal turn. Once acknowledged,
 it is appended to canonical history in arrival order and included in memory
 persistence. Explicit cancellation discards unsettled guidance. Attachments,
@@ -220,5 +218,5 @@ commands, and `AskUser` answers retain their existing non-steering paths.
 
 - [Composition](/programmatic/composition/) — building on `createMonoRuntime` and configured responders.
 - [Multi-agent](/programmatic/multi-agent/) — orchestrating collaborator responders.
-- [Execution effort & permissions](/runtime/execution-effort-permissions/) — config-level `permissionMode` posture.
+- [Execution effort & permissions](/runtime/execution-effort-permissions/) — config-level `permissionMode` (validated and forwarded, not consumed by the Pi runtime).
 - [Tool policy](/tools/policy/) — allow/deny lists and tool guards.

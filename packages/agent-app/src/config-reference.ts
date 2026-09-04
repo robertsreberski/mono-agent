@@ -9,7 +9,6 @@ import {
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
   MonoAgentConfigError,
-  ROUTE_SAFETY_MODES,
 } from "@mono-agent/config";
 import type { ConfigViewFieldId, MonoAgentConfigJson } from "@mono-agent/config";
 import {
@@ -543,37 +542,15 @@ function setStructuredAppSchemas(root: Record<string, JsonSchema>): void {
   });
   setSchemaPath(root, ["providers", "local"], {
     type: "array",
-    items: {
-      type: "object",
-      additionalProperties: false,
-      required: ["id", "type"],
-      properties: {
-        id: { type: "string", minLength: 1 },
-        type: { enum: ["ollama", "lmstudio", "openai_compat"] },
-        baseUrl: { type: "string" },
-        enabled: { type: "boolean" },
-        trustPublicUrl: { type: "boolean" },
-        apiKey: { type: "string" },
-        apiKeyEnv: { type: "string" },
-        models: {
-          type: "array",
-          items: {
-            type: "object",
-            additionalProperties: false,
-            required: ["name"],
-            properties: {
-              name: { type: "string", minLength: 1 },
-              alias: { type: "string", minLength: 1 },
-              displayName: { type: "string", minLength: 1 },
-              enabled: { type: "boolean" },
-              capabilities: { type: "object", additionalProperties: true },
-              pricing: { type: "object", additionalProperties: true },
-            },
-          },
-        },
-      },
-    },
+    items: providerEntrySchema(true),
   });
+  const providersSchema = schemaAt(root, ["providers"]);
+  if (providersSchema !== undefined) {
+    // Provider ids are intentionally open because pi-ai and self-hosted
+    // endpoints own that namespace. The entry itself remains typed and closed,
+    // unlike plugin payloads whose complete nested shape is package-owned.
+    (providersSchema as Record<string, unknown>).additionalProperties = providerEntrySchema(false);
+  }
   setSchemaPath(root, ["cron", "jobs"], {
     type: "array",
     items: cronJobSchema(),
@@ -635,6 +612,40 @@ function setStructuredAppSchemas(root: Record<string, JsonSchema>): void {
       timezone: { type: "string", minLength: 1 },
     },
   });
+}
+
+function providerEntrySchema(includeId: boolean): JsonSchema {
+  return {
+    type: "object",
+    additionalProperties: false,
+    ...(includeId ? { required: ["id", "type"] } : {}),
+    properties: {
+      ...(includeId ? { id: { type: "string", minLength: 1 } } : {}),
+      type: { enum: ["ollama", "lmstudio", "openai_compat"] },
+      baseUrl: { type: "string" },
+      enabled: { type: "boolean" },
+      trustPublicUrl: { type: "boolean" },
+      apiKey: { type: "string" },
+      apiKeyEnv: { type: "string" },
+      maxAdvertisedModels: { type: "integer", minimum: 1, maximum: 200, default: 100 },
+      models: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["name"],
+          properties: {
+            name: { type: "string", minLength: 1 },
+            alias: { type: "string", minLength: 1 },
+            displayName: { type: "string", minLength: 1 },
+            enabled: { type: "boolean" },
+            capabilities: { type: "object", additionalProperties: true },
+            pricing: { type: "object", additionalProperties: true },
+          },
+        },
+      },
+    },
+  };
 }
 
 function cronJobSchema(): JsonSchema {
@@ -1113,8 +1124,6 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.pattern = "^[^\\u0000-\\u001f\\u007f]+$";
   } else if (field.jsonPath === "runtime.effort") {
     schema.enum = EFFORT_LEVELS;
-  } else if (field.jsonPath === "runtime.routeSafety") {
-    schema.enum = ROUTE_SAFETY_MODES;
   } else if (field.jsonPath === "memory.backend") {
     schema.enum = MEMORY_BACKENDS;
   } else if (field.jsonPath === "memory.mode") {
@@ -1244,6 +1253,9 @@ function inferType(id: string): ConfigReferenceType {
   if (id === "subagents") {
     return "object";
   }
+  if (id === "providers") {
+    return "object";
+  }
   if (id === "providers.piNative.transport") {
     return "string";
   }
@@ -1270,7 +1282,7 @@ function inferType(id: string): ConfigReferenceType {
   if (/(Ms|Bytes|Count|Days|Turns|Retries|Attempts|Delay|port|dim|threshold|Hours|Runs)$/iu.test(id) || id.endsWith(".port")) {
     return "integer";
   }
-  if (id === "providers.local" || id === "observability.exporters") {
+  if (id === "observability.exporters") {
     return "array";
   }
   return "string";
@@ -1302,9 +1314,7 @@ function defaultLabelFor(id: string): string {
 
 function defaultValueFor(id: string): SettingsJsonValue | undefined {
   const defaults: Record<string, SettingsJsonValue> = {
-    "runtime.fallbackModels": [],
     "runtime.fallbacks": [],
-    "runtime.routeSafety": "uniform",
     subagents: { enabled: false },
     "slack.resolveUserNames": true,
     "slack.resolveChannelNames": true,
@@ -1319,7 +1329,6 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "runtime.compaction.enabled": true,
     "runtime.compaction.triggerRatio": 0.70,
     "runtime.compaction.fixedOverheadEnabled": true,
-    "runtime.executionMode": "inferred",
     "runtime.workspace": ".",
     "runtime.session.mode": "continuous",
     "runtime.session.idleTimeoutMs": 1_800_000,
@@ -1410,13 +1419,11 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
 function exampleFor(id: string): SettingsJsonValue {
   const examples: Record<string, SettingsJsonValue> = {
     "agent.name": "Research Partner",
-    "runtime.model": "codex:gpt-5.6-terra",
-    "runtime.fallbackModels": ["pi:ollama:gemma4:31b"],
+    "runtime.model": "openai-codex:gpt-5.6-terra",
     "runtime.fallbacks": [
-      { model: "codex:gpt-5.6-sol" },
-      { model: "pi:openai-codex:gpt-5.6-terra", effort: "high" },
+      { model: "openai-codex:gpt-5.6-sol" },
+      { model: "anthropic:claude-sonnet-4-6", effort: "high" },
     ],
-    "runtime.routeSafety": "per-route-native",
     subagents: {
       enabled: true,
       maxConcurrent: 5,
@@ -1443,12 +1450,16 @@ function exampleFor(id: string): SettingsJsonValue {
     "memory.embeddings.provider": "ollama",
     "memory.embeddings.model": "nomic-embed-text:v1.5",
     "memory.llm.provider": "agent-host",
-    "memory.llm.model": "pi:openai-codex:gpt-5.6-terra",
+    "memory.llm.model": "openai-codex:gpt-5.6-terra",
     "sandbox.mode": "native",
     "traceability.sourceId": "my-agent",
     "traceability.sourceLabel": "My Agent",
     "tools.mcpRequestContextServers": ["transcribe"],
     "tools.web.search.endpoint": "http://127.0.0.1:8088",
+    providers: {
+      "openai-codex": {},
+      ollama: { baseUrl: "http://localhost:11434" },
+    },
     "providers.piAuthPath": "~/.pi/agent/auth.json",
     "providers.piNative.transport": "sse",
     "telegram.botToken": "env:MONO_AGENT_TELEGRAM_BOT_TOKEN",
@@ -1493,6 +1504,9 @@ function exampleFor(id: string): SettingsJsonValue {
 function descriptionFor(id: string): string {
   const section = id.split(".")[0] ?? "config";
   const name = id.split(".").slice(1).join(".");
+  if (id === "providers") {
+    return "Provider-id map that widens or narrows the selectable Pi model catalog; MONO_AGENT_PROVIDERS_JSON projects the whole object because provider ids are dynamic.";
+  }
   if (id === "tui.requestToolEnvironment.allowedKeys") {
     return "Explicit environment-variable names an ACP request may pass to Bash, Exec, and nested subagents for one turn. Disabled when empty; dangerous process-loader, shell-startup, home, temp, and PATH keys are rejected.";
   }
@@ -1566,9 +1580,6 @@ function descriptionFor(id: string): string {
   if (id === "runtime.fallbacks") {
     return "Canonical ordered fallback routes. Omitted per-route effort means that provider's default.";
   }
-  if (id === "runtime.fallbackModels") {
-    return "Legacy fallback list whose routes inherit runtime.effort. Prefer runtime.fallbacks for new configs.";
-  }
   if (id === "subagents") {
     return "Subagent profiles the Agent tool can deploy, plus its caps. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the \"*\" wildcard is rejected. The agent may also author a specialized subagent at call time unless inline.enabled is false; inline.allowedTools caps what an authored subagent may request, defaulting to the parent agent's own built-ins.";
   }
@@ -1581,11 +1592,8 @@ function descriptionFor(id: string): string {
   if (id === "runtime.retry.maxBackoffMs") {
     return "Ceiling for the doubling same-model retry delay.";
   }
-  if (id === "runtime.routeSafety") {
-    return "Uniform preserves one shared safety contract; per-route-native uses and reports each provider's explicit contract.";
-  }
   if (id === "runtime.effort") {
-    return "Route-specific effort. Reasoning-capable pi:* maps ultra to LOW; Pi without reasoning uses OFF. Direct codex:* forwards ultra unchanged. Mono-agent rejects ultra on its Claude SDK route because the pinned SDK public contract ends at max (the SDK JavaScript itself forwards the value). The Claude CLI route passes --effort ultra, but both tested Claude Code binaries (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort. Direct OpenCode rejects explicit effort. Ranking above max only prevents keyword downgrade.";
+    return "Route-specific effort forwarded through Pi to the selected provider. Doctor warns when a configured value falls outside the model's advertised ladder but keeps turn-time handling permissive. Ranking above max only prevents keyword downgrade.";
   }
   if (id === "tools.mcpRequestContextServers") {
     return "Configured stdio MCP server names that receive trusted per-request conversation, run, output-directory, and scoped progress context.";

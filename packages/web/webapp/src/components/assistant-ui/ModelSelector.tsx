@@ -4,18 +4,16 @@ import { RadioGroup } from "@base-ui/react/radio-group";
 import { Command } from "cmdk";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../Icon";
+import type { AgentProvider } from "../../types";
+import {
+  groupSelectorModels,
+  selectorProvides,
+  type ModelSelectorOption,
+} from "../model-catalog";
 
-export type ModelSelectorEffortOption = {
-  readonly id: string;
-  readonly name: string;
-};
+export type { ModelSelectorEffortOption, ModelSelectorOption } from "../model-catalog";
 
-export type ModelSelectorOption = {
-  readonly id: string;
-  readonly name: string;
-  readonly description?: string;
-  readonly efforts: readonly ModelSelectorEffortOption[];
-};
+export type ProviderCatalogStatus = "loading" | "loaded" | "error";
 
 export type ModelSelectorProps = {
   readonly models: readonly ModelSelectorOption[];
@@ -31,10 +29,21 @@ export type ModelSelectorProps = {
   readonly agentDefaultId?: string;
   /** Offered only while a conversation override is in force. */
   readonly onReset?: () => void;
+  /** Asks the caller to fetch a provider's catalog lazily (chips and open). */
+  readonly onProviderRequest?: (provider: string) => void;
+  /** Providers the agent advertises, so a declared-but-unfetched one still gets a chip. */
+  readonly agentProviders?: readonly AgentProvider[];
+  /** Fetch state per provider, used to tell "still loading" from "no match". */
+  readonly providerStatus?: Readonly<Record<string, ProviderCatalogStatus>>;
 };
 
-const commandValue = (model: ModelSelectorOption, index: number) =>
-  `model-${index}:${model.id || "automatic"}`;
+/**
+ * The automatic row is always reachable; empty means "let the agent pick".
+ * Real rows key off their model id so filtering and grouping never invalidate
+ * the value cmdk highlights.
+ */
+const commandValue = (model: ModelSelectorOption) =>
+  model.id === "" ? "model::automatic" : `model:${model.id}`;
 
 /**
  * Controlled model and reasoning-effort picker adapted from assistant-ui's
@@ -56,9 +65,13 @@ export function ModelSelector({
   badge,
   agentDefaultId,
   onReset,
+  onProviderRequest,
+  providerStatus,
+  agentProviders,
 }: ModelSelectorProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [activeProvider, setActiveProvider] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const open = controlledOpen ?? internalOpen;
@@ -74,9 +87,7 @@ export function ModelSelector({
     [models, value],
   );
   const activeEffort = selectedModel?.efforts.find((option) => option.id === effort);
-  const selectedCommandValue = selectedModel
-    ? commandValue(selectedModel, Math.max(models.indexOf(selectedModel), 0))
-    : undefined;
+  const selectedCommandValue = selectedModel ? commandValue(selectedModel) : undefined;
 
   useEffect(() => {
     if (disabled) {
@@ -85,6 +96,7 @@ export function ModelSelector({
     }
     if (!open) {
       setQuery("");
+      setActiveProvider(null);
       return;
     }
     searchRef.current?.focus();
@@ -95,6 +107,34 @@ export function ModelSelector({
     setOpen(false);
     window.requestAnimationFrame(() => triggerRef.current?.focus());
   };
+
+  const normalizeQuery = (value: string) =>
+    value.replace(/[A-Z]/g, (character) =>
+      String.fromCharCode(character.charCodeAt(0) + 32),
+    );
+  const matchesQuery = (model: ModelSelectorOption, search: string) =>
+    [model.id, model.name, model.description]
+      .some((part) => part !== undefined && normalizeQuery(part).includes(search));
+
+  const filteredModels = useMemo(() => {
+    const byProvider = activeProvider === null
+      ? models
+      : models.filter((model) => !model.provider || model.provider === activeProvider);
+    const search = normalizeQuery(query.trim());
+    return search.length === 0 ? byProvider : byProvider.filter((model) => matchesQuery(model, search));
+  }, [activeProvider, models, query]);
+
+  const groups = useMemo(() => groupSelectorModels(filteredModels), [filteredModels]);
+  const provides = useMemo(() => selectorProvides(groups, agentProviders), [agentProviders, groups]);
+
+  const emptyMessage = query.trim().length === 0
+    ? activeProvider !== null && (
+        providerStatus?.[activeProvider] === "loading" ||
+        providerStatus?.[activeProvider] === undefined
+      )
+      ? "Loading models…"
+      : "No models found."
+    : "No models match.";
 
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
@@ -146,7 +186,7 @@ export function ModelSelector({
               className="model-selector__command"
               label="Search models"
               loop
-              shouldFilter
+              shouldFilter={false}
               {...(selectedCommandValue ? { defaultValue: selectedCommandValue } : {})}
             >
               <div
@@ -165,6 +205,50 @@ export function ModelSelector({
                 />
               </div>
 
+              {provides.length > 1 && (
+                <div
+                  data-slot="model-selector-providers"
+                  className="model-selector__providers"
+                  onKeyDown={(event) => {
+                    if (event.key === "Home" || event.key === "End") {
+                      event.stopPropagation();
+                    }
+                    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                      searchRef.current?.focus();
+                    }
+                  }}
+                >
+                  <RadioGroup
+                    className="model-selector__provider-options"
+                    value={activeProvider ?? ""}
+                    onValueChange={(nextProvider) => {
+                      const provider = nextProvider || null;
+                      setActiveProvider(provider);
+                      if (provider !== null) onProviderRequest?.(provider);
+                    }}
+                    aria-label="Filter by provider"
+                  >
+                    <Radio.Root
+                      data-slot="model-selector-provider-option"
+                      className="model-selector__provider-option"
+                      value=""
+                    >
+                      All
+                    </Radio.Root>
+                    {provides.map(({ provider, label }) => (
+                      <Radio.Root
+                        key={provider}
+                        data-slot="model-selector-provider-option"
+                        className="model-selector__provider-option"
+                        value={provider}
+                      >
+                        {label}
+                      </Radio.Root>
+                    ))}
+                  </RadioGroup>
+                </div>
+              )}
+
               <Command.List
                 data-slot="model-selector-list"
                 className="model-selector__list"
@@ -173,21 +257,21 @@ export function ModelSelector({
                   data-slot="model-selector-empty"
                   className="model-selector__empty"
                 >
-                  No models found.
+                  {emptyMessage}
                 </Command.Empty>
                 <Command.Group
                   data-slot="model-selector-group"
                   className="model-selector__group"
                 >
-                  {models.map((model, index) => {
+                  {filteredModels.filter((model) => !model.provider).map((model) => {
                     const selected = model.id === value;
                     return (
                       <Command.Item
-                        key={`${model.id}:${model.name}`}
+                        key={`${commandValue(model)}:${model.name}`}
                         data-slot="model-selector-item"
                         data-model-selected={selected || undefined}
                         className="model-selector__item"
-                        value={commandValue(model, index)}
+                        value={commandValue(model)}
                         keywords={[
                           model.id,
                           model.name,
@@ -219,6 +303,54 @@ export function ModelSelector({
                     );
                   })}
                 </Command.Group>
+                {groups.map((group) => (
+                  <Command.Group
+                    key={group.provider}
+                    heading={group.label}
+                    data-slot="model-selector-group"
+                    className="model-selector__group"
+                  >
+                    {group.models.map((model) => {
+                      const selected = model.id === value;
+                      return (
+                        <Command.Item
+                          key={`${commandValue(model)}:${model.name}`}
+                          data-slot="model-selector-item"
+                          data-model-selected={selected || undefined}
+                          className="model-selector__item"
+                          value={commandValue(model)}
+                          keywords={[
+                            model.id,
+                            model.name,
+                            ...(model.description ? [model.description] : []),
+                          ]}
+                          onSelect={() => selectModel(model)}
+                        >
+                          <span className="model-selector__item-copy">
+                            <span className="model-selector__item-name">{model.name}</span>
+                            {model.description && (
+                              <span className="model-selector__item-description">
+                                {model.description}
+                              </span>
+                            )}
+                          </span>
+                          {model.id !== "" && model.id === agentDefaultId && (
+                            <span className="model-selector__item-default">agent default</span>
+                          )}
+                          {selected && (
+                            <span
+                              data-slot="model-selector-selected-indicator"
+                              className="model-selector__selected-indicator"
+                              aria-hidden="true"
+                            >
+                              <Icon name="check" size={15} />
+                            </span>
+                          )}
+                        </Command.Item>
+                      );
+                    })}
+                  </Command.Group>
+                ))}
               </Command.List>
 
               {(selectedModel?.efforts.length ?? 0) > 0 && (

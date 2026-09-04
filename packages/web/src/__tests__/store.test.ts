@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { chmod, lstat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -39,6 +40,182 @@ function agent(sourceId = "agent-one", supportsAttachments = true): WebAgentSumm
 }
 
 describe("WebStore", () => {
+  it("broadcasts a replaced agent process without broadcasting its heartbeat", async () => {
+    // The generation is what the browser watches to know its per-agent caches
+    // -- the `/v1/models` pages above all -- describe a process that is gone.
+    // It therefore has to reach the browser: a restart behind an otherwise
+    // identical summary must still read as a notable change. The heartbeat
+    // must not, or the whole agent list is rebroadcast every discovery pass.
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    const first = { ...agent(), generation: "gen-1" };
+
+    expect(store.replaceAgents([first])).toBe(true);
+    expect(store.listAgents()[0]?.generation).toBe("gen-1");
+    expect(store.replaceAgents([first])).toBe(false);
+    expect(store.replaceAgents([{ ...first, updatedAt: "2026-07-17T09:00:05.000Z" }])).toBe(false);
+
+    const restarted = { ...first, generation: "gen-2", updatedAt: "2026-07-17T09:00:10.000Z" };
+    expect(store.replaceAgents([restarted])).toBe(true);
+    expect(store.listAgents()[0]?.generation).toBe("gen-2");
+    expect(store.getAgent("agent-one")?.generation).toBe("gen-2");
+
+    // Not a column: it describes the process behind a source id right now, and
+    // a value read back from disk would be a claim about a process nobody
+    // probed. A summary with none leaves the field absent rather than stale.
+    expect(store.replaceAgents([agent()])).toBe(true);
+    expect(store.listAgents()[0]?.generation).toBeUndefined();
+    store.close();
+  });
+
+  it("does not advance an agent generation the transaction never persisted", async () => {
+    // The generation is stitched onto every row read back, so advancing the map
+    // BEFORE the write made a failed transaction permanent: the retry compared
+    // the restarted summary against a prior that already carried the new
+    // generation, saw only `updatedAt` differ, and reported `notable === false`.
+    // No `agents.changed` frame was ever emitted for that restart and an open
+    // console kept serving caches for a process that was gone.
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    const first = { ...agent(), generation: "gen-1" };
+    expect(store.replaceAgents([first])).toBe(true);
+
+    // One failed transaction. Injected on the instance rather than simulated
+    // through a payload, so the repro is exactly "the write threw" and nothing
+    // about the summary itself is special.
+    const prototype = Object.getPrototypeOf(store) as Record<string, unknown>;
+    const realTransaction = prototype.transaction as (this: unknown, run: () => unknown) => unknown;
+    let failNext = true;
+    Object.defineProperty(store, "transaction", {
+      configurable: true,
+      value: function transaction(this: unknown, run: () => unknown): unknown {
+        if (failNext) {
+          failNext = false;
+          // A REAL transaction that does all of its work and then fails to
+          // commit, rather than one that refuses to start. Both roll back to
+          // the same place, but this one also runs the callback, so anything
+          // the callback itself advances is caught here too.
+          return realTransaction.call(this, () => {
+            run();
+            throw new Error("simulated agent write failure");
+          });
+        }
+        return realTransaction.call(this, run);
+      },
+    });
+
+    const restarted = { ...first, generation: "gen-2", updatedAt: "2026-07-17T09:00:05.000Z" };
+    expect(() => store.replaceAgents([restarted])).toThrowError(/simulated agent write failure/u);
+    // Nothing was written, so nothing may claim it was: the store must still
+    // describe the process it last persisted.
+    expect(store.listAgents()[0]?.generation).toBe("gen-1");
+    expect(store.listAgents()[0]?.updatedAt).toBe("2026-07-17T09:00:00.000Z");
+
+    // The retry carries the identical summary. It is still a restart.
+    expect(store.replaceAgents([restarted])).toBe(true);
+    expect(store.listAgents()[0]?.generation).toBe("gen-2");
+    expect(store.listAgents()[0]?.updatedAt).toBe("2026-07-17T09:00:05.000Z");
+
+    // And the heartbeat suppression this shares a function with still holds:
+    // an idle fleet emits nothing.
+    expect(store.replaceAgents([restarted])).toBe(false);
+    expect(store.replaceAgents([{ ...restarted, updatedAt: "2026-07-17T09:00:10.000Z" }])).toBe(false);
+    store.close();
+  });
+
+  it("applies a conditional run-config patch and its refusal in one transaction", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+
+    expect(store.patchThreadIfRunConfigUnset(thread.id, { model: "anthropic:opus-5" }))
+      .toMatchObject({ applied: true, thread: { runModel: "anthropic:opus-5", runEffort: null } });
+
+    const held = store.getThread(thread.id)!;
+    // The precondition covers BOTH fields. Reading only `runModel` let an
+    // adoption overwrite a real effort-only choice made in another tab.
+    store.patchThread(thread.id, { model: null });
+    store.patchThread(thread.id, { effort: "low" });
+    const contested = store.getThread(thread.id)!;
+    const refused = store.patchThreadIfRunConfigUnset(thread.id, {
+      model: "anthropic:sonnet-5",
+      effort: "high",
+    });
+    expect(refused.applied).toBe(false);
+    // A refusal writes nothing at all: same revision, same everything.
+    expect(refused.thread).toEqual(contested);
+    expect(store.getThread(thread.id)).toEqual(contested);
+    expect(held.runModel).toBe("anthropic:opus-5");
+
+    store.patchThread(thread.id, { effort: null });
+    expect(store.patchThreadIfRunConfigUnset(thread.id, { effort: "high" }))
+      .toMatchObject({ applied: true, thread: { runEffort: "high" } });
+    expect(() => store.patchThreadIfRunConfigUnset("missing", { effort: "low" }))
+      .toThrowError(/not found/iu);
+    store.close();
+  });
+
+  it("holds the precondition read inside the same transaction as its write", async () => {
+    // The sequential test above passes with the read moved OUTSIDE
+    // `BEGIN IMMEDIATE`, so it does not prove what the method's comment claims.
+    // This does, with a real second connection in a real second PROCESS: the
+    // service lease is held on a different file, so it makes this process the
+    // only *service* writing, not this statement the only writer.
+    //
+    // The other connection takes the write lock, updates the same row and
+    // holds the transaction open. A compare-and-set whose read is inside its
+    // own `BEGIN IMMEDIATE` cannot read until that commits, so it sees the
+    // contested effort and REFUSES. A read outside would see the pre-commit
+    // snapshot, find the run config unset, wait for the lock and then apply --
+    // overwriting a choice made in another tab, which is the whole failure the
+    // conditional exists to prevent.
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const databasePath = join(stateDir, "state.sqlite");
+
+    const child = spawn(process.execPath, ["-e", `
+      const { DatabaseSync } = require("node:sqlite");
+      const db = new DatabaseSync(process.argv[1], { timeout: 5000 });
+      db.exec("PRAGMA journal_mode = WAL");
+      db.exec("BEGIN IMMEDIATE");
+      db.prepare("UPDATE threads SET run_effort = 'low' WHERE id = ?").run(process.argv[2]);
+      console.log("held");
+      // Long enough that the parent is certainly blocked on the lock, short
+      // enough to stay far inside the 5s busy timeout it waits with.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400);
+      db.exec("COMMIT");
+      db.close();
+    `, databasePath, thread.id], { stdio: ["ignore", "pipe", "pipe"] });
+    const stderr: Buffer[] = [];
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    const exited = new Promise<number | null>((resolve) => { child.on("exit", resolve); });
+    await new Promise<void>((resolve, reject) => {
+      child.stdout.on("data", (chunk: Buffer) => {
+        if (chunk.toString("utf8").includes("held")) resolve();
+      });
+      child.on("exit", () => {
+        reject(new Error(`the contending writer exited early: ${Buffer.concat(stderr).toString("utf8")}`));
+      });
+    });
+
+    const result = store.patchThreadIfRunConfigUnset(thread.id, { model: "anthropic:opus-5" });
+    expect(await exited).toBe(0);
+    expect(result.applied).toBe(false);
+    expect(result.thread.runEffort).toBe("low");
+    expect(result.thread.runModel).toBeNull();
+    expect(store.getThread(thread.id)?.runEffort).toBe("low");
+    expect(store.getThread(thread.id)?.runModel).toBeNull();
+    store.close();
+  });
+
   it("applies agent titles idempotently until a manual rename permanently locks the thread", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -1715,6 +1892,143 @@ describe("WebStore", () => {
     reopened.close();
   });
 
+  it("migrates a seeded schema v10 database to v12 keeping its thread rows", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const seeded = await WebStore.open({ stateDir });
+    seeded.replaceAgents([agent()]);
+    const thread = seeded.createThread("agent-one");
+    seeded.patchThread(thread.id, { title: "kept title" });
+    const databasePath = seeded.paths.database;
+    seeded.close();
+
+    // Wind the file back to schema 10 by removing the v11 columns, so the
+    // guarded ALTER has to re-add them while the seeded row stays untouched.
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      ALTER TABLE threads DROP COLUMN run_model;
+      ALTER TABLE threads DROP COLUMN run_effort;
+      PRAGMA user_version = 10;
+    `);
+    legacy.close();
+
+    const migrated = await WebStore.open({ stateDir });
+    const threads = migrated.listThreads().filter((entry) => entry.sourceId === "agent-one");
+    expect(threads).toHaveLength(1);
+    expect(threads[0]).toMatchObject({ title: "kept title", runModel: null, runEffort: null });
+    migrated.close();
+
+    const inspected = new DatabaseSync(databasePath);
+    const version = inspected.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+    const columns = inspected.prepare("PRAGMA table_info(threads)").all() as unknown as Array<{ name: string }>;
+    // v12 adds the agent provider summary. `agentSelectSql` uses `a.*`, so the
+    // column is readable the moment it exists -- but only if the ALTER ran.
+    const agentColumns = new Set((inspected.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
+      .map((column) => column.name));
+    inspected.close();
+    expect(version.user_version).toBe(12);
+    expect(agentColumns.has("providers_json")).toBe(true);
+    expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(["run_model", "run_effort"]));
+  });
+
+  it("re-runs the v11/v12 migrations without failing when the new columns already exist", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const seeded = await WebStore.open({ stateDir });
+    seeded.replaceAgents([agent()]);
+    const thread = seeded.createThread("agent-one");
+    const databasePath = seeded.paths.database;
+    seeded.close();
+
+    // Columns already exist at the current schema; winding back only the
+    // version stamp forces initialize() to replay the < 11 block against them.
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec("PRAGMA user_version = 10");
+    legacy.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThread(thread.id)).toMatchObject({ id: thread.id, runModel: null, runEffort: null });
+    reopened.close();
+    expect(
+      new DatabaseSync(databasePath, { readOnly: true }).prepare("PRAGMA user_version").get(),
+    ).toMatchObject({ user_version: 12 });
+  });
+
+  it("sets, merges, and clears per-thread model and effort overrides", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state"), clock: () => new Date(0) });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+
+    const withModel = store.patchThread(thread.id, { model: "anthropic:claude-sonnet-5" });
+    expect(withModel).toMatchObject({ runModel: "anthropic:claude-sonnet-5", runEffort: null });
+
+    const withEffort = store.patchThread(thread.id, { effort: "high" });
+    expect(withEffort).toMatchObject({ runModel: "anthropic:claude-sonnet-5", runEffort: "high" });
+
+    const clearedModel = store.patchThread(thread.id, { model: null });
+    expect(clearedModel).toMatchObject({ runModel: null, runEffort: "high" });
+
+    const clearedEffort = store.patchThread(thread.id, { effort: null });
+    expect(clearedEffort).toMatchObject({ runModel: null, runEffort: null });
+  });
+
+  it("keeps updated_at stable and records run_config_changed for a model-only patch", async () => {
+    let clockMs = 3_000_000;
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state"), clock: () => new Date(clockMs) });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const createdAt = store.getThread(thread.id)!.updatedAt;
+
+    clockMs += 60_000;
+    const patched = store.patchThread(thread.id, { model: "anthropic:claude-sonnet-5" });
+    expect(patched.updatedAt).toBe(createdAt);
+    expect(patched.revision).toBe(2);
+    const cleared = store.patchThread(thread.id, { effort: null });
+    expect(cleared.updatedAt).toBe(createdAt);
+
+    const database = new DatabaseSync(store.paths.database, { readOnly: true });
+    const lastEvent = database.prepare(`
+      SELECT event FROM revisions
+      WHERE entity_kind = 'thread' AND entity_id = ?
+      ORDER BY revision DESC, id DESC LIMIT 1
+    `).get(thread.id) as unknown as { event: string };
+    database.close();
+    expect(lastEvent.event).toBe("run_config_changed");
+  });
+
+  it("keeps updated_at advancing for title/archive patches and emits title_changed then archived", async () => {
+    let clockMs = 4_000_000;
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state"), clock: () => new Date(clockMs) });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const createdAt = store.getThread(thread.id)!.updatedAt;
+
+    clockMs += 60_000;
+    const renamed = store.patchThread(thread.id, { title: "renamed" });
+    expect(renamed.updatedAt).not.toBe(createdAt);
+    clockMs += 60_000;
+    const archived = store.patchThread(thread.id, { archived: true });
+    expect(archived.updatedAt).not.toBe(renamed.updatedAt);
+    expect(archived.archivedAt).not.toBeNull();
+
+    const database = new DatabaseSync(store.paths.database, { readOnly: true });
+    const events = (database.prepare(`
+      SELECT event FROM revisions
+      WHERE entity_kind = 'thread' AND entity_id = ?
+      ORDER BY revision
+    `).all(thread.id) as unknown as Array<{ event: string }>).map((entry) => entry.event);
+    database.close();
+    expect(events.filter((event) => event !== "created")).toEqual(["title_changed", "archived"]);
+  });
+
   it("migrates schema v1 state through notification, live-input, and search storage", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -1742,7 +2056,7 @@ describe("WebStore", () => {
     const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
     const processJobCards = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'").get();
     inspected.close();
-    expect(version.user_version).toBe(10);
+    expect(version.user_version).toBe(12);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
     expect(liveInputs).toBeDefined();
@@ -1769,7 +2083,7 @@ describe("WebStore", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'",
     ).get();
     inspected.close();
-    expect(version.user_version).toBe(10);
+    expect(version.user_version).toBe(12);
     expect(processJobCards).toBeDefined();
   });
 
@@ -1782,7 +2096,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 11");
+    future.exec("PRAGMA user_version = 13");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 
@@ -2837,7 +3151,7 @@ describe("WebStore conversation search", () => {
     expect(
       new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true })
         .prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 10 });
+    ).toMatchObject({ user_version: 12 });
     reopened.close();
   });
 });

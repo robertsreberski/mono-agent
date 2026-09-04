@@ -71,6 +71,27 @@ describe("clean-dist", () => {
     expect(existsSync(join(repoRoot, "demos/generic-fixture/dist/index.js"))).toBe(true);
   });
 
+  it("removes declaration output without requiring every package to emit types", async () => {
+    const repoRoot = await fixtureRepo([
+      "packages/agent-runtime/types",
+      "packages/config/src",
+    ]);
+    await writeFile(join(repoRoot, "packages/agent-runtime/types/x.d.ts"), "");
+    await writeFile(join(repoRoot, "packages/config/src/index.ts"), "");
+    const logs = [];
+
+    expect(cleanBuildOutputs({ repoRoot, log: (message) => logs.push(message) })).toEqual([
+      "packages/agent-runtime/types",
+    ]);
+    expect(logs).toEqual([
+      "removed packages/agent-runtime/types",
+      "clean: removed 1 build output directory",
+    ]);
+    expect(existsSync(join(repoRoot, "packages/agent-runtime/types/x.d.ts"))).toBe(false);
+    // A package that has no declaration-only output is traversed without changing its sources.
+    expect(existsSync(join(repoRoot, "packages/config/src/index.ts"))).toBe(true);
+  });
+
   it("is idempotent and tolerates absent workspace parents", async () => {
     const repoRoot = await fixtureRepo(["packages/config/dist"]);
 

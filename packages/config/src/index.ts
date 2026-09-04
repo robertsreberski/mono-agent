@@ -1,14 +1,18 @@
 export {
+  assertConfiguredProviderCoverage,
   MAX_AGENT_NAME_LENGTH,
   loadMonoAgentConfig,
   MonoAgentConfigError,
   redactMonoAgentConfig,
+  resolveConfiguredProviders,
   resolveSupermemoryContainer,
+  RETIRED_CONFIG_FIELDS,
 } from "./config.js";
 export type {
   LoadMonoAgentConfigInput,
   MonoAgentConfigErrorCode,
   MonoAgentConfigErrorDetails,
+  ProviderCoverageRoute,
 } from "./config.js";
 export type {
   ArtifactRetentionConfig,
@@ -29,7 +33,6 @@ export type {
   ObservabilityExporterConfig,
   PiNativeProviderConfig,
   PermissionMode,
-  RouteSafetyMode,
   RuntimeFallbackConfig,
   PhoenixExporterConfig,
   RedactedMemoryConfig,
@@ -40,6 +43,8 @@ export type {
   RedactedObservabilityExporterConfig,
   RedactedPhoenixExporterConfig,
   RedactedLocalProviderDefinition,
+  RedactedProviderDefinition,
+  ResolvedProviders,
   SessionMode,
 } from "./types.js";
 export {
@@ -54,6 +59,7 @@ export type {
   MonoAgentArtifactRetentionJson,
   MonoAgentLocalProviderJson,
   MonoAgentLocalProviderModelJson,
+  MonoAgentProviderJson,
   MonoAgentMemoryEmbeddingsCircuitBreakerJson,
   MonoAgentMemoryConsolidationJson,
   MonoAgentMemoryEmbeddingsJson,
@@ -80,7 +86,6 @@ export {
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
   PERMISSION_MODES,
-  ROUTE_SAFETY_MODES,
 } from "./enums.js";
 export { buildMonoAgentConfigView, CONFIG_ENV_KEYS, findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "./config-view.js";
 export type {
@@ -92,3 +97,4 @@ export type {
   ConfigViewSectionStatus,
   RemovedConfigWarningsInput,
 } from "./config-view.js";
+export type { ProviderDefinition } from "@mono-agent/runtime-adapter";

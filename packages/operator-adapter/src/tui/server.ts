@@ -40,6 +40,7 @@ import {
   hostForUrl,
   isLoopbackHost,
   listen,
+  MAX_INFO_BODY_BYTES,
   normalizeOptionalString,
   parseCronOperatorOverview,
   parseCronOperatorRunDetail,
@@ -91,6 +92,75 @@ export type TuiSkillRegistry =
     };
 
 /** Static facts surfaced by GET /v1/info so the TUI can label the session. */
+export interface TuiModelOption {
+  readonly effortLevels?: readonly string[];
+  readonly reasoning?: boolean;
+  readonly reasoningMode?: string;
+  readonly label?: string;
+  /** Known model context capacity, in tokens. Omitted when unknown. */
+  readonly contextWindow?: number;
+  /** Canonical provider id the model belongs to. */
+  readonly provider?: string;
+  /** Provider display label. */
+  readonly providerLabel?: string;
+}
+
+/** One provider advertised in the bounded `/v1/info` provider catalog. */
+export interface TuiProviderInfo {
+  /** Canonical provider id, e.g. "anthropic". */
+  readonly id: string;
+  /** Human display label, e.g. "Anthropic". */
+  readonly label: string;
+  /** Number of models this provider advertises (post-narrowing, post-cap). */
+  readonly modelCount: number;
+  /** Present only when the advertised list was capped, so a UI can say "100 of 351". */
+  readonly totalModelCount?: number;
+  readonly source: "builtin" | "custom" | "discovered";
+  /** The agent explicitly supports this provider: it is listed in `providers`,
+   *  or a configured runtime route uses it. */
+  readonly configured?: true;
+}
+
+/** One model served by the lazy `/v1/models` catalog endpoint. */
+export interface TuiCatalogModel {
+  readonly id: string;
+  readonly name: string;
+  readonly provider: string;
+  readonly providerLabel: string;
+  readonly contextWindow?: number;
+  readonly reasoning?: boolean;
+  readonly effortLevels?: readonly string[];
+  readonly reasoningMode?: string;
+}
+
+/** A bounded, serializable model-catalog page produced by the injected provider. */
+export interface TuiModelCatalogRequest {
+  /** Provider-scoped listing. Mutually exclusive with `query`. */
+  readonly provider?: string;
+  /** Cross-provider text search. Mutually exclusive with `provider`. */
+  readonly query?: string;
+  /** Opaque pagination cursor returned by a previous page. */
+  readonly cursor?: string;
+  /** Page size, already bounded by the adapter to 1..maxPageSize. */
+  readonly limit: number;
+}
+
+export interface TuiModelCatalogPage {
+  readonly models: readonly TuiCatalogModel[];
+  readonly nextCursor?: string;
+  readonly truncated: boolean;
+}
+
+/**
+ * Injected model-catalog data source for GET /v1/models. The adapter validates,
+ * bounds, and serializes; the channel composition layer supplies the data
+ * (mirroring the `info` seam). Absent when the host does not serve a catalog,
+ * in which case `/v1/models` 404s and `/v1/info` omits the `modelCatalog`
+ * capability.
+ */
+export type TuiModelCatalogProvider = (request: TuiModelCatalogRequest) => TuiModelCatalogPage;
+
+/** Static facts surfaced by GET /v1/info so the TUI can label the session. */
 export interface TuiAdapterInfo {
   readonly label?: string;
   readonly model?: string;
@@ -114,14 +184,9 @@ export interface TuiAdapterInfo {
    * with no mode/levels so the TUI falls back to the global effort enum. Absent
    * on older agents; the TUI tolerates that and offers no model-aware picker.
    */
-  readonly modelOptions?: Record<string, {
-    readonly effortLevels?: readonly string[];
-    readonly reasoning?: boolean;
-    readonly reasoningMode?: string;
-    readonly label?: string;
-    /** Known model context capacity, in tokens. Omitted when unknown. */
-    readonly contextWindow?: number;
-  }>;
+  readonly modelOptions?: Record<string, TuiModelOption>;
+  /** Bounded provider catalog so the TUI can browse beyond the configured shortlist. */
+  readonly providers?: readonly TuiProviderInfo[];
   /** Bounded active-agent skill registry. Absent only on older producers. */
   readonly skills?: TuiSkillRegistry;
 }
@@ -145,6 +210,13 @@ export interface TuiAdapterOptions {
    * just calls it (and awaits it) on every request.
    */
   readonly info?: TuiAdapterInfo | (() => TuiAdapterInfo | Promise<TuiAdapterInfo>);
+  /**
+   * Optional lazy model-catalog data source served through GET /v1/models.
+   * Absent when the host does not expose a browsable catalog. The adapter
+   * validates/bounds/serializes every request and response; the supplier
+   * returns already-bounded, deterministic pages.
+   */
+  readonly modelCatalog?: TuiModelCatalogProvider;
   /**
    * Invoked when the already-listening HTTP server dies (e.g. EADDRINUSE
    * appearing later, socket-level failure). The hosting channel driver maps
@@ -173,6 +245,12 @@ export interface TuiAdapterStartResult {
 }
 
 const MAX_TURN_BODY_BYTES = 96 * 1024 * 1024;
+const MAX_MODEL_CATALOG_PAGE_SIZE = 200;
+const DEFAULT_MODEL_CATALOG_PAGE_SIZE = 100;
+const MAX_MODEL_CATALOG_RESPONSE_BYTES = 1024 * 1024;
+const MAX_MODEL_CATALOG_PROVIDER_BYTES = 256;
+const MAX_MODEL_CATALOG_QUERY_BYTES = 512;
+const MAX_MODEL_CATALOG_CURSOR_BYTES = 4 * 1024;
 const MAX_VERBATIM_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_VERBATIM_TEXT_CHARACTERS = 200_000;
 const MAX_VERBATIM_TEXT_BYTES = 1024 * 1024;
@@ -229,6 +307,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   let stopping = false;
   let stopPromise: Promise<void> | undefined;
   const infoPath = `${basePath}/v1/info`;
+  const modelsPath = `${basePath}/v1/models`;
   const turnsPath = `${basePath}/v1/turns`;
   const cancelPath = `${basePath}/v1/conversations/:conversationId/cancel`;
   const verbatimPath = `${basePath}/v1/conversations/:conversationId/verbatim`;
@@ -268,7 +347,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         });
     void Promise.all([resolveInfo(options.info), cronInfo])
       .then(([info, cronState]) => {
-        res.status(200).json({
+        sendBoundedInfo(res, {
           schema: TUI_WIRE_SCHEMA,
           pid: process.pid,
           capabilities: {
@@ -305,6 +384,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                   }),
             ...(options.processJobs === undefined || processJobsBearer === undefined ? {} : { jobs: true }),
             ...(options.requestToolEnvironment === undefined ? {} : { toolEnvironment: true }),
+            ...(options.modelCatalog === undefined
+              ? {}
+              : { modelCatalog: { version: 1, maxPageSize: MAX_MODEL_CATALOG_PAGE_SIZE } }),
           },
           ...(info?.label === undefined ? {} : { label: info.label }),
           ...(info?.model === undefined ? {} : { model: info.model }),
@@ -314,12 +396,44 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
             ? {}
             : { modelOptions: info.modelOptions }),
           ...(info?.skills === undefined ? {} : { skills: info.skills }),
-        });
+          ...(info?.providers === undefined || info.providers.length === 0 ? {} : { providers: info.providers }),
+        }, options.logger);
       })
       .catch((error: unknown) => {
         options.logger?.error?.("TUI info provider failed.", { error: errorToMessage(error) });
         sendJsonError(res, 500, error);
       });
+  });
+
+  app.get(modelsPath, (req, res, next) => {
+    if (!authorize(req, res, apiKey)) return;
+    if (options.modelCatalog === undefined) {
+      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "The model catalog is unavailable."));
+      return;
+    }
+    let request: TuiModelCatalogRequest;
+    try {
+      request = normalizeModelCatalogRequest(req);
+    } catch (error) {
+      next(error);
+      return;
+    }
+    let page: TuiModelCatalogPage;
+    try {
+      // The catalog is a trust boundary only in the sense that the provider is
+      // host-owned; a throwing supplier must still fail as a server error
+      // rather than silently serving an empty catalog (see the "totality"
+      // contract in the composition layer — that layer never throws).
+      page = options.modelCatalog(request);
+    } catch (error) {
+      next(error);
+      return;
+    }
+    try {
+      sendBoundedModelCatalog(res, page);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get(jobsPath, (req, res, next) => {
@@ -1724,6 +1838,189 @@ async function resolveInfo(info: TuiAdapterOptions["info"]): Promise<TuiAdapterI
   return info;
 }
 
+function normalizeModelCatalogRequest(req: Request): TuiModelCatalogRequest {
+  const rawProvider = typeof req.query.provider === "string" ? req.query.provider : undefined;
+  const provider = normalizeOptionalString(rawProvider);
+  if (provider !== undefined && Buffer.byteLength(provider, "utf8") > MAX_MODEL_CATALOG_PROVIDER_BYTES) {
+    throw new TuiAdapterError("invalid_request", "provider is too large.");
+  }
+  const rawQuery = typeof req.query.q === "string" ? req.query.q : undefined;
+  const query = normalizeOptionalString(rawQuery);
+  if (query !== undefined && Buffer.byteLength(query, "utf8") > MAX_MODEL_CATALOG_QUERY_BYTES) {
+    throw new TuiAdapterError("invalid_request", "q is too large.");
+  }
+  const rawCursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+  const cursor = normalizeOptionalString(rawCursor);
+  if (cursor !== undefined && Buffer.byteLength(cursor, "utf8") > MAX_MODEL_CATALOG_CURSOR_BYTES) {
+    throw new TuiAdapterError("invalid_request", "cursor is too large.");
+  }
+  if (provider === undefined && query === undefined) {
+    throw new TuiAdapterError("invalid_request", "provider or q is required.");
+  }
+  // `TuiModelCatalogRequest` documents the two modes as mutually exclusive and
+  // suppliers honour that by servicing `provider` and ignoring `query`. Sending
+  // both must therefore be a client error, not a silently provider-scoped page
+  // that looks like it answered the search.
+  if (provider !== undefined && query !== undefined) {
+    throw new TuiAdapterError("invalid_request", "provider and q are mutually exclusive.");
+  }
+  const rawLimit = typeof req.query.limit === "string"
+    ? Number(req.query.limit)
+    : DEFAULT_MODEL_CATALOG_PAGE_SIZE;
+  if (!Number.isSafeInteger(rawLimit) || rawLimit < 1 || rawLimit > MAX_MODEL_CATALOG_PAGE_SIZE) {
+    throw new TuiAdapterError(
+      "invalid_request",
+      `limit must be 1-${String(MAX_MODEL_CATALOG_PAGE_SIZE)}.`,
+    );
+  }
+  return {
+    ...(provider === undefined ? {} : { provider }),
+    ...(query === undefined ? {} : { query }),
+    ...(cursor === undefined ? {} : { cursor }),
+    limit: rawLimit,
+  };
+}
+
+
+
+/**
+ * `/v1/info` fields the fence may shed, least load-bearing first. Every one of
+ * them is already optional on the wire — the response literal omits each when
+ * its source is absent — so shedding produces a body that is still valid at
+ * schema 1, which matters because `TUI_WIRE_SCHEMA` is compared with `!==` and
+ * cannot be bumped. `schema`, `pid` and `capabilities` are never sheddable:
+ * they are the liveness and negotiation half of the response.
+ */
+const INFO_SHED_ORDER = [
+  "modelOptions",
+  "models",
+  "providers",
+  "skills",
+  "label",
+  "effort",
+  "model",
+] as const;
+
+type SheddableInfoField = (typeof INFO_SHED_ORDER)[number];
+
+/**
+ * Send `/v1/info` under the byte contract its consumer enforces.
+ *
+ * Every contributor to this body carries its own producer-side budget (see the
+ * budget table in `agent-app`'s `channel-drivers/tui.ts`, and
+ * `MAX_SKILL_REGISTRY_BYTES` for skills) and those budgets sum to 960 KiB. This
+ * is the last-resort fence behind them: without it the ONLY enforcement of the
+ * 1 MiB cap lived in the consumer, so any producer-side miss took the agent
+ * offline instead of degrading it.
+ *
+ * It measures the exact string it sends rather than estimating, and sends that
+ * string rather than re-serializing, so what was measured is what goes on the
+ * wire. Shedding is logged at error level: a body that reaches this fence is a
+ * producer bug, and it must not disappear silently.
+ */
+function sendBoundedInfo(
+  res: Response,
+  body: Record<string, unknown>,
+  logger: TuiAdapterLogger | undefined,
+): void {
+  const candidate: Record<string, unknown> = { ...body };
+  const dropped: string[] = [];
+  let serialized = serializeInfoBody(candidate);
+  while (serialized === undefined) {
+    const field = largestSheddableInfoField(candidate);
+    // Each pass removes one field from a finite set, so this terminates.
+    if (field === undefined) break;
+    delete candidate[field];
+    dropped.push(field);
+    serialized = serializeInfoBody(candidate);
+  }
+  if (serialized !== undefined) {
+    if (dropped.length > 0) {
+      logger?.error?.("TUI info body exceeded its wire budget; fields were dropped.", {
+        droppedFields: dropped.join(","),
+      });
+    }
+    res.status(200).type("application/json").send(serialized);
+    return;
+  }
+  // Nothing sheddable is left and the remainder still will not fit (or will not
+  // serialize at all). Fall back to the fixed liveness floor: a schema-1 body
+  // small by construction, which keeps the agent reachable and its capability
+  // negotiation honest rather than answering 500 and reading as offline.
+  logger?.error?.("TUI info body could not be bounded; served the minimal liveness body.", {
+    droppedFields: dropped.join(","),
+  });
+  res.status(200).type("application/json").send(JSON.stringify({
+    schema: TUI_WIRE_SCHEMA,
+    pid: process.pid,
+    capabilities: { attachments: true },
+  }));
+}
+
+/**
+ * The optional field costing the most bytes right now.
+ *
+ * Shedding the biggest field first means the fence removes what is ACTUALLY
+ * oversized instead of four innocent projections queued ahead of it: a 1.5 MiB
+ * `skills` registry costs the console its skills, not its model picker as well.
+ * Ties break towards the front of `INFO_SHED_ORDER` (least load-bearing first),
+ * so the choice is deterministic. A field whose own value will not serialize
+ * sorts first of all — it is the reason the body cannot be measured at all.
+ */
+function largestSheddableInfoField(
+  body: Record<string, unknown>,
+): SheddableInfoField | undefined {
+  let largest: SheddableInfoField | undefined;
+  let largestBytes = -1;
+  for (const field of INFO_SHED_ORDER) {
+    if (!(field in body)) continue;
+    const bytes = infoFieldBytes(body[field]);
+    if (bytes > largestBytes) {
+      largest = field;
+      largestBytes = bytes;
+    }
+  }
+  return largest;
+}
+
+/** Serialized size of one field value; `Infinity` when it cannot be serialized at all. */
+function infoFieldBytes(value: unknown): number {
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === "string"
+      ? Buffer.byteLength(serialized, "utf8")
+      : Number.POSITIVE_INFINITY;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+/** Serialize the candidate body, or `undefined` when it does not fit or does not serialize. */
+function serializeInfoBody(body: Record<string, unknown>): string | undefined {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(body);
+  } catch {
+    return undefined;
+  }
+  // `JSON.stringify` yields undefined for a non-serializable top-level value.
+  if (typeof serialized !== "string") return undefined;
+  return Buffer.byteLength(serialized, "utf8") > MAX_INFO_BODY_BYTES ? undefined : serialized;
+}
+
+function sendBoundedModelCatalog(res: Response, page: TuiModelCatalogPage): void {
+  const body = JSON.stringify(page);
+  if (Buffer.byteLength(body, "utf8") > MAX_MODEL_CATALOG_RESPONSE_BYTES) {
+    // The supplier is expected to pre-bound pages; hitting this fence is a
+    // producer bug, not a client mistake, so it reads as a 500.
+    throw new TuiAdapterError(
+      "model_catalog_too_large",
+      "Model catalog page exceeded its bounded wire contract.",
+    );
+  }
+  res.status(200).type("application/json").send(body);
+}
+
 function cronJobId(value: string | readonly string[] | undefined): string {
   const raw = typeof value === "string" ? value : undefined;
   const jobId = normalizeOptionalString(raw);
@@ -1808,12 +2105,72 @@ function authorize(req: Request, res: Response, apiKey: string | undefined): boo
 }
 
 function sendJsonError(res: Response, status: number, error: unknown): void {
-  res.status(status).json({
-    error: {
-      message: errorToMessage(error),
-      ...(codeOf(error) === undefined ? {} : { code: codeOf(error) }),
-    },
-  });
+  res.status(status).type("application/json").send(boundedErrorBody(error));
+}
+
+/** Appended to a message the fence had to cut, so a reader is never handed a
+ * truncated diagnostic as if it were the whole one. */
+const TRUNCATED_MESSAGE_SUFFIX = "\u2026 [truncated]";
+
+/**
+ * Serialize one error envelope under the SHARED `/v1/info` body cap.
+ *
+ * `sendBoundedInfo` bounds a success body by shedding fields; an error body has
+ * no field to shed — it is one diagnostic message — so it is bounded by
+ * clamping that message instead, which is the one place truncating is
+ * obviously correct. Bounding success and not failure is not a wire contract:
+ * before this, a rejecting `info` provider answered whatever its message
+ * measured (a real probe: 1,052,696 bytes against a 1,048,576-byte cap),
+ * because the route's `.catch` lands here and this responder had no bound.
+ *
+ * `code` survives clamping — the console and the TUI switch on it — and the
+ * message keeps its head, so a clamped body still names what failed.
+ */
+function boundedErrorBody(error: unknown): string {
+  const message = errorToMessage(error);
+  const rawCode = codeOf(error);
+  // A `code` is an identifier, kept whole whenever it can be. A "code" that
+  // alone overruns the cap is not an identifier, and dropping it is better than
+  // letting it crowd out the message that explains the failure.
+  const code = rawCode !== undefined
+    && Buffer.byteLength(errorEnvelope(TRUNCATED_MESSAGE_SUFFIX, rawCode), "utf8") <= MAX_INFO_BODY_BYTES
+    ? rawCode
+    : undefined;
+  const full = errorEnvelope(message, code);
+  if (Buffer.byteLength(full, "utf8") <= MAX_INFO_BODY_BYTES) return full;
+  return errorEnvelope(clampErrorMessage(message, code), code);
+}
+
+function errorEnvelope(message: string, code: string | undefined): string {
+  return JSON.stringify({ error: { message, ...(code === undefined ? {} : { code }) } });
+}
+
+/**
+ * A prefix of `message` whose envelope fits, plus the truncation marker.
+ *
+ * Measured against the SERIALIZED envelope, not the raw string, and shrunk in
+ * PROPORTION to how far over the envelope is. Both halves matter: the overshoot
+ * is counted in bytes while `kept` is counted in code units, and one unit can
+ * escape to six bytes (`\u0007` -> `\\u0007`), so subtracting a byte overshoot
+ * from a unit count deletes the entire message the moment escaping is heavy —
+ * leaving a body that is bounded but says nothing about what failed.
+ */
+function clampErrorMessage(message: string, code: string | undefined): string {
+  let kept = message;
+  for (;;) {
+    const candidate = kept + TRUNCATED_MESSAGE_SUFFIX;
+    const bytes = Buffer.byteLength(errorEnvelope(candidate, code), "utf8");
+    // The marker-only envelope was proven to fit before this was called, so the
+    // loop cannot spin at length 0.
+    if (bytes <= MAX_INFO_BODY_BYTES || kept.length === 0) return candidate;
+    // Never drop less than an eighth, so a proportion that barely moves (the
+    // envelope's own fixed overhead) still converges in O(log n) passes.
+    const proportional = Math.floor(kept.length * (MAX_INFO_BODY_BYTES / bytes));
+    kept = kept.slice(0, Math.min(proportional, kept.length - Math.ceil(kept.length / 8)));
+    // Never end on a lone high surrogate split out of a pair.
+    const last = kept.charCodeAt(kept.length - 1);
+    if (last >= 0xd800 && last <= 0xdbff) kept = kept.slice(0, -1);
+  }
 }
 
 function sendBoundedJobs(res: Response, jobs: readonly unknown[]): void {

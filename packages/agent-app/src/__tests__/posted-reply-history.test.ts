@@ -25,10 +25,9 @@ import type {
 import { createSlackPostedReplyHistory } from "../posted-reply-history.js";
 
 const MODEL = {
-  sdk: "pi",
   provider: "fake",
   model: "fake-model",
-  reference: "pi:fake:fake-model",
+  reference: "fake:fake-model",
 } as const;
 const PRODUCER = "cron:scheduled-scan";
 const CHANNEL = "C123";
@@ -182,7 +181,6 @@ describe("createSlackPostedReplyHistory", () => {
       identityPath,
       runtime: runtime.runtime,
       model: MODEL,
-      executionMode: "sdk",
       historyStore: bridge.wrapHistoryStore(canonical),
     });
     const responder = bridge.wrapResponder(createAgentResponder({ harness }));
@@ -408,7 +406,6 @@ describe("createSlackPostedReplyHistory", () => {
       identityPath,
       runtime: runtime.runtime,
       model: MODEL,
-      executionMode: "sdk",
       historyStore: bridge.wrapHistoryStore(countingStore),
       session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
     });

@@ -14,6 +14,8 @@ const { configureToolRuntime, readRuntimeBrand, resetToolRuntime } = await impor
 );
 const { createToolContext } = await import("../agent/tools/shared/tool-context.js");
 
+const TEST_MODEL = { provider: "anthropic", model: "x", reference: "anthropic:x" };
+
 beforeEach(() => {
   executeMock.mockReset();
   resolveRuntimeBridgeMock.mockReset();
@@ -71,7 +73,7 @@ describe("createRuntime + runtimeBrand", () => {
         doctorCommand: "demo doctor",
       },
     });
-    await runtime.run("sys", { model: { sdk: "claude", model: "x" } });
+    await runtime.run("sys", { model: TEST_MODEL });
     const brand = executeMock.mock.calls[0][1].toolContext.runtimeBrand;
     expect(brand.schemaPrefix).toBe("demo");
     expect(brand.mcpClientName).toBe("demo-host");
@@ -82,7 +84,7 @@ describe("createRuntime + runtimeBrand", () => {
   it("forwards the resolved brand under run() options to bridge.execute", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime({ runtimeBrand: { schemaPrefix: "demo" } });
-    await runtime.run("sys", { model: { sdk: "claude", model: "x" } });
+    await runtime.run("sys", { model: TEST_MODEL });
     expect(executeMock).toHaveBeenCalledTimes(1);
     const [, options] = executeMock.mock.calls[0];
     expect(options.runtimeBrand?.schemaPrefix).toBe("demo");

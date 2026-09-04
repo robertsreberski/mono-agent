@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createCodexAppServerClient } from "../../ai/providers/codex-app.js";
+import { createCodexAppServerClient } from "../../ai/providers/codex/app-server-client.js";
 
 export const DEFAULT_CODEX_SEARCH_MODEL = "gpt-5.6-luna";
 

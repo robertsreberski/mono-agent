@@ -1,7 +1,7 @@
 import { ALLOW_ALL_TOOLS } from "./enums.js";
 import type { MonoAgentConfigJson } from "./json-source.js";
 import type {
-  RedactedLocalProviderDefinition,
+  RedactedProviderDefinition,
   RedactedMemoryConfig,
   RedactedMonoAgentConfig,
   RedactedObservabilityExporterConfig,
@@ -59,21 +59,18 @@ export interface BuildMonoAgentConfigViewInput {
  * field id used in {@link ConfigViewField}. This is the authoritative map the
  * view resolves `source` against, and the surface the parity test checks
  * against the loader so the view can never silently drift from what the loader
- * actually reads. Complex sections (local providers) expose only their
- * registry env var here; their single-provider `MONO_AGENT_LOCAL_PROVIDER_*`
- * input form is an alternate encoding the parity test allowlists.
+ * actually reads. The provider map exposes one whole-object env projection;
+ * its legacy registry and single-provider encodings remain loader-only aliases
+ * that the parity test allowlists.
  */
 export const CONFIG_ENV_KEYS = {
   "agent.name": "MONO_AGENT_NAME",
   "runtime.model": "MONO_AGENT_MODEL",
-  "runtime.fallbackModels": "MONO_AGENT_FALLBACK_MODELS",
   "runtime.fallbacks": "MONO_AGENT_FALLBACKS_JSON",
   "subagents": "MONO_AGENT_SUBAGENTS_JSON",
   "runtime.retry.primaryAttempts": "MONO_AGENT_RETRY_PRIMARY_ATTEMPTS",
   "runtime.retry.backoffMs": "MONO_AGENT_RETRY_BACKOFF_MS",
   "runtime.retry.maxBackoffMs": "MONO_AGENT_RETRY_MAX_BACKOFF_MS",
-  "runtime.routeSafety": "MONO_AGENT_ROUTE_SAFETY",
-  "runtime.executionMode": "MONO_AGENT_EXECUTION_MODE",
   "runtime.effort": "MONO_AGENT_EFFORT",
   "runtime.permissionMode": "MONO_AGENT_PERMISSION_MODE",
   "runtime.maxTurns": "MONO_AGENT_MAX_TURNS",
@@ -121,7 +118,6 @@ export const CONFIG_ENV_KEYS = {
   "memory.embeddings.circuitBreaker.cooldownMs": "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
   "memory.llm.provider": "MONO_AGENT_MEMORY_LLM_PROVIDER",
   "memory.llm.model": "MONO_AGENT_MEMORY_LLM_MODEL",
-  "memory.llm.executionMode": "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
   "memory.llm.trace": "MONO_AGENT_MEMORY_LLM_TRACE",
   "memory.llm.timeoutMs": "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
   "memory.llm.endpoint": "MONO_AGENT_MEMORY_LLM_ENDPOINT",
@@ -163,12 +159,12 @@ export const CONFIG_ENV_KEYS = {
   "traceability.staleAfterMs": "MONO_AGENT_TRACE_STALE_AFTER_MS",
   "traceability.globalDiscovery": "MONO_AGENT_TRACE_GLOBAL_DISCOVERY",
   "observability.exporters": "MONO_AGENT_OBSERVABILITY_EXPORTERS",
+  "providers": "MONO_AGENT_PROVIDERS_JSON",
   "providers.piAuthPath": "MONO_AGENT_PI_AUTH_PATH",
   "providers.piNative.transport": "MONO_AGENT_PI_TRANSPORT",
   "providers.piNative.piMaxRetries": "MONO_AGENT_PI_MAX_RETRIES",
   "providers.piNative.maxRetryDelayMs": "MONO_AGENT_MAX_RETRY_DELAY_MS",
   "providers.piNative.piSessionsRoot": "MONO_AGENT_PI_SESSIONS_ROOT",
-  "providers.local": "MONO_AGENT_LOCAL_PROVIDERS_JSON",
 } as const satisfies Record<string, string>;
 
 export type ConfigViewFieldId = keyof typeof CONFIG_ENV_KEYS;
@@ -178,10 +174,6 @@ const PLACEHOLDER = "—";
 function envHas(env: Record<string, string | undefined>, key: string): boolean {
   const value = env[key];
   return value !== undefined && value.trim().length > 0;
-}
-
-function legacyFallbackEnvPresent(env: Record<string, string | undefined>): boolean {
-  return env.MONO_AGENT_FALLBACK_MODELS !== undefined;
 }
 
 function resolveSource(
@@ -261,20 +253,7 @@ function formatModelReference(
   if (typeof reference === "string") {
     return reference;
   }
-  if (reference.reference !== undefined && reference.reference.length > 0) {
-    return reference.reference;
-  }
-  const provider = reference.provider !== undefined ? `${reference.provider}:` : "";
-  return `${reference.sdk}:${provider}${reference.model}`;
-}
-
-function formatFallbackModels(
-  models: RedactedMonoAgentConfig["runtime"]["fallbackModels"],
-): string {
-  if (models === undefined || models.length === 0) {
-    return PLACEHOLDER;
-  }
-  return models.map(formatModelReference).join(", ");
+  return reference.reference;
 }
 
 function formatFallbacks(
@@ -325,25 +304,10 @@ function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
         jsonPresent: json.runtime?.model !== undefined,
       }),
       toField(env, {
-        id: "runtime.fallbackModels",
-        label: "Legacy fallback models",
-        value: formatFallbackModels(runtime.fallbackModels),
-        // The two fallback env encodings are aliases at the precedence layer:
-        // either real env value suppresses the other JSON form.
-        jsonPresent: json.runtime?.fallbackModels !== undefined
-          && !envHas(env, CONFIG_ENV_KEYS["runtime.fallbacks"]),
-        source: legacyFallbackEnvPresent(env)
-          ? "env"
-          : json.runtime?.fallbackModels !== undefined && !envHas(env, CONFIG_ENV_KEYS["runtime.fallbacks"])
-            ? "json"
-            : "default",
-      }),
-      toField(env, {
         id: "runtime.fallbacks",
         label: "Fallback routes",
         value: formatFallbacks(runtime.fallbacks),
-        jsonPresent: json.runtime?.fallbacks !== undefined
-          && !legacyFallbackEnvPresent(env),
+        jsonPresent: json.runtime?.fallbacks !== undefined,
       }),
       toField(env, {
         id: "runtime.retry.primaryAttempts",
@@ -362,20 +326,6 @@ function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
         label: "Retry backoff cap (ms)",
         value: String(runtime.retry?.maxBackoffMs ?? 15_000),
         jsonPresent: json.runtime?.retry?.maxBackoffMs !== undefined,
-      }),
-      toField(env, {
-        id: "runtime.routeSafety",
-        label: "Route safety",
-        value: runtime.routeSafety ?? "uniform",
-        jsonPresent: json.runtime?.routeSafety !== undefined,
-        jsonValue: json.runtime?.routeSafety,
-        defaultValue: "uniform",
-      }),
-      toField(env, {
-        id: "runtime.executionMode",
-        label: "Execution mode",
-        value: runtime.executionMode,
-        jsonPresent: json.runtime?.executionMode !== undefined,
       }),
       toField(env, {
         id: "runtime.effort",
@@ -751,12 +701,6 @@ function buildMemorySection(input: BuildMonoAgentConfigViewInput): ConfigViewSec
     } else {
       fields.push(
         toField(env, {
-          id: "memory.llm.executionMode",
-          label: "LLM execution mode",
-          value: llm.executionMode ?? "default",
-          jsonPresent: json.memory?.llm?.executionMode !== undefined,
-        }),
-        toField(env, {
           id: "memory.llm.trace",
           label: "LLM trace",
           value: llm.trace === false ? "off" : "on",
@@ -1106,20 +1050,26 @@ function buildObservabilitySection(input: BuildMonoAgentConfigViewInput): Config
   };
 }
 
-function formatLocalProviders(
-  providers: readonly RedactedLocalProviderDefinition[],
+function formatProviders(
+  providers: readonly RedactedProviderDefinition[],
 ): string {
   if (providers.length === 0) {
     return "none";
   }
-  return providers.map((provider) => `${provider.id} (${provider.type})`).join(", ");
+  return providers.map((provider) => provider.type === undefined
+    ? provider.id
+    : `${provider.id} (${provider.type})`).join(", ");
 }
 
 function buildProvidersSection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
   const { redacted, json, env } = input;
   const providers = redacted.providers;
   const present = providers !== undefined;
-  const localPresent = json.providers?.local !== undefined;
+  const entries = providers?.entries ?? providers?.local ?? [];
+  const configuredProviderIds = Object.keys(json.providers ?? {}).filter((key) =>
+    key !== "local" && key !== "piAuthPath" && key !== "piNative",
+  );
+  const providerMapPresent = json.providers?.local !== undefined || configuredProviderIds.length > 0;
   return {
     id: "providers",
     label: "Providers",
@@ -1156,10 +1106,10 @@ function buildProvidersSection(input: BuildMonoAgentConfigViewInput): ConfigView
         jsonPresent: json.providers?.piNative?.piSessionsRoot !== undefined,
       }),
       toField(env, {
-        id: "providers.local",
-        label: "Local providers",
-        value: providers?.local === undefined ? "none" : formatLocalProviders(providers.local),
-        jsonPresent: localPresent,
+        id: "providers",
+        label: "Configured providers",
+        value: formatProviders(entries),
+        jsonPresent: providerMapPresent,
       }),
     ],
   };
@@ -1168,7 +1118,7 @@ function buildProvidersSection(input: BuildMonoAgentConfigViewInput): ConfigView
 /**
  * Build the single, complete, source-annotated view of a resolved
  * `MonoAgentConfig`. Every core section and field is represented exactly once,
- * including the `observability.exporters` and `providers.local` blocks that the
+ * including the `observability.exporters` and `providers` blocks that the
  * retired field-group registry omitted. Drives both the read-only TUI config
  * pane and the `mono-agent config` CLI command, so the two surfaces can never
  * disagree about what the loader produced.
@@ -1235,11 +1185,14 @@ const REMOVED_MEMORY_ENV_KEYS = [
 ] as const;
 
 /**
- * Find advisory warnings for removed config keys that are tolerated but ignored.
- * Warnings mention only stable JSON paths and env var names, never values.
+ * Find advisory migration warnings for removed or one-release deprecated
+ * config surfaces. Warnings mention only stable paths/names, never values.
  */
 export function findRemovedConfigWarnings(input: RemovedConfigWarningsInput): readonly string[] {
   const warnings: string[] = [];
+  if (envHas(input.env, "MONO_AGENT_LOCAL_PROVIDERS_JSON")) {
+    warnings.push("[WARN] MONO_AGENT_LOCAL_PROVIDERS_JSON is deprecated; use MONO_AGENT_PROVIDERS_JSON with the provider-map shape instead.");
+  }
   if (input.json.memory?.reflection !== undefined) {
     warnings.push("[WARN] memory.reflection is removed and ignored; use memory.consolidation instead.");
   }

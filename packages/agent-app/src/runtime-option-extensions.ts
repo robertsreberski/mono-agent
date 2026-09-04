@@ -45,9 +45,7 @@ export interface ClearSessionsRuntimeBoundaryOptions {
 
 /**
  * Run the recovery attestation before any sibling extension/provider work,
- * then protect the stable registry whenever a reachable attempt can execute
- * Pi-native host tools. Per-route-native routing removes this policy from
- * non-Pi attempts; a genuinely non-Pi-only route stays policy-free here.
+ * then protect the stable registry for every reachable Pi provider route.
  */
 export function createClearSessionsRuntimeExtension(
   next: RuntimeOptionsExtension | undefined,
@@ -71,12 +69,9 @@ export function createClearSessionsRuntimeExtension(
 /** Build the stable tool-context half of the clear-sessions boundary. */
 export function clearSessionsSandboxPolicy(
   options: ClearSessionsRuntimeBoundaryOptions,
-  effectiveModel: RuntimeModelReference = options.baseModel,
+  _effectiveModel: RuntimeModelReference = options.baseModel,
 ): SandboxPolicy | undefined {
   if (options.suppressSyntheticSandbox === true) return undefined;
-  if (![effectiveModel, ...(options.fallbackModels ?? [])].some((model) => model.sdk === "pi")) {
-    return undefined;
-  }
   const base = options.sandboxPolicy?.mode === "native"
     ? { ...options.sandboxPolicy, fallback: "fail-closed" as const, unsafeAllowHostProcess: false }
     : failClosedSandboxPolicy({
@@ -197,8 +192,9 @@ function asSandboxPolicy(value: unknown): SandboxPolicy | undefined {
 
 function runtimeModel(value: unknown): RuntimeModelReference | undefined {
   return isRecord(value)
-    && typeof value.sdk === "string"
+    && typeof value.provider === "string"
     && typeof value.model === "string"
+    && typeof value.reference === "string"
     ? value as unknown as RuntimeModelReference
     : undefined;
 }

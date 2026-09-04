@@ -1,6 +1,6 @@
 import type {
-  AgentSummary,
   AgentSkillRegistry,
+  AgentSummary,
   AskAnswer,
   AskSnapshot,
   AskSubmissionResult,
@@ -14,12 +14,13 @@ import type {
   LiveInputReceipt,
   McpAppPart,
   McpAppResource,
+  MessagePage,
   MessagePart,
-  PushSubscriptionStatus,
+  ModelCatalogPage,
   ProcessJobProjection,
+  PushSubscriptionStatus,
   StartTurnInput,
   ThreadDetail,
-  MessagePage,
   ThreadPage,
   ThreadSearchPage,
   ThreadSummary,
@@ -278,10 +279,17 @@ export const api = {
     return result.job;
   },
 
-  createThread: async (sourceId: string) => {
+  /**
+   * `signal` because the server commits and emits the creation event BEFORE it
+   * answers this POST, so a held response describes a conversation the console
+   * may already know about -- and may already have deleted. The caller bounds
+   * it for the same reason it bounds every write.
+   */
+  createThread: async (sourceId: string, signal?: AbortSignal) => {
     const result = await request<{ thread: ThreadSummary }>("/api/v1/threads", {
       method: "POST",
       body: JSON.stringify({ sourceId }),
+      ...(signal === undefined ? {} : { signal }),
     });
     return result.thread;
   },
@@ -300,21 +308,57 @@ export const api = {
       { signal },
     ),
 
+  agentModels: (
+    sourceId: string,
+    provider: string,
+    cursor?: string,
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams({ provider, limit: "100" });
+    if (cursor !== undefined) query.set("cursor", cursor);
+    return request<ModelCatalogPage>(
+      `/api/v1/agents/${encodeURIComponent(sourceId)}/models?${query.toString()}`,
+      { signal },
+    );
+  },
+
+  /**
+   * `ifRunConfigUnset` is a compare-and-set: the server applies nothing unless
+   * the conversation still has no run override. The one-time adoption of a
+   * browser-local preference needs it -- it reads the thread and then writes
+   * it, and another tab can set a real override in between. `signal` matters
+   * for the same path: thread writes are serialized, so an unbounded one
+   * blocks every later write to that conversation.
+   */
   patchThread: async (
     threadId: string,
-    patch: { title?: string; archived?: boolean },
+    patch: {
+      title?: string;
+      archived?: boolean;
+      model?: string | null;
+      effort?: string | null;
+      ifRunConfigUnset?: boolean;
+    },
+    signal?: AbortSignal,
   ) => {
     const result = await request<{ thread: ThreadSummary }>(
       `/api/v1/threads/${encodeURIComponent(threadId)}`,
-      { method: "PATCH", body: JSON.stringify(patch) },
+      { method: "PATCH", body: JSON.stringify(patch), ...(signal === undefined ? {} : { signal }) },
     );
     return result.thread;
   },
 
-  deleteThread: async (threadId: string) => {
+  /**
+   * `signal` because an unbounded delete never settles for the operator, not
+   * because it is queued: a delete deliberately BYPASSES the conversation's
+   * write queue -- see `deleteThread` in the console store -- so it does not
+   * wait out a stalled write before removing what the operator asked to remove.
+   */
+  deleteThread: async (threadId: string, signal?: AbortSignal) => {
     const response = await fetch(`/api/v1/threads/${encodeURIComponent(threadId)}`, {
       method: "DELETE",
       headers: { Accept: "application/json" },
+      ...(signal === undefined ? {} : { signal }),
     });
     if (!response.ok) throw await readError(response);
   },

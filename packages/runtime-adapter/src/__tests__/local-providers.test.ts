@@ -26,14 +26,14 @@ const LMSTUDIO_PROVIDER: LocalProviderDefinition = {
 };
 
 describe("discoverLocalProviderModels", () => {
-  it("parses a well-formed /v1/models response into pi:<providerId>:<modelId> refs", async () => {
+  it("parses a well-formed /v1/models response into <providerId>:<modelId> refs", async () => {
     const models = await discoverLocalProviderModels([LMSTUDIO_PROVIDER], {
       fetch: fakeFetch(() => Promise.resolve(jsonResponse({ data: [{ id: "qwen3-8b" }, { id: "llama-3.1" }] }))),
     });
 
     expect(models).toEqual([
-      { ref: "pi:lmstudio:qwen3-8b", label: "qwen3-8b", providerId: "lmstudio" },
-      { ref: "pi:lmstudio:llama-3.1", label: "llama-3.1", providerId: "lmstudio" },
+      { ref: "lmstudio:qwen3-8b", label: "qwen3-8b", providerId: "lmstudio" },
+      { ref: "lmstudio:llama-3.1", label: "llama-3.1", providerId: "lmstudio" },
     ]);
   });
 
@@ -43,7 +43,7 @@ describe("discoverLocalProviderModels", () => {
     });
 
     expect(models).toEqual([
-      { ref: "pi:lmstudio:meta/llama-3.1-8b-instruct", label: "meta/llama-3.1-8b-instruct", providerId: "lmstudio" },
+      { ref: "lmstudio:meta/llama-3.1-8b-instruct", label: "meta/llama-3.1-8b-instruct", providerId: "lmstudio" },
     ]);
   });
 
@@ -179,7 +179,7 @@ describe("discoverLocalProviderModels", () => {
       },
     );
 
-    expect(models).toEqual([{ ref: "pi:ollama:gpt-oss:20b", label: "gpt-oss:20b", providerId: "ollama" }]);
+    expect(models).toEqual([{ ref: "ollama:gpt-oss:20b", label: "gpt-oss:20b", providerId: "ollama" }]);
   });
 });
 
@@ -200,7 +200,7 @@ describe("resolveModelEffortLevels", () => {
   ];
 
   it("returns the configured reasoning levels + effort mode for a configured local model", () => {
-    const ref = parseMonoRuntimeModelReference("pi:lmstudio:qwen/qwen3-8b");
+    const ref = parseMonoRuntimeModelReference("lmstudio:qwen/qwen3-8b");
 
     expect(resolveModelEffortLevels(ref, configuredProviders)).toEqual({
       reasoning: true,
@@ -213,7 +213,7 @@ describe("resolveModelEffortLevels", () => {
     const providers: readonly LocalProviderDefinition[] = [
       { id: "ollama", type: "ollama", baseUrl: "http://localhost:11434", enabled: true },
     ];
-    const ref = parseMonoRuntimeModelReference("pi:ollama:qwen3.6:latest");
+    const ref = parseMonoRuntimeModelReference("ollama:qwen3.6:latest");
 
     // Toggle models support only binary thinking, so they carry NO graded
     // effortLevels — the client renders on/off from the mode alone.
@@ -224,7 +224,7 @@ describe("resolveModelEffortLevels", () => {
     const providers: readonly LocalProviderDefinition[] = [
       { id: "ollama", type: "ollama", baseUrl: "http://localhost:11434", enabled: true },
     ];
-    const ref = parseMonoRuntimeModelReference("pi:ollama:gpt-oss:20b");
+    const ref = parseMonoRuntimeModelReference("ollama:gpt-oss:20b");
 
     expect(resolveModelEffortLevels(ref, providers)).toEqual({
       reasoning: true,
@@ -237,34 +237,34 @@ describe("resolveModelEffortLevels", () => {
     const providers: readonly LocalProviderDefinition[] = [
       { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
     ];
-    const ref = parseMonoRuntimeModelReference("pi:lmstudio:some-new-model");
+    const ref = parseMonoRuntimeModelReference("lmstudio:some-new-model");
 
     expect(resolveModelEffortLevels(ref, providers)).toEqual({ reasoning: false, reasoningMode: "none" });
   });
 
   it("degrades to reasoning:true with no effortLevels for a cloud model reference", () => {
-    const ref = parseMonoRuntimeModelReference("claude:claude-fable-5");
+    const ref = parseMonoRuntimeModelReference("anthropic:claude-fable-5");
 
     expect(resolveModelEffortLevels(ref, configuredProviders)).toEqual({ reasoning: true });
   });
 
   it("degrades to reasoning:true with no effortLevels for a local ref whose provider isn't configured", () => {
-    const ref = parseMonoRuntimeModelReference("pi:unknown-provider:some-model");
+    const ref = parseMonoRuntimeModelReference("unknown-provider:some-model");
 
     expect(resolveModelEffortLevels(ref, configuredProviders)).toEqual({ reasoning: true });
   });
 
   it("degrades to reasoning:true when no providers are configured at all", () => {
-    const ref = parseMonoRuntimeModelReference("pi:lmstudio:qwen/qwen3-8b");
+    const ref = parseMonoRuntimeModelReference("lmstudio:qwen/qwen3-8b");
 
     expect(resolveModelEffortLevels(ref, undefined)).toEqual({ reasoning: true });
   });
 
   it("never throws even for a malformed local provider definition", () => {
     const brokenProviders = [
-      { id: "bad id", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
+      { id: "lmstudio", type: "lmstudio", baseUrl: "not-a-url", enabled: true },
     ] as unknown as readonly LocalProviderDefinition[];
-    const ref = parseMonoRuntimeModelReference("pi:bad id:model");
+    const ref = parseMonoRuntimeModelReference("lmstudio:model");
 
     expect(() => resolveModelEffortLevels(ref, brokenProviders)).not.toThrow();
   });

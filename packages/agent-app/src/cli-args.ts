@@ -4,7 +4,7 @@ import {
   EFFORT_LEVELS,
   MAX_AGENT_NAME_LENGTH,
 } from "@mono-agent/config";
-import type { EffortLevel, RouteSafetyMode } from "@mono-agent/config";
+import type { EffortLevel } from "@mono-agent/config";
 
 import type { InstallSkillTarget } from "./install-skill.js";
 import {
@@ -12,9 +12,8 @@ import {
   INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
 } from "./launchd.js";
 import { parseWebLogMaintenanceArguments } from "./web-log-maintenance-command.js";
-import type { CodexLoginMode } from "./provider-setup.js";
 
-const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "bridge", "install-skill", "backfill", "runs", "memory", "continuations", "jobs"] as const;
+export const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "bridge", "install-skill", "backfill", "runs", "memory", "continuations", "jobs"] as const;
 const KNOWN_COMMANDS = [
   ...PUBLIC_COMMANDS,
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
@@ -24,7 +23,7 @@ const KNOWN_COMMANDS = [
 // Canonical (post-normalization) commands that emit a `--json` envelope. This is
 // an allowlist so future commands fail closed until they opt in explicitly. The
 // `install-skill`/`sandbox` entries carry an extra subcommand guard below.
-const JSON_CAPABLE_COMMANDS = [
+export const JSON_CAPABLE_COMMANDS = [
   "validate",
   "config",
   "presets",
@@ -67,7 +66,6 @@ export interface ParsedCliArgs {
   readonly name?: string;
   readonly model?: string;
   readonly fallbacks?: readonly CliFallbackArg[];
-  readonly routeSafety?: RouteSafetyMode;
   readonly effort?: string;
   readonly memory?: "lite" | "journal" | "bujo";
   /** init/validate: build/check against this preset id. */
@@ -82,8 +80,6 @@ export interface ParsedCliArgs {
   readonly piAuthPath?: string;
   /** auth: explicitly read one API key from redirected standard input. */
   readonly apiKeyStdin?: boolean;
-  /** init/auth: direct Codex browser callback or headless device-code flow. */
-  readonly codexAuthMode?: CodexLoginMode;
   /** Non-flag arguments (e.g. `presets show <id>`). */
   readonly positionals: readonly string[];
   readonly envFile?: string;
@@ -247,7 +243,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let model: string | undefined;
   const fallbacks: CliFallbackArg[] = [];
   let canAssignFallbackEffort = false;
-  let routeSafety: RouteSafetyMode | undefined;
   let effort: string | undefined;
   let memory: "lite" | "journal" | "bujo" | undefined;
   let preset: string | undefined;
@@ -256,7 +251,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let auth = false;
   let piAuthPath: string | undefined;
   let apiKeyStdin = false;
-  let codexAuthMode: CodexLoginMode | undefined;
   const positionals: string[] = [];
   let envFile: string | undefined;
   let controllerCliPath: string | undefined;
@@ -484,9 +478,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         }
         break;
       case "--fallback-models":
-        // Removed CLI spelling. The similarly named JSON `runtime.fallbackModels`
-        // and `MONO_AGENT_FALLBACK_MODELS` compatibility inputs are separate and
-        // remain supported; only this CLI flag is gone.
         throw new Error("`--fallback-models` was removed; repeat `--fallback <ref>` instead.");
       case "--fallback": {
         const fallbackModel = requireValue(rest, ++i, flag).trim();
@@ -513,14 +504,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
           };
         }
         canAssignFallbackEffort = false;
-        break;
-      }
-      case "--route-safety": {
-        const raw = requireValue(rest, ++i, flag);
-        if (raw !== "uniform" && raw !== "per-route-native") {
-          throw new Error("--route-safety must be uniform or per-route-native.");
-        }
-        routeSafety = raw;
         break;
       }
       case "--effort": {
@@ -557,14 +540,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--api-key-stdin":
         apiKeyStdin = true;
         break;
-      case "--codex-auth": {
-        const raw = requireValue(rest, ++i, flag);
-        if (raw !== "browser" && raw !== "device") {
-          throw new Error("--codex-auth must be browser or device.");
-        }
-        codexAuthMode = raw;
-        break;
-      }
       case "--with":
         withChannels = requireValue(rest, ++i, flag)
           .split(",")
@@ -654,10 +629,16 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (configure && local) {
     throw new Error("--configure attaches to the authoritative background agent; omit --local.");
   }
-  if ((project || check || update) && cmd !== "install-skill") {
-    throw new Error("--project, --check, and --update are only supported for `mono-agent install-skill`.");
+  if (project && cmd !== "install-skill") {
+    throw new Error("--project is only supported for `mono-agent install-skill`.");
   }
-  if ((check || update) && !project) {
+  if (update && cmd !== "install-skill") {
+    throw new Error("--update is only supported for `mono-agent install-skill`.");
+  }
+  if (check && cmd !== "install-skill") {
+    throw new Error("--check is only supported for `mono-agent install-skill --project`.");
+  }
+  if ((check || update) && cmd === "install-skill" && !project) {
     throw new Error("--check and --update require `mono-agent install-skill --project`.");
   }
   if (check && update) {
@@ -731,9 +712,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (apiKeyStdin && cmd !== "auth") {
     throw new Error("--api-key-stdin is only supported for `mono-agent auth login <provider>`.");
   }
-  if (codexAuthMode !== undefined && cmd !== "init" && cmd !== "auth") {
-    throw new Error("--codex-auth is only supported for `mono-agent init` and `mono-agent auth login codex`.");
-  }
   if (force && cmd === "restart") {
     throw new Error("`restart --force` was removed; use `mono-agent restart --clear-sessions`.");
   }
@@ -771,7 +749,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   assertFlagCommand(name !== undefined, "--name", cmd, ["init"]);
   assertFlagCommand(model !== undefined, "--model", cmd, ["init"]);
   assertFlagCommand(fallbacks.length > 0, "--fallback", cmd, ["init"]);
-  assertFlagCommand(routeSafety !== undefined, "--route-safety", cmd, ["init"]);
   assertFlagCommand(effort !== undefined, "--effort", cmd, ["init"]);
   assertFlagCommand(memory !== undefined, "--memory", cmd, ["init"]);
   assertFlagCommand(preset !== undefined, "--preset", cmd, ["init", "validate"]);
@@ -822,7 +799,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(name === undefined ? {} : { name }),
     ...(model === undefined ? {} : { model }),
     ...(fallbacks.length === 0 ? {} : { fallbacks }),
-    ...(routeSafety === undefined ? {} : { routeSafety }),
     ...(effort === undefined ? {} : { effort }),
     ...(memory === undefined ? {} : { memory }),
     ...(preset === undefined ? {} : { preset }),
@@ -831,7 +807,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(auth ? { auth } : {}),
     ...(piAuthPath === undefined ? {} : { piAuthPath }),
     ...(apiKeyStdin ? { apiKeyStdin } : {}),
-    ...(codexAuthMode === undefined ? {} : { codexAuthMode }),
     positionals,
     ...(envFile === undefined ? {} : { envFile }),
     ...(controllerCliPath === undefined ? {} : { controllerCliPath }),

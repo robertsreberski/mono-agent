@@ -142,13 +142,13 @@ describe("local configuration transaction", () => {
     const configReadPath = join(dir, "frozen-mono-agent.config.json");
     await writeFile(configReadPath, `${JSON.stringify({
       ...canonical,
-      runtime: { ...canonical.runtime, model: "pi:openai-codex:gpt-5.5" },
+      runtime: { ...canonical.runtime, model: "openai-codex:gpt-5.5" },
     }, null, 2)}\n`, { mode: 0o400 });
     const manager = await LocalConfigurationManager.create({ cwd: dir, configPath, env: {}, configure: true });
     try {
       await writeFile(configPath, `${JSON.stringify({
         ...canonical,
-        runtime: { ...canonical.runtime, model: "codex:gpt-5.6-sol" },
+        runtime: { ...canonical.runtime, model: "openai-codex:gpt-5.6-sol" },
       }, null, 2)}\n`);
       const extension = createLocalConfigurationRuntimeExtension({
         cwd: dir,
@@ -185,7 +185,7 @@ describe("local configuration transaction", () => {
   });
 
   it("replaces ordinary tool/MCP authority with a read-only configuration boundary", async () => {
-    const inspectExtension = async (model?: string, fallbackModels?: readonly string[]) => {
+    const inspectExtension = async (model?: string, fallbackModelReferences?: readonly string[]) => {
       const { dir, configPath } = await scaffold();
       const mcpPath = join(dir, "mcp.json");
       await writeFile(mcpPath, `${JSON.stringify({
@@ -195,13 +195,15 @@ describe("local configuration transaction", () => {
       const raw = JSON.parse(await readFile(configPath, "utf8")) as MonoAgentConfigJson;
       await writeFile(configPath, `${JSON.stringify({
         ...raw,
-        ...(model === undefined && fallbackModels === undefined
+        ...(model === undefined && fallbackModelReferences === undefined
           ? {}
           : {
               runtime: {
                 ...raw.runtime,
                 ...(model === undefined ? {} : { model }),
-                ...(fallbackModels === undefined ? {} : { fallbackModels }),
+                ...(fallbackModelReferences === undefined
+                  ? {}
+                  : { fallbacks: fallbackModelReferences.map((fallbackModel) => ({ model: fallbackModel })) }),
               },
             }),
         tools: { allowedTools: ["*"], disallowedTools: [], mcpConfigPath: "./mcp.json" },
@@ -227,7 +229,11 @@ describe("local configuration transaction", () => {
         context: {},
       } as never);
       expect(invitation.runtimeOptions).toMatchObject({ permissionMode: "plan" });
-      expect(invitation.toolPolicyOverride?.allowedTools).toEqual(["*"]);
+      expect(invitation.toolPolicyOverride?.allowedTools).toEqual([
+        "ReadSkill",
+        "MemoryRecall",
+        "SessionHistory",
+      ]);
       expect(invitation.toolPolicyOverride?.mcpServers).toEqual({});
 
       const extension = await direct.extension({
@@ -236,7 +242,13 @@ describe("local configuration transaction", () => {
         context: {},
       } as never);
       expect(extension.runtimeOptions).toMatchObject({ permissionMode: "plan" });
-      expect(extension.toolPolicyOverride?.allowedTools).toEqual(["*"]);
+      expect(extension.toolPolicyOverride?.allowedTools).toEqual([
+        "ReadSkill",
+        "MemoryRecall",
+        "SessionHistory",
+        "ProposeAgentConfiguration",
+        "mcp__agent_configuration__ProposeAgentConfiguration",
+      ]);
       expect(Object.keys(extension.toolPolicyOverride?.mcpServers ?? {})).toEqual(["agent_configuration"]);
       expect(extension.toolPolicyOverride?.mcpConfigPath).toBeUndefined();
 
@@ -255,7 +267,7 @@ describe("local configuration transaction", () => {
       context: {},
     } as never)).rejects.toThrow(/Configuration proposal session|ENOENT/u);
 
-    const pi = await inspectExtension("pi:openai-codex:gpt-5.5");
+    const pi = await inspectExtension("openai-codex:gpt-5.5");
     try {
       const invitation = await pi.extension({
         request: { metadata: pi.metadata("invitation") },
@@ -287,9 +299,9 @@ describe("local configuration transaction", () => {
       await pi.manager.dispose();
     }
 
-    const mixed = await inspectExtension("codex:gpt-5.6-sol", [
-      "pi:openai-codex:gpt-5.5",
-      "claude:claude-sonnet-4-6",
+    const mixed = await inspectExtension("openai-codex:gpt-5.6-sol", [
+      "openai-codex:gpt-5.5",
+      "anthropic:claude-sonnet-4-6",
     ]);
     try {
       const invitation = await mixed.extension({
@@ -316,48 +328,6 @@ describe("local configuration transaction", () => {
       await mixed.manager.dispose();
     }
 
-    const reroutedOpenCode = await inspectExtension("opencode:github-copilot:gpt-5.1", [
-      "pi:openai-codex:gpt-5.5",
-    ]);
-    try {
-      const operator = await reroutedOpenCode.extension({
-        request: { metadata: reroutedOpenCode.metadata("operator") },
-        runId: "opencode-rerouted",
-        context: {},
-      } as never);
-      expect(operator.runtimeOptions).toMatchObject({
-        permissionMode: "plan",
-        model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.5" },
-      });
-      expect(operator.toolPolicyOverride?.allowedTools).not.toContain("*");
-      expect(Object.keys(operator.toolPolicyOverride?.mcpServers ?? {})).toEqual(["agent_configuration"]);
-    } finally {
-      await reroutedOpenCode.manager.dispose();
-    }
-
-    const unsupportedOpenCode = await inspectExtension("opencode:github-copilot:gpt-5.1");
-    try {
-      await expect(unsupportedOpenCode.extension({
-        request: { metadata: unsupportedOpenCode.metadata("invitation") },
-        runId: "opencode-unsupported",
-        context: {},
-      } as never)).rejects.toThrow(/cannot receive the host-owned proposal MCP capability/u);
-    } finally {
-      await unsupportedOpenCode.manager.dispose();
-    }
-
-    const unsafeOpenCodeFallback = await inspectExtension("pi:openai-codex:gpt-5.5", [
-      "opencode:github-copilot:gpt-5.1",
-    ]);
-    try {
-      await expect(unsafeOpenCodeFallback.extension({
-        request: { metadata: unsafeOpenCodeFallback.metadata("invitation") },
-        runId: "opencode-unsafe-fallback",
-        context: {},
-      } as never)).rejects.toThrow(/fallback chain contains direct OpenCode/u);
-    } finally {
-      await unsafeOpenCodeFallback.manager.dispose();
-    }
   });
 
   it("builds an OS-owner-local responder and refuses a writable-by-others folder", async () => {
@@ -721,7 +691,7 @@ describe("local configuration transaction", () => {
     const scaffolded = JSON.parse(await readFile(configPath, "utf8")) as MonoAgentConfigJson;
     await writeFile(configPath, `${JSON.stringify({
       ...scaffolded,
-      runtime: { ...scaffolded.runtime, model: "pi:openai-codex:gpt-5.5" },
+      runtime: { ...scaffolded.runtime, model: "openai-codex:gpt-5.5" },
       tools: { ...scaffolded.tools, allowedTools: ["ReadSkill"] },
     }, null, 2)}\n`);
     const first = await readMonoAgentConfigJson(configPath);
@@ -746,10 +716,6 @@ describe("local configuration transaction", () => {
         id: "permission-proposal",
         patch: [{ op: "add", path: "/runtime/permissionMode", value: "bypassPermissions" }],
       }))).rejects.toThrow(/permissionMode/u);
-      await expect(envManager.prepareProposal(proposal(first.version, {
-        id: "route-safety-proposal",
-        patch: [{ op: "replace", path: "/runtime/routeSafety", value: "per-route-native" }],
-      }))).rejects.toThrow(/routeSafety|guided flow/u);
       await expect(envManager.prepareProposal(proposal(first.version, {
         id: "cron-proposal",
         patch: [{
@@ -1078,7 +1044,7 @@ describe("local configuration transaction", () => {
     const scaffolded = JSON.parse(await readFile(configPath, "utf8")) as MonoAgentConfigJson;
     await writeFile(configPath, `${JSON.stringify({
       ...scaffolded,
-      runtime: { ...scaffolded.runtime, model: "claude:claude-sonnet-4-6" },
+      runtime: { ...scaffolded.runtime, model: "anthropic:claude-sonnet-4-6" },
       tools: {
         ...scaffolded.tools,
         allowedTools: ["*"],
@@ -1116,7 +1082,7 @@ describe("local configuration transaction", () => {
     const scaffolded = JSON.parse(await readFile(configPath, "utf8")) as MonoAgentConfigJson;
     const base = {
       ...scaffolded,
-      runtime: { ...scaffolded.runtime, model: "claude:claude-sonnet-4-6" },
+      runtime: { ...scaffolded.runtime, model: "anthropic:claude-sonnet-4-6" },
     };
     await writeFile(configPath, `${JSON.stringify(base, null, 2)}\n`);
     const manager = await LocalConfigurationManager.create({ cwd: dir, configPath, env: {}, configure: true });
@@ -1202,7 +1168,7 @@ describe("local configuration transaction", () => {
     const current = await readMonoAgentConfigJson(configPath);
     const seeded: MonoAgentConfigJson = {
       ...current.json,
-      runtime: { ...current.json.runtime, model: "pi:openai-codex:gpt-5.5" },
+      runtime: { ...current.json.runtime, model: "openai-codex:gpt-5.5" },
       memory: {
         mode: "lite",
         path: ".mono-agent/memory",

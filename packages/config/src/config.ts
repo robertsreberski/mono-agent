@@ -2,16 +2,20 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 import {
-  assertExecutionModeCompatible,
-  defaultExecutionModeForModel,
-  isRuntimeExecutionMode,
+  isAutodiscoverableProviderId,
+  isPiBuiltinProvider,
+  localProviderDefinitionFor,
+  MODEL_REFERENCE_ECHO_MAX_BYTES,
+  MODEL_REFERENCE_REASON_MAX_BYTES,
   modelReferenceKey,
   parseMonoRuntimeModelReference,
   PI_TRANSPORTS,
   RuntimeAdapterError,
+  sanitizeModelReferenceText,
   validateLocalProviderDefinition,
+  validateProviderDefinition,
 } from "@mono-agent/runtime-adapter";
-import type { LocalProviderDefinition, LocalProviderModelDefinition, PiTransport, RuntimeExecutionMode } from "@mono-agent/runtime-adapter";
+import type { LocalProviderDefinition, LocalProviderModelDefinition, PiTransport, ProviderDefinition, RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import {
   SANDBOX_FALLBACKS,
   SANDBOX_MODES,
@@ -39,16 +43,14 @@ import {
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
   PERMISSION_MODES,
-  ROUTE_SAFETY_MODES,
 } from "./enums.js";
-import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, RouteSafetyMode, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
+import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, ResolvedProviders, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
   | "invalid_env"
   | "invalid_json"
-  | "invalid_model_reference"
-  | "incompatible_execution_mode";
+  | "invalid_model_reference";
 
 export interface MonoAgentConfigErrorDetails {
   readonly code?: MonoAgentConfigErrorCode;
@@ -82,6 +84,44 @@ export interface LoadMonoAgentConfigInput {
   readonly cwd: string;
 }
 
+/**
+ * Retired settings stay explicit here so every loader entry point gives the
+ * same repair instead of silently dropping a fallback chain or surfacing an
+ * unactionable unknown-key error from a host-owned schema.
+ *
+ * `message` repairs the JSON key; `envMessage` repairs the environment variable.
+ * They are separate on purpose: an operator whose `.env` still sets
+ * `MONO_AGENT_FALLBACK_MODELS` has no `runtime.fallbackModels` key to rewrite, so
+ * pointing at the JSON shape is not a repair they can carry out. Hand-migration is
+ * only safe if the repair names the surface the operator is actually holding.
+ */
+export const RETIRED_CONFIG_FIELDS = [
+  {
+    path: "runtime.executionMode",
+    env: "MONO_AGENT_EXECUTION_MODE",
+    message: "`runtime.executionMode` was removed; mono-agent runs only the Pi runtime (SDK). Delete the key.",
+    envMessage: "`MONO_AGENT_EXECUTION_MODE` was removed; mono-agent runs only the Pi runtime (SDK). Remove the variable from your environment and `.env`.",
+  },
+  {
+    path: "runtime.routeSafety",
+    env: "MONO_AGENT_ROUTE_SAFETY",
+    message: "`runtime.routeSafety` was removed; every route is Pi-native, so `per-route-native` has no meaning. Delete the key.",
+    envMessage: "`MONO_AGENT_ROUTE_SAFETY` was removed; every route is Pi-native, so `per-route-native` has no meaning. Remove the variable from your environment and `.env`.",
+  },
+  {
+    path: "runtime.fallbackModels",
+    env: "MONO_AGENT_FALLBACK_MODELS",
+    message: "`runtime.fallbackModels` was replaced by `runtime.fallbacks: [{ \"model\": \"...\" }]`. Replace the key with that shape.",
+    envMessage: "`MONO_AGENT_FALLBACK_MODELS` was replaced by `MONO_AGENT_FALLBACKS_JSON`, a JSON array of `{ \"model\": \"...\" }` objects. Remove the variable and re-express the chain there, or drop it into `runtime.fallbacks` in mono-agent.config.json.",
+  },
+  {
+    path: "memory.llm.executionMode",
+    env: "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
+    message: "`memory.llm.executionMode` was removed for the same reason as `runtime.executionMode`: mono-agent runs only the Pi runtime (SDK). Delete the key.",
+    envMessage: "`MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` was removed for the same reason as `MONO_AGENT_EXECUTION_MODE`: mono-agent runs only the Pi runtime (SDK). Remove the variable from your environment and `.env`.",
+  },
+] as const;
+
 const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MEMORY_MAX_BYTES = 64_000;
 const DEFAULT_EMBEDDINGS_MODELS: Record<MemoryEmbeddingsProvider, string> = {
@@ -96,7 +136,6 @@ const DEFAULT_EMBEDDINGS_MODELS: Record<MemoryEmbeddingsProvider, string> = {
 export const MEMORY_LLM_ENV_KEYS = [
   "MONO_AGENT_MEMORY_LLM_MODEL",
   "MONO_AGENT_MEMORY_LLM_PROVIDER",
-  "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
   "MONO_AGENT_MEMORY_LLM_ENDPOINT",
   "MONO_AGENT_MEMORY_LLM_TRACE",
   "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
@@ -114,14 +153,13 @@ const DEFAULT_PI_AUTH_PATH = resolve(homedir(), ".pi", "agent", "auth.json");
 export const MAX_AGENT_NAME_LENGTH = 80;
 
 export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentConfig {
+  assertNoRetiredConfigEnv(input.env);
   const cwd = normalizeCwd(input.cwd);
   const agentName = readAgentName(input.env.MONO_AGENT_NAME);
   const model = parseModel(readRequired(input.env, "MONO_AGENT_MODEL"));
-  const fallbackModels = readFallbackModels(input.env);
   const fallbacks = readFallbacks(input.env);
   const retry = readRetryConfig(input.env);
-  assertUniqueFallbackRoutes(model, fallbackModels, fallbacks);
-  const executionMode = parseExecutionMode(input.env.MONO_AGENT_EXECUTION_MODE, model);
+  assertUniqueFallbackRoutes(model, fallbacks);
   const maxTurns = readMaxTurns(input.env.MONO_AGENT_MAX_TURNS);
   const compaction = readRuntimeCompactionConfig(input.env);
   const workspace = readPath(input.env.MONO_AGENT_WORKSPACE, cwd, cwd);
@@ -150,31 +188,23 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   // Pi's auth path is routinely documented with a home-relative `~` prefix.
   // `path.resolve()` treats that prefix as a literal directory, so keep the
   // expansion explicit and limited to this user-owned credential path.
-  const piAuthPath = readUserPath(input.env.MONO_AGENT_PI_AUTH_PATH, cwd, DEFAULT_PI_AUTH_PATH);
-  const localProviders = readLocalProviders(input.env);
-  const piNative = readPiNativeProviderConfig(input.env, cwd);
-
-  assertModeCompatibility(model, executionMode);
+  const providerEnvelope = readConfiguredProviders(input.env);
+  const providerEnv = layerProviderReservedValuesOntoEnv(providerEnvelope, input.env);
+  const piAuthPath = readUserPath(providerEnv.MONO_AGENT_PI_AUTH_PATH, cwd, DEFAULT_PI_AUTH_PATH);
+  const piNative = readPiNativeProviderConfig(providerEnv, cwd);
+  const localProviders = providerEnvelope.entries
+    .map((provider) => localProviderDefinitionFor(provider))
+    .filter((provider): provider is LocalProviderDefinition => provider !== undefined);
 
   const effort = readEffort(input.env.MONO_AGENT_EFFORT);
-  const routeSafety = readChoice<RouteSafetyMode>(
-    input.env.MONO_AGENT_ROUTE_SAFETY,
-    "MONO_AGENT_ROUTE_SAFETY",
-    ROUTE_SAFETY_MODES,
-    "uniform",
-    invalidEnv,
-  );
   const permissionMode = readPermissionMode(input.env.MONO_AGENT_PERMISSION_MODE);
   const concurrency = readConcurrencyConfig(input.env);
   const subagents = readSubagentsConfig(input.env, cwd);
-  assertNoStaticAcpRoutes(model, fallbackModels, fallbacks, subagents);
+  const subagentRoutes = subagentProviderRoutes(subagents);
   const runtime: MonoAgentConfig["runtime"] = {
     model,
-    ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
     ...(fallbacks.length === 0 ? {} : { fallbacks }),
     retry,
-    routeSafety,
-    executionMode,
     ...(maxTurns === undefined ? {} : { maxTurns }),
     compaction,
     workspace,
@@ -247,6 +277,14 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     },
   };
 
+  const providers: NonNullable<MonoAgentConfig["providers"]> = {
+    piAuthPath,
+    ...(providerEnvelope.entries.length === 0 ? {} : { entries: providerEnvelope.entries }),
+    ...(localProviders.length === 0 ? {} : { local: localProviders }),
+    ...(piNative === undefined ? {} : { piNative }),
+  };
+  assertConfiguredProviderCoverage(model, fallbacks, resolveConfiguredProviders({ providers }), subagentRoutes);
+
   const config: MonoAgentConfig = {
     ...(agentName === undefined ? {} : { agent: { name: agentName } }),
     runtime,
@@ -262,17 +300,140 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     },
     traceability,
     ...(observability === undefined ? {} : { observability }),
-    providers: {
-      piAuthPath,
-      ...(localProviders.length === 0 ? {} : { local: localProviders }),
-      ...(piNative === undefined ? {} : { piNative }),
-    },
+    providers,
   };
 
   if (memory !== undefined) {
     return { ...config, memory };
   }
   return config;
+}
+
+/**
+ * Normalize loaded/programmatic provider config into one deterministic view.
+ * Loaded configs carry `entries`; the `local` fallback preserves compatibility
+ * for embedders that still construct the pre-map shape by hand.
+ */
+export function resolveConfiguredProviders(
+  config: Pick<MonoAgentConfig, "providers">,
+): ResolvedProviders {
+  const rawEntries = config.providers?.entries ?? config.providers?.local ?? [];
+  const byId = new Map<string, ProviderDefinition>();
+  for (const rawEntry of rawEntries) {
+    const entry = validateProviderDefinition(rawEntry);
+    if (byId.has(entry.id)) {
+      throw new MonoAgentConfigError(
+        "invalid_env",
+        `Provider id "${entry.id}" is configured more than once. Remove the duplicate definition.`,
+        { providerId: entry.id },
+      );
+    }
+    byId.set(entry.id, entry);
+  }
+  const entries = [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+  return {
+    entries,
+    byId: new Map(entries.map((entry) => [entry.id, entry])),
+    piAuthPath: config.providers?.piAuthPath ?? DEFAULT_PI_AUTH_PATH,
+    ...(config.providers?.piNative === undefined ? {} : { piNative: config.providers.piNative }),
+  };
+}
+
+/** One authored model reference to validate, with the config path that owns it. */
+export interface ProviderCoverageRoute {
+  readonly model: RuntimeModelReference;
+  /** Config path used verbatim in the failure message, e.g. `runtime.model`. */
+  readonly path: string;
+}
+
+/**
+ * Every authored `subagents.definitions[].model` is a real route: the harness
+ * builds a runtime for it exactly like a fallback, so it must pass the same
+ * provider gate. Left unchecked, a typo'd provider id loaded fine and only blew
+ * up mid-turn, inside a subagent, where the failure is hardest to attribute.
+ */
+function subagentProviderRoutes(
+  subagents: MonoAgentConfig["subagents"] | undefined,
+): readonly ProviderCoverageRoute[] {
+  return (subagents?.definitions ?? []).flatMap((definition, index) =>
+    definition.model === undefined
+      ? []
+      : [{ model: definition.model, path: `subagents.definitions[${index}].model` }],
+  );
+}
+
+/**
+ * Fail early when a route names neither Pi's builtin catalog, an explicitly
+ * configured provider, nor one of the two zero-config local discovery ids.
+ * `additionalRoutes` carries model references authored outside
+ * `runtime.model`/`runtime.fallbacks[]` (today: subagent profiles).
+ */
+export function assertConfiguredProviderCoverage(
+  model: RuntimeModelReference,
+  fallbacks: readonly RuntimeFallbackConfig[] | undefined,
+  providers: ResolvedProviders,
+  additionalRoutes: readonly ProviderCoverageRoute[] = [],
+): void {
+  const routes: readonly ProviderCoverageRoute[] = [
+    { model, path: "runtime.model" },
+    ...(fallbacks ?? []).map((fallback, index) => ({
+      model: fallback.model,
+      path: `runtime.fallbacks[${index}].model`,
+    })),
+    ...additionalRoutes,
+  ];
+  for (const route of routes) {
+    const providerId = route.model.provider;
+    const configured = providers.byId.get(providerId);
+    // `enabled: false` is deliberately NOT a load error: for a local provider it
+    // is a diagnosable state that `doctor` reports as waiting, and turning that
+    // into a crash would break a working contract. What it must do is stop the
+    // provider being advertised as selectable, which the catalog now enforces.
+    if (isPiBuiltinProvider(providerId) || isAutodiscoverableProviderId(providerId)) {
+      continue;
+    }
+    // A provider Pi does not know needs an endpoint to be reachable. Accepting a
+    // bare `{}` here produced a config that validated, advertised an empty
+    // catalog, and only failed at turn time with `pi model not found` -- and the
+    // old repair text recommended exactly that bare entry.
+    if (configured?.baseUrl !== undefined && configured.baseUrl.length > 0) {
+      continue;
+    }
+    const repair = configured === undefined
+      ? `add \"providers\": { \"${providerId}\": { \"type\": \"openai_compat\", \"baseUrl\": \"https://...\" } } to mono-agent.config.json`
+      : `give providers.${providerId} a \"baseUrl\" (and \"type\"), because Pi has no built-in catalog for it`;
+    throw new MonoAgentConfigError(
+      "invalid_model_reference",
+      `Provider "${providerId}" used by ${route.path} is not available; ${repair}.`,
+      { providerId, path: route.path, reason: repair },
+    );
+  }
+}
+
+/**
+ * Reject a retired field only when it still carries a value. Every reader in
+ * this loader treats an empty env var as unset (`normalizeOptionalString`,
+ * `readCsv`) and the layered loader drops empty env values before layering, so
+ * `MONO_AGENT_FALLBACK_MODELS=` never configured anything even before the field
+ * was retired -- it loaded as "no fallbacks". Rejecting it would turn an inert
+ * leftover line in a deployed `.env` into a startup crash with no stale setting
+ * behind it. A non-empty value is still a real, silently-dropped setting and
+ * still fails closed.
+ */
+function assertNoRetiredConfigEnv(env: Record<string, string | undefined>): void {
+  const retired = RETIRED_CONFIG_FIELDS.filter(
+    (field) => normalizeOptionalString(env[field.env]) !== undefined,
+  );
+  if (retired.length === 0) return;
+  // Report all of them, not just the first: a hand-migration is a single edit pass, and
+  // one-at-a-time discovery turns a four-variable `.env` into four stop/edit/re-run cycles.
+  // `env`/`path` stay the first entry so existing single-key consumers are unchanged.
+  throw new MonoAgentConfigError("invalid_env", retired.map((field) => field.envMessage).join(" "), {
+    env: retired[0]!.env,
+    path: retired[0]!.path,
+    envs: retired.map((field) => field.env),
+    paths: retired.map((field) => field.path),
+  });
 }
 
 export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgentConfig {
@@ -342,45 +503,52 @@ function redactApiKeyBlock<T extends { readonly apiKey?: string }>(
   };
 }
 
+/**
+ * The concrete repair for a rejected model reference (`codex:x` -> `openai-codex:x`, a tier
+ * alias, the `<provider>:<model>` grammar) is built by the kernel parser and nested by the
+ * runtime adapter in `details.reason`. Config used to keep only the adapter's generic outer
+ * sentence, which is the one string every operator surface prints — so the repair the code
+ * already knew was thrown away before anyone saw it. Unwrap one layer so the message carries
+ * the innermost, actionable text.
+ */
+function modelReferenceReason(error: unknown): string {
+  const reason = error instanceof RuntimeAdapterError && typeof error.details.reason === "string"
+    ? error.details.reason
+    : error instanceof Error
+      ? error.message
+      : String(error);
+  // The adapter already bounds its own reason; re-bounding is a no-op there and is what
+  // covers the branches above it, where the text is an arbitrary thrown value.
+  return sanitizeModelReferenceText(reason, MODEL_REFERENCE_REASON_MAX_BYTES);
+}
+
+/**
+ * Bound and neutralize the operator's own value before quoting it back at them. Naming the
+ * rejected value is the half of the message that tells an operator *which* field to open, so
+ * it stays -- but it is untrusted, unbounded text on its way into durable operator-shared
+ * output, and it is treated as such.
+ */
+function modelReferenceEcho(raw: string): string {
+  return sanitizeModelReferenceText(raw, MODEL_REFERENCE_ECHO_MAX_BYTES);
+}
+
 function parseModel(raw: string): MonoAgentConfig["runtime"]["model"] {
   try {
     return parseMonoRuntimeModelReference(raw);
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new MonoAgentConfigError("invalid_model_reference", "MONO_AGENT_MODEL is not a valid runtime model reference.", {
-      env: "MONO_AGENT_MODEL",
-      reason,
-    });
+    const reason = modelReferenceReason(error);
+    throw new MonoAgentConfigError(
+      "invalid_model_reference",
+      `MONO_AGENT_MODEL \`${modelReferenceEcho(raw)}\` is not a valid runtime model reference: ${reason}`,
+      { env: "MONO_AGENT_MODEL", reason },
+    );
   }
-}
-
-function readFallbackModels(env: Record<string, string | undefined>): readonly MonoAgentConfig["runtime"]["model"][] {
-  const models = readCsv(env.MONO_AGENT_FALLBACK_MODELS).map((raw) => {
-    try {
-      return parseMonoRuntimeModelReference(raw);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new MonoAgentConfigError(
-        "invalid_model_reference",
-        `MONO_AGENT_FALLBACK_MODELS entry \`${raw}\` is not a valid runtime model reference.`,
-        { env: "MONO_AGENT_FALLBACK_MODELS", reason },
-      );
-    }
-  });
-  return models;
 }
 
 function readFallbacks(env: Record<string, string | undefined>): readonly RuntimeFallbackConfig[] {
   const raw = normalizeOptionalString(env.MONO_AGENT_FALLBACKS_JSON);
   if (raw === undefined) {
     return [];
-  }
-  if (normalizeOptionalString(env.MONO_AGENT_FALLBACK_MODELS) !== undefined) {
-    throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_FALLBACKS_JSON and legacy MONO_AGENT_FALLBACK_MODELS cannot both be set.",
-      { env: "MONO_AGENT_FALLBACKS_JSON", conflictsWith: "MONO_AGENT_FALLBACK_MODELS" },
-    );
   }
   let parsed: unknown;
   try {
@@ -595,10 +763,11 @@ function parseSubagentModel(value: unknown, name: string): MonoAgentConfig["runt
   try {
     return parseMonoRuntimeModelReference(value);
   } catch (error) {
+    const reason = modelReferenceReason(error);
     throw new MonoAgentConfigError(
       "invalid_model_reference",
-      `MONO_AGENT_SUBAGENTS_JSON definition "${name}" model is not a valid runtime model reference.`,
-      { env: "MONO_AGENT_SUBAGENTS_JSON", reason: error instanceof Error ? error.message : String(error) },
+      `MONO_AGENT_SUBAGENTS_JSON definition "${name}" model \`${modelReferenceEcho(value)}\` is not a valid runtime model reference: ${reason}`,
+      { env: "MONO_AGENT_SUBAGENTS_JSON", reason },
     );
   }
 }
@@ -668,24 +837,21 @@ function parseFallbackModel(raw: string, env: string, index: number): MonoAgentC
   try {
     return parseMonoRuntimeModelReference(raw.trim());
   } catch (error) {
+    const reason = modelReferenceReason(error);
     throw new MonoAgentConfigError(
       "invalid_model_reference",
-      `${env} entry ${index + 1} model \`${raw}\` is not a valid runtime model reference.`,
-      { env, index, reason: error instanceof Error ? error.message : String(error) },
+      `${env} entry ${index + 1} model \`${modelReferenceEcho(raw)}\` is not a valid runtime model reference: ${reason}`,
+      { env, index, reason },
     );
   }
 }
 
 function assertUniqueFallbackRoutes(
   primary: MonoAgentConfig["runtime"]["model"],
-  legacy: readonly MonoAgentConfig["runtime"]["model"][],
   canonical: readonly RuntimeFallbackConfig[],
 ): void {
   const seen = new Map<string, string>([[modelReferenceKey(primary), "runtime.model"]]);
-  const routes = [
-    ...legacy.map((model, index) => ({ model, path: `runtime.fallbackModels[${index}]` })),
-    ...canonical.map((entry, index) => ({ model: entry.model, path: `runtime.fallbacks[${index}]` })),
-  ];
+  const routes = canonical.map((entry, index) => ({ model: entry.model, path: `runtime.fallbacks[${index}]` }));
   for (const route of routes) {
     const key = modelReferenceKey(route.model);
     const first = seen.get(key);
@@ -698,52 +864,6 @@ function assertUniqueFallbackRoutes(
     }
     seen.set(key, route.path);
   }
-}
-
-function assertNoStaticAcpRoutes(
-  primary: MonoAgentConfig["runtime"]["model"],
-  legacy: readonly MonoAgentConfig["runtime"]["model"][],
-  canonical: readonly RuntimeFallbackConfig[],
-  subagents: MonoAgentConfig["subagents"],
-): void {
-  const routes: Array<{
-    model: MonoAgentConfig["runtime"]["model"];
-    path: string;
-    env: string;
-  }> = [
-    { model: primary, path: "runtime.model", env: "MONO_AGENT_MODEL" },
-    ...legacy.map((model, index) => ({
-      model,
-      path: `runtime.fallbackModels[${index}]`,
-      env: "MONO_AGENT_FALLBACK_MODELS",
-    })),
-    ...canonical.map((entry, index) => ({
-      model: entry.model,
-      path: `runtime.fallbacks[${index}]`,
-      env: "MONO_AGENT_FALLBACKS_JSON",
-    })),
-  ];
-  if (subagents?.enabled === true) {
-    for (const [index, definition] of (subagents.definitions || []).entries()) {
-      if (definition.model === undefined) continue;
-      routes.push({
-        model: definition.model,
-        path: `subagents.definitions[${index}].model`,
-        env: "MONO_AGENT_SUBAGENTS_JSON",
-      });
-    }
-  }
-  const route = routes.find((candidate) => candidate.model.sdk === "acp");
-  if (route === undefined) return;
-  throw new MonoAgentConfigError(
-    "incompatible_execution_mode",
-    "Static mono-agent configuration cannot consume an ACP profile because the app has no host profile resolver. Use the programmatic runtime adapter from a host that supplies resolveAcpProfile.",
-    {
-      env: route.env,
-      path: route.path,
-      model: modelReferenceKey(route.model),
-    },
-  );
 }
 
 function readAgentName(raw: string | undefined): string | undefined {
@@ -926,33 +1046,6 @@ function readMemoryArtifactRetentionConfig(
       invalidEnv,
     ),
   };
-}
-
-function parseExecutionMode(raw: string | undefined, model: MonoAgentConfig["runtime"]["model"]): RuntimeExecutionMode {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return defaultExecutionModeForModel(model);
-  }
-  if (!isRuntimeExecutionMode(normalized)) {
-    throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_EXECUTION_MODE must be sdk or cli.", {
-      env: "MONO_AGENT_EXECUTION_MODE",
-    });
-  }
-  return normalized;
-}
-
-function assertModeCompatibility(model: MonoAgentConfig["runtime"]["model"], executionMode: RuntimeExecutionMode): void {
-  try {
-    assertExecutionModeCompatible(model, executionMode);
-  } catch (error) {
-    if (error instanceof RuntimeAdapterError && error.code === "incompatible_execution_mode") {
-      throw new MonoAgentConfigError("incompatible_execution_mode", "Runtime model and execution mode are incompatible.", {
-        env: "MONO_AGENT_EXECUTION_MODE",
-        reason: error.message,
-      });
-    }
-    throw error;
-  }
 }
 
 function readSandboxConfig(env: Record<string, string | undefined>, workspace: string): MonoAgentConfig["sandbox"] | undefined {
@@ -1141,7 +1234,6 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
       "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
       "MONO_AGENT_MEMORY_LLM_PROVIDER",
       "MONO_AGENT_MEMORY_LLM_MODEL",
-      "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
       "MONO_AGENT_MEMORY_LLM_ENDPOINT",
       "MONO_AGENT_MEMORY_LLM_TRACE",
       "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
@@ -1459,18 +1551,16 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
         { env: "MONO_AGENT_MEMORY_LLM_ENDPOINT" },
       );
     }
-    let model: MonoAgentConfig["runtime"]["model"];
     try {
-      model = parseMonoRuntimeModelReference(rawModel);
+      parseMonoRuntimeModelReference(rawModel);
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
+      const reason = modelReferenceReason(error);
       throw new MonoAgentConfigError(
         "invalid_model_reference",
-        "MONO_AGENT_MEMORY_LLM_MODEL is not a valid runtime model reference for agent-host memory LLM.",
+        `MONO_AGENT_MEMORY_LLM_MODEL \`${modelReferenceEcho(rawModel)}\` is not a valid runtime model reference for agent-host memory LLM: ${reason}`,
         { env: "MONO_AGENT_MEMORY_LLM_MODEL", reason },
       );
     }
-    const executionMode = readMemoryLlmExecutionMode(env.MONO_AGENT_MEMORY_LLM_EXECUTION_MODE, model);
     const trace =
       normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_TRACE) === undefined
         ? undefined
@@ -1482,17 +1572,9 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
     return {
       provider,
       model: rawModel,
-      executionMode,
       ...(trace === undefined ? {} : { trace }),
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
     };
-  }
-  if (normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_EXECUTION_MODE) !== undefined) {
-    throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE is only valid when MONO_AGENT_MEMORY_LLM_PROVIDER is agent-host.",
-      { env: "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE" },
-    );
   }
   if (normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_TRACE) !== undefined) {
     throw new MonoAgentConfigError(
@@ -1517,49 +1599,6 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
 
 function hasMemoryLlmConfig(env: Record<string, string | undefined>): boolean {
   return MEMORY_LLM_ENV_KEYS.some((name) => normalizeOptionalString(env[name]) !== undefined);
-}
-
-function readMemoryLlmExecutionMode(
-  raw: string | undefined,
-  model: MonoAgentConfig["runtime"]["model"],
-): RuntimeExecutionMode {
-  const normalized = normalizeOptionalString(raw);
-  let executionMode: RuntimeExecutionMode;
-  if (normalized === undefined) {
-    executionMode = defaultExecutionModeForModel(model);
-  } else {
-    if (!isRuntimeExecutionMode(normalized)) {
-      throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE must be sdk or cli.", {
-        env: "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
-      });
-    }
-    executionMode = normalized;
-  }
-  try {
-    assertExecutionModeCompatible(model, executionMode);
-  } catch (error) {
-    if (error instanceof RuntimeAdapterError && error.code === "incompatible_execution_mode") {
-      throw new MonoAgentConfigError(
-        "incompatible_execution_mode",
-        "memory.llm agent-host model and execution mode are incompatible.",
-        {
-          env: normalized === undefined ? "MONO_AGENT_MEMORY_LLM_MODEL" : "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
-          reason: error.message,
-        },
-      );
-    }
-    throw error;
-  }
-  if (executionMode !== "sdk") {
-    throw new MonoAgentConfigError(
-      "incompatible_execution_mode",
-      "memory.llm provider agent-host currently supports SDK execution mode only; CLI-backed memory LLMs are rejected because they cannot yet enforce no external actions.",
-      {
-        env: normalized === undefined ? "MONO_AGENT_MEMORY_LLM_MODEL" : "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
-      },
-    );
-  }
-  return executionMode;
 }
 
 /**
@@ -1806,72 +1845,139 @@ function redactObservabilityConfig(
   };
 }
 
-function readLocalProviders(env: Record<string, string | undefined>): readonly LocalProviderDefinition[] {
+interface ConfiguredProviderEnvelope {
+  readonly entries: readonly ProviderDefinition[];
+  readonly piAuthPath?: string;
+  readonly piNative?: Readonly<Record<string, unknown>>;
+}
+
+const RESERVED_PROVIDER_KEYS = new Set(["local", "piAuthPath", "piNative"]);
+const PROVIDER_ENTRY_KEYS = new Set([
+  "apiKey",
+  "apiKeyEnv",
+  "baseUrl",
+  "enabled",
+  "maxAdvertisedModels",
+  "models",
+  "trustPublicUrl",
+  "type",
+]);
+
+function readConfiguredProviders(env: Record<string, string | undefined>): ConfiguredProviderEnvelope {
+  const providerJson = normalizeOptionalString(env.MONO_AGENT_PROVIDERS_JSON);
+  let parsed: Record<string, unknown> = {};
+  if (providerJson !== undefined) {
+    let value: unknown;
+    try {
+      value = JSON.parse(providerJson);
+    } catch (error) {
+      throw new MonoAgentConfigError("invalid_json", "MONO_AGENT_PROVIDERS_JSON must contain valid JSON.", {
+        env: "MONO_AGENT_PROVIDERS_JSON",
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+    if (!isRecord(value) || Array.isArray(value)) {
+      throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_PROVIDERS_JSON must be an object.", {
+        env: "MONO_AGENT_PROVIDERS_JSON",
+      });
+    }
+    parsed = value;
+  }
+
+  const entries = new Map<string, { readonly provider: ProviderDefinition; readonly path: string }>();
+  for (const id of Object.keys(parsed).filter((key) => !RESERVED_PROVIDER_KEYS.has(key)).sort()) {
+    addConfiguredProvider(entries, normalizeProviderFromUnknown(id, parsed[id], env, `providers.${id}`, false), `providers.${id}`);
+  }
+
+  const legacyFromEnv = readLegacyProviderEnv(env);
+  const legacyFromMap = parsed.local;
+  if (legacyFromEnv.length === 0 && legacyFromMap !== undefined) {
+    if (!Array.isArray(legacyFromMap)) {
+      throw new MonoAgentConfigError("invalid_env", "providers.local must be an array.", { env: "MONO_AGENT_PROVIDERS_JSON" });
+    }
+    legacyFromMap.forEach((provider, index) => {
+      const path = `providers.local[${index}]`;
+      const normalized = normalizeLegacyProviderFromUnknown(provider, env, path);
+      addConfiguredProvider(entries, normalized, path);
+    });
+  }
+
+  for (const legacy of legacyFromEnv) {
+    addConfiguredProvider(entries, legacy.provider, legacy.path);
+  }
+
+  const piAuthPath = parsed.piAuthPath === undefined
+    ? undefined
+    : readObjectString(parsed, "piAuthPath", "providers", false);
+  const piNative = parsed.piNative === undefined
+    ? undefined
+    : readProviderPiNative(parsed.piNative);
+  return {
+    entries: [...entries.values()].map(({ provider }) => provider).sort((a, b) => a.id.localeCompare(b.id)),
+    ...(piAuthPath === undefined ? {} : { piAuthPath }),
+    ...(piNative === undefined ? {} : { piNative }),
+  };
+}
+
+function readLegacyProviderEnv(
+  env: Record<string, string | undefined>,
+): readonly { readonly provider: LocalProviderDefinition; readonly path: string }[] {
   const registryJson = normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDERS_JSON);
   if (registryJson !== undefined) {
-    return readLocalProvidersJson(registryJson, env);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(registryJson);
+    } catch (error) {
+      throw new MonoAgentConfigError("invalid_json", "MONO_AGENT_LOCAL_PROVIDERS_JSON must contain valid JSON.", {
+        env: "MONO_AGENT_LOCAL_PROVIDERS_JSON",
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+    const rawProviders = Array.isArray(parsed)
+      ? parsed
+      : isRecord(parsed) && Array.isArray(parsed.local)
+        ? parsed.local
+        : undefined;
+    if (rawProviders === undefined) {
+      throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_LOCAL_PROVIDERS_JSON must be an array or an object with local array.", {
+        env: "MONO_AGENT_LOCAL_PROVIDERS_JSON",
+      });
+    }
+    return rawProviders.map((provider, index) => {
+      const path = `MONO_AGENT_LOCAL_PROVIDERS_JSON[${index}]`;
+      return { provider: normalizeLegacyProviderFromUnknown(provider, env, path), path };
+    });
   }
 
   const id = normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_ID);
   const type = normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_TYPE);
   const baseUrl = normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_BASE_URL);
-  const hasOneProviderEnv = id !== undefined ||
-    type !== undefined ||
-    baseUrl !== undefined ||
-    normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_ENABLED) !== undefined ||
-    normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL) !== undefined ||
-    normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_API_KEY) !== undefined;
+  const hasOneProviderEnv = id !== undefined
+    || type !== undefined
+    || baseUrl !== undefined
+    || normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_ENABLED) !== undefined
+    || normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL) !== undefined
+    || normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_API_KEY) !== undefined;
   if (!hasOneProviderEnv) {
     return [];
   }
-
-  const provider = normalizeLocalProviderFromUnknown({
-    id: id ?? "ollama",
-    type: type ?? "ollama",
-    ...(baseUrl === undefined ? {} : { baseUrl }),
-    enabled: readBoolean(env.MONO_AGENT_LOCAL_PROVIDER_ENABLED, "MONO_AGENT_LOCAL_PROVIDER_ENABLED", true, invalidEnv),
-    trustPublicUrl: readBoolean(env.MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL, "MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL", false, invalidEnv),
-    ...(normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_API_KEY) === undefined
-      ? {}
-      : { apiKey: normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_API_KEY) as string }),
-  }, env, "MONO_AGENT_LOCAL_PROVIDER");
-
-  return [provider];
+  const path = "MONO_AGENT_LOCAL_PROVIDER";
+  return [{
+    path,
+    provider: normalizeLegacyProviderFromUnknown({
+      id: id ?? "ollama",
+      type: type ?? "ollama",
+      ...(baseUrl === undefined ? {} : { baseUrl }),
+      enabled: readBoolean(env.MONO_AGENT_LOCAL_PROVIDER_ENABLED, "MONO_AGENT_LOCAL_PROVIDER_ENABLED", true, invalidEnv),
+      trustPublicUrl: readBoolean(env.MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL, "MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL", false, invalidEnv),
+      ...(normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_API_KEY) === undefined
+        ? {}
+        : { apiKey: normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_API_KEY) as string }),
+    }, env, path),
+  }];
 }
 
-function readLocalProvidersJson(
-  value: string,
-  env: Record<string, string | undefined>,
-): readonly LocalProviderDefinition[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch (error) {
-    throw new MonoAgentConfigError("invalid_json", "MONO_AGENT_LOCAL_PROVIDERS_JSON must contain valid JSON.", {
-      env: "MONO_AGENT_LOCAL_PROVIDERS_JSON",
-      reason: error instanceof Error ? error.message : String(error),
-    });
-  }
-
-  const rawProviders = Array.isArray(parsed)
-    ? parsed
-    : isRecord(parsed) && Array.isArray(parsed.local)
-      ? parsed.local
-      : undefined;
-  if (rawProviders === undefined) {
-    throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_LOCAL_PROVIDERS_JSON must be an array or an object with local array.", {
-      env: "MONO_AGENT_LOCAL_PROVIDERS_JSON",
-    });
-  }
-
-  return rawProviders.map((provider, index) => normalizeLocalProviderFromUnknown(
-    provider,
-    env,
-    `MONO_AGENT_LOCAL_PROVIDERS_JSON[${index}]`,
-  ));
-}
-
-function normalizeLocalProviderFromUnknown(
+function normalizeLegacyProviderFromUnknown(
   value: unknown,
   env: Record<string, string | undefined>,
   source: string,
@@ -1879,28 +1985,54 @@ function normalizeLocalProviderFromUnknown(
   if (!isRecord(value) || Array.isArray(value)) {
     throw new MonoAgentConfigError("invalid_env", `${source} must be an object.`, { env: source });
   }
-
   const id = readObjectString(value, "id", source, true) as string;
-  const type = readObjectString(value, "type", source, true) as LocalProviderDefinition["type"];
+  const provider = normalizeProviderFromUnknown(id, value, env, source, true);
+  return provider as LocalProviderDefinition;
+}
+
+function normalizeProviderFromUnknown(
+  id: string,
+  value: unknown,
+  env: Record<string, string | undefined>,
+  source: string,
+  requireType: boolean,
+): ProviderDefinition {
+  if (!isRecord(value) || Array.isArray(value)) {
+    throw new MonoAgentConfigError("invalid_env", `${source} must be an object.`, { env: source });
+  }
+  const unknownKeys = Object.keys(value).filter((key) =>
+    !(requireType && key === "id") && !PROVIDER_ENTRY_KEYS.has(key),
+  ).sort();
+  if (unknownKeys.length > 0) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${source} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.`,
+      { env: source, unknownKeys },
+    );
+  }
+  const type = readObjectString(value, "type", source, requireType) as ProviderDefinition["type"];
   const baseUrl = readObjectString(value, "baseUrl", source, false);
   const apiKeyEnv = readObjectString(value, "apiKeyEnv", source, false);
   const apiKeyFromEnv = apiKeyEnv === undefined ? undefined : normalizeOptionalString(env[apiKeyEnv]);
   const inlineApiKey = readObjectString(value, "apiKey", source, false);
   const apiKey = apiKeyFromEnv ?? inlineApiKey;
   const models = readLocalProviderModels(value.models, source);
-  const provider: LocalProviderDefinition = {
+  const maxAdvertisedModels = readObjectInteger(value, "maxAdvertisedModels", source, { min: 1, max: 200 });
+  const provider: ProviderDefinition = {
     id,
-    type,
+    ...(type === undefined ? {} : { type }),
     ...(baseUrl === undefined ? {} : { baseUrl }),
     enabled: readObjectBoolean(value, "enabled", true, source),
     trustPublicUrl: readObjectBoolean(value, "trustPublicUrl", false, source),
     ...(apiKeyEnv === undefined ? {} : { apiKeyEnv }),
     ...(apiKey === undefined ? {} : { apiKey }),
     ...(models.length === 0 ? {} : { models }),
+    ...(maxAdvertisedModels === undefined ? {} : { maxAdvertisedModels }),
   };
-
   try {
-    return validateLocalProviderDefinition(provider);
+    return requireType
+      ? validateLocalProviderDefinition(provider as LocalProviderDefinition)
+      : validateProviderDefinition(provider);
   } catch (error) {
     if (error instanceof RuntimeAdapterError) {
       throw new MonoAgentConfigError("invalid_env", error.message, {
@@ -1910,6 +2042,59 @@ function normalizeLocalProviderFromUnknown(
     }
     throw error;
   }
+}
+
+function addConfiguredProvider(
+  entries: Map<string, { readonly provider: ProviderDefinition; readonly path: string }>,
+  provider: ProviderDefinition,
+  path: string,
+): void {
+  const existing = entries.get(provider.id);
+  if (existing !== undefined) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `Provider id "${provider.id}" is configured twice at ${existing.path} and ${path}. Remove one definition.`,
+      { env: path, providerId: provider.id, paths: [existing.path, path] },
+    );
+  }
+  entries.set(provider.id, { provider, path });
+}
+
+function readProviderPiNative(value: unknown): Readonly<Record<string, unknown>> {
+  const source = "providers.piNative";
+  const record = readPlainObject(value, source);
+  const allowed = new Set(["transport", "piMaxRetries", "maxRetryDelayMs", "piSessionsRoot"]);
+  const unknownKeys = Object.keys(record).filter((key) => !allowed.has(key)).sort();
+  if (unknownKeys.length > 0) {
+    throw new MonoAgentConfigError("invalid_env", `${source} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.`, {
+      env: source,
+      unknownKeys,
+    });
+  }
+  return record;
+}
+
+function layerProviderReservedValuesOntoEnv(
+  providers: ConfiguredProviderEnvelope,
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const layered = { ...env };
+  if (normalizeOptionalString(env.MONO_AGENT_PI_AUTH_PATH) === undefined && providers.piAuthPath !== undefined) {
+    layered.MONO_AGENT_PI_AUTH_PATH = providers.piAuthPath;
+  }
+  const mappings = [
+    ["transport", "MONO_AGENT_PI_TRANSPORT"],
+    ["piMaxRetries", "MONO_AGENT_PI_MAX_RETRIES"],
+    ["maxRetryDelayMs", "MONO_AGENT_MAX_RETRY_DELAY_MS"],
+    ["piSessionsRoot", "MONO_AGENT_PI_SESSIONS_ROOT"],
+  ] as const;
+  for (const [property, envKey] of mappings) {
+    const value = providers.piNative?.[property];
+    if (normalizeOptionalString(env[envKey]) === undefined && value !== undefined) {
+      layered[envKey] = String(value);
+    }
+  }
+  return layered;
 }
 
 function readLocalProviderModels(value: unknown, source: string): readonly LocalProviderModelDefinition[] {
@@ -1952,18 +2137,27 @@ function withRedactedProviders(
       // pi-native knobs carry no secrets — pass them through so redacted config
       // surfaces (e.g. the TUI config pane) still show them.
       ...(config.providers.piNative === undefined ? {} : { piNative: config.providers.piNative }),
+      ...(config.providers.entries === undefined
+        ? {}
+        : {
+            entries: config.providers.entries.map((provider) => redactProviderDefinition(provider)),
+          }),
       ...(config.providers.local === undefined
         ? {}
         : {
-            local: config.providers.local.map((provider) => {
-              const { apiKey, ...safeProvider } = provider;
-              return {
-                ...safeProvider,
-                ...(apiKey === undefined ? {} : { apiKey: redactedSecret(apiKey) }),
-              };
-            }),
+            local: config.providers.local.map((provider) => redactProviderDefinition(provider)),
           }),
     },
+  };
+}
+
+function redactProviderDefinition<T extends ProviderDefinition>(provider: T): Omit<T, "apiKey"> & {
+  readonly apiKey?: ReturnType<typeof redactedSecret>;
+} {
+  const { apiKey, ...safeProvider } = provider;
+  return {
+    ...safeProvider,
+    ...(apiKey === undefined ? {} : { apiKey: redactedSecret(apiKey) }),
   };
 }
 

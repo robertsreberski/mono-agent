@@ -1200,7 +1200,6 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
         type: "run_config",
         model: "pi:openai-codex:gpt-5.5",
         effort: "high",
-        executionMode: "sdk",
         overridden: true,
         timestamp: "t",
       }),
@@ -1210,7 +1209,6 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
       data: {
         model: "pi:openai-codex:gpt-5.5",
         effort: "high",
-        executionMode: "sdk",
         overridden: true,
         timestamp: "t",
       },

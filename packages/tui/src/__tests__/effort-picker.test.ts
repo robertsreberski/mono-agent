@@ -129,9 +129,9 @@ describe("/effort slash command (Layer E)", () => {
     const adapter = await startTuiAdapter({
       responder: okResponder(),
       info: {
-        model: "pi:ollama:qwen3.6",
-        models: ["pi:ollama:qwen3.6"],
-        modelOptions: { "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" } },
+        model: "ollama:qwen3.6",
+        models: ["ollama:qwen3.6"],
+        modelOptions: { "ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" } },
       },
     });
     const terminal = new TestTerminal(120, 30);
@@ -169,9 +169,9 @@ describe("/effort slash command (Layer E)", () => {
     const adapter = await startTuiAdapter({
       responder: capturingResponder(captured),
       info: {
-        model: "pi:ollama:qwen3.6",
-        models: ["pi:ollama:qwen3.6"],
-        modelOptions: { "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" } },
+        model: "ollama:qwen3.6",
+        models: ["ollama:qwen3.6"],
+        modelOptions: { "ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" } },
       },
     });
     const terminal = new TestTerminal(120, 30);
@@ -207,9 +207,9 @@ describe("/effort slash command (Layer E)", () => {
     const adapter = await startTuiAdapter({
       responder: capturingResponder(captured),
       info: {
-        model: "pi:ollama:qwen3.6",
-        models: ["pi:ollama:qwen3.6"],
-        modelOptions: { "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" } },
+        model: "ollama:qwen3.6",
+        models: ["ollama:qwen3.6"],
+        modelOptions: { "ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" } },
       },
     });
     const terminal = new TestTerminal(120, 30);

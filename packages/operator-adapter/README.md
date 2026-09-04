@@ -223,6 +223,12 @@ TuiAdapterInfo
 TuiAdapterLogger
 TuiAdapterOptions
 TuiAdapterStartResult
+TuiCatalogModel
+TuiModelCatalogPage
+TuiModelCatalogProvider
+TuiModelCatalogRequest
+TuiModelOption
+TuiProviderInfo
 TuiSkillAvailability
 TuiSkillInfo
 TuiSkillRegistry

@@ -32,7 +32,7 @@ The Slack section runs in Socket Mode (effective `botToken` and `appToken` value
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6"
+    "model": "anthropic:claude-sonnet-4-6"
   },
   "slack": {
     "enabled": true,
@@ -58,7 +58,7 @@ The exact MCP tool name (`deployTool` here) must match the name your server adve
 ## Steps
 
 1. Create a Slack app with Socket Mode (app token `connections:write`), a bot token (`chat:write` plus `commands` for slash controls, `users:read` so the agent can address teammates by name, and `channels:history` / `groups:history` so a mention inside a thread arrives with that thread behind it), and **Interactivity & Shortcuts** enabled so runtime selectors can deliver `block_actions` over Socket Mode. Register `/<bot-username>-model` and `/<bot-username>-effort`; Socket Mode needs no Request URL.
-2. `mono-agent init --model claude:claude-sonnet-4-6`
+2. `mono-agent init --model anthropic:claude-sonnet-4-6`
 3. Write `mcp.json` with the team's stdio MCP server; `deployTool` becomes available from the server declaration (MCP tools aren't gated by `tools.allowedTools`). This playbook keeps a specific allowlist, so it lists `deployTool` for readability, but the entry is not what enables it.
 4. Set a specific `tools.allowedTools` (the built-ins you want plus `SlackSendMessage`) and add the `slack` section; set concurrency bounds (note: per-channel scope). Or drop `tools.allowedTools` entirely to keep the allow-all default.
 5. `mono-agent validate`, then `mono-agent start` (confirm Slack is running with both tokens).

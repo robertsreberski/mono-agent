@@ -65,7 +65,7 @@ describe("AgentHarness proactive session isolation", () => {
   it("an isolated cron run neither resumes nor persists the shared session", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-cron" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session: isolatingSession });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session: isolatingSession });
     const events: unknown[] = [];
 
     // First cron run: no session keys requested, no warm session derived.
@@ -93,7 +93,7 @@ describe("AgentHarness proactive session isolation", () => {
   it("an isolated cron turn does not pollute a following interactive turn", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async (_p, _o, call) => ({ text: `answer-${call}`, providerSessionId: `ps-${call}` }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session: isolatingSession });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session: isolatingSession });
 
     // A cron turn runs ephemerally...
     await harness.run(cronRequest("telegram:morgan", "cron tick"));
@@ -113,7 +113,7 @@ describe("AgentHarness proactive session isolation", () => {
   it("with isolateProactive off, a cron request uses the shared session as before", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-shared" }));
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
 
     await harness.run(cronRequest("cron:nightly", "first"));
     // First turn warms the session (keepalive requested, id captured).
@@ -129,7 +129,7 @@ describe("AgentHarness proactive session isolation", () => {
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-1" }));
     const harness = createAgentHarness({
-      identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session: isolatingSession,
+      identityPath, runtime: fake.runtime, model, historyStore, session: isolatingSession,
     });
 
     await harness.run(request("telegram:morgan", "first"));

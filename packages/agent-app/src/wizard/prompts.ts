@@ -1,5 +1,6 @@
 import * as p from "@clack/prompts";
 import { MAX_AGENT_NAME_LENGTH } from "@mono-agent/config";
+import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 import type { EffortLevel } from "@mono-agent/config";
 
@@ -212,7 +213,7 @@ export function modelSelectOptions(
       ...(candidate.hint === undefined ? {} : { hint: candidate.hint }),
     })),
     { value: "__pi_other__", label: "Other Pi model…", hint: "choose provider and model id" },
-    { value: "__other__", label: "Other model ref…", hint: "type a full sdk:model reference" },
+    { value: "__other__", label: "Other model ref…", hint: "type a full provider:model reference" },
   ];
 }
 
@@ -228,7 +229,7 @@ export function piModelSelectOptions(
   const excluded = new Set(excludedModels);
   return [
     ...candidates
-      .filter((candidate) => candidate.value.startsWith("pi:") && !excluded.has(candidate.value))
+      .filter((candidate) => !excluded.has(candidate.value))
       .map((candidate) => ({
         value: candidate.value,
         label: candidate.label,
@@ -245,6 +246,26 @@ export function piModelSelectOptions(
 export function assertConcreteWizardModelRef(value: string): void {
   if (WIZARD_MODEL_SENTINELS.has(value)) {
     throw new Error(`Wizard model sentinel cannot be used as a model reference: ${value}`);
+  }
+}
+
+/**
+ * Store the CANONICAL form of an accepted model reference. Validation accepts a
+ * legacy `pi:<provider>:<model>` (the parser canonicalizes the prefix away), but
+ * the raw string was what got written to `runtime.model` — and every downstream
+ * consumer matches on the literal text: `selectedModuleIds` tests `/^ollama:/`
+ * to auto-add the local provider module, and `modelRefNeedsCredentials` tests
+ * the same prefixes to decide whether setup needs an API key. A stored `pi:`
+ * ref therefore skipped the local-provider module and was reviewed as a
+ * credentialed cloud route. Falls back to the input when it does not parse, so
+ * an unparseable ref still surfaces at its normal validation boundary rather
+ * than being silently swallowed here.
+ */
+export function canonicalWizardModelRef(value: string): string {
+  try {
+    return parseMonoRuntimeModelReference(value).reference;
+  } catch {
+    return value;
   }
 }
 
@@ -281,62 +302,6 @@ export function effortSelectOptions(
     },
     ...supportedEfforts.map((level) => ({ value: level, label: level })),
   ];
-}
-
-export const ROUTE_SAFETY_OPTIONS: readonly WizardSelectOption[] = [
-  {
-    value: "uniform",
-    label: "Uniform safety contract",
-    hint: "compatibility default; every route must satisfy one common policy",
-  },
-  {
-    value: "per-route-native",
-    label: "Per-route native safety",
-    hint: "each provider keeps its explicit native tool and sandbox contract",
-  },
-];
-
-/** Exact per-route contract shown before accepting a mixed/provider-native chain. */
-export function routeSafetyContract(model: string, managedSrt: boolean): string {
-  if (model.startsWith("pi:")) {
-    return managedSrt
-      ? "Pi: mono-agent managed SRT + mono-agent tool policy"
-      : "Pi: mono-agent tool policy; managed SRT disabled";
-  }
-  if (model.startsWith("claude:")) {
-    return "Claude: provider-native sandbox; representable tool restrictions only; mono-agent SRT is not applied";
-  }
-  if (model.startsWith("codex:")) {
-    return "Codex: Codex-native sandbox + allow-all-only policy; mono-agent SRT/tool allowlist is not applied";
-  }
-  if (model.startsWith("opencode:")) {
-    return "OpenCode: provider-native sandbox + allow-all-only policy; unsupported capabilities skip this route";
-  }
-  return "Custom runtime: provider-native policy; unsupported capabilities skip this route";
-}
-
-export function formatRouteSafetyMatrix(
-  primary: { readonly model: string; readonly effort?: string },
-  fallbacks: readonly { readonly model: string; readonly effort?: string }[],
-  managedSrt: boolean,
-): string {
-  return [primary, ...fallbacks].map((route, index) =>
-    `${index === 0 ? "Primary" : `Fallback ${index}`}: ${route.model} [${route.effort ?? "provider default"}]\n  ${routeSafetyContract(route.model, managedSrt)}`,
-  ).join("\n");
-}
-
-export function routeFamilies(models: readonly string[]): readonly string[] {
-  return [...new Set(models.map((model) =>
-    model.startsWith("pi:") ? "pi"
-      : model.startsWith("claude:") ? "claude"
-        : model.startsWith("codex:") ? "codex"
-          : model.startsWith("opencode:") ? "opencode"
-            : "custom",
-  ))];
-}
-
-export function isMixedRouteChain(models: readonly string[]): boolean {
-  return routeFamilies(models).length > 1;
 }
 
 export function creationReviewOptions(options: { readonly setupRequired: boolean }): WizardSelectOption[] {

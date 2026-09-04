@@ -1,27 +1,11 @@
-import { useMemo } from "react";
-import { effortLevelsForAgentModel, useConsoleStore } from "../console-store";
+import { useCallback, useMemo } from "react";
+import { useConsoleStore } from "../console-store";
 import { conversationConsoleUsage, type ConsoleUsage } from "../usage";
-import type {
-  ModelSelectorEffortOption,
-  ModelSelectorOption,
-} from "./assistant-ui/ModelSelector";
-
-export const effortName = (effort: string): string => ({
-  none: "Off",
-  minimal: "Minimal",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra high",
-  max: "Max",
-  ultra: "Ultra",
-}[effort] ?? effort);
-
-export const defaultEffortName = (effort: string | undefined, toggle: boolean): string => {
-  if (effort === undefined) return "Provider";
-  if (toggle) return effort === "none" ? "Off" : "On";
-  return effortName(effort);
-};
+import {
+  buildSelectorModels,
+  providerOfModel,
+  type ModelSelectorOption,
+} from "./model-catalog";
 
 /**
  * The model and context derivations, owned by neither surface that shows them.
@@ -44,6 +28,8 @@ export function useRunControls() {
     effectiveEffort,
     hasRunOverride,
     resetRunOverride,
+    catalogByProvider,
+    ensureProviderCatalog,
   } = useConsoleStore();
   // The agent's own advertised defaults. Console-owned per-agent run defaults are
   // a separate feature with its own server contract; until that exists, "the
@@ -69,39 +55,43 @@ export function useRunControls() {
   }, [detail, effectiveModel, selectedThread]);
 
   const selectorModels = useMemo<readonly ModelSelectorOption[]>(() => {
-    if (!selectedAgent) return [];
-    const effortChoices = (reference: string): readonly ModelSelectorEffortOption[] => {
-      const effectiveReference = reference || agentDefaultModel || selectedAgent.defaultModel || modelOptions[0] || "";
-      const toggle = selectedAgent.modelOptions?.[effectiveReference]?.reasoningMode === "toggle";
-      const levels = effortLevelsForAgentModel(selectedAgent, effectiveReference);
-      if (levels.length === 0) return [];
-      return [
-        { id: "", name: `Default · ${defaultEffortName(agentDefaultEffort || selectedAgent.defaultEffort, toggle)}` },
-        ...levels.map((level) => ({
-          id: level,
-          name: toggle
-            ? level === "none" ? "Off" : "On"
-            : effortName(level),
-        })),
-      ];
-    };
-    return [
-      {
-        id: "",
-        name: `Default · ${(selectedAgent.modelOptions?.[agentDefaultModel]?.label ?? agentDefaultModel) || "agent"}`,
-        description: agentDefaultModel
-          ? `Agent default · ${agentDefaultModel}`
-          : "Use the agent default",
-        efforts: effortChoices(""),
-      },
-      ...modelOptions.map((reference) => ({
-        id: reference,
-        name: selectedAgent.modelOptions?.[reference]?.label ?? reference,
-        description: reference,
-        efforts: effortChoices(reference),
-      })),
-    ];
-  }, [agentDefaultEffort, agentDefaultModel, modelOptions, selectedAgent]);
+    const catalogModels = Object.fromEntries(
+      Object.entries(catalogByProvider ?? {}).map(([provider, state]) => [provider, state.models]),
+    );
+    return buildSelectorModels({
+      agent: selectedAgent,
+      modelOptions,
+      defaultEffort: agentDefaultEffort || selectedAgent?.defaultEffort || "",
+      catalogByProvider: catalogModels,
+    });
+  }, [agentDefaultEffort, catalogByProvider, modelOptions, selectedAgent]);
+
+  const catalogStatusByProvider = useMemo(
+    () => Object.fromEntries(
+      Object.entries(catalogByProvider ?? {}).map(([provider, state]) => [provider, state.status]),
+    ),
+    [catalogByProvider],
+  );
+
+  // The selector calls these when it opens (preload the shortlist routes) and
+  // when a provider chip is requested directly; the store fetches once per
+  // (agent, provider) with an in-flight guard.
+  const agentProviders = selectedAgent?.providers ?? [];
+  const openCatalog = useCallback(() => {
+    // Shortlist routes first so the default groups render immediately, then the
+    // agent's declared providers -- a provider listed purely to widen selection
+    // appears in neither `modelOptions` nor any group until it is fetched.
+    const providers = new Set(modelOptions.map((reference) => providerOfModel(reference)));
+    for (const provider of agentProviders) providers.add(provider.id);
+    for (const provider of providers) void ensureProviderCatalog(provider);
+  }, [agentProviders, ensureProviderCatalog, modelOptions]);
+
+  const requestProvider = useCallback(
+    (provider: string) => {
+      void ensureProviderCatalog(provider);
+    },
+    [ensureProviderCatalog],
+  );
 
   return {
     usage,
@@ -115,6 +105,10 @@ export function useRunControls() {
     agentDefaultModel,
     hasRunOverride,
     resetRunOverride,
+    catalogStatusByProvider,
+    openCatalog,
+    requestProvider,
+    agentProviders,
     // A running turn owns its model; changing it mid-flight would describe a
     // request the agent never received.
     disabled: selectedThread?.runState.status === "running",

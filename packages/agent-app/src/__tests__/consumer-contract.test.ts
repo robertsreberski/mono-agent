@@ -140,7 +140,7 @@ describe("golden consumer config contracts", () => {
         },
         {
           "id": "runtime",
-          "status": "ok",
+          "status": "waiting",
         },
         {
           "id": "credentials",
@@ -289,7 +289,7 @@ async function validateFixture(name: ConsumerContractName) {
     fixtureDir: join(consumersRoot, name),
     sandboxEngine,
   });
-  expect(sandboxEngine.isAvailable).toHaveBeenCalledTimes(1);
+  expect(sandboxEngine.isAvailable).toHaveBeenCalledOnce();
   expect(sandboxEngine.prepareCommand).not.toHaveBeenCalled();
   return result;
 }

@@ -232,7 +232,7 @@ describe("sandbox effective state", () => {
       fallbackActive: false,
     });
     expect(sandboxEffectiveStateWarning(state)).toBeUndefined();
-    expect(describeSandboxEffectiveState(state)).toContain("commands fail closed with sandbox_unavailable");
+    expect(describeSandboxEffectiveState(state)).toContain("is unavailable (sandbox_unavailable); commands fail closed with sandbox_prepare_failed");
   });
 
   it("warns when unavailable native sandbox falls back to an unsafe host process", async () => {

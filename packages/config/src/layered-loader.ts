@@ -1,9 +1,10 @@
-import { readMonoAgentConfigJson } from "./json-source.js";
+import { assertNoRetiredMonoAgentConfigJson, readMonoAgentConfigJson } from "./json-source.js";
 import type {
   MonoAgentConfigJson,
   MonoAgentMemoryConsolidationJson,
   MonoAgentMemoryEmbeddingsJson,
   MonoAgentMemoryLlmJson,
+  MonoAgentProvidersJson,
 } from "./json-source.js";
 import { loadMonoAgentConfig, MEMORY_LLM_ENV_KEYS, MonoAgentConfigError } from "./config.js";
 import type { MonoAgentConfig } from "./types.js";
@@ -25,7 +26,7 @@ export interface LoadMonoAgentConfigWithSourcesInput {
  * Precedence (highest first):
  *   1. process env
  *   2. mono-agent.config.json
- *   3. built-in defaults from loadMonoAgentConfig (executionMode, sessions, etc.)
+ *   3. built-in defaults from loadMonoAgentConfig (sessions, retry policy, etc.)
  *
  * Returns the same `MonoAgentConfig` shape as `loadMonoAgentConfig` so
  * existing call sites only need to swap the loader.
@@ -44,8 +45,45 @@ export async function loadMonoAgentConfigWithSources(
   try {
     return loadMonoAgentConfig({ env: layeredEnv, cwd: input.cwd });
   } catch (error) {
-    throw remapJsonMemoryError(error, jsonLayer, input.env);
+    // Two disjoint source sets, so the order is immaterial; both translate a diagnostic
+    // about the flattened env surface back to the file the operator actually edits.
+    throw remapJsonRuntimeError(remapJsonMemoryError(error, jsonLayer, input.env), jsonLayer, input.env);
   }
+}
+
+/**
+ * Every JSON setting is validated through the flattened env surface, so a rejected
+ * `runtime.model` reported `MONO_AGENT_MODEL` -- a variable the operator never set and cannot
+ * find. `memory.*` already translated back; the runtime, fallback and subagent sources did
+ * not, which made the repair unactionable for exactly the fields a 0.21.0 migration touches.
+ *
+ * The reader per source is what makes this sound: `layerJsonOntoEnv` lets env win, so a
+ * diagnostic is only JSON's to claim when the variable is unset *and* the JSON layer supplied
+ * the value.
+ */
+const JSON_RUNTIME_SOURCES: readonly {
+  readonly env: string;
+  readonly path: string;
+  readonly read: (json: MonoAgentConfigJson) => unknown;
+}[] = [
+  { env: "MONO_AGENT_MODEL", path: "runtime.model", read: (json) => json.runtime?.model },
+  { env: "MONO_AGENT_FALLBACKS_JSON", path: "runtime.fallbacks", read: (json) => json.runtime?.fallbacks },
+  { env: "MONO_AGENT_SUBAGENTS_JSON", path: "subagents", read: (json) => json.subagents },
+];
+
+/** Preserve the operator's real source surface when a layered runtime setting fails. */
+function remapJsonRuntimeError(
+  error: unknown,
+  json: MonoAgentConfigJson,
+  env: Record<string, string | undefined>,
+): unknown {
+  if (!(error instanceof MonoAgentConfigError)) return error;
+  const source = error.details.env;
+  if (typeof source !== "string") return error;
+  const mapping = JSON_RUNTIME_SOURCES.find((candidate) => candidate.env === source);
+  if (mapping === undefined) return error;
+  if (hasValue(env[source]) || mapping.read(json) === undefined) return error;
+  return remapConfigErrorToJson(error, source, mapping.path);
 }
 
 /** Preserve the operator's real source surface when layered memory validation fails. */
@@ -96,7 +134,7 @@ function remapJsonMemoryError(
     ? `memory.mode "${mode}" requires an explicit memory.embeddings block.`
     : source === "MONO_AGENT_MEMORY_LLM_MODEL"
       ? `memory.mode "${mode}" requires an explicit memory.llm block.`
-      : error.message.replaceAll("MONO_AGENT_MEMORY_MODE", "memory.mode");
+      : attributeMessageToJsonPath(error, "MONO_AGENT_MEMORY_MODE", "memory.mode");
   return new MonoAgentConfigError("invalid_json", message, { path, reason: message });
 }
 
@@ -193,11 +231,6 @@ const MEMORY_JSON_SOURCES = {
   MONO_AGENT_MEMORY_LLM_MODEL: jsonMemorySource(
     "memory.llm.model",
     (memory) => memory.llm?.model,
-    "bujo",
-  ),
-  MONO_AGENT_MEMORY_LLM_EXECUTION_MODE: jsonMemorySource(
-    "memory.llm.executionMode",
-    (memory) => memory.llm?.executionMode,
     "bujo",
   ),
   MONO_AGENT_MEMORY_LLM_ENDPOINT: jsonMemorySource(
@@ -316,13 +349,87 @@ function jsonEmbeddingsCredentialPath(
   return undefined;
 }
 
+/**
+ * Re-attribute a diagnostic from the env variable it was raised against to the JSON path the
+ * operator actually edits -- without rewriting anything the operator wrote.
+ *
+ * Two spans of a config diagnostic are operator text rather than config prose:
+ *   - the value it quotes back, which config always renders inside BACKTICKS; and
+ *   - the parser-derived `reason` it ends with, which is built FROM that value and carries
+ *     the concrete repair the operator is meant to copy.
+ * Everything outside those two spans is config's own fixed sentence, and that is the only
+ * part re-attribution may touch.
+ *
+ * `error.message.replaceAll(source, path)` touched all three. A model reference is an
+ * arbitrary operator string, so `"runtime": { "model": "codex:MONO_AGENT_MODEL" }` was quoted
+ * back as `codex:runtime.model` and repaired to `openai-codex:runtime.model` -- a model that
+ * does not exist. The same held for a fallback, a subagent and the agent-host memory LLM.
+ *
+ * The other operator-supplied fragments a config message interpolates cannot collide: a
+ * subagent name is `^[a-z0-9][a-z0-9-]*$` and a memory mode is an enum, so neither can spell
+ * an upper-case variable name.
+ *
+ * NOTE what this is and is not. Attribution here is still SURGERY ON A RENDERED STRING, and
+ * every version of it rests on some claim about where operator text sits in that string. The
+ * real fix is for the diagnostic to carry its source as a SLOT the loader re-renders, so
+ * nothing is ever searched for or replaced; that means changing where the messages are built
+ * (`packages/config/src/config.ts`), not where they are re-attributed, and it is filed as a
+ * handoff rather than done here. What this layer owes in the meantime is that its failure mode
+ * is a LOST attribution, never a CORRUPTED value -- see `replaceSourceBeforeOperatorText`.
+ */
+function attributeMessageToJsonPath(
+  error: MonoAgentConfigError,
+  source: string,
+  path: string,
+): string {
+  const message = error.message;
+  const reason = error.details.reason;
+  // A `reason` equal to the whole message is a self-reference (the message IS the reason), not
+  // a nested parser reason, so there is no operator-derived tail to protect.
+  const frameLength = typeof reason === "string" && reason.length < message.length && message.endsWith(reason)
+    ? message.length - reason.length
+    : message.length;
+  const attributed = replaceSourceBeforeOperatorText(message.slice(0, frameLength), source, path)
+    + message.slice(frameLength);
+  return attributed.includes(path) ? attributed : `${path}: ${attributed}`;
+}
+
+/**
+ * Rewrite the source only in the span that runs from the start of the message to its FIRST
+ * backtick. Config opens a backtick when, and only when, it begins quoting an operator value,
+ * so that span is config's own prose by construction and everything from the backtick on is
+ * either the value, the fixed connector after it, or a reason built from it.
+ *
+ * This replaces a parity rule -- "the odd segments of a backtick split are the operator's" --
+ * that was true only while the operator's value contained no backtick of its own. It can, and
+ * `codex:a\`MONO_AGENT_MODEL` came back as `codex:a\`runtime.model`: every segment after the
+ * value's own backtick shifted parity, so the value's second half was rewritten as if it were
+ * config's sentence. Counting backticks does not rescue the parity rule either -- a value with
+ * two of them restores an even count and corrupts just the same -- which is why the rule is
+ * replaced rather than guarded.
+ *
+ * The cost is deliberate and one-directional. Every message config renders with a quoted value
+ * that also names a source names it BEFORE the quote opens -- `parseModel`, the subagent and
+ * fallback entries, the agent-host memory LLM, all four pinned by the attribution cases below
+ * -- so nothing in use loses its attribution. A future
+ * message that named its source only AFTER its quoted value would keep the variable name in
+ * the sentence and be prefixed with the JSON path by the caller above -- an attribution that
+ * reads clumsily, rather than a value the operator is told to paste and cannot use.
+ */
+function replaceSourceBeforeOperatorText(frame: string, source: string, path: string): string {
+  const quote = frame.indexOf("`");
+  if (quote === -1) {
+    return frame.replaceAll(source, path);
+  }
+  return frame.slice(0, quote).replaceAll(source, path) + frame.slice(quote);
+}
+
 function remapConfigErrorToJson(
   error: MonoAgentConfigError,
   source: string,
   path: string,
 ): MonoAgentConfigError {
-  const replaced = error.message.replaceAll(source, path);
-  const message = replaced.includes(path) ? replaced : `${path}: ${replaced}`;
+  const message = attributeMessageToJsonPath(error, source, path);
   const { code: _code, env: _env, ...details } = error.details;
   return new MonoAgentConfigError("invalid_json", message, {
     ...details,
@@ -481,7 +588,6 @@ function validateJsonMemoryLlmFields(
   const stringFields = [
     ["provider", "MONO_AGENT_MEMORY_LLM_PROVIDER"],
     ["model", "MONO_AGENT_MEMORY_LLM_MODEL"],
-    ["executionMode", "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE"],
     ["endpoint", "MONO_AGENT_MEMORY_LLM_ENDPOINT"],
   ] as const;
   for (const [field, envName] of stringFields) {
@@ -600,7 +706,6 @@ function jsonLlmActive(value: MonoAgentMemoryLlmJson | undefined): boolean {
   return value !== undefined && (
     hasJsonString(value.provider)
     || hasJsonString(value.model)
-    || hasJsonString(value.executionMode)
     || hasJsonString(value.endpoint)
     || value.trace !== undefined
     || value.timeoutMs !== undefined
@@ -634,6 +739,7 @@ export function layerJsonOntoEnv(
   json: MonoAgentConfigJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
+  assertNoRetiredMonoAgentConfigJson(json);
   validateJsonRuntimeCompaction(json);
   const fromJson: Record<string, string | undefined> = {};
   if (json.agent?.name !== undefined) {
@@ -642,17 +748,8 @@ export function layerJsonOntoEnv(
   if (json.runtime?.model !== undefined) {
     fromJson.MONO_AGENT_MODEL = json.runtime.model;
   }
-  // Legacy CSV intentionally uses an empty string to clear JSON fallbacks.
-  // Canonical JSON clears with `[]`; an empty JSON string remains unset.
-  const fallbackEnvPresent = hasValue(env.MONO_AGENT_FALLBACKS_JSON)
-    || env.MONO_AGENT_FALLBACK_MODELS !== undefined;
-  if (!fallbackEnvPresent) {
-    if (json.runtime?.fallbackModels !== undefined) {
-      fromJson.MONO_AGENT_FALLBACK_MODELS = csv(json.runtime.fallbackModels);
-    }
-    if (json.runtime?.fallbacks !== undefined) {
-      fromJson.MONO_AGENT_FALLBACKS_JSON = JSON.stringify(json.runtime.fallbacks);
-    }
+  if (!hasValue(env.MONO_AGENT_FALLBACKS_JSON) && json.runtime?.fallbacks !== undefined) {
+    fromJson.MONO_AGENT_FALLBACKS_JSON = JSON.stringify(json.runtime.fallbacks);
   }
   if (json.runtime?.retry?.primaryAttempts !== undefined) {
     fromJson.MONO_AGENT_RETRY_PRIMARY_ATTEMPTS = String(json.runtime.retry.primaryAttempts);
@@ -665,12 +762,6 @@ export function layerJsonOntoEnv(
   }
   if (json.subagents !== undefined && !hasValue(env.MONO_AGENT_SUBAGENTS_JSON)) {
     fromJson.MONO_AGENT_SUBAGENTS_JSON = JSON.stringify(json.subagents);
-  }
-  if (json.runtime?.routeSafety !== undefined) {
-    fromJson.MONO_AGENT_ROUTE_SAFETY = json.runtime.routeSafety;
-  }
-  if (json.runtime?.executionMode !== undefined) {
-    fromJson.MONO_AGENT_EXECUTION_MODE = json.runtime.executionMode;
   }
   if (json.runtime?.effort !== undefined) {
     fromJson.MONO_AGENT_EFFORT = json.runtime.effort;
@@ -832,9 +923,6 @@ export function layerJsonOntoEnv(
   if (json.memory?.llm?.model !== undefined) {
     fromJson.MONO_AGENT_MEMORY_LLM_MODEL = json.memory.llm.model;
   }
-  if (json.memory?.llm?.executionMode !== undefined) {
-    fromJson.MONO_AGENT_MEMORY_LLM_EXECUTION_MODE = json.memory.llm.executionMode;
-  }
   if (json.memory?.llm?.trace !== undefined) {
     fromJson.MONO_AGENT_MEMORY_LLM_TRACE = String(json.memory.llm.trace);
   }
@@ -958,11 +1046,14 @@ export function layerJsonOntoEnv(
   if (json.observability?.exporters !== undefined && !hasObservabilityEnv(env)) {
     fromJson.MONO_AGENT_OBSERVABILITY_EXPORTERS = JSON.stringify(json.observability.exporters);
   }
+  // Provider ids are operator-defined map keys, so the hand-written scalar
+  // projector cannot enumerate them. Preserve the whole providers object in
+  // one JSON env value; discrete legacy/reserved env values still layer later.
+  if (json.providers !== undefined && !hasValue(env.MONO_AGENT_PROVIDERS_JSON)) {
+    fromJson.MONO_AGENT_PROVIDERS_JSON = JSON.stringify(withoutEnvOverriddenProviders(json.providers, env));
+  }
   if (json.providers?.piAuthPath !== undefined) {
     fromJson.MONO_AGENT_PI_AUTH_PATH = json.providers.piAuthPath;
-  }
-  if (json.providers?.local !== undefined && !hasLocalProviderEnv(env)) {
-    fromJson.MONO_AGENT_LOCAL_PROVIDERS_JSON = JSON.stringify(json.providers.local);
   }
   if (json.providers?.piNative?.piMaxRetries !== undefined) {
     fromJson.MONO_AGENT_PI_MAX_RETRIES = String(json.providers.piNative.piMaxRetries);
@@ -980,10 +1071,7 @@ export function layerJsonOntoEnv(
   // env wins: spread env last
   const layered: Record<string, string | undefined> = { ...fromJson };
   for (const [key, value] of Object.entries(env)) {
-    if (
-      value !== undefined
-      && (value.trim().length > 0 || key === "MONO_AGENT_FALLBACK_MODELS")
-    ) {
+    if (value !== undefined && value.trim().length > 0) {
       layered[key] = value;
     }
   }
@@ -1040,22 +1128,76 @@ function hasValue(value: string | undefined): boolean {
   return value !== undefined && value.trim().length > 0;
 }
 
+/** Reserved `providers` keys that configure Pi rather than name a provider. */
+const RESERVED_PROVIDERS_JSON_KEYS = new Set(["local", "piAuthPath", "piNative"]);
+
+/**
+ * Provider ids claimed by the legacy local-provider env vars, which the config
+ * reader loads *in addition to* the provider map. Best effort by design: an
+ * unparseable `MONO_AGENT_LOCAL_PROVIDERS_JSON` yields no ids here so the
+ * reader still raises its own precise `invalid_json` error.
+ */
+function legacyEnvProviderIds(env: Record<string, string | undefined>): ReadonlySet<string> {
+  const ids = new Set<string>();
+  const registryJson = env.MONO_AGENT_LOCAL_PROVIDERS_JSON;
+  if (hasValue(registryJson)) {
+    try {
+      const parsed: unknown = JSON.parse(registryJson as string);
+      const entries: unknown = Array.isArray(parsed)
+        ? parsed
+        : (parsed as { readonly local?: unknown } | null)?.local;
+      if (Array.isArray(entries)) {
+        for (const entry of entries) {
+          const id: unknown = (entry as { readonly id?: unknown } | null)?.id;
+          if (typeof id === "string" && id.trim().length > 0) ids.add(id.trim());
+        }
+      }
+    } catch {
+      return ids;
+    }
+    return ids;
+  }
+  // The discrete single-provider form: any one of these vars activates it, and
+  // an omitted id defaults to `ollama` exactly as the reader defaults it.
+  const singleProviderVars = [
+    env.MONO_AGENT_LOCAL_PROVIDER_ID,
+    env.MONO_AGENT_LOCAL_PROVIDER_TYPE,
+    env.MONO_AGENT_LOCAL_PROVIDER_BASE_URL,
+    env.MONO_AGENT_LOCAL_PROVIDER_ENABLED,
+    env.MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL,
+    env.MONO_AGENT_LOCAL_PROVIDER_API_KEY,
+  ];
+  if (singleProviderVars.some((value) => hasValue(value))) {
+    const id = env.MONO_AGENT_LOCAL_PROVIDER_ID;
+    ids.add(hasValue(id) ? (id as string).trim() : "ollama");
+  }
+  return ids;
+}
+
+/**
+ * Env wins over JSON everywhere else in this loader, so a provider id defined
+ * by both the JSON `providers` map and a legacy local-provider env var must
+ * resolve to the env definition. Both layers used to reach the reader intact,
+ * where `addConfiguredProvider()` rejected the collision and the agent failed
+ * to load instead of taking the override. Reserved keys and `providers.local[]`
+ * are untouched: the reader already drops the JSON `local` array whenever the
+ * legacy env form is present.
+ */
+function withoutEnvOverriddenProviders(
+  providers: MonoAgentProvidersJson,
+  env: Record<string, string | undefined>,
+): MonoAgentProvidersJson {
+  const overridden = legacyEnvProviderIds(env);
+  if (overridden.size === 0) return providers;
+  const kept = Object.entries(providers).filter(
+    ([key]) => RESERVED_PROVIDERS_JSON_KEYS.has(key) || !overridden.has(key),
+  );
+  return kept.length === Object.keys(providers).length
+    ? providers
+    : (Object.fromEntries(kept) as MonoAgentProvidersJson);
+}
+
 function hasObservabilityEnv(env: Record<string, string | undefined>): boolean {
   const value = env.MONO_AGENT_OBSERVABILITY_EXPORTERS;
   return value !== undefined && value.trim().length > 0;
-}
-
-function hasLocalProviderEnv(env: Record<string, string | undefined>): boolean {
-  return [
-    "MONO_AGENT_LOCAL_PROVIDERS_JSON",
-    "MONO_AGENT_LOCAL_PROVIDER_ID",
-    "MONO_AGENT_LOCAL_PROVIDER_TYPE",
-    "MONO_AGENT_LOCAL_PROVIDER_BASE_URL",
-    "MONO_AGENT_LOCAL_PROVIDER_ENABLED",
-    "MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL",
-    "MONO_AGENT_LOCAL_PROVIDER_API_KEY",
-  ].some((name) => {
-    const value = env[name];
-    return value !== undefined && value.trim().length > 0;
-  });
 }

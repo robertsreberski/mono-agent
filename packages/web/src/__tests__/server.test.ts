@@ -932,6 +932,115 @@ describe("web HTTP server", () => {
     expect(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`)).toMatchObject({ status: 404 });
   });
 
+  it("persists per-thread model and effort overrides and round-trips them unset and nulled", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const created = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    const thread = (await json(created)).thread as { id: string };
+    expect((await json(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`))).thread).toMatchObject({
+      id: thread.id,
+      runModel: null,
+      runEffort: null,
+    });
+
+    const patched = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "anthropic:claude-sonnet-5", effort: "high" }),
+    });
+    expect(patched.status).toBe(200);
+    expect((await json(patched)).thread).toMatchObject({ id: thread.id, runModel: "anthropic:claude-sonnet-5", runEffort: "high" });
+    expect((await json(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`))).thread).toMatchObject({
+      runModel: "anthropic:claude-sonnet-5",
+      runEffort: "high",
+    });
+
+    const modelOnly = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "provider/fallback" }),
+    });
+    expect((await json(modelOnly)).thread).toMatchObject({ runModel: "provider/fallback", runEffort: "high" });
+
+    const cleared = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: null, effort: null }),
+    });
+    expect(cleared.status).toBe(200);
+    expect((await json(cleared)).thread).toMatchObject({ runModel: null, runEffort: null });
+    const reopened = await json(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`));
+    expect((reopened.thread as { runModel: string | null }).runModel).toBeNull();
+  });
+
+  it("rejects an empty thread patch and non-string model or effort overrides", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const created = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    const thread = (await json(created)).thread as { id: string };
+
+    const empty = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({}),
+    });
+    expect(empty.status).toBe(400);
+    expect(await json(empty)).toMatchObject({ error: { code: "invalid_request", message: "Provide title, archived, model, or effort." } });
+
+    const numericModel = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: 7 }),
+    });
+    expect(numericModel.status).toBe(400);
+    expect(await json(numericModel)).toMatchObject({ error: { code: "invalid_request", message: "model must be a non-empty string of at most 120 characters." } });
+
+    const overlongEffort = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ effort: "x".repeat(121) }),
+    });
+    expect(overlongEffort.status).toBe(400);
+
+    // The compare-and-set flag is a boolean or nothing: a truthy string would
+    // otherwise silently arm a precondition the caller never asked for.
+    const badCondition = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "anthropic:opus-5", ifRunConfigUnset: "yes" }),
+    });
+    expect(badCondition.status).toBe(400);
+    expect(await json(badCondition)).toMatchObject({
+      error: { code: "invalid_request", message: "ifRunConfigUnset must be boolean." },
+    });
+  });
+
+  it("serves the conditional run-config patch end to end", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const created = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    const thread = (await json(created)).thread as { id: string };
+    const patch = async (body: Record<string, unknown>) => json(await fetch(
+      `${baseUrl}/api/v1/threads/${thread.id}`,
+      { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+    ));
+
+    expect((await patch({ model: "anthropic:opus-5", ifRunConfigUnset: true })).thread)
+      .toMatchObject({ runModel: "anthropic:opus-5" });
+    // The second adopter loses and is handed the winner to adopt.
+    expect((await patch({ model: "anthropic:sonnet-5", effort: "low", ifRunConfigUnset: true })).thread)
+      .toMatchObject({ runModel: "anthropic:opus-5", runEffort: null });
+  });
+
+  it("keeps legacy title and archive patches serving unchanged alongside override clearing", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const created = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    const thread = (await json(created)).thread as { id: string };
+    const renamed = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Server rename" }),
+    });
+    expect((await json(renamed)).thread).toMatchObject({ title: "Server rename" });
+    const archived = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ archived: true }),
+    });
+    const archivedThread = (await json(archived)).thread as { archivedAt: string | null };
+    expect(archivedThread.archivedAt).not.toBeNull();
+  });
+
   it("searches conversation text through a route the :id parameter cannot swallow", async () => {
     const { baseUrl } = await start({ host: "127.0.0.1" });
     const created = await fetch(`${baseUrl}/api/v1/threads`, {
@@ -966,6 +1075,20 @@ describe("web HTTP server", () => {
     expect(page.hits[0]?.thread.id).toBe(thread.id);
     expect(page.hits[0]?.snippet).toContain("tailscale");
     expect(page.truncated).toBe(false);
+  });
+
+  it("rejects a model-catalog request that mixes the two mutually exclusive modes", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+
+    // The agent services `provider` and ignores `query`, so a request carrying
+    // both would answer a search it never ran. Proxying that rejection turns
+    // the caller's mistake into a 502 `agent_http_error` against the agent.
+    const both = await fetch(`${baseUrl}/api/v1/agents/agent-one/models?provider=anthropic&q=opus`);
+    expect(both.status).toBe(400);
+    expect(await json(both)).toMatchObject({ error: { code: "invalid_page" } });
+
+    const providerOnly = await fetch(`${baseUrl}/api/v1/agents/agent-one/models?provider=provider`);
+    expect(providerOnly.status).toBe(200);
   });
 
   it("validates the search query string and bounds its page size", async () => {

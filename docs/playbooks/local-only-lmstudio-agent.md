@@ -17,28 +17,25 @@ An agent that runs entirely on a local LM Studio provider via the Pi SDK runtime
 
 ## Features used
 
-- [`runtime.local-providers`](/runtime/local-providers/) — register LM Studio as a `pi:<provider>:<model>` backend
+- [`runtime.local-providers`](/runtime/local-providers/) — register LM Studio and reference it as `lmstudio:<model>`
 - [`runtime.multi-backend`](/runtime/backends/) — the Pi SDK bridge that drives the local provider
 - [`memory.lite`](/memory/capture-and-recall/) — FTS-only recall, no embeddings or chat LLM required
 
 ## Configuration
 
-Every key below is verified against [the config blueprint](/config/blueprint/). The `providers.local[]` entry registers LM Studio; `runtime.model` references it as `pi:lmstudio:qwen3.6-32b`. `type: "lmstudio"` defaults to `baseUrl: "http://localhost:1234"` when omitted — LM Studio's default local-server port — shown explicitly here for clarity.
+Every key below is verified against [the config blueprint](/config/blueprint/). The `providers` map registers LM Studio; `runtime.model` references it as `lmstudio:qwen3.6-32b`. `type: "lmstudio"` defaults to `baseUrl: "http://localhost:1234"` when omitted — LM Studio's default local-server port — shown explicitly here for clarity.
 
 ```json
 {
   "runtime": {
-    "model": "pi:lmstudio:qwen3.6-32b"
+    "model": "lmstudio:qwen3.6-32b"
   },
   "providers": {
-    "local": [
-      {
-        "id": "lmstudio",
-        "type": "lmstudio",
-        "baseUrl": "http://localhost:1234",
-        "enabled": true
-      }
-    ]
+    "lmstudio": {
+      "type": "lmstudio",
+      "baseUrl": "http://localhost:1234",
+      "enabled": true
+    }
   },
   "memory": {
     "mode": "lite",
@@ -58,7 +55,7 @@ Every key below is verified against [the config blueprint](/config/blueprint/). 
 ## Steps
 
 1. Open LM Studio, load a model, and start the local server from the Developer tab (default port `1234`).
-2. Scaffold the agent: `mono-agent init --model pi:lmstudio:<your-model-id> --memory lite` — a `pi:lmstudio:*` model auto-adds the LM Studio provider block. (There is no LM Studio preset; the `local-private` preset is Ollama-based.)
+2. Scaffold the agent: `mono-agent init --model lmstudio:<your-model-id> --memory lite` — a `lmstudio:*` model auto-adds the LM Studio provider block. (There is no LM Studio preset; the `local-private` preset is Ollama-based.)
 3. If your loaded model's id differs from `qwen3.6-32b`, update `runtime.model` to match exactly what LM Studio reports for the loaded model.
 4. Run `mono-agent validate` to confirm LM Studio's local server is reachable.
 5. Run `mono-agent start` — keep the [webhook channel](/channels/webhook/) as the zero-credential smoke channel.

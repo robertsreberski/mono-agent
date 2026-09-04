@@ -66,7 +66,7 @@ describe("AgentHarness.submit (queue-after-turn)", () => {
       }
       return { text: `answer-${call}`, providerSessionId: "ps-1" };
     });
-    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session: continuous });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session: continuous });
 
     const p1 = harness.submit?.(request("conv-1", "first"));
     const p2 = harness.submit?.(request("conv-1", "second"));
@@ -101,7 +101,6 @@ describe("AgentHarness.submit (queue-after-turn)", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       session: continuous,
       concurrency: { maxConcurrentRuns: 1 },
     });
@@ -130,7 +129,6 @@ describe("AgentHarness.submit (queue-after-turn)", () => {
       identityPath,
       runtime: fake.runtime,
       model,
-      executionMode: "sdk",
       session: { mode: "per-message", idleTimeoutMs: 60_000, supportsResume: true },
     });
 

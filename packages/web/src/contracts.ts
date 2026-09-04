@@ -110,6 +110,22 @@ export interface WebModelOption {
 
 export interface WebAgentSummary {
   readonly sourceId: string;
+  /**
+   * Opaque token for the agent PROCESS this summary describes: stable while
+   * that process lives, different once it is replaced. Additive, and additive
+   * only -- no client is required to read it.
+   *
+   * A source id outlives the process behind it, so anything a client caches
+   * per agent (the `/v1/models` pages the model picker fetches, above all)
+   * outlives the catalog that filled it. The console's server already scopes
+   * its own catalog cache this way; before this field the browser had nothing
+   * generation-shaped to observe at all -- no pid, no start time, and an
+   * `updatedAt` that is a discovery heartbeat -- so a tab kept offering a
+   * restarted agent's retired models until it was reloaded.
+   *
+   * Absent on any summary not built from a live discovery pass.
+   */
+  readonly generation?: string;
   readonly label: string;
   readonly status: WebAgentStatus;
   readonly pinned?: boolean;
@@ -120,6 +136,13 @@ export interface WebAgentSummary {
   readonly defaultEffort?: string;
   readonly efforts?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, WebModelOption>>;
+  /**
+   * Providers this agent supports. `models`/`modelOptions` stay the configured
+   * shortlist; this is what the selector groups and filters by, and what tells
+   * a client which providers are worth requesting a `/v1/models` page for.
+   * Absent when the agent predates the provider catalog.
+   */
+  readonly providers?: readonly WebAgentProvider[];
   /** Absent when the addressed agent predates first-class cron operator routes. */
   readonly cron?: WebCronCapability;
   readonly supportsAskById?: boolean;
@@ -181,6 +204,10 @@ export interface WebThread {
   readonly runState: WebRunState;
   readonly canSend: boolean;
   readonly canUpload: boolean;
+  /** Per-conversation model override, or null when the agent default applies. */
+  readonly runModel: string | null;
+  /** Per-conversation effort override, or null when the agent default applies. */
+  readonly runEffort: string | null;
 }
 
 export type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" | "interrupted";
@@ -388,6 +415,33 @@ export interface WebCronRunPage extends CronOperatorRunPage {
   readonly messages?: readonly WebMessage[];
 }
 
+/** One provider an agent advertises as supported. */
+export interface WebAgentProvider {
+  readonly id: string;
+  readonly label: string;
+  /** The agent declared this provider or routes through it. */
+  readonly configured?: true;
+}
+
+/** One model served by the lazy agent `/v1/models` catalog endpoint. */
+export interface WebCatalogModel {
+  readonly id: string;
+  readonly name: string;
+  readonly provider: string;
+  readonly providerLabel: string;
+  readonly contextWindow?: number;
+  readonly reasoning?: boolean;
+  readonly effortLevels?: readonly string[];
+  readonly reasoningMode?: string;
+}
+
+/** A bounded model-catalog page proxied from an agent's `/v1/models` endpoint. */
+export interface WebModelPage {
+  readonly models: readonly WebCatalogModel[];
+  readonly nextCursor?: string;
+  readonly truncated: boolean;
+}
+
 export interface WebCronConfirmation {
   readonly token: string;
   readonly expiresAt: string;
@@ -485,6 +539,19 @@ export interface PatchWebAgentInput {
 export interface PatchWebThreadInput {
   readonly title?: string;
   readonly archived?: boolean;
+  readonly model?: string | null;
+  readonly effort?: string | null;
+  /**
+   * Compare-and-set: apply nothing unless this conversation still has NO run
+   * override. The console's one-time adoption of a browser-local preference
+   * reads the thread and then writes it, and between those two calls another
+   * tab (or another device) can set a real override -- an unconditional write
+   * then makes the adopting tab's stale local value the final server state.
+   * The precondition is checked and the write applied in one synchronous step,
+   * so nothing can interleave. When it does not hold the current thread comes
+   * back untouched, which is exactly what the caller must adopt.
+   */
+  readonly ifRunConfigUnset?: boolean;
 }
 
 export interface StartWebTurnInput {

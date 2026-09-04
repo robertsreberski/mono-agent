@@ -11,7 +11,7 @@ import {
 } from "../modules/index.js";
 import { BUILTIN_TOOL_NAMES, DEFAULT_SAFE_TOOLS, isKnownToolName } from "../modules/known-tools.js";
 
-const MODEL = "claude:claude-sonnet-4-6";
+const MODEL = "anthropic:claude-sonnet-4-6";
 
 /** Section ids the doctor emits — a `channel:<driver>` id or one of the fixed sections. */
 const FIXED_SECTION_IDS = new Set(["runtime", "credentials", "memory", "sandbox", "tools", "observability"]);

@@ -98,6 +98,7 @@ export interface ModelOption {
   readonly reasoningMode?: string;
   readonly label?: string;
   readonly contextWindow?: number;
+  readonly provider?: string;
 }
 
 export interface AskOption {
@@ -139,6 +140,19 @@ export interface AskSubmissionResult {
 
 export interface AgentSummary {
   readonly sourceId: string;
+  /**
+   * Opaque token for the agent PROCESS this summary describes, mirrored from
+   * `WebAgentSummary`: stable while that process lives, different once it is
+   * replaced.
+   *
+   * A source id outlives the process behind it, so everything this console
+   * caches per agent -- above all the `/v1/models` pages the model picker walks
+   * -- outlives the catalog that filled it. Nothing else on this summary is
+   * generation-shaped: there is no pid, no start time, and `updatedAt` is a
+   * discovery heartbeat that changes while nothing has. Absent on any summary
+   * an older server built.
+   */
+  readonly generation?: string;
   readonly label: string;
   readonly status: AgentStatus;
   readonly pinned: boolean;
@@ -149,6 +163,13 @@ export interface AgentSummary {
   readonly defaultEffort?: string;
   readonly efforts?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, ModelOption>>;
+  /**
+   * Providers this agent supports, mirrored from `WebAgentSummary`. This is the
+   * set the selector groups and filters by; `modelOptions` stays the configured
+   * shortlist. A provider declared purely to widen selection appears here and
+   * nowhere else, so deriving the chip list from the shortlist hides it.
+   */
+  readonly providers?: readonly AgentProvider[];
   readonly cron?: { readonly read: boolean; readonly actions: boolean };
   readonly supportsAskById?: boolean;
   readonly updatedAt: string;
@@ -214,6 +235,10 @@ export interface ThreadSummary {
   readonly runState: RunState;
   readonly canSend: boolean;
   readonly canUpload: boolean;
+  /** Per-conversation model override, or null when the agent default applies. */
+  readonly runModel?: string | null;
+  /** Per-conversation effort override, or null when the agent default applies. */
+  readonly runEffort?: string | null;
 }
 
 export type ToolCallStatus = "running" | "complete" | "failed";
@@ -528,6 +553,30 @@ export interface WebEvent {
   readonly at: string;
   readonly threadId?: string;
   readonly payload?: unknown;
+}
+
+export interface ModelCatalogPage {
+  readonly models: readonly CatalogModel[];
+  readonly nextCursor?: string;
+  readonly truncated: boolean;
+}
+
+/** One model served by an agent's lazy `/v1/models` catalog endpoint. */
+export interface AgentProvider {
+  readonly id: string;
+  readonly label: string;
+  readonly configured?: true;
+}
+
+export interface CatalogModel {
+  readonly id: string;
+  readonly name: string;
+  readonly provider: string;
+  readonly providerLabel: string;
+  readonly contextWindow?: number;
+  readonly reasoning?: boolean;
+  readonly effortLevels?: readonly string[];
+  readonly reasoningMode?: string;
 }
 
 export interface StartTurnInput {

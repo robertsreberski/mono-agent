@@ -20,6 +20,21 @@ import { sessionToolHistorySection } from "../doctor-session-history.js";
 
 const tempDirs: string[] = [];
 
+/**
+ * `ToolHistoryWriter.persist` waits at most `persistenceCeilingMs` (default
+ * 250 ms) for its worker, and a timeout is swallowed into a `failed` result
+ * that records a write incident — while the worker may still land the row.
+ * Under the full repo gate every package's vitest runs at once, and a first
+ * round-trip that includes worker startup plus SQLite open can exceed 250 ms.
+ * That turns a lifecycle assertion into a wall-clock race. These tests are
+ * about lifecycle semantics, not the host wait ceiling, so lift it.
+ */
+const HISTORY_CEILING_MS = 30_000;
+
+async function openWriter(root: string): Promise<ToolHistoryWriter> {
+  return await ToolHistoryWriter.open({ root, persistenceCeilingMs: HISTORY_CEILING_MS });
+}
+
 async function tempRoot(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "mono-agent-history-doctor-"));
   tempDirs.push(dir);
@@ -54,7 +69,7 @@ describe("sessionToolHistorySection", () => {
     const root = await tempRoot();
     await mkdir(root, { recursive: true, mode: 0o700 });
     await writeFile(join(root, "conversation.history.json"), "{}\n");
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openWriter(root);
     await writer.persist(binding, { phase: "invocation", toolCallId: "call-1", toolName: "Read", arguments: { path: "README.md" } });
     await writer.persist(binding, { phase: "result", toolCallId: "call-1", state: "success", content: "ok" });
     await writer.close();
@@ -88,7 +103,7 @@ describe("sessionToolHistorySection", () => {
 
   it.skipIf(process.platform === "win32")("rejects a symlinked history root that writer startup would reject", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openWriter(root);
     await writer.close();
     const alias = `${root}-alias`;
     await symlink(root, alias, "dir");
@@ -134,7 +149,7 @@ describe("sessionToolHistorySection", () => {
 
   it("treats a crash-stale zero-byte content database as pristine and writer-recoverable", async () => {
     const root = await tempRoot();
-    const initialized = await ToolHistoryWriter.open({ root });
+    const initialized = await openWriter(root);
     await initialized.close();
     const path = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
     await writeFile(path, "", { mode: 0o600 });
@@ -146,7 +161,7 @@ describe("sessionToolHistorySection", () => {
     );
     expect(pristine.details.join("\n")).not.toMatch(/unsupported.*schema|downgrade/iu);
 
-    const recovered = await ToolHistoryWriter.open({ root });
+    const recovered = await openWriter(root);
     await expect(recovered.stats()).resolves.toMatchObject({ calls: 0, records: 0 });
     await recovered.close();
     const healthy = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
@@ -155,7 +170,7 @@ describe("sessionToolHistorySection", () => {
 
   it("treats a journal beside a pristine zero-byte database as stale recoverable state, not a foreign schema", async () => {
     const root = await tempRoot();
-    const initialized = await ToolHistoryWriter.open({ root });
+    const initialized = await openWriter(root);
     await initialized.close();
     const path = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
     await writeFile(path, "", { mode: 0o600 });
@@ -181,7 +196,7 @@ describe("sessionToolHistorySection", () => {
     );
     expect(stale.details.join("\n")).not.toMatch(/foreign tool-history schema|purged before adoption|downgrade/iu);
 
-    const recovered = await ToolHistoryWriter.open({ root });
+    const recovered = await openWriter(root);
     await expect(recovered.stats()).resolves.toMatchObject({ calls: 0, records: 0 });
     await recovered.close();
   });
@@ -260,7 +275,7 @@ describe("sessionToolHistorySection", () => {
 
   it("reports unresolved writer incidents and returns to healthy after matching operations succeed", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openWriter(root);
     await writer.persist(binding, {
       phase: "invocation", toolCallId: "conflicted-call", toolName: "Read", arguments: { path: "README.md" },
     });
@@ -290,7 +305,7 @@ describe("sessionToolHistorySection", () => {
     expect(degraded.details.join("\n")).toContain("1 retention failure(s) remain");
     expect(degraded.details.join("\n")).toContain("1 recovery failure(s) remain");
 
-    const unrelated = await ToolHistoryWriter.open({ root });
+    const unrelated = await openWriter(root);
     await unrelated.persist({ ...binding, runId: "unrelated-run" }, {
       phase: "invocation", toolCallId: "healthy-call", toolName: "Read", arguments: { path: "README.md" },
     });
@@ -306,7 +321,7 @@ describe("sessionToolHistorySection", () => {
     expect(stillDegraded.details.join("\n")).not.toContain("retention failure(s) remain");
     expect(stillDegraded.details.join("\n")).not.toContain("recovery failure(s) remain");
 
-    const recoveredWriter = await ToolHistoryWriter.open({ root });
+    const recoveredWriter = await openWriter(root);
     await recoveredWriter.persist(binding, {
       phase: "invocation", toolCallId: "conflicted-call", toolName: "Read", arguments: { path: "README.md" },
     });
@@ -322,7 +337,7 @@ describe("sessionToolHistorySection", () => {
 
   it("returns to healthy when reset retires conflicted and failed lifecycle identities", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openWriter(root);
     await writer.persist(binding, {
       phase: "invocation", toolCallId: "reset-call", toolName: "Read", arguments: {},
     });
@@ -339,7 +354,7 @@ describe("sessionToolHistorySection", () => {
     expect(degraded.details.join("\n")).toContain("1 unresolved lifecycle write incident(s)");
     expect(degraded.details.join("\n")).toContain("1 unresolved lifecycle idempotency conflict(s)");
 
-    const reset = await ToolHistoryWriter.open({ root });
+    const reset = await openWriter(root);
     await reset.resetConversation(binding.logicalConversationId);
     await reset.close();
     const healthy = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
@@ -379,7 +394,7 @@ describe("sessionToolHistorySection", () => {
 
   it("does not classify a graceful close of a dangling invocation as crash recovery", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openWriter(root);
     await writer.persist(binding, { phase: "invocation", toolCallId: "dangling", toolName: "Bash", arguments: {} });
     await writer.close();
 
@@ -423,7 +438,7 @@ describe("sessionToolHistorySection", () => {
 
   it.skipIf(process.platform === "win32")("reports a secure live DELETE transaction as waiting instead of error", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openWriter(root);
     const contentPath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
     const journalPath = `${contentPath}-journal`;
     const blocker = new DatabaseSync(contentPath);
@@ -458,7 +473,7 @@ describe("sessionToolHistorySection", () => {
 
   it("hard-fails newer schema state with the documented purge-only downgrade path", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openWriter(root);
     await writer.close();
     const path = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
     const database = new DatabaseSync(path);
@@ -472,7 +487,7 @@ describe("sessionToolHistorySection", () => {
 
   it("reports an older compatible schema as upgrade-pending rather than a blocked downgrade", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openWriter(root);
     await writer.close();
     const path = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
     const database = new DatabaseSync(path);
@@ -484,7 +499,7 @@ describe("sessionToolHistorySection", () => {
     expect(pending.details.join("\n")).toContain("Tool-history schema upgrade is pending");
     expect(pending.details.join("\n")).not.toMatch(/downgrade/iu);
 
-    const upgraded = await ToolHistoryWriter.open({ root });
+    const upgraded = await openWriter(root);
     await upgraded.close();
     const healthy = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
     expect(healthy.status, healthy.details.join("\n")).toBe("ok");
@@ -492,7 +507,7 @@ describe("sessionToolHistorySection", () => {
 
   it.skipIf(process.platform === "win32")("rejects a content database that is not owner-only", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openWriter(root);
     await writer.close();
     await chmod(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE), 0o644);
 

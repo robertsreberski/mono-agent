@@ -508,6 +508,45 @@ describe("release pack validation", () => {
     }
   });
 
+  test("rejects declaration-only output whose source was deleted", () => {
+    const packageDir = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-orphan-test-"));
+    const packDestination = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-pack-test-"));
+    try {
+      fs.mkdirSync(path.join(packageDir, "src", "nested"), { recursive: true });
+      fs.writeFileSync(path.join(packageDir, "src", "index.ts"), "");
+      fs.writeFileSync(path.join(packageDir, "src", "nested", "kept.js"), "");
+      fs.writeFileSync(path.join(packageDir, "src", "runner.mjs"), "");
+      const tarballPath = path.join(packDestination, "mono-agent-example-1.2.3.tgz");
+      fs.writeFileSync(tarballPath, "tgz");
+      const packOutput = (typeFiles) => ({
+        name: pkg.name,
+        version: "1.2.3",
+        filename: tarballPath,
+        files: [
+          { path: "package.json" },
+          { path: "README.md" },
+          ...typeFiles.map((file) => ({ path: file })),
+        ],
+      });
+
+      // Declaration-only emit keeps the source-relative index, nesting, and module extension.
+      expect(
+        assertPackResult(pkg, packOutput([
+          "types/index.d.ts",
+          "types/nested/kept.d.ts",
+          "types/runner.d.mts",
+        ]), packDestination, { packageDir }),
+      ).toMatchObject({ tarballPath });
+
+      expect(() =>
+        assertPackResult(pkg, packOutput(["types/x.d.ts"]), packDestination, { packageDir }),
+      ).toThrow(/ships build artifacts with no source: types\/x\.d\.ts/);
+    } finally {
+      fs.rmSync(packageDir, { recursive: true, force: true });
+      fs.rmSync(packDestination, { recursive: true, force: true });
+    }
+  });
+
   test("skips the orphan check for packages that ship no src directory", () => {
     const packageDir = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-orphan-test-"));
     try {

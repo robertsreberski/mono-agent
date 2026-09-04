@@ -5,9 +5,6 @@ import {
   createToolLifecycleEventGate,
   toolLifecycleMetadata,
 } from "../../ai/tool-lifecycle.js";
-import { normalizeCodexItemEvent } from "../../ai/streaming/codex-events.js";
-import { toolResultEvent as normalizeOpenCodeResult } from "../../ai/streaming/opencode-events.js";
-import { normalizeCliEvent } from "../../ai/providers/claude-cli.js";
 
 function crossPackageChannelUserCancelReason(channel) {
   return Object.assign(new Error(`Cancelled by ${channel} user.`), {
@@ -49,57 +46,6 @@ describe("managed tool lifecycle classification", () => {
     expect(classifyPiToolResult(input)).toEqual(expected);
   });
 
-  it("keeps provider fidelity conservative where the event contract is narrower", () => {
-    const codexExit = normalizeCodexItemEvent({
-      type: "item.completed",
-      item: { id: "c1", type: "commandExecution", command: "false", exitCode: 9, aggregatedOutput: "" },
-    });
-    const codexError = normalizeCodexItemEvent({
-      type: "item.completed",
-      item: { id: "c2", type: "mcpToolCall", tool: "read", status: "failed", error: "provider failed" },
-    });
-    const codexSuccess = normalizeCodexItemEvent({
-      type: "item.completed",
-      item: { id: "c3", type: "commandExecution", command: "true", exitCode: 0, aggregatedOutput: "" },
-    });
-    const openCodeError = normalizeOpenCodeResult({
-      callID: "o1",
-      tool: "bash",
-      state: { status: "error", error: "timed out in prose only" },
-    });
-    const openCodeSuccess = normalizeOpenCodeResult({
-      callID: "o2",
-      tool: "bash",
-      state: { status: "completed", output: "done" },
-    });
-    const claudeCliError = normalizeCliEvent({
-      type: "tool_result",
-      id: "cl1",
-      output: "failed",
-      is_error: true,
-    });
-    const claudeCliSuccess = normalizeCliEvent({
-      type: "tool_result",
-      id: "cl2",
-      output: "done",
-    });
-
-    expect(codexExit.message.content[0].tool_lifecycle).toEqual({
-      state: "exit_nonzero", failure_kind: "runtime_error", detail_code: "exit_9",
-    });
-    expect(codexError.message.content[0].tool_lifecycle).toEqual({
-      state: "error", failure_kind: "runtime_error", detail_code: "codex_item_failed",
-    });
-    expect(codexSuccess.message.content[0].tool_lifecycle).toEqual({ state: "success" });
-    expect(openCodeError.message.content[0].tool_lifecycle).toEqual({
-      state: "error", failure_kind: "runtime_error", detail_code: "opencode_tool_error",
-    });
-    expect(openCodeSuccess.message.content[0].tool_lifecycle).toEqual({ state: "success" });
-    expect(claudeCliError.message.content[0].tool_lifecycle).toEqual({
-      state: "error", failure_kind: "runtime_error", detail_code: "claude_cli_tool_error",
-    });
-    expect(claudeCliSuccess.message.content[0].tool_lifecycle).toEqual({ state: "success" });
-  });
 });
 
 describe("tool lifecycle persistence gate", () => {

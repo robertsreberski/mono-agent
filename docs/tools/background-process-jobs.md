@@ -143,8 +143,8 @@ from `settleCleanup`, after `runtime.run` truly settles. Earlier cleanup, abort,
 or harness disposal cannot release it beneath a late provider result.
 
 Once the registry is non-empty, every reachable primary, fallback, accepted
-request override, and named `Agent` child route must be Pi-native in both
-`uniform` and `per-route-native` routing. The configured app rejects the whole
+request override, and named `Agent` child route must be Pi-native — which every
+route now is. The configured app rejects the whole
 incompatible route plan before provider invocation; it does not wait to discover
 the unsafe fallback after another route fails. An empty registry preserves
 legitimate non-Pi routes.

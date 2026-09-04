@@ -1,8 +1,7 @@
 // Provider session registries.
 //
-// Bridges that support continuous provider sessions (codex-app keeps the
-// app-server subprocess + thread alive, pi-native keeps a pi Session
-// transcript) register their live sessions here, keyed by provider session id.
+// Pi keeps each continuous provider session as a live Session transcript and
+// registers it here under the provider session id.
 // The host
 // owns session lifetime policy (which conversation maps to which session,
 // when to resume, when to retire); these registries only make sure nothing
@@ -13,8 +12,8 @@
 // `createSessionRegistry` instances self-register in a module-level set so
 // the runtime surface can expose `syncSession(id)` / `refreshSession(id)` /
 // `disposeSession(id)` / `disposeAllSessions()`
-// without knowing which bridge owns the id. Provider session ids are unique
-// across bridges (codex thread ids, pi uuids), so fan-out dispose is safe.
+// without coupling the host-facing lifecycle surface to Pi's transcript
+// implementation. Pi session UUIDs are unique, so fan-out dispose is safe.
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 

@@ -32,7 +32,7 @@ same durable outcomes without changing the stored answer text.
 
 **Model-exhaustion failure notice.** For cron jobs only, `notify: true` also enables a short one-line error notice when the run fails because **all configured models failed** (`provider_unavailable_exhausted`). This notice is sent only when `notifyConversationId` is explicitly set; failure notices never infer a destination. They are delivered verbatim with no second LLM turn, best-effort, and rate-limited per job by `notifyFailureCooldownHours` (default `6`).
 
-**Failover attribution.** A notification whose run did not execute on the configured primary model carries one appended line naming the route that actually answered (see [Fallback models & failover](/runtime/fallback/#who-sees-a-failover)). It is the only text the framework ever adds to an otherwise verbatim payload, and it appears only when a genuine route change happened.
+**Failover attribution.** A notification whose run did not execute on the configured primary model carries one appended line naming the route that actually answered (see [Fallback & failover](/runtime/fallback/#who-sees-a-failover)). It is the only text the framework ever adds to an otherwise verbatim payload, and it appears only when a genuine route change happened.
 
 **Staying silent.** To send nothing for this tick, have the agent produce an **empty final answer** or reply with the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed and case-insensitively, either as the whole answer or as its final line — never as a substring). In either case no notification is sent. Replying with the sentinel alone is the contract; a model that narrates first and ends with the marker is still treated as silent, and the run logs a warning so the off-contract answer stays visible. Suppression wins over attribution: a silent tick stays silent even when the run failed over.
 
@@ -90,7 +90,7 @@ When you select **Scheduled jobs (cron)** in the guided `mono-agent init` wizard
 | `jobs[].notifyConversationId` | string | no | inferred if exactly one destination | Destination conversation id for native notification. Use exact `web:new` to create a new CRON-marked web conversation; web is never inferred. |
 | `jobs[].notifyFailureCooldownHours` | number | no | `6` | Per-job cooldown, in hours, for all-models-failed error notices on `notify: true` jobs. |
 | `jobs[].model` | string | no | `runtime.model` | Per-job model override. Becomes this turn's primary, keeping canonical `runtime.fallbacks` (or legacy backups). See [Per-trigger model & effort](#per-trigger-model--effort). |
-| `jobs[].effort` | string | no | `runtime.effort` | Per-job reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. Reasoning-capable `pi:*` maps `ultra` to LOW; Pi without reasoning uses OFF. Direct `codex:*` forwards `ultra` unchanged. Mono-agent rejects `ultra` on its Claude SDK route because the pinned SDK public contract ends at `max` (the SDK JavaScript itself forwards the value). The Claude CLI route passes `--effort ultra`, but both tested Claude Code binaries (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort. Direct OpenCode rejects explicit effort. Ranking above `max` only prevents keyword downgrade. |
+| `jobs[].effort` | string | no | `runtime.effort` | Per-job reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. Reasoning-capable models map `ultra` to LOW; models without reasoning use OFF. `max` degrades to `xhigh` unless the resolved model advertises it. `mono-agent doctor` warns and names the nearest supported level when the configured value is outside the model's advertised set. Ranking above `max` only prevents keyword downgrade. |
 
 These limits are checked after inline and folder jobs are merged. Values are measured as UTF-8 bytes and rejected rather than truncated, so an oversized operator-visible configuration fails closed before any jobs arm.
 
@@ -99,10 +99,10 @@ These limits are checked after inline and folder jobs are merged. Values are mea
 A job can run on a different model or reasoning effort than the agent's default — useful for a nightly deep-research job that should run on a more powerful (and pricier) model than the interactive default. Set `model` and/or `effort` on the job:
 
 ```json
-{ "id": "deep-research", "expression": "0 3 * * *", "prompt": "…", "model": "claude:claude-opus-4-8", "effort": "high" }
+{ "id": "deep-research", "expression": "0 3 * * *", "prompt": "…", "model": "anthropic:claude-opus-4-8", "effort": "high" }
 ```
 
-The override becomes that turn's **primary** model; configured canonical/legacy fallbacks remain. Under `runtime.routeSafety: "uniform"`, crossing into an incompatible safety family is rejected. Explicit `per-route-native` allows the override only with the route's documented native contract; unsupported capabilities still reject/skip rather than being silently removed. Static violations fail `mono-agent validate`; dynamic invalid values are warned and ignored, so the job stays on its safe default. Only the overridden turn is affected.
+The override becomes that turn's **primary** model; configured canonical/legacy fallbacks remain. Static violations fail `mono-agent validate`; dynamic invalid values are warned and ignored, so the job stays on its safe default. Only the overridden turn is affected.
 
 A model-override tick runs **ephemerally**: it does not resume or persist a shared continuous session (so a different model never mixes into the conversation's session lineage), though it still sees the job's run history. Overrides to configured local providers are supported: mono-agent recomputes the target provider's endpoint and capabilities. An unconfigured or invalid local target clears the inherited endpoint block and is rejected rather than accidentally using the host provider. An `effort`-only override keeps the same model chain and therefore must still be compatible with every retained fallback.
 

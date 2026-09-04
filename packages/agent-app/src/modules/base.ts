@@ -1,15 +1,14 @@
-import type { MonoAgentConfigJson, MonoAgentRuntimeFallbackJson, RouteSafetyMode } from "@mono-agent/config";
+import type { MonoAgentConfigJson, MonoAgentRuntimeFallbackJson } from "@mono-agent/config";
 
 import type { ModuleInput } from "./types.js";
 
-export const DEFAULT_MODEL = "codex:gpt-5.6-terra";
-export const DEFAULT_PI_MEMORY_MODEL = "pi:openai-codex:gpt-5.6-terra";
+export const DEFAULT_MODEL = "openai-codex:gpt-5.6-terra";
 
 /** The model input every composed agent shares; overridable from the wizard/CLI. */
 export const MODEL_INPUT: ModuleInput = {
   id: "model",
   label: "Model",
-  description: "Primary runtime model reference, e.g. codex:gpt-5.6-terra, codex:gpt-5.6-sol, pi:openai-codex:gpt-5.6-sol, pi:opencode-go:kimi-k2.6, claude:claude-sonnet-4-6.",
+  description: "Primary runtime model reference in <provider>:<model> form, e.g. openai-codex:gpt-5.6-terra, anthropic:claude-sonnet-4-6, opencode-go:kimi-k2.6.",
   default: DEFAULT_MODEL,
 };
 
@@ -35,7 +34,6 @@ export function baseConfig(
   agentName: string,
   model: string,
   fallbacks: readonly MonoAgentRuntimeFallbackJson[],
-  routeSafety: RouteSafetyMode,
   effort?: string,
 ): MonoAgentConfigJson {
   return {
@@ -43,7 +41,6 @@ export function baseConfig(
     runtime: {
       model,
       ...(fallbacks.length === 0 ? {} : { fallbacks }),
-      routeSafety,
       ...(effort === undefined ? {} : { effort }),
       workspace: ".",
     },

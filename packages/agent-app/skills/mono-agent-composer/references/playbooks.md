@@ -20,7 +20,7 @@ Put `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`; the source config omits the c
 
 ```json
 {
-  "runtime": { "model": "pi:openai-codex:gpt-5.6-terra" },
+  "runtime": { "model": "openai-codex:gpt-5.6-terra" },
   "telegram": { "enabled": true, "allowedChatIds": ["123456789"] },
   "memory": {
     "mode": "bujo", "path": "./.mono-agent/memory", "writeMode": "capture",
@@ -30,7 +30,7 @@ Put `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`; the source config omits the c
   }
 }
 ```
-**Steps:** `ollama pull nomic-embed-text:v1.5 && ollama pull qwen3.6:latest` → `mono-agent init --model claude:claude-sonnet-4-6 --memory bujo` → add telegram + fill embeddings/llm + `writeMode: capture` → `mono-agent validate` (confirm memory liveness + consolidation cadence) → `mono-agent start`.
+**Steps:** `ollama pull nomic-embed-text:v1.5 && ollama pull qwen3.6:latest` → `mono-agent init --model anthropic:claude-sonnet-4-6 --memory bujo` → add telegram + fill embeddings/llm + `writeMode: capture` → `mono-agent validate` (confirm memory liveness + consolidation cadence) → `mono-agent start`.
 **Smoke:** send a fact from the allowed chat, then ask a paraphrased question later; confirm the final answer arrives separately and the temporary memory-tool activity disappears, `MemoryRecall` appears in the run JSONL, and the answer uses it.
 
 ## 2. Slack team bot with MCP tools
@@ -42,7 +42,7 @@ Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the
 
 ```json
 {
-  "runtime": { "model": "pi:openai-codex:gpt-5.6-terra" },
+  "runtime": { "model": "openai-codex:gpt-5.6-terra" },
   "slack": { "enabled": true, "allowedChannelIds": ["C012345"], "stripMentionText": true },
   "tools": { "allowedTools": ["Read", "Grep", "SlackSendMessage", "deployTool"], "mcpConfigPath": "./mcp.json" },
   "concurrency": { "maxConcurrentRuns": 4, "maxPendingRuns": 8 }
@@ -58,13 +58,13 @@ Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the
 
 ```json
 {
-  "runtime": { "model": "pi:ollama:gemma4:31b" },
+  "runtime": { "model": "ollama:gemma4:31b" },
   "providers": { "local": [{ "id": "ollama", "type": "ollama", "baseUrl": "http://localhost:11434", "enabled": true, "models": [{ "name": "gemma4:31b", "capabilities": { "context_window": 32768 } }] }] },
   "memory": { "mode": "journal", "path": "./.mono-agent/memory", "embeddings": { "provider": "ollama", "model": "nomic-embed-text:v1.5", "endpoint": "http://localhost:11434", "dim": 768 } },
   "sandbox": { "mode": "native", "network": { "mode": "localhost" } }
 }
 ```
-**Steps:** pull both models → `mono-agent init --model pi:ollama:gemma4:31b --memory journal` → add `providers.local` + embeddings + `sandbox.network.mode: localhost` → `validate` (Ollama reachable, models pulled) → `start`.
+**Steps:** pull both models → `mono-agent init --model ollama:gemma4:31b --memory journal` → add `providers.local` + embeddings + `sandbox.network.mode: localhost` → `validate` (Ollama reachable, models pulled) → `start`.
 **Smoke:** `curl -X POST` the webhook path; confirm a local-model response and no outbound non-localhost network in the artifact.
 
 ## 4. OpenAI-compatible endpoint for Open WebUI
@@ -74,7 +74,7 @@ Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the
 
 ```json
 {
-  "runtime": { "model": "claude:claude-sonnet-4-6", "session": { "mode": "continuous", "idleTimeoutMs": 1800000 } },
+  "runtime": { "model": "anthropic:claude-sonnet-4-6", "session": { "mode": "continuous", "idleTimeoutMs": 1800000 } },
   "openaiApi": { "enabled": true, "host": "0.0.0.0", "port": 4040, "basePath": "/v1", "allowNonLoopback": true, "modelId": "my-agent" }
 }
 ```
@@ -88,7 +88,7 @@ Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the
 
 ```json
 {
-  "runtime": { "model": "claude:claude-sonnet-4-6" },
+  "runtime": { "model": "anthropic:claude-sonnet-4-6" },
   "webhook": {
     "enabled": true, "host": "127.0.0.1", "port": 8080, "defaultMode": "sync",
     "endpoints": [
@@ -113,7 +113,7 @@ Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the
 
 ```json
 {
-  "runtime": { "model": "claude:claude-sonnet-4-6" },
+  "runtime": { "model": "anthropic:claude-sonnet-4-6" },
   "slack": { "enabled": true, "allowedChannelIds": ["C012345"], "unfurlLinks": false, "unfurlMedia": false },
   "cron": { "jobs": [{ "id": "morning-digest", "enabled": true, "expression": "0 9 * * *", "timezone": "America/New_York", "prompt": "Build the morning digest. Your final answer is the digest to notify.", "conversationId": "daily-digest", "notify": true, "notifyConversationId": "slack:C012345" }] }
 }
@@ -180,13 +180,13 @@ const orchestrator = await createConfiguredAgentResponder({
 
 ```json
 {
-  "runtime": { "model": "pi:openai-codex:gpt-5.6-terra" },
+  "runtime": { "model": "openai-codex:gpt-5.6-terra" },
   "tools": { "allowedTools": ["*"] },
   "sandbox": { "mode": "native", "network": { "mode": "localhost" }, "readableRoots": ["."], "writableRoots": ["."], "denyWrite": [".env", ".env.*", ".git/config", ".git/hooks/**"], "fallback": "fail-closed" }
 }
 ```
 **Steps:** `mono-agent init --memory journal` → leave tools at the allow-all default (`["*"]`); the **sandbox**, not an allowlist, is what constrains the code tools → `sandbox.mode native` + `network localhost` + deny-write defaults → keep `fallback: fail-closed` (do NOT set `unsafe-host-process`) → `validate` → `start`.
-**Smoke:** ask it to read a file, use Exec for one argv-safe command, run one Bash pipeline, then use NodeRepl twice to retain a variable and produce `42` (all work); next fetch an external URL or write `.env` (both blocked in the artifact). Keep every primary/fallback/trigger model on Pi; direct Codex, Claude, and direct OpenCode reject this mono-agent sandbox policy.
+**Smoke:** ask it to read a file, use Exec for one argv-safe command, run one Bash pipeline, then use NodeRepl twice to retain a variable and produce `42` (all work); next fetch an external URL or write `.env` (both blocked in the artifact). Every route is Pi-native, so this sandbox policy applies uniformly to the primary, every fallback, and every per-trigger override.
 
 ## 10. Phoenix-observed agent with the TUI
 **For:** an agent builder evaluating runs in a tracing dashboard.
@@ -195,7 +195,7 @@ const orchestrator = await createConfiguredAgentResponder({
 
 ```json
 {
-  "runtime": { "model": "claude:claude-sonnet-4-6" },
+  "runtime": { "model": "anthropic:claude-sonnet-4-6" },
   "artifacts": { "dir": ".mono-agent/artifacts" },
   "traceability": { "registryDir": ".mono-agent/trace-sources", "sourceId": "my-agent", "heartbeatMs": 10000 },
   "observability": { "exporters": [{ "type": "phoenix", "endpoint": "http://127.0.0.1:6006/v1/traces", "projectName": "my-project", "includeSensitiveData": false, "contentPatternRedaction": false, "timeoutMs": 5000 }] }
@@ -223,16 +223,12 @@ const orchestrator = await createConfiguredAgentResponder({
 
 ```json
 {
-  "runtime": { "model": "claude:claude-sonnet-4-6", "fallbacks": [{ "model": "pi:openai-codex:gpt-5.5" }, { "model": "pi:ollama:gemma4:31b" }], "session": { "mode": "continuous" } },
+  "runtime": { "model": "anthropic:claude-sonnet-4-6", "fallbacks": [{ "model": "openai-codex:gpt-5.6-sol" }, { "model": "ollama:gemma4:31b" }], "session": { "mode": "continuous" } },
   "providers": { "local": [{ "id": "ollama", "type": "ollama", "baseUrl": "http://localhost:11434", "enabled": true }], "piNative": { "transport": "auto", "piMaxRetries": 2, "maxRetryDelayMs": 60000, "piSessionsRoot": ".mono-agent/sessions" } }
 }
 ```
-Legacy `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain supported
-with no removal deadline, but this playbook intentionally emits the canonical
-per-route form for a new agent.
-**Steps:** `ollama pull gemma4:31b` → `mono-agent init --model claude:claude-sonnet-4-6 --fallback pi:openai-codex:gpt-5.5 --fallback pi:ollama:gemma4:31b` → add `providers.local` + `piNative.piSessionsRoot` → `validate` → `start`.
-**Boundary:** this mixed Pi/Claude chain intentionally omits the native mono-agent sandbox. Keep direct Codex chains all-direct; keep every route on Pi (including `pi:opencode-go:*`, not direct `opencode:*`) when `sandbox.mode` is `native`.
-**Smoke:** force a retryable primary failure; confirm the run result reports failover to the next model (not silent) and the conversation resumes from the transcript tail.
+`runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired in 0.21.0
+and are rejected at load; emit `runtime.fallbacks[]` only.
 
 ## 13. Personal Telegram assistant with Supermemory
 **For:** a power user trying an external memory layer while keeping the agent local.
@@ -241,7 +237,7 @@ per-route form for a new agent.
 
 ```json
 {
-  "runtime": { "model": "claude:claude-sonnet-4-6" },
+  "runtime": { "model": "anthropic:claude-sonnet-4-6" },
   "telegram": { "enabled": true, "allowedChatIds": ["123456789"] },
   "memory": {
     "backend": "supermemory", "mode": "lite", "path": "./.mono-agent/memory",
@@ -261,13 +257,13 @@ per-route form for a new agent.
 
 ```json
 {
-  "runtime": { "model": "pi:lmstudio:qwen3.6-32b" },
+  "runtime": { "model": "lmstudio:qwen3.6-32b" },
   "providers": { "local": [{ "id": "lmstudio", "type": "lmstudio", "baseUrl": "http://localhost:1234", "enabled": true }] },
   "memory": { "mode": "lite", "path": "./.mono-agent/memory", "writeMode": "append-host-summary" },
   "webhook": { "enabled": true }
 }
 ```
-**Steps:** start LM Studio's local server with the chosen model loaded → `mono-agent init --model pi:lmstudio:qwen3.6-32b --memory lite` (the `pi:lmstudio:*` model auto-adds the LM Studio provider block; there is no LM Studio preset — `local-private` is Ollama-based) → adjust `runtime.model` if the displayed model id differs → `validate` → `start`.
+**Steps:** start LM Studio's local server with the chosen model loaded → `mono-agent init --model lmstudio:qwen3.6-32b --memory lite` (the `lmstudio:*` model auto-adds the LM Studio provider block; there is no LM Studio preset — `local-private` is Ollama-based) → adjust `runtime.model` if the displayed model id differs → `validate` → `start`.
 **Smoke:** `curl` the webhook invoke URL and confirm the response comes from the local LM Studio model.
 
 ## 15. Interactive agent with long jobs and large media
@@ -279,7 +275,7 @@ per-route form for a new agent.
 
 ```json
 {
-  "runtime": { "model": "pi:openai-codex:gpt-5.5", "executionMode": "sdk" },
+  "runtime": { "model": "openai-codex:gpt-5.6-sol" },
   "tools": { "allowedTools": ["Read", "AskUser", "TelegramSendFile", "PublishReplyFile"], "mcpConfigPath": "./.mcp.json", "mcpCallMaxTotalTimeoutMs": 2700000 },
   "interaction": { "bridge": { "host": "127.0.0.1", "port": 4471 }, "askUser": { "timeoutMs": 600000 }, "progress": { "enabled": true } },
   "telegram": { "enabled": true, "allowedChatIds": ["123456789"], "apiRoot": "http://127.0.0.1:8081", "attachments": { "maxBytes": 268435456, "maxUploadBytes": 268435456 } }
@@ -295,7 +291,7 @@ per-route form for a new agent.
 
 ```json
 {
-  "runtime": { "model": "pi:openai-codex:gpt-5.5" },
+  "runtime": { "model": "openai-codex:gpt-5.6-sol" },
   "tools": {
     "allowedTools": ["Read", "Glob", "Grep", "WebSearch", "WebFetch"],
     "web": {

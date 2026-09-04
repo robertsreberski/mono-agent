@@ -1,8 +1,12 @@
-import type { EffortLevel, RouteSafetyMode } from "@mono-agent/config";
+import type { EffortLevel } from "@mono-agent/config";
 
 import { defaultAnswers, type WizardAnswers, type WizardFallback } from "./answers.js";
 import { findPreset } from "./presets.js";
-import { assertConcreteWizardModelRef, validateWizardAgentName } from "./prompts.js";
+import {
+  assertConcreteWizardModelRef,
+  canonicalWizardModelRef,
+  validateWizardAgentName,
+} from "./prompts.js";
 
 /** Channels `mono-agent init --with <csv>` can switch on, by their short flag name. */
 export const WITH_CHANNELS = ["telegram", "slack", "webhook", "openaiApi", "cron"] as const;
@@ -27,7 +31,6 @@ export interface AnswersFromCliArgs {
   readonly name?: string;
   readonly model?: string;
   readonly fallbacks?: readonly { readonly model: string; readonly effort?: EffortLevel }[];
-  readonly routeSafety?: RouteSafetyMode;
   readonly effort?: string;
   readonly memory?: "lite" | "journal" | "bujo";
   /** Validated `--with` channel flag names (see {@link WithChannel}). */
@@ -84,13 +87,18 @@ export function answersFromCli(args: AnswersFromCliArgs): WizardAnswers {
     ...(model === undefined ? {} : { model }),
     ...(fallbacks === undefined ? {} : { fallbacks }),
     ...(args.effort === undefined ? {} : { effort: args.effort }),
-    ...(args.routeSafety === undefined ? {} : { routeSafety: args.routeSafety }),
     channels: [...channels],
     ...(memory === undefined ? {} : { memory }),
   });
 }
 
+/**
+ * `--model`/`--fallback` take the same canonicalization as the interactive
+ * picker: a legacy `pi:<provider>:<model>` passes validation but must not reach
+ * the plan as raw text, or the literal-prefix checks downstream (local-provider
+ * module selection, credential review) misclassify the route.
+ */
 function concreteCliModelRef(value: string): string {
   assertConcreteWizardModelRef(value);
-  return value;
+  return canonicalWizardModelRef(value);
 }

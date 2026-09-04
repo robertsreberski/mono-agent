@@ -114,26 +114,34 @@ function resolveCustomPiModel(resolved, options) {
 // through the same custom provider once options.customProvider is set for the
 // run (the router does not re-derive customProvider per chain entry).
 export function resolvePiRuntimeModel(resolved, options) {
-  if (options.customProvider) return resolveCustomPiModel(resolved, options);
-  if (resolved.sdk !== "pi") throw new Error(`unsupported pi sdk: ${resolved.sdk}`);
   const provider = resolved.provider;
-  const model = getPiModel(provider, resolved.model);
-  if (!model) {
+  const model = resolved.model;
+  if (
+    typeof provider !== "string"
+    || provider.length === 0
+    || typeof model !== "string"
+    || model.length === 0
+  ) {
+    throw new Error("invalid pi model reference: provider and model are required");
+  }
+  if (options.customProvider) return resolveCustomPiModel(resolved, options);
+  const catalogModel = getPiModel(/** @type {*} */ (provider), model);
+  if (!catalogModel) {
     // Phrasing matters: this must match ai/failure.js's NON_RETRYABLE_PROVIDER_RE
     // `model[_ ]not[_ ]found` alternation so the router classifies a catalog miss
     // as non-retryable and bails cleanly instead of retrying/misclassifying it as
     // a transient provider_unavailable failure.
-    throw new Error(`pi model not found: ${provider}:${resolved.model}`);
+    throw new Error(`pi model not found: ${provider}:${model}`);
   }
   return {
-    model,
+    model: catalogModel,
     capabilities: {
       tool_use: true,
-      reasoning: !!model.reasoning,
-      reasoning_mode: model.reasoning ? "effort" : "none",
-      reasoning_levels: model.reasoning ? reasoningLevelsForPiModel(model) : undefined,
+      reasoning: !!catalogModel.reasoning,
+      reasoning_mode: catalogModel.reasoning ? "effort" : "none",
+      reasoning_levels: catalogModel.reasoning ? reasoningLevelsForPiModel(catalogModel) : undefined,
       reasoning_disable_supported: true,
-      vision: Array.isArray(model.input) ? model.input.includes("image") : false,
+      vision: Array.isArray(catalogModel.input) ? catalogModel.input.includes("image") : false,
       json_mode: true,
     },
     apiKeys: new Map(),

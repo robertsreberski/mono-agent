@@ -23,14 +23,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> = {
   "agent.name": "string",
   "runtime.model": "string",
-  "runtime.fallbackModels": "string[]",
   "runtime.fallbacks": "array",
   subagents: "object",
   "runtime.retry.primaryAttempts": "integer",
   "runtime.retry.backoffMs": "integer",
   "runtime.retry.maxBackoffMs": "integer",
-  "runtime.routeSafety": "string",
-  "runtime.executionMode": "string",
   "runtime.effort": "string",
   "runtime.permissionMode": "string",
   "runtime.maxTurns": "integer",
@@ -78,7 +75,6 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "memory.embeddings.circuitBreaker.cooldownMs": "integer",
   "memory.llm.provider": "string",
   "memory.llm.model": "string",
-  "memory.llm.executionMode": "string",
   "memory.llm.trace": "boolean",
   "memory.llm.timeoutMs": "integer",
   "memory.llm.endpoint": "string",
@@ -120,12 +116,12 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "traceability.staleAfterMs": "integer",
   "traceability.globalDiscovery": "boolean",
   "observability.exporters": "array",
+  providers: "object",
   "providers.piAuthPath": "string",
   "providers.piNative.transport": "string",
   "providers.piNative.piMaxRetries": "integer",
   "providers.piNative.maxRetryDelayMs": "integer",
   "providers.piNative.piSessionsRoot": "string",
-  "providers.local": "array",
 };
 
 interface SchemaNode {
@@ -166,7 +162,7 @@ describe("config reference", () => {
     const json = {
       $schema: MONO_AGENT_CONFIG_SCHEMA_URL,
       runtime: {
-        model: "codex:gpt-5.5",
+        model: "openai-codex:gpt-5.5",
         session: {
           idleMs: 5_000,
         },
@@ -217,12 +213,15 @@ describe("config reference", () => {
 
   it("keeps only explicitly plugin-owned and extensible maps open", () => {
     expect(findUnknownAppConfigPaths({
-      runtime: { model: "codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },
       channels: {
         plugins: [{ package: "@mono-agent/a2a-adapter", config: { nested: { pluginOwned: true } } }],
       },
       providers: {
+        openrouter: {
+          models: [{ name: "anthropic/claude-opus-4.5", capabilities: { vendor_extension: true } }],
+        },
         local: [{
           id: "local",
           type: "openai_compat",
@@ -236,11 +235,12 @@ describe("config reference", () => {
     })).toEqual([]);
 
     expect(findUnknownAppConfigPaths({
-      runtime: { model: "codex:gpt-5.5" },
+      runtime: { model: "openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },
       cron: { jobs: [{ id: "daily", expression: "0 8 * * *", prompt: "Run", retryForever: true }] },
       channels: { plugins: [{ package: "pkg", typo: true, config: {} }] },
-    })).toEqual(["channels.plugins[0].typo", "cron.jobs[0].retryForever"]);
+      providers: { openrouter: { typo: true } },
+    })).toEqual(["channels.plugins[0].typo", "cron.jobs[0].retryForever", "providers.openrouter.typo"]);
   });
 
   it("keeps the committed schema generated from the current registry", () => {
@@ -296,7 +296,6 @@ describe("config reference", () => {
     expect(schemaNode(schema, "runtime", "fallbacks").items?.required).toEqual(["model"]);
     expect(schemaNode(schema, "runtime", "fallbacks").items?.properties?.effort?.enum)
       .toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
-    expect(schemaNode(schema, "runtime", "routeSafety").enum).toEqual(["uniform", "per-route-native"]);
     expect(schemaNode(schema, "runtime", "compaction", "enabled")).toMatchObject({
       type: "boolean",
       default: true,
