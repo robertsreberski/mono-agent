@@ -48,6 +48,9 @@ importers:
       '@mono-agent/memory-supermemory':
         specifier: workspace:0.20.14
         version: link:extras/memory-supermemory
+      '@mono-agent/messenger-adapter':
+        specifier: workspace:0.20.14
+        version: link:extras/messenger-adapter
       '@mono-agent/observability':
         specifier: workspace:0.20.14
         version: link:packages/observability
@@ -141,6 +144,12 @@ importers:
         version: 4.4.3
 
   extras/memory-supermemory:
+    dependencies:
+      '@mono-agent/agent-contracts':
+        specifier: workspace:0.20.14
+        version: link:../../packages/agent-contracts
+
+  extras/messenger-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.20.14
