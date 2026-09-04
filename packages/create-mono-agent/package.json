@@ -1,6 +1,6 @@
 {
   "name": "create-mono-agent",
-  "version": "0.20.13",
+  "version": "0.20.14",
   "description": "npm-init style installer for the mono-agent CLI: `npm create mono-agent`. Ships both a `create-mono-agent` and a `mono-agent` bin, each delegating to the @mono-agent/agent-app CLI.",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -27,7 +27,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mono-agent/agent-app": "workspace:0.20.13"
+    "@mono-agent/agent-app": "workspace:0.20.14"
   },
   "publishConfig": {
     "access": "public"
