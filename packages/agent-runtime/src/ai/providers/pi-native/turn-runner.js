@@ -7,7 +7,6 @@
 // state; run state (harness, removeAbortHandler, externalAbort) lives on the
 // caller-owned runState.
 
-import { AgentHarness } from "@earendil-works/pi-agent-core";
 import {
   createStructuredOutputTool,
   getPiBuiltinTools,
@@ -17,6 +16,7 @@ import { createNodeReplController } from "../../../agent/tools/node-repl.js";
 import { createWebToolController } from "../../../agent/tools/web-controller.js";
 import { readToolRuntime } from "../../../agent/tools/shared/runtime-context.js";
 import { formatLiveInputGuidance } from "../../live-input-prompt.js";
+import { createPiHarnessAdapter } from "./harness-adapter.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
 import { createStreamSubscriber } from "./stream-subscriber.js";
 
@@ -251,7 +251,7 @@ export function toolResultErrorOverride(details) {
   return failed ? { isError: true } : undefined;
 }
 
-export function buildTurnHarness(runState, {
+export async function buildTurnHarness(runState, {
   session,
   piModels,
   model,
@@ -269,12 +269,7 @@ export function buildTurnHarness(runState, {
   sdk,
   reference,
 }) {
-  // pi-agent-core 0.83.0 removed `env` from AgentHarnessOptions: an
-  // ExecutionEnv now reaches tools through the generic per-turn `toolContext`
-  // instead. mono-agent needs neither — it uses none of pi's built-in
-  // file/shell tools, and its own tools close over what they need — so the
-  // option is dropped rather than migrated.
-  const harness = new AgentHarness({
+  const harness = await createPiHarnessAdapter(session, {
     session,
     models: piModels,
     model,
@@ -297,6 +292,17 @@ export function buildTurnHarness(runState, {
   // every resolved execute(), so without this the model would be told a failed,
   // timed-out, or empty delegation succeeded.
   harness.on("tool_result", (event) => toolResultErrorOverride(event?.details));
+  // Pi 0.85 records in-flight work durably. mono-agent tools do not yet use the
+  // new replay-memo contract, so abort an interrupted operation instead of
+  // risking a duplicate external effect. Do this before subscribing so stale
+  // recovery events cannot contaminate the new run's transcript counters.
+  try {
+    await harness.abortOpenOperations();
+  } catch (error) {
+    try { await harness.close(); } catch { /* best-effort */ }
+    throw error;
+  }
+
   runState.harness = harness;
 
   harness.subscribe(createStreamSubscriber(runState, {
@@ -310,7 +316,7 @@ export function buildTurnHarness(runState, {
 
   const abortHandler = () => {
     runState.externalAbort = true;
-    harness.abort();
+    void harness.abort().catch(() => {});
   };
   if (options.abortSignal) {
     options.abortSignal.addEventListener("abort", abortHandler, { once: true });

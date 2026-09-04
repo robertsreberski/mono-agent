@@ -13,7 +13,7 @@
 // and `piResolvedModels` seams (the faux provider is not in pi's builtin
 // catalog, so it is reachable only through an explicit collection).
 
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -444,6 +444,84 @@ describe("pi-native sessions", () => {
     ]);
   });
 
+  it("resumes a Pi 0.84 legacy v3 JSONL and lets Pi upgrade it atomically to v4", async () => {
+    const model = setup();
+    const root = mkdtempSync(join(tmpdir(), "pi-native-v3-upgrade-"));
+    const directory = join(root, "legacy-workspace");
+    const sessionId = "legacy-pi-084-session";
+    const path = join(directory, `2026-09-04T00-00-00-000Z_${sessionId}.jsonl`);
+    const timestamp = Date.now() - 10_000;
+    const usage = {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(path, `${[
+      {
+        type: "session",
+        version: 3,
+        id: sessionId,
+        timestamp: new Date(timestamp).toISOString(),
+        cwd: process.cwd(),
+      },
+      {
+        type: "message",
+        id: "legacy-user",
+        parentId: null,
+        timestamp: new Date(timestamp + 1).toISOString(),
+        message: { role: "user", content: [{ type: "text", text: "legacy-turn" }], timestamp: timestamp + 1 },
+      },
+      {
+        type: "message",
+        id: "legacy-assistant",
+        parentId: "legacy-user",
+        timestamp: new Date(timestamp + 2).toISOString(),
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "legacy-reply" }],
+          api: "openai-completions",
+          provider: "faux",
+          model: "faux-model",
+          usage,
+          stopReason: "stop",
+          timestamp: timestamp + 2,
+        },
+      },
+    ].map((record) => JSON.stringify(record)).join("\n")}\n`);
+
+    try {
+      let resumedContext = null;
+      faux.setResponses([
+        (context) => { resumedContext = context; return fauxAssistantMessage([fauxText("new-reply")]); },
+      ]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "new-turn" }],
+        sessionKeepAlive: true,
+        sessionId,
+        piSessionsRoot: root,
+      }));
+
+      expect(result.error).toBeNull();
+      expect(transcriptOf(resumedContext)).toEqual([
+        "user:legacy-turn",
+        "assistant:legacy-reply",
+        "user:new-turn",
+      ]);
+      expect(JSON.parse(readFileSync(path, "utf8").split("\n", 1)[0])).toMatchObject({
+        v: 4,
+        kind: "header",
+        id: sessionId,
+      });
+    } finally {
+      await invalidateProviderSession(sessionId).catch(() => {});
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("invalidates both live and durable transcript state rejected by the host", async () => {
     const model = setup();
     const sessionId = "host-rejected-stable-id";
@@ -561,10 +639,10 @@ describe("pi-native sessions", () => {
       expect(first.error).toBeNull();
       expect(findJsonlFiles(root)).toHaveLength(1);
 
-      repo.delete = vi.fn(async (metadata) => {
+      repo.delete = vi.fn(async (metadata, context) => {
         deleteStarted();
         await deleteGate;
-        return originalDelete.call(repo, metadata);
+        return originalDelete.call(repo, metadata, context);
       });
       const invalidation = invalidateProviderSession(sessionId);
       await started;

@@ -312,6 +312,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     },
     session: null,
     sessionEntry: null,
+    // Fresh keep-alive sessions are registered busy until the harness closes;
+    // this prevents another turn from reopening the same repo record while its
+    // first handle is still live.
+    registeredSessionEntry: null,
     // True when a requestedSessionId had no live entry AND no durable transcript,
     // so a fresh durable session was created under that id (cross-restart resume,
     // first turn for the conversation). Distinct from a true resume (sessionEntry
@@ -505,7 +509,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // Construct the harness, subscribe the stream normalizer, and wire the
     // external abort handler (which sets runState.externalAbort and aborts the
     // harness). Sets runState.harness + runState.removeAbortHandler.
-    harness = buildTurnHarness(runState, {
+    harness = await buildTurnHarness(runState, {
       session: runState.session,
       piModels,
       model: runtime.model,
@@ -872,7 +876,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       piTransport,
     });
   } finally {
+    try { await harness?.close?.(); } catch { /* best-effort */ }
     if (runState.sessionEntry) runState.sessionEntry.busy = false;
+    if (runState.registeredSessionEntry) runState.registeredSessionEntry.busy = false;
     runState.removeAbortHandler?.();
     try {
       await closeRunTools();

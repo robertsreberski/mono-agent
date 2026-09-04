@@ -487,10 +487,9 @@ describe("pi-native AgentHarness bridge", () => {
   });
 
   it("delivers final-turn images to the model as image content blocks (not dropped)", async () => {
-    // Regression: AgentHarness.prompt takes images under an options object
-    // (`{ images }`). Passing a bare ImageContent[] as the second positional arg
-    // makes `options?.images` undefined, so the image is silently dropped and
-    // never reaches the model. Assert the image block survives to the provider.
+    // Regression: the mono-agent wrapper accepts images under `{ images }` and
+    // translates them to Pi 0.85's lane prompt signature. Passing the wrapper
+    // object through would silently drop the image before the provider call.
     const model = setup({ input: ["text", "image"] });
 
     let capturedMessages = null;

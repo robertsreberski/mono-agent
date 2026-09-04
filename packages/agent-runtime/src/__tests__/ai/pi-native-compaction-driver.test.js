@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildSessionContext, estimateTokens } from "@earendil-works/pi-agent-core";
+import { estimateTokens } from "@earendil-works/pi-agent-core";
 import {
   estimateCurrentContextTokens,
   piSummaryReserveTokens,
@@ -8,6 +8,7 @@ import {
   runReactiveCompaction,
   tryCompact,
 } from "../../ai/providers/pi-native/compaction-driver.js";
+import { buildPiSessionContext } from "../../ai/providers/pi-native/harness-adapter.js";
 
 // A session double whose buildContext / getEntries / (message count) are
 // scriptable, so the trigger math is exercised deterministically.
@@ -99,14 +100,16 @@ function hookHarness({ sourceMessages = reducibleMessages(), summary = "short su
         type: "compaction",
         id: "compaction-1",
         parentId: branchEntries.at(-1)?.id || null,
-        timestamp: new Date().toISOString(),
+        timestamp: Date.now(),
         summary: result.summary,
-        firstKeptEntryId: result.firstKeptEntryId,
+        retainedTail: result.retainedTail,
         tokensBefore: result.tokensBefore,
         details: result.details,
+        usage: result.usage,
         fromHook: true,
       };
-      messages.splice(0, messages.length, ...buildSessionContext([...branchEntries, compactedEntry]).messages);
+      const context = buildPiSessionContext([...branchEntries, compactedEntry]);
+      messages.splice(0, messages.length, ...context);
       return result;
     }),
   };
