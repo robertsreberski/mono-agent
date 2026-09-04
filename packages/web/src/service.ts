@@ -1562,6 +1562,7 @@ export class WebService {
       monitorId: input.monitor.monitorId,
       deliveryKey: input.deliveryKey,
       payloadSha256: monitorWakePayloadSha256(input.monitor, input.wakePrompt),
+      monitor: input.monitor,
     });
     if (reservation.kind === "completed") {
       return {
@@ -1632,12 +1633,16 @@ export class WebService {
             signal: AbortSignal.timeout(10 * 60 * 1_000),
           });
           if (settlement.status === "applied") {
-            this.store.completeMonitorWake({
+            const message = this.store.completeMonitorWake({
               sourceId: input.sourceId,
               monitorId: input.monitor.monitorId,
               deliveryKey: input.deliveryKey,
               disposition: "steered",
+              turnId: active.turnId,
             });
+            if (message !== undefined) {
+              this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
+            }
             return { delivered: true, disposition: "steered" };
           }
         } catch (error) {
@@ -1701,13 +1706,16 @@ export class WebService {
           ambiguous: true,
         };
       }
-      this.store.completeMonitorWake({
+      const message = this.store.completeMonitorWake({
         sourceId: input.sourceId,
         monitorId: input.monitor.monitorId,
         deliveryKey: input.deliveryKey,
         disposition: "follow_up",
         turnId: started.turnId,
       });
+      if (message !== undefined) {
+        this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
+      }
       return { delivered: true, disposition: "follow_up" };
     });
     const tail = delivery.then(() => undefined, () => undefined);

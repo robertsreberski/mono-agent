@@ -1017,7 +1017,13 @@ describe("WebService", () => {
     expect(service.thread(thread.id).messages).toEqual([
       expect.objectContaining({
         role: "assistant",
-        parts: [expect.objectContaining({ type: "text", text: "The watched process is ready." })],
+        parts: expect.arrayContaining([
+          expect.objectContaining({ type: "text", text: "The watched process is ready." }),
+          {
+            type: "monitor-activity",
+            monitors: [{ projection: monitor, deliveryKeys: [input.deliveryKey] }],
+          },
+        ]),
       }),
     ]);
     const raw = new DatabaseSync(service.store.paths.database, { readOnly: true });
@@ -1094,6 +1100,10 @@ describe("WebService", () => {
     stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
     stream?.close();
     await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(service.thread(thread.id).messages.at(-1)?.parts).toEqual(expect.arrayContaining([{
+      type: "monitor-activity",
+      monitors: [{ projection: monitor, deliveryKeys: [deliveryKey] }],
+    }]));
     await service.stop();
   });
 

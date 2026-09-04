@@ -14,6 +14,7 @@ import {
   type CronOperatorRunTrigger,
   type CronOperatorRunTruncatedField,
   type SessionToolHistoryEventMetadata,
+  type MonitorProjection,
   type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
 
@@ -270,6 +271,15 @@ export type WebMessagePart =
       readonly job: ProcessJobProjection;
       /** Bounded normal-turn answer produced by the terminal wake, when ready. */
       readonly responseText?: string;
+    }
+  | {
+      readonly type: "monitor-activity";
+      /** One compact run-level row, with one latest projection per Monitor. */
+      readonly monitors: readonly {
+        readonly projection: MonitorProjection;
+        /** Exact delivered wake identities, retained only for idempotent UI aggregation. */
+        readonly deliveryKeys: readonly string[];
+      }[];
     }
   | { readonly type: "telemetry"; readonly event: string; readonly data?: unknown }
   | { readonly type: "error"; readonly code?: string; readonly message: string }

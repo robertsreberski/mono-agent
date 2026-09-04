@@ -42,9 +42,14 @@ Availability matches process jobs with one narrowing: a turn gets `Monitor` and
 
 Cron, webhook, `web:new`, TUI-direct, and A2A turns never see the tools. A web
 Monitor belongs to the exact existing thread that started it. Its batches arrive
-as ordinary assistant wake turns; this release intentionally adds no Monitor
-card and no browser-side stop control. The model can use `MonitorStop` in a turn,
-and the owner can use `mono-agent monitors cancel <monitor-id>` from the CLI.
+as ordinary assistant wake turns. The Web console groups their host-owned
+receipts into one compact Monitor activity row per assistant run; it does not
+render them as user messages or repeated `Steered` tool calls. The row exposes
+only the redacted description, lifecycle state, and aggregate line counters —
+never delivery keys, command output, argv, environment values, or process
+identifiers. There is no browser-side stop control. The model can use
+`MonitorStop` in a turn, and the owner can use
+`mono-agent monitors cancel <monitor-id>` from the CLI.
 
 ## Configuration
 
@@ -105,8 +110,11 @@ owner-private loopback ingress can accept wakes. The browser tab may be closed:
 the service still runs the turn, persists any visible assistant reply in the
 thread, and sends the normal response-ready Web Push when configured. A silent
 `NOTHING_TO_REPORT` result completes delivery without a Web Push. Web SQLite
-retains only the Monitor delivery identity and payload hash for duplicate
-suppression; the fenced event text remains memory-only.
+retains the Monitor delivery identity and payload hash for duplicate
+suppression plus the secret-free Monitor projection used by the activity row;
+the fenced event text remains memory-only. Host-owned Monitor input steered into
+an active run is applied to that provider run but excluded from canonical user
+history and memory persistence.
 Deleting that web conversation clears the ledger's thread reference but retains
 the delivery tombstone, so the same key can never name different content later.
 

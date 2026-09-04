@@ -55,9 +55,11 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   append, and proxy thread job refreshes through the agent's independent owner
   operator capability.
 - Accept exact-source/thread Monitor wakes through that private ingress, steer
-  them into the active run or serialize one assistant-only follow-up, and retain
-  only delivery identity plus a payload hash for fail-closed duplicate handling.
-  Monitor wakes deliberately have no web card or browser-side stop control.
+  them into the active run or serialize one assistant-only follow-up, retain
+  delivery identity plus a payload hash for fail-closed duplicate handling, and
+  group their secret-free projections into one compact Monitor activity row per
+  assistant run. Raw event text and delivery keys never reach the rendered row;
+  Monitor wakes have no browser-side stop control.
 
 ## Install / Usage
 
@@ -319,17 +321,19 @@ cross-resource requests fail. See
    memory-only live skill registry, so reloads and concurrent tabs do not own or
    interrupt upstream turns.
 4. The bundled assistant-ui webapp maps those DTOs—including canonical
-   lifecycle metadata—into its external store, thread list, messages, tool
-   cards, composer, attachments, activity, and push-subscription UI; its service
-   worker handles background delivery and same-origin clicks.
+   lifecycle metadata—into its external store, thread list, messages, compact
+   Monitor activity, tool cards, composer, attachments, and push-subscription
+   UI; its service worker handles background delivery and same-origin clicks.
 5. `deliverWebNotification` reads the owner-private live ingress record and
    performs one bearer-authenticated loopback delivery. Cron/webhook delivery
    first appends the result to agent history, then atomically exposes an
    idempotent assistant-only thread. A process-job delivery instead updates one
    source/thread-bound durable card; its normal wake turn owns the single agent
-   history entry. A Monitor delivery creates no card: it is steered into an
-   active run or becomes an assistant-only follow-up in the exact existing web
-   thread. The browser may be closed, but the web service must remain running.
+   history entry. A Monitor delivery is steered into an active run or becomes an
+   assistant-only follow-up in the exact existing web thread; exact host-owned
+   receipts update one compact, secret-free activity row rather than creating
+   repeated steering cards. The browser may be closed, but the web service must
+   remain running.
 
 ### Package structure
 
@@ -340,7 +344,7 @@ cross-resource requests fail. See
 | [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence, including race-safe automatic-title updates that never overwrite a user rename. |
 | [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, and owner-authenticated process-job reads/cancel over the operator protocol. |
 | [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook delivery, source/thread-bound process-job cards, and Monitor wake turns. |
-| [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including atomic `AskUser` forms, tests, and its own dependency lockfile. |
+| [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including compact Monitor activity, atomic `AskUser` forms, tests, and its own dependency lockfile. |
 
 ## Public API
 

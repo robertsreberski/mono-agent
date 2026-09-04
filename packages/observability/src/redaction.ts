@@ -49,6 +49,36 @@ const MAX_REDACTION_NODES = 10_000;
 const MAX_ARRAY_ITEMS = 1_000;
 const MAX_OBJECT_KEYS = 1_000;
 const MAX_JSON_CREDENTIAL_SCAN_CODE_UNITS = 256 * 1_024;
+const TOKEN_USAGE_KEYS = new Set([
+  "input",
+  "input_tokens",
+  "inputTokens",
+  "output",
+  "output_tokens",
+  "outputTokens",
+  "cachedInput",
+  "cached_input",
+  "cachedInputTokens",
+  "cached_input_tokens",
+  "cacheRead",
+  "cache_read",
+  "cacheCreation",
+  "cache_creation",
+  "cacheReadTokens",
+  "cache_read_tokens",
+  "cacheCreationTokens",
+  "cache_creation_tokens",
+  "cacheWrite",
+  "cache_write",
+  "cacheWriteTokens",
+  "cache_write_tokens",
+  "total",
+  "total_tokens",
+  "totalTokens",
+  "reasoning",
+  "reasoning_tokens",
+  "reasoningTokens",
+]);
 
 export interface RedactJsonValueOptions {
   /**
@@ -111,7 +141,12 @@ function redact(
   // numeric value under a "sensitive" key is a count/flag — e.g. `input_tokens`,
   // `output_tokens`, `cache_read_tokens` all match /token/ but carry token COUNTS
   // we want visible for cost observability. Only redact non-numeric matches.
-  if (key !== undefined && isSensitiveStructuredKey(key) && typeof value !== "number") {
+  if (
+    key !== undefined
+    && isSensitiveStructuredKey(key)
+    && typeof value !== "number"
+    && !(key === "tokens" && isNumericTokenUsage(value))
+  ) {
     return "[redacted]";
   }
   if (!consumeNode(budget)) {
@@ -189,6 +224,27 @@ function redact(
         ...options.visibleTextSanitization,
         maxBytes: maxStringBytes,
       }, options.contentPatternRedaction === true);
+}
+
+/**
+ * Preserve the closed token-count envelope emitted by runtime telemetry while
+ * keeping every token-bearing string or open-ended object fail-closed.
+ */
+function isNumericTokenUsage(value: unknown): value is Readonly<Record<string, number>> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    const entries = Object.entries(value as Record<string, unknown>);
+    return entries.length > 0
+      && entries.length <= TOKEN_USAGE_KEYS.size
+      && entries.every(([entryKey, entryValue]) => TOKEN_USAGE_KEYS.has(entryKey)
+        && typeof entryValue === "number"
+        && Number.isFinite(entryValue)
+        && entryValue >= 0);
+  } catch {
+    return false;
+  }
 }
 
 /**

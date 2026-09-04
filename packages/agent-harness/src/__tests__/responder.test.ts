@@ -1160,6 +1160,12 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
       .toEqual({ type: "runtime_telemetry", kind: "capabilities_resolved", data: { capabilitiesUsed: ["vision"] } });
     expect(streamEventFromRuntimeEvent({ type: "provider_bridge_latency", durationMs: 88, timestamp: "t" }))
       .toEqual({ type: "runtime_telemetry", kind: "provider_bridge_latency", data: { durationMs: 88, timestamp: "t" } });
+    expect(streamEventFromRuntimeEvent({ type: "assistant_message_boundary", messageId: "assistant-1" }))
+      .toEqual({
+        type: "runtime_telemetry",
+        kind: "assistant_message_boundary",
+        data: { messageId: "assistant-1" },
+      });
     expect(streamEventFromRuntimeEvent({
       type: "context_usage",
       model: "pi:openai-codex:gpt-5.5",

@@ -130,6 +130,19 @@ describe("createStreamSubscriber — exact context snapshots", () => {
         tokens: { input: 60, output: 8, cacheRead: 10, cacheCreation: 2, total: 80 },
       }),
     ]);
+    expect(emitted.filter((event) => event.type === "assistant_message_boundary")).toEqual([
+      { type: "assistant_message_boundary", messageId: "assistant-1" },
+      { type: "assistant_message_boundary", messageId: "assistant-2" },
+    ]);
+  });
+
+  it("does not invent an assistant boundary for a tool-only message", () => {
+    const { emitted, handler } = driver();
+    handler({
+      type: "message_end",
+      message: completedAssistant({ content: [{ type: "toolCall", id: "tool-1", name: "Read", arguments: {} }] }),
+    });
+    expect(emitted.some((event) => event.type === "assistant_message_boundary")).toBe(false);
   });
 
   it.each(["error", "aborted"])("does not report a %s assistant message as exact context", (stopReason) => {
