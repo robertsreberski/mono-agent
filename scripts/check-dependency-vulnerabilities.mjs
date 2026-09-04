@@ -24,6 +24,10 @@ const MAX_CONCURRENT_BULK_REQUESTS = 1;
 const BULK_REQUEST_TRANSIENT_RETRIES = 2;
 const BULK_REQUEST_RETRY_DELAY_MS = 60_000;
 const NPM_REGISTRY_ROUTE_TIMEOUT_MS = 2_000;
+const MAX_OSV_BATCH_QUERIES = 1_000;
+const MAX_OSV_QUERIES = 10_000;
+const MAX_OSV_VULNERABILITIES = 1_000;
+const MAX_CONCURRENT_OSV_DETAIL_REQUESTS = 4;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_WHY_PATHS_PER_TARGET = 10_000;
 const MAX_WHY_TRAVERSAL_STEPS_PER_TARGET = 100_000;
@@ -61,6 +65,7 @@ const DEFAULT_ROOT_PACKAGE_NAMES = packageCatalog
   .sort();
 
 export const DEFAULT_AUDIT_REGISTRY_URL = "https://registry.npmjs.org/";
+export const DEFAULT_OSV_API_URL = "https://api.osv.dev/v1/";
 export const DEFAULT_DISPOSITIONS_PATH = fileURLToPath(
   new URL("./dependency-vulnerability-dispositions.json", import.meta.url),
 );
@@ -855,6 +860,7 @@ export async function queryBulkAdvisories(inventory, options = {}) {
         (index + 1) * MAX_BULK_REQUEST_PACKAGES,
       )),
     );
+  const fallbackState = { useOsv: false };
   const reports = await mapWithConcurrency(
     requestInventories,
     MAX_CONCURRENT_BULK_REQUESTS,
@@ -863,6 +869,7 @@ export async function queryBulkAdvisories(inventory, options = {}) {
       options,
       transientRetries,
       retryDelayMs,
+      fallbackState,
     ),
   );
   const reportEntries = [];
@@ -879,11 +886,30 @@ export async function queryBulkAdvisories(inventory, options = {}) {
   return Object.fromEntries(reportEntries);
 }
 
-async function queryBulkAdvisoriesWithRetries(inventory, options, transientRetries, retryDelayMs) {
+async function queryBulkAdvisoriesWithRetries(
+  inventory,
+  options,
+  transientRetries,
+  retryDelayMs,
+  fallbackState,
+) {
+  if (fallbackState.useOsv) {
+    return await queryOsvAdvisories(inventory, options);
+  }
   for (let attempt = 0; attempt <= transientRetries; attempt += 1) {
     try {
       return await queryBulkAdvisoryRequest(inventory, options);
     } catch (error) {
+      if (error instanceof BulkAdvisoryTransientError && canUseOsvFallback(options)) {
+        fallbackState.useOsv = true;
+        try {
+          return await queryOsvAdvisories(inventory, options);
+        } catch (fallbackError) {
+          throw new Error(
+            `${error.message}; OSV fallback failed: ${reasonOf(fallbackError)}`,
+          );
+        }
+      }
       if (!(error instanceof BulkAdvisoryTransientError) || attempt === transientRetries) {
         throw error;
       }
@@ -891,6 +917,209 @@ async function queryBulkAdvisoriesWithRetries(inventory, options, transientRetri
     }
   }
   throw new Error("bulk advisory retry loop ended without a verdict.");
+}
+
+export async function queryOsvAdvisories(inventory, options = {}) {
+  const queries = Object.entries(inventory).flatMap(([packageName, versions]) => (
+    versions.map((version) => ({
+      packageName,
+      version,
+      query: {
+        package: { ecosystem: "npm", name: packageName },
+        version,
+      },
+    }))
+  ));
+  if (queries.length > MAX_OSV_QUERIES) {
+    throw new Error(`OSV fallback inventory exceeded ${MAX_OSV_QUERIES} exact package versions.`);
+  }
+
+  const vulnerabilities = new Map();
+  for (let offset = 0; offset < queries.length; offset += MAX_OSV_BATCH_QUERIES) {
+    const batch = queries.slice(offset, offset + MAX_OSV_BATCH_QUERIES);
+    const document = await requestOsvDocument("querybatch", {
+      method: "POST",
+      body: JSON.stringify({ queries: batch.map(({ query }) => query) }),
+    }, options);
+    if (!isRecord(document) || !Array.isArray(document.results)
+      || document.results.length !== batch.length) {
+      throw new Error("OSV querybatch returned a result count that does not match its queries.");
+    }
+    for (const [index, result] of document.results.entries()) {
+      if (!isRecord(result)) {
+        throw new Error("OSV querybatch returned a malformed result.");
+      }
+      const resultVulnerabilities = result.vulns ?? [];
+      if (!Array.isArray(resultVulnerabilities)) {
+        throw new Error("OSV querybatch returned a malformed vulnerability list.");
+      }
+      for (const vulnerability of resultVulnerabilities) {
+        if (!isRecord(vulnerability) || !isCanonicalNonEmptyString(vulnerability.id)) {
+          throw new Error("OSV querybatch returned a vulnerability without an id.");
+        }
+        const { packageName, version } = batch[index];
+        const key = `${packageName}\0${vulnerability.id}`;
+        const owned = vulnerabilities.get(key) ?? {
+          id: vulnerability.id,
+          packageName,
+          versions: new Set(),
+        };
+        owned.versions.add(version);
+        vulnerabilities.set(key, owned);
+        if (vulnerabilities.size > MAX_OSV_VULNERABILITIES) {
+          throw new Error(`OSV fallback exceeded ${MAX_OSV_VULNERABILITIES} vulnerabilities.`);
+        }
+      }
+    }
+  }
+
+  const advisories = await mapWithConcurrency(
+    [...vulnerabilities.values()],
+    MAX_CONCURRENT_OSV_DETAIL_REQUESTS,
+    async (owned) => osvVulnerabilityToBulkAdvisory(
+      await requestOsvDocument(`vulns/${encodeURIComponent(owned.id)}`, { method: "GET" }, options),
+      owned,
+    ),
+  );
+  const report = new Map();
+  for (const { packageName, advisory } of advisories) {
+    const packageAdvisories = report.get(packageName) ?? [];
+    packageAdvisories.push(advisory);
+    report.set(packageName, packageAdvisories);
+  }
+  return Object.fromEntries(
+    [...report.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([packageName, packageAdvisories]) => [
+        packageName,
+        packageAdvisories.sort((left, right) => String(left.id).localeCompare(String(right.id))),
+      ]),
+  );
+}
+
+function canUseOsvFallback(options) {
+  if (options.fetchImpl !== undefined) return false;
+  const registryUrl = options.registryUrl ?? DEFAULT_AUDIT_REGISTRY_URL;
+  try {
+    return new URL(registryUrl).href === new URL(DEFAULT_AUDIT_REGISTRY_URL).href;
+  } catch {
+    return false;
+  }
+}
+
+async function requestOsvDocument(path, request, options) {
+  const fetchImpl = options.osvFetchImpl ?? globalThis.fetch;
+  const timeoutMs = options.osvTimeoutMs ?? REQUEST_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("OSV fallback timeout must be a positive finite number.");
+  }
+  let endpoint;
+  try {
+    endpoint = new URL(path, options.osvApiUrl ?? DEFAULT_OSV_API_URL);
+  } catch {
+    throw new Error("OSV fallback API URL is invalid.");
+  }
+  if (endpoint.protocol !== "https:" || endpoint.username.length > 0 || endpoint.password.length > 0) {
+    throw new Error("OSV fallback API URL must be credential-free HTTPS.");
+  }
+
+  const controller = new AbortController();
+  const timeoutError = new Error(`OSV fallback request timed out after ${timeoutMs}ms.`);
+  const responseTooLargeError = new Error(
+    `OSV fallback response exceeded ${MAX_RESPONSE_BYTES} bytes.`,
+  );
+  let timeout;
+  let response;
+  let source;
+  try {
+    const fetchRequest = Promise.resolve().then(async () => {
+      const fetched = await fetchImpl(endpoint, {
+        method: request.method,
+        headers: {
+          accept: "application/json",
+          ...(request.body === undefined ? {} : { "content-type": "application/json" }),
+          "user-agent": "mono-agent-dependency-vulnerability-gate",
+        },
+        ...(request.body === undefined ? {} : { body: request.body }),
+        signal: controller.signal,
+      });
+      if (typeof fetched?.ok !== "boolean" || typeof fetched.status !== "number"
+        || (fetched.body !== null
+          && (!isRecord(fetched.body) || typeof fetched.body.getReader !== "function"))) {
+        throw new Error("OSV fallback returned a malformed HTTP response");
+      }
+      const responseSource = await readBoundedResponseBody(
+        fetched.body,
+        MAX_RESPONSE_BYTES,
+        responseTooLargeError,
+        () => controller.abort(responseTooLargeError),
+      );
+      return { response: fetched, source: responseSource };
+    });
+    const timedOut = new Promise((_, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort(timeoutError);
+        reject(timeoutError);
+      }, timeoutMs);
+    });
+    ({ response, source } = await Promise.race([fetchRequest, timedOut]));
+  } catch (error) {
+    if (error === timeoutError || error === responseTooLargeError) throw error;
+    throw new Error(`OSV fallback request failed: ${reasonOf(error)}`);
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) {
+    throw new Error(
+      `OSV fallback returned HTTP ${response.status}: `
+      + boundedSingleLine(source, MAX_DIAGNOSTIC_CHARS),
+    );
+  }
+  try {
+    return JSON.parse(source);
+  } catch (error) {
+    throw new Error(`OSV fallback response was not valid JSON: ${reasonOf(error)}`);
+  }
+}
+
+function osvVulnerabilityToBulkAdvisory(document, owned) {
+  if (!isRecord(document) || document.id !== owned.id
+    || !isCanonicalNonEmptyString(document.summary)) {
+    throw new Error(`OSV vulnerability ${owned.id} returned malformed details.`);
+  }
+  if (!Array.isArray(document.affected) || !document.affected.some((affected) => (
+    isRecord(affected)
+    && isRecord(affected.package)
+    && affected.package.ecosystem === "npm"
+    && affected.package.name === owned.packageName
+  ))) {
+    throw new Error(
+      `OSV vulnerability ${owned.id} does not identify affected npm package ${owned.packageName}.`,
+    );
+  }
+  const severity = normalizeOsvSeverity(document.database_specific?.severity, owned.id);
+  const versions = [...owned.versions].sort();
+  return {
+    packageName: owned.packageName,
+    advisory: {
+      id: owned.id,
+      severity,
+      title: document.summary,
+      url: owned.id.startsWith("GHSA-")
+        ? `https://github.com/advisories/${owned.id}`
+        : `https://osv.dev/vulnerability/${encodeURIComponent(owned.id)}`,
+      vulnerable_versions: versions.join(" || "),
+    },
+  };
+}
+
+function normalizeOsvSeverity(value, vulnerabilityId) {
+  if (typeof value === "string") {
+    const severity = value.toLowerCase();
+    if (severity === "medium") return "moderate";
+    if (isKnownSeverity(severity)) return severity;
+  }
+  throw new Error(`OSV vulnerability ${vulnerabilityId} has no recognized severity.`);
 }
 
 async function mapWithConcurrency(values, concurrency, mapper) {

@@ -13,6 +13,7 @@ import {
   parsePnpmProductionInventory,
   parsePnpmWhyDependencyPaths,
   queryBulkAdvisories,
+  queryOsvAdvisories,
   runDependencyVulnerabilityCheck,
 } from "../check-dependency-vulnerabilities.mjs";
 
@@ -1763,6 +1764,103 @@ describe("dependency vulnerability gate", () => {
     })).resolves.toEqual({ ws: [] });
 
     expect(requestedAddresses).toEqual(["192.0.2.1", "192.0.2.2", "192.0.2.3"]);
+  });
+
+  it("falls back once to OSV after every official npm route is unavailable", async () => {
+    const registryRequests = [];
+    const osvRequests = [];
+    const report = await queryBulkAdvisories({ ws: ["8.20.1", "8.21.1"] }, {
+      resolveRegistryAddressesImpl: async () => ["192.0.2.1", "192.0.2.2"],
+      requestRegistryAddressImpl: async (_url, _request, address) => {
+        registryRequests.push(address);
+        return httpResponse("registry unavailable", { status: 503, raw: true });
+      },
+      osvFetchImpl: async (url, request) => {
+        osvRequests.push({ url: url.href, request });
+        if (url.pathname.endsWith("/querybatch")) {
+          expect(JSON.parse(request.body)).toEqual({
+            queries: [
+              { package: { ecosystem: "npm", name: "ws" }, version: "8.20.1" },
+              { package: { ecosystem: "npm", name: "ws" }, version: "8.21.1" },
+            ],
+          });
+          return httpResponse({
+            results: [
+              { vulns: [{ id: "GHSA-fixture" }] },
+              {},
+            ],
+          });
+        }
+        expect(url.pathname).toMatch(/\/vulns\/GHSA-fixture$/u);
+        expect(request.body).toBeUndefined();
+        return httpResponse({
+          id: "GHSA-fixture",
+          summary: "fixture exact-version advisory",
+          database_specific: { severity: "MODERATE" },
+          affected: [{ package: { ecosystem: "npm", name: "ws" } }],
+        });
+      },
+    });
+
+    expect(registryRequests).toEqual(["192.0.2.1", "192.0.2.2"]);
+    expect(osvRequests).toHaveLength(2);
+    expect(report).toEqual({
+      ws: [{
+        id: "GHSA-fixture",
+        severity: "moderate",
+        title: "fixture exact-version advisory",
+        url: "https://github.com/advisories/GHSA-fixture",
+        vulnerable_versions: "8.20.1",
+      }],
+    });
+  });
+
+  it("keeps using OSV after the first registry outage in a chunked inventory", async () => {
+    const inventory = Object.fromEntries(Array.from(
+      { length: 451 },
+      (_unused, index) => [`package-${String(index).padStart(3, "0")}`, ["1.0.0"]],
+    ));
+    const registryRequest = vi.fn(async () => (
+      httpResponse("registry unavailable", { status: 503, raw: true })
+    ));
+    const osvBatchSizes = [];
+
+    await expect(queryBulkAdvisories(inventory, {
+      resolveRegistryAddressesImpl: async () => ["192.0.2.1"],
+      requestRegistryAddressImpl: registryRequest,
+      osvFetchImpl: async (url, request) => {
+        expect(url.pathname).toMatch(/\/querybatch$/u);
+        const queries = JSON.parse(request.body).queries;
+        osvBatchSizes.push(queries.length);
+        return httpResponse({ results: queries.map(() => ({})) });
+      },
+    })).resolves.toEqual({});
+
+    expect(registryRequest).toHaveBeenCalledTimes(1);
+    expect(osvBatchSizes).toEqual([450, 1]);
+  });
+
+  it("fails closed when OSV fallback details cannot support the advisory contract", async () => {
+    await expect(queryBulkAdvisories({ ws: ["8.20.1"] }, {
+      resolveRegistryAddressesImpl: async () => ["192.0.2.1"],
+      requestRegistryAddressImpl: async () => (
+        httpResponse("registry unavailable", { status: 503, raw: true })
+      ),
+      osvFetchImpl: async (url) => url.pathname.endsWith("/querybatch")
+        ? httpResponse({ results: [{ vulns: [{ id: "GHSA-fixture" }] }] })
+        : httpResponse({
+          id: "GHSA-fixture",
+          summary: "fixture advisory",
+          database_specific: {},
+          affected: [{ package: { ecosystem: "npm", name: "ws" } }],
+        }),
+    })).rejects.toThrow(
+      "OSV fallback failed: OSV vulnerability GHSA-fixture has no recognized severity",
+    );
+
+    await expect(queryOsvAdvisories({ ws: ["8.20.1"] }, {
+      osvFetchImpl: async () => httpResponse({ results: [] }),
+    })).rejects.toThrow("result count that does not match its queries");
   });
 
   it.each([
