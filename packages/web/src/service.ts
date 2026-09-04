@@ -674,7 +674,7 @@ export class WebService {
 
   patchAgent(sourceId: string, patch: PatchWebAgentInput): WebAgentSummary {
     const agent = this.store.setAgentPinned(sourceId, patch.pinned);
-    this.emit("agents.changed", undefined, { agents: this.store.listAgents() });
+    this.emit("agents.changed");
     return agent;
   }
 
@@ -1554,7 +1554,7 @@ export class WebService {
       this.options.logger?.warn?.("Web agent discovery failed.", { error: errorMessage(error) });
       const changed = this.store.replaceAgents([]);
       this.connections = new Map();
-      if (changed) this.emit("agents.changed", undefined, { agents: this.store.listAgents() });
+      if (changed) this.emit("agents.changed");
       return;
     }
 
@@ -1625,7 +1625,7 @@ export class WebService {
         });
       }
     }));
-    if (agentsChanged) this.emit("agents.changed", undefined, { agents: this.store.listAgents() });
+    if (agentsChanged) this.emit("agents.changed");
     for (const sourceId of cronChangedSources) this.emit("cron.changed", undefined, { sourceId });
     if (cronChangedSources.size > 0) this.emit("threads.changed");
     for (const threadId of this.store.queuedLiveInputThreadIds()) {
