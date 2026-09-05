@@ -4193,11 +4193,13 @@ export class WebStore {
     const storedParts = parseParts(row.parts_json);
     const quote = quoteFromParts(storedParts);
     const liveInputStatus = liveInputStatusFromParts(storedParts);
+    const role = normalizeRole(row.role);
+    const finishedAt = role === "assistant" ? this.turnFinishedAt(row.turn_id) : undefined;
     return {
       id: row.id,
       threadId: row.thread_id,
       ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
-      role: normalizeRole(row.role),
+      role,
       ...(quote === undefined ? {} : { quote }),
       parts: storedParts.filter(
         (part) => part.type !== "telemetry"
@@ -4206,9 +4208,18 @@ export class WebStore {
       attachments: attachments.map((attachment) => toWebAttachment(mapStoredAttachment(attachment))),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      ...(finishedAt === undefined ? {} : { finishedAt }),
       status: normalizeMessageStatus(row.status),
       ...(liveInputStatus === undefined ? {} : { liveInputStatus }),
     };
+  }
+
+  /** The turn's terminal stamp, which `finishTurnInTransaction` writes with the message status. */
+  private turnFinishedAt(turnId: string | null): string | undefined {
+    if (turnId === null) return undefined;
+    const row = this.database.prepare("SELECT finished_at FROM turns WHERE id = ?")
+      .get(turnId) as unknown as { finished_at: string | null } | undefined;
+    return row?.finished_at ?? undefined;
   }
 
   private latestRunState(threadId: string): WebRunState {
