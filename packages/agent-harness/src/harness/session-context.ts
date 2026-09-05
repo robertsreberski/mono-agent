@@ -73,7 +73,7 @@ export function sessionContextBlock(
       ? CONSOLE_ROUTE_PROHIBITION
       : `${identity} ${CONSOLE_ID_ROUTE_PROHIBITION}`;
     return [
-      `You are handling an interactive console conversation on ${CONSOLE_SURFACE_LABEL[consoleKind]}. ${CONSOLE_AUDIENCE}`,
+      `You are handling an interactive console conversation on ${consoleSurfaceLabel(consoleKind)}. ${CONSOLE_AUDIENCE}`,
       `${route} ${continuationPromise(capabilities.backgroundProcessJobs === true || capabilities.monitors === true)}`,
       backgroundGuidance,
       monitorGuidance,
@@ -120,25 +120,29 @@ function consoleSurface(metadata: Record<string, unknown> | undefined): ConsoleS
 }
 
 /**
- * The id sentence for a console turn, or undefined when the id cannot be shown
- * exactly. A host issues these ids (`web:<uuid>`, `tui-<sourceId>`, a
- * `--conversation` value), so the normal case passes untouched; an id that the
- * surface sanitizer or bounds would alter is omitted outright rather than
- * rendered mangled, because an inexact id is worse than none -- the model would
+ * The id sentence for a console turn, or undefined when the id is not disclosed.
+ *
+ * This line lands in the SYSTEM block, so only a host-issued token shape is
+ * ever rendered: one ASCII token of letters, digits and `. _ : # -`, at most 80
+ * characters -- `web:<uuid>`, `web:notification-<hex>`, `tui-<sourceId>`, an
+ * operator's `--conversation` value. Anything else (whitespace, quotes, markup,
+ * prose) is omitted outright, never sanitized: an id cannot carry instruction
+ * text into the block, and an inexact id is worse than none -- the model would
  * quote it into a host tool that then binds nothing.
  */
 function consoleConversationIdentity(conversationId: string): string | undefined {
-  const safe = boundedSurfacePart(stripQuotes(sanitizeLabelPart(conversationId)));
-  if (safe === undefined || safe !== conversationId) {
+  if (!CONSOLE_CONVERSATION_ID_PATTERN.test(conversationId)) {
     return undefined;
   }
   return `Conversation id: \`${conversationId}\`. ${CONSOLE_ID_PURPOSE}`;
 }
 
-const CONSOLE_SURFACE_LABEL: Record<ConsoleSurface, string> = {
-  web: "the web console",
-  tui: "the terminal console",
-};
+/** Host-issued console conversation ids: a single bounded ASCII token. */
+const CONSOLE_CONVERSATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:#-]{0,79}$/u;
+
+function consoleSurfaceLabel(kind: ConsoleSurface): string {
+  return kind === "web" ? "the web console" : "the terminal console";
+}
 
 const CONSOLE_AUDIENCE =
   "The person you are talking to reads your reply in this thread; the host routes it.";
