@@ -608,3 +608,36 @@ describe("short-lived reply access", () => {
     ]));
   });
 });
+
+describe("listing requests", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("asks for one sidebar page rather than the whole bucket", async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(Response.json({ threads: [] })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.threads("agent/one", false);
+    expect(fetchMock.mock.calls[0]?.[0])
+      .toBe("/api/v1/threads?sourceId=agent%2Fone&archived=false&limit=50");
+
+    await api.threads("agent/one", true, "cursor-1", undefined, 200);
+    expect(fetchMock.mock.calls[1]?.[0])
+      .toBe("/api/v1/threads?sourceId=agent%2Fone&archived=true&limit=200&before=cursor-1");
+  });
+
+  it("sends a bootstrap scope only when one is asked for", async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(Response.json({ version: 1 })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.bootstrap();
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/bootstrap");
+
+    await api.bootstrap(undefined, { sourceId: "agent/one", archived: false, limit: 50 });
+    expect(fetchMock.mock.calls[1]?.[0])
+      .toBe("/api/v1/bootstrap?sourceId=agent%2Fone&archived=false&limit=50");
+  });
+});

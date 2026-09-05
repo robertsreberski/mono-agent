@@ -634,4 +634,30 @@ describe("response notifications", () => {
     expect(api.thread).not.toHaveBeenCalled();
     expect(showNotification).not.toHaveBeenCalled();
   });
+  it("does not re-reconcile push when a refresh repeats the same push identity", async () => {
+    // Every bootstrap answer is a new object, and the reconcile effect depended
+    // on that identity -- so a console watching a running turn re-read the
+    // subscription and re-ran the service-worker version handshake on every
+    // refresh. Only the three `push` fields can change what reconciliation
+    // decides.
+    enablePushSupport();
+    localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, "1");
+    localStorage.setItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY, "subscription-1");
+    getSubscription.mockResolvedValue(browserSubscription);
+    storeMock.current = createStore(running);
+    const notificationTree = () => (
+      <NotificationsProvider>
+        <NotificationBell />
+      </NotificationsProvider>
+    );
+    const view = render(notificationTree());
+    await waitFor(() => expect(api.pushSubscription).toHaveBeenCalledTimes(1));
+
+    // A fresh bootstrap object carrying exactly the same push identity.
+    storeMock.current = createStore(complete);
+    view.rerender(notificationTree());
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+
+    expect(api.pushSubscription).toHaveBeenCalledTimes(1);
+  });
 });
