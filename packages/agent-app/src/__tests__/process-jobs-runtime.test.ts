@@ -28,6 +28,9 @@ import {
 } from "../app-controller-process-jobs.js";
 import { traceMetadata } from "../app-controller-traceability.js";
 
+import { runWithMonitorWakeContext, monitorWakeContextForRequest } from "../monitors-context.js";
+import { createMonitorsRuntimeExtension, monitorsAvailableForRequest } from "../monitors-runtime.js";
+
 const PROCESS_JOB_WAKE_DELIVERY_METADATA = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");
 const PROCESS_JOBS_STATE_DIR = "/agent/.mono-agent/process-jobs";
 const availableSandboxEngine = {
@@ -244,6 +247,54 @@ describe("process-job request availability", () => {
     ] as const;
     for (const [channelId, request] of cases) {
       expect(processJobOriginForRequest({ runId: "run", request: { text: "hello", ...request } as never }, channelId as never)).toBeUndefined();
+    }
+  });
+
+  it.each(["monitor", "process-job"])("denies both controllers for stale and unmatched host %s keys", async (kind) => {
+    const coreConfig = {
+      runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, workspace: "/agent" },
+      tools: { allowedTools: ["*"], disallowedTools: [] },
+    } as never;
+    const controller = vi.fn(() => ({ start: vi.fn(), stop: vi.fn() }));
+    const service = { settings: { maxChainDepth: 4 }, controller } as never;
+    const options = { service, coreConfig, channelId: "slack" as const };
+    const extension = createProcessJobsRuntimeExtension({
+      ...processJobsBoundary(coreConfig), ...options, sandboxEngine: availableSandboxEngine,
+      next: createMonitorsRuntimeExtension(options),
+    });
+    const deliveryKey = `${kind}:expired:1`;
+    const input = (metadata: Record<string, unknown>) => ({ runId: "stale-wake", request: {
+      conversationId: "slack:C1:1.1", text: "wake", metadata,
+    } }) as never;
+    const check = async (key: string) => {
+      const metadata = { [PROCESS_JOB_WAKE_DELIVERY_METADATA]: key };
+      expect(processJobWakeContextForRequest({ metadata })).toEqual({ kind: "missed" });
+      if (kind === "monitor") expect(monitorWakeContextForRequest({ metadata })).toEqual({ kind: "missed" });
+      const result = await extension(input(metadata));
+      try {
+        expect(result.runtimeOptions).not.toHaveProperty("monitors");
+        expect(result.runtimeOptions).not.toHaveProperty("processJobs");
+        expect(monitorsAvailableForRequest(input(metadata), options)).toBe(false);
+        expect(processJobsAvailableForRequest(input(metadata), options)).toBe(false);
+      } finally { await result.settleCleanup?.(); }
+    };
+    if (kind === "monitor") {
+      await runWithMonitorWakeContext({ monitorId: "expired", chainDepth: 4 }, async () => {}, deliveryKey);
+    } else {
+      await runWithProcessJobWakeContext({ jobId: "expired", chainDepth: 4 }, async () => {}, deliveryKey);
+    }
+    await check(deliveryKey);
+    await check(`${kind}:never-registered:1`);
+    expect(controller).not.toHaveBeenCalled();
+    // String metadata is user data, not the host-only symbol.
+    for (const metadata of [{}, { processJobWakeDeliveryKey: deliveryKey, chainDepth: 999 }]) {
+      expect(processJobWakeContextForRequest({ metadata })).toEqual({ kind: "none" });
+      expect(monitorWakeContextForRequest({ metadata })).toEqual({ kind: "none" });
+      const result = await extension(input(metadata));
+      try {
+        expect(result.runtimeOptions).toHaveProperty("monitors");
+        expect(result.runtimeOptions).toHaveProperty("processJobs");
+      } finally { await result.settleCleanup?.(); }
     }
   });
 

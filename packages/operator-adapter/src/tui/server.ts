@@ -584,6 +584,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     if (!authorize(req, res, apiKey)) {
       return;
     }
+    if (!authorizeMonitorWake(req, res, req.body?.processJobWakeDeliveryKey, monitorsBearer)) return;
     void handleTurn(req, res).catch((error: unknown) => {
       options.logger?.error?.("TUI turn failed before response.", { error: errorToMessage(error) });
       if (!res.headersSent) {
@@ -777,6 +778,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       ));
       return;
     }
+    if (!authorizeMonitorWake(req, res, body.deliveryKey, monitorsBearer)) return;
     if (typeof options.responder.offerLiveInput !== "function") {
       res.status(200).json({ status: "unavailable", reason: "unsupported" });
       return;
@@ -2172,6 +2174,15 @@ function sendBoundedCronJson(res: Response, status: number, value: unknown): voi
     );
   }
   res.status(status).type("application/json").send(serialized);
+}
+
+/** A wake key identifies a flight; only the independent owner bearer authorizes it. */
+function authorizeMonitorWake(req: Request, res: Response, key: unknown, ownerBearer: string | undefined): boolean {
+  if (typeof key !== "string" || !key.trim().startsWith("monitor:")) return true;
+  const presented = readAuthorizationBearer(req.header("x-mono-agent-monitor-wake-authorization"));
+  if (ownerBearer !== undefined && presented !== undefined && bearerTokensEqual(presented, ownerBearer)) return true;
+  res.status(401).json({ error: { message: "Monitor wake requires owner authorization.", code: "invalid_api_key" } });
+  return false;
 }
 
 function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {

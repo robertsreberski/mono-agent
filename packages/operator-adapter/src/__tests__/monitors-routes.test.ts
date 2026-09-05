@@ -130,3 +130,41 @@ describe("monitor operator routes", () => {
     })).rejects.toThrow(/monitors and monitorsBearer must be configured together/u);
   });
 });
+
+it.each([false, true])("authorizes Monitor turn and live-input keys independently of ordinary API auth (configured=%s)", async (apiAuth) => {
+  const requests: unknown[] = [];
+  const offers: unknown[] = [];
+  const operator: MonitorOperator = {
+    operatorToken: "owner-monitors-token", list: async () => [], get: async () => undefined, cancel: async () => monitor(),
+  };
+  const server = await startTuiAdapter({
+    host: "127.0.0.1", port: 0,
+    ...(apiAuth ? { apiKey: "ordinary-tui-key" } : {}),
+    monitors: operator, monitorsBearer: operator.operatorToken,
+    responder: {
+      respond: async (request) => { requests.push(request); return { text: "NOTHING_TO_REPORT" }; },
+      offerLiveInput: (input) => { offers.push(input); return { status: "accepted", settled: Promise.resolve({ status: "applied", runId: "run" }) }; },
+    },
+  });
+  servers.push(server);
+  const headers = { "content-type": "application/json", ...(apiAuth ? bearer("ordinary-tui-key") : {}) };
+  const key = "monitor:mon-1:2";
+  const turn = { client: "web", conversationId: "web:thread", text: "Literal", processJobWakeDeliveryKey: key };
+  for (const supplied of [undefined, "Bearer ordinary-tui-key", "Bearer wrong-owner"]) {
+    const response = await fetch(`${server.baseUrl}/v1/turns`, { method: "POST", headers: { ...headers,
+      ...(supplied === undefined ? {} : { "x-mono-agent-monitor-wake-authorization": supplied }) }, body: JSON.stringify(turn) });
+    expect(response.status).toBe(401); await response.text();
+  }
+  expect(requests).toHaveLength(0);
+  const live = { id: key, deliveryKey: key, text: "Event", receivedAt: new Date().toISOString() };
+  const denied = await fetch(`${server.baseUrl}/v1/conversations/web%3Athread/live-input`, { method: "POST", headers, body: JSON.stringify(live) });
+  expect(denied.status).toBe(401); await denied.text(); expect(offers).toHaveLength(0);
+  const ownerHeaders = { ...headers, "x-mono-agent-monitor-wake-authorization": `Bearer ${operator.operatorToken}` };
+  const accepted = await fetch(`${server.baseUrl}/v1/turns`, { method: "POST", headers: ownerHeaders, body: JSON.stringify(turn) });
+  expect(accepted.status).toBe(200); await accepted.text(); expect(requests).toHaveLength(1);
+  const steered = await fetch(`${server.baseUrl}/v1/conversations/web%3Athread/live-input`, { method: "POST", headers: ownerHeaders, body: JSON.stringify(live) });
+  expect(steered.status).toBe(200); await steered.text(); expect(offers).toHaveLength(1);
+  const ordinary = await fetch(`${server.baseUrl}/v1/turns`, { method: "POST", headers,
+    body: JSON.stringify({ client: "web", conversationId: "web:thread", text: "Literal" }) });
+  expect(ordinary.status).toBe(200); expect(await ordinary.text()).toContain("NOTHING_TO_REPORT");
+});

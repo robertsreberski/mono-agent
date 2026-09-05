@@ -114,6 +114,16 @@ describe("monitors service on the real launch path", () => {
     expect(projection?.timestamps.completedAt).not.toBeNull();
   });
 
+  it("delivers exactly one terminal wake for a zero-stdout exit", async () => {
+    await startShell("exit 2", { timeout_ms: 20_000 });
+    await waitFor(() => wakes.some((wake) => wake.projection.state === "exited"));
+    expect(wakes).toHaveLength(1);
+    const body = JSON.parse(fenced(wakes[0]!.prompt));
+    expect(body.events).toEqual([]);
+    expect(body.exitCode).toBe(2);
+    expect(body.state).toBe("exited");
+  });
+
   it("reports a non-zero exit code from the real process", async () => {
     await startShell("echo out; exit 7", { timeout_ms: 20_000 });
     await waitFor(() => wakes.some((wake) => wake.projection.state === "exited"));
