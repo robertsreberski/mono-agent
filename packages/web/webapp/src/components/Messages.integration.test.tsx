@@ -4,12 +4,14 @@ import {
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import { convertWebMessage } from "../runtime";
 import type { WebMessage } from "../types";
 import { monitor, processJob } from "../test/fixtures";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
+import { ToolCallRepairProvider } from "./tool-call-repair";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -114,6 +116,126 @@ describe("AssistantMessage grouped parts", () => {
     uploaded: true,
     createdAt: "2026-07-17T10:00:00.000Z",
     contentUrl: `/api/v1/uploads/${id}/content`,
+  });
+
+  /**
+   * A conversation read is served a preview of a large tool result, so a row
+   * has to say so and be able to fetch the rest -- and the fetched message must
+   * arrive as a NEW object, because assistant-ui caches its part conversions by
+   * object identity.
+   */
+  function RepairableHarness({
+    preview,
+    whole,
+    onRepair,
+  }: {
+    readonly preview: WebMessage;
+    readonly whole: WebMessage;
+    readonly onRepair: (toolCallId: string) => void;
+  }) {
+    const [message, setMessage] = useState(preview);
+    return (
+      <ToolCallRepairProvider
+        repair={async (toolCallId) => {
+          onRepair(toolCallId);
+          setMessage(whole);
+          return true;
+        }}
+      >
+        <MessageHarness message={message} />
+      </ToolCallRepairProvider>
+    );
+  }
+
+  const truncatedToolMessage = (): WebMessage => ({
+    ...assistantMessage("complete"),
+    parts: [
+      {
+        type: "tool-call",
+        toolCallId: "tool-big",
+        toolName: "Exec",
+        args: { command: "run" },
+        result: "HEAD-".repeat(4),
+        resultTruncated: true,
+        resultBytes: 20 * 1_024,
+        status: "complete",
+      },
+      { type: "text", text: "Done." },
+    ],
+  });
+
+  it("says a tool result is a preview and loads the whole body on request", async () => {
+    const repaired = vi.fn();
+    const preview = truncatedToolMessage();
+    const whole: WebMessage = {
+      ...preview,
+      parts: [
+        {
+          type: "tool-call",
+          toolCallId: "tool-big",
+          toolName: "Exec",
+          args: { command: "run" },
+          result: "WHOLE-BODY",
+          status: "complete",
+        },
+        { type: "text", text: "Done." },
+      ],
+    };
+    render(<RepairableHarness preview={preview} whole={whole} onRepair={repaired} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(screen.getByText("Exec").closest("summary")!);
+    expect(screen.getByText("Preview only, 20,480 chars.")).toBeVisible();
+    expect(screen.queryByText('"WHOLE-BODY"')).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+    expect(repaired).toHaveBeenCalledWith("tool-big");
+    await screen.findByText('"WHOLE-BODY"');
+    expect(screen.queryByText("Preview only, 20,480 chars.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Load full output" })).toBeNull();
+  });
+
+  it("gives one control to a tool call whose input and output were both cut", () => {
+    // The route returns the WHOLE part, so one round trip repairs both sides.
+    // Two buttons for it read as two different fetches.
+    const preview: WebMessage = {
+      ...assistantMessage("complete"),
+      parts: [
+        {
+          type: "tool-call",
+          toolCallId: "tool-big",
+          toolName: "Exec",
+          args: { command: "run " },
+          argsTruncated: true,
+          argsBytes: 8_192,
+          result: "HEAD-",
+          resultTruncated: true,
+          resultBytes: 20 * 1_024,
+          status: "complete",
+        },
+        { type: "text", text: "Done." },
+      ],
+    };
+    render(
+      <ToolCallRepairProvider repair={async () => true}>
+        <MessageHarness message={preview} />
+      </ToolCallRepairProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(screen.getByText("Exec").closest("summary")!);
+    expect(screen.getByText("Preview only, 8,192 chars.")).toBeVisible();
+    expect(screen.getByText("Preview only, 20,480 chars.")).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "Load full output" })).toHaveLength(1);
+  });
+
+  it("states the preview without offering a load where there is no way to fetch one", () => {
+    render(<MessageHarness message={truncatedToolMessage()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(screen.getByText("Exec").closest("summary")!);
+    expect(screen.getByText("Preview only, 20,480 chars.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Load full output" })).toBeNull();
   });
 
   it("shows sent images as a gallery while documents keep their file chip", () => {

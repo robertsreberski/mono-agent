@@ -38,7 +38,13 @@ import {
   type WebTheme,
 } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
-import { WEB_THREAD_SEARCH_MAX } from "./store.js";
+import {
+  WEB_MESSAGE_PAGE_DEFAULT,
+  WEB_MESSAGE_PAGE_MAX,
+  WEB_THREAD_PAGE_DEFAULT,
+  WEB_THREAD_PAGE_MAX,
+  WEB_THREAD_SEARCH_MAX,
+} from "./store.js";
 import {
   MCP_APP_PROXY_CONTENT_SECURITY_POLICY,
   MCP_APP_PROXY_DOCUMENT,
@@ -48,7 +54,7 @@ import {
   startWebNotificationIngress,
   type WebNotificationIngressHandle,
 } from "./notification-ingress.js";
-import { WebService, type CreateWebServiceOptions } from "./service.js";
+import { WebService, type CreateWebServiceOptions, type WebTranscriptShape } from "./service.js";
 
 export const DEFAULT_WEB_HOST = "0.0.0.0";
 export const DEFAULT_WEB_PORT = 5050;
@@ -140,10 +146,25 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     });
   });
 
-  app.get("/api/v1/bootstrap", (_req, res, next) => {
-    void service.bootstrap()
-      .then((bootstrap) => res.status(200).json({ ...bootstrap, console: consoleIdentity }))
-      .catch(next);
+  app.get("/api/v1/bootstrap", (req, res, next) => {
+    try {
+      // One bucket, not every agent's conversations. An unknown or absent
+      // `sourceId` falls back inside the service rather than failing: the
+      // first request a fresh console makes has no selection to name yet.
+      // An empty `sourceId` is a console that has not resolved an agent yet,
+      // which is the same thing as omitting it -- not a malformed request.
+      const requested = req.query.sourceId === "" ? undefined : req.query.sourceId;
+      const sourceId = optionalQueryString(requested, 512);
+      void service.bootstrap({
+        ...(sourceId === undefined ? {} : { sourceId }),
+        archived: optionalArchivedQuery(req.query.archived) ?? false,
+        limit: boundedQueryLimit(req.query.limit, WEB_THREAD_PAGE_MAX, WEB_THREAD_PAGE_DEFAULT),
+      })
+        .then((bootstrap) => res.status(200).json({ ...bootstrap, console: consoleIdentity }))
+        .catch(next);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get(MCP_APP_PROXY_PATH, (_req, res) => {
@@ -289,16 +310,17 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   app.get("/api/v1/threads", (req, res, next) => {
     try {
       const sourceId = requiredQueryString(req.query.sourceId, "sourceId", 512);
-      const archived = req.query.archived === "true"
-        ? true
-        : req.query.archived === "false"
-          ? false
-          : (() => { throw new WebConsoleError("invalid_page", "archived must be true or false.", 400); })();
+      const archived = optionalArchivedQuery(req.query.archived);
+      if (archived === undefined) {
+        throw new WebConsoleError("invalid_page", "archived must be true or false.", 400);
+      }
       const before = optionalQueryString(req.query.before, 4_096);
       res.status(200).json(service.threadsPage({
         sourceId,
         archived,
-        limit: boundedQueryLimit(req.query.limit, 200, 200),
+        // A sidebar shows a handful of rows and pages from there. This used to
+        // answer with the whole per-bucket cap by default.
+        limit: boundedQueryLimit(req.query.limit, WEB_THREAD_PAGE_MAX, WEB_THREAD_PAGE_DEFAULT),
         ...(before === undefined ? {} : { before }),
       }));
     } catch (error) {
@@ -321,9 +343,25 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  // Registered above `/threads/:id` so the conversation reads and the read that
+  // repairs one of their truncated tool calls stay together.
+  app.get("/api/v1/threads/:threadId/messages/:messageId/tool-calls/:toolCallId", (req, res, next) => {
+    try {
+      res.status(200).json({
+        part: service.toolCallPart(
+          pathParam(req.params.threadId),
+          pathParam(req.params.messageId),
+          pathParam(req.params.toolCallId),
+        ),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/v1/threads/:id", (req, res, next) => {
     try {
-      res.status(200).json(service.thread(pathParam(req.params.id)));
+      res.status(200).json(service.thread(pathParam(req.params.id), fullTranscriptQuery(req.query.full)));
     } catch (error) {
       next(error);
     }
@@ -333,8 +371,11 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     try {
       const before = optionalQueryString(req.query.before, 4_096);
       res.status(200).json(service.messagePage(pathParam(req.params.id), {
-        limit: boundedQueryLimit(req.query.limit, 100, 100),
+        // A screenful, not the ceiling: the console renders the tail and pages
+        // backwards from the cursor.
+        limit: boundedQueryLimit(req.query.limit, WEB_MESSAGE_PAGE_MAX, WEB_MESSAGE_PAGE_DEFAULT),
         ...(before === undefined ? {} : { before }),
+        ...fullTranscriptQuery(req.query.full),
       }));
     } catch (error) {
       next(error);
@@ -1277,6 +1318,27 @@ function optionalQueryString(value: unknown, max: number): string | undefined {
     throw new WebConsoleError("invalid_page", "Pagination cursor is invalid.", 400);
   }
   return value;
+}
+
+/** `true`/`false`, or `undefined` for a query that said neither. */
+function optionalArchivedQuery(value: unknown): boolean | undefined {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (value === undefined) return undefined;
+  throw new WebConsoleError("invalid_page", "archived must be true or false.", 400);
+}
+
+/**
+ * `?full=1` (or `full=true`) turns the transcript diet off for one read: no
+ * truncated tool payloads, no stripped telemetry. Anything else, including an
+ * absent parameter, keeps the shaped transcript.
+ *
+ * It changes the SHAPE of the messages a read answers with, never how many: a
+ * full conversation read still answers with one page and the rest still comes
+ * from `messagesNextCursor` (or an explicit `limit`).
+ */
+function fullTranscriptQuery(value: unknown): WebTranscriptShape {
+  return value === "1" || value === "true" ? { full: true } : {};
 }
 
 function boundedQueryLimit(value: unknown, maximum: number, fallback: number): number {
