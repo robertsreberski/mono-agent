@@ -1,5 +1,6 @@
 // @ts-check
 
+import { withWebDeadline, coordinatedWebRequest, webRequestFailure } from "./web-request.js";
 import { parseHTML } from "linkedom";
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { searchCodexSubscription } from "./codex-subscription-search.js";
@@ -75,7 +76,7 @@ const TRACKING_PARAMETERS = new Set([
  * Compatibility wrapper for direct callers.
  *
  * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, time_range?: string}} params
- * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, searchConfig?: any, fetchImpl?: typeof fetch}} [options]
+ * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, fetchImpl?: typeof fetch}} [options]
  */
 export async function webSearchToolImpl(params, options = {}) {
   return (await performWebSearch(params, options)).text;
@@ -87,9 +88,21 @@ export async function webSearchToolImpl(params, options = {}) {
  * internal outcome for the Pi bridge.
  *
  * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, time_range?: string}} params
- * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, searchConfig?: any, fetchImpl?: typeof fetch, codexSearch?: typeof searchCodexSubscription}} [options]
+ * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, fetchImpl?: typeof fetch, codexSearch?: typeof searchCodexSubscription}} [options]
  */
-export async function performWebSearch(
+export async function performWebSearch(params, options = {}) {
+  return await withWebDeadline(options.signal, 60_000, (signal) => performSearch(params, { ...options, signal }));
+}
+
+/**
+ * Search through an operator-owned SearXNG endpoint, ChatGPT-subscription
+ * Codex search, and/or the keyless HTML fallback chain. Returns a structured
+ * internal outcome for the Pi bridge.
+ *
+ * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, time_range?: string}} params
+ * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, fetchImpl?: typeof fetch, codexSearch?: typeof searchCodexSubscription}} [options]
+ */
+async function performSearch(
   {
     query,
     limit = 5,
@@ -104,6 +117,7 @@ export async function performWebSearch(
     ctx,
     signal,
     searchConfig,
+    coordinator,
     fetchImpl = globalThis.fetch,
     codexSearch = searchCodexSubscription,
   } = {},
@@ -135,25 +149,32 @@ export async function performWebSearch(
   const actualQueries = [];
   let attempts = 0;
   let anyProviderSucceeded = false;
+  let queueWaitMs = 0;
+  let backendDurationMs = 0;
 
-  const runQuery = async (candidate, backend) => {
+  const runQuery = async (candidate, backend, stageSignal = signal) => {
     attempts += 1;
     attemptedBackends.add(backend);
     return await searchOneQuery(
       queryWithDomains(candidate, explicitDomains),
       {
         config: { ...config, backend },
+        coordinator,
+        relevanceQuery: normalizedQuery, includeDomains, excludeDomains,
+        auto: config.backend === "auto",
         language,
         timeRange: time_range,
         sandbox,
         policy,
-        signal,
+        signal: stageSignal,
         fetchImpl,
         codexSearch,
       },
     );
   };
   const recordResult = (result) => {
+    queueWaitMs += result.coordinationWaitMs || 0;
+    backendDurationMs += result.backendDurationMs || 0;
     // Chain failures are reported even when a later backend rescued the query,
     // so a silent degradation to the fallback is still visible in the outcome.
     if (result.failures?.length) providerFailures.push(...result.failures);
@@ -186,9 +207,21 @@ export async function performWebSearch(
   };
 
   const runStage = async (backend, candidates) => {
-    const results = await Promise.all(candidates.map((candidate) => runQuery(candidate, backend)));
-    results.forEach(recordResult);
-    return mergeRankedResults(rankedLists, max);
+    if (providerFailures.some((r) => r.code === "coordination_unavailable")) return [];
+    const run = async (stageSignal) => {
+      for (const candidate of candidates) {
+        if (stageSignal?.aborted) break;
+        const result = await runQuery(candidate, backend, stageSignal);
+        recordResult(result);
+        // Alternate wording cannot repair transport or quota failures.
+        if (!result.ok && !result.relevance) break;
+        const accepted = mergeRankedResults(rankedLists, max);
+        if (accepted.length > 0) return accepted;
+      }
+      return mergeRankedResults(rankedLists, max);
+    };
+    return backend === "searxng" && config.backend === "auto"
+      ? await withWebDeadline(signal, 3000, run) : await run(signal);
   };
 
   let merged = [];
@@ -204,12 +237,15 @@ export async function performWebSearch(
     merged = await runStage("keyless", initialQueries);
   }
   if (signal?.aborted) {
-    return failure("Error: WebSearch was aborted.", "aborted", startedAt, {
+    return failure("Error: WebSearch was aborted or exceeded its deadline.", signal.reason?.code === "deadline_exceeded" ? "deadline_exceeded" : "aborted", startedAt, {
       attempts,
       retryable: false,
     });
   }
 
+  if (providerFailures.some((r) => r.code === "coordination_unavailable")) {
+    return failure("Error: Web request coordination is unavailable; no uncoordinated fallback was attempted.", "coordination_unavailable", startedAt, { attempts });
+  }
   if (!anyProviderSucceeded) {
     // Four query variants against two backends produce the same handful of
     // messages over and over; dedupe so the reason stays readable.
@@ -229,6 +265,10 @@ export async function performWebSearch(
       cooldownBackends: [...backendCooldownUntil.keys()],
       attemptedBackends: [...attemptedBackends],
       failureMetadata: sanitizeFailureMetadata(providerFailures),
+      queueWaitMs, backendDurationMs,
+      cooldownSkipCount: providerFailures.filter((r) => r.cooldown).length,
+      quotaSkipCount: providerFailures.filter((r) => r.quotaSkipped).length,
+      retryAfterMs: shortestRetry(providerFailures),
     });
   }
 
@@ -249,6 +289,7 @@ export async function performWebSearch(
       query: actualQueries[0] || normalizedQuery,
       providerFailures,
     }),
+    ...(language || time_range ? [`[Requested filters: language=${JSON.stringify(language || "default")}; time_range=${time_range || "any"}; provider-dependent, verify dates in sources.]`] : []),
     body,
     "[END UNTRUSTED WEB SEARCH RESULTS]",
   ].join("\n");
@@ -265,6 +306,10 @@ export async function performWebSearch(
       bytes: Buffer.byteLength(text, "utf8"),
       truncated: false,
       resultCount: merged.length,
+      queueWaitMs, backendDurationMs,
+      cooldownSkipCount: providerFailures.filter((r) => r.cooldown).length,
+      quotaSkipCount: providerFailures.filter((r) => r.quotaSkipped).length,
+      filterSupport: { language: language ? (backend === "searxng" ? "provider" : "advisory") : "not_requested", timeRange: time_range ? (backend === "codex" ? "advisory" : backend === "startpage" ? "advisory" : "provider") : "not_requested" },
       providerFailureCount: providerFailures.length,
       rateLimited: providerFailures.some((entry) => entry.rateLimited || entry.cooldown),
       cooldownBackends: [...backendCooldownUntil.keys()],
@@ -294,7 +339,7 @@ async function searchOneQuery(query, options) {
   let emptySuccess = null;
   if (options.signal?.aborted) return abortedSearch(config.backend, failures);
   if (config.backend === "searxng") {
-    const result = await searchSearxng(query, options);
+    const result = await guardedSearch("searxng", options.config.endpoint, options, () => searchSearxng(query, options));
     return { ...result, failures };
   }
   if (config.backend === "codex") {
@@ -307,10 +352,10 @@ async function searchOneQuery(query, options) {
         failures,
       };
     }
-    const result = await options.codexSearch(query, {
-      model: config.codex.model,
-      signal: options.signal,
-    });
+    const result = await guardedSearch("codex", "codex", options, () => options.codexSearch(query, {
+      model: config.codex.model, signal: options.signal, coordinator: options.coordinator,
+      language: options.language, timeRange: options.timeRange,
+    }));
     return { ...result, failures };
   }
   if (config.backend === "keyless") {
@@ -323,17 +368,24 @@ async function searchOneQuery(query, options) {
           message: `${backend} skipped: cooling down after rate limiting.`,
           retryable: true,
           cooldown: true,
+          retryAfterMs: Math.max(0, (backendCooldownUntil.get(backend) ?? Date.now()) - Date.now()),
         });
         continue;
       }
-      const result = await KEYLESS_RUNNERS[backend](query, options);
+      const result = await guardedSearch(backend, backend, options, () => KEYLESS_RUNNERS[backend](query, options));
       if (result.ok) {
-        if (result.results.length > 0) return { ...result, failures };
+        if (result.results.length > 0) {
+          const usable = filterRelevantResults(filterByDomains(result.results, options.includeDomains, options.excludeDomains), options.relevanceQuery);
+          if (usable.length > 0) return { ...result, results: usable, failures };
+          failures.push({ backend, message: `${backend} returned no relevant results.`, relevance: true });
+          continue;
+        }
         emptySuccess ??= result;
         continue;
       }
       // The cooldown is already open — rateLimited() sets it at detection.
       failures.push(result);
+      if (result.code === "coordination_unavailable") return { ...result, failures };
     }
   }
   if (emptySuccess) return { ...emptySuccess, failures };
@@ -441,7 +493,7 @@ async function searchSearxng(query, options) {
         "User-Agent": "mono-agent-web/1",
       },
       body,
-      signal: requestSignal(options.signal),
+      signal: options.auto ? AbortSignal.any([options.signal, AbortSignal.timeout(3000)]) : requestSignal(options.signal),
       redirect: "error",
     });
     const text = await readLimitedText(response);
@@ -450,6 +502,7 @@ async function searchSearxng(query, options) {
         ok: false,
         backend: "searxng",
         message: `SearXNG HTTP ${response.status}`,
+        rateLimited: response.status === 429, retryAfterMs: parseRetryAfter(response),
         retryable: response.status === 429 || response.status >= 500,
       };
     }
@@ -560,7 +613,7 @@ async function keylessHtmlSearch(spec, options) {
     // once it stops asking politely. No credentials are ever sent to these
     // endpoints, so a 403 can only mean "blocked", never "unauthorized".
     if (RATE_LIMIT_STATUSES.has(response.status)) {
-      return rateLimited(spec, `HTTP ${response.status}`);
+      return rateLimited(spec, `HTTP ${response.status}`, response);
     }
     if (!response.ok) {
       return {
@@ -589,7 +642,7 @@ function searchDuckDuckGo(query, options) {
   return keylessHtmlSearch({
     backend: "duckduckgo",
     label: "DuckDuckGo",
-    url: `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
+    url: `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}${({ day: "d", month: "m", year: "y" }[options.timeRange]) ? `&df=${({ day: "d", month: "m", year: "y" }[options.timeRange])}` : ""}`,
     parse: parseDuckDuckGoResults,
   }, options);
 }
@@ -619,12 +672,13 @@ function searchStartpage(query, options) {
 // do it. The semaphore slot is released before this result reaches the caller,
 // so a queued sibling would otherwise be admitted and re-check the cooldown
 // while it was still closed, and every variant in flight would hit the wire.
-function rateLimited(spec, detail) {
+function rateLimited(spec, detail, response) {
   backendCooldownUntil.set(spec.backend, Date.now() + keylessThrottle.cooldownMs);
   return {
     ok: false,
     backend: spec.backend,
     message: `${spec.label} rate-limited (${detail})`,
+    retryAfterMs: parseRetryAfter(response),
     retryable: true,
     rateLimited: true,
   };
@@ -874,7 +928,7 @@ function sanitizeFailureMetadata(failures) {
   const metadata = [];
   for (const failureEntry of failures) {
     const backend = collapseWhitespace(failureEntry?.backend).slice(0, 40) || "unknown";
-    const code = failureEntry?.relevance
+    const code = ["quota_reserved", "quota_unavailable", "coordination_unavailable"].includes(failureEntry?.code) ? failureEntry.code : failureEntry?.relevance
       ? "no_relevant_results"
       : failureEntry?.rateLimited ? "rate_limited"
         : failureEntry?.cooldown ? "cooldown"
@@ -1002,4 +1056,21 @@ function clampInteger(value, min, max, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(number)));
+}
+
+async function guardedSearch(kind, key, options, execute) {
+  try { return await coordinatedWebRequest(options.coordinator, kind, key, options.signal, execute); }
+  catch (error) { return webRequestFailure(error, kind, options.signal); }
+}
+
+function parseRetryAfter(response) {
+  const raw = response?.headers?.get("retry-after");
+  if (!raw) return undefined;
+  const ms = Number.isFinite(Number(raw)) ? Number(raw) * 1000 : Date.parse(raw) - Date.now();
+  return Number.isFinite(ms) ? Math.max(0, ms) : undefined;
+}
+
+function shortestRetry(failures) {
+  const waits = failures.map((r) => r.retryAfterMs).filter((n) => Number.isFinite(n) && n > 0);
+  return waits.length ? Math.min(...waits) : undefined;
 }

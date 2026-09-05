@@ -1070,6 +1070,18 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "coordination": {
+              "description": "Host mode shares web request budgets and cooldowns across participating local mono-agent processes; process preserves isolated coordination.",
+              "examples": [
+                "process"
+              ],
+              "type": "string",
+              "default": "process",
+              "enum": [
+                "process",
+                "host"
+              ]
+            },
             "search": {
               "type": "object",
               "additionalProperties": false,

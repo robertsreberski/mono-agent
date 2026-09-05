@@ -1215,6 +1215,7 @@ describe("agent host composition helpers", () => {
         tools: {
           ...baseConfig.tools,
           web: {
+            coordination: "host",
             search: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
             fetch: { render: "auto", browserCommand: "/opt/homebrew/bin/agent-browser" },
           },
@@ -1229,6 +1230,7 @@ describe("agent host composition helpers", () => {
       abortSignal: new AbortController().signal,
     });
 
+    expect(fake.calls[0]?.options.webRequestCoordinator?.scope).toMatch(/^host:/u);
     expect(fake.calls[0]?.options.webSearchConfig).toEqual({
       backend: "searxng",
       endpoint: "http://127.0.0.1:8088",
@@ -1258,6 +1260,7 @@ describe("agent host composition helpers", () => {
           ...baseConfig.tools,
           allowedTools: [...(baseConfig.tools.allowedTools ?? []), "Agent"],
           web: {
+            coordination: "host",
             search: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
             fetch: { render: "auto", browserCommand: "/opt/homebrew/bin/agent-browser" },
           },
@@ -1290,6 +1293,8 @@ describe("agent host composition helpers", () => {
 
     const childCall = fake.calls[1];
     expect(childCall).toBeDefined();
+    expect(childCall?.options.webRequestCoordinator?.scope).toBe(fake.calls[0]?.options.webRequestCoordinator?.scope);
+    expect(childCall?.options.webRequestCoordinator?.acquire).toBeTypeOf("function");
     expect(childCall?.options.webSearchConfig).toEqual({
       backend: "searxng",
       endpoint: "http://127.0.0.1:8088",

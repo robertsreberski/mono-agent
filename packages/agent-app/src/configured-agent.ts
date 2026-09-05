@@ -1,3 +1,4 @@
+import { createHostWebRequestCoordinator } from "./web-request-coordinator.js";
 import {
   createAgentHarness,
   createAgentResponder,
@@ -821,6 +822,7 @@ function subagentsRuntimeOptions(
       // milliseconds. The parent keeps working, so the degradation is invisible
       // until you read the child's activity log.
       ...(config.tools.web?.search === undefined ? {} : { webSearchConfig: config.tools.web.search }),
+      ...(config.tools.web?.coordination === "host" ? { webRequestCoordinator: createHostWebRequestCoordinator() } : {}),
       ...(config.tools.web?.fetch === undefined ? {} : { webFetchConfig: config.tools.web.fetch }),
       // Both keys or neither: pi-bridge builds ReadSkill only when it has the
       // names AND the root, and a half-set pair fails by silently omitting the
@@ -2358,6 +2360,7 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
     ...(settings === undefined ? {} : { settings }),
     ...(webSearchConfig === undefined ? {} : { webSearchConfig }),
     ...(webFetchConfig === undefined ? {} : { webFetchConfig }),
+    ...(config.tools.web?.coordination === "host" ? { webRequestCoordinator: createHostWebRequestCoordinator() } : {}),
   };
 }
 

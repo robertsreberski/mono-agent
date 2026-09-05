@@ -229,6 +229,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly mcpCallTimeoutMs?: number;
     readonly mcpCallMaxTotalTimeoutMs?: number;
     readonly web?: {
+      readonly coordination?: "process" | "host";
       readonly search?: {
         readonly backend?: string;
         readonly endpoint?: string;

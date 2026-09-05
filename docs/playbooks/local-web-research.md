@@ -197,6 +197,7 @@ tools enabled and add their local-first settings:
   "tools": {
     "allowedTools": ["Read", "Glob", "Grep", "WebSearch", "WebFetch"],
     "web": {
+      "coordination": "host",
       "search": {
         "backend": "searxng",
         "endpoint": "http://127.0.0.1:8088"
@@ -221,6 +222,10 @@ tools enabled and add their local-first settings:
   }
 }
 ```
+
+`coordination: "host"` shares admission and cooldowns with other opted-in agents
+under this OS user; it does not start a service. Inspect with
+`mono-agent web-control status --json`.
 
 Strict `searxng` mode makes companion failure explicit. Change it to `auto` to
 fall through to ChatGPT-subscription Codex search and then DuckDuckGo/Startpage.
@@ -303,3 +308,12 @@ The run artifact should contain:
 See [Local-first web research](/tools/web-research/) for all parameters,
 failure behavior, extraction formats, retries, browser isolation, and sandbox
 interactions.
+
+## Researcher instructions
+
+Start with one narrow query; supply alternates only for a plausible empty result.
+Fetch the strongest sources and request bounded line slices for long documents.
+Respect cooldown and quota errors instead of repeating the same request or
+spawning more search workers. Cite retrieved sources and check publication dates
+when freshness matters. Enable host coordination in every participating agent;
+an agent left in process mode does not join the shared budget.

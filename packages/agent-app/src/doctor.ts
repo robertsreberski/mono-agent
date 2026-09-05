@@ -1,3 +1,4 @@
+import { inspectWebControl } from "./web-request-coordinator.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
 import { access, lstat, mkdir, readdir, readFile, realpath, stat } from "node:fs/promises";
@@ -1816,8 +1817,17 @@ async function webToolsSection(
     codex: { model: "gpt-5.6-luna" },
   };
   const fetchConfig = web?.fetch ?? { render: "never" as const, browserCommand: "agent-browser" };
-  const details = [`WebSearch backend: ${search.backend}.`];
+  const details = [`WebSearch backend: ${search.backend}.`, `Web coordination: ${web?.coordination ?? "process"}.`];
   let status: ValidationStatus = "ok";
+  if (web?.coordination === "host") {
+    try {
+      const shared = await inspectWebControl();
+      details.push(shared.exists ? "Host web control state is valid." : "Host web control state will be initialized on first request.");
+    } catch {
+      status = "waiting";
+      details.push("Host web control state is unavailable; web requests will fail closed. Inspect with mono-agent web-control status.");
+    }
+  }
 
   if (search.endpoint === undefined) {
     details.push(search.backend === "keyless"

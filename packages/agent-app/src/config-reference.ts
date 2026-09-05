@@ -1238,6 +1238,8 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.enum = SANDBOX_FALLBACKS;
   } else if (field.jsonPath === "providers.piNative.transport") {
     schema.enum = PI_TRANSPORTS;
+  } else if (field.jsonPath === "tools.web.coordination") {
+    schema.enum = ["process", "host"];
   } else if (field.jsonPath === "tools.web.search.backend") {
     schema.enum = ["auto", "searxng", "codex", "keyless"];
   } else if (field.jsonPath === "tools.web.fetch.render") {
@@ -1452,6 +1454,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "tools.mcpRequestContextServers": [],
     "tools.mcpCallTimeoutMs": 120_000,
     "tools.mcpCallMaxTotalTimeoutMs": 2_700_000,
+    "tools.web.coordination": "process",
     "tools.web.search.backend": "auto",
     "tools.web.search.codex.model": "gpt-5.6-luna",
     "tools.web.fetch.render": "never",
@@ -1692,6 +1695,7 @@ function descriptionFor(id: string): string {
   if (id === "tools.mcpRequestContextServers") {
     return "Configured stdio MCP server names that receive trusted per-request conversation, run, output-directory, and scoped progress context.";
   }
+  if (id === "tools.web.coordination") return "Host mode shares web request budgets and cooldowns across participating local mono-agent processes; process preserves isolated coordination.";
   if (id === "tools.web.search.backend") {
     return "WebSearch backend: auto tries configured local SearXNG, then ChatGPT-subscription Codex search, then keyless fallbacks; searxng, codex, and keyless are strict.";
   }
