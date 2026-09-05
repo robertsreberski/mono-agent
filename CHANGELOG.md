@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Upgrade the exact-pinned Pi AI, Agent Core, and TUI dependencies to 0.85.1,
+  exposing GPT-6 Astra as `openai:gpt-6-astra` for OpenAI API keys and
+  `openai-codex:gpt-6-astra` for Codex subscriptions. Adopt Pi's corrected
+  30-minute long prompt-cache request shape for GPT-5.6+ OpenAI Responses
+  models, plus its fullscreen Alt-wheel and list-hover TUI fixes.
 - Remove the repository-owned final-agent and SearXNG demos together with their
   root commands, build provenance, verification, CI, and documentation wiring.
 - **Breaking: mono-agent runs only its Pi implementation.** The `claude-sdk`,
