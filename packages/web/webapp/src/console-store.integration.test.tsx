@@ -1,5 +1,5 @@
 import { act, render, waitFor } from "@testing-library/react";
-import { useEffect } from "react";
+import { StrictMode, useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, THREAD_PAGE_LIMIT } from "./api";
 import { resetServerClock, serverNow } from "./server-clock";
@@ -2534,6 +2534,144 @@ describe("ConsoleStoreProvider integration", () => {
 
       expect(store.current.selectedThreadId).toBe("older-alpha");
       expect(store.current.selectedThread?.id).toBe("older-alpha");
+    });
+
+    it("keeps refreshing after the remount StrictMode does on every mount", async () => {
+      // React 19 StrictMode -- which `main.tsx` wraps the console in -- runs
+      // every effect setup, cleanup, setup, and refs survive all three. A
+      // "still mounted" flag that is only ever CLEARED by a cleanup is false
+      // for the rest of the session after that, and every SSE-driven refresh
+      // routed through the debounce is silently dead in `vite dev`.
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alphaThread],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+      vi.mocked(api.thread).mockResolvedValue(detail(alphaThread, "hello"));
+      let current: Store | undefined;
+      render(
+        <StrictMode>
+          <ConsoleStoreProvider>
+            <StoreProbe onChange={(store) => { current = store; }} />
+          </ConsoleStoreProvider>
+        </StrictMode>,
+      );
+      await waitFor(() => expect(current?.selectedThreadId).toBe("alpha-thread"));
+      await waitFor(() => expect(current?.detail?.thread.id).toBe("alpha-thread"));
+      const detailReads = vi.mocked(api.thread).mock.calls.length;
+
+      emit("message.changed", {
+        threadId: "alpha-thread",
+        payload: { messageId: "message-1", updatedAt: "2026-08-14T09:00:00.000Z" },
+      });
+
+      await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads + 1));
+    });
+
+    it("closes a restored conversation the server no longer has", async () => {
+      // The stored id outlives the browser, so a conversation deleted from
+      // another client is resolved again on every load. One bucket page cannot
+      // say it is gone -- the detail read can, and it is the only thing that
+      // does.
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: "deleted-elsewhere" }));
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [alphaThread],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+      vi.mocked(api.thread).mockRejectedValue(
+        new ApiError("Conversation not found.", 404, "thread_not_found"),
+      );
+      const store = await renderStore();
+
+      await waitFor(() => expect(store.current.selectedThreadId).toBeNull());
+      await quiet();
+
+      expect(store.current.detail).toBeNull();
+      expect(store.current.actionError).toBe("This conversation was deleted.");
+      expect(JSON.parse(localStorage.getItem(SELECTED_THREADS_STORAGE_KEY) ?? "{}"))
+        .toEqual({});
+      // The sidebar it landed on is still the bucket the bootstrap carried.
+      expect(store.current.visibleThreads.map((item) => item.id)).toEqual(["alpha-thread"]);
+    });
+
+    it("does not open a restored conversation archived from another client", async () => {
+      // Archiving one HERE moves the selection to the next active row (see
+      // `archiveThread`), and a restored id the console finds archived is no
+      // more the active view's selection than that one was. The active bucket
+      // cannot show it, so keeping it opened a conversation the sidebar does
+      // not list and the archive toggle says nothing about.
+      const archivedElsewhere = thread("archived-elsewhere", "alpha", {
+        archivedAt: "2026-07-17T09:30:00.000Z",
+        updatedAt: "2026-07-17T09:30:00.000Z",
+      });
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: "archived-elsewhere" }));
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [alphaThread],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+      vi.mocked(api.thread).mockImplementation(async (threadId) => detail(
+        threadId === "archived-elsewhere" ? archivedElsewhere : alphaThread,
+        "hello",
+      ));
+      const store = await renderStore();
+
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      await quiet();
+
+      expect(store.current.showArchived).toBe(false);
+      expect(store.current.detail?.thread.id).toBe("alpha-thread");
+      expect(JSON.parse(localStorage.getItem(SELECTED_THREADS_STORAGE_KEY) ?? "{}"))
+        .toEqual({ alpha: "alpha-thread" });
+    });
+
+    it("keeps an archived conversation the operator opened themselves", async () => {
+      // Conversation search and push deep links both reach archived
+      // conversations while the active view is showing, and both are the
+      // operator's choice. Only a selection the console RESTORED is second-
+      // guessed by the detail read.
+      const archivedElsewhere = thread("archived-elsewhere", "alpha", {
+        archivedAt: "2026-07-17T09:30:00.000Z",
+        updatedAt: "2026-07-17T09:30:00.000Z",
+      });
+      const store = await openOnAlpha([alphaThread]);
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      vi.mocked(api.thread).mockImplementation(async (threadId) => detail(
+        threadId === "archived-elsewhere" ? archivedElsewhere : alphaThread,
+        "hello",
+      ));
+
+      act(() => { store.current.selectThread("archived-elsewhere"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("archived-elsewhere"));
+      await quiet();
+
+      expect(store.current.selectedThreadId).toBe("archived-elsewhere");
+      expect(store.current.showArchived).toBe(false);
+    });
+
+    it("drops a conversation a listing event says was removed, without a page", async () => {
+      // The removal arrives as a pair, and the `threads.changed` half names a
+      // conversation this tab does not list. Read as a bare listing event it
+      // bought a page of the bucket to look for something the same event had
+      // just said was gone.
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      emit("threads.changed", {
+        threadId: "outside-the-window",
+        payload: { threadId: "outside-the-window", removed: true },
+      });
+      await quiet(THREAD_LIST_REVALIDATE_DEBOUNCE_MS + 200);
+
+      expect(api.threads).not.toHaveBeenCalled();
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
     });
 
     it("updates a sidebar row from the summary an event carries, without reading anything", async () => {

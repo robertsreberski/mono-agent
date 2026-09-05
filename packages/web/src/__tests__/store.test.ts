@@ -280,7 +280,8 @@ describe("WebStore", () => {
     expect(store.replaceAgents([agent("alpha")])).toBe(true);
     expect(store.listAgents().map((entry) => entry.sourceId)).toEqual(["alpha"]);
     expect(store.getAgent("zulu")).toBeUndefined();
-    expect(store.listThreads().map((entry) => entry.id)).not.toContain(retained.id);
+    expect(() => store.listThreadsPage({ sourceId: "zulu", archived: false }))
+      .toThrowError(expect.objectContaining({ code: "agent_not_found" }));
     expect(() => store.setAgentPinned("zulu", false))
       .toThrowError(expect.objectContaining({ code: "agent_not_found" }));
 
@@ -296,7 +297,8 @@ describe("WebStore", () => {
       { sourceId: "zulu", pinned: true },
       { sourceId: "alpha", pinned: false },
     ]);
-    expect(store.listThreads().map((entry) => entry.id)).toContain(retained.id);
+    expect(store.listThreadsPage({ sourceId: "zulu", archived: false }).threads.map((entry) => entry.id))
+      .toContain(retained.id);
     store.close();
 
     const reopened = await WebStore.open({ stateDir });
@@ -2182,7 +2184,7 @@ describe("WebStore", () => {
     legacy.close();
 
     const migrated = await WebStore.open({ stateDir });
-    const threads = migrated.listThreads().filter((entry) => entry.sourceId === "agent-one");
+    const threads = migrated.listThreadsPage({ sourceId: "agent-one", archived: false }).threads;
     expect(threads).toHaveLength(1);
     expect(threads[0]).toMatchObject({ title: "kept title", runModel: null, runEffort: null });
     migrated.close();
@@ -2243,7 +2245,7 @@ describe("WebStore", () => {
     expect(migrated.listAgents()).toEqual([
       expect.objectContaining({ sourceId: "agent-one" }),
     ]);
-    expect(migrated.listThreads()).toEqual([
+    expect(migrated.listThreadsPage({ sourceId: "agent-one", archived: false }).threads).toEqual([
       expect.objectContaining({ id: thread.id, sourceId: "agent-one" }),
     ]);
     migrated.close();

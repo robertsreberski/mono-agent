@@ -89,6 +89,7 @@ import {
   cronChannelReadOnlyError,
   toWebAttachment,
   WebStore,
+  WEB_THREAD_PAGE_DEFAULT,
   notificationPushLogicalKey,
   type StoredAttachment,
   type StoredTurnExecution,
@@ -398,7 +399,7 @@ export class WebService {
       : this.store.listThreadsPage({
         sourceId: threadsSourceId,
         archived,
-        ...(scope.limit === undefined ? {} : { limit: scope.limit }),
+        limit: scope.limit ?? WEB_THREAD_PAGE_DEFAULT,
       });
     return {
       version: WEB_API_VERSION,

@@ -284,27 +284,34 @@ export const resolveBootstrapSelection = (
   // A bootstrap carries ONE page of ONE bucket now, so a conversation missing
   // from `threads` is the ordinary case -- older than the page, or another
   // agent's -- and no longer says anything about whether it still exists.
-  // Re-resolving a stored selection for that alone moves the operator out of
-  // the conversation they were in; the page that follows, or the detail read
-  // the selection itself issues, is what settles it.
-  //
-  // An answer that DOES carry it and shows it unusable here -- archived, or
-  // belonging to another agent -- is a different matter, and still re-resolves.
-  if (currentAgent !== undefined) {
+  // Re-resolving for that alone moves the operator out of the conversation
+  // they were in, so an id this tab is ALREADY on is kept and the detail read
+  // the selection issues is what settles it: `loadThread` closes the
+  // conversation the server answers 404 for and moves off one it finds
+  // archived. An answer that DOES carry it and shows it unusable here --
+  // archived, or another agent's -- settles it right now instead.
+  if (currentAgent !== undefined && selectedThreadId !== null) {
     // An archived conversation the operator is READING stays open; only one
     // this answer says belongs to someone else is re-resolved.
-    const selected = selectedThreadId === null
-      ? undefined
-      : next.threads.find((thread) => thread.id === selectedThreadId);
-    if (selectedThreadId !== null && (selected === undefined || selected.sourceId === agentId)) {
+    const selected = next.threads.find((thread) => thread.id === selectedThreadId);
+    if (selected === undefined || selected.sourceId === agentId) {
       return { agentId, threadId: selectedThreadId };
     }
-    const persistedId = persistedThreadIds[agentId ?? ""];
-    const persisted = next.threads.find((thread) => thread.id === persistedId);
-    if (persistedId !== undefined
-      && (persisted === undefined || (persisted.sourceId === agentId && !persisted.archivedAt))) {
+  }
+  // The stored selection is per agent, so the agent this resolves to has one
+  // whether or not it is the agent the tab came in on.
+  const persistedId = agentId === null ? undefined : persistedThreadIds[agentId];
+  const persisted = persistedId === undefined
+    ? undefined
+    : next.threads.find((thread) => thread.id === persistedId);
+  if (persistedId !== undefined) {
+    if (persisted !== undefined && persisted.sourceId === agentId && !persisted.archivedAt) {
       return { agentId, threadId: persistedId };
     }
+    // Unlisted is "keep it" only for the agent the tab is already on. For an
+    // agent it is falling back TO, this page is the only evidence there is and
+    // an id it does not carry is not something to open blind.
+    if (persisted === undefined && currentAgent !== undefined) return { agentId, threadId: persistedId };
   }
   const thread = [...next.threads]
     .filter((candidate) => candidate.sourceId === agentId && !candidate.archivedAt)
@@ -1199,6 +1206,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const initialBootstrapRef = useRef<"pending" | "answered">("pending");
   /** Whether this store is still mounted. See `scheduleRefresh`. */
   const mountedRef = useRef(true);
+  /**
+   * A selection this store RESTORED rather than the operator making it.
+   *
+   * The stored id outlives the browser and one bucket page cannot confirm it,
+   * so an id the answer did not carry is opened on trust -- and the detail read
+   * is the only thing that can say the conversation was deleted or archived
+   * from another client since. What the OPERATOR opened -- a search hit, a push
+   * deep link, a sidebar row -- is their choice and is never second-guessed.
+   */
+  const restoredSelectionRef = useRef<string | null>(null);
   /** Set true by the first `ready`, so the next one is known to be a RECONNECT. */
   const streamOpenedRef = useRef(false);
   const hasBootstrapRef = useRef(false);
@@ -1217,7 +1234,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify(stored));
   }, [effortByContext, modelByContext]);
 
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  // SET on every mount, not just cleared on teardown: StrictMode runs this
+  // setup, its cleanup, and this setup again, and the ref survives all three.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     selectedThreadRef.current = selectedThreadId;
@@ -1287,6 +1309,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const selection = routeThread === undefined
       ? baseSelection
       : { agentId: routeThread.sourceId, threadId: routeThread.id };
+    // Resolved from a stored id this answer did not carry, so nothing has
+    // confirmed it yet. See `restoredSelectionRef` and `loadThread`.
+    restoredSelectionRef.current = selection.threadId !== null
+      && !next.threads.some((thread) => thread.id === selection.threadId)
+      ? selection.threadId
+      : null;
     selectedAgentRef.current = selection.agentId;
     selectedThreadRef.current = selection.threadId;
     setSelectedAgentId(selection.agentId);
@@ -1421,6 +1449,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       const next = page.find((item) => item.id === persistedId && !item.archivedAt)
         ?? [...page].filter((item) => !item.archivedAt).sort(byMostRecent)[0];
       if (next === undefined) return;
+      restoredSelectionRef.current = null;
       selectedThreadRef.current = next.id;
       setSelectedThreadId(next.id);
       persistThreadId(selectedAgentId, next.id);
@@ -1429,6 +1458,45 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setActionError(errorMessage(loadError));
     });
   }, [hasBootstrap, loadThreadBucket, loading, selectedAgentId, showArchived]);
+
+  /**
+   * The conversation on screen is gone: a read of it was answered "not found".
+   *
+   * The same repair the `thread.changed` removal arm makes for a conversation
+   * this tab holds no row for -- clear the selection, say so, and drop the
+   * stored id, which is what otherwise resolves the dead conversation again on
+   * every single load.
+   */
+  const closeMissingThread = useCallback((threadId: string) => {
+    selectedThreadRef.current = null;
+    setSelectedThreadId(null);
+    setDetail(null);
+    const sourceId = selectedAgentRef.current;
+    if (sourceId !== null && readPersistedThreadIds()[sourceId] === threadId) {
+      persistThreadId(sourceId, null);
+    }
+    setActionError("This conversation was deleted.");
+  }, []);
+
+  /**
+   * A restored conversation the server says is archived, while this tab is
+   * showing the active view.
+   *
+   * Archiving one HERE moves the selection to the next active row and repoints
+   * the stored id -- see `archiveThread` -- so one found archived is treated
+   * the same way rather than opened where the sidebar cannot list it and the
+   * archive toggle says nothing about it.
+   */
+  const leaveRestoredArchivedThread = useCallback((thread: ThreadSummary) => {
+    const replacement = [...threadsRef.current]
+      .filter((item) => item.sourceId === thread.sourceId && !item.archivedAt)
+      .sort(byMostRecent)[0];
+    selectedThreadRef.current = replacement?.id ?? null;
+    setSelectedThreadId(replacement?.id ?? null);
+    setDetail(null);
+    persistThreadId(thread.sourceId, replacement?.id ?? null);
+    updateThreadRoute(replacement, true);
+  }, []);
 
   const loadThread = useCallback(async (threadId: string, signal: AbortSignal) => {
     setDetailLoading(true);
@@ -1443,13 +1511,29 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // has seen about a conversation, and a failed delete has to hand that
       // back rather than a staler listing.
       if (!admitThread(removedThreadsRef.current, next.thread, issuedAt)) return;
+      // This read is what confirms a RESTORED selection -- nothing else does.
+      if (restoredSelectionRef.current === threadId) {
+        restoredSelectionRef.current = null;
+        if (next.thread.archivedAt !== null && !showArchivedRef.current) {
+          leaveRestoredArchivedThread(next.thread);
+          return;
+        }
+      }
       if (selectedThreadRef.current === threadId) setDetail(next);
     } catch (loadError) {
-      if (!signal.aborted) setActionError(errorMessage(loadError));
+      if (signal.aborted) return;
+      if (loadError instanceof ApiError
+        && loadError.status === 404
+        && selectedThreadRef.current === threadId) {
+        restoredSelectionRef.current = null;
+        closeMissingThread(threadId);
+        return;
+      }
+      setActionError(errorMessage(loadError));
     } finally {
       if (selectedThreadRef.current === threadId) setDetailLoading(false);
     }
-  }, []);
+  }, [closeMissingThread, leaveRestoredArchivedThread]);
 
   useEffect(() => {
     if (!selectedThreadId) {
@@ -1747,6 +1831,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             applyThreadUpdate(payload.thread, removedThreadsRef.current.epoch());
             return;
           }
+          // The removal is the `thread.changed` half's business: it holds the
+          // tombstone and the selection repair, and it arrives with this one.
+          // Read as a bare listing event, this bought a page of the bucket to
+          // go looking for a conversation the same event said was gone.
+          if (payload.removed === true) return;
           if (threadId !== undefined) {
             // A conversation this tab already lists needs nothing from the
             // listing: whatever changed about it arrives as its own
@@ -2139,6 +2228,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const selectAgent = useCallback(
     (sourceId: string) => {
       operatorSelectionRef.current += 1;
+      // Whatever this resolves to is the operator's, never a provisional
+      // restore. See `restoredSelectionRef`.
+      restoredSelectionRef.current = null;
       selectedAgentRef.current = sourceId;
       setSelectedAgentId(sourceId);
       localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, sourceId);
@@ -2191,6 +2283,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const selectThread = useCallback(
     (threadId: string) => {
       operatorSelectionRef.current += 1;
+      restoredSelectionRef.current = null;
       const thread = threads.find((candidate) => candidate.id === threadId);
       if (thread) {
         selectedAgentRef.current = thread.sourceId;

@@ -83,6 +83,34 @@ describe("resolveBootstrapSelection", () => {
     ).toBe("open-and-unlisted");
   });
 
+  it("restores the fallback agent's own last conversation when the selected agent leaves", () => {
+    // The stored selection is per agent, so the agent the console falls back to
+    // has one of its own. Looking it up only for an agent that is still there
+    // dropped the operator onto whatever that agent had touched most recently.
+    const payload = bootstrap(
+      [agent("remaining")],
+      [
+        thread("remaining-newest", "remaining", { updatedAt: "2026-07-17T12:00:00.000Z" }),
+        thread("remaining-last-read", "remaining", { updatedAt: "2026-07-17T10:00:00.000Z" }),
+      ],
+    );
+
+    expect(
+      resolveBootstrapSelection(payload, "removed", "removed-thread", {
+        removed: "removed-thread",
+        remaining: "remaining-last-read",
+      }),
+    ).toEqual({ agentId: "remaining", threadId: "remaining-last-read" });
+    // An id the fallback agent's own bucket does not carry is no evidence at
+    // all -- unlike the current agent's, nothing else is coming to settle it.
+    expect(
+      resolveBootstrapSelection(payload, "removed", "removed-thread", {
+        removed: "removed-thread",
+        remaining: "older-than-the-page",
+      }).threadId,
+    ).toBe("remaining-newest");
+  });
+
   it("falls back to a discovered agent when the selected agent leaves bootstrap", () => {
     const payload = bootstrap(
       [agent("remaining")],

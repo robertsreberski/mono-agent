@@ -13,6 +13,7 @@ import {
 } from "@mono-agent/agent-contracts";
 
 import type { WebEvent } from "../contracts.js";
+import { WEB_THREAD_PAGE_DEFAULT } from "../store.js";
 import { agentGeneration, WebService, WeightedTurnBudget } from "../service.js";
 import { fakeDiscoveredAgent, fakeMonitor, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
 
@@ -190,6 +191,14 @@ describe("WebService", () => {
     expect(asked.threadsSourceId).toBe("agent-one");
     expect(asked.threads.map((thread) => thread.id)).toEqual([newer.id, older.id]);
     expect(asked.threadsNextCursor).toBeNull();
+
+    // The exported scope defaults the way the route does, so a caller that
+    // omits `limit` gets a page and not the store's whole 200-row bucket.
+    expect(WEB_THREAD_PAGE_DEFAULT).toBe(50);
+    for (let index = 0; index < 60; index += 1) service.createThread("agent-two");
+    const defaulted = await service.bootstrap({ sourceId: "agent-two" });
+    expect(defaulted.threads).toHaveLength(WEB_THREAD_PAGE_DEFAULT);
+    expect(defaulted.threadsNextCursor).toEqual(expect.any(String));
 
     const firstPage = await service.bootstrap({ sourceId: "agent-one", limit: 1 });
     expect(firstPage.threads.map((thread) => thread.id)).toEqual([newer.id]);
@@ -1969,7 +1978,11 @@ describe("WebService", () => {
     await service.refreshAgents();
     const removed = await service.bootstrap();
     expect(removed.agents.map((entry) => entry.sourceId)).toEqual(["agent-one"]);
-    expect(removed.threads.map((entry) => entry.id)).not.toContain(retained.id);
+    // Asked for BY NAME: a bootstrap answers with one bucket now, so "the
+    // retained conversation is not in the fallback agent's page" is true
+    // however badly hiding an undiscovered agent breaks.
+    expect(() => service.threadsPage({ sourceId: "agent-two", archived: false }))
+      .toThrowError(expect.objectContaining({ code: "agent_not_found" }));
     expect(removed.currentThreadId).toBeUndefined();
     expect(() => service.patchAgent("agent-two", { pinned: false }))
       .toThrowError(expect.objectContaining({ code: "agent_not_found" }));
@@ -1985,9 +1998,10 @@ describe("WebService", () => {
 
     discovered = [first, second];
     await service.refreshAgents();
-    const restored = await service.bootstrap();
+    const restored = await service.bootstrap({ sourceId: "agent-two" });
     expect(restored.agents.find((entry) => entry.sourceId === "agent-two"))
       .toMatchObject({ pinned: true });
+    expect(restored.threadsSourceId).toBe("agent-two");
     expect(restored.threads.map((entry) => entry.id)).toContain(retained.id);
     expect(restored.currentThreadId).toBe(retained.id);
     expect(events).toEqual([undefined, undefined]);

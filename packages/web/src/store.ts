@@ -456,6 +456,14 @@ export function escapeLikeTerm(raw: string): string {
 const WEB_STORAGE_SCHEMA_VERSION = 16;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
+/**
+ * What one page is when the caller does not say.
+ *
+ * A sidebar shows a handful of conversations and pages from there, so both the
+ * bootstrap's bucket and the thread-list route answer with this rather than the
+ * whole per-bucket cap.
+ */
+export const WEB_THREAD_PAGE_DEFAULT = 50;
 export const WEB_MESSAGE_PAGE_MAX = 100;
 const MAX_ACTIVE_PUSH_SUBSCRIPTIONS = 32;
 const MAX_PENDING_PUSH_DELIVERIES_PER_SUBSCRIPTION = 200;
@@ -1967,31 +1975,6 @@ export class WebStore {
       this.setSetting("current_thread_id", id);
     });
     return this.requireThread(id);
-  }
-
-  /**
-   * Every discovered agent's conversations, at most one 200-row bucket per
-   * (source_id, archived).
-   *
-   * NOT what a bootstrap answers with -- that is one page of ONE bucket, see
-   * `listThreadsPage` -- because carrying every agent's rows was 187 KB of a
-   * 219 KB payload and the console re-read the one bucket it shows anyway.
-   */
-  listThreads(): WebThread[] {
-    const rows = this.database.prepare(threadSelectSql(`
-      WHERE a.discovered = 1 AND t.id IN (
-        SELECT id FROM (
-          SELECT id,
-                 ROW_NUMBER() OVER (
-                   PARTITION BY source_id, CASE WHEN archived_at IS NULL THEN 0 ELSE 1 END
-                   ORDER BY updated_at DESC, id DESC
-                 ) AS bucket_row
-          FROM threads
-        ) WHERE bucket_row <= ${String(WEB_THREAD_PAGE_MAX)}
-      )
-      ORDER BY t.updated_at DESC, t.id DESC
-    `)).all() as unknown as ThreadRow[];
-    return rows.map((row) => this.mapThread(row));
   }
 
   listThreadsPage(input: {

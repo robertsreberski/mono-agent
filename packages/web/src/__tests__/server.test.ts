@@ -283,6 +283,14 @@ describe("web HTTP server", () => {
     expect(shelf.threadsSourceId).toBe("agent-one");
     expect(shelf.threads.map((thread) => thread.id)).toEqual([archived]);
 
+    // A console that has not resolved an agent yet sends the parameter empty
+    // rather than omitting it; that is an absent bucket, not a bad request.
+    const unresolved = await fetch(`${baseUrl}/api/v1/bootstrap?sourceId=`);
+    expect(unresolved.status).toBe(200);
+    expect(await json(unresolved) as unknown as ScopedBootstrap).toMatchObject({
+      threadsSourceId: "agent-one",
+    });
+
     for (const query of ["limit=0", "limit=201", "limit=abc", "archived=sometimes"]) {
       const rejected = await fetch(`${baseUrl}/api/v1/bootstrap?sourceId=agent-one&${query}`);
       expect({ query, status: rejected.status }).toEqual({ query, status: 400 });

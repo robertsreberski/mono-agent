@@ -38,7 +38,7 @@ import {
   type WebTheme,
 } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
-import { WEB_THREAD_SEARCH_MAX } from "./store.js";
+import { WEB_THREAD_PAGE_DEFAULT, WEB_THREAD_PAGE_MAX, WEB_THREAD_SEARCH_MAX } from "./store.js";
 import {
   MCP_APP_PROXY_CONTENT_SECURITY_POLICY,
   MCP_APP_PROXY_DOCUMENT,
@@ -145,11 +145,14 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       // One bucket, not every agent's conversations. An unknown or absent
       // `sourceId` falls back inside the service rather than failing: the
       // first request a fresh console makes has no selection to name yet.
-      const sourceId = optionalQueryString(req.query.sourceId, 512);
+      // An empty `sourceId` is a console that has not resolved an agent yet,
+      // which is the same thing as omitting it -- not a malformed request.
+      const requested = req.query.sourceId === "" ? undefined : req.query.sourceId;
+      const sourceId = optionalQueryString(requested, 512);
       void service.bootstrap({
         ...(sourceId === undefined ? {} : { sourceId }),
         archived: optionalArchivedQuery(req.query.archived) ?? false,
-        limit: boundedQueryLimit(req.query.limit, 200, 50),
+        limit: boundedQueryLimit(req.query.limit, WEB_THREAD_PAGE_MAX, WEB_THREAD_PAGE_DEFAULT),
       })
         .then((bootstrap) => res.status(200).json({ ...bootstrap, console: consoleIdentity }))
         .catch(next);
@@ -310,8 +313,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         sourceId,
         archived,
         // A sidebar shows a handful of rows and pages from there. This used to
-        // answer with the whole 200-row per-bucket cap by default.
-        limit: boundedQueryLimit(req.query.limit, 200, 50),
+        // answer with the whole per-bucket cap by default.
+        limit: boundedQueryLimit(req.query.limit, WEB_THREAD_PAGE_MAX, WEB_THREAD_PAGE_DEFAULT),
         ...(before === undefined ? {} : { before }),
       }));
     } catch (error) {
