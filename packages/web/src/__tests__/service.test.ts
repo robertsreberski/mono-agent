@@ -131,6 +131,48 @@ describe("agentGeneration", () => {
 });
 
 describe("WebService", () => {
+  it("saves strict web defaults, snapshots new threads, and reverts without changing existing threads", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({ fetchImpl: operatorFetch({ onTurn: (body) => turnBodies.push(body) }) });
+    const events: string[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event.type); });
+
+    expect((await service.bootstrap()).agents[0]?.runSettings).toMatchObject({
+      config: { model: "provider/default", effort: "medium" },
+      override: null,
+      effective: { modelSource: "config", effortSource: "config" },
+    });
+    const saved = service.setAgentRunDefaults("agent-one", { model: "provider/fallback", effort: "high" });
+    expect(saved.runSettings.override).toEqual({ model: "provider/fallback", effort: "high" });
+    expect(events).toContain("agents.changed");
+
+    const inherited = service.createThread("agent-one");
+    expect(inherited).toMatchObject({ runModel: "provider/fallback", runEffort: "high" });
+    await service.startTurn(inherited.id, { text: "use the web default" });
+    await waitFor(() => service.store.getThread(inherited.id)?.runState.status === "complete");
+    expect(turnBodies[0]).toMatchObject({
+      client: "web",
+      metadata: { web: { model: "provider/fallback", effort: "high" } },
+    });
+
+    const explicit = service.createThread("agent-one", { model: null, effort: "low" });
+    expect(explicit).toMatchObject({ runModel: null, runEffort: "low" });
+    const reverted = service.clearAgentRunDefaults("agent-one");
+    expect(reverted.runSettings).toMatchObject({ override: null, effective: { modelSource: "config", effortSource: "config" } });
+    expect(service.createThread("agent-one")).toMatchObject({ runModel: null, runEffort: null });
+    expect(service.store.getThread(inherited.id)).toMatchObject({ runModel: "provider/fallback", runEffort: "high" });
+
+    expect(() => service.setAgentRunDefaults("agent-one", { model: "anthropic:never-advertised", effort: null }))
+      .toThrowError(expect.objectContaining({ code: "invalid_model" }));
+    expect(() => service.setAgentRunDefaults("agent-one", { model: "provider/default", effort: "ultra" }))
+      .toThrowError(expect.objectContaining({ code: "invalid_effort" }));
+    expect(() => service.setAgentRunDefaults("agent-one", { model: null, effort: null }))
+      .toThrowError(expect.objectContaining({ code: "invalid_request" }));
+
+    unsubscribe();
+    await service.stop();
+  });
+
   it("delegates conversation search to the store and emits nothing for it", async () => {
     const service = await createService({});
     const thread = service.createThread("agent-one");
@@ -1871,6 +1913,7 @@ describe("WebService", () => {
     });
     first.store.replaceAgents([{
       sourceId: "agent-one", label: "Agent", status: "online", supportsAttachments: true,
+      runSettings: { config: {}, override: null, effective: { modelSource: "config", effortSource: "config" } },
       updatedAt: new Date().toISOString(),
     }]);
     const thread = first.store.createThread("agent-one");

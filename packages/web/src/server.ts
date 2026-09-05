@@ -30,6 +30,7 @@ import {
   type CreateWebUploadInput,
   type PatchWebAgentInput,
   type PatchWebThreadInput,
+  type PutWebAgentRunSettingsInput,
   type StartWebLiveInputInput,
   type StartWebTurnInput,
   type WebEvent,
@@ -167,6 +168,23 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  app.put("/api/v1/agents/:id/run-defaults", (req, res, next) => {
+    try {
+      const input = parsePutAgentRunSettings(req.body);
+      res.status(200).json({ agent: service.setAgentRunDefaults(pathParam(req.params.id), input) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/v1/agents/:id/run-defaults", (req, res, next) => {
+    try {
+      res.status(200).json({ agent: service.clearAgentRunDefaults(pathParam(req.params.id)) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/v1/agents/:id/skills", (req, res, next) => {
     try {
       res.status(200).json(service.agentSkills(pathParam(req.params.id)));
@@ -280,7 +298,10 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   app.post("/api/v1/threads", (req, res, next) => {
     try {
       const input = parseCreateThread(req.body);
-      res.status(201).json({ thread: service.createThread(input.sourceId) });
+      res.status(201).json({ thread: service.createThread(input.sourceId, {
+        ...(input.model === undefined ? {} : { model: input.model }),
+        ...(input.effort === undefined ? {} : { effort: input.effort }),
+      }) });
     } catch (error) {
       next(error);
     }
@@ -1084,7 +1105,31 @@ function securityHeaders(_req: Request, res: Response, next: NextFunction): void
 
 function parseCreateThread(value: unknown): CreateWebThreadInput {
   const body = requireRecord(value);
-  return { sourceId: requireString(body.sourceId, "sourceId", 256) };
+  const model = optionalNullableString(body.model, "model", 120);
+  const effort = optionalNullableString(body.effort, "effort", 120);
+  return {
+    sourceId: requireString(body.sourceId, "sourceId", 256),
+    ...(model === undefined ? {} : { model }),
+    ...(effort === undefined ? {} : { effort }),
+  };
+}
+
+function parsePutAgentRunSettings(value: unknown): PutWebAgentRunSettingsInput {
+  const body = requireRecord(value);
+  if (!("model" in body) || !("effort" in body)) {
+    throw invalidBody("model and effort are required and must be strings or null.");
+  }
+  const unknown = Object.keys(body).filter((key) => key !== "model" && key !== "effort");
+  if (unknown.length > 0) throw invalidBody(`Unknown run-defaults field: ${unknown[0]}.`);
+  const model = optionalNullableString(body.model, "model", 120);
+  const effort = optionalNullableString(body.effort, "effort", 120);
+  if (model === undefined || effort === undefined) {
+    throw invalidBody("model and effort are required and must be strings or null.");
+  }
+  if (model === null && effort === null) {
+    throw invalidBody("Choose a model or effort override, or use Revert to config.");
+  }
+  return { model, effort };
 }
 
 function parsePatchAgent(value: unknown): PatchWebAgentInput {

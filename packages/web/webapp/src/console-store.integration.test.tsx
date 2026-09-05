@@ -36,6 +36,8 @@ vi.mock("./api", async (importOriginal) => ({
     patchThread: vi.fn(),
     deleteThread: vi.fn(),
     patchAgent: vi.fn(),
+    setAgentRunDefaults: vi.fn(),
+    clearAgentRunDefaults: vi.fn(),
     agentSkills: vi.fn(),
     agentModels: vi.fn(),
     startTurn: vi.fn(),
@@ -173,6 +175,56 @@ describe("ConsoleStoreProvider integration", () => {
     const drift = Date.now() - serverNow();
     expect(drift).toBeGreaterThanOrEqual(3_000);
     expect(drift).toBeLessThan(3_500);
+  });
+
+  it("sends authored draft run choices atomically with thread creation", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    vi.mocked(api.createThread).mockResolvedValue(thread("created", "alpha", {
+      runModel: "provider/model",
+      runEffort: "high",
+    }));
+    const store = await renderStore();
+
+    act(() => {
+      store.current.setModel("provider/model");
+      store.current.setEffort("high");
+    });
+    await act(async () => { await store.current.createThread(); });
+
+    expect(api.createThread).toHaveBeenCalledWith(
+      "alpha",
+      { model: "provider/model", effort: "high" },
+      expect.any(AbortSignal),
+    );
+    expect(store.current.selectedThread).toMatchObject({
+      id: "created",
+      runModel: "provider/model",
+      runEffort: "high",
+    });
+  });
+
+  it("applies server-authoritative agent default save and revert responses", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    vi.mocked(api.setAgentRunDefaults).mockResolvedValue(agent("alpha", {
+      label: "Alpha",
+      runSettings: {
+        config: { model: "provider/model" },
+        override: { effort: "high" },
+        effective: {
+          model: "provider/model",
+          modelSource: "config",
+          effort: "high",
+          effortSource: "override",
+        },
+      },
+    }));
+    vi.mocked(api.clearAgentRunDefaults).mockResolvedValue(agent("alpha", { label: "Alpha" }));
+    const store = await renderStore();
+
+    await act(async () => { await store.current.setAgentRunDefaults(null, "high"); });
+    expect(store.current.selectedAgent?.runSettings.override).toEqual({ effort: "high" });
+    await act(async () => { await store.current.clearAgentRunDefaults(); });
+    expect(store.current.selectedAgent?.runSettings.override).toBeNull();
   });
 
   it("applies the returned pin state and moves the agent into the favorite group", async () => {

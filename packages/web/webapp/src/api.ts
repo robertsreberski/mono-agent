@@ -329,10 +329,14 @@ export const api = {
    * may already know about -- and may already have deleted. The caller bounds
    * it for the same reason it bounds every write.
    */
-  createThread: async (sourceId: string, signal?: AbortSignal) => {
+  createThread: async (
+    sourceId: string,
+    runConfig: { readonly model?: string | null; readonly effort?: string | null } = {},
+    signal?: AbortSignal,
+  ) => {
     const result = await request<{ thread: ThreadSummary }>("/api/v1/threads", {
       method: "POST",
-      body: JSON.stringify({ sourceId }),
+      body: JSON.stringify({ sourceId, ...runConfig }),
       ...(signal === undefined ? {} : { signal }),
     });
     return result.thread;
@@ -342,6 +346,25 @@ export const api = {
     const result = await request<{ agent: AgentSummary }>(
       `/api/v1/agents/${encodeURIComponent(sourceId)}`,
       { method: "PATCH", body: JSON.stringify({ pinned }) },
+    );
+    return result.agent;
+  },
+
+  setAgentRunDefaults: async (
+    sourceId: string,
+    input: { readonly model: string | null; readonly effort: string | null },
+  ) => {
+    const result = await request<{ agent: AgentSummary }>(
+      `/api/v1/agents/${encodeURIComponent(sourceId)}/run-defaults`,
+      { method: "PUT", body: JSON.stringify(input) },
+    );
+    return result.agent;
+  },
+
+  clearAgentRunDefaults: async (sourceId: string) => {
+    const result = await request<{ agent: AgentSummary }>(
+      `/api/v1/agents/${encodeURIComponent(sourceId)}/run-defaults`,
+      { method: "DELETE" },
     );
     return result.agent;
   },

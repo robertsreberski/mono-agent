@@ -71,6 +71,8 @@ interface ConsoleStoreValue {
   readonly hasOlderMessages: boolean;
   readonly selectAgent: (sourceId: string) => void;
   readonly setAgentPinned: (sourceId: string, pinned: boolean) => Promise<void>;
+  readonly setAgentRunDefaults: (model: string | null, effort: string | null) => Promise<void>;
+  readonly clearAgentRunDefaults: () => Promise<void>;
   readonly selectThread: (threadId: string) => void;
   readonly createThread: () => Promise<ThreadSummary>;
   readonly renameThread: (threadId: string, title: string) => Promise<void>;
@@ -2151,8 +2153,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (!selectedAgentId) throw new Error("Select an agent before starting a conversation.");
     try {
       const issuedAt = removedThreadsRef.current.epoch();
+      const draftPreferenceKey = preferenceKeyForThread(selectedAgentId, null);
+      const runConfig = {
+        ...(Object.hasOwn(modelByContext, draftPreferenceKey)
+          ? { model: modelByContext[draftPreferenceKey] || null }
+          : {}),
+        ...(Object.hasOwn(effortByContext, draftPreferenceKey)
+          ? { effort: effortByContext[draftPreferenceKey] || null }
+          : {}),
+      };
       const thread = await boundedRequest(
-        (signal) => api.createThread(selectedAgentId, signal),
+        (signal) => api.createThread(selectedAgentId, runConfig, signal),
       );
       // The server commits and emits `threads.changed` before this POST
       // answers, so by the time it does the console may have admitted this
@@ -2163,17 +2174,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       if (!admitThread(removedThreadsRef.current, thread, issuedAt)) {
         throw new Error("This conversation was deleted.");
       }
-      const draftPreferenceKey = preferenceKeyForThread(selectedAgentId, null);
-      const threadPreferenceKey = preferenceKeyForThread(selectedAgentId, thread.id);
       setModelByContext((current) => {
         if (current[draftPreferenceKey] === undefined) return current;
-        const next = { ...current, [threadPreferenceKey]: current[draftPreferenceKey] ?? "" };
+        const next = { ...current };
         delete next[draftPreferenceKey];
         return next;
       });
       setEffortByContext((current) => {
         if (current[draftPreferenceKey] === undefined) return current;
-        const next = { ...current, [threadPreferenceKey]: current[draftPreferenceKey] ?? "" };
+        const next = { ...current };
         delete next[draftPreferenceKey];
         return next;
       });
@@ -2193,7 +2202,40 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setActionError(errorMessage(createError));
       throw createError;
     }
-  }, [selectedAgentId]);
+  }, [effortByContext, modelByContext, selectedAgentId]);
+
+  const applyAgentUpdate = useCallback((agent: AgentSummary) => {
+    setBootstrap((current) => current === null
+      ? current
+      : {
+          ...current,
+          agents: current.agents.map((item) => item.sourceId === agent.sourceId ? agent : item),
+        });
+  }, []);
+
+  const setAgentRunDefaults = useCallback(async (model: string | null, effort: string | null) => {
+    if (!selectedAgentId) throw new Error("Select an agent before changing its defaults.");
+    try {
+      const agent = await api.setAgentRunDefaults(selectedAgentId, { model, effort });
+      applyAgentUpdate(agent);
+      setActionError(null);
+    } catch (settingsError) {
+      setActionError(errorMessage(settingsError));
+      throw settingsError;
+    }
+  }, [applyAgentUpdate, selectedAgentId]);
+
+  const clearAgentRunDefaults = useCallback(async () => {
+    if (!selectedAgentId) throw new Error("Select an agent before changing its defaults.");
+    try {
+      const agent = await api.clearAgentRunDefaults(selectedAgentId);
+      applyAgentUpdate(agent);
+      setActionError(null);
+    } catch (settingsError) {
+      setActionError(errorMessage(settingsError));
+      throw settingsError;
+    }
+  }, [applyAgentUpdate, selectedAgentId]);
 
   const fetchThreadSummary = useCallback(async (threadId: string): Promise<ThreadSummary> => {
     const known = threads.find((candidate) => candidate.id === threadId) ??
@@ -2997,6 +3039,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       hasOlderMessages,
       selectAgent,
       setAgentPinned,
+      setAgentRunDefaults,
+      clearAgentRunDefaults,
       selectThread,
       createThread,
       renameThread,
@@ -3027,6 +3071,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       archiveThread,
       bootstrap,
       cancelTurn,
+      clearAgentRunDefaults,
       connection,
       createThread,
       cronLoading,
@@ -3067,6 +3112,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       sendLiveInput,
       setEffort,
       setAgentPinned,
+      setAgentRunDefaults,
       setModel,
       showArchived,
       showOfflineAgents,

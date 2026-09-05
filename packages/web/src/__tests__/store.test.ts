@@ -35,6 +35,11 @@ function agent(sourceId = "agent-one", supportsAttachments = true): WebAgentSumm
     defaultModel: "provider/default",
     efforts: ["low", "high"],
     modelOptions: { "provider/default": { effortLevels: ["low", "high"] } },
+    runSettings: {
+      config: { model: "provider/default" },
+      override: null,
+      effective: { model: "provider/default", modelSource: "config", effortSource: "config" },
+    },
     updatedAt: "2026-07-17T09:00:00.000Z",
   };
 }
@@ -2160,7 +2165,7 @@ describe("WebStore", () => {
     reopened.close();
   });
 
-  it("migrates a seeded schema v10 database to v16 keeping its thread rows", async () => {
+  it("migrates a seeded schema v10 database to v17 keeping its thread rows", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -2195,13 +2200,13 @@ describe("WebStore", () => {
     const agentColumns = new Set((inspected.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
       .map((column) => column.name));
     inspected.close();
-    expect(version.user_version).toBe(16);
+    expect(version.user_version).toBe(17);
     expect(agentColumns.has("providers_json")).toBe(true);
     expect(agentColumns.has("discovered")).toBe(true);
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(["run_model", "run_effort"]));
   });
 
-  it("re-runs the v11-v16 migrations without failing when current columns and tables already exist", async () => {
+  it("re-runs the v11-v17 migrations without failing when current columns and tables already exist", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -2222,7 +2227,7 @@ describe("WebStore", () => {
     reopened.close();
     expect(
       new DatabaseSync(databasePath, { readOnly: true }).prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 16 });
+    ).toMatchObject({ user_version: 17 });
   });
 
   it("migrates schema v15 agents as discovered without losing their threads", async () => {
@@ -2249,7 +2254,7 @@ describe("WebStore", () => {
     migrated.close();
 
     const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 16 });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 17 });
     expect(inspected.prepare(
       "SELECT discovered FROM agents WHERE source_id = 'agent-one'",
     ).get()).toMatchObject({ discovered: 1 });
@@ -2271,7 +2276,7 @@ describe("WebStore", () => {
     const migrated = await WebStore.open({ stateDir });
     migrated.close();
     const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 16 });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 17 });
     expect(inspected.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'monitor_wake_deliveries'",
     ).get()).toBeDefined();
@@ -2335,7 +2340,7 @@ describe("WebStore", () => {
 
     const migrated = await WebStore.open({ stateDir });
     const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 16 });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 17 });
     const threadForeignKey = (inspected.prepare("PRAGMA foreign_key_list(monitor_wake_deliveries)").all() as Array<{
       from: string;
       on_delete: string;
@@ -2380,6 +2385,88 @@ describe("WebStore", () => {
 
     const clearedEffort = store.patchThread(thread.id, { effort: null });
     expect(clearedEffort).toMatchObject({ runModel: null, runEffort: null });
+  });
+
+  it("persists per-agent defaults and snapshots only newly created interactive threads", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir, clock: () => new Date("2026-09-05T12:00:00.000Z") });
+    store.replaceAgents([agent()]);
+
+    expect(store.getAgent("agent-one")?.runSettings).toEqual({
+      config: { model: "provider/default" },
+      override: null,
+      effective: { model: "provider/default", modelSource: "config", effortSource: "config" },
+    });
+    const saved = store.setAgentRunOverride("agent-one", { model: "provider/default", effort: "high" });
+    expect(saved.runSettings).toEqual({
+      config: { model: "provider/default" },
+      override: { model: "provider/default", effort: "high" },
+      effective: {
+        model: "provider/default",
+        modelSource: "override",
+        effort: "high",
+        effortSource: "override",
+      },
+    });
+
+    const inherited = store.createThread("agent-one");
+    const explicitConfigModel = store.createThread("agent-one", { model: null });
+    expect(inherited).toMatchObject({ runModel: "provider/default", runEffort: "high" });
+    expect(explicitConfigModel).toMatchObject({ runModel: null, runEffort: "high" });
+
+    store.setAgentRunOverride("agent-one", { model: null, effort: "low" });
+    expect(store.getThread(inherited.id)).toMatchObject({ runModel: "provider/default", runEffort: "high" });
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getAgent("agent-one")?.runSettings.override).toEqual({ effort: "low" });
+    const afterRestart = reopened.createThread("agent-one");
+    expect(afterRestart).toMatchObject({ runModel: null, runEffort: "low" });
+
+    const reservation = reopened.reserveNotification({
+      sourceId: "agent-one",
+      triggerKind: "webhook",
+      deliveryKey: "webhook:web-default-isolation",
+      text: "Triggered outside the browser",
+    });
+    const notification = reopened.completeNotification(reservation).thread;
+    expect(notification).toMatchObject({ runModel: null, runEffort: null, trigger: { kind: "webhook" } });
+
+    const reverted = reopened.clearAgentRunOverride("agent-one");
+    expect(reverted.runSettings.override).toBeNull();
+    expect(reopened.createThread("agent-one")).toMatchObject({ runModel: null, runEffort: null });
+    expect(() => reopened.setAgentRunOverride("agent-one", { model: null, effort: null }))
+      .toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    reopened.close();
+  });
+
+  it("migrates a schema v16 database by adding the per-agent run-default table", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const seeded = await WebStore.open({ stateDir });
+    seeded.replaceAgents([agent()]);
+    const thread = seeded.createThread("agent-one");
+    const databasePath = seeded.paths.database;
+    seeded.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec("DROP TABLE agent_run_overrides; PRAGMA user_version = 16");
+    legacy.close();
+
+    const migrated = await WebStore.open({ stateDir });
+    expect(migrated.getThread(thread.id)).toMatchObject({ runModel: null, runEffort: null });
+    expect(migrated.getAgent("agent-one")?.runSettings.override).toBeNull();
+    migrated.setAgentRunOverride("agent-one", { model: "provider/default", effort: null });
+    migrated.close();
+
+    const inspected = new DatabaseSync(databasePath, { readOnly: true });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 17 });
+    expect(inspected.prepare("SELECT model, effort FROM agent_run_overrides WHERE source_id = ?")
+      .get("agent-one")).toEqual({ model: "provider/default", effort: null });
+    inspected.close();
   });
 
   it("keeps updated_at stable and records run_config_changed for a model-only patch", async () => {
@@ -2462,7 +2549,7 @@ describe("WebStore", () => {
     const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
     const processJobCards = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'").get();
     inspected.close();
-    expect(version.user_version).toBe(16);
+    expect(version.user_version).toBe(17);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
     expect(liveInputs).toBeDefined();
@@ -2489,7 +2576,7 @@ describe("WebStore", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'",
     ).get();
     inspected.close();
-    expect(version.user_version).toBe(16);
+    expect(version.user_version).toBe(17);
     expect(processJobCards).toBeDefined();
   });
 
@@ -2502,7 +2589,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 17");
+    future.exec("PRAGMA user_version = 18");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 
@@ -3557,7 +3644,7 @@ describe("WebStore conversation search", () => {
     expect(
       new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true })
         .prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 16 });
+    ).toMatchObject({ user_version: 17 });
     reopened.close();
   });
 });

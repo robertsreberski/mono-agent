@@ -27,6 +27,7 @@ import {
   WEB_MAX_TURN_ATTACHMENT_BYTES,
   WEB_MAX_TURN_TEXT_CHARACTERS,
   type WebAgentProvider,
+  type WebAgentRunSettings,
   type WebAgentSummary,
   type WebAttachment,
   type WebMessage,
@@ -79,7 +80,14 @@ interface AgentRow {
   cron_read: number;
   cron_actions: number;
   ask_by_id: number;
+  override_model: string | null;
+  override_effort: string | null;
   updated_at: string;
+}
+
+export interface CreateStoredThreadInput {
+  readonly model?: string | null;
+  readonly effort?: string | null;
 }
 
 interface ThreadRow {
@@ -453,7 +461,7 @@ export function escapeLikeTerm(raw: string): string {
   return raw.replaceAll(/[\\%_]/gu, (character) => `\\${character}`);
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 16;
+const WEB_STORAGE_SCHEMA_VERSION = 17;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
 export const WEB_MESSAGE_PAGE_MAX = 100;
@@ -663,7 +671,7 @@ export class WebStore {
       if (prior === undefined) return true;
       // `pinned` is store-owned and never arrives from discovery; normalizing it
       // keeps a locally pinned agent from looking like an incoming change.
-      const next = { ...agent, pinned: prior.pinned };
+      const next = { ...agent, pinned: prior.pinned, runSettings: prior.runSettings };
       if (!ignoreHeartbeat) return !isDeepStrictEqual(prior, next);
       return !isDeepStrictEqual({ ...prior, updatedAt: "" }, { ...next, updatedAt: "" });
     };
@@ -799,6 +807,39 @@ export class WebStore {
     const agent = this.getAgent(sourceId);
     if (agent === undefined) throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
     return agent;
+  }
+
+  setAgentRunOverride(
+    sourceId: string,
+    override: { readonly model: string | null; readonly effort: string | null },
+  ): WebAgentSummary {
+    if (this.getAgent(sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
+    }
+    if (override.model === null && override.effort === null) {
+      throw new WebConsoleError(
+        "invalid_request",
+        "Choose a model or effort override, or use Revert to config.",
+        400,
+      );
+    }
+    this.database.prepare(`
+      INSERT INTO agent_run_overrides (source_id, model, effort, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(source_id) DO UPDATE SET
+        model = excluded.model,
+        effort = excluded.effort,
+        updated_at = excluded.updated_at
+    `).run(sourceId, override.model, override.effort, this.now());
+    return this.getAgent(sourceId)!;
+  }
+
+  clearAgentRunOverride(sourceId: string): WebAgentSummary {
+    if (this.getAgent(sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
+    }
+    this.database.prepare("DELETE FROM agent_run_overrides WHERE source_id = ?").run(sourceId);
+    return this.getAgent(sourceId)!;
   }
 
   reserveNotification(input: ReserveWebNotificationInput): WebNotificationReservation {
@@ -1948,7 +1989,7 @@ export class WebStore {
     `).get(sourceId, threadId, jobId) !== undefined;
   }
 
-  createThread(sourceId: string): WebThread {
+  createThread(sourceId: string, explicit: CreateStoredThreadInput = {}): WebThread {
     const agent = this.getAgent(sourceId);
     if (agent === undefined) {
       throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
@@ -1956,12 +1997,17 @@ export class WebStore {
     const id = randomUUID();
     const now = this.now();
     this.transaction(() => {
+      const override = this.database.prepare(`
+        SELECT model, effort FROM agent_run_overrides WHERE source_id = ?
+      `).get(sourceId) as unknown as { model: string | null; effort: string | null } | undefined;
+      const model = explicit.model === undefined ? override?.model ?? null : explicit.model;
+      const effort = explicit.effort === undefined ? override?.effort ?? null : explicit.effort;
       this.database.prepare(`
         INSERT INTO threads (
           id, source_id, conversation_id, title, title_manual, archived_at,
-          created_at, updated_at, revision
-        ) VALUES (?, ?, ?, 'New conversation', 0, NULL, ?, ?, 1)
-      `).run(id, sourceId, `web:${id}`, now, now);
+          created_at, updated_at, run_model, run_effort, revision
+        ) VALUES (?, ?, ?, 'New conversation', 0, NULL, ?, ?, ?, ?, 1)
+      `).run(id, sourceId, `web:${id}`, now, now, model, effort);
       this.database.prepare("INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at) VALUES ('thread', ?, 1, 'created', ?)")
         .run(id, now);
       this.setSetting("current_thread_id", id);
@@ -3478,6 +3524,13 @@ export class WebStore {
         ask_by_id INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS agent_run_overrides (
+        source_id TEXT PRIMARY KEY REFERENCES agents(source_id) ON DELETE CASCADE,
+        model TEXT,
+        effort TEXT,
+        updated_at TEXT NOT NULL,
+        CHECK (model IS NOT NULL OR effort IS NOT NULL)
+      );
       CREATE TABLE IF NOT EXISTS threads (
         id TEXT PRIMARY KEY,
         source_id TEXT NOT NULL REFERENCES agents(source_id),
@@ -4020,8 +4073,9 @@ export class WebStore {
     if (check === undefined || !Object.values(check).includes("ok")) {
       throw new WebConsoleError("storage_corrupt", "Web state failed SQLite integrity validation.", 500);
     }
-    const requiredTables = new Set([
-      "agents",
+      const requiredTables = new Set([
+        "agents",
+        "agent_run_overrides",
       "threads",
       "turns",
       "messages",
@@ -4707,11 +4761,14 @@ function threadSelectSql(suffix: string): string {
 function agentSelectSql(suffix: string): string {
   return `
     SELECT a.*,
+           o.model AS override_model,
+           o.effort AS override_effort,
            CASE WHEN EXISTS (
              SELECT 1 FROM settings s
              WHERE s.key = 'agent_pin:' || a.source_id AND s.value = '1'
            ) THEN 1 ELSE 0 END AS pinned
     FROM agents a
+    LEFT JOIN agent_run_overrides o ON o.source_id = a.source_id
     ${suffix}
   `;
 }
@@ -5052,6 +5109,7 @@ function mapAgent(row: AgentRow): WebAgentSummary {
   const efforts = parseStringArray(row.efforts_json);
   const modelOptions = parseRecord(row.model_options_json);
   const providers = parseProviderSummary(row.providers_json);
+  const runSettings = agentRunSettings(row);
   return {
     sourceId: row.source_id,
     label: row.label,
@@ -5064,12 +5122,38 @@ function mapAgent(row: AgentRow): WebAgentSummary {
     ...(row.default_effort === null ? {} : { defaultEffort: row.default_effort }),
     ...(efforts === undefined ? {} : { efforts }),
     ...(modelOptions === undefined ? {} : { modelOptions }),
+    runSettings,
     ...(providers === undefined ? {} : { providers }),
     ...(row.cron_read === 1
       ? { cron: { read: true, actions: row.cron_actions === 1 } }
       : {}),
     ...(row.ask_by_id === 1 ? { supportsAskById: true } : {}),
     updatedAt: row.updated_at,
+  };
+}
+
+function agentRunSettings(row: AgentRow): WebAgentRunSettings {
+  const effectiveModel = row.override_model ?? row.default_model;
+  const effectiveEffort = row.override_effort ?? row.default_effort;
+  const config = {
+    ...(row.default_model === null ? {} : { model: row.default_model }),
+    ...(row.default_effort === null ? {} : { effort: row.default_effort }),
+  };
+  const override = row.override_model === null && row.override_effort === null
+    ? null
+    : {
+        ...(row.override_model === null ? {} : { model: row.override_model }),
+        ...(row.override_effort === null ? {} : { effort: row.override_effort }),
+      };
+  return {
+    config,
+    override,
+    effective: {
+      ...(effectiveModel === null ? {} : { model: effectiveModel }),
+      modelSource: row.override_model === null ? "config" : "override",
+      ...(effectiveEffort === null ? {} : { effort: effectiveEffort }),
+      effortSource: row.override_effort === null ? "config" : "override",
+    },
   };
 }
 

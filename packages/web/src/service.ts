@@ -34,8 +34,10 @@ import {
   WEB_MAX_TURN_ATTACHMENT_BYTES,
   WEB_STAGED_UPLOAD_TTL_MS,
   type CreateWebUploadInput,
+  type CreateWebThreadInput,
   type PatchWebAgentInput,
   type PatchWebThreadInput,
+  type PutWebAgentRunSettingsInput,
   type StartWebTurnInput,
   type WebAgentSummary,
   type WebAttachment,
@@ -407,8 +409,22 @@ export class WebService {
     };
   }
 
-  createThread(sourceId: string): WebThread {
-    const thread = this.store.createThread(sourceId);
+  createThread(sourceId: string, input: Omit<CreateWebThreadInput, "sourceId"> = {}): WebThread {
+    const agent = this.store.getAgent(sourceId);
+    if (agent === undefined) {
+      throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
+    }
+    const inherited = agent.runSettings.override;
+    const model = input.model === undefined ? inherited?.model : input.model ?? undefined;
+    const effort = input.effort === undefined ? inherited?.effort : input.effort ?? undefined;
+    this.validateModelAndEffort(
+      sourceId,
+      agent,
+      model,
+      effort,
+      input.model === undefined && inherited?.model !== undefined,
+    );
+    const thread = this.store.createThread(sourceId, input);
     this.emit("threads.changed", thread.id, { thread });
     return thread;
   }
@@ -724,6 +740,30 @@ export class WebService {
 
   patchAgent(sourceId: string, patch: PatchWebAgentInput): WebAgentSummary {
     const agent = this.store.setAgentPinned(sourceId, patch.pinned);
+    this.emit("agents.changed");
+    return agent;
+  }
+
+  setAgentRunDefaults(sourceId: string, input: PutWebAgentRunSettingsInput): WebAgentSummary {
+    const agent = this.store.getAgent(sourceId);
+    if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    if (this.connections.get(sourceId) === undefined || agent.status === "offline") {
+      throw new WebConsoleError("agent_offline", "This agent is offline. Reconnect it before saving new defaults.", 409);
+    }
+    this.validateModelAndEffort(
+      sourceId,
+      agent,
+      input.model ?? undefined,
+      input.effort ?? undefined,
+      true,
+    );
+    const updated = this.store.setAgentRunOverride(sourceId, input);
+    this.emit("agents.changed");
+    return updated;
+  }
+
+  clearAgentRunDefaults(sourceId: string): WebAgentSummary {
+    const agent = this.store.clearAgentRunOverride(sourceId);
     this.emit("agents.changed");
     return agent;
   }
@@ -1864,6 +1904,7 @@ export class WebService {
           ...(info.effort === undefined ? {} : { defaultEffort: info.effort }),
           ...(efforts.length === 0 ? {} : { efforts }),
           ...(info.modelOptions === undefined ? {} : { modelOptions: info.modelOptions }),
+          runSettings: configRunSettings(info.model, info.effort),
           ...(info.providers === undefined ? {} : { providers: info.providers }),
           ...(info.cron === undefined ? {} : { cron: info.cron }),
           ...(info.supportsAskById ? { supportsAskById: true } : {}),
@@ -2194,8 +2235,11 @@ export class WebService {
     agent: WebAgentSummary,
     model: string | undefined,
     effort: string | undefined,
+    strictModel = false,
   ): void {
-    if (model !== undefined && !this.modelAdmitted(sourceId, agent, model)) {
+    if (model !== undefined && !(strictModel
+      ? this.modelStrictlyAdmitted(sourceId, agent, model)
+      : this.modelAdmitted(sourceId, agent, model))) {
       throw new WebConsoleError("invalid_model", "This agent did not advertise the selected model.", 400);
     }
     // Both ends resolve a blank selection to the same route -- the browser fell
@@ -2217,15 +2261,18 @@ export class WebService {
   }
 
   private modelAdmitted(sourceId: string, agent: WebAgentSummary, model: string): boolean {
+    if (this.modelStrictlyAdmitted(sourceId, agent, model)) return true;
+    // Tier 3: syntactic `<provider>:<model>` floor. Existing per-conversation
+    // selections retain this compatibility path; durable web defaults do not.
+    return modelPassesSyntacticFloor(model);
+  }
+
+  private modelStrictlyAdmitted(sourceId: string, agent: WebAgentSummary, model: string): boolean {
     // Tier 1: the configured-route shortlist — unchanged, always allowed.
     if (agent.models === undefined ? model === agent.defaultModel : agent.models.includes(model)) return true;
     // Tier 2: a model reached only through the catalog cache.
     const cached = this.modelCatalogCache.get(sourceId);
-    if (cached !== undefined && cached.models.has(model)) return true;
-    // Tier 3: syntactic `<provider>:<model>` floor. The web package has no pi-ai
-    // access, so a well-formed ref passes here and the agent itself is the real
-    // gate at turn time.
-    return modelPassesSyntacticFloor(model);
+    return cached !== undefined && cached.models.has(model);
   }
 
   private authorizeReplyPart<T extends "attachment" | "mcp_app">(
@@ -2709,7 +2756,24 @@ function offlineSummary(agent: DiscoveredOperatorAgent, generation: string): Web
     pinned: false,
     health: agent.source.health,
     supportsAttachments: false,
+    runSettings: configRunSettings(),
     updatedAt: agent.source.updatedAt,
+  };
+}
+
+function configRunSettings(model?: string, effort?: string): WebAgentSummary["runSettings"] {
+  return {
+    config: {
+      ...(model === undefined ? {} : { model }),
+      ...(effort === undefined ? {} : { effort }),
+    },
+    override: null,
+    effective: {
+      ...(model === undefined ? {} : { model }),
+      modelSource: "config",
+      ...(effort === undefined ? {} : { effort }),
+      effortSource: "config",
+    },
   };
 }
 

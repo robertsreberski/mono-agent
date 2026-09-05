@@ -140,6 +140,63 @@ function pushSubscriptionBody(endpoint = "https://push.example.test/send/opaque"
 }
 
 describe("web HTTP server", () => {
+  it("persists, applies, validates, and reverts web-only new-conversation defaults", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const mutation = { "content-type": "application/json", origin: baseUrl };
+
+    const saved = await fetch(`${baseUrl}/api/v1/agents/agent-one/run-defaults`, {
+      method: "PUT",
+      headers: mutation,
+      body: JSON.stringify({ model: "provider/fallback", effort: "high" }),
+    });
+    expect(saved.status).toBe(200);
+    expect(await json(saved)).toMatchObject({ agent: { runSettings: {
+      override: { model: "provider/fallback", effort: "high" },
+      effective: { modelSource: "override", effortSource: "override" },
+    } } });
+
+    const createdA = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST",
+      headers: mutation,
+      body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    expect(createdA.status).toBe(201);
+    expect(await json(createdA)).toMatchObject({ thread: { runModel: "provider/fallback", runEffort: "high" } });
+
+    const invalid = await fetch(`${baseUrl}/api/v1/agents/agent-one/run-defaults`, {
+      method: "PUT",
+      headers: mutation,
+      body: JSON.stringify({ model: "anthropic:never-advertised", effort: null }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(await json(invalid)).toMatchObject({ error: { code: "invalid_model" } });
+
+    const meaningless = await fetch(`${baseUrl}/api/v1/agents/agent-one/run-defaults`, {
+      method: "PUT",
+      headers: mutation,
+      body: JSON.stringify({ model: null, effort: null }),
+    });
+    expect(meaningless.status).toBe(400);
+    expect(await json(meaningless)).toMatchObject({ error: { code: "invalid_request" } });
+
+    const reverted = await fetch(`${baseUrl}/api/v1/agents/agent-one/run-defaults`, {
+      method: "DELETE",
+      headers: { origin: baseUrl },
+    });
+    expect(reverted.status).toBe(200);
+    expect(await json(reverted)).toMatchObject({ agent: { runSettings: {
+      override: null,
+      effective: { modelSource: "config", effortSource: "config" },
+    } } });
+
+    const createdB = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST",
+      headers: mutation,
+      body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    expect(await json(createdB)).toMatchObject({ thread: { runModel: null, runEffort: null } });
+  });
+
   it("defaults to a LAN bind with no application auth or CORS grant", async () => {
     const { handle, baseUrl } = await start();
     expect(handle.host).toBe("0.0.0.0");

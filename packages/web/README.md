@@ -24,6 +24,8 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 - Persist agents, threads, messages, structured reasoning/tool/telemetry parts,
   revisions, turns, attachments, and agent pin preferences under
   `~/.mono-agent/web`.
+- Persist optional per-agent model/effort defaults for new interactive web
+  threads, copied at creation and clearable back to resolved config.
 - Let an MCP-capable agent replace the interim first-message title with a short
   semantic title and evolve it after a material topic shift, while treating any
   user rename as a permanent lock.
@@ -159,6 +161,15 @@ from aggregate work.
 Structured reasoning, routine tools, and one update-in-place row per compaction
 share the stream-aware Activity disclosure, which collapses at every terminal
 message state without reordering answer parts.
+
+The agent rail's settings action opens a separate **Agent settings** dialog.
+Its model and effort choices become the defaults for subsequently created web
+console conversations for that agent. Either field may inherit resolved config,
+and **Revert to config** clears both overrides in one action. The dialog labels
+each effective value as Config or Override. These settings live in the web
+service's SQLite database, survive restart, and do not edit
+`mono-agent.config.json`; existing conversations and Telegram, Slack, cron,
+webhook, API, and TUI requests remain unchanged.
 
 New interactive threads initially use the first user message as their fallback
 title. On compatible routes, an allowlisted app-owned `SetConversationTitle`
@@ -421,6 +432,7 @@ OperatorTurnInput
 OperatorTurnResult
 PatchWebAgentInput
 PatchWebThreadInput
+PutWebAgentRunSettingsInput
 SearchWebThreadsInput
 StartWebLiveInputInput
 StartWebServerOptions
@@ -440,6 +452,7 @@ WEB_STAGED_UPLOAD_TTL_MS
 WEB_THEMES
 WEB_THREAD_SEARCH_MAX
 WEB_THREAD_SEARCH_MIN_QUERY
+WebAgentRunSettings
 WebAgentStatus
 WebAgentSummary
 WebAttachment
@@ -458,6 +471,7 @@ WebPushBootstrap
 WebPushSubscriptionState
 WebPushSubscriptionStatus
 WebQuote
+WebRunSettingSource
 WebRunState
 WebRunStatus
 WebServerHandle
