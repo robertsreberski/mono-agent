@@ -1,6 +1,6 @@
 // @ts-check
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 import { performWebFetch, formatWebFetchDocument } from "./web-fetch.js";
@@ -134,7 +134,7 @@ export function createWebToolController({
       // strict as the key claims.
       const resolvedCtx = ctx ?? readToolRuntime();
       const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
-      const key = stableKey({ params, searchConfig, policy, coordination: coordinator?.scope });
+      const key = stableKey({ params, searchConfig: safeSearchCacheIdentity(searchConfig), policy, coordination: coordinator?.scope });
       return cachedSearch(key, async () => performWebSearch(params, {
         coordinator,
         searchConfig,
@@ -178,6 +178,17 @@ export function createWebToolController({
       fetchCache.clear();
       searchInFlight.clear();
       fetchInFlight.clear();
+    },
+  };
+}
+
+function safeSearchCacheIdentity(searchConfig) {
+  if (!searchConfig?.ollama?.apiKey) return searchConfig;
+  return {
+    ...searchConfig,
+    ollama: {
+      ...searchConfig.ollama,
+      apiKey: `sha256:${createHash("sha256").update(searchConfig.ollama.apiKey).digest("hex")}`,
     },
   };
 }

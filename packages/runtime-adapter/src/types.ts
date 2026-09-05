@@ -440,7 +440,7 @@ export interface RuntimeRunOptions {
   /** Host-owned shared web admission; never model-configurable. */
   readonly webRequestCoordinator?: {
     readonly scope: string;
-    acquire(request: { kind: "searxng" | "duckduckgo" | "startpage" | "codex" | "fetch"; key: string; deadlineMs: number; signal?: AbortSignal }): Promise<{
+    acquire(request: { kind: "searxng" | "ollama" | "duckduckgo" | "startpage" | "codex" | "fetch"; key: string; deadlineMs: number; signal?: AbortSignal }): Promise<{
       readonly waitMs: number;
       complete(outcome: { status: "ok" | "rate_limited" | "unavailable" | "cancelled"; retryAfterMs?: number }): Promise<void>;
     }>;
@@ -449,8 +449,16 @@ export interface RuntimeRunOptions {
   };
   /** Local-first WebSearch backend selection for this run. */
   readonly webSearchConfig?: {
-    readonly backend?: "auto" | "searxng" | "codex" | "keyless";
+    readonly backend?: "auto" | "searxng" | "ollama" | "codex" | "keyless";
+    /** @deprecated Use searxng.endpoint. */
     readonly endpoint?: string;
+    readonly searxng?: { readonly endpoint?: string };
+    readonly ollama?: {
+      readonly baseUrl?: string;
+      readonly apiKey?: string;
+      readonly apiKeyEnv?: string;
+      readonly trustPublicUrl?: boolean;
+    };
     readonly codex?: { readonly model?: string };
   };
   /** Static WebFetch extraction and optional isolated browser-render policy. */

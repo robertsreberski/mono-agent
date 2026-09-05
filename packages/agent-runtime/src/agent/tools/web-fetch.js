@@ -1,16 +1,13 @@
 import { withWebDeadline, coordinatedWebRequest, webRequestFailure } from "./web-request.js";
 // @ts-check
 
-import { Readability } from "@mozilla/readability";
-import { Defuddle as parseDefuddle } from "defuddle/node";
-import { DOMParser, parseHTML } from "linkedom";
-import { extractText as extractPdfText, getDocumentProxy } from "unpdf";
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { DEFAULT_MAX_TOOL_OUTPUT_CHARS } from "./shared/constants.js";
 import { capChars } from "./shared/output-truncation.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 import { renderWithAgentBrowser } from "./web-browser-render.js";
+import { contentKind, decodeWebBytes, extractWebDocument, markdownToText, shouldAutoRender } from "./web-document-extractor.js";
 
 const FETCH_TIMEOUT_MS = 15_000;
 const MAX_REDIRECTS = 5;
@@ -144,6 +141,51 @@ async function performFetch(
   const resolvedCtx = ctx ?? readToolRuntime();
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
+  if (requestedRender === "always") {
+    if (!sandbox.networkAllowsUrl(policy, parsed.href)) {
+      return failure("Error: Network access denied by sandbox policy.", "network_denied", startedAt, {
+        backend: "agent-browser", browserRecommended: true, renderReason: "explicit",
+      });
+    }
+    try {
+      const renderedResult = await coordinatedWebRequest(coordinator, "fetch", parsed.origin, signal, async () => ({
+        ok: true,
+        rendered: await browserRenderer(parsed.href, {
+          browserCommand: fetchSettings.browserCommand,
+          namespace,
+          sandboxPolicy: policy,
+          sandboxEngine,
+          ctx: resolvedCtx,
+          signal,
+          registerCleanup,
+        }),
+      }));
+      const rendered = normalizeBrowserResult(renderedResult.rendered, parsed.href);
+      const renderedBody = outputFormat === "text" ? markdownToText(rendered.text) : rendered.text;
+      const document = {
+        body: renderedBody,
+        finalUrl: rendered.finalUrl,
+        outcome: {
+          status: "ok", code: "ok", retryable: false, attempts: 1,
+          backend: "agent-browser", cacheHit: false, durationMs: Date.now() - startedAt,
+          bytes: Buffer.byteLength(rendered.text, "utf8"), queueWaitMs: renderedResult.coordinationWaitMs,
+          backendDurationMs: renderedResult.backendDurationMs, truncated: renderedBody.length > maxChars,
+          redirectCount: 0, rendered: true, renderFailed: false, browserRecommended: false,
+          renderReason: "explicit", contentKind: "html", extractionStage: "browser", parserFailureCount: 0,
+          parserFailures: [],
+        },
+      };
+      return documentOnly ? { text: "", error: false, outcome: document.outcome, document }
+        : formatWebFetchDocument(document, { start_line, max_lines, max_output_chars: maxChars }, resolvedCtx);
+    } catch (error) {
+      const code = ["access_challenge", "authentication_required", "network_denied"].includes(error?.code)
+        ? error.code : "browser_render_failed";
+      return failure(`Error rendering URL: ${error?.message || String(error)}`, code, startedAt, {
+        attempts: 1, backend: "agent-browser", rendered: false, renderFailed: true,
+        browserRecommended: code === "browser_render_failed", renderReason: "explicit",
+      });
+    }
+  }
   const delays = Array.isArray(retryDelaysMs)
     ? retryDelaysMs.slice(0, 2).map((value) => Math.max(0, Number(value) || 0))
     : [];
@@ -211,6 +253,8 @@ async function performFetch(
         retryable: normalized.retryable,
         statusCode: normalized.statusCode ?? response?.status,
         retryAfterMs: normalized.retryAfterMs, queueWaitMs, backendDurationMs,
+        browserRecommended: requestedRender === "auto"
+          && !["network_denied", "redirect_network_denied", "aborted", "deadline_exceeded"].includes(normalized.code),
       });
     }
   }
@@ -224,7 +268,7 @@ async function performFetch(
   if (!response.ok) {
     const preview = responseKind === "binary"
       ? "(binary response body omitted)"
-      : decodeBytes(bytes, contentType).slice(0, 500);
+      : safeDecodePreview(bytes, contentType, responseKind);
     const errorText = [
       `HTTP ${response.status}`,
       `[BEGIN UNTRUSTED WEB ERROR BODY source=${JSON.stringify(finalUrl)}]`,
@@ -238,6 +282,7 @@ async function performFetch(
       bytes: responseBytes,
       backend: "http",
       redirectCount,
+      browserRecommended: requestedRender === "auto" && [406, 415].includes(response.status),
     });
   }
   if (responseKind === "binary") {
@@ -251,32 +296,42 @@ async function performFetch(
   }
 
   let extracted;
+  let decoding;
   try {
-    extracted = await extractResponse(bytes, {
+    decoding = decodeWebBytes(bytes, contentType, responseKind);
+    extracted = await extractWebDocument(bytes, {
       contentType,
       format: outputFormat,
       url: finalUrl,
     });
   } catch (error) {
-    return failure(`Error extracting URL: ${error?.message || String(error)}`, "extraction_failed", startedAt, {
+    return failure(`Error extracting URL: ${error?.message || String(error)}`, error?.code || "extraction_failed", startedAt, {
       attempts,
       statusCode: response.status,
       bytes: responseBytes,
       backend: "http",
       redirectCount,
+      browserRecommended: requestedRender === "auto" && responseKind === "html",
+      contentKind: responseKind,
+      ...(decoding === undefined ? {} : {
+        charset: decoding.charset,
+        charsetSource: decoding.charsetSource,
+        hadDecodingReplacement: decoding.hadDecodingReplacement,
+      }),
+      ...(Array.isArray(error?.parserFailures) ? { parserFailures: error.parserFailures.slice(0, 3) } : {}),
     });
   }
 
   const shouldRender = responseKind === "html"
     && (
       requestedRender === "always"
-      || (requestedRender === "auto" && shouldAutoRender(extracted.readableText, decodeBytes(bytes, contentType)))
+      || (requestedRender === "auto" && shouldAutoRender(extracted.readableText, decodedText(bytes, contentType, responseKind)))
     );
   let backend = "http";
   let renderFailed = false;
   if (shouldRender) {
     try {
-      const renderedResult = await coordinatedWebRequest(coordinator, "fetch", new URL(finalUrl).origin, signal, async () => ({ ok: true, text: await browserRenderer(finalUrl, {
+      const renderedResult = await coordinatedWebRequest(coordinator, "fetch", new URL(finalUrl).origin, signal, async () => ({ ok: true, rendered: await browserRenderer(finalUrl, {
         browserCommand: fetchSettings.browserCommand,
         namespace,
         sandboxPolicy,
@@ -287,18 +342,27 @@ async function performFetch(
       }) }));
       queueWaitMs += renderedResult.coordinationWaitMs;
       backendDurationMs += renderedResult.backendDurationMs;
-      const rendered = renderedResult.text;
+      const rendered = normalizeBrowserResult(renderedResult.rendered, finalUrl);
       signal?.throwIfAborted();
       extracted = {
-        body: outputFormat === "text" ? markdownToText(rendered) : rendered,
-        readableText: markdownToText(rendered),
+        body: outputFormat === "text" ? markdownToText(rendered.text) : rendered.text,
+        readableText: markdownToText(rendered.text),
         title: extracted.title,
+        charset: extracted.charset,
+        charsetSource: extracted.charsetSource,
+        hadDecodingReplacement: extracted.hadDecodingReplacement,
+        extractionStage: "browser",
+        parserFailureCount: extracted.parserFailureCount,
+        parserFailures: extracted.parserFailures,
       };
+      finalUrl = rendered.finalUrl;
       backend = "agent-browser";
     } catch (error) {
       if (signal?.aborted) return failure("Error: WebFetch rendering was aborted.", "aborted", startedAt);
       if (requestedRender === "always" || error?.code === "coordination_unavailable") {
-        return failure(`Error rendering URL: ${error?.message || String(error)}`, "browser_render_failed", startedAt, {
+        const code = ["access_challenge", "authentication_required", "network_denied"].includes(error?.code)
+          ? error.code : "browser_render_failed";
+        return failure(`Error rendering URL: ${error?.message || String(error)}`, code, startedAt, {
           attempts,
           statusCode: response.status,
           bytes: responseBytes,
@@ -310,8 +374,8 @@ async function performFetch(
     }
   }
 
-  if (responseKind === "html" && backend === "http" && shouldAutoRender(extracted.readableText, decodeBytes(bytes, contentType))) {
-    return failure("Error: Page contains an unusable loading shell; no readable evidence was retrieved.", "unusable_content", startedAt, { backend, rendered: false, renderFailed });
+  if (responseKind === "html" && backend === "http" && shouldAutoRender(extracted.readableText, decodedText(bytes, contentType, responseKind))) {
+    return failure("Error: Page contains an unusable loading shell; no readable evidence was retrieved.", "unusable_content", startedAt, { backend, rendered: false, renderFailed, browserRecommended: true });
   }
   const body = extracted.body || "(no readable content)";
   const document = { body, finalUrl,
@@ -330,11 +394,25 @@ async function performFetch(
       redirectCount,
       rendered: backend === "agent-browser",
       renderFailed,
+      browserRecommended: renderFailed,
+      ...(backend === "agent-browser" ? { renderReason: "sparse_html" } : {}),
       contentKind: responseKind,
+      charset: extracted.charset,
+      charsetSource: extracted.charsetSource,
+      hadDecodingReplacement: extracted.hadDecodingReplacement,
+      extractionStage: extracted.extractionStage,
+      parserFailureCount: extracted.parserFailureCount ?? 0,
+      parserFailures: extracted.parserFailures ?? [],
     },
     };
   return documentOnly ? { text: "", error: false, outcome: document.outcome, document }
     : formatWebFetchDocument(document, { start_line, max_lines, max_output_chars: maxChars }, resolvedCtx);
+}
+
+function normalizeBrowserResult(value, requestedUrl) {
+  if (typeof value === "string") return { text: value, finalUrl: requestedUrl };
+  if (value && typeof value.text === "string" && typeof value.finalUrl === "string") return value;
+  throw Object.assign(new Error("Browser renderer returned an invalid result."), { code: "browser_render_failed" });
 }
 
 async function fetchFollowingRedirects(initialUrl, options) {
@@ -419,166 +497,13 @@ async function readResponseBytes(response) {
   return new Uint8Array(Buffer.concat(chunks));
 }
 
-async function extractResponse(bytes, { contentType, format, url }) {
-  const kind = contentKind(contentType, bytes);
-  const raw = decodeBytes(bytes, contentType);
-  if (format === "raw") return { body: raw, readableText: raw, title: "" };
-  if (kind === "pdf") {
-    const pdf = await getDocumentProxy(bytes);
-    try {
-      const extracted = await extractPdfText(pdf, { mergePages: true });
-      const body = String(extracted.text || "").trim();
-      return {
-        body,
-        readableText: body,
-        title: "",
-      };
-    } finally {
-      try { await /** @type {any} */ (pdf).destroy?.(); } catch { /* best effort */ }
-    }
-  }
-  if (kind === "json") {
-    let parsed;
-    try { parsed = JSON.parse(raw); } catch {
-      return { body: raw, readableText: raw, title: "" };
-    }
-    const pretty = JSON.stringify(parsed, null, 2);
-    return {
-      body: format === "markdown" ? `\`\`\`json\n${pretty}\n\`\`\`` : pretty,
-      readableText: pretty,
-      title: "",
-    };
-  }
-  if (kind === "xml") {
-    const body = extractXml(raw, format);
-    return { body, readableText: markdownToText(body), title: "" };
-  }
-  if (kind === "html") {
-    return extractHtml(raw, url, format);
-  }
-  return { body: raw.trim(), readableText: raw.trim(), title: "" };
+function decodedText(bytes, contentType, kind) {
+  return decodeWebBytes(bytes, contentType, kind).text;
 }
 
-async function extractHtml(html, url, format) {
-  let title = "";
-  let markdown = "";
-  try {
-    const { document } = parseHTML(html);
-    const parsed = await parseDefuddle(/** @type {any} */ (document), url, {
-      markdown: true,
-      separateMarkdown: true,
-      useAsync: false,
-    });
-    title = String(parsed.title || "").trim();
-    markdown = String(parsed.contentMarkdown || parsed.content || "").trim();
-  } catch { /* Readability fallback below */ }
-
-  if (meaningfulCharacters(markdown) < 1) {
-    try {
-      const { document } = parseHTML(html);
-      const article = new Readability(/** @type {any} */ (document)).parse();
-      if (article) {
-        title ||= String(article.title || "").trim();
-        markdown = htmlToText(article.content || article.textContent || "");
-      }
-    } catch { /* final body-text fallback below */ }
-  }
-
-  if (meaningfulCharacters(markdown) < 1) {
-    const { document } = parseHTML(html);
-    title ||= collapseWhitespace(document.querySelector("title")?.textContent);
-    markdown = collapseDocumentText(document.body?.textContent || "");
-  }
-  const readableText = markdownToText(markdown);
-  if (format === "text") return { body: readableText, readableText, title };
-  const body = title && !markdown.trimStart().startsWith(`# ${title}`)
-    ? `# ${title}\n\n${markdown}`
-    : markdown;
-  return { body, readableText, title };
-}
-
-function extractXml(xml, format) {
-  const document = new DOMParser().parseFromString(String(xml || ""), "text/xml");
-  const entries = [...document.querySelectorAll("item, entry")].slice(0, 50);
-  if (entries.length === 0) {
-    return collapseDocumentText(document.documentElement?.textContent || xml);
-  }
-  const blocks = entries.map((entry) => {
-    const title = collapseWhitespace(entry.querySelector("title")?.textContent) || "Untitled";
-    const linkElement = entry.querySelector("link");
-    const link = linkElement?.getAttribute("href") || collapseWhitespace(linkElement?.textContent);
-    const description = collapseWhitespace(
-      entry.querySelector("description, summary, content")?.textContent,
-    );
-    if (format === "text") return [title, link, description].filter(Boolean).join("\n");
-    return [
-      `## ${title}`,
-      link ? `[${link}](${link})` : "",
-      description,
-    ].filter(Boolean).join("\n\n");
-  });
-  return blocks.join("\n\n");
-}
-
-function contentKind(contentType, bytes) {
-  const mime = String(contentType || "").split(";", 1)[0].trim().toLowerCase();
-  if (mime === "application/pdf" || startsWithPdf(bytes)) return "pdf";
-  if (mime.includes("json") || mime.endsWith("+json")) return "json";
-  if (
-    mime.includes("xml")
-    || mime.includes("rss")
-    || mime.includes("atom")
-    || mime.endsWith("+xml")
-  ) return "xml";
-  if (mime.includes("html") || looksLikeHtml(bytes)) return "html";
-  if (
-    mime.startsWith("text/")
-    || [
-      "application/ecmascript",
-      "application/graphql",
-      "application/javascript",
-      "application/rtf",
-      "application/sql",
-      "application/x-httpd-php",
-      "application/x-yaml",
-      "application/yaml",
-    ].includes(mime)
-  ) return "text";
-  if (!mime && !looksBinary(bytes)) return "text";
-  return "binary";
-}
-
-function startsWithPdf(bytes) {
-  return Buffer.from(bytes.subarray(0, 5)).toString("ascii") === "%PDF-";
-}
-
-function looksLikeHtml(bytes) {
-  return /^\s*(?:<!doctype html|<html|<head|<body)/iu.test(
-    Buffer.from(bytes.subarray(0, 512)).toString("utf8"),
-  );
-}
-
-function looksBinary(bytes) {
-  const sample = bytes.subarray(0, Math.min(bytes.byteLength, 1_024));
-  if (sample.byteLength === 0) return false;
-  let controls = 0;
-  for (const byte of sample) {
-    if (byte === 0) return true;
-    if (byte < 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0c && byte !== 0x0d) {
-      controls += 1;
-    }
-  }
-  return controls / sample.byteLength > 0.1;
-}
-
-function decodeBytes(bytes, contentType) {
-  const match = String(contentType || "").match(/charset\s*=\s*["']?([^;"'\s]+)/iu);
-  const charset = match?.[1] || "utf-8";
-  try {
-    return new TextDecoder(charset, { fatal: false }).decode(bytes);
-  } catch {
-    return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
-  }
+function safeDecodePreview(bytes, contentType, kind) {
+  try { return decodedText(bytes, contentType, kind).slice(0, 500); }
+  catch { return new TextDecoder("utf-8", { fatal: false }).decode(bytes).slice(0, 500); }
 }
 
 function normalizeRequestHeaders(headers) {
@@ -617,51 +542,6 @@ function normalizeFetchConfig(input) {
     return { error: "Web browser command must be a direct executable name or path." };
   }
   return { render, browserCommand: browserCommand.trim() };
-}
-
-function shouldAutoRender(readableText, html) {
-  if (meaningfulCharacters(readableText) >= 200) return false;
-  const scriptCount = (html.match(/<script\b/giu) || []).length;
-  const hasAppRoot = /<(?:div|main)[^>]+(?:id|class)=["'][^"']*(?:app|root|__next|nuxt|svelte)[^"']*["']/iu.test(html);
-  const hasSpaAssets = /\b(?:webpack|__NEXT_DATA__|vite|hydration|data-reactroot)\b/iu.test(html);
-  return scriptCount >= 2 && (hasAppRoot || hasSpaAssets);
-}
-
-function meaningfulCharacters(value) {
-  return markdownToText(value).replace(/\s/gu, "").length;
-}
-
-function htmlToText(value) {
-  try {
-    const { document } = parseHTML(String(value || ""));
-    return collapseDocumentText(document.body?.textContent || document.documentElement?.textContent || "");
-  } catch {
-    return collapseDocumentText(String(value || "").replace(/<[^>]+>/gu, " "));
-  }
-}
-
-function markdownToText(value) {
-  return collapseDocumentText(
-    String(value || "")
-      .replace(/```[\s\S]*?```/gu, (block) => block.replace(/^```[^\n]*\n?|```$/gu, ""))
-      .replace(/!\[([^\]]*)\]\([^)]*\)/gu, "$1")
-      .replace(/\[([^\]]+)\]\([^)]*\)/gu, "$1")
-      .replace(/^[#>*+-]+\s*/gmu, "")
-      .replace(/[*_`~]/gu, ""),
-  );
-}
-
-function collapseDocumentText(value) {
-  return String(value || "")
-    .replace(/\r/gu, "")
-    .replace(/[ \t]+\n/gu, "\n")
-    .replace(/\n{3,}/gu, "\n\n")
-    .replace(/[ \t]{2,}/gu, " ")
-    .trim();
-}
-
-function collapseWhitespace(value) {
-  return String(value || "").replace(/\s+/gu, " ").trim();
 }
 
 function requestSignal(signal) {

@@ -147,6 +147,24 @@ describe("layerJsonOntoEnv", () => {
     });
   });
 
+  it("projects canonical SearXNG and Ollama blocks while real env wins across the SearXNG alias", () => {
+    const layered = layerJsonOntoEnv({ tools: { web: { search: {
+      backend: "ollama",
+      searxng: { endpoint: "http://127.0.0.1:8088" },
+      ollama: { baseUrl: "https://ollama.com", apiKeyEnv: "OLLAMA_WEB_KEY", trustPublicUrl: false },
+    } } } }, {
+      MONO_AGENT_WEB_SEARCH_ENDPOINT: "http://127.0.0.1:9090",
+    });
+    expect(layered).toMatchObject({
+      MONO_AGENT_WEB_SEARCH_BACKEND: "ollama",
+      MONO_AGENT_WEB_SEARCH_ENDPOINT: "http://127.0.0.1:9090",
+      MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL: "https://ollama.com",
+      MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV: "OLLAMA_WEB_KEY",
+      MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL: "false",
+    });
+    expect(layered.MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT).toBeUndefined();
+  });
+
   it("lets the canonical fallback env override JSON", () => {
     const json = {
       runtime: { fallbacks: [{ model: "anthropic:claude-sonnet-4-6" }] },

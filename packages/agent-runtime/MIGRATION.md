@@ -60,6 +60,29 @@ use any of them, nothing changes:
 Note also that `openai-codex` and `opencode-go` are **Pi provider ids**, not
 references to the deleted bridges. Routes naming them keep working.
 
+### Web research configuration
+
+SearXNG remains supported in strict mode and as the first configured `auto`
+route. Its canonical JSON setting is now provider-scoped:
+
+```json
+{ "tools": { "web": { "search": {
+  "backend": "searxng",
+  "searxng": { "endpoint": "http://127.0.0.1:8088" }
+} } } }
+```
+
+The former `tools.web.search.endpoint` and
+`MONO_AGENT_WEB_SEARCH_ENDPOINT` spellings remain compatibility aliases; no
+immediate migration is required. Prefer `tools.web.search.searxng.endpoint` or
+`MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` when editing config. If both spellings
+are present they must normalize to the same URL.
+
+Ollama Web Search is additive and explicit-only: select `backend: "ollama"`.
+It never joins `auto`. Local mode defaults to `http://127.0.0.1:11434`; hosted
+`https://ollama.com` additionally requires `ollama.apiKeyEnv`. A hosted key is
+never sent to a local or custom origin.
+
 ### Model reference grammar
 
 Old: `<sdk>:[<provider>:]<model>`. New: **`<provider>:<model>`**, split at the

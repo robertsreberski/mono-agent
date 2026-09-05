@@ -173,8 +173,12 @@ They are tolerated so stale environments do not break startup, but they are igno
 | `MONO_AGENT_CONTINUATION_SERVERS` | `tools.continuationServers` | Comma-separated stdio or loopback-HTTP MCP server names that receive trusted request-bound continuation claim capabilities. See [durable continuations](/tools/durable-continuations/). |
 | `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | `tools.mcpCallTimeoutMs` | Inactivity timeout per MCP tool call; tool progress notifications reset it. Default 120000. |
 | `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | `tools.mcpCallMaxTotalTimeoutMs` | Hard wall clock per MCP tool call that progress cannot extend. Default 2700000 (45 min). An AskUser configured with no automatic expiry is narrowly exempt. |
-| `MONO_AGENT_WEB_SEARCH_BACKEND` | `tools.web.search.backend` | `auto` (default), strict `searxng`, strict `codex`, or `keyless`. Auto uses local SearXNG → ChatGPT-subscription Codex → keyless. |
-| `MONO_AGENT_WEB_SEARCH_ENDPOINT` | `tools.web.search.endpoint` | Optional unauthenticated loopback HTTP SearXNG base URL; required by strict `searxng`. |
+| `MONO_AGENT_WEB_SEARCH_BACKEND` | `tools.web.search.backend` | `auto` (default), strict `searxng`, strict `ollama`, strict `codex`, or `keyless`. Auto preserves local SearXNG → ChatGPT-subscription Codex → keyless and never silently selects Ollama. |
+| `MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` | `tools.web.search.searxng.endpoint` | Canonical unauthenticated loopback HTTP SearXNG base URL; required by strict `searxng`. |
+| `MONO_AGENT_WEB_SEARCH_ENDPOINT` | `tools.web.search.endpoint` | Compatibility alias for the canonical SearXNG endpoint variable. Existing config remains valid; prefer the provider-specific name. |
+| `MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL` | `tools.web.search.ollama.baseUrl` | Ollama origin; strict Ollama defaults to `http://127.0.0.1:11434`. Hosted search accepts exact `https://ollama.com`; custom public origins require HTTPS plus explicit trust. |
+| `MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV` | `tools.web.search.ollama.apiKeyEnv` | Explicit environment-variable name for hosted Ollama auth. Required only for exact `https://ollama.com`; rejected for every other origin. |
+| `MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL` | `tools.web.search.ollama.trustPublicUrl` | Explicit `true` acknowledgement for an unauthenticated custom public HTTPS Ollama origin. Never authorizes hosted credentials there. |
 | `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` | `tools.web.search.codex.model` | Codex app-server subscription-search model; default `gpt-5.6-luna`. |
 | `MONO_AGENT_WEB_FETCH_RENDER` | `tools.web.fetch.render` | `never` (default and capability disabled) or `auto` (static-first isolated browser fallback). |
 | `MONO_AGENT_WEB_BROWSER_COMMAND` | `tools.web.fetch.browserCommand` | Direct `agent-browser` executable name/path. Default `agent-browser`; shell fragments are not evaluated. |

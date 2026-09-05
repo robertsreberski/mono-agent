@@ -42,6 +42,13 @@ export async function renderWithAgentBrowser(
   let tempDir = null;
   let unregister = () => {};
   let closed = false;
+  const renderDeadlineAt = Date.now() + BROWSER_TIMEOUT_MS;
+
+  function remainingRenderMs() {
+    const remaining = renderDeadlineAt - Date.now();
+    if (remaining <= 0) throw Object.assign(new Error(`agent-browser timed out after ${BROWSER_TIMEOUT_MS}ms`), { code: "browser_render_failed" });
+    return remaining;
+  }
 
   async function closeSession() {
     if (closed) return;
@@ -156,7 +163,7 @@ export async function renderWithAgentBrowser(
       if (result.spawnError) throw result.spawnError;
       if (result.signal) throw new Error(`agent-browser terminated by ${result.signal}`);
       if (result.code !== 0) {
-        throw new Error(`agent-browser exited ${result.code}: ${String(result.stderr || result.stdout).trim()}`);
+        throw new Error(`agent-browser exited ${result.code}`);
       }
       return String(result.stdout || "").trim();
     } finally {
@@ -168,14 +175,46 @@ export async function renderWithAgentBrowser(
     tempDir = await mkdtemp(join(workspace, ".mono-agent-web-"));
     await writeFile(join(tempDir, "agent-browser.json"), "{}\n", { encoding: "utf8", mode: 0o600 });
     unregister = registerCleanup?.(closeSession) ?? (() => {});
-    await run(["open", parsed.href]);
-    await run(["wait", "--load", "domcontentloaded"]);
-    const output = await run(["read"]);
+    await run(["open", parsed.href], remainingRenderMs());
+    await run(["wait", "--load", "domcontentloaded"], remainingRenderMs());
+    const finalUrlOutput = await run(["get", "url"], remainingRenderMs());
+    const finalUrl = validateFinalUrl(extractBrowserText(finalUrlOutput), parsed, sandbox, policy);
+    const output = await run(["read"], remainingRenderMs());
     const text = extractBrowserText(output);
     if (!text) throw new Error("agent-browser returned no readable rendered content");
-    return text;
+    assertNoAccessChallenge(finalUrl, text);
+    return { text, finalUrl };
   } finally {
     await closeSession();
+  }
+}
+
+function validateFinalUrl(value, requested, sandbox, policy) {
+  let finalUrl;
+  try { finalUrl = new URL(String(value || "").trim()); }
+  catch { throw Object.assign(new Error("agent-browser returned an invalid final URL"), { code: "browser_render_failed" }); }
+  if (!["http:", "https:"].includes(finalUrl.protocol) || finalUrl.username || finalUrl.password) {
+    throw Object.assign(new Error("agent-browser navigated to an unsupported final URL"), { code: "network_denied" });
+  }
+  const requestedHost = requested.hostname.toLowerCase();
+  const finalHost = finalUrl.hostname.toLowerCase();
+  if (!(finalHost === requestedHost || finalHost.endsWith(`.${requestedHost}`))
+    || !sandbox.networkAllowsUrl(policy, finalUrl.href)) {
+    throw Object.assign(new Error("agent-browser final URL is outside the allowed domain policy"), { code: "network_denied" });
+  }
+  return finalUrl.href;
+}
+
+function assertNoAccessChallenge(finalUrl, text) {
+  const body = String(text).slice(0, 16_384);
+  if (/\/(?:login|signin|sign-in)(?:[/?#]|$)/iu.test(finalUrl)
+    || /\b(?:authentication required|(?:sign|log) in to continue)\b/iu.test(body)) {
+    throw Object.assign(new Error("Browser page requires authentication; no login was attempted."), { code: "authentication_required" });
+  }
+  if (/\/(?:captcha|challenge)(?:[/?#]|$)/iu.test(finalUrl)
+    || /challenge-platform|verify (?:you are|that you are)(?: a)? human|unusual traffic|checking your browser/iu.test(body)
+    || /\baccess denied\b[\s\S]{0,240}\b(?:blocked|permission|reference|administrator)\b/iu.test(body)) {
+    throw Object.assign(new Error("Browser page presented an access challenge; no bypass was attempted."), { code: "access_challenge" });
   }
 }
 
@@ -206,7 +245,7 @@ function findText(value, depth = 0) {
     return value.map((entry) => findText(entry, depth + 1)).filter(Boolean).join("\n").trim();
   }
   if (typeof value !== "object") return "";
-  for (const key of ["markdown", "content", "text", "result", "output", "data"]) {
+  for (const key of ["markdown", "content", "text", "url", "result", "output", "data"]) {
     if (!(key in value)) continue;
     const text = findText(value[key], depth + 1);
     if (text) return text;

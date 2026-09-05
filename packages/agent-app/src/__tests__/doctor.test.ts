@@ -4024,6 +4024,58 @@ describe("validateMonoAgentFolder — web tools", () => {
     );
   });
 
+  it("probes strict local Ollama Web Search with the same-origin compatibility route", async () => {
+    const fetchSpy = vi.fn(async (url: string | URL, _init?: RequestInit) => String(url).endsWith("/api/experimental/web_search")
+      ? new Response("missing", { status: 404 })
+      : new Response(JSON.stringify({ results: [] }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({
+      search: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
+    const web = sectionById(report, "web-tools");
+    expect(web.status).toBe("ok");
+    expect(web.details).toContain("Ollama Web Search JSON probe succeeded.");
+    expect(fetchSpy.mock.calls.map(([url]) => String(url))).toEqual([
+      "http://127.0.0.1:11434/api/experimental/web_search",
+      "http://127.0.0.1:11434/api/web_search",
+    ]);
+    expect(fetchSpy.mock.calls.every(([, init]) => !("Authorization" in ((init as RequestInit).headers as Record<string, string>)))).toBe(true);
+  });
+
+  it("stops an Ollama Web Search probe response that exceeds its streamed byte limit", async () => {
+    const oversized = new Uint8Array((2 * 1024 * 1024) + 1);
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(oversized);
+        controller.close();
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({
+      search: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
+    const web = sectionById(report, "web-tools");
+    expect(web.status).toBe("waiting");
+    expect(web.details.some((detail) => detail.includes("response exceeded 2097152 bytes"))).toBe(true);
+  });
+
+  it("does not probe an inactive Ollama block and reports it explicitly", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({
+      search: { backend: "keyless", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+    });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
+    expect(sectionById(report, "web-tools").details).toContain(
+      "Ollama Web Search is configured but inactive; select backend ollama explicitly to use it.",
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("warns when the SearXNG endpoint answers with every engine unresponsive", async () => {
     // A dead instance still answers `200 {"results": []}`, so probing only for a
     // results array reported a completely blocked SearXNG as healthy. The empty

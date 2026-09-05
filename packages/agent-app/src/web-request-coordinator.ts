@@ -14,7 +14,7 @@ type Bucket = { nextAt: number; cooldownUntil: number; strikes: number; failures
 type State = { schema: "mono-agent.web-control.v1"; buckets: Record<string, Bucket>; quota?: { checkedAt: number; value: unknown } };
 const MAX_STATE_BYTES = 256 * 1024;
 const MAX_BUCKETS = 512;
-const defaults = { searxng: [1, 2000], duckduckgo: [1, 3000], startpage: [1, 3000], codex: [1, 0], fetch: [2, 500] } as const;
+const defaults = { searxng: [1, 2000], ollama: [1, 2000], duckduckgo: [1, 3000], startpage: [1, 3000], codex: [1, 0], fetch: [2, 500] } as const;
 
 export function webControlDirectory(): string { return join(homedir(), ".mono-agent", "web-control"); }
 
@@ -199,7 +199,7 @@ function parseState(text: string): State {
   if (value?.schema !== "mono-agent.web-control.v1" || !value.buckets || Array.isArray(value.buckets)
     || typeof value.buckets !== "object" || Object.keys(value.buckets).length > MAX_BUCKETS) throw unavailable();
   for (const [key, bucket] of Object.entries(value.buckets)) {
-    if (!/^(searxng|duckduckgo|startpage|codex|fetch):[a-f0-9]{64}$/u.test(key)
+    if (!/^(searxng|ollama|duckduckgo|startpage|codex|fetch):[a-f0-9]{64}$/u.test(key)
       || !bucket || ![bucket.nextAt, bucket.cooldownUntil, bucket.strikes, bucket.failures].every((v) => Number.isSafeInteger(v) && v >= 0)
       || !Array.isArray(bucket.leases) || bucket.leases.length > 2) throw unavailable();
     for (const lease of bucket.leases) {

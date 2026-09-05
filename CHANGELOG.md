@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add explicit Ollama Web Search alongside the existing SearXNG, Codex, and
+  keyless routes. Preserve `auto` as SearXNG → Codex → keyless, repair the
+  canonical nested SearXNG config while retaining its legacy endpoint alias,
+  bind hosted Ollama bearer credentials to the exact official origin, and keep
+  strict-provider failures visible. WebFetch now adds deterministic charset and
+  parser handling, safer HTML-to-Markdown conversion, structured failures, and
+  explicit browser-first rendering through an isolated `agent-browser` session
+  without treating authentication or access challenges as bypassable.
 - Preserve no-expiry `AskUser` waits in web and remote-TUI turns by removing
   Undici's implicit five-minute inactivity deadline from long-lived operator
   streams. Host-wake delivery keeps its explicit ten-minute request bound.
