@@ -34,6 +34,11 @@ const agent: WebAgentSummary = {
   label: "Agent One",
   status: "online",
   supportsAttachments: true,
+  runSettings: {
+    config: {},
+    override: null,
+    effective: { modelSource: "config", effortSource: "config" },
+  },
   updatedAt: "2026-08-13T08:00:00.000Z",
 };
 

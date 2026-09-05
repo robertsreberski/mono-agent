@@ -133,6 +133,300 @@ describe("agentGeneration", () => {
 });
 
 describe("WebService", () => {
+  it("saves strict web defaults, snapshots new threads, and reverts without changing existing threads", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({ fetchImpl: operatorFetch({ onTurn: (body) => turnBodies.push(body) }) });
+    const events: string[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event.type); });
+
+    expect((await service.bootstrap()).agents[0]?.runSettings).toMatchObject({
+      config: { model: "provider/default", effort: "medium" },
+      override: null,
+      effective: { modelSource: "config", effortSource: "config" },
+    });
+    const saved = service.setAgentRunDefaults("agent-one", { model: "provider/fallback", effort: "high" });
+    expect(saved.runSettings.override).toEqual({ model: "provider/fallback", effort: "high" });
+    expect(events).toContain("agents.changed");
+
+    const inherited = service.createThread("agent-one");
+    expect(inherited).toMatchObject({ runModel: "provider/fallback", runEffort: "high" });
+    await service.startTurn(inherited.id, { text: "use the web default" });
+    await waitFor(() => service.store.getThread(inherited.id)?.runState.status === "complete");
+    expect(turnBodies[0]).toMatchObject({
+      client: "web",
+      metadata: { web: { model: "provider/fallback", effort: "high" } },
+    });
+
+    const explicit = service.createThread("agent-one", { model: null, effort: "low" });
+    expect(explicit).toMatchObject({ runModel: null, runEffort: "low" });
+    const reverted = service.clearAgentRunDefaults("agent-one");
+    expect(reverted.runSettings).toMatchObject({ override: null, effective: { modelSource: "config", effortSource: "config" } });
+    expect(service.createThread("agent-one")).toMatchObject({ runModel: null, runEffort: null });
+    expect(service.store.getThread(inherited.id)).toMatchObject({ runModel: "provider/fallback", runEffort: "high" });
+
+    expect(() => service.setAgentRunDefaults("agent-one", { model: "anthropic:never-advertised", effort: null }))
+      .toThrowError(expect.objectContaining({ code: "invalid_model" }));
+    expect(() => service.setAgentRunDefaults("agent-one", { model: "provider/default", effort: "ultra" }))
+      .toThrowError(expect.objectContaining({ code: "invalid_effort" }));
+    expect(() => service.setAgentRunDefaults("agent-one", { model: null, effort: null }))
+      .toThrowError(expect.objectContaining({ code: "invalid_request" }));
+
+    unsubscribe();
+    await service.stop();
+  });
+
+  it("pages within the exact provider to restore a persisted catalog default after restart", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const catalogModel = {
+      id: "catalog:model",
+      name: "Catalog Model",
+      provider: "provider",
+      providerLabel: "Provider",
+      reasoning: true,
+      effortLevels: ["low", "high"],
+    };
+    const fuzzyGlobalMatches = Array.from({ length: 100 }, (_, index) => ({
+      id: `catalog:model-${String(index).padStart(3, "0")}`,
+      name: `Fuzzy ${String(index)}`,
+      provider: "aaa",
+      providerLabel: "AAA",
+    }));
+    const earlierProviderModels = Array.from({ length: 100 }, (_, index) => ({
+      id: `earlier-${String(index).padStart(3, "0")}`,
+      name: `Earlier ${String(index)}`,
+      provider: "provider",
+      providerLabel: "Provider",
+    }));
+    const modelRequests: string[] = [];
+    type CatalogState = "seed" | "current" | "effort-drift" | "retired" | "endless" | "failure" | "timeout";
+    const create = async (state: CatalogState, generation = 1) => {
+      const fallbackFetch = operatorFetch();
+      const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (href.endsWith("/v1/info")) {
+          return Response.json({
+            schema: 1,
+            model: "provider/default",
+            effort: "medium",
+            models: ["provider/default"],
+            modelOptions: { "provider/default": { effortLevels: ["low", "medium", "high"] } },
+            providers: [
+              { id: "aaa", label: "AAA", modelCount: 100 },
+              { id: "provider", label: "Provider", modelCount: 101, configured: true },
+            ],
+            capabilities: { attachments: true },
+          });
+        }
+        if (/\/v1\/models(?:\?|$)/u.test(href)) {
+          modelRequests.push(href);
+          const request = new URL(href);
+          if (request.searchParams.has("q")) {
+            // This is the real producer's failure shape: the exact model is
+            // later than 100 fuzzy matches and therefore absent from search.
+            return Response.json({ models: fuzzyGlobalMatches, truncated: false });
+          }
+          if (state === "failure") return new Response("catalog unavailable", { status: 503 });
+          if (state === "timeout") {
+            return new Promise<Response>((_resolvePromise, reject) => {
+              if (init?.signal?.aborted === true) reject(init.signal.reason);
+              else init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+            });
+          }
+          if (state === "seed") return Response.json({ models: [catalogModel], truncated: false });
+          if (request.searchParams.get("cursor") === null) {
+            return Response.json({
+              models: earlierProviderModels,
+              nextCursor: "provider-page-1",
+              truncated: true,
+            });
+          }
+          if (state === "retired") {
+            // A repeated cursor must terminate the bounded walk rather than
+            // refetching this stale page until the outer timeout fires.
+            return Response.json({
+              // Its flattened string equals the persisted reference, but the
+              // provider/id pair does not. Provider ids containing colons are
+              // invalid runtime providers and cannot win by string collision.
+              models: [{
+                id: "model",
+                name: "Colliding malformed provider",
+                provider: "provider:catalog",
+                providerLabel: "Malformed",
+              }],
+              nextCursor: "provider-page-1",
+              truncated: true,
+            });
+          }
+          if (state === "endless") {
+            const cursor = request.searchParams.get("cursor") ?? "page-0";
+            return Response.json({
+              models: earlierProviderModels.slice(0, 1),
+              nextCursor: `${cursor}-next`,
+              truncated: true,
+            });
+          }
+          return Response.json({
+            models: [{
+              ...catalogModel,
+              ...(state === "effort-drift" ? { effortLevels: ["low"] } : {}),
+            }],
+            truncated: false,
+          });
+        }
+        return fallbackFetch(input, init);
+      }) as typeof fetch;
+      return WebService.create({
+        stateDir,
+        discoveryIntervalMs: 0,
+        purgeIntervalMs: 0,
+        discoverImpl: async () => [fakeDiscoveredAgent(generation === 1 ? {} : {
+          source: {
+            ...fakeDiscoveredAgent().source,
+            pid: 123 + generation,
+            startedAt: `2026-07-${16 + generation}T09:00:00.000Z`,
+          },
+        })],
+        fetchImpl,
+      });
+    };
+
+    let service = await create("seed");
+    await service.agentModels("agent-one", { provider: "provider", limit: 50 });
+    service.setAgentRunDefaults("agent-one", { model: "provider:catalog:model", effort: "high" });
+    expect(service.createThread("agent-one")).toMatchObject({
+      runModel: "provider:catalog:model",
+      runEffort: "high",
+    });
+    await service.stop();
+
+    let requestStart = modelRequests.length;
+    service = await create("current");
+    let restartRequests = modelRequests.slice(requestStart).map((href) => new URL(href));
+    expect(restartRequests).toHaveLength(2);
+    expect(restartRequests.every((request) => request.searchParams.get("provider") === "provider")).toBe(true);
+    expect(restartRequests.every((request) => !request.searchParams.has("q"))).toBe(true);
+    expect(restartRequests[1]?.searchParams.get("cursor")).toBe("provider-page-1");
+    expect(service.createThread("agent-one")).toMatchObject({
+      runModel: "provider:catalog:model",
+      runEffort: "high",
+    });
+    await service.stop();
+
+    service = await create("current", 2);
+    expect(service.createThread("agent-one")).toMatchObject({
+      runModel: "provider:catalog:model",
+      runEffort: "high",
+    });
+    await service.stop();
+
+    service = await create("effort-drift", 3);
+    expect(() => service.createThread("agent-one"))
+      .toThrowError(expect.objectContaining({ code: "invalid_effort" }));
+    await service.stop();
+
+    requestStart = modelRequests.length;
+    service = await create("retired", 4);
+    restartRequests = modelRequests.slice(requestStart).map((href) => new URL(href));
+    expect(restartRequests).toHaveLength(2);
+    expect(() => service.createThread("agent-one"))
+      .toThrowError(expect.objectContaining({ code: "invalid_model" }));
+    await service.stop();
+
+    requestStart = modelRequests.length;
+    service = await create("endless", 5);
+    expect(modelRequests.slice(requestStart)).toHaveLength(5);
+    expect(() => service.createThread("agent-one"))
+      .toThrowError(expect.objectContaining({ code: "invalid_model" }));
+    await service.stop();
+
+    service = await create("failure", 5);
+    expect(() => service.createThread("agent-one"))
+      .toThrowError(expect.objectContaining({ code: "invalid_model" }));
+    await service.stop();
+
+    service = await create("timeout", 6);
+    expect(() => service.createThread("agent-one"))
+      .toThrowError(expect.objectContaining({ code: "invalid_model" }));
+    await service.stop();
+  });
+
+  it("restores a bare persisted model by bounded exact provider traversal when global search is full", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const fuzzy = Array.from({ length: 100 }, (_, index) => ({
+      id: `bare-model-${String(index).padStart(3, "0")}`,
+      name: `Bare fuzzy ${String(index)}`,
+      provider: "aaa",
+      providerLabel: "AAA",
+    }));
+    let seed = true;
+    const requests: URL[] = [];
+    const create = async () => {
+      const fallbackFetch = operatorFetch();
+      const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (href.endsWith("/v1/info")) {
+          return Response.json({
+            schema: 1,
+            model: "provider/default",
+            models: ["provider/default"],
+            providers: [
+              { id: "aaa", label: "AAA", modelCount: 100 },
+              { id: "target", label: "Target", modelCount: 101, configured: true },
+            ],
+            capabilities: { attachments: true },
+          });
+        }
+        if (/\/v1\/models(?:\?|$)/u.test(href)) {
+          const request = new URL(href);
+          requests.push(request);
+          if (seed) {
+            return Response.json({
+              models: [{ id: "bare-model", name: "Bare Model", provider: "target", providerLabel: "Target" }],
+              truncated: false,
+            });
+          }
+          if (request.searchParams.has("q")) return Response.json({ models: fuzzy, truncated: false });
+          if (request.searchParams.get("provider") === "aaa") return Response.json({ models: fuzzy, truncated: false });
+          if (request.searchParams.get("cursor") === null) {
+            return Response.json({ models: fuzzy, nextCursor: "target-page-1", truncated: true });
+          }
+          return Response.json({
+            models: [{ id: "bare-model", name: "Bare Model", provider: "target", providerLabel: "Target" }],
+            truncated: false,
+          });
+        }
+        return fallbackFetch(input, init);
+      }) as typeof fetch;
+      return WebService.create({
+        stateDir,
+        discoveryIntervalMs: 0,
+        purgeIntervalMs: 0,
+        discoverImpl: async () => [fakeDiscoveredAgent()],
+        fetchImpl,
+      });
+    };
+
+    let service = await create();
+    await service.agentModels("agent-one", { provider: "target", limit: 100 });
+    service.setAgentRunDefaults("agent-one", { model: "bare-model", effort: null });
+    await service.stop();
+
+    seed = false;
+    const requestStart = requests.length;
+    service = await create();
+    const restartRequests = requests.slice(requestStart);
+    expect(restartRequests.map((request) => request.searchParams.get("provider")))
+      .toEqual([null, "aaa", "target", "target"]);
+    expect(restartRequests[0]?.searchParams.get("q")).toBe("bare-model");
+    expect(restartRequests.at(-1)?.searchParams.get("cursor")).toBe("target-page-1");
+    expect(service.createThread("agent-one")).toMatchObject({ runModel: "bare-model", runEffort: null });
+    await service.stop();
+  });
+
   /**
    * Every listing event a write emitted, reduced to the conversation its
    * PAYLOAD names -- `undefined` for one that names none, which is the whole
@@ -2114,6 +2408,7 @@ describe("WebService", () => {
     });
     first.store.replaceAgents([{
       sourceId: "agent-one", label: "Agent", status: "online", supportsAttachments: true,
+      runSettings: { config: {}, override: null, effective: { modelSource: "config", effortSource: "config" } },
       updatedAt: new Date().toISOString(),
     }]);
     const thread = first.store.createThread("agent-one");

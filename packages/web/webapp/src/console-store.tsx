@@ -55,7 +55,7 @@ interface ConsoleStoreValue {
   readonly hiddenOfflineAgentCount: number;
   readonly model: string;
   readonly effort: string;
-  /** What the next turn will actually run on, override or agent default. */
+  /** What this thread, or the next draft thread, will actually run on. */
   readonly effectiveModel: string;
   readonly effectiveEffort: string;
   /** True while this conversation overrides what the agent would start with. */
@@ -73,6 +73,8 @@ interface ConsoleStoreValue {
   readonly hasOlderMessages: boolean;
   readonly selectAgent: (sourceId: string) => void;
   readonly setAgentPinned: (sourceId: string, pinned: boolean) => Promise<void>;
+  readonly setAgentRunDefaults: (model: string | null, effort: string | null) => Promise<void>;
+  readonly clearAgentRunDefaults: () => Promise<void>;
   readonly selectThread: (threadId: string) => void;
   readonly createThread: () => Promise<ThreadSummary>;
   readonly renameThread: (threadId: string, title: string) => Promise<void>;
@@ -2466,8 +2468,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (!selectedAgentId) throw new Error("Select an agent before starting a conversation.");
     try {
       const issuedAt = removedThreadsRef.current.epoch();
+      const draftPreferenceKey = preferenceKeyForThread(selectedAgentId, null);
+      const runConfig = {
+        ...(Object.hasOwn(modelByContext, draftPreferenceKey)
+          ? { model: modelByContext[draftPreferenceKey] || null }
+          : {}),
+        ...(Object.hasOwn(effortByContext, draftPreferenceKey)
+          ? { effort: effortByContext[draftPreferenceKey] || null }
+          : {}),
+      };
       const thread = await boundedRequest(
-        (signal) => api.createThread(selectedAgentId, signal),
+        (signal) => api.createThread(selectedAgentId, runConfig, signal),
       );
       // The server commits and emits `threads.changed` before this POST
       // answers, so by the time it does the console may have admitted this
@@ -2478,17 +2489,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       if (!admitThread(removedThreadsRef.current, thread, issuedAt)) {
         throw new Error("This conversation was deleted.");
       }
-      const draftPreferenceKey = preferenceKeyForThread(selectedAgentId, null);
-      const threadPreferenceKey = preferenceKeyForThread(selectedAgentId, thread.id);
       setModelByContext((current) => {
         if (current[draftPreferenceKey] === undefined) return current;
-        const next = { ...current, [threadPreferenceKey]: current[draftPreferenceKey] ?? "" };
+        const next = { ...current };
         delete next[draftPreferenceKey];
         return next;
       });
       setEffortByContext((current) => {
         if (current[draftPreferenceKey] === undefined) return current;
-        const next = { ...current, [threadPreferenceKey]: current[draftPreferenceKey] ?? "" };
+        const next = { ...current };
         delete next[draftPreferenceKey];
         return next;
       });
@@ -2511,7 +2520,40 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setActionError(errorMessage(createError));
       throw createError;
     }
-  }, [selectedAgentId]);
+  }, [effortByContext, modelByContext, selectedAgentId]);
+
+  const applyAgentUpdate = useCallback((agent: AgentSummary) => {
+    setBootstrap((current) => current === null
+      ? current
+      : {
+          ...current,
+          agents: current.agents.map((item) => item.sourceId === agent.sourceId ? agent : item),
+        });
+  }, []);
+
+  const setAgentRunDefaults = useCallback(async (model: string | null, effort: string | null) => {
+    if (!selectedAgentId) throw new Error("Select an agent before changing its defaults.");
+    try {
+      const agent = await api.setAgentRunDefaults(selectedAgentId, { model, effort });
+      applyAgentUpdate(agent);
+      setActionError(null);
+    } catch (settingsError) {
+      setActionError(errorMessage(settingsError));
+      throw settingsError;
+    }
+  }, [applyAgentUpdate, selectedAgentId]);
+
+  const clearAgentRunDefaults = useCallback(async () => {
+    if (!selectedAgentId) throw new Error("Select an agent before changing its defaults.");
+    try {
+      const agent = await api.clearAgentRunDefaults(selectedAgentId);
+      applyAgentUpdate(agent);
+      setActionError(null);
+    } catch (settingsError) {
+      setActionError(errorMessage(settingsError));
+      throw settingsError;
+    }
+  }, [applyAgentUpdate, selectedAgentId]);
 
   const fetchThreadSummary = useCallback(async (threadId: string): Promise<ThreadSummary> => {
     const known = threads.find((candidate) => candidate.id === threadId) ??
@@ -2906,6 +2948,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const preferenceKey = selectedAgentId
     ? preferenceKeyForThread(selectedAgentId, selectedThreadId)
     : "";
+  const localModelPresent = preferenceKey !== "" && Object.hasOwn(modelByContext, preferenceKey);
+  const localEffortPresent = preferenceKey !== "" && Object.hasOwn(effortByContext, preferenceKey);
   // Overrides live on the thread (persisted by the server). Browser-local
   // prefs survive only for threads that have not been migrated yet, which keeps
   // the one-time PATCH that adopts them from ever overriding a real server
@@ -2933,19 +2977,29 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     catalogModels,
   );
   const model = validatedPreference.model;
-  const effectiveModel = selectedAgent
-    ? effectiveModelForAgent(selectedAgent, model) ?? ""
-    : "";
+  const configModel = selectedAgent ? effectiveModelForAgent(selectedAgent, "") ?? "" : "";
+  const draftInheritsWebModel = selectedThread === null && !localModelPresent;
+  const inheritedModel = draftInheritsWebModel
+    ? selectedAgent?.runSettings.effective.model ?? configModel
+    : configModel;
+  const effectiveModel = model || inheritedModel;
   const effortOptions = effortLevelsForAgentModel(
     selectedAgent,
     effectiveModel,
     findCatalogModel(catalogModels, effectiveModel),
   );
   const effort = validatedPreference.effort;
-  const effectiveEffort = effort || selectedAgent?.defaultEffort || "";
+  const configEffort = selectedAgent?.defaultEffort ?? "";
+  const draftInheritsWebEffort = selectedThread === null && !localEffortPresent;
+  const inheritedEffort = draftInheritsWebEffort
+    ? selectedAgent?.runSettings.effective.effort ?? configEffort
+    : configEffort;
+  const effectiveEffort = effort || inheritedEffort;
   // An override is what the operator chose for THIS conversation, as opposed to
   // whatever the agent would otherwise start with.
-  const hasRunOverride = model.length > 0 || effort.length > 0;
+  const hasRunOverride = selectedThread === null
+    ? localModelPresent || localEffortPresent
+    : model.length > 0 || effort.length > 0;
 
   useEffect(() => {
     if (!preferenceKey || serverOverrideActive) return;
@@ -3148,12 +3202,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         nextEffectiveModel,
         findCatalogModel(catalogModels, nextEffectiveModel),
       );
-      setEffortByContext((current) => ({
-        ...current,
-        [preferenceKey]: nextEfforts.includes(current[preferenceKey] ?? "")
-          ? (current[preferenceKey] ?? "")
-          : "",
-      }));
+      setEffortByContext((current) => {
+        const authored = Object.hasOwn(current, preferenceKey);
+        const candidate = authored
+          ? current[preferenceKey] ?? ""
+          : selectedAgent?.runSettings.effective.effort ?? "";
+        if (candidate === "" || nextEfforts.includes(candidate)) return current;
+        // Deliberately materialize explicit null only when the inherited or
+        // authored effort cannot run on the newly selected draft model.
+        return { ...current, [preferenceKey]: "" };
+      });
     },
     [
       catalogModels,
@@ -3317,6 +3375,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       hasOlderMessages,
       selectAgent,
       setAgentPinned,
+      setAgentRunDefaults,
+      clearAgentRunDefaults,
       selectThread,
       createThread,
       renameThread,
@@ -3348,6 +3408,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       archiveThread,
       bootstrap,
       cancelTurn,
+      clearAgentRunDefaults,
       connection,
       createThread,
       cronLoading,
@@ -3389,6 +3450,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       sendLiveInput,
       setEffort,
       setAgentPinned,
+      setAgentRunDefaults,
       setModel,
       showArchived,
       showOfflineAgents,

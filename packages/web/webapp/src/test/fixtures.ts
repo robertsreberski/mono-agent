@@ -41,6 +41,11 @@ export const agent = (
   supportsAttachments: true,
   models: ["provider/model"],
   defaultModel: "provider/model",
+  runSettings: {
+    config: { model: "provider/model" },
+    override: null,
+    effective: { model: "provider/model", modelSource: "config", effortSource: "config" },
+  },
   updatedAt: "2026-07-17T10:00:00.000Z",
   ...overrides,
 });

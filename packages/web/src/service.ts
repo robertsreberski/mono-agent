@@ -34,11 +34,14 @@ import {
   WEB_MAX_TURN_ATTACHMENT_BYTES,
   WEB_STAGED_UPLOAD_TTL_MS,
   type CreateWebUploadInput,
+  type CreateWebThreadInput,
   type PatchWebAgentInput,
   type PatchWebThreadInput,
+  type PutWebAgentRunSettingsInput,
   type StartWebTurnInput,
   type WebAgentsChangedPayload,
   type WebAgentSummary,
+  type WebAgentProvider,
   type WebAttachment,
   type WebBootstrap,
   type WebBootstrapScope,
@@ -105,6 +108,10 @@ const INFO_TIMEOUT_MS = 2_500;
 const ASK_DISCOVERY_TIMEOUT_MS = 120_000;
 /** Bounded per-agent catalog-admitted model refs; beyond it, oldest go first. */
 const MODEL_CATALOG_CACHE_CAP = 2_048;
+/** Matches the browser picker: enough for today's 200-row provider ceiling,
+ * with slack for an older or independently implemented operator. */
+const MODEL_CATALOG_RESTORE_PAGE_SIZE = 100;
+const MODEL_CATALOG_RESTORE_PAGE_LIMIT = 5;
 const REPLY_ACCESS_TTL_MS = 10 * 60 * 1_000;
 /**
  * Raster types the console keeps its own copy of. `image/svg+xml` is absent on
@@ -466,6 +473,17 @@ interface CatalogCacheEntry {
   readonly models: Map<string, CatalogModelRecord>;
 }
 
+type PersistedCatalogTarget =
+  | {
+      readonly kind: "canonical";
+      readonly provider: string;
+      readonly modelId: string;
+    }
+  | {
+      readonly kind: "bare";
+      readonly modelId: string;
+    };
+
 export class WebService {
   readonly store: WebStore;
   private readonly options: CreateWebServiceOptions;
@@ -637,8 +655,22 @@ export class WebService {
       ?? null;
   }
 
-  createThread(sourceId: string): WebThread {
-    const thread = this.store.createThread(sourceId);
+  createThread(sourceId: string, input: Omit<CreateWebThreadInput, "sourceId"> = {}): WebThread {
+    const agent = this.store.getAgent(sourceId);
+    if (agent === undefined) {
+      throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
+    }
+    const inherited = agent.runSettings.override;
+    const model = input.model === undefined ? inherited?.model : input.model ?? undefined;
+    const effort = input.effort === undefined ? inherited?.effort : input.effort ?? undefined;
+    this.validateModelAndEffort(
+      sourceId,
+      agent,
+      model,
+      effort,
+      input.model === undefined && inherited?.model !== undefined,
+    );
+    const thread = this.store.createThread(sourceId, input);
     this.emitThread("threads.changed", { thread });
     return thread;
   }
@@ -998,6 +1030,30 @@ export class WebService {
     return agent;
   }
 
+  setAgentRunDefaults(sourceId: string, input: PutWebAgentRunSettingsInput): WebAgentSummary {
+    const agent = this.store.getAgent(sourceId);
+    if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    if (this.connections.get(sourceId) === undefined || agent.status === "offline") {
+      throw new WebConsoleError("agent_offline", "This agent is offline. Reconnect it before saving new defaults.", 409);
+    }
+    this.validateModelAndEffort(
+      sourceId,
+      agent,
+      input.model ?? undefined,
+      input.effort ?? undefined,
+      true,
+    );
+    const updated = this.store.setAgentRunOverride(sourceId, input);
+    this.emit("agents.changed");
+    return updated;
+  }
+
+  clearAgentRunDefaults(sourceId: string): WebAgentSummary {
+    const agent = this.store.clearAgentRunOverride(sourceId);
+    this.emit("agents.changed");
+    return agent;
+  }
+
   agentSkills(sourceId: string): WebSkillRegistry {
     const agent = this.store.getAgent(sourceId);
     if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
@@ -1104,17 +1160,7 @@ export class WebService {
     // the reply -- fetched from a process that is gone -- was written straight
     // into the freshly reconciled map, where `source: "page"` overwrites
     // unconditionally. Generation 1's ladder then judged generation 2's turns.
-    this.admitCatalogRefs(sourceId, generation, page.models.flatMap((model) => {
-      const record: CatalogModelRecord = { source: "page", efforts: advertisedEffortLevels(model) };
-      // The wire carries provider-local ids while every selection surface
-      // speaks the canonical `<provider>:<model>` reference. Admit both, or a
-      // turn is judged against metadata the page did advertise but under a
-      // name nothing ever asks for.
-      const reference = model.provider ? `${model.provider}:${model.id}` : model.id;
-      const entries: (readonly [string, CatalogModelRecord])[] = [[model.id, record]];
-      if (reference !== model.id) entries.push([reference, record]);
-      return entries;
-    }));
+    this.admitModelPage(sourceId, generation, page);
     return page;
   }
 
@@ -2120,6 +2166,13 @@ export class WebService {
         const info = await client.info(AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]));
         nextConnections.set(agent.source.sourceId, { client, info });
         this.seedModelCatalogFromOptions(agent.source.sourceId, generation, info.modelOptions);
+        await this.restorePersistedModelAdmission(
+          client,
+          agent.source.sourceId,
+          generation,
+          info.providers,
+          signal,
+        );
         const efforts = collectEfforts(info);
         return {
           sourceId: agent.source.sourceId,
@@ -2134,6 +2187,7 @@ export class WebService {
           ...(info.effort === undefined ? {} : { defaultEffort: info.effort }),
           ...(efforts.length === 0 ? {} : { efforts }),
           ...(info.modelOptions === undefined ? {} : { modelOptions: info.modelOptions }),
+          runSettings: configRunSettings(info.model, info.effort),
           ...(info.providers === undefined ? {} : { providers: info.providers }),
           ...(info.cron === undefined ? {} : { cron: info.cron }),
           ...(info.supportsAskById ? { supportsAskById: true } : {}),
@@ -2468,6 +2522,126 @@ export class WebService {
     );
   }
 
+  /**
+   * A catalog-only web default outlives this process, while the admission cache
+   * deliberately does not. Revalidate that one persisted ref against the live
+   * generation during discovery so first-use thread creation never depends on
+   * a browser having opened the model picker. An exact match is mandatory: a
+   * retired ref remains unadmitted even if the search returns close names.
+   */
+  private async restorePersistedModelAdmission(
+    client: OperatorClient,
+    sourceId: string,
+    generation: string,
+    providers: readonly WebAgentProvider[] | undefined,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const model = this.store.getAgent(sourceId)?.runSettings.override?.model;
+    if (model === undefined || this.modelCatalogCache.get(sourceId)?.models.has(model) === true) return;
+    const separator = model.indexOf(":");
+    // The runtime wire makes only the first colon structural: provider ids may
+    // not contain one, while opaque model ids commonly do. Keeping that exact
+    // split also prevents a malformed colon-bearing provider from colliding
+    // with a legitimate provider plus colon-bearing model id.
+    const target: PersistedCatalogTarget = separator > 0 && separator < model.length - 1
+      ? {
+          kind: "canonical",
+          provider: model.slice(0, separator),
+          modelId: model.slice(separator + 1),
+        }
+      : { kind: "bare", modelId: model };
+    const boundedSignal = AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]);
+    try {
+      if (target.kind === "canonical") {
+        await this.restorePersistedModelFromProvider(
+          client,
+          sourceId,
+          generation,
+          target.provider,
+          target,
+          boundedSignal,
+        );
+        return;
+      }
+
+      // Bare ids have no provider address. Keep the cheap global search, but
+      // accept only an exact id; if its 100-row fuzzy cap hides the target,
+      // traverse the bounded provider window advertised in `/v1/info`.
+      const search = await client.models({
+        q: target.modelId,
+        limit: MODEL_CATALOG_RESTORE_PAGE_SIZE,
+        signal: boundedSignal,
+      });
+      if (this.admitModelPage(sourceId, generation, search, target)) return;
+      for (const provider of new Set((providers ?? []).map((entry) => entry.id))) {
+        if (await this.restorePersistedModelFromProvider(
+          client,
+          sourceId,
+          generation,
+          provider,
+          target,
+          boundedSignal,
+        )) return;
+      }
+    } catch (error) {
+      this.options.logger?.debug?.("Persisted web model default could not be revalidated.", {
+        sourceId,
+        error: errorMessage(error),
+      });
+    }
+  }
+
+  private async restorePersistedModelFromProvider(
+    client: OperatorClient,
+    sourceId: string,
+    generation: string,
+    provider: string,
+    target: PersistedCatalogTarget,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    let cursor: string | undefined;
+    const seenCursors = new Set<string>();
+    for (let pageIndex = 0; pageIndex < MODEL_CATALOG_RESTORE_PAGE_LIMIT; pageIndex += 1) {
+      if (this.modelCatalogCache.get(sourceId)?.generation !== generation) return false;
+      const page = await client.models({
+        provider,
+        ...(cursor === undefined ? {} : { cursor }),
+        limit: MODEL_CATALOG_RESTORE_PAGE_SIZE,
+        signal,
+      });
+      if (this.modelCatalogCache.get(sourceId)?.generation !== generation) return false;
+      if (this.admitModelPage(sourceId, generation, page, target)) return true;
+      const nextCursor = page.truncated ? page.nextCursor : undefined;
+      if (nextCursor === undefined || nextCursor.length === 0 || seenCursors.has(nextCursor)) return false;
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+    return false;
+  }
+
+  private admitModelPage(
+    sourceId: string,
+    generation: string | undefined,
+    page: WebModelPage,
+    exactTarget?: PersistedCatalogTarget,
+  ): boolean {
+    const refs = page.models.flatMap((model) => {
+      const record: CatalogModelRecord = { source: "page", efforts: advertisedEffortLevels(model) };
+      // The wire carries provider-local ids while every selection surface
+      // speaks the canonical `<provider>:<model>` reference. Admit both, or a
+      // turn is judged against metadata the page did advertise but under a
+      // name nothing ever asks for.
+      const reference = model.provider ? `${model.provider}:${model.id}` : model.id;
+      if (exactTarget?.kind === "canonical"
+        && (model.provider !== exactTarget.provider || model.id !== exactTarget.modelId)) return [];
+      if (exactTarget?.kind === "bare" && model.id !== exactTarget.modelId) return [];
+      const entries: (readonly [string, CatalogModelRecord])[] = [[model.id, record]];
+      if (reference !== model.id) entries.push([reference, record]);
+      return entries;
+    });
+    return refs.length > 0 && this.admitCatalogRefs(sourceId, generation, refs);
+  }
+
   private admitModelRef(
     entries: Map<string, CatalogModelRecord>,
     ref: string,
@@ -2495,8 +2669,11 @@ export class WebService {
     agent: WebAgentSummary,
     model: string | undefined,
     effort: string | undefined,
+    strictModel = false,
   ): void {
-    if (model !== undefined && !this.modelAdmitted(sourceId, agent, model)) {
+    if (model !== undefined && !(strictModel
+      ? this.modelStrictlyAdmitted(sourceId, agent, model)
+      : this.modelAdmitted(sourceId, agent, model))) {
       throw new WebConsoleError("invalid_model", "This agent did not advertise the selected model.", 400);
     }
     // Both ends resolve a blank selection to the same route -- the browser fell
@@ -2518,15 +2695,18 @@ export class WebService {
   }
 
   private modelAdmitted(sourceId: string, agent: WebAgentSummary, model: string): boolean {
+    if (this.modelStrictlyAdmitted(sourceId, agent, model)) return true;
+    // Tier 3: syntactic `<provider>:<model>` floor. Existing per-conversation
+    // selections retain this compatibility path; durable web defaults do not.
+    return modelPassesSyntacticFloor(model);
+  }
+
+  private modelStrictlyAdmitted(sourceId: string, agent: WebAgentSummary, model: string): boolean {
     // Tier 1: the configured-route shortlist — unchanged, always allowed.
     if (agent.models === undefined ? model === agent.defaultModel : agent.models.includes(model)) return true;
     // Tier 2: a model reached only through the catalog cache.
     const cached = this.modelCatalogCache.get(sourceId);
-    if (cached !== undefined && cached.models.has(model)) return true;
-    // Tier 3: syntactic `<provider>:<model>` floor. The web package has no pi-ai
-    // access, so a well-formed ref passes here and the agent itself is the real
-    // gate at turn time.
-    return modelPassesSyntacticFloor(model);
+    return cached !== undefined && cached.models.has(model);
   }
 
   private authorizeReplyPart<T extends "attachment" | "mcp_app">(
@@ -3023,7 +3203,24 @@ function offlineSummary(agent: DiscoveredOperatorAgent, generation: string): Web
     pinned: false,
     health: agent.source.health,
     supportsAttachments: false,
+    runSettings: configRunSettings(),
     updatedAt: agent.source.updatedAt,
+  };
+}
+
+function configRunSettings(model?: string, effort?: string): WebAgentSummary["runSettings"] {
+  return {
+    config: {
+      ...(model === undefined ? {} : { model }),
+      ...(effort === undefined ? {} : { effort }),
+    },
+    override: null,
+    effective: {
+      ...(model === undefined ? {} : { model }),
+      modelSource: "config",
+      ...(effort === undefined ? {} : { effort }),
+      effortSource: "config",
+    },
   };
 }
 

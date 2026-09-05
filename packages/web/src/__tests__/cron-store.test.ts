@@ -25,6 +25,11 @@ function agent(sourceId = "agent-one"): WebAgentSummary {
     defaultModel: "provider/default",
     efforts: ["low", "high"],
     modelOptions: { "provider/default": { effortLevels: ["low", "high"] } },
+    runSettings: {
+      config: { model: "provider/default" },
+      override: null,
+      effective: { model: "provider/default", modelSource: "config", effortSource: "config" },
+    },
     updatedAt: "2026-08-14T10:00:00.000Z",
   };
 }
