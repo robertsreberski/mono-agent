@@ -29,6 +29,8 @@ describe("configured agent runtime Pi auth", () => {
     expect(createPiOAuthApiKeyResolverMock).toHaveBeenCalledWith({ path: "/tmp/pi-auth.json" });
     expect(createMonoRuntimeMock).toHaveBeenCalledWith({
       workspace: "/repo",
+      additionalReadRoots: ["/framework", "/worktrees"],
+      additionalWriteRoots: ["/worktrees"],
       qaOutputDir: "/repo/.mono-agent/artifacts",
       resolvePiApiKey,
       sandboxEngine: expect.objectContaining({ id: "srt" }),
@@ -51,6 +53,10 @@ function monoConfig(piAuthPath: string): MonoAgentConfig {
     tools: {
       allowedTools: [],
       disallowedTools: [],
+      filesystem: {
+        readableRoots: ["/framework", "/worktrees"],
+        writableRoots: ["/worktrees"],
+      },
     },
     artifacts: {
       dir: "/repo/.mono-agent/artifacts",

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { encode as encodeBmp } from "bmp-ts";
 import sharp from "sharp";
@@ -493,6 +493,37 @@ describe("ai tool helpers", () => {
     expect(grepResult).toContain("Path not allowed");
   });
 
+  it("allows configured file-tool roots without admitting unrelated or symlink-escaped paths", async () => {
+    const workspace = tempWorkspace();
+    const ownedWorktrees = mkdtempSync(join(homedir(), ".mono-agent-owned-worktrees-"));
+    const mainCheckout = mkdtempSync(join(homedir(), ".mono-agent-main-checkout-"));
+    const unrelated = mkdtempSync(join(homedir(), ".mono-agent-unrelated-"));
+    tempDirs.push(ownedWorktrees, mainCheckout, unrelated);
+    writeFile(join(ownedWorktrees, "feature", "source.ts"), "owned needle");
+    writeFile(join(mainCheckout, "source.ts"), "main needle");
+    writeFile(join(unrelated, "secret.ts"), "outside needle");
+    symlinkSync(unrelated, join(ownedWorktrees, "escaped"), "dir");
+
+    configureToolRuntime({
+      workspace,
+      additionalReadRoots: [mainCheckout, ownedWorktrees],
+      additionalWriteRoots: [ownedWorktrees],
+    });
+
+    expect(await grepToolImpl({ path: ownedWorktrees, pattern: "owned needle" }))
+      .toContain("feature/source.ts");
+    expect(await readToolImpl({ file_path: join(mainCheckout, "source.ts") }))
+      .toContain("main needle");
+    expect(await writeToolImpl({ file_path: join(ownedWorktrees, "feature", "new.ts"), content: "ok" }))
+      .toContain("Successfully wrote");
+    expect(await writeToolImpl({ file_path: join(mainCheckout, "new.ts"), content: "no" }))
+      .toContain("Path not allowed");
+    expect(await grepToolImpl({ path: unrelated, pattern: "outside needle" }))
+      .toContain("Path not allowed");
+    expect(await grepToolImpl({ path: join(ownedWorktrees, "escaped"), pattern: "outside needle" }))
+      .toContain("Path not allowed");
+  });
+
   it("uses sandbox policy roots instead of permissive default roots", async () => {
     const root = tempWorkspace();
     const outsideTmpFile = join(resolve("/tmp"), `mono-agent-outside-${process.pid}.txt`);
@@ -500,6 +531,8 @@ describe("ai tool helpers", () => {
 
     configureToolRuntime({
       workspace: root,
+      additionalReadRoots: [resolve("/tmp")],
+      additionalWriteRoots: [resolve("/tmp")],
       sandboxPolicy: failClosedSandboxPolicy({ root }),
     });
 

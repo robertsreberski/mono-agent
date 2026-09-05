@@ -244,7 +244,8 @@ export interface ChannelAskSnapshot {
   readonly activeQuestionIndex: number;
   readonly status: ChannelAskStatus;
   readonly createdAt: string;
-  readonly expiresAt: string;
+  /** Null when the operator explicitly configured an unbounded human wait. */
+  readonly expiresAt: string | null;
 }
 
 export interface ChannelAskSubmission {

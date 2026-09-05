@@ -63,6 +63,10 @@ describe("layerJsonOntoEnv", () => {
         tools: {
           allowedTools: ["Read"],
           disallowedTools: ["Bash"],
+          filesystem: {
+            readableRoots: ["../framework,archive", "../worktrees"],
+            writableRoots: ["../worktrees"],
+          },
           mcpRequestContextServers: ["transcribe"],
           continuationServers: ["a8c-control"],
           mcpCallTimeoutMs: 150000,
@@ -109,6 +113,10 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MEMORY_PATH).toBe(".mono-agent/memory");
     expect(layered.MONO_AGENT_ALLOWED_TOOLS).toBe("Read");
     expect(layered.MONO_AGENT_DISALLOWED_TOOLS).toBe("Bash");
+    expect(JSON.parse(layered.MONO_AGENT_FILE_TOOL_READABLE_ROOTS ?? "[]"))
+      .toEqual(["../framework,archive", "../worktrees"]);
+    expect(JSON.parse(layered.MONO_AGENT_FILE_TOOL_WRITABLE_ROOTS ?? "[]"))
+      .toEqual(["../worktrees"]);
     expect(layered.MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS).toBe("transcribe");
     expect(layered.MONO_AGENT_CONTINUATION_SERVERS).toBe("a8c-control");
     expect(layered.MONO_AGENT_MCP_CALL_TIMEOUT_MS).toBe("150000");
@@ -1033,6 +1041,30 @@ describe("loadMonoAgentConfigWithSources", () => {
     );
     const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
     expect(config.tools.allowedTools).toEqual(["*"]);
+  });
+
+  it("preserves commas inside JSON file-tool root paths", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        tools: {
+          filesystem: {
+            readableRoots: ["projects/repo,archive"],
+            writableRoots: ["output/repo,archive"],
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    expect(config.tools.filesystem).toEqual({
+      readableRoots: [join(dir, "projects/repo,archive")],
+      writableRoots: [join(dir, "output/repo,archive")],
+    });
   });
 
   it("resolves an explicit empty tools.allowedTools to [] (chat-only)", async () => {

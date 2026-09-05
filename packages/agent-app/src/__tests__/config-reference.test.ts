@@ -84,6 +84,8 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "memory.consolidation.cron": "string",
   "tools.allowedTools": "string[]",
   "tools.disallowedTools": "string[]",
+  "tools.filesystem.readableRoots": "string[]",
+  "tools.filesystem.writableRoots": "string[]",
   "tools.mcpConfigPath": "string",
   "tools.mcpRequestContextServers": "string[]",
   "tools.continuationServers": "string[]",
@@ -280,6 +282,7 @@ describe("config reference", () => {
     expect(schemaNode(schema, "context").required).toEqual(["identityPath"]);
     expect(schemaNode(schema, "concurrency", "maxConcurrentRuns").type).toBe("integer");
     expect(schemaNode(schema, "concurrency", "maxPendingRuns").type).toBe("integer");
+    expect(schemaNode(schema, "interaction", "askUser", "timeoutMs").type).toEqual(["integer", "null"]);
     expect(schemaNode(schema, "memory", "embeddings", "circuitBreaker", "failureThreshold").type).toBe("integer");
     expect(schemaNode(schema, "cron", "jobs").items?.required).toEqual(["id", "expression", "prompt"]);
     expect(schemaNode(schema, "webhook", "endpoints").items?.required).toEqual(["path"]);

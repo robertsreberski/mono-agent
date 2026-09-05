@@ -1245,10 +1245,21 @@ describe("monitors service", () => {
 
     const { snapshot } = await readMonitorStore(stateDir);
     const record = snapshot.records.find((entry) => entry.monitorId === "mon-1");
-    // Cancelled, because shutdown terminated the watcher and observed it exit.
-    expect(record?.state).toBe("cancelled");
+    // Agent shutdown is the cause even when cancelling the watcher produces a
+    // clean, confirmed process exit before the final durable snapshot.
+    expect(record?.state).toBe("interrupted");
+    expect(record?.lastError?.code).toBe("monitor_agent_restarted");
+    expect(record?.terminalWakePending).toBe(true);
     expect(record?.droppedLines).toBeGreaterThanOrEqual(2);
     expect(record?.pendingLines).toBe(0);
+
+    wakes = [];
+    const restarted = await reopen();
+    await restarted.activateWakes();
+    await waitForWakes(1);
+    const recovery = JSON.parse(fenced(wakes[0]!.prompt));
+    expect(recovery.state).toBe("interrupted");
+    expect(recovery.error.code).toBe("monitor_agent_restarted");
   });
 
   it("refuses a handle that does not own its own process group", async () => {

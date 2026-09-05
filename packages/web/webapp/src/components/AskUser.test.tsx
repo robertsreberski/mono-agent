@@ -85,6 +85,17 @@ afterEach(() => {
 });
 
 describe("AskUser web form", () => {
+  it("does not locally expire a pending snapshot whose expiry is explicitly null", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2200-01-01T00:00:00.000Z"));
+    const noExpiry = { ...snapshot, expiresAt: null };
+    vi.spyOn(api, "pendingAsk").mockResolvedValue(noExpiry);
+    vi.spyOn(api, "ask").mockResolvedValue(noExpiry);
+    render(askUserTool());
+    expect(await screen.findByRole("button", { name: "Submit answers" })).toBeVisible();
+    expect(screen.queryByText("This question expired.")).not.toBeInTheDocument();
+  });
+
   it("renders all questions together and submits option plus custom answers atomically", async () => {
     const answered: AskSnapshot = {
       ...snapshot,

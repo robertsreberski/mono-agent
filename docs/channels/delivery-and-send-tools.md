@@ -245,11 +245,17 @@ substitute for a local bind boundary.
   "already pending" result; consolidate related decisions into one call of up to
   five questions.
 - One timeout covers the whole interaction (default 10 min,
-  `interaction.askUser.timeoutMs`). The tool returns any answers already
-  submitted, identifies the remaining questions as unanswered, and treats a
-  later reply as a normal next turn. With no submitted answers, it reports that
-  the user did not answer. On an app restart pending asks degrade the same way.
-- The wait keeps the MCP call alive via progress notifications (see `tools.mcpCallTimeoutMs` / `tools.mcpCallMaxTotalTimeoutMs`).
+  `interaction.askUser.timeoutMs`). Set it to `null` when the interaction must
+  remain pending until the user answers, cancels, or the app stops; the
+  equivalent environment value is `MONO_AGENT_ASK_USER_TIMEOUT_MS=none`.
+  With a numeric timeout, the tool returns any answers already submitted,
+  identifies the remaining questions as unanswered, and treats a later reply
+  as a normal next turn. With no submitted answers, it reports that the user
+  did not answer. On an app restart pending asks degrade the same way.
+- The wait keeps the MCP call alive via progress notifications (see
+  `tools.mcpCallTimeoutMs`). A no-expiry AskUser is exempt only from the generic
+  `tools.mcpCallMaxTotalTimeoutMs` cap; cancellation and run shutdown still
+  abort it.
 - Opted project MCP children can POST `{key, message, state}` to `/v1/progress` using `MONO_AGENT_INTERACTION_PROGRESS_URL` / `MONO_AGENT_INTERACTION_PROGRESS_TOKEN`. The run-scoped bearer selects the producing conversation server-side, is revalidated after the body is read, and is revoked at cleanup. The bridge master bearer remains app-owned and is blanked in opted project MCP environments.
 
 When a blocking `AskUser` call is answered or expires, mono-agent stores its

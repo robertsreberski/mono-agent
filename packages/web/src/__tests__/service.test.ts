@@ -1591,6 +1591,48 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("keeps a no-expiry AskUser snapshot pending while bounding only its push delivery", async () => {
+    const instant = new Date("2026-08-13T08:00:00.000Z");
+    const pendingAsk = {
+      interactionId: "ask-no-expiry",
+      questions: [{
+        id: "q1",
+        header: "Review",
+        question: "Approve the change?",
+        options: [],
+        multiSelect: false,
+      }],
+      answers: [],
+      activeQuestionIndex: 0,
+      status: "pending",
+      createdAt: "2026-08-01T07:00:00.000Z",
+      expiresAt: null,
+    };
+    const service = await createService({
+      clock: () => instant,
+      fetchImpl: operatorFetch({ supportsAskUser: true, pendingAsk }),
+      pushDnsResolver: async () => [{ address: "203.0.114.10", family: 4 }],
+    });
+    const key = Buffer.alloc(65);
+    key[0] = 4;
+    await service.registerWebPushSubscription({
+      endpoint: "https://push.example.test/send/no-expiry-ask",
+      p256dh: key.toString("base64url"),
+      auth: Buffer.alloc(16, 8).toString("base64url"),
+      siteOrigin: "https://console.example.test",
+    });
+    const thread = service.createThread("agent-one");
+
+    await expect(service.pendingAsk(thread.id)).resolves.toMatchObject({
+      interactionId: "ask-no-expiry",
+      status: "pending",
+      expiresAt: null,
+    });
+    expect(service.store.webPushEventByLogicalKey("ask:ask-no-expiry")?.expiresAt)
+      .toBe("2026-08-14T08:00:00.000Z");
+    await service.stop();
+  });
+
   it("aborts and awaits an AskUser watcher before closing the store", async () => {
     let markAskStarted: (() => void) | undefined;
     const askStarted = new Promise<void>((resolvePromise) => { markAskStarted = resolvePromise; });

@@ -223,6 +223,10 @@ export interface MonoAgentConfigJson extends SettingsJson {
   readonly tools?: {
     readonly allowedTools?: readonly string[];
     readonly disallowedTools?: readonly string[];
+    readonly filesystem?: {
+      readonly readableRoots?: readonly string[];
+      readonly writableRoots?: readonly string[];
+    };
     readonly mcpConfigPath?: string;
     readonly mcpRequestContextServers?: readonly string[];
     readonly continuationServers?: readonly string[];

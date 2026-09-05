@@ -839,7 +839,11 @@ describe("createRouterRuntime — production fallback contracts", () => {
       chain: [modelRef("anthropic", "claude-sonnet-4-6")],
       resolveAttempt: () => ({ runtime: resolvedRuntime }),
     });
-    router.configureTools({ workspace: "/tmp/configured" });
+    router.configureTools({
+      workspace: "/tmp/configured",
+      additionalReadRoots: ["/tmp/framework", "/tmp/worktrees"],
+      additionalWriteRoots: ["/tmp/worktrees"],
+    });
     executeMock.mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
 
     const result = await router.run("sys", { messages: [] });
@@ -847,6 +851,8 @@ describe("createRouterRuntime — production fallback contracts", () => {
     expect(result.text).toBe("ok");
     expect(executeMock.mock.calls[0][1].toolContext).toMatchObject({
       workspace: "/tmp/configured",
+      additionalReadRoots: ["/tmp/framework", "/tmp/worktrees"],
+      additionalWriteRoots: ["/tmp/worktrees"],
       sandbox: passthroughSandbox,
     });
     expect(executeMock.mock.calls[0][1].toolContext.sandboxPolicy).toBeUndefined();
