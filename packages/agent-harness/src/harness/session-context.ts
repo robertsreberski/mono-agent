@@ -32,12 +32,22 @@ export interface SessionContextCapabilities {
  * tokens. An opted-in MCP server gets an opaque destination-bound claim
  * capability instead, and a model may promise a later reply only after such a
  * tool confirms that the continuation was registered.
+ *
+ * The one exception to "never the route" is an interactive console turn (the
+ * web console or the terminal TUI): its conversation id IS disclosed. There the
+ * id is the surface the user is already on rather than a route to a different
+ * one -- no send tool can target another `web:*` thread -- and host-side tools
+ * that bind work to the thread (background jobs, monitors, operator task
+ * records) need the model to quote it. Without it a console turn read as a
+ * scheduled/webhook run and an agent asked to start supervised work could only
+ * reply that it had no conversation to bind it to.
  */
 export function sessionContextBlock(
-  request: Pick<AgentHarnessRequest, "metadata" | "replyTo" | "surface">,
+  request: Pick<AgentHarnessRequest, "conversationId" | "metadata" | "replyTo" | "surface">,
   capabilities: SessionContextCapabilities = {},
 ): string {
-  const deliverable = request.replyTo !== undefined && !hasRequestDrivenTrigger(request.metadata);
+  const requestDriven = hasRequestDrivenTrigger(request.metadata);
+  const deliverable = request.replyTo !== undefined && !requestDriven;
   const memoryGuidance = capabilities.hostManagedMemory === true
     ? HOST_MANAGED_MEMORY_GUIDANCE
     : undefined;
@@ -51,6 +61,20 @@ export function sessionContextBlock(
       "You are handling an interactive push conversation. The host owns its exact channel and thread destination.",
       surface,
       `${surface === undefined ? NO_ROUTE_PROHIBITION : SURFACE_ROUTE_PROHIBITION} ${continuationPromise(capabilities.backgroundProcessJobs === true || capabilities.monitors === true)}`,
+      backgroundGuidance,
+      monitorGuidance,
+      memoryGuidance,
+    ].filter((part) => part !== undefined).join("\n\n");
+  }
+  const consoleKind = requestDriven ? undefined : consoleSurface(request.metadata);
+  if (consoleKind !== undefined) {
+    const identity = consoleConversationIdentity(request.conversationId);
+    const route = identity === undefined
+      ? CONSOLE_ROUTE_PROHIBITION
+      : `${identity} ${CONSOLE_ID_ROUTE_PROHIBITION}`;
+    return [
+      `You are handling an interactive console conversation on ${consoleSurfaceLabel(consoleKind)}. ${CONSOLE_AUDIENCE}`,
+      `${route} ${continuationPromise(capabilities.backgroundProcessJobs === true || capabilities.monitors === true)}`,
       backgroundGuidance,
       monitorGuidance,
       memoryGuidance,
@@ -81,10 +105,64 @@ function hasRequestDrivenTrigger(metadata: Record<string, unknown> | undefined):
   return metadata?.cron !== undefined || metadata?.webhook !== undefined;
 }
 
+type ConsoleSurface = "web" | "tui";
+
 /**
- * Said when the channel disclosed no surface. Byte-identical to the guidance
- * that shipped before surfaces existed, so a TUI, web, or custom-channel turn is
- * unchanged.
+ * The operator endpoint stamps `metadata.source` with the console client that
+ * submitted the turn (`web` for the web console, `tui` for the terminal TUI);
+ * `runSourceFromRequest` keys on the same values. Anything else -- `acp`,
+ * openai-api, a2a, a custom channel without a reply target -- stays
+ * request-driven, so a console is never inferred from a conversation id prefix.
+ */
+function consoleSurface(metadata: Record<string, unknown> | undefined): ConsoleSurface | undefined {
+  const source = metadata?.source;
+  return source === "web" || source === "tui" ? source : undefined;
+}
+
+/**
+ * The id sentence for a console turn, or undefined when the id is not disclosed.
+ *
+ * This line lands in the SYSTEM block, so only a host-issued token shape is
+ * ever rendered: one ASCII token of letters, digits and `. _ : # -`, at most 80
+ * characters -- `web:<uuid>`, `web:notification-<hex>`, `tui-<sourceId>`, an
+ * operator's `--conversation` value. Anything else (whitespace, quotes, markup,
+ * prose) is omitted outright, never sanitized: an id cannot carry instruction
+ * text into the block, and an inexact id is worse than none -- the model would
+ * quote it into a host tool that then binds nothing.
+ */
+function consoleConversationIdentity(conversationId: string): string | undefined {
+  if (!CONSOLE_CONVERSATION_ID_PATTERN.test(conversationId)) {
+    return undefined;
+  }
+  return `Conversation id: \`${conversationId}\`. ${CONSOLE_ID_PURPOSE}`;
+}
+
+/** Host-issued console conversation ids: a single bounded ASCII token. */
+const CONSOLE_CONVERSATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:#-]{0,79}$/u;
+
+function consoleSurfaceLabel(kind: ConsoleSurface): string {
+  return kind === "web" ? "the web console" : "the terminal console";
+}
+
+const CONSOLE_AUDIENCE =
+  "The person you are talking to reads your reply in this thread; the host routes it.";
+
+const CONSOLE_ID_PURPOSE =
+  "It names this conversation for host-side tools and operator commands that bind work to it (background jobs, monitors, task records); quote it exactly when such a tool asks for it.";
+
+/** Said after the id: the id locates the thread, it never addresses a delivery. */
+const CONSOLE_ID_ROUTE_PROHIBITION =
+  "It is not a delivery target: never use it, a callback URL, or a delivery token to send or redirect this turn's reply.";
+
+/** Said when the id was withheld; the route half of the rule still applies. */
+const CONSOLE_ROUTE_PROHIBITION =
+  "Never use a callback URL or delivery token to send or redirect this turn's reply.";
+
+/**
+ * Said when a push channel disclosed no surface. Byte-identical to the guidance
+ * that shipped before surfaces existed, so a custom-channel turn that sets only
+ * a reply target is unchanged. Console turns do not say this: they disclose
+ * their own conversation id, so the blanket rule would contradict the block.
  */
 const NO_ROUTE_PROHIBITION =
   "Never copy, request, infer, or pass a conversation id, channel id, callback URL, or delivery token.";

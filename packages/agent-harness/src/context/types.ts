@@ -49,8 +49,10 @@ export interface BuildContextInput {
   readonly core?: ContextBlockInput;
   /**
    * Live runtime facts about the current turn: whether it is a deliverable push
-   * conversation or a request-driven one, which surface it is on, and the
-   * per-message budget there. Never the route — see `sessionContextBlock`.
+   * conversation, an interactive console conversation, or a request-driven one,
+   * which surface it is on, and the per-message budget there. Never the route;
+   * the one id disclosed is a console thread's own conversation id — see
+   * `sessionContextBlock`.
    */
   readonly session?: ContextBlockInput;
   readonly memory?: ContextBlockInput | readonly ContextBlockInput[];
