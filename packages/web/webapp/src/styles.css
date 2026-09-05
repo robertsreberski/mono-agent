@@ -975,6 +975,13 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .activity-payload > span { color: var(--text-muted); font-size: 8.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .activity-payload pre { min-width: 0; max-width: 100%; max-height: 280px; margin: 0; padding: 8px 9px; overflow: auto; overscroll-behavior: contain; color: var(--text-soft); background: color-mix(in srgb, var(--app-bg) 60%, var(--surface)); border: 1px solid var(--line); border-radius: 8px; font-family: var(--font-mono); font-size: 10px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .activity-error { min-width: 0; display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; margin: 0; padding: 7px 9px; color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent); border-radius: 8px; font-size: 10.5px; line-height: 1.45; user-select: text; }
+/* A payload the server sent only the head of. Quiet by default -- most rows
+   are whole -- with the one control that fetches the rest sitting inline. */
+.activity-truncated { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: -2px 0 0; color: var(--text-muted); font-size: 10.5px; line-height: 1.45; }
+.activity-truncated button { padding: 3px 8px; color: var(--text-soft); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 999px; font: inherit; cursor: pointer; }
+@media (hover: hover) {
+  .activity-truncated button:hover { color: var(--text); background: var(--surface); }
+}
 .activity-thought { padding: 2px 12px 12px 34px; color: var(--text-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 
 @media (hover: hover) {

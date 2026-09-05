@@ -43,12 +43,14 @@ import {
   clusterSummary,
   failedLabel,
   toolVerb,
+  truncationProps,
 } from "./ActivityRow";
 import { finiteDuration, formatToolDuration } from "./duration";
 import { Icon } from "./Icon";
 import { MessageGallery } from "./ImageGallery";
 import { toolHistoryFailure } from "./tool-history";
 import { ProcessJobPart } from "./ProcessJob";
+import { useToolCallRepair } from "./tool-call-repair";
 import { SubagentPart, toolArgumentPreview } from "./Subagent";
 import { QuoteBlock } from "./assistant-ui/Quote";
 import { cronRunAnchor } from "./CronChannelHeader";
@@ -693,6 +695,8 @@ export function ToolFallback({
   toolCallId,
   artifact,
 }: ToolCallMessagePartProps) {
+  // Read before the AskUser branch: hooks cannot sit behind an early return.
+  const repairToolCall = useToolCallRepair();
   const envelope = toolCallArtifact(artifact);
   if (toolName === "AskUser") {
     return (
@@ -731,6 +735,7 @@ export function ToolFallback({
         resultIsError={isError}
         error={historyFailure}
         indented
+        {...truncationProps(envelope, toolCallId, repairToolCall)}
       />
     </ActivityRow>
   );
@@ -994,6 +999,7 @@ const asRecord = (value: unknown): Record<string, unknown> =>
  * individually expandable underneath so nothing is actually hidden.
  */
 function ToolClusterPart({ data }: DataMessagePartProps) {
+  const repairToolCall = useToolCallRepair();
   const payload = asRecord(data);
   const calls = Array.isArray(payload.calls) ? payload.calls : [];
   const failed = typeof payload.failedCount === "number" ? payload.failedCount : 0;
@@ -1033,6 +1039,9 @@ function ToolClusterPart({ data }: DataMessagePartProps) {
                 result={call.result}
                 resultIsError={isError}
                 error={historyFailure}
+                {...(typeof call.toolCallId === "string"
+                  ? truncationProps(artifact, call.toolCallId, repairToolCall)
+                  : {})}
               />
             </ActivityStep>
           );

@@ -1,7 +1,7 @@
 import { act, render, waitFor } from "@testing-library/react";
-import { useEffect } from "react";
+import { StrictMode, useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError } from "./api";
+import { api, ApiError, THREAD_PAGE_LIMIT } from "./api";
 import { resetServerClock, serverNow } from "./server-clock";
 import {
   CATALOG_TTL_MS,
@@ -12,6 +12,7 @@ import {
   REMOVED_THREAD_TTL_MS,
   RUN_PREFERENCES_STORAGE_KEY,
   SELECTED_AGENT_STORAGE_KEY,
+  SELECTED_THREADS_STORAGE_KEY,
   THREAD_LIST_REVALIDATE_DEBOUNCE_MS,
   THREAD_READ_TIMEOUT_MS,
   THREAD_WRITE_TIMEOUT_MS,
@@ -19,7 +20,15 @@ import {
 } from "./console-store";
 import type { RequestLanding } from "./console-store";
 import { agent, bootstrap, thread } from "./test/fixtures";
-import type { AgentSkillRegistry, AgentSummary, CronOverview, ThreadDetail, WebEvent } from "./types";
+import type {
+  AgentSkillRegistry,
+  AgentSummary,
+  CronOverview,
+  MessagePart,
+  ThreadDetail,
+  ThreadSummary,
+  WebEvent,
+} from "./types";
 
 // `importOriginal` so `ApiError` stays the REAL class: the store branches on
 // `instanceof ApiError` and on its status to tell a server that refused a
@@ -43,6 +52,7 @@ vi.mock("./api", async (importOriginal) => ({
     cronOverview: vi.fn(),
     cronRuns: vi.fn(),
     cronRun: vi.fn(),
+    toolCallPart: vi.fn(),
   },
 }));
 
@@ -2401,6 +2411,388 @@ describe("ConsoleStoreProvider integration", () => {
   });
 
   /**
+   * One bucket per bootstrap.
+   *
+   * A bootstrap used to carry EVERY agent's conversations -- 187 KB of a 219 KB
+   * payload on a 13-agent fleet -- and the sidebar then re-read the one bucket
+   * it actually shows. It now asks for that bucket and nothing else, which
+   * makes every other bucket something to go and fetch.
+   */
+  describe("one bucket per bootstrap", () => {
+    const alphaThread = thread("alpha-thread", "alpha");
+    const olderAlpha = thread("older-alpha", "alpha", { updatedAt: "2026-07-16T09:00:00.000Z" });
+    const betaThread = thread("beta-thread", "beta");
+    let eventSequence = 0;
+
+    const emit = (
+      type: WebEvent["type"],
+      extra: { readonly threadId?: string; readonly payload?: unknown } = {},
+    ) => {
+      eventSequence += 1;
+      act(() => FakeEventSource.latest?.emit(type, {
+        id: `bucket-event-${String(eventSequence)}`,
+        version: 1,
+        type,
+        at: "2026-08-14T09:00:00.000Z",
+        ...extra,
+      }));
+    };
+
+    const quiet = async (ms = 400) => {
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, ms); }); });
+    };
+
+    const openOnAlpha = async (
+      threads: readonly ThreadSummary[] = [alphaThread],
+      scope: { readonly threadsSourceId?: string | null; readonly threadsNextCursor?: string | null } = {},
+    ) => {
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        threads,
+        undefined,
+        { threadsSourceId: "alpha", ...scope },
+      ));
+      vi.mocked(api.thread).mockImplementation(async (threadId) => detail(
+        [alphaThread, olderAlpha, betaThread].find((item) => item.id === threadId) ?? alphaThread,
+        "hello",
+      ));
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedAgentId).toBe("alpha"));
+      return store;
+    };
+
+    it("asks for the bucket it is about to show, and pages it from the cursor it came with", async () => {
+      const store = await openOnAlpha([alphaThread], { threadsNextCursor: "cursor-1" });
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      await quiet();
+
+      expect(api.bootstrap).toHaveBeenCalledWith(expect.any(AbortSignal), {
+        sourceId: "alpha",
+        archived: false,
+        limit: THREAD_PAGE_LIMIT,
+      });
+      // The bucket the bootstrap carried is not re-read...
+      expect(api.threads).not.toHaveBeenCalled();
+      // ...and it arrives with the cursor that makes "load more" work on it.
+      expect(store.current.hasMoreThreads).toBe(true);
+      vi.mocked(api.threads).mockResolvedValue({ threads: [olderAlpha] });
+      await act(async () => { await store.current.loadMoreThreads(); });
+      expect(api.threads).toHaveBeenCalledWith("alpha", false, "cursor-1", expect.any(AbortSignal));
+      expect(store.current.visibleThreads.map((item) => item.id))
+        .toEqual(["alpha-thread", "older-alpha"]);
+    });
+
+    it("fetches the bucket an agent switch lands on instead of another bootstrap", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.visibleThreads.map((item) => item.id))
+        .toEqual(["beta-thread"]));
+      await quiet();
+
+      expect(api.threads).toHaveBeenCalledTimes(1);
+      expect(api.threads).toHaveBeenCalledWith("beta", false, undefined, expect.any(AbortSignal));
+      // The page is what resolves the conversation to open: the bootstrap no
+      // longer carries the other agents' rows for `selectAgent` to look in.
+      expect(store.current.selectedThreadId).toBe("beta-thread");
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+    });
+
+    it("opens the conversation the operator last had with the agent they switch to", async () => {
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ beta: "beta-older" }));
+      const olderBeta = thread("beta-older", "beta", { updatedAt: "2026-07-16T09:00:00.000Z" });
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread, olderBeta] });
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("beta-older"));
+      await quiet();
+
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+      expect(api.threads).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the open conversation a refreshed bucket does not happen to list", async () => {
+      // One page of fifty rows is not the whole bucket, so "not in the answer"
+      // is the ordinary case for an older conversation -- and yanking the
+      // operator to another one for it is not a refresh, it is a jump.
+      const store = await openOnAlpha([alphaThread, olderAlpha]);
+      act(() => { store.current.selectThread("older-alpha"); });
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("older-alpha"));
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [alphaThread],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+
+      emit("agents.changed");
+      await waitFor(() => expect(api.bootstrap).toHaveBeenCalledTimes(2));
+      await quiet();
+
+      expect(store.current.selectedThreadId).toBe("older-alpha");
+      expect(store.current.selectedThread?.id).toBe("older-alpha");
+    });
+
+    it("keeps refreshing after the remount StrictMode does on every mount", async () => {
+      // React 19 StrictMode -- which `main.tsx` wraps the console in -- runs
+      // every effect setup, cleanup, setup, and refs survive all three. A
+      // "still mounted" flag that is only ever CLEARED by a cleanup is false
+      // for the rest of the session after that, and every SSE-driven refresh
+      // routed through the debounce is silently dead in `vite dev`.
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alphaThread],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+      vi.mocked(api.thread).mockResolvedValue(detail(alphaThread, "hello"));
+      let current: Store | undefined;
+      render(
+        <StrictMode>
+          <ConsoleStoreProvider>
+            <StoreProbe onChange={(store) => { current = store; }} />
+          </ConsoleStoreProvider>
+        </StrictMode>,
+      );
+      await waitFor(() => expect(current?.selectedThreadId).toBe("alpha-thread"));
+      await waitFor(() => expect(current?.detail?.thread.id).toBe("alpha-thread"));
+      const detailReads = vi.mocked(api.thread).mock.calls.length;
+
+      emit("message.changed", {
+        threadId: "alpha-thread",
+        payload: { messageId: "message-1", updatedAt: "2026-08-14T09:00:00.000Z" },
+      });
+
+      await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads + 1));
+    });
+
+    it("closes a restored conversation the server no longer has", async () => {
+      // The stored id outlives the browser, so a conversation deleted from
+      // another client is resolved again on every load. One bucket page cannot
+      // say it is gone -- the detail read can, and it is the only thing that
+      // does.
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: "deleted-elsewhere" }));
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [alphaThread],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+      vi.mocked(api.thread).mockRejectedValue(
+        new ApiError("Conversation not found.", 404, "thread_not_found"),
+      );
+      const store = await renderStore();
+
+      await waitFor(() => expect(store.current.selectedThreadId).toBeNull());
+      await quiet();
+
+      expect(store.current.detail).toBeNull();
+      expect(store.current.actionError).toBe("This conversation was deleted.");
+      expect(JSON.parse(localStorage.getItem(SELECTED_THREADS_STORAGE_KEY) ?? "{}"))
+        .toEqual({});
+      // The sidebar it landed on is still the bucket the bootstrap carried.
+      expect(store.current.visibleThreads.map((item) => item.id)).toEqual(["alpha-thread"]);
+    });
+
+    it("does not open a restored conversation archived from another client", async () => {
+      // Archiving one HERE moves the selection to the next active row (see
+      // `archiveThread`), and a restored id the console finds archived is no
+      // more the active view's selection than that one was. The active bucket
+      // cannot show it, so keeping it opened a conversation the sidebar does
+      // not list and the archive toggle says nothing about.
+      const archivedElsewhere = thread("archived-elsewhere", "alpha", {
+        archivedAt: "2026-07-17T09:30:00.000Z",
+        updatedAt: "2026-07-17T09:30:00.000Z",
+      });
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: "archived-elsewhere" }));
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [alphaThread],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+      vi.mocked(api.thread).mockImplementation(async (threadId) => detail(
+        threadId === "archived-elsewhere" ? archivedElsewhere : alphaThread,
+        "hello",
+      ));
+      const store = await renderStore();
+
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      await quiet();
+
+      expect(store.current.showArchived).toBe(false);
+      expect(store.current.detail?.thread.id).toBe("alpha-thread");
+      expect(JSON.parse(localStorage.getItem(SELECTED_THREADS_STORAGE_KEY) ?? "{}"))
+        .toEqual({ alpha: "alpha-thread" });
+    });
+
+    it("keeps an archived conversation the operator opened themselves", async () => {
+      // Conversation search and push deep links both reach archived
+      // conversations while the active view is showing, and both are the
+      // operator's choice. Only a selection the console RESTORED is second-
+      // guessed by the detail read.
+      const archivedElsewhere = thread("archived-elsewhere", "alpha", {
+        archivedAt: "2026-07-17T09:30:00.000Z",
+        updatedAt: "2026-07-17T09:30:00.000Z",
+      });
+      const store = await openOnAlpha([alphaThread]);
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      vi.mocked(api.thread).mockImplementation(async (threadId) => detail(
+        threadId === "archived-elsewhere" ? archivedElsewhere : alphaThread,
+        "hello",
+      ));
+
+      act(() => { store.current.selectThread("archived-elsewhere"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("archived-elsewhere"));
+      await quiet();
+
+      expect(store.current.selectedThreadId).toBe("archived-elsewhere");
+      expect(store.current.showArchived).toBe(false);
+    });
+
+    it("keeps a conversation the operator opened when a bootstrap lands before its read", async () => {
+      // `agents.changed` alone re-applies a bootstrap, and a conversation the
+      // operator deliberately opened from search or a push link is by
+      // definition absent from the active bucket. Re-arming the restore marker
+      // for a selection that did not CHANGE turned that routine refresh into an
+      // ejection out of the conversation they had just opened.
+      const archivedElsewhere = thread("archived-elsewhere", "alpha", {
+        archivedAt: "2026-07-17T09:30:00.000Z",
+        updatedAt: "2026-07-17T09:30:00.000Z",
+      });
+      const store = await openOnAlpha([alphaThread]);
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      let release: (() => void) | undefined;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId !== "archived-elsewhere") return detail(alphaThread, "hello");
+        await held;
+        return detail(archivedElsewhere, "hello");
+      });
+
+      act(() => { store.current.selectThread("archived-elsewhere"); });
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("archived-elsewhere"));
+      emit("agents.changed");
+      await waitFor(() => expect(api.bootstrap).toHaveBeenCalledTimes(2));
+      await act(async () => {
+        release?.();
+        await held;
+      });
+      await quiet();
+
+      expect(store.current.selectedThreadId).toBe("archived-elsewhere");
+      expect(store.current.detail?.thread.id).toBe("archived-elsewhere");
+    });
+
+    it("leaves the conversation the operator created while a restored read was in flight", async () => {
+      // The restored read answers late and about a conversation nobody is
+      // looking at any more. Applying its repair blind blanked the pane the
+      // operator had just opened.
+      const archivedElsewhere = thread("archived-elsewhere", "alpha", {
+        archivedAt: "2026-07-17T09:30:00.000Z",
+        updatedAt: "2026-07-17T09:30:00.000Z",
+      });
+      const fresh = thread("fresh-thread", "alpha", { updatedAt: "2026-07-17T13:00:00.000Z" });
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: "archived-elsewhere" }));
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alphaThread],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+      let release: (() => void) | undefined;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId === "fresh-thread") return detail(fresh, "hello");
+        if (threadId !== "archived-elsewhere") return detail(alphaThread, "hello");
+        await held;
+        return detail(archivedElsewhere, "hello");
+      });
+      vi.mocked(api.createThread).mockResolvedValue(fresh);
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("archived-elsewhere"));
+
+      await act(async () => { await store.current.createThread(); });
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("fresh-thread"));
+      await act(async () => {
+        release?.();
+        await held;
+      });
+      await quiet();
+
+      expect(store.current.selectedThreadId).toBe("fresh-thread");
+      expect(store.current.detail?.thread.id).toBe("fresh-thread");
+    });
+
+    it("drops a conversation a listing event says was removed, without a page", async () => {
+      // The removal arrives as a pair, and the `threads.changed` half names a
+      // conversation this tab does not list. Read as a bare listing event it
+      // bought a page of the bucket to look for something the same event had
+      // just said was gone.
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+
+      emit("threads.changed", {
+        threadId: "outside-the-window",
+        payload: { threadId: "outside-the-window", removed: true },
+      });
+      await quiet(THREAD_LIST_REVALIDATE_DEBOUNCE_MS + 200);
+
+      expect(api.threads).not.toHaveBeenCalled();
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+    });
+
+    it("updates a sidebar row from the summary an event carries, without reading anything", async () => {
+      const store = await openOnAlpha([alphaThread, olderAlpha]);
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      const detailReads = vi.mocked(api.thread).mock.calls.length;
+
+      emit("thread.changed", {
+        threadId: "older-alpha",
+        payload: { thread: { ...olderAlpha, title: "Renamed by another tab", revision: 2 } },
+      });
+      await waitFor(() => expect(
+        store.current.threads.find((item) => item.id === "older-alpha")?.title,
+      ).toBe("Renamed by another tab"));
+      await quiet();
+
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+      expect(api.threads).not.toHaveBeenCalled();
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads);
+    });
+
+    it("re-reads the open conversation when an event says its transcript moved", async () => {
+      // The summary an event carries is the sidebar row. The MESSAGES are not
+      // in it, and a finished turn, a reconciled cron run and an appended
+      // notification all end in this event and say nothing else.
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      const detailReads = vi.mocked(api.thread).mock.calls.length;
+
+      emit("thread.changed", {
+        threadId: "alpha-thread",
+        payload: { thread: { ...alphaThread, title: "Named by the agent", revision: 3 } },
+      });
+      await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads + 1));
+      await quiet();
+
+      expect(store.current.threads.find((item) => item.id === "alpha-thread")?.title)
+        .toBe("Named by the agent");
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads + 1);
+    });
+  });
+
+  /**
    * The event table. Every SSE event used to fall through to one
    * `Promise.all([api.bootstrap(), api.thread(selected)])` -- for any type, for
    * any agent, for any conversation -- so watching one turn run cost a full
@@ -2446,6 +2838,248 @@ describe("ConsoleStoreProvider integration", () => {
       await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
       return store;
     };
+
+    it("applies a pin the event named, and asks the server for nothing", async () => {
+      seedTwoThreads();
+      const store = await openedOnAlpha();
+      const detailReads = vi.mocked(api.thread).mock.calls.length;
+
+      emit("agents.changed", { payload: { sourceId: "alpha", pinned: true } });
+      await quiet();
+
+      expect(store.current.agents.map((item) => [item.sourceId, item.pinned]))
+        .toEqual([["alpha", true]]);
+      // The whole point: a one-boolean write no longer costs a bootstrap, the
+      // skill registry and the cron overview in every open tab.
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads);
+      expect(api.agentSkills).toHaveBeenCalledTimes(1);
+    });
+
+    it("still re-reads everything for an agents.changed that names nothing", async () => {
+      seedTwoThreads();
+      await openedOnAlpha();
+
+      emit("agents.changed");
+      await waitFor(() => expect(api.bootstrap).toHaveBeenCalledTimes(2));
+    });
+
+    it("replaces the message a truncated tool call sits in, rather than repairing it in place", async () => {
+      const truncated = {
+        id: "message-tool",
+        threadId: selected.id,
+        role: "assistant" as const,
+        parts: [
+          {
+            type: "tool-call" as const,
+            toolCallId: "tool-big",
+            toolName: "Exec",
+            args: { command: "run" },
+            result: "HEAD",
+            resultTruncated: true,
+            resultBytes: 20 * 1_024,
+            status: "complete" as const,
+          },
+        ],
+        attachments: [],
+        createdAt: "2026-08-14T08:00:00.000Z",
+        updatedAt: "2026-08-14T08:00:00.000Z",
+        status: "complete" as const,
+      };
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { label: "Alpha" })], [selected]));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [selected] });
+      vi.mocked(api.thread).mockResolvedValue({ thread: selected, messages: [truncated] });
+      vi.mocked(api.toolCallPart).mockResolvedValue({
+        type: "tool-call",
+        toolCallId: "tool-big",
+        toolName: "Exec",
+        args: { command: "run" },
+        result: "THE WHOLE BODY",
+        status: "complete",
+      });
+      const store = await openedOnAlpha();
+      const before = store.current.detail?.messages[0];
+
+      await act(async () => { await store.current.loadFullToolCall("tool-big"); });
+
+      // Bounded like every other read, so the call carries the deadline's signal.
+      expect(api.toolCallPart).toHaveBeenCalledWith(
+        selected.id, "message-tool", "tool-big", expect.any(AbortSignal));
+      const after = store.current.detail?.messages[0];
+      // assistant-ui caches its part conversions by object identity, so the
+      // repair has to arrive as new objects or the row keeps its preview.
+      expect(after).not.toBe(before);
+      expect(after?.parts[0]).not.toBe(before?.parts[0]);
+      expect(after?.parts[0]).toEqual({
+        type: "tool-call",
+        toolCallId: "tool-big",
+        toolName: "Exec",
+        args: { command: "run" },
+        result: "THE WHOLE BODY",
+        status: "complete",
+      });
+      // The preview and its marker are gone together.
+      expect(before).toMatchObject({ parts: [{ resultTruncated: true }] });
+    });
+
+    it("keeps both repairs when two calls in one message come back together", async () => {
+      // Two "Load full output" clicks on one message -- a cluster, or two
+      // subagent steps -- can have both responses queued before React commits
+      // either. A repair that substitutes a message it built from a pre-commit
+      // snapshot loses the other one, and both still report success.
+      const truncatedCall = (toolCallId: string) => ({
+        type: "tool-call" as const,
+        toolCallId,
+        toolName: "Exec",
+        result: "HEAD",
+        resultTruncated: true,
+        resultBytes: 20 * 1_024,
+        status: "complete" as const,
+      });
+      const truncated = {
+        id: "message-tool",
+        threadId: selected.id,
+        role: "assistant" as const,
+        parts: [truncatedCall("tool-a"), truncatedCall("tool-b")],
+        attachments: [],
+        createdAt: "2026-08-14T08:00:00.000Z",
+        updatedAt: "2026-08-14T08:00:00.000Z",
+        status: "complete" as const,
+      };
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { label: "Alpha" })], [selected]));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [selected] });
+      vi.mocked(api.thread).mockResolvedValue({ thread: selected, messages: [truncated] });
+      const answers = new Map<string, (part: MessagePart) => void>();
+      vi.mocked(api.toolCallPart).mockImplementation(async (_threadId, _messageId, toolCallId) =>
+        new Promise<MessagePart>((resolve) => answers.set(toolCallId, resolve)));
+      const store = await openedOnAlpha();
+
+      const first = store.current.loadFullToolCall("tool-a");
+      const second = store.current.loadFullToolCall("tool-b");
+      await waitFor(() => expect(answers.size).toBe(2));
+
+      // Both answers land before React commits either repair.
+      await act(async () => {
+        answers.get("tool-a")?.({
+          type: "tool-call", toolCallId: "tool-a", toolName: "Exec", result: "WHOLE A", status: "complete",
+        });
+        answers.get("tool-b")?.({
+          type: "tool-call", toolCallId: "tool-b", toolName: "Exec", result: "WHOLE B", status: "complete",
+        });
+        await Promise.all([first, second]);
+      });
+
+      await expect(first).resolves.toBe(true);
+      await expect(second).resolves.toBe(true);
+      const parts = store.current.detail?.messages[0]?.parts ?? [];
+      expect(parts.map((part) => (part as { result?: unknown }).result)).toEqual(["WHOLE A", "WHOLE B"]);
+      expect(parts.every((part) => (part as { resultTruncated?: boolean }).resultTruncated !== true)).toBe(true);
+    });
+
+    it("abandons a full-body read the transport never answers", async () => {
+      // Every other read is bounded; this one was not. A stalled request left
+      // the notice stuck on "Loading…" with no way back to the button, because
+      // nothing ever settled the promise it was waiting on.
+      const truncated = {
+        id: "message-tool",
+        threadId: selected.id,
+        role: "assistant" as const,
+        parts: [{
+          type: "tool-call" as const,
+          toolCallId: "tool-big",
+          toolName: "Exec",
+          result: "HEAD",
+          resultTruncated: true,
+          resultBytes: 20 * 1_024,
+          status: "complete" as const,
+        }],
+        attachments: [],
+        createdAt: "2026-08-14T08:00:00.000Z",
+        updatedAt: "2026-08-14T08:00:00.000Z",
+        status: "complete" as const,
+      };
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { label: "Alpha" })], [selected]));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [selected] });
+      vi.mocked(api.thread).mockResolvedValue({ thread: selected, messages: [truncated] });
+      const store = await openedOnAlpha();
+
+      // A transport that answers neither the request nor its abort.
+      vi.mocked(api.toolCallPart).mockImplementation(() => new Promise<never>(() => undefined));
+      let settledWith: unknown;
+      vi.useFakeTimers();
+      try {
+        const repairing = store.current.loadFullToolCall("tool-big").then(
+          (replaced) => { settledWith = replaced; },
+          (error: unknown) => { settledWith = error; },
+        );
+        for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
+        expect(settledWith).toBeUndefined();
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(THREAD_READ_TIMEOUT_MS);
+          await repairing;
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+      // Rejected, so the row's notice reports the failure instead of waiting
+      // forever on a promise nothing will settle.
+      expect(settledWith).toBeInstanceOf(Error);
+      expect((settledWith as Error).message).toMatch(/timed out/iu);
+      expect(JSON.stringify(store.current.detail?.messages)).toContain("resultTruncated");
+    });
+
+    it("reports no repair when the operator leaves the conversation mid-fetch", async () => {
+      // The full body is a round trip, and the operator can walk away from the
+      // conversation during it. Reporting success for a replacement that never
+      // landed leaves the row looking settled on the preview it still shows.
+      const truncated = {
+        id: "message-tool",
+        threadId: selected.id,
+        role: "assistant" as const,
+        parts: [{
+          type: "tool-call" as const,
+          toolCallId: "tool-big",
+          toolName: "Exec",
+          result: "HEAD",
+          resultTruncated: true,
+          resultBytes: 20 * 1_024,
+          status: "complete" as const,
+        }],
+        attachments: [],
+        createdAt: "2026-08-14T08:00:00.000Z",
+        updatedAt: "2026-08-14T08:00:00.000Z",
+        status: "complete" as const,
+      };
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { label: "Alpha" })], [selected, other]));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [selected, other] });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => threadId === selected.id
+        ? { thread: selected, messages: [truncated] }
+        : detail(other, "elsewhere"));
+      let answer!: (part: MessagePart) => void;
+      vi.mocked(api.toolCallPart).mockImplementation(async () =>
+        new Promise<MessagePart>((resolve) => { answer = resolve; }));
+      const store = await openedOnAlpha();
+
+      const repairing = store.current.loadFullToolCall("tool-big");
+      await waitFor(() => expect(api.toolCallPart).toHaveBeenCalledTimes(1));
+      act(() => { store.current.selectThread(other.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(other.id));
+
+      await act(async () => {
+        answer({
+          type: "tool-call",
+          toolCallId: "tool-big",
+          toolName: "Exec",
+          result: "THE WHOLE BODY",
+          status: "complete",
+        });
+        await repairing;
+      });
+      await expect(repairing).resolves.toBe(false);
+      expect(store.current.detail?.thread.id).toBe(other.id);
+      expect(JSON.stringify(store.current.detail?.messages)).not.toContain("THE WHOLE BODY");
+    });
 
     it("fetches nothing for a message in a conversation nobody is looking at", async () => {
       seedTwoThreads();
@@ -2552,7 +3186,9 @@ describe("ConsoleStoreProvider integration", () => {
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
     });
 
-    it("does not re-request a thread bucket the bootstrap already carried", async () => {
+    it("re-requests no bucket a bootstrap carried, and one page for each it did not", async () => {
+      // A bootstrap carries ONE bucket, so the archive shelf and every other
+      // agent are pages to fetch -- one each, and never another bootstrap.
       const betaThread = thread("beta-thread", "beta");
       const archived = thread("archived-thread", "alpha", {
         archivedAt: "2026-07-17T09:30:00.000Z",
@@ -2560,21 +3196,27 @@ describe("ConsoleStoreProvider integration", () => {
       });
       vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
         [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
-        [selected, archived, betaThread],
+        [selected],
+        undefined,
+        { threadsSourceId: "alpha" },
       ));
       vi.mocked(api.thread).mockImplementation(async (threadId) =>
         detail(threadId === "beta-thread" ? betaThread : selected, "hello"));
       const store = await openedOnAlpha();
+      expect(api.threads).not.toHaveBeenCalled();
 
+      vi.mocked(api.threads).mockResolvedValue({ threads: [archived] });
       act(() => { store.current.setShowArchived(true); });
       await waitFor(() => expect(store.current.visibleThreads.map((item) => item.id))
         .toEqual(["archived-thread"]));
       act(() => { store.current.setShowArchived(false); });
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
       act(() => { store.current.selectAgent("beta"); });
       await waitFor(() => expect(store.current.selectedThreadId).toBe("beta-thread"));
       await quiet();
 
-      expect(api.threads).not.toHaveBeenCalled();
+      expect(vi.mocked(api.threads).mock.calls.map((call) => [call[0], call[1]]))
+        .toEqual([["alpha", true], ["beta", false]]);
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
     });
 
@@ -2789,7 +3431,9 @@ describe("ConsoleStoreProvider integration", () => {
       const betaThread = thread("beta-thread", "beta");
       vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
         [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
-        [selected, other, betaThread],
+        [selected, other],
+        undefined,
+        { threadsSourceId: "alpha" },
       ));
       vi.mocked(api.thread).mockImplementation(async (threadId) =>
         detail(threadId === "beta-thread" ? betaThread : selected, "hello"));
@@ -2801,15 +3445,18 @@ describe("ConsoleStoreProvider integration", () => {
       expect(api.threads).toHaveBeenCalledTimes(1);
       expect(vi.mocked(api.threads).mock.calls[0]?.[0]).toBe("alpha");
 
+      // The switch itself costs beta's page, because a bootstrap carries only
+      // the bucket it was asked for.
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
       act(() => { store.current.selectAgent("beta"); });
       await waitFor(() => expect(store.current.selectedAgentId).toBe("beta"));
-      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(2));
 
       emit("threads.changed", { threadId: "outside-the-window" });
       await quiet(THREAD_LIST_REVALIDATE_DEBOUNCE_MS + 200);
 
-      expect(api.threads).toHaveBeenCalledTimes(2);
-      expect(vi.mocked(api.threads).mock.calls[1]?.[0]).toBe("beta");
+      expect(api.threads).toHaveBeenCalledTimes(3);
+      expect(vi.mocked(api.threads).mock.calls[2]?.[0]).toBe("beta");
     });
 
     it("closes a conversation deleted while this tab was still fetching it by id", async () => {
