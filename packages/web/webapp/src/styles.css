@@ -939,6 +939,22 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
    band. It borrows the band's chrome instead, and reads as a one-row block
    between the turn that launched it and the turn its wake produced. */
 .assistant-content > .activity-row.is-job { margin: 5px 0 11px; padding: 3px 4px; background: color-mix(in srgb, var(--panel) 32%, var(--surface)); border: 1px solid var(--line); border-radius: 12px; }
+.activity-row-alert { color: var(--danger); font-weight: 700; white-space: nowrap; }
+@media (max-width: 560px) {
+  /* A phone's row cannot hold the purpose and the meta side by side: the flex
+     line first squeezed the purpose to nothing and then clipped the meta, so a
+     failed wake read as "wak…". Job rows alone go to two lines here — purpose
+     beside the label, meta underneath and free to wrap — because a job's meta
+     is the only one that carries a token an operator has to act on. */
+  .activity-row.is-job > summary { display: grid; grid-template-columns: 18px auto minmax(0, 1fr) auto; align-items: center; column-gap: 8px; row-gap: 3px; padding-top: 7px; padding-bottom: 7px; }
+  .activity-row.is-job > summary .activity-row-glyph { grid-area: 1 / 1; }
+  .activity-row.is-job > summary .activity-row-label { grid-area: 1 / 2; }
+  .activity-row.is-job > summary .activity-row-summary { grid-area: 1 / 3; }
+  .activity-row.is-job > summary .activity-row-chevron { grid-area: 1 / 4; }
+  .activity-row.is-job > summary .failed-tag { grid-area: 2 / 2; justify-self: start; }
+  .activity-row.is-job > summary .activity-row-time { grid-area: 2 / 2 / 3 / 5; overflow: visible; white-space: normal; text-overflow: clip; line-height: 1.5; }
+  .activity-row.is-job > summary .failed-tag ~ .activity-row-time { grid-column: 3 / 5; }
+}
 
 /* Members of an expanded row, on a rail so a delegation's work is never
    confused with the agent's own. Flatter than the row above them on purpose:

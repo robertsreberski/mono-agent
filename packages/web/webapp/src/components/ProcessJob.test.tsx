@@ -160,11 +160,72 @@ describe("ProcessJobPart", () => {
 
     const row = screen.getByRole("group", { name: "Exec background job succeeded" });
     expect(row.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0 · wake failed");
+    // The token is its own element inside the time slot: the phone layout lets
+    // the meta wrap and relies on this element never splitting or clipping.
+    const alert = row.querySelector(".activity-row-time .activity-row-alert");
+    expect(alert).toHaveTextContent("wake failed");
     fireEvent.click(row.querySelector("summary")!);
     const error = screen.getByText(/Process-job wake delivery failed/u).closest(".activity-error");
     expect(error).not.toBeNull();
     expect(error).toHaveTextContent("process_job_wake_failed");
     expect(screen.getByText("failed (3 attempts)")).toBeVisible();
+  });
+
+  it("keeps the summary's slot order the phone layout is written against", () => {
+    // styles.css places a job's tag and meta on a second line with sibling
+    // selectors (`.failed-tag ~ .activity-row-time`), so the order of the
+    // summary's children is a contract: glyph, label, purpose, tag, time, chevron.
+    render(part({
+      type: "process-job",
+      job: processJob({ state: "timed_out", exitCode: null, signal: "SIGKILL", durationMs: 12_000, wake: { ...processJob().wake, state: "failed" } }),
+    }));
+    const summary = screen.getByRole("group", { name: "Exec background job timed out" }).querySelector("summary")!;
+    expect([...summary.children].map((child) => (child.getAttribute("class") ?? "").split(" ")[0])).toEqual([
+      "activity-row-glyph",
+      "activity-row-label",
+      "activity-row-summary",
+      "failed-tag",
+      "activity-row-time",
+      "activity-row-chevron",
+    ]);
+    expect(summary.querySelector(".activity-row-time .activity-row-alert")).toHaveTextContent("wake failed");
+  });
+
+  it("does not let a poll answer that was in flight overwrite a newer projection from the store", async () => {
+    const base = processJob();
+    const pending = { ...base.wake, state: "pending" as const, attempts: 0, lastAttemptAt: null };
+    const starting = processJob({
+      state: "starting",
+      exitCode: null,
+      durationMs: null,
+      timestamps: { ...base.timestamps, startedAt: null, completedAt: null },
+      wake: pending,
+    });
+    const running = processJob({
+      state: "running",
+      exitCode: null,
+      durationMs: null,
+      timestamps: { ...base.timestamps, completedAt: null },
+      wake: pending,
+    });
+    let answerFirstPoll: ((job: typeof starting) => void) | undefined;
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise((resolve) => {
+      answerFirstPoll ??= resolve;
+    }));
+    const { rerender } = render(part({ type: "process-job", job: starting }));
+    expect(screen.getByRole("group", { name: "Exec background job starting" })).toBeInTheDocument();
+
+    // The store refreshes the card while the first poll is still out.
+    rerender(part({ type: "process-job", job: running }));
+    expect(screen.getByRole("group", { name: "Exec background job running" })).toBeInTheDocument();
+
+    // The poll answers with what it read before that: older than the row already shows.
+    await act(async () => {
+      answerFirstPoll!(starting);
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("group", { name: "Exec background job running" })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Exec background job starting" })).toBeNull();
   });
 
   it("marks truncated output and shows the preview and refs it has", () => {

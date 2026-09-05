@@ -1,5 +1,5 @@
 import type { DataMessagePartProps } from "@assistant-ui/react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
 import type { ProcessJobProjection, ProcessJobState } from "../types";
@@ -81,7 +81,11 @@ const processJobMeta = (job: ProcessJobProjection, terminal: boolean): ReactNode
     items.push(<ActivityElapsed key="elapsed" timing={timing} live={!terminal} />);
   }
   if (exit !== undefined) items.push(exit);
-  if (terminal && job.wake.state === "failed") items.push("wake failed");
+  // Its own element: a phone-width row lets the meta wrap, and this is the one
+  // token that must neither split across lines nor be the part that clips.
+  if (terminal && job.wake.state === "failed") {
+    items.push(<span key="wake" className="activity-row-alert">wake failed</span>);
+  }
   return items.length === 0 ? undefined : joinMeta(items);
 };
 
@@ -102,11 +106,16 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
   const payload = data as { readonly job?: ProcessJobProjection; readonly responseText?: unknown };
   const initial = payload.job;
   const [live, setLive] = useState(initial);
+  // The projection the store handed over most recently. A poll answer that was
+  // already in flight when the store moved on is older than what it would
+  // replace, so the poll checks this before applying what it fetched.
+  const retainedRef = useRef(initial);
   const threadId = initial === undefined ? undefined : processJobThreadId(initial);
   const jobId = initial?.jobId;
   const terminal = live === undefined || TERMINAL_PROCESS_JOB_STATES.has(live.state);
 
   useEffect(() => {
+    retainedRef.current = initial;
     setLive(initial);
   }, [initial]);
 
@@ -116,10 +125,11 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
     let timer: number | undefined;
     let delayMs = PROCESS_JOB_POLL_INITIAL_MS;
     const refresh = async () => {
+      const retained = retainedRef.current;
       try {
         const next = await api.threadJob(threadId, jobId, controller.signal);
         if (controller.signal.aborted) return;
-        setLive(next);
+        if (retainedRef.current === retained) setLive(next);
         if (TERMINAL_PROCESS_JOB_STATES.has(next.state)) return;
       } catch {
         // The retained card remains authoritative while its owner is offline.
