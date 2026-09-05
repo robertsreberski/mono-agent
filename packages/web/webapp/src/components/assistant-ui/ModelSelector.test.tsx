@@ -105,6 +105,7 @@ describe("ModelSelector", () => {
 
     const search = within(popup).getByRole("combobox", { name: "Search models" });
     await waitFor(() => expect(search).toHaveFocus());
+    search.focus();
     fireEvent.change(search, { target: { value: "anthropic" } });
 
     expect(within(popup).getByRole("option", { name: /Claude Sonnet 4\.5/u })).toBeVisible();
@@ -129,6 +130,34 @@ describe("ModelSelector", () => {
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: "Model and reasoning effort" })).toBeNull();
     });
+  });
+
+  it("does not focus search on model, effort, or parent callback changes", async () => {
+    function Parent() {
+      const [open, setOpen] = useState(false);
+      const [model, setModel] = useState("");
+      const [effort, setEffort] = useState("");
+      return <ModelSelector models={models} value={model} effort={effort}
+        open={open} onOpenChange={(next) => setOpen(next)}
+        onValueChange={setModel} onEffortChange={setEffort} />;
+    }
+    render(<Parent />);
+    const trigger = screen.getByRole("button", { name: "Model and reasoning effort" });
+    fireEvent.click(trigger, { detail: 1 });
+    const popup = await screen.findByRole("dialog");
+    await waitFor(() => expect(popup).toHaveFocus());
+    const search = screen.getByRole("combobox");
+    const focus = vi.spyOn(search, "focus");
+    fireEvent.click(screen.getByRole("option", { name: /GPT-5.5 Codex/u }));
+    expect(popup).toBeVisible();
+    const high = screen.getByRole("radio", { name: "High" });
+    high.focus();
+    fireEvent.click(high);
+    expect(high).toBeChecked();
+    expect(high).toHaveFocus();
+    expect(focus).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 
   it("opens from the trigger with arrow keys and supports cmdk keyboard selection", async () => {

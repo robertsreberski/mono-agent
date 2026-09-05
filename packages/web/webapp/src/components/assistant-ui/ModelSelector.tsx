@@ -74,6 +74,8 @@ export function ModelSelector({
   const [activeProvider, setActiveProvider] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+  const keyboardOpenRef = useRef(false);
   const open = controlledOpen ?? internalOpen;
   const setOpen = useCallback(
     (nextOpen: boolean) => {
@@ -95,11 +97,11 @@ export function ModelSelector({
       return;
     }
     if (!open) {
+      keyboardOpenRef.current = false;
       setQuery("");
       setActiveProvider(null);
       return;
     }
-    searchRef.current?.focus();
   }, [disabled, open, setOpen]);
 
   const closeSelector = () => {
@@ -153,7 +155,9 @@ export function ModelSelector({
         aria-label="Model and reasoning effort"
         aria-haspopup="dialog"
         disabled={disabled}
+        onPointerDown={() => { keyboardOpenRef.current = false; }}
         onKeyDown={(event) => {
+          keyboardOpenRef.current = true;
           if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
           event.preventDefault();
           setOpen(true);
@@ -184,6 +188,11 @@ export function ModelSelector({
           sideOffset={6}
         >
           <Popover.Popup
+            ref={popupRef}
+            initialFocus={(interaction) =>
+              interaction === "keyboard" || keyboardOpenRef.current
+                ? searchRef.current : popupRef.current
+            }
             data-slot="model-selector-content"
             className="model-selector__content"
             aria-label="Model and reasoning effort"

@@ -21,6 +21,22 @@ function urlString(input: FetchInput): string {
 describe("discoverLocalProviders", () => {
   beforeEach(() => clearLocalProviderDiscoveryCache());
 
+  it("preserves native embedding evidence through a configured allowlist and warm cache", async () => {
+    const fetchImpl = vi.fn(async (url: FetchInput) => response(
+      urlString(url).endsWith("/api/show") ? { capabilities: ["embedding"] }
+        : { data: [{ id: "vector" }] },
+    )) as unknown as typeof fetch;
+    const configured = [{ id: "ollama", models: [{ name: "vector", alias: "Vectors" }] },
+      { id: "lmstudio", enabled: false }] as const;
+    for (let i = 0; i < 2; i++) {
+      const providers = await discoverLocalProviders({ configured, fetch: fetchImpl });
+      expect(providers[0]?.models[0]).toMatchObject({
+        name: "vector", alias: "Vectors", capabilities: { advertised_capabilities: ["embedding"] },
+      });
+    }
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("discovers both default endpoints in parallel", async () => {
     const fetchImpl = vi.fn((input: FetchInput) => {
       const url = urlString(input);
@@ -34,7 +50,7 @@ describe("discoverLocalProviders", () => {
     expect(providers.map((provider) => provider.id)).toEqual(["ollama", "lmstudio"]);
     expect(providers[0]?.models).toEqual([{ name: "qwen3:8b" }]);
     expect(providers[1]?.models).toEqual([{ name: "local-model" }]);
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 
   it("returns the answering provider when the other endpoint fails", async () => {
@@ -91,7 +107,7 @@ describe("discoverLocalProviders", () => {
     await discoverLocalProviders({ fetch: fetchImpl });
     await discoverLocalProviders({ fetch: fetchImpl });
 
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 
   it("permits only one forced refresh during a warm TTL window", async () => {
@@ -101,7 +117,7 @@ describe("discoverLocalProviders", () => {
     await discoverLocalProviders({ fetch: fetchImpl, forceRefresh: true });
     await discoverLocalProviders({ fetch: fetchImpl, forceRefresh: true });
 
-    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(fetchImpl).toHaveBeenCalledTimes(8);
   });
 
   it("treats a 500 and a non-JSON body as independent empty results", async () => {
@@ -151,7 +167,7 @@ describe("discoverLocalProviders", () => {
     });
     expect(third.find((provider) => provider.id === "ollama")?.models).toEqual([{ name: "live-a" }]);
 
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
   it("keys the cache by the probed endpoint, so a type change re-probes", async () => {
@@ -176,7 +192,7 @@ describe("discoverLocalProviders", () => {
     // appends `/v1` to the path as given. Different endpoints for the same
     // id+baseUrl, so the second definition must probe rather than read the
     // first one's cache entry.
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
     expect(retyped.find((provider) => provider.id === "ollama")?.models)
       .toEqual([{ name: "http://localhost:11434/api/v1/models" }]);
   });
@@ -203,7 +219,9 @@ describe("discoverLocalProviders", () => {
     // order: the earlier probe answering last used to overwrite the later one,
     // caching "no models" over a live answer for the rest of the 60 s TTL.
     const deferred: { resolve: (value: Response) => void; reject: (reason: unknown) => void }[] = [];
-    const racingFetch = vi.fn(() => new Promise<Response>((resolve, reject) => {
+    const racingFetch = vi.fn((url: FetchInput) => urlString(url).endsWith("/api/show")
+      ? Promise.resolve(response({ capabilities: ["completion"] }))
+      : new Promise<Response>((resolve, reject) => {
       deferred.push({ resolve, reject });
     })) as unknown as typeof fetch;
     const warmFetch = vi.fn(() => Promise.resolve(response({ data: [{ id: "warm" }] }))) as unknown as typeof fetch;
@@ -211,7 +229,7 @@ describe("discoverLocalProviders", () => {
 
     // Warm the entry so both forced refreshes take the probe path.
     await discoverLocalProviders({ fetch: warmFetch, configured });
-    expect(warmFetch).toHaveBeenCalledTimes(1);
+    expect(warmFetch).toHaveBeenCalledTimes(2);
 
     const older = discoverLocalProviders({ fetch: racingFetch, configured, forceRefresh: true });
     const newer = discoverLocalProviders({ fetch: racingFetch, configured, forceRefresh: true });
@@ -233,12 +251,14 @@ describe("discoverLocalProviders", () => {
     // And the next warm read still serves the live model without re-probing.
     const afterwards = await discoverLocalProviders({ fetch: warmFetch, configured });
     expect(afterwards.find((provider) => provider.id === "ollama")?.models).toEqual([{ name: "live" }]);
-    expect(warmFetch).toHaveBeenCalledTimes(1);
+    expect(warmFetch).toHaveBeenCalledTimes(2);
   });
 
   it("drops an in-flight probe's result when the cache is cleared beneath it", async () => {
     let settle: ((value: Response) => void) | undefined;
-    const slowFetch = vi.fn(() => new Promise<Response>((resolve) => {
+    const slowFetch = vi.fn((url: FetchInput) => urlString(url).endsWith("/api/show")
+      ? Promise.resolve(response({ capabilities: ["completion"] }))
+      : new Promise<Response>((resolve) => {
       settle = resolve;
     })) as unknown as typeof fetch;
     const configured = [{ id: "lmstudio", enabled: false } as const];
@@ -252,6 +272,6 @@ describe("discoverLocalProviders", () => {
     const after = await discoverLocalProviders({ fetch: nextFetch, configured });
 
     expect(after.find((provider) => provider.id === "ollama")?.models).toEqual([{ name: "fresh" }]);
-    expect(nextFetch).toHaveBeenCalledTimes(1);
+    expect(nextFetch).toHaveBeenCalledTimes(2);
   });
 });

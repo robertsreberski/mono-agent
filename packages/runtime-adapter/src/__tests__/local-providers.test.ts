@@ -26,6 +26,68 @@ const LMSTUDIO_PROVIDER: LocalProviderDefinition = {
 };
 
 describe("discoverLocalProviderModels", () => {
+  it("bounds metadata concurrency and retains models when its shared deadline expires", async () => {
+    vi.useFakeTimers();
+    try {
+      let active = 0;
+      let peak = 0;
+      const pending = discoverLocalProviderModels([{
+        id: "ollama", type: "ollama", baseUrl: "http://localhost:11434",
+      }], { timeoutMs: 100, fetch: (async (url, init) => {
+        if (String(url).endsWith("/v1/models")) return jsonResponse({
+          data: Array.from({ length: 12 }, (_, i) => ({ id: `model-${i}` })),
+        });
+        active++;
+        peak = Math.max(peak, active);
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => { active--; reject(new Error("aborted")); });
+        });
+      }) as typeof fetch });
+      await vi.advanceTimersByTimeAsync(100);
+      const models = await pending;
+      expect(peak).toBe(4);
+      expect(active).toBe(0);
+      expect(models).toHaveLength(12);
+      expect(models.every((model) => model.embeddingOnly === undefined)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("classifies LM Studio embedding keys and loaded instance ids without guessing names", async () => {
+    const models = await discoverLocalProviderModels([{ ...LMSTUDIO_PROVIDER, id: "desk" }], {
+      fetch: fakeFetch(async (url) => jsonResponse(url.endsWith("/api/v1/models")
+        ? { models: [
+          { key: "vector", type: "embedding", loaded_instances: [{ id: "loaded-vector" }] },
+          { key: "embedding-in-chat-name", type: "llm" },
+        ] }
+        : { data: [{ id: "vector" }, { id: "loaded-vector" }, { id: "embedding-in-chat-name" }] })),
+    });
+    expect(models.map((model) => [model.ref, model.embeddingOnly ?? false])).toEqual([
+      ["desk:vector", true], ["desk:loaded-vector", true], ["desk:embedding-in-chat-name", false],
+    ]);
+  });
+
+  it("classifies only Ollama embedding-only models and retains unknown or dual-purpose models", async () => {
+    const models = await discoverLocalProviderModels([{
+      id: "desk", type: "ollama", baseUrl: "http://localhost:11434/v1",
+    }], {
+      fetch: (async (url, init) => {
+        if (String(url).endsWith("/v1/models")) return jsonResponse({
+          data: ["vector", "both", "chat", "unknown"].map((id) => ({ id })),
+        });
+        expect(String(url)).toBe("http://localhost:11434/api/show");
+        const { model } = JSON.parse(String(init?.body));
+        if (model === "unknown") throw new Error("unavailable");
+        return jsonResponse({ capabilities: model === "vector" ? ["embedding"]
+          : model === "both" ? ["embedding", "completion"] : ["completion"] });
+      }) as typeof fetch,
+    });
+    expect(models.map((model) => [model.ref, model.embeddingOnly ?? false])).toEqual([
+      ["desk:vector", true], ["desk:both", false], ["desk:chat", false], ["desk:unknown", false],
+    ]);
+  });
+
   it("parses a well-formed /v1/models response into <providerId>:<modelId> refs", async () => {
     const models = await discoverLocalProviderModels([LMSTUDIO_PROVIDER], {
       fetch: fakeFetch(() => Promise.resolve(jsonResponse({ data: [{ id: "qwen3-8b" }, { id: "llama-3.1" }] }))),

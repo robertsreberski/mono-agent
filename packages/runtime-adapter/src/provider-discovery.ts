@@ -1,6 +1,7 @@
 import { isPlainObject } from "./runtime-helpers.js";
 import {
   localProviderDefinitionFor,
+  discoverEmbeddingOnlyModelIds,
   modelsEndpointForProvider,
   validateLocalProviderDefinition,
 } from "./local-providers.js";
@@ -173,7 +174,11 @@ function advertisedProvider(
   }
   const advertised = provider.models === undefined
     ? liveModels
-    : provider.models.filter((model) => model.enabled ?? true);
+    : provider.models.filter((model) => model.enabled ?? true).map((model) => {
+      const live = liveModels.find((entry) => entry.name === model.name);
+      return live?.capabilities?.advertised_capabilities?.includes("embedding")
+        ? { ...model, capabilities: { ...model.capabilities, ...live.capabilities } } : model;
+    });
   return {
     ...provider,
     baseUrl: provider.baseUrl as string,
@@ -211,7 +216,12 @@ async function probeProvider(
       if (!isPlainObject(body) || !Array.isArray(body.data)) {
         return undefined;
       }
-      return modelsFromResponse(body.data);
+      const models = modelsFromResponse(body.data);
+      const embeddingIds = await discoverEmbeddingOnlyModelIds(
+        provider, models.map((model) => model.name), input.fetch ?? fetch, controller.signal,
+      );
+      return models.map((model) => embeddingIds.has(model.name)
+        ? { ...model, capabilities: { advertised_capabilities: ["embedding"] } } : model);
     } finally {
       clearTimeout(timer);
       input.signal?.removeEventListener("abort", forwardAbort);

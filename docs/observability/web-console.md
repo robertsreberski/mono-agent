@@ -293,6 +293,12 @@ The web service and outbox are self-hosted. Web Push itself necessarily sends an
 
 ## Run controls and context
 
+Pointer/touch opening and model or effort changes do not focus the search input;
+keyboard opening retains search navigation. LM Studio and Ollama models confirmed
+as embedding-only by native metadata are omitted from chat choices, including
+configured aliases. Unknown metadata preserves compatibility; names are not used
+to guess a model's purpose. Memory embedding configuration is unaffected.
+
 The run-settings control marks whether the conversation is running on the agent's
 default or on a choice made here, and while an override is in force the picker
 offers to reset back to the agent default. It uses a searchable model picker with the selected model's supported reasoning-effort choices in the same popover. Configured models use their configured display name when present and otherwise use the running agent's catalog name. A model choice applies immediately but leaves the picker open so effort can be chosen next; the explicit **Close** action finishes the interaction. The running agent captures those capabilities at startup from configured/local Pi metadata and Pi's built-in catalog, which covers every bundled provider (Anthropic, GitHub Copilot, OpenAI Codex, OpenCode-Go, and more). If that snapshot cannot confirm exact levels, the picker offers provider/config default only instead of substituting the global effort ladder. Older agents that omit per-model metadata retain the global ladder for protocol compatibility. On narrow screens the picker becomes a full-width bottom sheet so every advertised effort level remains reachable without overflowing the viewport. **Default model** delegates model selection to the agent. The default effort names the effective configured value, such as **Default · High**; when the agent leaves that choice to its provider, the control says **Default · Provider** instead of guessing a level. Choosing either default clears the conversation override.
