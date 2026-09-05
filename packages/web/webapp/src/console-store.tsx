@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { api, ApiError } from "./api";
+import { recordServerTime } from "./server-clock";
 import { DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
   AgentSummary,
@@ -1307,6 +1308,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       try {
         const webEvent = JSON.parse((event as MessageEvent<string>).data) as WebEvent;
         if (webEvent.version !== 1) return;
+        recordServerTime(webEvent.at);
         eventType = webEvent.type;
         if (webEvent.type === "push.pending") {
           window.dispatchEvent(new CustomEvent("mono-agent:push-pending", { detail: webEvent.payload }));

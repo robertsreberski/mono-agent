@@ -51,7 +51,8 @@ const assistantMessage = (
   threadId: "thread",
   role: "assistant",
   createdAt: "2026-07-17T10:00:00.000Z",
-  updatedAt: "2026-07-17T10:00:00.000Z",
+  updatedAt: "2026-07-17T10:00:12.000Z",
+  ...(status === "running" ? {} : { finishedAt: "2026-07-17T10:00:12.000Z" }),
   status,
   attachments: [],
   parts: [
@@ -345,7 +346,7 @@ describe("AssistantMessage grouped parts", () => {
     );
   });
 
-  it("clusters repeated tools with step counts, durations, previews, and failures", () => {
+  it("clusters repeated tools with step counts, previews, and failures under the turn window", () => {
     const calls: WebMessage["parts"] = ["one.md", "two.md", "three.md", "four.md"].map(
       (path, index) => ({
         type: "tool-call" as const,
@@ -362,45 +363,109 @@ describe("AssistantMessage grouped parts", () => {
       parts: [...calls, { type: "text", text: "Finished." }],
     }} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    expect(screen.getByText("4 steps \u00b7 400ms")).toBeVisible();
-    expect(screen.getByText("Read \u00d74")).toBeVisible();
+    const header = screen.getByRole("button", { name: "Activity" });
+    fireEvent.click(header);
+    // The header is the turn's window, never the 400ms sum of the calls.
+    expect(header).toHaveTextContent("4 steps \u00b7 12s");
+    const clusterRow = screen.getByText("Read \u00d74").closest("summary")!;
+    // The row keeps its own summed duration.
+    expect(within(clusterRow).getByText("400ms")).toBeVisible();
     expect(screen.getByText("one.md, two.md +2")).toBeVisible();
     expect(screen.getByText("1 failed")).toBeVisible();
 
-    fireEvent.click(screen.getByText("Read \u00d74").closest("summary")!);
+    fireEvent.click(clusterRow);
     expect(screen.getAllByText("read_file")).toHaveLength(4);
     fireEvent.click(screen.getAllByText("read_file")[2]!.closest("summary")!);
     expect(screen.getByText(/unreadable/u)).toBeVisible();
   });
 
-  it("summarizes each Activity band from its own parts, not the whole message", () => {
-    const read = (id: string, ms: number) => ({
+  it("times the turn as one window, so thinking counts and parallel calls are not summed twice", () => {
+    const slow = (id: string) => ({
       type: "tool-call" as const,
       toolCallId: id,
       toolName: "read_file",
       args: { path: `${id}.md` },
       result: { text: id },
       status: "complete" as const,
-      executionMs: ms,
+      executionMs: 5_000,
+    });
+    render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      createdAt: "2026-07-17T10:00:00.000Z",
+      finishedAt: "2026-07-17T10:00:06.000Z",
+      parts: [
+        { type: "reasoning", text: "Read both." },
+        slow("one"),
+        slow("two"),
+        { type: "text", text: "Done." },
+      ],
+    }} />);
+
+    expect(screen.getByRole("button", { name: "Activity" })).toHaveTextContent("3 steps \u00b7 6s");
+  });
+
+  it("ticks while the turn runs and freezes at the recorded finish", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T10:00:03.000Z"));
+    const running = {
+      ...assistantMessage("running"),
+      parts: assistantMessage("running").parts.slice(0, 2),
+    };
+    const { rerender } = render(<MessageHarness message={running} />);
+    const open = () => screen.getByRole("button", { name: "Activity in progress" });
+    expect(open()).toHaveTextContent("2 steps \u00b7 3s");
+    act(() => { vi.advanceTimersByTime(2_000); });
+    expect(open()).toHaveTextContent("2 steps \u00b7 5s");
+
+    // The runtime settles a message asynchronously, so the settled state is
+    // awaited on real timers. The frozen figure comes from the two server
+    // stamps, not from the clock; the settled fixture folds to one band of
+    // reasoning + tool + compaction.
+    vi.useRealTimers();
+    rerender(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      finishedAt: "2026-07-17T10:00:05.400Z",
+    }} />);
+    const settled = await screen.findByRole("button", { name: "Activity" });
+    expect(settled).toHaveTextContent("3 steps \u00b7 5s");
+  });
+
+  it("gives the clock to the band still open and counts steps on the rest", () => {
+    const read = (id: string) => ({
+      type: "tool-call" as const,
+      toolCallId: id,
+      toolName: "read_file",
+      args: { path: `${id}.md` },
+      result: { text: id },
+      status: "complete" as const,
     });
     // Prose between two runs of work splits the turn into two Activity bands.
     render(<MessageHarness message={{
       ...assistantMessage("cancelled"),
       parts: [
-        read("one", 100),
+        read("one"),
         { type: "text", text: "Checked the first half." },
-        read("two", 400),
-        read("three", 400),
+        read("two"),
+        read("three"),
       ],
     }} />);
 
     const triggers = screen.getAllByRole("button", { name: "Activity" });
     expect(triggers).toHaveLength(2);
-    // 1 step / 100ms, then 2 steps / 800ms — never the message-wide 3 / 900ms.
-    expect(triggers[0]).toHaveTextContent("1 step · 100ms");
-    expect(triggers[1]).toHaveTextContent("2 steps · 800ms");
-    expect(screen.queryByText(/3 steps/u)).toBeNull();
+    expect(triggers[0]).toHaveTextContent("1 step");
+    expect(triggers[0]?.textContent).not.toContain("\u00b7");
+    expect(triggers[1]).toHaveTextContent("2 steps \u00b7 12s");
+  });
+
+  it("shows steps only for a historical record with no finish stamp", () => {
+    // A cancelled turn keeps arrival order: reasoning + tool + compaction form
+    // the band (3 steps); usage telemetry never renders; the text follows.
+    const { finishedAt: _omitted, ...legacy } = assistantMessage("cancelled");
+    render(<MessageHarness message={legacy} />);
+
+    const trigger = screen.getByRole("button", { name: "Activity" });
+    expect(trigger).toHaveTextContent("3 steps");
+    expect(trigger.textContent).not.toContain("\u00b7");
   });
 
   it("colours a cluster's dot by its own outcome, not by a member's", () => {

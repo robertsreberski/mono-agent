@@ -1,6 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import "../../styles.css";
+import { recordServerTime, resetServerClock } from "../../server-clock";
 import {
   ACTIVITY_GROUP_BY,
   ActivityGroup,
@@ -8,6 +9,11 @@ import {
   Reasoning,
   ReasoningGroup,
 } from "./Reasoning";
+
+afterEach(() => {
+  vi.useRealTimers();
+  resetServerClock();
+});
 
 describe("Reasoning", () => {
   it("streams a live thought open and lets a settled one fold away", () => {
@@ -225,6 +231,61 @@ describe("ActivityGroup", () => {
     expect(settledTrigger).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(settledTrigger);
     expect(settledTrigger).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("shows a settled turn's window from its stamps and never ticks it", () => {
+    vi.useFakeTimers();
+    render(
+      <ActivityGroup streaming={false} stepCount={3} timing={{ startedAt: 0, finishedAt: 12_400 }}>
+        <p>Done</p>
+      </ActivityGroup>,
+    );
+    const trigger = screen.getByRole("button", { name: "Activity" });
+    expect(trigger).toHaveTextContent("3 steps \u00b7 12s");
+    act(() => { vi.advanceTimersByTime(5_000); });
+    expect(trigger).toHaveTextContent("3 steps \u00b7 12s");
+  });
+
+  it("ticks an open window once a second while streaming, then freezes at the stamps", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-04T10:00:03.000Z"));
+    const startedAt = Date.parse("2026-09-04T10:00:00.000Z");
+    const { rerender } = render(
+      <ActivityGroup streaming stepCount={1} timing={{ startedAt }}><p>Working</p></ActivityGroup>,
+    );
+    expect(screen.getByRole("button", { name: "Activity in progress" })).toHaveTextContent("1 step \u00b7 3s");
+    act(() => { vi.advanceTimersByTime(2_000); });
+    expect(screen.getByRole("button", { name: "Activity in progress" })).toHaveTextContent("1 step \u00b7 5s");
+    rerender(
+      <ActivityGroup streaming={false} stepCount={1} timing={{ startedAt, finishedAt: startedAt + 5_400 }}>
+        <p>Working</p>
+      </ActivityGroup>,
+    );
+    act(() => { vi.advanceTimersByTime(10_000); });
+    expect(screen.getByRole("button", { name: "Activity" })).toHaveTextContent("1 step \u00b7 5s");
+  });
+
+  it("ticks against the server's clock, not the browser's", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-04T10:00:10.000Z"));
+    recordServerTime("2026-09-04T10:00:03.000Z"); // the browser runs 7s ahead of the server
+    render(
+      <ActivityGroup streaming stepCount={1} timing={{ startedAt: Date.parse("2026-09-04T10:00:00.000Z") }}>
+        <p>Working</p>
+      </ActivityGroup>,
+    );
+    expect(screen.getByRole("button", { name: "Activity in progress" })).toHaveTextContent("1 step \u00b7 3s");
+  });
+
+  it("says nothing about time when a settled turn recorded no finish", () => {
+    render(
+      <ActivityGroup streaming={false} stepCount={2} timing={{ startedAt: 0 }}>
+        <p>Old</p>
+      </ActivityGroup>,
+    );
+    const trigger = screen.getByRole("button", { name: "Activity" });
+    expect(trigger).toHaveTextContent("2 steps");
+    expect(trigger.textContent).not.toContain("\u00b7");
   });
 });
 

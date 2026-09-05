@@ -3561,3 +3561,35 @@ describe("WebStore conversation search", () => {
     reopened.close();
   });
 });
+
+describe("WebStore turn timing", () => {
+  it("exposes the turn's finish stamp on the assistant message once the turn settles", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    let clockMs = Date.parse("2026-09-04T10:00:00.000Z");
+    const store = await WebStore.open({ stateDir: join(base, "state"), clock: () => new Date(clockMs) });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "time me", attachmentIds: [] });
+    clockMs += 4_000;
+    const running = store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "assistant_thought", text: "Thinking" } },
+    ]);
+    expect(running.createdAt).toBe("2026-09-04T10:00:00.000Z");
+    expect(running.finishedAt).toBeUndefined();
+
+    clockMs += 8_000;
+    const detail = store.completeTurn(turn.turnId, "Done");
+    const assistant = detail.messages.find((message) => message.role === "assistant");
+    expect(assistant?.finishedAt).toBe("2026-09-04T10:00:12.000Z");
+    expect(assistant?.finishedAt).toBe(detail.thread.runState.finishedAt);
+    expect(detail.messages.find((message) => message.role === "user")?.finishedAt).toBeUndefined();
+
+    // A failed turn is finished too: the window is still known.
+    const second = store.beginTurn({ threadId: thread.id, text: "again", attachmentIds: [] });
+    clockMs += 1_500;
+    const failed = store.failTurn(second.turnId, { message: "boom", code: "provider_unavailable" });
+    expect(failed.messages.at(-1)?.finishedAt).toBe("2026-09-04T10:00:13.500Z");
+    store.close();
+  });
+});
