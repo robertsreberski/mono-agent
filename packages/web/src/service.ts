@@ -54,6 +54,7 @@ import {
   type WebEventType,
   type WebLiveInputReceipt,
   type WebMessage,
+  type WebMessageDelta,
   type WebMessagePart,
   type WebModelOption,
   type WebThreadNotificationTriggerKind,
@@ -97,6 +98,7 @@ import {
   WEB_THREAD_PAGE_DEFAULT,
   notificationPushLogicalKey,
   type StoredAttachment,
+  type StoredMessageWrite,
   type StoredTurnExecution,
   type StoredWebPushEvent,
   type WebPushIdentity,
@@ -707,6 +709,24 @@ export class WebService {
     const page = this.store.listMessagesPage(threadId, query);
     const shape: WebTranscriptShape = full === undefined ? {} : { full };
     return { ...page, messages: page.messages.map((message) => this.shapeMessage(message, shape)) };
+  }
+
+  /**
+   * ONE message, at the version it currently holds.
+   *
+   * The recovery a streamed transcript needs: a console whose delta no longer
+   * chains onto the `seq` it is holding re-reads the one message rather than
+   * the conversation around it. Addressed by (conversation, message) for the
+   * same reason the tool-call read is -- a message id is not a capability, and
+   * a lookup that took it alone would serve any caller any conversation.
+   */
+  message(threadId: string, messageId: string, options: WebTranscriptShape = {}): WebMessage {
+    const thread = this.store.getThread(threadId);
+    const message = this.store.getMessage(messageId);
+    if (thread === undefined || message === undefined || message.threadId !== thread.id) {
+      throw new WebConsoleError("message_not_found", "The message is unavailable.", 404);
+    }
+    return this.shapeMessage(message, options);
   }
 
   /**
@@ -1555,8 +1575,7 @@ export class WebService {
   ): Promise<void> {
     const coalescer = new StreamFrameCoalescer(
       async (frames) => {
-        const { message } = this.store.applyStreamFrames(started.turnId, frames);
-        this.emit("message.changed", started.thread.id, { messageId: message.id, updatedAt: message.updatedAt });
+        this.emitMessageWrite(started.thread.id, this.store.applyStreamFrames(started.turnId, frames));
       },
       (error) => controller.abort(error),
     );
@@ -1606,6 +1625,7 @@ export class WebService {
           ...(hostWakeDeliveryKey === undefined ? {} : { monitorWakeDeliveryKey: hostWakeDeliveryKey }),
         },
       );
+      this.emitMessageWrite(started.thread.id, detail.write);
       this.emit("turn.changed", started.thread.id, { turn: detail.thread.runState });
       this.emitThread("thread.changed", { thread: detail.thread });
       this.emitThread("threads.changed", { thread: detail.thread });
@@ -1630,6 +1650,7 @@ export class WebService {
         ...(code === undefined ? {} : { code }),
         cancelled,
       });
+      this.emitMessageWrite(started.thread.id, detail.write);
       this.emit("turn.changed", started.thread.id, { turn: detail.thread.runState });
       this.emitThread("thread.changed", { thread: detail.thread });
       this.emitThread("threads.changed", { thread: detail.thread });
@@ -2298,6 +2319,50 @@ export class WebService {
     for (const type of types) this.emitThread(type, { thread });
   }
 
+  /**
+   * Put one persisted assistant-message write on the wire as content.
+   *
+   * A streaming answer is rewritten every {@link STREAM_FLUSH_INTERVAL_MS}
+   * milliseconds. Announcing each one as an invalidation made every connected
+   * console re-read the whole conversation to find the few characters that had
+   * arrived, so these two paths -- the stream coalescer and the write that
+   * settles a turn -- say what changed instead.
+   *
+   * Three rules keep that honest:
+   * - A write that did not happen says nothing. `applyStreamFrames` and the
+   *   finish both answer a settled turn with no delta at all, and a version
+   *   nobody wrote is not a version to announce.
+   * - An empty `ops` list is still announced. A status-only finish moves the
+   *   sequence number without changing a part, and a console that never heard
+   *   about it would reject the next delta as a gap.
+   * - The parts inside a `set` are shaped exactly as a read would serve them,
+   *   and a delta that would cost more than re-reading the message is demoted
+   *   to the invalidation hint every other writer emits. A splice-driven finish
+   *   re-sets every part it shifted, which is bigger than the message itself.
+   */
+  private emitMessageWrite(threadId: string, write: StoredMessageWrite | undefined): void {
+    if (write === undefined || write.delta === undefined) return;
+    const { message, delta } = write;
+    const hint = (): void => {
+      this.emit("message.changed", threadId, { messageId: message.id, updatedAt: message.updatedAt });
+    };
+    // User rows are mapped with their quote and live-input telemetry filtered
+    // out, so a delta diffed against them would describe parts no reader holds.
+    if (message.role !== "assistant") {
+      hint();
+      return;
+    }
+    const shaped: WebMessageDelta = {
+      ...delta,
+      ops: delta.ops.map((op) => (op.op === "set" ? { ...op, part: this.shapePart(message, op.part, {}) } : op)),
+    };
+    if (JSON.stringify(shaped.ops).length > JSON.stringify(this.shapeMessage(message)).length) {
+      hint();
+      return;
+    }
+    this.emit("message.delta", threadId, shaped);
+  }
+
   private emit(type: WebEventType, threadId?: string, payload?: unknown): void {
     if (this.stopped) return;
     const event = this.createEvent(type, threadId, payload);
@@ -2786,15 +2851,24 @@ export class WebService {
    * exactly as recorded.
    */
   private shapeMessage(message: WebMessage, options: WebTranscriptShape = {}): WebMessage {
-    const parts = message.parts.map((part): WebMessagePart => {
-      if (part.type === "attachment" || part.type === "mcp_app") return this.decorateReplyPart(message, part);
-      if (options.full === true) return part;
-      if (part.type === "telemetry") return shapeTelemetryPart(part);
-      if (part.type === "tool-call") return shapeToolCallPart(part);
-      if (part.type === "subagent") return shapeSubagentPart(part);
-      return part;
-    });
-    return { ...message, parts };
+    return { ...message, parts: message.parts.map((part) => this.shapePart(message, part, options)) };
+  }
+
+  /**
+   * One part, shaped exactly as a read of its message would serve it.
+   *
+   * A streamed delta puts individual parts on the wire, and they cross the same
+   * boundary the transcript does. Reading the rules from one place is what keeps
+   * a `set` op and a re-read of the same message from disagreeing about what a
+   * tool result contains.
+   */
+  private shapePart(message: WebMessage, part: WebMessagePart, options: WebTranscriptShape): WebMessagePart {
+    if (part.type === "attachment" || part.type === "mcp_app") return this.decorateReplyPart(message, part);
+    if (options.full === true) return part;
+    if (part.type === "telemetry") return shapeTelemetryPart(part);
+    if (part.type === "tool-call") return shapeToolCallPart(part);
+    if (part.type === "subagent") return shapeSubagentPart(part);
+    return part;
   }
 
   /**

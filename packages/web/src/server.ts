@@ -35,6 +35,7 @@ import {
   type StartWebTurnInput,
   type WebEvent,
   type WebConsoleIdentity,
+  type WebMessageDelta,
   type WebMessagePart,
   type WebTheme,
 } from "./contracts.js";
@@ -61,6 +62,23 @@ export const DEFAULT_WEB_HOST = "0.0.0.0";
 export const DEFAULT_WEB_PORT = 5050;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const MAX_SSE_CLIENTS = 64;
+/**
+ * How often one connection may be told that one conversation's message moved,
+ * when it is not subscribed to that conversation's content.
+ *
+ * A hint costs its reader a re-read, and a streaming turn produces one write
+ * every 50 ms. A console that is not looking at the conversation has no reason
+ * to follow it at that rate -- it needs the sidebar row to be right, which the
+ * conversation events already carry.
+ */
+const DELTA_HINT_INTERVAL_MS = 1_000;
+/**
+ * How many conversations one connection remembers having hinted about before it
+ * drops the entries that can no longer suppress anything. Purely memory
+ * hygiene: an entry older than {@link DELTA_HINT_INTERVAL_MS} never suppresses
+ * a hint, so forgetting it changes nothing a console observes.
+ */
+const MAX_THROTTLED_THREADS = 256;
 const MAX_MCP_APP_BRIDGE_REQUEST_BYTES = 64 * 1024;
 /**
  * Content-addressed build output and write-once upload bytes never change under
@@ -380,6 +398,24 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  // Registered above `/threads/:id` and above the message page for the same
+  // reason the tool-call read is: this is how a console whose delta stream
+  // skipped a version repairs ONE message instead of re-reading the whole
+  // conversation around it.
+  app.get("/api/v1/threads/:threadId/messages/:messageId", (req, res, next) => {
+    try {
+      res.status(200).json({
+        message: service.message(
+          pathParam(req.params.threadId),
+          pathParam(req.params.messageId),
+          fullTranscriptQuery(req.query.full),
+        ),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/v1/threads/:id", (req, res, next) => {
     try {
       res.status(200).json(service.thread(pathParam(req.params.id), fullTranscriptQuery(req.query.full)));
@@ -687,7 +723,32 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     void trackOperation(handleDownloadContent(pathParam(req.params.id), res, service), activeOperations).catch(next);
   });
 
-  app.get("/api/v1/events", (_req, res) => {
+  /**
+   * The console's live channel.
+   *
+   * Two kinds of frame travel on it. A console names the conversation it is
+   * looking at with `?thread=`, and for THAT conversation it is served
+   * `message.delta` frames carrying what each write changed; a streamed answer
+   * is rewritten every 50 ms, and a console that answered each of those by
+   * re-reading the conversation paid for the whole transcript every time.
+   * Everything else -- another conversation's writes, and every write on a
+   * console that named no conversation -- is downgraded to the
+   * `message.changed` invalidation this stream has always carried, at most one
+   * per conversation per second, dropped rather than queued. Every other event
+   * type passes through untouched.
+   *
+   * `Last-Event-ID` is still ignored and nothing is replayed: this is state
+   * invalidation, not a log. A reconnecting console bootstraps, and `ready`
+   * means resync the conversation it has open.
+   */
+  app.get("/api/v1/events", (req, res, next) => {
+    let subscribed: string | undefined;
+    try {
+      subscribed = optionalQueryString(req.query.thread, 512);
+    } catch (error) {
+      next(error);
+      return;
+    }
     if (activeStreams.size >= MAX_SSE_CLIENTS) {
       res.status(503).json({ error: { code: "sse_capacity", message: "Too many event streams are connected." } });
       return;
@@ -700,16 +761,19 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
 
+    // Per connection, and cleared with it: what one console has already been
+    // told about is no reason to keep another quiet.
+    const hintedAt = new Map<string, number>();
     const closeStream = (): void => {
       if (closed) return;
       closed = true;
       clearInterval(heartbeat);
       unsubscribe();
+      hintedAt.clear();
       activeStreams.delete(closeStream);
       res.end();
     };
-    const send = (event: WebEvent): boolean => {
-      if (closed || res.writableEnded) return false;
+    const write = (event: WebEvent): boolean => {
       const writable = res.write(formatSse(event));
       if (!writable) {
         // Events are state-invalidation hints, not an unbounded replay log. A
@@ -718,6 +782,27 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         return false;
       }
       return true;
+    };
+    const send = (event: WebEvent): boolean => {
+      if (closed || res.writableEnded) return false;
+      if (event.type !== "message.delta") return write(event);
+      if (event.threadId !== undefined && event.threadId === subscribed) return write(event);
+      const delta = event.payload as WebMessageDelta;
+      const key = event.threadId ?? "";
+      const now = Date.now();
+      const last = hintedAt.get(key);
+      // Dropped, not queued: a hint says only that the message moved, so the
+      // one that was suppressed is answered by the one that follows it.
+      if (last !== undefined && now - last < DELTA_HINT_INTERVAL_MS) return true;
+      if (hintedAt.size > MAX_THROTTLED_THREADS) {
+        for (const [seen, at] of hintedAt) if (now - at >= DELTA_HINT_INTERVAL_MS) hintedAt.delete(seen);
+      }
+      hintedAt.set(key, now);
+      return write({
+        ...event,
+        type: "message.changed",
+        payload: { messageId: delta.messageId, updatedAt: delta.updatedAt },
+      });
     };
     const unsubscribe = service.subscribe(send);
     const heartbeat = setInterval(() => {

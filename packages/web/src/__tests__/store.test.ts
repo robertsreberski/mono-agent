@@ -29,6 +29,9 @@ import {
   type StoredTurnFinish,
 } from "../store.js";
 import { fakeMonitor, fakeProcessJob, temporaryRoot } from "./helpers.js";
+// The console replays these same vectors, so they live where both suites can
+// take them verbatim rather than each inventing its own reading of an op.
+import { MESSAGE_DELTA_VECTORS } from "../../webapp/src/test/message-delta-vectors.js";
 
 const cleanup: string[] = [];
 
@@ -3696,100 +3699,20 @@ describe("WebStore turn timing", () => {
   });
 });
 
-/** Shared parts, so a vector's unchanged slots keep the identity the diff reads. */
-const VECTOR_PARTS = {
-  alpha: { type: "text", text: "alpha" },
-  alphaGrown: { type: "text", text: "alpha and more" },
-  alphaShrunk: { type: "text", text: "alp" },
-  alphaCopy: { type: "text", text: "alpha" },
-  alphaReasoning: { type: "reasoning", text: "alpha" },
-  why: { type: "reasoning", text: "why" },
-  whyGrown: { type: "reasoning", text: "why not" },
-  toolRunning: { type: "tool-call", toolCallId: "t1", toolName: "Read", status: "running" },
-  toolComplete: { type: "tool-call", toolCallId: "t1", toolName: "Read", result: "body", status: "complete" },
-  failed: { type: "error", code: "provider_unavailable", message: "boom" },
-} as const satisfies Record<string, WebMessagePart>;
-
 /**
- * The delta vectors the store's diff and replay must satisfy — and the ones
- * Task 7's client-side replay is expected to satisfy too. Exported so the
- * console's own suite can take them verbatim rather than inventing a second
- * reading of what an op means.
+ * The shared delta table, read as this package's own types.
+ *
+ * The annotation is the point: it is a compile-time proof that every vector in
+ * the dependency-free table is a valid {@link WebMessagePart} and a valid
+ * {@link WebMessageDeltaOp} here, so the console cannot hold the diff to a
+ * contract the store does not share.
  */
-export const MESSAGE_DELTA_VECTORS: readonly {
+const DELTA_VECTORS: readonly {
   readonly name: string;
   readonly prev: readonly WebMessagePart[];
   readonly next: readonly WebMessagePart[];
   readonly ops: readonly WebMessageDeltaOp[];
-}[] = [
-  {
-    name: "opens a transcript with its first part",
-    prev: [],
-    next: [VECTOR_PARTS.alpha],
-    ops: [{ op: "set", index: 0, part: VECTOR_PARTS.alpha }],
-  },
-  {
-    name: "grows a text part by its tail",
-    prev: [VECTOR_PARTS.alpha],
-    next: [VECTOR_PARTS.alphaGrown],
-    ops: [{ op: "append", index: 0, delta: " and more" }],
-  },
-  {
-    name: "grows a reasoning part by its tail",
-    prev: [VECTOR_PARTS.alpha, VECTOR_PARTS.why],
-    next: [VECTOR_PARTS.alpha, VECTOR_PARTS.whyGrown],
-    ops: [{ op: "append", index: 1, delta: " not" }],
-  },
-  {
-    name: "replaces a tool call in the slot it already holds",
-    prev: [VECTOR_PARTS.alpha, VECTOR_PARTS.toolRunning],
-    next: [VECTOR_PARTS.alpha, VECTOR_PARTS.toolComplete],
-    ops: [{ op: "set", index: 1, part: VECTOR_PARTS.toolComplete }],
-  },
-  {
-    name: "sets every index the array gained",
-    prev: [VECTOR_PARTS.alpha],
-    next: [VECTOR_PARTS.alpha, VECTOR_PARTS.toolComplete, VECTOR_PARTS.failed],
-    ops: [
-      { op: "set", index: 1, part: VECTOR_PARTS.toolComplete },
-      { op: "set", index: 2, part: VECTOR_PARTS.failed },
-    ],
-  },
-  {
-    name: "truncates before re-setting a spliced array",
-    prev: [VECTOR_PARTS.alpha, VECTOR_PARTS.toolComplete, VECTOR_PARTS.why],
-    next: [VECTOR_PARTS.toolComplete, VECTOR_PARTS.whyGrown],
-    ops: [
-      { op: "truncate", length: 2 },
-      { op: "set", index: 0, part: VECTOR_PARTS.toolComplete },
-      { op: "set", index: 1, part: VECTOR_PARTS.whyGrown },
-    ],
-  },
-  {
-    name: "says nothing about an array nothing touched",
-    prev: [VECTOR_PARTS.alpha, VECTOR_PARTS.toolComplete],
-    next: [VECTOR_PARTS.alpha, VECTOR_PARTS.toolComplete],
-    ops: [],
-  },
-  {
-    name: "says nothing about a text part that only lost its identity",
-    prev: [VECTOR_PARTS.alpha],
-    next: [VECTOR_PARTS.alphaCopy],
-    ops: [],
-  },
-  {
-    name: "sets rather than appends when a part changed type",
-    prev: [VECTOR_PARTS.alpha],
-    next: [VECTOR_PARTS.alphaReasoning],
-    ops: [{ op: "set", index: 0, part: VECTOR_PARTS.alphaReasoning }],
-  },
-  {
-    name: "sets rather than appends when text shrank",
-    prev: [VECTOR_PARTS.alpha],
-    next: [VECTOR_PARTS.alphaShrunk],
-    ops: [{ op: "set", index: 0, part: VECTOR_PARTS.alphaShrunk }],
-  },
-];
+}[] = MESSAGE_DELTA_VECTORS;
 
 describe("WebStore message sequence and part deltas", () => {
   interface StreamingStore {
@@ -3853,7 +3776,7 @@ describe("WebStore message sequence and part deltas", () => {
     for (const nested of Object.values(value as Record<string, unknown>)) deepFreeze(nested);
   }
 
-  it.each(MESSAGE_DELTA_VECTORS)("diffs and replays a vector that $name", ({ prev, next, ops }) => {
+  it.each(DELTA_VECTORS)("diffs and replays a vector that $name", ({ prev, next, ops }) => {
     expect(diffParts(prev, next)).toEqual(ops);
     expect(applyDeltaOps(prev, ops)).toEqual(next);
   });

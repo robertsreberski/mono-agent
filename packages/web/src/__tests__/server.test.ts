@@ -1948,6 +1948,184 @@ describe("web HTTP server", () => {
     }
   });
 
+  it("streams content for the conversation a console subscribed to and hints for everything else", async () => {
+    const lines = [
+      JSON.stringify({ kind: "append", delta: "hello " }),
+      JSON.stringify({ kind: "append", delta: "world" }),
+      JSON.stringify({ kind: "finish", finalText: "hello world" }),
+      "",
+    ];
+    const { baseUrl } = await start({ fetchImpl: operatorFetch({ turns: () => lines.join("\n") }) });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const otherId = await createThread(baseUrl, "agent-one");
+
+    const subscribed = await fetch(`${baseUrl}/api/v1/events?thread=${encodeURIComponent(threadId)}`);
+    const unsubscribed = await fetch(`${baseUrl}/api/v1/events`);
+    const subscribedReader = subscribed.body?.getReader();
+    const unsubscribedReader = unsubscribed.body?.getReader();
+    if (subscribedReader === undefined || unsubscribedReader === undefined) {
+      throw new Error("Expected two SSE response bodies.");
+    }
+    const nextSubscribed = sseEventReader(subscribedReader);
+    const nextUnsubscribed = sseEventReader(unsubscribedReader);
+    expect(await nextSubscribed()).toMatchObject({ type: "ready" });
+    expect(await nextUnsubscribed()).toMatchObject({ type: "ready" });
+
+    await settleTurn(baseUrl, threadId, "go");
+    const streamed = await drainTurn(nextSubscribed);
+    const hinted = await drainTurn(nextUnsubscribed);
+
+    // The subscribed console is served what changed, and never a hint about the
+    // conversation it is looking at.
+    const deltas = streamed.filter((event) => event.type === "message.delta");
+    expect(deltas.length).toBeGreaterThanOrEqual(2);
+    expect(streamed.filter((event) => event.type === "message.changed")).toEqual([]);
+    for (const event of deltas) {
+      expect(event.threadId).toBe(threadId);
+      expect(event.payload).toMatchObject({
+        messageId: expect.any(String),
+        baseSeq: expect.any(Number),
+        seq: expect.any(Number),
+        status: expect.any(String),
+        ops: expect.any(Array),
+      });
+    }
+
+    // Every other console keeps the invalidation it already understands, and the
+    // two writes above reach it as ONE hint rather than one per flush.
+    expect(hinted.filter((event) => event.type === "message.delta")).toEqual([]);
+    const hints = hinted.filter((event) => event.type === "message.changed");
+    expect(hints).toHaveLength(1);
+    expect(hints[0]?.payload).toEqual({ messageId: expect.any(String), updatedAt: expect.any(String) });
+
+    // A delta for a conversation this console is NOT in is downgraded too.
+    await settleTurn(baseUrl, otherId, "elsewhere");
+    const elsewhere = await drainTurn(nextSubscribed);
+    expect(elsewhere.filter((event) => event.type === "message.delta")).toEqual([]);
+    const elsewhereHints = elsewhere.filter((event) => event.type === "message.changed");
+    expect(elsewhereHints).toHaveLength(1);
+    expect(elsewhereHints[0]?.threadId).toBe(otherId);
+
+    await Promise.all([subscribedReader.cancel(), unsubscribedReader.cancel()]);
+  });
+
+  it("rejects an oversized conversation subscription rather than opening a stream", async () => {
+    const { baseUrl } = await start();
+    const refused = await fetch(`${baseUrl}/api/v1/events?thread=${"t".repeat(600)}`);
+    expect(refused.status).toBe(400);
+    expect(await json(refused)).toMatchObject({ error: { code: "invalid_page" } });
+  });
+
+  /**
+   * A conversation with a tool-heavy turn already in it, whose NEXT turn streams
+   * a long prose answer -- the shape that made this stream expensive: every
+   * flush invalidated a transcript that had nothing to do with the few
+   * characters that had arrived.
+   */
+  function historyThenStreamedAnswerFetch(): typeof fetch {
+    const answer = `${"word ".repeat(400)}end`;
+    let turn = 0;
+    const heavy = toolHeavyAgentFetch();
+    return ((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!url.includes("/v1/turns")) return heavy(input, init);
+      turn += 1;
+      if (turn === 1) return heavy(input, init);
+      return operatorFetch({
+        turns: () => [
+          ...answer.split(" ").map((word) => JSON.stringify({ kind: "append", delta: `${word} ` })),
+          JSON.stringify({ kind: "finish", finalText: answer }),
+          "",
+        ].join("\n"),
+      })(input, init);
+    }) as typeof fetch;
+  }
+
+  it("costs a subscribed console what changed, not the conversation once per write", async () => {
+    const { baseUrl } = await start({ fetchImpl: historyThenStreamedAnswerFetch() });
+    const threadId = await createThread(baseUrl, "agent-one");
+    // One tool-heavy turn of history, so a re-read is nothing like the size of
+    // the write that provokes it.
+    await settleTurn(baseUrl, threadId, "first");
+
+    const stream = await fetch(`${baseUrl}/api/v1/events?thread=${encodeURIComponent(threadId)}`);
+    const reader = stream.body?.getReader();
+    if (reader === undefined) throw new Error("Expected an SSE response body.");
+    let streamBytes = 0;
+    const next = sseEventReader(reader, (count) => { streamBytes += count; });
+    expect(await next()).toMatchObject({ type: "ready" });
+    const readyBytes = streamBytes;
+
+    await settleTurn(baseUrl, threadId, "second");
+    const streamed = await drainTurn(next);
+    const deltas = streamed.filter((event) => event.type === "message.delta");
+    const turnBytes = streamBytes - readyBytes;
+
+    // What the same turn costs a console that answers each write by re-reading
+    // the conversation it is looking at.
+    const read = await rawGet(baseUrl, `/api/v1/threads/${threadId}`);
+    expect(read.status).toBe(200);
+    expect(read.body.length).toBeGreaterThan(10 * 1_024);
+    expect(deltas.length).toBeGreaterThanOrEqual(2);
+    expect(streamed.filter((event) => event.type === "message.changed")).toEqual([]);
+    // The whole turn -- deltas, run state and both conversation summaries --
+    // costs less than ONE of the re-reads it replaces, of which there would
+    // have been one per write.
+    expect(turnBytes).toBeLessThan(read.body.length / 2);
+
+    await reader.cancel();
+  });
+
+  it("answers a message read with the version the delta stream last named", async () => {
+    const { baseUrl } = await start({ fetchImpl: toolHeavyAgentFetch() });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const other = await createThread(baseUrl, "agent-one");
+    const stream = await fetch(`${baseUrl}/api/v1/events?thread=${encodeURIComponent(threadId)}`);
+    const reader = stream.body?.getReader();
+    if (reader === undefined) throw new Error("Expected an SSE response body.");
+    const next = sseEventReader(reader);
+    expect(await next()).toMatchObject({ type: "ready" });
+
+    const detail = await settleTurn(baseUrl, threadId, "go");
+    const message = wireMessages(detail).at(-1);
+    if (message === undefined) throw new Error("Expected an assistant message.");
+    const streamed = await drainTurn(next);
+    const seq = streamed
+      .filter((event) => event.type === "message.delta")
+      .map((event) => (event.payload as { readonly seq: number }).seq)
+      .at(-1);
+    expect(seq).toBeTypeOf("number");
+
+    // The recovery a console reaches for when a delta no longer chains: the one
+    // message, at the version the stream just named.
+    const found = await fetch(`${baseUrl}/api/v1/threads/${threadId}/messages/${message.id}`);
+    expect(found.status).toBe(200);
+    const shaped = (await json(found)).message as WireMessage & { readonly seq: number };
+    expect(shaped.id).toBe(message.id);
+    expect(shaped.seq).toBe(seq);
+    expect(shaped.parts.filter((part) => part.resultTruncated === true)).toHaveLength(3);
+
+    const whole = (await json(await fetch(
+      `${baseUrl}/api/v1/threads/${threadId}/messages/${message.id}?full=1`,
+    ))).message as WireMessage & { readonly seq: number };
+    expect(whole.seq).toBe(seq);
+    expect(whole.parts.filter((part) => part.resultTruncated === true)).toHaveLength(0);
+    expect(whole.parts.find((part) => part.type === "tool-call")).toMatchObject({
+      result: "R".repeat(20 * 1_024),
+    });
+
+    // A message id is not a capability: it answers only inside its own conversation.
+    for (const path of [
+      `/api/v1/threads/${threadId}/messages/no-such-message`,
+      `/api/v1/threads/${other}/messages/${message.id}`,
+    ]) {
+      const refused = await fetch(`${baseUrl}${path}`);
+      expect(refused.status).toBe(404);
+      expect(await json(refused)).toMatchObject({ error: { code: "message_not_found" } });
+    }
+    await reader.cancel();
+  });
+
   it("answers a conversation and its message page with one screenful by default", async () => {
     const { baseUrl } = await start();
     const threadId = await createThread(baseUrl, "agent-one");
@@ -1994,6 +2172,7 @@ describe("web HTTP server", () => {
 
 function sseEventReader(
   reader: ReadableStreamDefaultReader<Uint8Array>,
+  onBytes?: (count: number) => void,
 ): () => Promise<Record<string, unknown>> {
   const decoder = new TextDecoder();
   let buffered = "";
@@ -2009,9 +2188,26 @@ function sseEventReader(
       }
       const chunk = await readSseChunk(reader);
       if (chunk.done) throw new Error("SSE stream ended before the next event.");
+      onBytes?.(chunk.value?.byteLength ?? 0);
       buffered += decoder.decode(chunk.value, { stream: true });
     }
   };
+}
+
+/**
+ * Everything one settling turn put on a stream, up to the conversation summary
+ * the finish emits. `threads.changed` is no boundary: a turn emits one when it
+ * STARTS too.
+ */
+async function drainTurn(
+  next: () => Promise<Record<string, unknown>>,
+): Promise<readonly Record<string, unknown>[]> {
+  const events: Record<string, unknown>[] = [];
+  for (;;) {
+    const event = await next();
+    events.push(event);
+    if (event.type === "thread.changed") return events;
+  }
 }
 
 async function readSseChunk(
