@@ -3069,28 +3069,32 @@ export class WebStore {
     // Nothing is written for a turn that already settled, so there is no
     // version for a delta to name.
     if (turn.status !== "running") return { message: this.requireMessage(turn.assistant_message_id) };
-    const message = this.requireMessage(turn.assistant_message_id);
-    const parts = [...message.parts];
-    let actualModel: string | undefined;
-    let actualEffort: string | undefined;
-    for (const frame of frames) {
-      if (frame.kind === "status") {
-        parts.push({ type: "telemetry", event: "status", data: { text: frame.text } });
-      } else if (frame.kind === "append") {
-        appendTextPart(parts, "text", frame.delta);
-      } else if (frame.kind === "replace") {
-        replaceWholeText(parts, frame.text);
-      } else if (frame.kind === "event") {
-        applyEvent(parts, frame.event, (deliveryKey) => this.monitorWakeProjection(turnId, deliveryKey));
-        if (frame.event.type === "runtime_telemetry" && frame.event.kind === "run_config") {
-          if (typeof frame.event.data?.model === "string") actualModel = frame.event.data.model;
-          if (typeof frame.event.data?.effort === "string") actualEffort = frame.event.data.effort;
+    // The base read, the frames applied to it and the write are ONE atomic
+    // span, as they already are on the finish path. A delta whose ops were
+    // diffed against a version other than the one its `baseSeq` names is
+    // self-consistent and WRONG -- the one corruption a sequence number cannot
+    // expose, because the console would apply it without complaint.
+    const delta = this.transaction(() => {
+      const message = this.requireMessage(turn.assistant_message_id);
+      const parts = [...message.parts];
+      let actualModel: string | undefined;
+      let actualEffort: string | undefined;
+      for (const frame of frames) {
+        if (frame.kind === "status") {
+          parts.push({ type: "telemetry", event: "status", data: { text: frame.text } });
+        } else if (frame.kind === "append") {
+          appendTextPart(parts, "text", frame.delta);
+        } else if (frame.kind === "replace") {
+          replaceWholeText(parts, frame.text);
+        } else if (frame.kind === "event") {
+          applyEvent(parts, frame.event, (deliveryKey) => this.monitorWakeProjection(turnId, deliveryKey));
+          if (frame.event.type === "runtime_telemetry" && frame.event.kind === "run_config") {
+            if (typeof frame.event.data?.model === "string") actualModel = frame.event.data.model;
+            if (typeof frame.event.data?.effort === "string") actualEffort = frame.event.data.effort;
+          }
         }
       }
-    }
-    const now = this.now();
-    const delta = this.transaction(() => {
-      const written = this.writeMessageDelta(message, parts, now);
+      const written = this.writeMessageDelta(message, parts, this.now());
       if (actualModel !== undefined || actualEffort !== undefined) {
         this.database.prepare(`
           UPDATE turns SET
@@ -3101,7 +3105,7 @@ export class WebStore {
       }
       return written;
     });
-    return { message: this.requireMessage(message.id), delta };
+    return { message: this.requireMessage(turn.assistant_message_id), delta };
   }
 
   completeTurn(
@@ -4561,6 +4565,19 @@ export class WebStore {
     columns: MessagePartsColumns = {},
   ): WebMessageDelta {
     const { baseSeq, seq } = this.writeMessageParts(message.id, parts, now, columns);
+    // The ops describe `message.parts`; `baseSeq` is what the row actually held
+    // when this statement ran. Every caller reads and writes inside one
+    // transaction on a single-writer database, so these agree -- and if they
+    // ever stopped agreeing, the delta would be a self-consistent description
+    // of a version that never existed, which a console applies in silence.
+    // Refusing here turns that into a failure the caller can see.
+    if (baseSeq !== message.seq) {
+      throw new WebConsoleError(
+        "storage_corrupt",
+        `Message ${message.id} moved from ${String(message.seq)} to ${String(baseSeq)} while its delta was built.`,
+        500,
+      );
+    }
     return {
       messageId: message.id,
       baseSeq,

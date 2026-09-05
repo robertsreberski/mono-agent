@@ -3,7 +3,7 @@ import { chmod, lstat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   MAX_AGENT_REPLY_PARTS,
@@ -28,6 +28,7 @@ import {
   diffParts,
   type StoredTurnFinish,
 } from "../store.js";
+import { WebConsoleError } from "../errors.js";
 import { fakeMonitor, fakeProcessJob, temporaryRoot } from "./helpers.js";
 // The console replays these same vectors, so they live where both suites can
 // take them verbatim rather than each inventing its own reading of an op.
@@ -3775,6 +3776,48 @@ describe("WebStore message sequence and part deltas", () => {
     Object.freeze(value);
     for (const nested of Object.values(value as Record<string, unknown>)) deepFreeze(nested);
   }
+
+  it("refuses a delta whose ops and version describe different writes", async () => {
+    // Every caller reads the base and writes inside one transaction on a
+    // single-writer database, so this cannot happen today. It is guarded
+    // because the failure is silent if it ever does: ops diffed against one
+    // version, carrying the sequence number of another, are a self-consistent
+    // description of a transcript that never existed, and a console applies
+    // that without complaint. A detectable gap is the only safe answer.
+    const context = await openStreamingStore();
+    stream(context, [{ kind: "append", delta: "a" }]);
+
+    const internals = context.store as unknown as {
+      writeMessageParts: (
+        id: string,
+        parts: readonly WebMessagePart[],
+        now: string,
+        columns?: unknown,
+      ) => { readonly baseSeq: number; readonly seq: number };
+      database: DatabaseSync;
+    };
+    const write = internals.writeMessageParts.bind(context.store);
+    const spy = vi.spyOn(internals, "writeMessageParts").mockImplementation((id, parts, now, columns) => {
+      // Another writer moved the row after the parts were derived from it.
+      internals.database.prepare("UPDATE messages SET seq = seq + 1 WHERE id = ?").run(id);
+      return write(id, parts, now, columns);
+    });
+    try {
+      expect(() => context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "b" }]))
+        .toThrow(WebConsoleError);
+      expect(() => context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "b" }]))
+        .toThrow(/moved from 1 to 2 while its delta was built/u);
+    } finally {
+      spy.mockRestore();
+    }
+
+    // The refused write rolled back with its transaction: the row still holds
+    // the version, and the parts, the last honest delta described.
+    const message = context.store.getMessage(context.messageId);
+    expect(message?.seq).toBe(1);
+    expect(message?.parts).toEqual([{ type: "text", text: "a" }]);
+    context.store.close();
+  });
 
   it.each(DELTA_VECTORS)("diffs and replays a vector that $name", ({ prev, next, ops }) => {
     expect(diffParts(prev, next)).toEqual(ops);
