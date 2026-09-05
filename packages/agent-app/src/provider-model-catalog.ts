@@ -128,6 +128,8 @@ export interface ProviderModelCatalogInput {
 }
 
 export interface ProviderModelCatalog {
+  /** Whether native local metadata proves this route cannot generate chat. */
+  isEmbeddingOnly(ref: RuntimeModelReference): boolean;
   /** Eager, frozen, deterministic provider list. Never throws. */
   listProviders(): readonly TuiProviderInfo[];
   listModels(
@@ -184,6 +186,25 @@ export function buildProviderModelCatalog(
   const configuredById = new Map<string, ProviderDefinition>(
     providers.map((provider) => [provider.id, provider]),
   );
+  const embeddingRefs = new Set(
+    (input.discoveredModels ?? []).filter((model) => model.embeddingOnly).map((model) => model.ref),
+  );
+  for (const provider of [...providers, ...(localProviders ?? [])]) {
+    const localType = provider.type ?? provider.id;
+    if (localType !== "ollama" && localType !== "lmstudio") continue;
+    for (const model of provider.models ?? []) {
+      const capabilities = model.capabilities?.advertised_capabilities;
+      if (capabilities?.includes("embedding") && !capabilities.includes("completion")) {
+        embeddingRefs.add(`${provider.id}:${model.name}`);
+      }
+    }
+  }
+  const isEmbeddingOnly = (ref: RuntimeModelReference): boolean => {
+    const model = configuredById.get(ref.provider)?.models?.find(
+      (entry) => entry.name === ref.model || entry.alias === ref.model,
+    );
+    return embeddingRefs.has(`${ref.provider}:${model?.name ?? ref.model}`);
+  };
   const configuredRouteKeys = new Set(configuredRoutes.map((ref) => modelReferenceKey(ref)));
   // `providers` is the operator's explicit support list, and a route's own
   // provider is supported by construction — you cannot route through a provider
@@ -310,7 +331,8 @@ export function buildProviderModelCatalog(
     // every entry narrowed the provider to nothing, and must not fall through
     // to the un-narrowed built-in catalog.
     const declaredModels = configured?.models;
-    const allowlist = declaredModels?.filter((model) => model.enabled !== false) ?? [];
+    const allowlist = declaredModels?.filter((model) => model.enabled !== false
+      && !embeddingRefs.has(`${id}:${model.name}`)) ?? [];
     const maxAdvertised = configured?.maxAdvertisedModels ?? DEFAULT_MAX_ADVERTISED_PER_PROVIDER;
 
     let models: TuiCatalogModel[] = [];
@@ -382,7 +404,8 @@ export function buildProviderModelCatalog(
       // Dedupe by canonical ref (last wins) before sorting/capping, so a noisy
       // live /v1/models response cannot double-list a model.
       const discovered = [...new Map(
-        (discoveredByProvider.get(id) ?? []).map((model) => [model.ref, model]),
+        (discoveredByProvider.get(id) ?? []).filter((model) => !embeddingRefs.has(model.ref))
+          .map((model) => [model.ref, model]),
       ).values()].sort((left, right) => compareModelId(left.ref, right.ref));
       // The provider's own `maxAdvertisedModels`, not the default: a provider
       // that narrowed its contribution to 10 was still handed 100 live-discovered
@@ -470,6 +493,7 @@ export function buildProviderModelCatalog(
   };
 
   return {
+    isEmbeddingOnly,
     listProviders: () => frozenProviders,
 
     listModels(providerId, options = {}) {

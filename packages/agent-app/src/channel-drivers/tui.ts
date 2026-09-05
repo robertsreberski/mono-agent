@@ -383,11 +383,17 @@ export function createTuiChannelDriver(
         for (const provider of probed) {
           for (const model of provider.models) {
             const ref = `${provider.id}:${model.name}`;
-            if (byRef.has(ref)) continue;
+            const embeddingOnly = model.capabilities?.advertised_capabilities?.includes("embedding")
+              && !model.capabilities.advertised_capabilities.includes("completion");
+            if (byRef.has(ref)) {
+              if (embeddingOnly) byRef.set(ref, { ...byRef.get(ref)!, embeddingOnly: true });
+              continue;
+            }
             byRef.set(ref, {
               ref,
               label: model.displayName ?? model.alias ?? model.name,
               providerId: provider.id,
+              ...(embeddingOnly ? { embeddingOnly: true } : {}),
             });
           }
         }
@@ -436,7 +442,8 @@ export function createTuiChannelDriver(
       const discoveredRefs: RuntimeModelReference[] = [];
       for (const model of discoveredModels) {
         try {
-          discoveredRefs.push(parseMonoRuntimeModelReference(model.ref));
+          const ref = parseMonoRuntimeModelReference(model.ref);
+          if (!catalog.isEmbeddingOnly(ref)) discoveredRefs.push(ref);
         } catch {
           // A provider that reports an unparseable ref is skipped, not fatal.
         }
@@ -460,7 +467,7 @@ export function createTuiChannelDriver(
       // big to mention. If the whole body then will not fit, `sendBoundedInfo`
       // sheds a field and logs it — one loud, visible degradation instead of a
       // silent hole in the middle of the picker.
-      admitInfoModels(configuredRefs, describeModelOption, projection);
+      admitInfoModels(configuredRefs.filter((ref) => !catalog.isEmbeddingOnly(ref)), describeModelOption, projection);
       // Advisory discovery on top: its own aggregate budget, and never room the
       // body no longer has. When authored routes have already spent past the
       // reserve this ceiling sits below the running total and discovery admits

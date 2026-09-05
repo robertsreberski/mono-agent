@@ -129,7 +129,12 @@ the selected model's supported reasoning-effort choices and becomes a
 viewport-safe bottom sheet on narrow screens. Model rows use the configured
 display name when present and otherwise use the running agent's catalog name.
 Choosing a model applies it immediately while keeping the popover open for an
-effort choice; the explicit **Close** action finishes the interaction. Exact
+effort choice; the explicit **Close** action finishes the interaction.
+Pointer/touch opening and model or effort changes do not focus the search input;
+keyboard opening retains search navigation. Local LM Studio and Ollama models
+confirmed as embedding-only by native metadata are omitted from chat choices.
+Unknown metadata preserves compatibility; model names are not used as a heuristic.
+Exact
 choices come from the running agent's startup capability snapshot; when a model
 does not advertise exact levels, the console offers provider/config default
 only instead of the global effort ladder. Usage telemetry remains internal

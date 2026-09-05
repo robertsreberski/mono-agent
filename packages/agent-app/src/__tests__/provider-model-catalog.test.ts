@@ -229,6 +229,32 @@ describe("provider-model-catalog", () => {
     expect(catalog.listModels("anthropic").models).toEqual([]);
   });
 
+  it("excludes confirmed embedding models including configured aliases", () => {
+    const catalog = buildProviderModelCatalog({
+      providers: [{ id: "desk", type: "ollama", baseUrl: "http://localhost:11434",
+        models: [{ name: "vector", alias: "pretty-vector" }, { name: "chat" }] }],
+      discoveredModels: [
+        { ref: "desk:vector", label: "Vector", providerId: "desk", embeddingOnly: true },
+        { ref: "desk:chat", label: "Chat", providerId: "desk" },
+      ],
+    });
+    expect(catalog.listModels("desk").models.map((model) => model.id)).toEqual(["chat"]);
+    expect(catalog.searchModels("vector")).toEqual([]);
+    expect(catalog.isEmbeddingOnly(parseMonoRuntimeModelReference("desk:pretty-vector"))).toBe(true);
+    expect(catalog.isEmbeddingOnly(parseMonoRuntimeModelReference("desk:chat"))).toBe(false);
+  });
+
+  it.each(["ollama", "lmstudio"])("honors configured embedding metadata for implicit %s providers", (id) => {
+    const catalog = buildProviderModelCatalog({
+      providers: [{ id, models: [
+        { name: "vector", alias: "vectors", capabilities: { advertised_capabilities: ["embedding"] } },
+        { name: "chat" },
+      ] }],
+    });
+    expect(catalog.listModels(id).models.map((model) => model.id)).toEqual(["chat"]);
+    expect(catalog.isEmbeddingOnly(parseMonoRuntimeModelReference(`${id}:vectors`))).toBe(true);
+  });
+
   it("lets a typed local provider own a Pi built-in id instead of advertising Pi's catalog", () => {
     // `runtimeOptionsForLocalProvider` routes on provider id alone, so every
     // selection under this id executes against the local endpoint. Advertising

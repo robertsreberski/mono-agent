@@ -934,6 +934,25 @@ describe("tui channel driver — info composition", () => {
     });
   });
 
+  it("withholds embedding routes and aliases from both info and paged chat models", async () => {
+    const captured = await startCapturingTui({
+      fallbackModels: ["desk:pretty-vector", "desk:chat"],
+      localProviders: [{ id: "desk", type: "lmstudio", baseUrl: "http://localhost:1234",
+        models: [{ name: "vector", alias: "pretty-vector" }, { name: "chat" }] }],
+      discoverModels: async () => [
+        { ref: "desk:vector", label: "Vector", providerId: "desk", embeddingOnly: true },
+        { ref: "desk:chat", label: "Chat", providerId: "desk" },
+      ],
+    });
+    const info = await resolveInfo(captured);
+    expect(info.models).toContain("desk:chat");
+    expect(info.models).not.toContain("desk:vector");
+    expect(info.models).not.toContain("desk:pretty-vector");
+    expect(info.modelOptions).not.toHaveProperty("desk:pretty-vector");
+    expect(captured.modelCatalog?.({ provider: "desk", limit: 100 }).models.map((m) => m.id))
+      .toEqual(["chat"]);
+  });
+
   it("dedups discovered models within a provider's catalog page", async () => {
     const localProviders: readonly LocalProviderDefinition[] = [
       { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },

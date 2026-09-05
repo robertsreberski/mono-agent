@@ -114,6 +114,8 @@ export interface DiscoveredLocalModel {
   readonly ref: string;
   readonly label: string;
   readonly providerId: string;
+  /** Confirmed by native provider metadata, never inferred from the name. */
+  readonly embeddingOnly?: boolean;
 }
 
 export interface DiscoverLocalProviderModelsOptions {
@@ -152,17 +154,12 @@ async function discoverProviderModels(
   fetchImpl: typeof fetch,
   timeoutMs: number,
 ): Promise<DiscoveredLocalModel[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const normalized = validateLocalProviderDefinition(provider);
     const url = modelsEndpointForProvider(normalized);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    let response: Response;
-    try {
-      response = await fetchImpl(url, { signal: controller.signal });
-    } finally {
-      clearTimeout(timer);
-    }
+    const response = await fetchImpl(url, { signal: controller.signal });
     if (!response.ok) {
       return [];
     }
@@ -176,10 +173,70 @@ async function discoverProviderModels(
         models.push({ ref: `${normalized.id}:${entry.id}`, label: entry.id, providerId: normalized.id });
       }
     }
-    return models;
+    const embeddingIds = await discoverEmbeddingOnlyModelIds(normalized, models.map((model) =>
+      model.ref.slice(normalized.id.length + 1)), fetchImpl, controller.signal);
+    return models.map((model) => embeddingIds.has(model.ref.slice(normalized.id.length + 1))
+      ? { ...model, embeddingOnly: true } : model);
   } catch {
     return [];
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+/**
+ * Advisory native metadata for chat catalogs. Unknown models remain usable.
+ * One shared deadline and four workers bound Ollama's per-model requests.
+ */
+export async function discoverEmbeddingOnlyModelIds(
+  provider: LocalProviderDefinition,
+  ids: readonly string[],
+  fetchImpl: typeof fetch,
+  signal: AbortSignal,
+): Promise<ReadonlySet<string>> {
+  const result = new Set<string>();
+  if (ids.length === 0 || provider.type === "openai_compat") return result;
+  const root = (provider.baseUrl ?? "").replace(/\/(?:api|v\d+)$/u, "");
+  const read = async (url: string, init?: RequestInit): Promise<unknown> => {
+    if (signal.aborted) return undefined;
+    try {
+      const response = await fetchImpl(url, { ...init, signal });
+      return response.ok ? await response.json() : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  if (provider.type === "lmstudio") {
+    const body = await read(`${root}/api/v1/models`);
+    if (isPlainObject(body) && Array.isArray(body.models)) {
+      for (const model of body.models) {
+        if (!isPlainObject(model) || model.type !== "embedding") continue;
+        if (typeof model.key === "string") result.add(model.key);
+        if (Array.isArray(model.loaded_instances)) {
+          for (const instance of model.loaded_instances) {
+            if (isPlainObject(instance) && typeof instance.id === "string") result.add(instance.id);
+          }
+        }
+      }
+    }
+    return result;
+  }
+  const pending = [...new Set(ids)];
+  await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
+    while (pending.length > 0 && !signal.aborted) {
+      const model = pending.shift()!;
+      const body = await read(`${root}/api/show`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model }),
+      });
+      if (isPlainObject(body) && Array.isArray(body.capabilities)
+        && body.capabilities.includes("embedding") && !body.capabilities.includes("completion")) {
+        result.add(model);
+      }
+    }
+  }));
+  return result;
 }
 
 /**
