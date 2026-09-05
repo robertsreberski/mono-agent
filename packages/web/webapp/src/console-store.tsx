@@ -2166,7 +2166,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         model: modelByContext[preferenceKey] ?? "",
         effort: effortByContext[preferenceKey] ?? "",
       };
-  const advertisedProviders = Object.keys(catalogByProvider);
+  // A provider advertised by the agent can own persisted catalog-only models
+  // before this tab has fetched its first page. Catalog keys remain included
+  // for compatibility with older agent payloads that do not expose providers.
+  const advertisedProviders = [
+    ...(selectedAgent?.providers?.map((provider) => provider.id) ?? []),
+    ...Object.keys(catalogByProvider),
+  ];
   const validatedPreference = validateRunPreference(
     selectedAgent,
     storedPreference,

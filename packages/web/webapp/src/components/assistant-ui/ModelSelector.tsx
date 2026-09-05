@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../Icon";
 import type { AgentProvider } from "../../types";
 import {
+  effortName,
   groupSelectorModels,
   selectorProvides,
   type ModelSelectorOption,
@@ -84,11 +85,19 @@ export function ModelSelector({
     },
     [controlledOpen, onOpenChange],
   );
-  const selectedModel = useMemo(
-    () => models.find((model) => model.id === value) ?? models[0],
-    [models, value],
-  );
-  const activeEffort = selectedModel?.efforts.find((option) => option.id === effort);
+  const selectedModel = useMemo(() => {
+    const exact = models.find((model) => model.id === value);
+    if (exact) return exact;
+    // A controlled nonblank value is still the truth even if a lazy catalog
+    // row is briefly unavailable. Never mislabel it as the first/default row.
+    if (value !== "") return { id: value, name: value, description: value, efforts: [] };
+    return models[0];
+  }, [models, value]);
+  const activeEffort = selectedModel?.efforts.find((option) => option.id === effort)
+    // A persisted nonblank effort remains authoritative while exact model
+    // metadata is unavailable. Show it in the trigger without adding it to the
+    // selectable effort ladder below.
+    ?? (effort !== "" ? { id: effort, name: effortName(effort) } : undefined);
   const selectedCommandValue = selectedModel ? commandValue(selectedModel) : undefined;
 
   useEffect(() => {

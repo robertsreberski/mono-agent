@@ -103,6 +103,62 @@ describe("ModelControls", () => {
     expect(store.setModel).toHaveBeenCalledWith(MODEL);
   });
 
+  it("keeps a catalog-only override and its shared effort controls visible while its lazy row loads", async () => {
+    const selectedModel = "anthropic:claude-fable-5";
+    storeMock.current = {
+      ...storeMock.current,
+      model: selectedModel,
+      effort: "high",
+      hasRunOverride: true,
+      selectedAgent: agent("agent", {
+        models: [MODEL],
+        defaultModel: MODEL,
+        defaultEffort: "high",
+        providers: [{ id: "anthropic", label: "Anthropic" }],
+        modelOptions: {
+          [MODEL]: { label: "GPT-5.5 Codex", reasoning: true, effortLevels: ["low", "high"] },
+        },
+      }),
+    };
+    const { rerender } = render(<ModelControls />);
+    const trigger = screen.getByRole("button", { name: "Model and reasoning effort" });
+    expect(trigger).toHaveTextContent(selectedModel);
+    expect(trigger).toHaveTextContent("High");
+    expect(trigger).not.toHaveTextContent("Default · GPT-5.5 Codex");
+
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
+    const effortGroup = within(dialog).getByRole("radiogroup", { name: "Reasoning effort" });
+    expect(within(effortGroup).getByRole("radio", { name: "Default · High" })).toBeVisible();
+    expect(within(effortGroup).getByRole("radio", { name: "Medium" })).toBeVisible();
+    expect(within(effortGroup).getByRole("radio", { name: "Ultra" })).toBeVisible();
+    fireEvent.click(within(effortGroup).getByRole("radio", { name: "Medium" }));
+    expect((storeMock.current as { setEffort: ReturnType<typeof vi.fn> }).setEffort)
+      .toHaveBeenCalledWith("medium");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+
+    storeMock.current = {
+      ...storeMock.current,
+      catalogByProvider: {
+        anthropic: {
+          status: "loaded",
+          models: [{
+            id: "claude-fable-5",
+            name: "Claude Fable 5",
+            provider: "anthropic",
+            providerLabel: "Anthropic",
+            reasoning: true,
+            effortLevels: ["low", "high"],
+          }],
+        },
+      },
+    };
+    rerender(<ModelControls />);
+    expect(trigger).toHaveTextContent("Claude Fable 5");
+    expect(trigger).toHaveTextContent("High");
+    expect(trigger).not.toHaveTextContent("Default · GPT-5.5 Codex");
+  });
+
   it("marks a conversation override and offers to clear it", async () => {
     storeMock.current = { ...storeMock.current, model: MODEL, hasRunOverride: true };
     render(<ModelControls />);
