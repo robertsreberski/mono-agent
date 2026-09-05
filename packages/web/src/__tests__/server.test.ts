@@ -1797,6 +1797,39 @@ describe("web HTTP server", () => {
   const wireMessages = (detail: Record<string, unknown>): readonly WireMessage[] =>
     detail.messages as readonly WireMessage[];
 
+  it("answers a bootstrap with one bucket, not with every agent's listing", async () => {
+    // The bootstrap used to carry every `(sourceId, archived)` bucket in full.
+    // This is the guard against that coming back: one named bucket, one page of
+    // it, and a body a fraction of what all three listings cost together.
+    const agents = ["agent-one", "agent-two", "agent-three"].map((sourceId) => ({
+      ...fakeDiscoveredAgent(),
+      source: { ...fakeDiscoveredAgent().source, sourceId, label: `Agent ${sourceId}` },
+    }));
+    const { baseUrl } = await start({ discoverImpl: async () => agents });
+    for (const agent of agents) {
+      for (let index = 0; index < 60; index += 1) await createThread(baseUrl, agent.source.sourceId);
+    }
+
+    const scoped = await rawGet(baseUrl, "/api/v1/bootstrap?sourceId=agent-one&limit=50");
+    const listings = await Promise.all(agents.map(async (agent) =>
+      rawGet(baseUrl, `/api/v1/threads?sourceId=${agent.source.sourceId}&archived=false&limit=200`)));
+    const everyBucket = listings.reduce((sum, listing) => sum + listing.body.length, 0);
+
+    const body = JSON.parse(scoped.body.toString("utf8")) as ScopedBootstrap;
+    expect(body.threadsSourceId).toBe("agent-one");
+    expect(body.threads).toHaveLength(50);
+    expect(body.threads.every((thread) => thread.sourceId === "agent-one")).toBe(true);
+    expect(body.threadsNextCursor).toEqual(expect.any(String));
+    // 180 rows across three buckets against one page of 50 from one of them.
+    // Measured: 18,480 B against 57,039 B, a factor of 3.1. A bootstrap that
+    // went back to carrying every bucket would be ~59.6 KB -- the same rows plus
+    // its own agents/limits/push overhead -- a factor of about 1. The boundary
+    // sits at 2 so both sides have most of a factor of margin, and a row growing
+    // a field cannot trip it.
+    expect(everyBucket).toBeGreaterThan(50 * 1_024);
+    expect(scoped.body.length).toBeLessThan(everyBucket / 2);
+  });
+
   it("puts a tool-heavy conversation on a diet, and serves the whole thing on request", async () => {
     const { baseUrl } = await start({ fetchImpl: toolHeavyAgentFetch() });
     const threadId = await createThread(baseUrl, "agent-one");

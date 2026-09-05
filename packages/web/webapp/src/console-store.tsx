@@ -2268,15 +2268,23 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (target === undefined) return false;
     const merged = target.parts.map((existing) => mergeToolCallPart(existing, part));
     if (merged.every((next, index) => next === target.parts[index])) return false;
-    // A NEW message object, and new part objects inside it: assistant-ui caches
-    // its conversions by object identity, so mutating in place would leave the
-    // transcript showing the preview it already rendered.
-    const repaired = { ...target, parts: merged };
+    // The MERGE runs inside the updater, against whatever React has committed by
+    // then. `detailRef` is assigned during render, so it is stale for the whole
+    // stretch between one async repair's `setDetail` and the re-render that
+    // follows: two calls repaired in the same message -- two clicks on a
+    // cluster, two subagent steps -- would each substitute a message built
+    // before the other landed, and the first repair would silently revert to its
+    // preview while both reported success. `mergeToolCallPart` is pure and
+    // idempotent, so StrictMode running this twice changes nothing.
     setDetail((committed) => committed?.thread.id === latest.thread.id
       ? {
           ...committed,
-          messages: committed.messages.map((candidate) =>
-            candidate.id === message.id ? repaired : candidate),
+          messages: committed.messages.map((candidate) => candidate.id === message.id
+            // A NEW message object, and new part objects inside it: assistant-ui
+            // caches its conversions by object identity, so a transcript
+            // repaired in place goes on rendering the preview it converted.
+            ? { ...candidate, parts: candidate.parts.map((existing) => mergeToolCallPart(existing, part)) }
+            : candidate),
         }
       : committed);
     return true;

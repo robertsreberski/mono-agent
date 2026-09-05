@@ -2920,6 +2920,60 @@ describe("ConsoleStoreProvider integration", () => {
       expect(before).toMatchObject({ parts: [{ resultTruncated: true }] });
     });
 
+    it("keeps both repairs when two calls in one message come back together", async () => {
+      // Two "Load full output" clicks on one message -- a cluster, or two
+      // subagent steps -- can have both responses queued before React commits
+      // either. A repair that substitutes a message it built from a pre-commit
+      // snapshot loses the other one, and both still report success.
+      const truncatedCall = (toolCallId: string) => ({
+        type: "tool-call" as const,
+        toolCallId,
+        toolName: "Exec",
+        result: "HEAD",
+        resultTruncated: true,
+        resultBytes: 20 * 1_024,
+        status: "complete" as const,
+      });
+      const truncated = {
+        id: "message-tool",
+        threadId: selected.id,
+        role: "assistant" as const,
+        parts: [truncatedCall("tool-a"), truncatedCall("tool-b")],
+        attachments: [],
+        createdAt: "2026-08-14T08:00:00.000Z",
+        updatedAt: "2026-08-14T08:00:00.000Z",
+        status: "complete" as const,
+      };
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { label: "Alpha" })], [selected]));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [selected] });
+      vi.mocked(api.thread).mockResolvedValue({ thread: selected, messages: [truncated] });
+      const answers = new Map<string, (part: MessagePart) => void>();
+      vi.mocked(api.toolCallPart).mockImplementation(async (_threadId, _messageId, toolCallId) =>
+        new Promise<MessagePart>((resolve) => answers.set(toolCallId, resolve)));
+      const store = await openedOnAlpha();
+
+      const first = store.current.loadFullToolCall("tool-a");
+      const second = store.current.loadFullToolCall("tool-b");
+      await waitFor(() => expect(answers.size).toBe(2));
+
+      // Both answers land before React commits either repair.
+      await act(async () => {
+        answers.get("tool-a")?.({
+          type: "tool-call", toolCallId: "tool-a", toolName: "Exec", result: "WHOLE A", status: "complete",
+        });
+        answers.get("tool-b")?.({
+          type: "tool-call", toolCallId: "tool-b", toolName: "Exec", result: "WHOLE B", status: "complete",
+        });
+        await Promise.all([first, second]);
+      });
+
+      await expect(first).resolves.toBe(true);
+      await expect(second).resolves.toBe(true);
+      const parts = store.current.detail?.messages[0]?.parts ?? [];
+      expect(parts.map((part) => (part as { result?: unknown }).result)).toEqual(["WHOLE A", "WHOLE B"]);
+      expect(parts.every((part) => (part as { resultTruncated?: boolean }).resultTruncated !== true)).toBe(true);
+    });
+
     it("reports no repair when the operator leaves the conversation mid-fetch", async () => {
       // The full body is a round trip, and the operator can walk away from the
       // conversation during it. Reporting success for a replacement that never

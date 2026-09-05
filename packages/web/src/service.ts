@@ -223,7 +223,7 @@ function shapeToolCall(call: WebToolCall): WebToolCall {
   // are bounded at the emitter. `structuredResult` is never touched anywhere:
   // it is the machine-readable outcome, bounded at the emitter too.
   if (call.toolName === "AskUser") return call;
-  const args = payloadPreview(call.args);
+  const args = shapedArgsObject(call.args) ?? payloadPreview(call.args);
   const result = payloadPreview(call.result);
   if (args === undefined && result === undefined) return call;
   return {
@@ -241,10 +241,12 @@ function shapeToolCallPart(part: WebToolCallPart): WebToolCallPart {
  * An oversized ARGUMENTS OBJECT with its string leaves cut back to fit, rather
  * than replaced by the head of its JSON text.
  *
- * A delegation's arguments are not opaque the way an arbitrary tool's are: the
- * console reads `prompt` out of them for the row summary and the Task note, and
- * a JSON-text head is neither. Nothing is added or removed, so the object keeps
- * its shape and every key keeps its place, and the longest string pays first.
+ * Arguments are not opaque the way a result is: the console reads named keys out
+ * of them -- `command`, `file_path`, a delegation's `prompt` -- for the row
+ * summary and the Task note, and the head of a JSON text is none of those. It is
+ * also what an operator scans, and a mid-object slice reads as garbage. Nothing
+ * is added or removed, so the object keeps its shape and every key keeps its
+ * place, and the longest string pays first.
  *
  * Termination is the bounded pass count, NOT an assumption that every slice
  * shrinks the serialization: cutting between a surrogate pair leaves a lone

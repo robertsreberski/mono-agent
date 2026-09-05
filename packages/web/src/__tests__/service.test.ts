@@ -3663,10 +3663,16 @@ describe("transcript shaping", () => {
       result: "R".repeat(4_096),
       resultTruncated: true,
       resultBytes: 20 * 1_024,
-      args: JSON.stringify(bigArgs).slice(0, 4_096),
       argsTruncated: true,
       argsBytes: JSON.stringify(bigArgs).length,
     });
+    // An arguments OBJECT stays an object here too: the row's summary reads a
+    // named key out of it (`command`, `file_path`, ...), and the head of a JSON
+    // text is not one. Only the oversized leaf pays.
+    const execArgs = toolCall("call-1").args as { command: string };
+    expect(bigArgs.command.startsWith(execArgs.command)).toBe(true);
+    expect(execArgs.command.length).toBeLessThan(bigArgs.command.length);
+    expect(JSON.stringify(execArgs).length).toBeLessThanOrEqual(4_096);
 
     // AskUser's question and answer ARE the card; a preview would break it.
     expect(toolCall("ask-1")).toEqual({

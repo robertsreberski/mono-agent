@@ -78,6 +78,7 @@ export type {
   PatchWebThreadInput,
   StartWebLiveInputInput,
   StartWebTurnInput,
+  WebAgentsChangedPayload,
   WebAgentStatus,
   WebAgentSummary,
   WebAttachment,
