@@ -81,6 +81,33 @@ A route that names a provider in none of `providers`, Pi's built-in catalog, nor
 - **Pi-level auth** (OAuth/account providers such as Anthropic, GitHub Copilot, OpenAI Codex; API-key providers such as OpenCode-Go) resolves through `providers.piAuthPath`. Set it up with `mono-agent auth login <provider> [--pi-auth-path ...]`.
 - **Provider-level keys** resolve through the definition's `apiKeyEnv`: keep the value in `.env` and reference only its variable name in config, so the committed file carries no secret.
 
+## OpenCode request attribution
+
+Requests whose Pi provider id is `opencode` or `opencode-go`, or whose custom
+model uses the exact hostname `opencode.ai`, include these provider-facing
+headers automatically:
+
+- `x-opencode-client: mono-agent`
+- `x-opencode-session: <provider session id>`
+
+The session value is the raw internal provider-session identity. It is not a
+Telegram chat id, Slack channel id, web thread id, cron id, or other channel
+conversation id. Continuous conversations reuse it across turns and rotate it
+after a session reset or invalidation. Per-message, isolated, model-override, and
+otherwise unkeyed direct runtime calls use a fresh one-shot identity.
+
+Existing auth, model, and request headers win case-insensitively; an explicit
+`null` suppresses the automatic value, and a caller header transform can replace
+or remove it. Other provider ids and hosts receive no `x-opencode-*` headers.
+
+For a manual transport check, run a throwaway agent configured with
+`opencode-go:deepseek-v4-pro` through a local TLS inspection proxy that redacts
+`Authorization`, then inspect the outbound request to
+`opencode.ai/zen/go/v1`. A transient dummy `OPENCODE_API_KEY` is sufficient to
+capture header presence before the expected authentication failure; testing
+two successful turns requires an explicitly authorized real provider call. This
+manual check is not performed in CI and must never use a live agent directory.
+
 ## Env form
 
 `MONO_AGENT_PROVIDERS_JSON` is a JSON object of the same shape — provider ids plus the reserved `local`/`piAuthPath`/`piNative` keys. Prefer the config file, but the env override is the escape hatch for secrets-free ephemeral setups:

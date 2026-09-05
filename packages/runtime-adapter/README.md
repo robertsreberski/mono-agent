@@ -87,6 +87,13 @@ For fallback chains, `resolveAttempt().policyOptions` may project only
 being attempted. Every other logical request field remains protected and cannot
 be replaced through `resolveAttempt().options`.
 
+`RuntimeRunOptions.providerAttributionSessionId` is a host-owned continuity key
+for provider attribution, not permission to resume provider transcript state.
+The agent harness supplies the active provider-session epoch automatically for
+continuous conversations and protects it from route-attempt overrides. Direct
+runtime callers that need attribution continuity across calls must reuse a safe,
+opaque value; otherwise Pi-native creates a fresh per-run value.
+
 `RuntimeRunOptions.toolLifecycleSink` is the typed incremental persistence seam
 for managed tools. It receives an invocation with stable call id/name,
 and redaction-eligible arguments, then exactly one result

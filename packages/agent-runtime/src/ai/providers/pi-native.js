@@ -82,6 +82,7 @@ import {
   thinkingLevelForEffort,
 } from "./pi-native/turn-runner.js";
 import { resolvePiTransport } from "./pi-native/transport.js";
+import { withOpenCodeSessionHeaders } from "./pi-native/provider-attribution.js";
 
 /**
  * Resolve mono-agent's programmatic mode once per run. Tool builders mark
@@ -190,8 +191,10 @@ export function createDynamicCredentialStore(apiKeys, resolvePiApiKey, runtimeWa
 // resolved model. `piResolvedModels` is an advanced/test seam mirroring
 // `piResolvedModel`: when supplied it is used verbatim (the model dispatched via
 // `piResolvedModel` may live outside pi's builtin catalog, e.g. a faux model).
-function buildRunModels(runtime, options, runtimeWarnings) {
-  if (options.piResolvedModels) return options.piResolvedModels;
+function buildRunModels(runtime, options, runtimeWarnings, providerAttributionSessionId) {
+  if (options.piResolvedModels) {
+    return withOpenCodeSessionHeaders(options.piResolvedModels, providerAttributionSessionId);
+  }
   const credentials = createDynamicCredentialStore(runtime.apiKeys, options.resolvePiApiKey, runtimeWarnings);
   if (options.customProvider) {
     const model = runtime.model;
@@ -204,9 +207,9 @@ function buildRunModels(runtime, options, runtimeWarnings) {
       models: [model],
       api: openAICompletionsApi(),
     }));
-    return models;
+    return withOpenCodeSessionHeaders(models, providerAttributionSessionId);
   }
-  return builtinModels({ credentials });
+  return withOpenCodeSessionHeaders(builtinModels({ credentials }), providerAttributionSessionId);
 }
 
 // Normalize the incoming runtime messages into AgentMessages the harness can
@@ -340,8 +343,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
 
   const providerSessionId = options.sessionId
     || options.providerSessionId
+    || options.providerAttributionSessionId
     || options.runId
     || randomUUID();
+  const providerAttributionSessionId = options.providerAttributionSessionId || providerSessionId;
   // Prefer the explicit sessionId, but fall back to providerSessionId so a caller
   // that only supplies providerSessionId still resumes the prior session instead
   // of being treated as a fresh run (which would drop prior context).
@@ -507,7 +512,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // global scheduling mode from the tools' executionMode markers.
     const toolSteeringMode = "one-at-a-time";
 
-    const piModels = buildRunModels(runtime, options, runtimeWarnings);
+    const piModels = buildRunModels(runtime, options, runtimeWarnings, providerAttributionSessionId);
 
     // Construct the harness and recover any interrupted durable operation.
     // Stream subscription and the external abort handler are activated only

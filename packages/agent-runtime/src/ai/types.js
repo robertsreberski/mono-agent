@@ -190,6 +190,7 @@
  * @property {RuntimeModelRef} model                     Resolved model reference; see parseRuntimeModelReference.
  * @property {string} [sessionId]                         Host conversation/session key for resumable bridges.
  * @property {string} [providerSessionId]                 Provider-owned resume id for resumable bridges.
+ * @property {string} [providerAttributionSessionId]      Host-owned provider attribution continuity key; does not authorize transcript resume.
  * @property {boolean} [sessionKeepAlive]                 Keep resumable provider state alive after the turn.
  * @property {number} [sessionIdleTimeoutMs]              Idle TTL for resumable provider state.
  * @property {AsyncIterable<{body: string, id?: string, receivedAt?: string, acknowledge?: () => void, reject?: (error?: unknown) => void}>} [liveInput] Stream of in-flight user messages for steering an active run. Providers acknowledge only after accepting a message into the active turn.

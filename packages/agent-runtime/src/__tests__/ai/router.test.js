@@ -436,6 +436,7 @@ describe("createRouterRuntime — fallback on retryable", () => {
       messages: [],
       sessionId: "host-session",
       providerSessionId: "pi-provider-session",
+      providerAttributionSessionId: "conversation-epoch",
       sessionKeepAlive: true,
       sessionIdleTimeoutMs: 60_000,
     });
@@ -449,6 +450,24 @@ describe("createRouterRuntime — fallback on retryable", () => {
     expect(executeMock.mock.calls[1][1]).not.toHaveProperty("providerSessionId");
     expect(executeMock.mock.calls[1][1]).not.toHaveProperty("sessionKeepAlive");
     expect(executeMock.mock.calls[1][1]).not.toHaveProperty("sessionIdleTimeoutMs");
+    expect(executeMock.mock.calls[0][1].providerAttributionSessionId).toBe("conversation-epoch");
+    expect(executeMock.mock.calls[1][1].providerAttributionSessionId).toBe("conversation-epoch");
+  });
+
+  it("rejects an attempt resolver that tries to replace provider attribution", async () => {
+    const router = createRouterRuntime({
+      chain: [modelRef("opencode-go", "deepseek-v4-pro")],
+      resolveAttempt: () => ({ options: { providerAttributionSessionId: "resolver-value" } }),
+    });
+
+    const result = await router.run("sys", {
+      messages: [],
+      providerAttributionSessionId: "host-value",
+    });
+
+    expect(result.failureKind).toBe("provider_unavailable_exhausted");
+    expect(result.error).toBe("route attempt resolver cannot override providerAttributionSessionId");
+    expect(executeMock).not.toHaveBeenCalled();
   });
 
   it("normalizes auth-shaped provider_unavailable failures before falling back", async () => {

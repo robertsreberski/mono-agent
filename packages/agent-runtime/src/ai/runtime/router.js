@@ -94,7 +94,7 @@ const ROUTER_TOOL_CONTEXT_KEYS = [
 ];
 const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "model", "effort", "messages", "abortSignal", "onEvent",
-  "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
+  "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
   "allowedTools", "disallowedTools", "permissionMode", "mcpServers", "mcpApps", "skills",
   "mcpCallNoTotalTimeoutTools",

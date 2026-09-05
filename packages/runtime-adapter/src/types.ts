@@ -375,6 +375,12 @@ export interface RuntimeRunOptions {
   readonly model: RuntimeModelReference;
   readonly messages: readonly RuntimeMessage[];
   readonly abortSignal: AbortSignal;
+  /**
+   * Host-owned provider attribution continuity key. Pi-native sends this raw
+   * value only to providers that require session attribution; it does not by
+   * itself authorize resuming provider transcript state.
+   */
+  readonly providerAttributionSessionId?: string;
   /** Host-only environment applied to Bash, Exec, and their nested subagents for this run. */
   readonly toolEnvironment?: AgentToolEnvironment;
   /** Host-only Pi-native process-job controller; never model/provider visible. */
