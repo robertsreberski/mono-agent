@@ -1,7 +1,8 @@
 import { lstat, readFile, readdir, writeFile } from "node:fs/promises";
-import { request as httpRequest } from "node:http";
+import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -26,8 +27,15 @@ async function start(options: Partial<Parameters<typeof startWebServer>[0]> = {}
   // fixture so SPA fallback tests exercise Express's dotfile handling.
   const staticDir = join(root, ".mono-agent", "static");
   const { mkdir } = await import("node:fs/promises");
-  await mkdir(staticDir, { recursive: true });
+  await mkdir(join(staticDir, "assets"), { recursive: true });
   await writeFile(join(staticDir, "index.html"), "<!doctype html><title>web</title>");
+  // Hashed bundles, the two service workers, and the shell each take a different
+  // cache policy, so the fixture carries a real file for every one of them. The
+  // bundle is padded past the 1 KiB compression threshold.
+  await writeFile(join(staticDir, "assets", "app-abc123.js"), `export const shell = "${"s".repeat(2048)}";\n`);
+  await writeFile(join(staticDir, "sw.js"), "self.addEventListener('install', () => {});\n");
+  await writeFile(join(staticDir, "workbox-abc.js"), "self.workbox = {};\n");
+  await writeFile(join(staticDir, "notification-sw.js"), "self.addEventListener('push', () => {});\n");
   await writeFile(join(staticDir, "manifest.webmanifest"), JSON.stringify({
     name: "mono-agent Console",
     short_name: "mono-agent",
@@ -51,6 +59,71 @@ async function start(options: Partial<Parameters<typeof startWebServer>[0]> = {}
 
 async function json(response: Response): Promise<Record<string, unknown>> {
   return response.json() as Promise<Record<string, unknown>>;
+}
+
+interface RawResponse {
+  readonly status: number;
+  readonly headers: IncomingHttpHeaders;
+  readonly body: Buffer;
+}
+
+/**
+ * `fetch` negotiates and transparently decodes its own `Accept-Encoding`, which
+ * hides exactly what these transport tests measure. Node's raw client sends no
+ * encoding of its own and never decodes, so the assertions see the bytes on the
+ * wire.
+ */
+async function rawGet(baseUrl: string, path: string, headers: Record<string, string> = {}): Promise<RawResponse> {
+  const target = new URL(path, baseUrl);
+  return new Promise<RawResponse>((resolvePromise, reject) => {
+    const request = httpRequest({
+      hostname: target.hostname,
+      port: target.port,
+      path: `${target.pathname}${target.search}`,
+      headers,
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.once("error", reject);
+      response.once("end", () => resolvePromise({
+        status: response.statusCode ?? 0,
+        headers: response.headers,
+        body: Buffer.concat(chunks),
+      }));
+    });
+    request.once("error", reject);
+    request.end();
+  });
+}
+
+/** An agent whose model catalog alone pushes bootstrap well past 16 KiB. */
+function modelRichAgentFetch(): typeof fetch {
+  const models = Array.from(
+    { length: 300 },
+    (_unused, index) => `provider/model-${String(index).padStart(3, "0")}-${"m".repeat(64)}`,
+  );
+  const modelOptions = Object.fromEntries(models.map((model) => [model, {
+    label: `Model ${model} ${"l".repeat(64)}`,
+    reasoning: true,
+    effortLevels: ["low", "medium", "high", "xhigh"],
+    contextWindow: 131_072,
+  }]));
+  const fallbackFetch = operatorFetch();
+  return async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.endsWith("/v1/info")) {
+      return Response.json({
+        schema: 1,
+        label: "Agent One",
+        model: models[0],
+        effort: "high",
+        models,
+        modelOptions,
+        capabilities: { attachments: true, askUser: false, liveInput: false },
+      });
+    }
+    return fallbackFetch(input, init);
+  };
 }
 
 function pushSubscriptionBody(endpoint = "https://push.example.test/send/opaque") {
@@ -81,7 +154,7 @@ describe("web HTTP server", () => {
     expect(await clientRoute.text()).toContain("<title>web</title>");
     const bootstrap = await fetch(`${baseUrl}/api/v1/bootstrap`);
     expect(bootstrap.status).toBe(200);
-    expect(bootstrap.headers.get("cache-control")).toBe("no-store");
+    expect(bootstrap.headers.get("cache-control")).toBe("private, no-cache");
     expect(bootstrap.headers.get("access-control-allow-origin")).toBeNull();
     const body = await bootstrap.json() as { console: unknown; agents: unknown[] };
     expect(body.console).toEqual({ hostName: hostname(), theme: "evergreen" });
@@ -94,6 +167,125 @@ describe("web HTTP server", () => {
       },
     });
     expect(JSON.stringify(body)).not.toContain("privateKey");
+  });
+
+  it("compresses large API JSON for clients that negotiate brotli or gzip", async () => {
+    const { baseUrl } = await start({ fetchImpl: modelRichAgentFetch() });
+
+    const identity = await rawGet(baseUrl, "/api/v1/bootstrap");
+    expect(identity.status).toBe(200);
+    expect(identity.headers["content-encoding"]).toBeUndefined();
+    expect(identity.body.byteLength).toBeGreaterThan(16 * 1024);
+
+    const brotli = await rawGet(baseUrl, "/api/v1/bootstrap", { "accept-encoding": "br" });
+    expect(brotli.status).toBe(200);
+    expect(brotli.headers["content-encoding"]).toBe("br");
+    expect(brotli.headers.vary).toContain("Accept-Encoding");
+    expect(brotli.body.byteLength).toBeLessThan(identity.body.byteLength / 2);
+    expect(JSON.parse(brotliDecompressSync(brotli.body).toString("utf8"))).toMatchObject({ version: 1 });
+
+    const gzip = await rawGet(baseUrl, "/api/v1/bootstrap", { "accept-encoding": "gzip" });
+    expect(gzip.status).toBe(200);
+    expect(gzip.headers["content-encoding"]).toBe("gzip");
+    expect(gzip.body.byteLength).toBeLessThan(identity.body.byteLength / 2);
+    expect(JSON.parse(gunzipSync(gzip.body).toString("utf8"))).toMatchObject({ version: 1 });
+
+    // Small payloads stay below the threshold, so the CPU is spent only where it buys bytes.
+    const health = await rawGet(baseUrl, "/healthz", { "accept-encoding": "br, gzip" });
+    expect(health.status).toBe(200);
+    expect(health.headers["content-encoding"]).toBeUndefined();
+  });
+
+  it("lets the browser revalidate API JSON instead of forbidding its cache", async () => {
+    const { baseUrl } = await start();
+
+    const first = await rawGet(baseUrl, "/api/v1/bootstrap");
+    expect(first.headers["cache-control"]).toBe("private, no-cache");
+    expect(first.headers.pragma).toBeUndefined();
+    const etag = first.headers.etag;
+    expect(etag).toEqual(expect.any(String));
+
+    const revalidated = await rawGet(baseUrl, "/api/v1/bootstrap", { "if-none-match": String(etag) });
+    expect(revalidated.status).toBe(304);
+    expect(revalidated.body.byteLength).toBe(0);
+  });
+
+  it("caches hashed assets immutably while the shell and service workers revalidate", async () => {
+    const { baseUrl } = await start();
+
+    const asset = await rawGet(baseUrl, "/assets/app-abc123.js", { "accept-encoding": "br" });
+    expect(asset.status).toBe(200);
+    expect(asset.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
+    expect(asset.headers["content-encoding"]).toBe("br");
+
+    for (const path of ["/sw.js", "/workbox-abc.js", "/notification-sw.js"]) {
+      const worker = await rawGet(baseUrl, path);
+      expect({ path, status: worker.status, cacheControl: worker.headers["cache-control"] })
+        .toEqual({ path, status: 200, cacheControl: "no-cache" });
+    }
+
+    const shell = await rawGet(baseUrl, "/");
+    expect(shell.status).toBe(200);
+    expect(shell.headers["cache-control"]).toBe("no-cache");
+    const shellEtag = shell.headers.etag;
+    expect(shellEtag).toEqual(expect.any(String));
+
+    const route = await rawGet(baseUrl, "/conversations/example");
+    expect(route.status).toBe(200);
+    expect(route.headers["cache-control"]).toBe("no-cache");
+
+    const revalidated = await rawGet(baseUrl, "/", { "if-none-match": String(shellEtag) });
+    expect(revalidated.status).toBe(304);
+    expect(revalidated.body.byteLength).toBe(0);
+  });
+
+  it("leaves the event stream and attachment bytes untransformed", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+
+    const created = await fetch(`${baseUrl}/api/v1/uploads`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "notes.txt", contentType: "text/plain", sizeBytes: 4096 }),
+    });
+    const attachment = (await json(created)).attachment as { id: string };
+    const bytes = Buffer.alloc(4096, 0x61);
+    const uploaded = await fetch(`${baseUrl}/api/v1/uploads/${attachment.id}/content`, {
+      method: "PUT",
+      headers: { "content-type": "application/octet-stream" },
+      body: bytes,
+    });
+    expect(uploaded.status).toBe(200);
+
+    // Upload bytes are write-once per random id, so the browser may keep them forever;
+    // the declared Content-Length has to survive, which rules out transforming them.
+    const content = await rawGet(baseUrl, `/api/v1/uploads/${attachment.id}/content`, { "accept-encoding": "br, gzip" });
+    expect(content.status).toBe(200);
+    expect(content.headers["content-encoding"]).toBeUndefined();
+    expect(content.headers["content-length"]).toBe("4096");
+    expect(content.headers["cache-control"]).toBe("private, max-age=31536000, immutable, no-transform");
+    expect(content.body).toEqual(bytes);
+
+    const stream = await new Promise<{ headers: IncomingHttpHeaders; first: string }>((resolvePromise, reject) => {
+      const target = new URL("/api/v1/events", baseUrl);
+      const request = httpRequest({
+        hostname: target.hostname,
+        port: target.port,
+        path: target.pathname,
+        headers: { "accept-encoding": "gzip, br" },
+      }, (response) => {
+        response.once("data", (chunk: Buffer) => {
+          const first = chunk.toString("utf8");
+          request.destroy();
+          resolvePromise({ headers: response.headers, first });
+        });
+        response.once("error", reject);
+      });
+      request.once("error", reject);
+      request.end();
+    });
+    expect(stream.headers["content-encoding"]).toBeUndefined();
+    expect(stream.headers["cache-control"]).toBe("no-cache, no-transform");
+    expect(stream.first).toContain("event: ready");
   });
 
   it("serves the fixed MCP App proxy with a route-local executable CSP", async () => {
@@ -740,6 +932,11 @@ describe("web HTTP server", () => {
     expect(download.headers.get("x-content-type-options")).toBe("nosniff");
     expect(download.headers.get("content-security-policy")).toContain("sandbox");
     expect(download.headers.get("accept-ranges")).toBe("none");
+    // The client rejects a reply attachment whose Content-Length disagrees with the
+    // declared size, so this body must never be compressed away from its length.
+    expect(download.headers.get("cache-control")).toBe("private, no-store, max-age=0, no-transform");
+    expect(download.headers.get("content-length")).toBe(String(bytes.byteLength));
+    expect(download.headers.get("content-encoding")).toBeNull();
     expect(Buffer.from(await download.arrayBuffer())).toEqual(bytes);
 
     const other = await fetch(`${baseUrl}/api/v1/threads`, {
@@ -1411,34 +1608,7 @@ describe("web HTTP server", () => {
   }, 15_000);
 
   it("keeps one SSE stream open across compact invalidations for a model-rich agent", async () => {
-    const models = Array.from(
-      { length: 300 },
-      (_unused, index) => `provider/model-${String(index).padStart(3, "0")}-${"m".repeat(64)}`,
-    );
-    const modelOptions = Object.fromEntries(models.map((model) => [model, {
-      label: `Model ${model} ${"l".repeat(64)}`,
-      reasoning: true,
-      effortLevels: ["low", "medium", "high", "xhigh"],
-      contextWindow: 131_072,
-    }]));
-    const fallbackFetch = operatorFetch();
-    const { baseUrl } = await start({
-      fetchImpl: async (input, init) => {
-        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-        if (url.endsWith("/v1/info")) {
-          return Response.json({
-            schema: 1,
-            label: "Agent One",
-            model: models[0],
-            effort: "high",
-            models,
-            modelOptions,
-            capabilities: { attachments: true, askUser: false, liveInput: false },
-          });
-        }
-        return fallbackFetch(input, init);
-      },
-    });
+    const { baseUrl } = await start({ fetchImpl: modelRichAgentFetch() });
     const bootstrap = await (await fetch(`${baseUrl}/api/v1/bootstrap`)).json() as { agents: unknown[] };
     expect(Buffer.byteLength(JSON.stringify({ agents: bootstrap.agents }), "utf8")).toBeGreaterThan(16 * 1024);
 
