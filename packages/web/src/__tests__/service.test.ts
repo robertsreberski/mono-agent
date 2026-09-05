@@ -12,6 +12,7 @@ import {
   type AgentReplyPart,
 } from "@mono-agent/agent-contracts";
 
+import type { WebEvent } from "../contracts.js";
 import { agentGeneration, WebService, WeightedTurnBudget } from "../service.js";
 import { fakeDiscoveredAgent, fakeMonitor, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
 
@@ -131,6 +132,171 @@ describe("agentGeneration", () => {
 });
 
 describe("WebService", () => {
+  /**
+   * Every listing event a write emitted, reduced to the conversation its
+   * PAYLOAD names -- `undefined` for one that names none, which is the whole
+   * cost this normalisation removes: a console holding a row it cannot update
+   * has to spend a page of its bucket to find out what changed.
+   */
+  const listingTargets = (events: readonly WebEvent[]): readonly (string | undefined)[] =>
+    events
+      .filter((event) => event.type === "thread.changed" || event.type === "threads.changed")
+      .map((event) => {
+        const payload = event.payload as {
+          readonly thread?: { readonly id: string; readonly revision: number };
+          readonly threadId?: string;
+          readonly removed?: boolean;
+        } | undefined;
+        if (payload?.thread !== undefined) return payload.thread.id;
+        if (payload?.removed === true) return payload.threadId;
+        return undefined;
+      });
+
+  it("scopes the bootstrap listing to one bucket and falls back deterministically", async () => {
+    const online = fakeDiscoveredAgent();
+    const other = fakeDiscoveredAgent({
+      source: { ...online.source, sourceId: "agent-two", label: "Agent Two" },
+    });
+    // No endpoint at all, and sorted ahead of both: "the first agent" and "the
+    // first agent that can answer" are different agents here.
+    const dark = { source: { ...online.source, sourceId: "agent-alpha", label: "Agent Alpha" } };
+    const service = await createService({ discoverImpl: async () => [dark, online, other] });
+    expect((await service.bootstrap({})).agents.map((agent) => agent.sourceId))
+      .toEqual(["agent-alpha", "agent-one", "agent-two"]);
+    await expect(service.bootstrap({})).resolves.toMatchObject({
+      threadsSourceId: "agent-one",
+      threads: [],
+      threadsNextCursor: null,
+    });
+
+    const older = service.createThread("agent-one");
+    const newer = service.createThread("agent-one");
+    const elsewhere = service.createThread("agent-two");
+
+    // `createThread` makes it the current conversation, and that is the bucket
+    // a console with nothing of its own to ask for opens on.
+    await expect(service.bootstrap({})).resolves.toMatchObject({
+      currentThreadId: elsewhere.id,
+      threadsSourceId: "agent-two",
+      threads: [expect.objectContaining({ id: elsewhere.id })],
+    });
+    // An id no agent answers to falls back the same way rather than failing the
+    // console's very first request.
+    await expect(service.bootstrap({ sourceId: "ghost" })).resolves.toMatchObject({
+      threadsSourceId: "agent-two",
+    });
+
+    const asked = await service.bootstrap({ sourceId: "agent-one" });
+    expect(asked.threadsSourceId).toBe("agent-one");
+    expect(asked.threads.map((thread) => thread.id)).toEqual([newer.id, older.id]);
+    expect(asked.threadsNextCursor).toBeNull();
+
+    const firstPage = await service.bootstrap({ sourceId: "agent-one", limit: 1 });
+    expect(firstPage.threads.map((thread) => thread.id)).toEqual([newer.id]);
+    expect(firstPage.threadsNextCursor).toEqual(expect.any(String));
+    expect(service.threadsPage({
+      sourceId: "agent-one",
+      archived: false,
+      before: String(firstPage.threadsNextCursor),
+    }).threads.map((thread) => thread.id)).toEqual([older.id]);
+
+    service.patchThread(older.id, { archived: true });
+    await expect(service.bootstrap({ sourceId: "agent-one", archived: true })).resolves.toMatchObject({
+      threadsSourceId: "agent-one",
+      threads: [expect.objectContaining({ id: older.id })],
+    });
+
+    const darkOnly = await createService({ discoverImpl: async () => [dark] });
+    expect((await darkOnly.bootstrap({})).threadsSourceId).toBe("agent-alpha");
+    const empty = await createService({ discoverImpl: async () => [] });
+    await expect(empty.bootstrap({})).resolves.toMatchObject({
+      threadsSourceId: null,
+      threads: [],
+      threadsNextCursor: null,
+    });
+
+    await Promise.all([service.stop(), darkOnly.stop(), empty.stop()]);
+  });
+
+  it("carries the conversation on every listing event a write emits", async () => {
+    const service = await createService({});
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+
+    const thread = service.createThread("agent-one");
+    service.patchThread(thread.id, { title: "Renamed" });
+    await service.startTurn(thread.id, { text: "hello" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    // Queued rather than delivered -- this agent advertises no live input --
+    // so the drain promotes it to a turn of its own.
+    service.submitLiveInput(thread.id, "and one more thing");
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    service.patchThread(thread.id, { archived: true });
+    await service.deleteThread(thread.id);
+    unsubscribe();
+
+    const targets = listingTargets(events);
+    expect(targets.length).toBeGreaterThanOrEqual(8);
+    expect([...new Set(targets)]).toEqual([thread.id]);
+    // The summary each one carries is the state AFTER the write, so a console
+    // applying them in order never moves a row backwards.
+    const revisions = events.flatMap((event) => {
+      const summary = (event.payload as { readonly thread?: { readonly revision: number } } | undefined)?.thread;
+      return summary === undefined ? [] : [summary.revision];
+    });
+    expect(revisions).toEqual([...revisions].sort((left, right) => left - right));
+    // Unchanged emission order for a finishing turn.
+    const types = events.map((event) => event.type);
+    const finish = types.lastIndexOf("turn.changed");
+    expect(types.slice(finish, finish + 3)).toEqual(["turn.changed", "thread.changed", "threads.changed"]);
+
+    await service.stop();
+  });
+
+  it("carries the conversation on the listing events a cron reconcile and a notification emit", async () => {
+    const run = {
+      projection: "summary",
+      runId: "cron:digest:2026-08-14T09:55:00.000Z",
+      jobId: "digest",
+      scheduledAt: "2026-08-14T09:55:00.000Z",
+      orderedAt: "2026-08-14T09:55:00.000Z",
+      sequence: 4,
+      trigger: "scheduled",
+      status: "succeeded",
+      startedAt: "2026-08-14T09:55:01.000Z",
+      completedAt: "2026-08-14T09:55:02.000Z",
+      text: "Digest complete",
+      eventCount: 0,
+    };
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsHistoryAppend: true,
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+        cronRun: { ...run, projection: "detail", events: [], eventsIncluded: 0 },
+      }),
+    });
+    const cronThreadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId;
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+
+    await service.cronRuns("agent-one", "digest", { limit: 100 });
+    await service.cronRun("agent-one", "digest", run.runId);
+    const delivered = await service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "cron",
+      deliveryKey: "cron:digest:success",
+      text: "Morning brief",
+    });
+    unsubscribe();
+
+    expect(listingTargets(events).filter((target) => target === undefined)).toEqual([]);
+    expect([...new Set(listingTargets(events))].sort())
+      .toEqual([cronThreadId, delivered.thread?.id].sort());
+
+    await service.stop();
+  });
+
   it("delegates conversation search to the store and emits nothing for it", async () => {
     const service = await createService({});
     const thread = service.createThread("agent-one");

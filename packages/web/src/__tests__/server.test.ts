@@ -61,6 +61,22 @@ async function json(response: Response): Promise<Record<string, unknown>> {
   return response.json() as Promise<Record<string, unknown>>;
 }
 
+async function createThread(baseUrl: string, sourceId: string): Promise<string> {
+  const response = await fetch(`${baseUrl}/api/v1/threads`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sourceId }),
+  });
+  return ((await json(response)).thread as { id: string }).id;
+}
+
+interface ScopedBootstrap {
+  readonly threads: readonly { readonly id: string; readonly sourceId: string }[];
+  readonly threadsSourceId: string | null;
+  readonly threadsNextCursor: string | null;
+  readonly agents: readonly { readonly sourceId: string; readonly updatedAt: string }[];
+}
+
 interface RawResponse {
   readonly status: number;
   readonly headers: IncomingHttpHeaders;
@@ -208,6 +224,87 @@ describe("web HTTP server", () => {
     const revalidated = await rawGet(baseUrl, "/api/v1/bootstrap", { "if-none-match": String(etag) });
     expect(revalidated.status).toBe(304);
     expect(revalidated.body.byteLength).toBe(0);
+  });
+
+  it("answers a bootstrap with one agent's bucket and a cursor for the rest of it", async () => {
+    // A bootstrap used to carry EVERY agent's conversations -- 187 KB of a
+    // 219 KB payload on the fleet -- and the console then re-read the one
+    // bucket it actually shows. One bucket is what it now carries.
+    const first = fakeDiscoveredAgent();
+    const second = fakeDiscoveredAgent({
+      source: { ...first.source, sourceId: "agent-two", label: "Agent Two" },
+    });
+    const { baseUrl } = await start({ host: "127.0.0.1", discoverImpl: async () => [first, second] });
+    const one = [
+      await createThread(baseUrl, "agent-one"),
+      await createThread(baseUrl, "agent-one"),
+      await createThread(baseUrl, "agent-one"),
+    ];
+    const two = await createThread(baseUrl, "agent-two");
+
+    const scoped = await json(await fetch(`${baseUrl}/api/v1/bootstrap?sourceId=agent-one&limit=2`)) as unknown as ScopedBootstrap;
+    expect(scoped.threadsSourceId).toBe("agent-one");
+    expect(scoped.threads).toHaveLength(2);
+    expect(scoped.threads.every((thread) => thread.sourceId === "agent-one")).toBe(true);
+    expect(scoped.threads.map((thread) => thread.id)).not.toContain(two);
+    expect(scoped.threadsNextCursor).toEqual(expect.any(String));
+    // Every agent's summary still travels: the rail shows all of them, and a
+    // lazy agents route would put an RTT in front of every switch.
+    expect(scoped.agents.map((agent) => agent.sourceId)).toEqual(["agent-one", "agent-two"]);
+    expect(scoped.agents[0]).toMatchObject({ updatedAt: expect.any(String), models: expect.any(Array) });
+
+    const rest = await json(await fetch(
+      `${baseUrl}/api/v1/threads?sourceId=agent-one&archived=false&before=${encodeURIComponent(String(scoped.threadsNextCursor))}`,
+    )) as unknown as { threads: readonly { readonly id: string }[] };
+    expect([...scoped.threads.map((thread) => thread.id), ...rest.threads.map((thread) => thread.id)].sort())
+      .toEqual([...one].sort());
+
+    const other = await json(await fetch(`${baseUrl}/api/v1/bootstrap?sourceId=agent-two`)) as unknown as ScopedBootstrap;
+    expect(other.threadsSourceId).toBe("agent-two");
+    expect(other.threads.map((thread) => thread.id)).toEqual([two]);
+    expect(other.threadsNextCursor).toBeNull();
+  });
+
+  it("serves the archived bucket only when the bootstrap asks for it", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const active = await createThread(baseUrl, "agent-one");
+    const archived = await createThread(baseUrl, "agent-one");
+    const patched = await fetch(`${baseUrl}/api/v1/threads/${archived}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ archived: true }),
+    });
+    expect(patched.status).toBe(200);
+
+    const live = await json(await fetch(`${baseUrl}/api/v1/bootstrap?sourceId=agent-one`)) as unknown as ScopedBootstrap;
+    expect(live.threads.map((thread) => thread.id)).toEqual([active]);
+
+    const shelf = await json(await fetch(`${baseUrl}/api/v1/bootstrap?sourceId=agent-one&archived=true`)) as unknown as ScopedBootstrap;
+    expect(shelf.threadsSourceId).toBe("agent-one");
+    expect(shelf.threads.map((thread) => thread.id)).toEqual([archived]);
+
+    for (const query of ["limit=0", "limit=201", "limit=abc", "archived=sometimes"]) {
+      const rejected = await fetch(`${baseUrl}/api/v1/bootstrap?sourceId=agent-one&${query}`);
+      expect({ query, status: rejected.status }).toEqual({ query, status: 400 });
+    }
+  });
+
+  it("pages both the bootstrap bucket and the thread list at fifty rows", async () => {
+    // The sidebar shows a handful of rows and pages from there. Both routes
+    // used to answer with the whole 200-row per-bucket cap.
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    for (let index = 0; index < 51; index += 1) await createThread(baseUrl, "agent-one");
+
+    const bootstrap = await json(await fetch(`${baseUrl}/api/v1/bootstrap?sourceId=agent-one`)) as unknown as ScopedBootstrap;
+    expect(bootstrap.threads).toHaveLength(50);
+    expect(bootstrap.threadsNextCursor).toEqual(expect.any(String));
+
+    const page = await json(await fetch(`${baseUrl}/api/v1/threads?sourceId=agent-one&archived=false`)) as unknown as {
+      threads: readonly unknown[];
+      nextCursor?: string;
+    };
+    expect(page.threads).toHaveLength(50);
+    expect(page.nextCursor).toEqual(expect.any(String));
   });
 
   it("caches hashed assets immutably while the shell and service workers revalidate", async () => {

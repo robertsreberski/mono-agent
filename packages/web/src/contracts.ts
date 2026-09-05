@@ -510,12 +510,33 @@ export interface WebPushSubscriptionStatus {
   readonly lastErrorCode?: string;
 }
 
+/**
+ * What a bootstrap should carry, when the console knows.
+ *
+ * A bootstrap used to carry every discovered agent's conversations -- one
+ * 200-row bucket per agent per archive state -- and the console then re-read
+ * the single bucket its sidebar shows. `sourceId` names the bucket it wants;
+ * an absent or unknown one falls back rather than failing, because the first
+ * request a fresh console makes has no selection to name yet.
+ */
+export interface WebBootstrapScope {
+  readonly sourceId?: string;
+  readonly archived?: boolean;
+  readonly limit?: number;
+}
+
 export interface WebBootstrap {
   readonly version: typeof WEB_API_VERSION;
   readonly console: WebConsoleIdentity;
   readonly push: WebPushBootstrap;
+  /** Every discovered agent, in full: the rail shows all of them at once. */
   readonly agents: readonly WebAgentSummary[];
+  /** One page of ONE (agent, archived) bucket -- the one `threadsSourceId` names. */
   readonly threads: readonly WebThread[];
+  /** The bucket `threads` came from, or `null` when there is no agent to open on. */
+  readonly threadsSourceId: string | null;
+  /** Keyset cursor for the next older page of that bucket, or `null` at its end. */
+  readonly threadsNextCursor: string | null;
   readonly currentThreadId?: string;
   readonly limits: {
     readonly maxFileBytes: number;
@@ -535,6 +556,19 @@ export type WebEventType =
   | "turn.changed"
   | "attachment.changed"
   | "push.pending";
+
+/**
+ * The payload of every `thread.changed`/`threads.changed` that names a
+ * conversation.
+ *
+ * The fresh summary travels WITH the event: one that only named a conversation
+ * cost every connected console a page of its bucket to find out what had
+ * changed about a row it was already holding. A removal has no summary left to
+ * carry, so it says so.
+ */
+export type WebThreadChangedPayload =
+  | { readonly thread: WebThread }
+  | { readonly threadId: string; readonly removed: true };
 
 export interface WebEvent {
   readonly id: string;

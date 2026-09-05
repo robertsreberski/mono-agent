@@ -40,6 +40,7 @@ import {
   type WebAgentSummary,
   type WebAttachment,
   type WebBootstrap,
+  type WebBootstrapScope,
   type WebChannelConfigView,
   type WebCronMutationResult,
   type WebCronOverview,
@@ -54,6 +55,7 @@ import {
   type WebThreadNotificationTriggerKind,
   type WebSkillRegistry,
   type WebThread,
+  type WebThreadChangedPayload,
   type WebThreadDetail,
   type WebThreadPage,
   type WebThreadSearchPage,
@@ -381,13 +383,23 @@ export class WebService {
     }
   }
 
-  async bootstrap(): Promise<Omit<WebBootstrap, "console">> {
+  async bootstrap(scope: WebBootstrapScope = {}): Promise<Omit<WebBootstrap, "console">> {
     const currentThreadId = this.store.currentThreadId();
     const currentThread = currentThreadId === undefined ? undefined : this.store.getThread(currentThreadId);
     const discoveredCurrentThreadId = currentThread !== undefined
       && this.store.getAgent(currentThread.sourceId) !== undefined
       ? currentThreadId
       : undefined;
+    const agents = this.store.listAgents();
+    const threadsSourceId = this.bootstrapSourceId(scope.sourceId, currentThread, agents);
+    const archived = scope.archived ?? false;
+    const page = threadsSourceId === null
+      ? { threads: [] as readonly WebThread[] }
+      : this.store.listThreadsPage({
+        sourceId: threadsSourceId,
+        archived,
+        ...(scope.limit === undefined ? {} : { limit: scope.limit }),
+      });
     return {
       version: WEB_API_VERSION,
       push: {
@@ -395,8 +407,10 @@ export class WebService {
         keyFingerprint: this.pushIdentity.fingerprint,
         serviceWorkerVersion: WEB_PUSH_SERVICE_WORKER_VERSION,
       },
-      agents: this.store.listAgents(),
-      threads: this.store.listThreads(),
+      agents,
+      threads: page.threads,
+      threadsSourceId,
+      threadsNextCursor: page.nextCursor ?? null,
       ...(discoveredCurrentThreadId === undefined ? {} : { currentThreadId: discoveredCurrentThreadId }),
       limits: {
         maxFileBytes: DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
@@ -407,9 +421,34 @@ export class WebService {
     };
   }
 
+  /**
+   * The one bucket a bootstrap answers with.
+   *
+   * An absent or unknown `sourceId` is the ordinary case, not an error: the
+   * first request a fresh console makes has no selection to name, and a
+   * console whose stored agent has since gone away must still get a console.
+   * The chain is the one the browser resolves its own selection with -- the
+   * agent of the conversation the console was last in, else the first agent
+   * that can answer, else the first agent at all.
+   */
+  private bootstrapSourceId(
+    requested: string | undefined,
+    currentThread: WebThread | undefined,
+    agents: readonly WebAgentSummary[],
+  ): string | null {
+    if (requested !== undefined && agents.some((agent) => agent.sourceId === requested)) return requested;
+    const current = currentThread === undefined
+      ? undefined
+      : agents.find((agent) => agent.sourceId === currentThread.sourceId);
+    return current?.sourceId
+      ?? agents.find((agent) => agent.status !== "offline")?.sourceId
+      ?? agents[0]?.sourceId
+      ?? null;
+  }
+
   createThread(sourceId: string): WebThread {
     const thread = this.store.createThread(sourceId);
-    this.emit("threads.changed", thread.id, { thread });
+    this.emitThread("threads.changed", { thread });
     return thread;
   }
 
@@ -695,13 +734,13 @@ export class WebService {
       // state DB from writing between a bare read and a bare write.
       const result = this.store.patchThreadIfRunConfigUnset(id, patch);
       if (!result.applied) return result.thread;
-      this.emit("thread.changed", result.thread.id, { thread: result.thread });
-      this.emit("threads.changed", result.thread.id);
+      this.emitThread("thread.changed", { thread: result.thread });
+      this.emitThread("threads.changed", { thread: result.thread });
       return result.thread;
     }
     const thread = this.store.patchThread(id, patch);
-    this.emit("thread.changed", thread.id, { thread });
-    this.emit("threads.changed", thread.id);
+    this.emitThread("thread.changed", { thread });
+    this.emitThread("threads.changed", { thread });
     return thread;
   }
 
@@ -718,8 +757,8 @@ export class WebService {
         count: result.orphanedFiles,
       });
     }
-    this.emit("thread.changed", resolved, { threadId: resolved, removed: true });
-    this.emit("threads.changed", resolved);
+    this.emitThread("thread.changed", { threadId: resolved, removed: true });
+    this.emitThread("threads.changed", { threadId: resolved, removed: true });
   }
 
   patchAgent(sourceId: string, patch: PatchWebAgentInput): WebAgentSummary {
@@ -785,9 +824,7 @@ export class WebService {
     });
     const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, page.runs);
     if (reconciled.changed) {
-      const threadId = this.store.cronThread(sourceId, jobId)?.id;
-      this.emit("thread.changed", threadId);
-      this.emit("threads.changed", threadId);
+      this.emitStoredThread(this.store.cronThread(sourceId, jobId)?.id, ["thread.changed", "threads.changed"]);
     }
     return { ...page, messages: reconciled.messages.map((message) => this.decorateMessage(message)) };
   }
@@ -801,8 +838,7 @@ export class WebService {
       throw new WebConsoleError("invalid_operator_cron", "Cron detail did not reconcile a message.", 502);
     }
     if (reconciled.changed) {
-      this.emit("thread.changed", message.threadId, { messageId: message.id });
-      this.emit("threads.changed", message.threadId);
+      this.emitStoredThread(message.threadId, ["thread.changed", "threads.changed"]);
     }
     return this.decorateMessage(message);
   }
@@ -866,9 +902,7 @@ export class WebService {
     if (result.kind === "completed") {
       const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, [result.value.run]);
       if (reconciled.changed) {
-        const threadId = this.store.cronThread(sourceId, jobId)?.id;
-        this.emit("thread.changed", threadId);
-        this.emit("threads.changed", threadId);
+        this.emitStoredThread(this.store.cronThread(sourceId, jobId)?.id, ["thread.changed", "threads.changed"]);
       }
     }
     return result;
@@ -895,8 +929,7 @@ export class WebService {
     if (job === undefined) throw new WebConsoleError("invalid_operator_cron", "Updated cron job disappeared.", 502);
     if (synced.changed) {
       this.emit("cron.changed", job.threadId, { sourceId, jobId });
-      this.emit("thread.changed", job.threadId, { thread: this.store.getThread(job.threadId) });
-      this.emit("threads.changed", job.threadId);
+      this.emitStoredThread(job.threadId, ["thread.changed", "threads.changed"]);
     }
     return { ...result, value: { job } };
   }
@@ -949,8 +982,10 @@ export class WebService {
       if (!completed.duplicate && message !== undefined) {
         this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
       }
-      this.emit("threads.changed", input.threadId, { thread: completed.thread });
-      this.emit("thread.changed", input.threadId, { thread: completed.thread });
+      // Read back rather than trusted: the shared notification result leaves the
+      // conversation optional, and an event that carries `undefined` is exactly
+      // the bare event this normalisation exists to remove.
+      this.emitStoredThread(input.threadId, ["threads.changed", "thread.changed"]);
       if (input.wakePrompt === undefined) return completed;
       if (this.connections.get(input.sourceId) === undefined) await this.refreshAgents();
       if (this.stopped) {
@@ -1025,7 +1060,7 @@ export class WebService {
     const started = this.store.beginTurn({ threadId, text, attachmentIds, ...(input.quote === undefined ? {} : { quote: input.quote }), ...(model === undefined ? {} : { model }), ...(effort === undefined ? {} : { effort }) });
     this.launchTurn(started, connection.client, operatorText);
     this.emit("turn.changed", threadId, { turn: started.thread.runState });
-    this.emit("threads.changed", threadId);
+    this.emitThread("threads.changed", { thread: started.thread });
     return { thread: started.thread, turn: started.thread.runState };
   }
 
@@ -1040,7 +1075,7 @@ export class WebService {
     const active = this.activeTurns.get(threadId);
     const reserved = this.store.reserveLiveInput(threadId, text);
     this.emit("message.changed", threadId, { messageId: reserved.message.id, updatedAt: reserved.message.updatedAt });
-    this.emit("threads.changed", threadId);
+    this.emitThread("threads.changed", { thread: reserved.thread });
 
     if (!reserved.offered || active === undefined || connection === undefined || !connection.info.supportsLiveInput) {
       const queued = reserved.offered ? this.store.queueLiveInput(reserved.input.id) ?? reserved.message : reserved.message;
@@ -1291,8 +1326,8 @@ export class WebService {
         },
       );
       this.emit("turn.changed", started.thread.id, { turn: detail.thread.runState });
-      this.emit("thread.changed", started.thread.id, { revision: detail.thread.revision });
-      this.emit("threads.changed", started.thread.id);
+      this.emitThread("thread.changed", { thread: detail.thread });
+      this.emitThread("threads.changed", { thread: detail.thread });
       this.announcePushEvent(`turn:${started.turnId}:terminal`);
       // Detached: the turn is already finished and reported, and keeping a copy
       // must neither delay nor fail it. The agent is still connected here, which
@@ -1315,8 +1350,8 @@ export class WebService {
         cancelled,
       });
       this.emit("turn.changed", started.thread.id, { turn: detail.thread.runState });
-      this.emit("thread.changed", started.thread.id, { revision: detail.thread.revision });
-      this.emit("threads.changed", started.thread.id);
+      this.emitThread("thread.changed", { thread: detail.thread });
+      this.emitThread("threads.changed", { thread: detail.thread });
       this.announcePushEvent(`turn:${started.turnId}:terminal`);
     } finally {
       releaseAttachmentBudget?.();
@@ -1384,7 +1419,7 @@ export class WebService {
         updatedAt: changedMessage.updatedAt,
       });
     }
-    this.emit("threads.changed", threadId);
+    this.emitStoredThread(threadId, ["threads.changed"]);
     if (queued && !this.stopped) await this.drainQueuedLiveInputs(threadId);
   }
 
@@ -1407,7 +1442,7 @@ export class WebService {
         updatedAt: started.thread.updatedAt,
       });
       this.emit("turn.changed", threadId, { turn: started.thread.runState });
-      this.emit("threads.changed", threadId);
+      this.emitThread("threads.changed", { thread: started.thread });
     } finally {
       this.drainingLiveInputThreads.delete(threadId);
     }
@@ -1531,7 +1566,7 @@ export class WebService {
         updatedAt: started.thread.updatedAt,
       });
       this.emit("turn.changed", input.threadId, { turn: started.thread.runState });
-      this.emit("threads.changed", input.threadId);
+      this.emitThread("threads.changed", { thread: started.thread });
       await completion;
       if (this.store.turnStatus(started.turnId) !== "complete") {
         return {
@@ -1712,7 +1747,7 @@ export class WebService {
         updatedAt: started.thread.updatedAt,
       });
       this.emit("turn.changed", input.threadId, { turn: started.thread.runState });
-      this.emit("threads.changed", input.threadId);
+      this.emitThread("threads.changed", { thread: started.thread });
       await completion;
       if (this.store.turnStatus(started.turnId) !== "complete") {
         return {
@@ -1788,8 +1823,8 @@ export class WebService {
       if (completed.tombstoned === true) return completed;
       throw new WebConsoleError("storage_corrupt", "A new notification completed without a conversation.", 500);
     }
-    this.emit("threads.changed", completed.thread.id, { thread: completed.thread });
-    this.emit("thread.changed", completed.thread.id, { thread: completed.thread });
+    this.emitThread("threads.changed", { thread: completed.thread });
+    this.emitThread("thread.changed", { thread: completed.thread });
     if (!completed.duplicate) {
       this.announcePushEvent(notificationPushLogicalKey(reservation.sourceId, reservation.deliveryKey));
     }
@@ -1943,6 +1978,37 @@ export class WebService {
     }
   }
 
+  /**
+   * A listing event that names a conversation AND describes it.
+   *
+   * The id comes off the payload, so the two can never disagree: an event that
+   * named one conversation while carrying another would have every console
+   * apply the wrong row.
+   */
+  private emitThread(type: "thread.changed" | "threads.changed", payload: WebThreadChangedPayload): void {
+    this.emit(type, "thread" in payload ? payload.thread.id : payload.threadId, payload);
+  }
+
+  /**
+   * The same, for a write whose caller kept no snapshot of what it produced --
+   * a cron reconcile, a live-input hand-off -- so the store is the only place
+   * the fresh summary can come from.
+   *
+   * A conversation that is no longer there leaves nothing to describe, and the
+   * bulk form is the only honest scope left for a listing that did change.
+   */
+  private emitStoredThread(
+    threadId: string | undefined,
+    types: readonly ("thread.changed" | "threads.changed")[],
+  ): void {
+    const thread = threadId === undefined ? undefined : this.store.getThread(threadId);
+    if (thread === undefined) {
+      this.emit("threads.changed");
+      return;
+    }
+    for (const type of types) this.emitThread(type, { thread });
+  }
+
   private emit(type: WebEventType, threadId?: string, payload?: unknown): void {
     if (this.stopped) return;
     const event = this.createEvent(type, threadId, payload);
@@ -1987,8 +2053,8 @@ export class WebService {
     try {
       const thread = this.store.applyAgentTitle(threadId, title);
       if (thread === undefined) return;
-      this.emit("thread.changed", threadId, { revision: thread.revision });
-      this.emit("threads.changed", threadId, { thread });
+      this.emitThread("thread.changed", { thread });
+      this.emitThread("threads.changed", { thread });
     } catch (error) {
       this.options.logger?.warn?.("Agent conversation-title update failed; the turn is continuing.", {
         threadId,

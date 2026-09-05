@@ -60,9 +60,27 @@ describe("resolveBootstrapSelection", () => {
     expect(
       resolveBootstrapSelection(payload, "a", null, { a: "archived" }).threadId,
     ).toBe("active-new");
+  });
+
+  it("keeps a persisted thread the one bucket a bootstrap carries did not list", () => {
+    // A bootstrap answers with one page of one bucket, so a conversation it
+    // does not carry is routinely just older than that page. Re-resolving to
+    // the newest one for that alone moved the operator out of the conversation
+    // they had open; the detail read the selection issues settles it instead.
+    const payload = bootstrap(
+      [agent("a")],
+      [
+        thread("active-old", "a", { updatedAt: "2026-07-17T10:00:00.000Z" }),
+        thread("active-new", "a", { updatedAt: "2026-07-17T12:00:00.000Z" }),
+      ],
+    );
+
     expect(
-      resolveBootstrapSelection(payload, "a", null, { a: "removed" }).threadId,
-    ).toBe("active-new");
+      resolveBootstrapSelection(payload, "a", null, { a: "older-than-the-page" }).threadId,
+    ).toBe("older-than-the-page");
+    expect(
+      resolveBootstrapSelection(payload, "a", "open-and-unlisted", {}).threadId,
+    ).toBe("open-and-unlisted");
   });
 
   it("falls back to a discovered agent when the selected agent leaves bootstrap", () => {

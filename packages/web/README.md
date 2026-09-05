@@ -444,6 +444,7 @@ WebAgentStatus
 WebAgentSummary
 WebAttachment
 WebBootstrap
+WebBootstrapScope
 WebConsoleError
 WebConsoleIdentity
 WebEvent
@@ -469,6 +470,7 @@ WebStatePathOptions
 WebStatePaths
 WebTheme
 WebThread
+WebThreadChangedPayload
 WebThreadDetail
 WebThreadNotificationTriggerKind
 WebThreadSearchHit

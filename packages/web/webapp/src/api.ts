@@ -246,13 +246,12 @@ const cronMutation = async <T>(path: string, body: Readonly<Record<string, unkno
 export const THREAD_PAGE_LIMIT = 50;
 
 /**
- * What a bootstrap should carry, when the caller knows.
+ * The bucket a bootstrap should carry.
  *
- * Accepted and sent now, ignored by the server until the bootstrap is scoped
- * per agent. Nothing in the console passes one yet: `selectAgent` resolves the
- * conversation to open from the threads of EVERY agent the bootstrap carried,
- * so narrowing it is a behaviour change that belongs with the code that
- * replaces that lookup, not with this transport.
+ * A bootstrap answers with one page of one `(sourceId, archived)` bucket and
+ * says which one it chose. An absent `sourceId` is answered with the agent of
+ * the current conversation rather than refused, which is what a console with
+ * no stored selection asks for on its very first request.
  */
 export interface BootstrapScope {
   readonly sourceId?: string;

@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { api, ApiError } from "./api";
+import { api, ApiError, THREAD_PAGE_LIMIT, type BootstrapScope } from "./api";
 import { recordServerTime } from "./server-clock";
 import { DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
@@ -274,24 +274,41 @@ export const resolveBootstrapSelection = (
   const currentAgent = next.agents.find((agent) => agent.sourceId === selectedAgentId);
   const agentId =
     currentAgent?.sourceId ??
+    // The bucket the SERVER opened on when this tab named none: it resolves the
+    // same chain, and adopting its answer is what keeps a first load to one
+    // request instead of a bootstrap plus the page for a different agent.
+    next.agents.find((agent) => agent.sourceId === next.threadsSourceId)?.sourceId ??
     next.agents.find((agent) => agent.status !== "offline")?.sourceId ??
     next.agents[0]?.sourceId ??
     null;
-  const currentThread = next.threads.find(
-    (thread) => thread.id === selectedThreadId && thread.sourceId === agentId,
-  );
-  const persistedThread = next.threads.find(
-    (thread) =>
-      thread.id === persistedThreadIds[agentId ?? ""] &&
-      thread.sourceId === agentId &&
-      !thread.archivedAt,
-  );
-  const thread =
-    currentThread ??
-    persistedThread ??
-    [...next.threads]
-      .filter((candidate) => candidate.sourceId === agentId && !candidate.archivedAt)
-      .sort(byMostRecent)[0];
+  // A bootstrap carries ONE page of ONE bucket now, so a conversation missing
+  // from `threads` is the ordinary case -- older than the page, or another
+  // agent's -- and no longer says anything about whether it still exists.
+  // Re-resolving a stored selection for that alone moves the operator out of
+  // the conversation they were in; the page that follows, or the detail read
+  // the selection itself issues, is what settles it.
+  //
+  // An answer that DOES carry it and shows it unusable here -- archived, or
+  // belonging to another agent -- is a different matter, and still re-resolves.
+  if (currentAgent !== undefined) {
+    // An archived conversation the operator is READING stays open; only one
+    // this answer says belongs to someone else is re-resolved.
+    const selected = selectedThreadId === null
+      ? undefined
+      : next.threads.find((thread) => thread.id === selectedThreadId);
+    if (selectedThreadId !== null && (selected === undefined || selected.sourceId === agentId)) {
+      return { agentId, threadId: selectedThreadId };
+    }
+    const persistedId = persistedThreadIds[agentId ?? ""];
+    const persisted = next.threads.find((thread) => thread.id === persistedId);
+    if (persistedId !== undefined
+      && (persisted === undefined || (persisted.sourceId === agentId && !persisted.archivedAt))) {
+      return { agentId, threadId: persistedId };
+    }
+  }
+  const thread = [...next.threads]
+    .filter((candidate) => candidate.sourceId === agentId && !candidate.archivedAt)
+    .sort(byMostRecent)[0];
   return { agentId, threadId: thread?.id ?? null };
 };
 
@@ -1180,6 +1197,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   );
   /** Whether the bootstrap this component asked for on mount has answered. */
   const initialBootstrapRef = useRef<"pending" | "answered">("pending");
+  /** Whether this store is still mounted. See `scheduleRefresh`. */
+  const mountedRef = useRef(true);
   /** Set true by the first `ready`, so the next one is known to be a RECONNECT. */
   const streamOpenedRef = useRef(false);
   const hasBootstrapRef = useRef(false);
@@ -1198,6 +1217,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify(stored));
   }, [effortByContext, modelByContext]);
 
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   useEffect(() => {
     selectedThreadRef.current = selectedThreadId;
   }, [selectedThreadId]);
@@ -1214,7 +1235,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     showArchivedRef.current = showArchived;
   }, [showArchived]);
 
-  const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number) => {
+  const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number, archived: boolean) => {
     // A bootstrap is a wholesale replacement, so a deleted conversation it
     // still lists is re-added, selected, and routed to. It is also the single
     // most likely response to be in flight across a delete: `refreshNow` issues
@@ -1223,21 +1244,38 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       ...rawNext,
       threads: admitThreads(removedThreadsRef.current, rawNext.threads, issuedAt),
     };
-    // Recorded before the state lands, because the effect that would re-request
-    // these buckets runs on the commit this schedules. See `seededBucketsRef`.
-    for (const agent of next.agents) {
-      seededBucketsRef.current.add(threadBucketKey(agent.sourceId, false));
-      seededBucketsRef.current.add(threadBucketKey(agent.sourceId, true));
+    // REPLACED, not added to. A bootstrap answers with one bucket and the
+    // projection it lands in is a wholesale replacement, so every other bucket
+    // is gone from the sidebar -- and an "already seeded" entry left behind for
+    // one of them would leave that agent's sidebar empty with nothing to
+    // refill it. Recorded before the state lands, because the effect that would
+    // re-request this bucket runs on the commit this schedules.
+    const seeded = next.threadsSourceId === null
+      ? undefined
+      : threadBucketKey(next.threadsSourceId, archived);
+    seededBucketsRef.current = new Set(seeded === undefined ? [] : [seeded]);
+    // The page came with its own cursor, so "load more" works on a
+    // bootstrap-seeded bucket without a page request to learn one.
+    if (seeded !== undefined) {
+      setThreadCursorByBucket((current) => ({ ...current, [seeded]: next.threadsNextCursor }));
     }
     setBootstrap(next);
     hasBootstrapRef.current = true;
     setError(null);
     setLoading(false);
+    // A conversation this tab has TOMBSTONED is not a selection to keep,
+    // however this answer describes it: the operator asked for it to go, and
+    // the automatic re-resolution to a survivor is what a failed delete then
+    // owes them back. Anything else the answer merely did not list is kept.
+    const live = (threadId: string | null): string | null =>
+      threadId !== null && !removedThreadsRef.current.has(threadId) ? threadId : null;
     const baseSelection = resolveBootstrapSelection(
       next,
       selectedAgentRef.current,
-      selectedThreadRef.current,
-      readPersistedThreadIds(),
+      live(selectedThreadRef.current),
+      Object.fromEntries(
+        Object.entries(readPersistedThreadIds()).filter(([, threadId]) => live(threadId) !== null),
+      ),
     );
     const route = cronRouteSelection();
     const routeThread = route === undefined
@@ -1256,12 +1294,30 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (selection.agentId) {
       localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, selection.agentId);
       const selected = next.threads.find((thread) => thread.id === selection.threadId);
-      persistThreadId(
-        selection.agentId,
-        selected && !selected.archivedAt ? selected.id : null,
-      );
+      // Only what the answer ACTUALLY carries is evidence about the stored
+      // selection. One bucket page is not the whole bucket, so clearing it for
+      // a conversation this answer merely did not list would throw away the
+      // operator's place in a conversation that is still there.
+      if (selection.threadId === null) persistThreadId(selection.agentId, null);
+      else if (selected !== undefined) {
+        persistThreadId(selection.agentId, selected.archivedAt ? null : selected.id);
+      }
     }
   }, []);
+
+  /**
+   * The bucket a bootstrap should carry: the one this tab is showing.
+   *
+   * A bootstrap used to answer with every agent's conversations and the sidebar
+   * re-read the single bucket it shows anyway. An agent this tab has not
+   * resolved yet names none, and the server falls back the same way this store
+   * does.
+   */
+  const bootstrapScope = useCallback((): BootstrapScope => ({
+    ...(selectedAgentRef.current === null ? {} : { sourceId: selectedAgentRef.current }),
+    archived: showArchivedRef.current,
+    limit: THREAD_PAGE_LIMIT,
+  }), []);
 
   const loadBootstrap = useCallback(async () => {
     try {
@@ -1269,8 +1325,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // tombstone's lifetime is only an upper bound on late responses while
       // the responses themselves have one.
       const issuedAt = removedThreadsRef.current.epoch();
-      const next = await boundedRequest((signal) => api.bootstrap(signal), THREAD_READ_TIMEOUT_MS);
-      applyBootstrap(next, issuedAt);
+      const scope = bootstrapScope();
+      const next = await boundedRequest((signal) => api.bootstrap(signal, scope), THREAD_READ_TIMEOUT_MS);
+      applyBootstrap(next, issuedAt, scope.archived === true);
       setConnection("live");
     } catch (loadError) {
       setError(errorMessage(loadError));
@@ -1279,7 +1336,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     } finally {
       initialBootstrapRef.current = "answered";
     }
-  }, [applyBootstrap]);
+  }, [applyBootstrap, bootstrapScope]);
 
   useEffect(() => {
     void loadBootstrap();
@@ -1305,9 +1362,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    *   bootstrap-seeded window down to one page to do it. It keeps an existing
    *   cursor too: its page starts at the top of the bucket, so its own cursor
    *   would walk rows it has just refreshed rather than the older ones the
-   *   bucket is already pointing at. It DOES adopt one when the bucket has
-   *   none, which is how a bootstrap-seeded bucket -- the bootstrap carries no
-   *   cursor -- learns that there is anything older to page to at all.
+   *   bucket is already pointing at. It DOES adopt one when the bucket has no
+   *   cursor to page FROM -- absent, or `null` for "nothing older, as of the
+   *   answer that said so" -- which is how a bucket whose window has since
+   *   grown past one page learns that there is anything older to reach at all.
    */
   const loadThreadBucket = useCallback(async (
     sourceId: string,
@@ -1330,8 +1388,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         : current.threads;
       return { ...current, threads: mergeThreads(retained, admitted) };
     });
-    setThreadCursorByBucket((current) => mode === "merge"
-      && Object.prototype.hasOwnProperty.call(current, key)
+    setThreadCursorByBucket((current) => mode === "merge" && typeof current[key] === "string"
       ? current
       : { ...current, [key]: page.nextCursor ?? null });
     return admitted;
@@ -1349,7 +1406,26 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (selectedAgentId === null || loading || !hasBootstrap) return;
     // Already delivered by a bootstrap -- see `seededBucketsRef`.
     if (seededBucketsRef.current.has(threadBucketKey(selectedAgentId, showArchived))) return;
-    void loadThreadBucket(selectedAgentId, showArchived).catch((loadError: unknown) => {
+    void loadThreadBucket(selectedAgentId, showArchived).then((page) => {
+      // A bootstrap carries ONE bucket, so switching agents lands on rows this
+      // tab has never held: `selectAgent` resolves the conversation to open
+      // from what it holds and finds nothing, and this page is the first thing
+      // there is to resolve from. Only when nothing is selected -- an operator
+      // choice, a deep link and a restored selection all make this false, and
+      // none of them is this effect's to overrule -- and never on the archive
+      // shelf, which has never moved the selection.
+      if (showArchived
+        || selectedAgentRef.current !== selectedAgentId
+        || selectedThreadRef.current !== null) return;
+      const persistedId = readPersistedThreadIds()[selectedAgentId];
+      const next = page.find((item) => item.id === persistedId && !item.archivedAt)
+        ?? [...page].filter((item) => !item.archivedAt).sort(byMostRecent)[0];
+      if (next === undefined) return;
+      selectedThreadRef.current = next.id;
+      setSelectedThreadId(next.id);
+      persistThreadId(selectedAgentId, next.id);
+      updateThreadRoute(next);
+    }).catch((loadError: unknown) => {
       setActionError(errorMessage(loadError));
     });
   }, [hasBootstrap, loadThreadBucket, loading, selectedAgentId, showArchived]);
@@ -1406,9 +1482,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     try {
       const issuedAt = removedThreadsRef.current.epoch();
       const selectedForRefresh = scope.detail ? selectedThreadRef.current : null;
+      const bucket = bootstrapScope();
       const [nextBootstrap, nextDetail] = await Promise.all([
         scope.bootstrap
-          ? boundedRequest((signal) => api.bootstrap(signal), THREAD_READ_TIMEOUT_MS)
+          ? boundedRequest((signal) => api.bootstrap(signal, bucket), THREAD_READ_TIMEOUT_MS)
           : Promise.resolve(null),
         selectedForRefresh
           ? boundedRequest(
@@ -1417,7 +1494,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             )
           : Promise.resolve(null),
       ]);
-      if (nextBootstrap !== null) applyBootstrap(nextBootstrap, issuedAt);
+      if (nextBootstrap !== null) applyBootstrap(nextBootstrap, issuedAt, bucket.archived === true);
       if (
         nextDetail
         && admitThread(removedThreadsRef.current, nextDetail.thread, issuedAt)
@@ -1438,9 +1515,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         scheduleRefreshRef.current({});
       }
     }
-  }, [applyBootstrap]);
+  }, [applyBootstrap, bootstrapScope]);
 
   const scheduleRefresh = useCallback((scope: Partial<RefreshScope>) => {
+    // A refresh that settles after the tree is gone re-queues through the
+    // scope above, and a torn-down console has no business putting another
+    // request on the wire. The stream effect's cleanup clears the timer that is
+    // pending AT teardown; this is the one that would be armed after it.
+    if (!mountedRef.current) return;
     refreshScopeRef.current = {
       bootstrap: refreshScopeRef.current.bootstrap || scope.bootstrap === true,
       detail: refreshScopeRef.current.detail || scope.detail === true,
@@ -1691,6 +1773,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         case "thread.changed":
           if (payload.thread !== undefined) {
             applyThreadUpdate(payload.thread, removedThreadsRef.current.epoch());
+            // The summary IS the sidebar row and it is applied above, for every
+            // conversation, at no cost. The MESSAGES are not in it: a finished
+            // turn, a reconciled cron run and an appended notification all end
+            // in this event and nothing else says the transcript moved. Only
+            // the conversation on screen has anything to show for that.
+            if (threadId === selectedThreadRef.current) refreshSelectedThread();
             return;
           }
           if (payload.removed === true && threadId !== undefined) {
@@ -2064,7 +2152,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         .sort(byMostRecent)[0];
       selectedThreadRef.current = recent?.id ?? null;
       setSelectedThreadId(recent?.id ?? null);
-      persistThreadId(sourceId, recent?.id ?? null);
+      // Only a row this tab HOLDS is evidence. With one bucket per bootstrap,
+      // holding none for an agent means its bucket has not been fetched yet --
+      // not that the operator's last conversation there is gone -- and clearing
+      // the stored id here would throw away what the page is about to open on.
+      if (recent !== undefined) persistThreadId(sourceId, recent.id);
       updateThreadRoute(recent);
       setShowArchived(false);
       setActionError(null);

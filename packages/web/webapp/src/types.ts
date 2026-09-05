@@ -595,8 +595,14 @@ export interface Bootstrap {
   readonly version: typeof API_VERSION;
   readonly console: ConsoleIdentity;
   readonly push: PushBootstrap;
+  /** Every discovered agent: the rail shows all of them at once. */
   readonly agents: readonly AgentSummary[];
+  /** One page of ONE (agent, archived) bucket -- the one `threadsSourceId` names. */
   readonly threads: readonly ThreadSummary[];
+  /** The bucket `threads` came from, or `null` when there is no agent to open on. */
+  readonly threadsSourceId: string | null;
+  /** Keyset cursor for the next older page of that bucket, or `null` at its end. */
+  readonly threadsNextCursor: string | null;
   readonly currentThreadId?: string;
   readonly limits: UploadLimits;
 }

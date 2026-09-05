@@ -140,10 +140,22 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     });
   });
 
-  app.get("/api/v1/bootstrap", (_req, res, next) => {
-    void service.bootstrap()
-      .then((bootstrap) => res.status(200).json({ ...bootstrap, console: consoleIdentity }))
-      .catch(next);
+  app.get("/api/v1/bootstrap", (req, res, next) => {
+    try {
+      // One bucket, not every agent's conversations. An unknown or absent
+      // `sourceId` falls back inside the service rather than failing: the
+      // first request a fresh console makes has no selection to name yet.
+      const sourceId = optionalQueryString(req.query.sourceId, 512);
+      void service.bootstrap({
+        ...(sourceId === undefined ? {} : { sourceId }),
+        archived: optionalArchivedQuery(req.query.archived) ?? false,
+        limit: boundedQueryLimit(req.query.limit, 200, 50),
+      })
+        .then((bootstrap) => res.status(200).json({ ...bootstrap, console: consoleIdentity }))
+        .catch(next);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get(MCP_APP_PROXY_PATH, (_req, res) => {
@@ -289,16 +301,17 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   app.get("/api/v1/threads", (req, res, next) => {
     try {
       const sourceId = requiredQueryString(req.query.sourceId, "sourceId", 512);
-      const archived = req.query.archived === "true"
-        ? true
-        : req.query.archived === "false"
-          ? false
-          : (() => { throw new WebConsoleError("invalid_page", "archived must be true or false.", 400); })();
+      const archived = optionalArchivedQuery(req.query.archived);
+      if (archived === undefined) {
+        throw new WebConsoleError("invalid_page", "archived must be true or false.", 400);
+      }
       const before = optionalQueryString(req.query.before, 4_096);
       res.status(200).json(service.threadsPage({
         sourceId,
         archived,
-        limit: boundedQueryLimit(req.query.limit, 200, 200),
+        // A sidebar shows a handful of rows and pages from there. This used to
+        // answer with the whole 200-row per-bucket cap by default.
+        limit: boundedQueryLimit(req.query.limit, 200, 50),
         ...(before === undefined ? {} : { before }),
       }));
     } catch (error) {
@@ -1277,6 +1290,14 @@ function optionalQueryString(value: unknown, max: number): string | undefined {
     throw new WebConsoleError("invalid_page", "Pagination cursor is invalid.", 400);
   }
   return value;
+}
+
+/** `true`/`false`, or `undefined` for a query that said neither. */
+function optionalArchivedQuery(value: unknown): boolean | undefined {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (value === undefined) return undefined;
+  throw new WebConsoleError("invalid_page", "archived must be true or false.", 400);
 }
 
 function boundedQueryLimit(value: unknown, maximum: number, fallback: number): number {

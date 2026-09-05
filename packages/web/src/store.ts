@@ -1969,7 +1969,14 @@ export class WebStore {
     return this.requireThread(id);
   }
 
-  /** Bounded bootstrap: at most one 200-row bucket per (source_id, archived). */
+  /**
+   * Every discovered agent's conversations, at most one 200-row bucket per
+   * (source_id, archived).
+   *
+   * NOT what a bootstrap answers with -- that is one page of ONE bucket, see
+   * `listThreadsPage` -- because carrying every agent's rows was 187 KB of a
+   * 219 KB payload and the console re-read the one bucket it shows anyway.
+   */
   listThreads(): WebThread[] {
     const rows = this.database.prepare(threadSelectSql(`
       WHERE a.discovered = 1 AND t.id IN (
