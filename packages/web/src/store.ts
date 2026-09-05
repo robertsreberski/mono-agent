@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 
+import { normalizeMonitorTerminalReply, hasMonitorReplyContent, monitorReplyText } from "./monitor-reply.js";
+
 import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
   AGENT_LIVE_INPUT_MAX_MESSAGES,
@@ -1763,6 +1765,18 @@ export class WebStore {
     return { kind: "new" };
   }
 
+  /** Hold terminal pushes while this exact turn's steering receipt is unresolved. */
+  setMonitorWakeSteeringTurn(sourceId: string, deliveryKey: string, turnId: string, pending: boolean): void {
+    const turn = this.requireTurn(turnId);
+    const changed = this.database.prepare(`
+      UPDATE monitor_wake_deliveries SET turn_id = ?
+      WHERE source_id = ? AND delivery_key = ? AND thread_id = ? AND state = 'accepted'
+    `).run(pending ? turnId : null, sourceId, deliveryKey, turn.thread_id);
+    if (changed.changes !== 1) {
+      throw new WebConsoleError("notification_reservation_lost", "The Monitor steering reservation was lost.", 409);
+    }
+  }
+
   completeMonitorWake(input: {
     readonly sourceId: string;
     readonly monitorId: string;
@@ -1808,14 +1822,48 @@ export class WebStore {
         throw new WebConsoleError("storage_corrupt", "A retained Monitor wake projection is invalid.", 500);
       }
       const message = this.requireMessage(turn.assistant_message_id);
-      const parts = [...message.parts];
-      if (!upsertMonitorActivity(parts, projection, input.deliveryKey)) return;
+      const raw = this.database.prepare("SELECT parts_json FROM messages WHERE id = ?")
+        .get(message.id) as unknown as { parts_json: string };
+      const original = parseParts(raw.parts_json);
+      const normalized = turn.status === "complete" ? normalizeMonitorTerminalReply(original) : { parts: original, changed: false };
+      const parts = normalized.parts;
+      const activityChanged = upsertMonitorActivity(parts, projection, input.deliveryKey);
+      if (turn.status === "complete") this.repairMonitorResponsePush(input.turnId, parts);
+      if (!activityChanged && !normalized.changed) return;
       const now = this.now();
       this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ? WHERE id = ?")
         .run(serializeParts(parts), now, message.id);
       messageId = message.id;
     });
     return messageId === undefined ? undefined : this.requireMessage(messageId);
+  }
+
+  private hasMonitorTurnAssociation(turnId: string, deliveryKey?: string): boolean {
+    const rows = this.database.prepare(`
+      SELECT deliveries.delivery_key FROM monitor_wake_deliveries AS deliveries
+      JOIN turns ON turns.id = ? AND turns.thread_id = deliveries.thread_id
+      JOIN threads ON threads.id = turns.thread_id AND threads.source_id = deliveries.source_id
+      WHERE (deliveries.state = 'completed' AND deliveries.turn_id = turns.id
+        AND deliveries.disposition IN ('steered', 'follow_up'))
+        OR (deliveries.state = 'accepted' AND deliveries.delivery_key = ?)
+    `).all(turnId, deliveryKey ?? null);
+    return rows.length > 0;
+  }
+
+  private repairMonitorResponsePush(turnId: string, parts: readonly WebMessagePart[]): void {
+    const key = `turn:${turnId}:terminal`;
+    if (hasMonitorReplyContent(parts)) {
+      this.database.prepare("UPDATE push_events SET body = ? WHERE logical_key = ? AND kind = 'response.ready'")
+        .run(webPushPreview(monitorReplyText(parts)), key);
+    } else {
+      const now = this.now();
+      this.database.prepare(`
+        UPDATE push_deliveries SET status = 'suppressed', updated_at = ?, finished_at = ?
+        WHERE status = 'pending' AND event_id IN (
+          SELECT id FROM push_events WHERE logical_key = ? AND kind = 'response.ready'
+        )
+      `).run(now, now, key);
+    }
   }
 
   /** Resolve only an exact Monitor live-input receipt belonging to this turn. */
@@ -2900,7 +2948,7 @@ export class WebStore {
     finalText?: string,
     metadata?: Readonly<Record<string, unknown>>,
     replyParts?: readonly AgentReplyPart[],
-    options: { readonly suppressResponsePush?: boolean } = {},
+    options: { readonly suppressResponsePush?: boolean; readonly monitorWakeDeliveryKey?: string } = {},
   ): WebThreadDetail {
     const runtime = runtimeMetadata(metadata);
     return this.finishTurn(
@@ -2912,6 +2960,7 @@ export class WebStore {
       runtime,
       replyParts,
       options.suppressResponsePush === true,
+      options.monitorWakeDeliveryKey,
     );
   }
 
@@ -3203,6 +3252,11 @@ export class WebStore {
         JOIN push_events e ON e.id = d.event_id
         JOIN push_subscriptions s ON s.id = d.subscription_id
         WHERE d.status = 'pending' AND d.next_attempt_at <= ? AND e.expires_at > ? AND s.state = 'active'
+          AND NOT EXISTS (
+            SELECT 1 FROM monitor_wake_deliveries m
+            WHERE e.kind = 'response.ready' AND m.state = 'accepted' AND m.turn_id IS NOT NULL
+              AND e.logical_key = 'turn:' || m.turn_id || ':terminal'
+          )
         ORDER BY d.next_attempt_at, d.created_at, d.rowid
         LIMIT ?
       `).all(now, now, limit) as unknown as Array<Record<string, unknown>>;
@@ -4047,6 +4101,7 @@ export class WebStore {
     runtime?: { readonly model?: string; readonly effort?: string },
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
+    monitorWakeDeliveryKey?: string,
   ): WebThreadDetail {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") {
@@ -4062,6 +4117,7 @@ export class WebStore {
         runtime,
         replyParts,
         suppressResponsePush,
+        monitorWakeDeliveryKey,
       );
     });
     return this.requireThreadDetail(turn.thread_id);
@@ -4076,6 +4132,7 @@ export class WebStore {
     runtime?: { readonly model?: string; readonly effort?: string },
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
+    monitorWakeDeliveryKey?: string,
   ): void {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") return;
@@ -4085,6 +4142,14 @@ export class WebStore {
     if (replyParts !== undefined) parts = boundedWebReplyParts(replyParts, parts);
     if (errorMessage !== undefined) {
       parts.push({ type: "error", ...(errorCode === undefined ? {} : { code: errorCode }), message: errorMessage });
+    }
+    const monitorAssociated = status === "complete" && this.hasMonitorTurnAssociation(turnId, monitorWakeDeliveryKey);
+    if (monitorAssociated) {
+      const normalized = normalizeMonitorTerminalReply(parts);
+      parts = normalized.parts;
+      // A suppressed callback may still have streamed the sentinel. Preserve a
+      // preceding answer and rich output even when its terminal reply was empty.
+      suppressResponsePush = !hasMonitorReplyContent(parts);
     }
     const now = this.now();
     const thread = this.requireThread(turn.thread_id);
@@ -4127,7 +4192,7 @@ export class WebStore {
             : "run.failed";
       const label = agent?.label ?? "mono-agent";
       const body = status === "complete"
-        ? parts.filter((part): part is Extract<WebMessagePart, { type: "text" }> => part.type === "text")
+        ? monitorAssociated ? monitorReplyText(parts) : parts.filter((part): part is Extract<WebMessagePart, { type: "text" }> => part.type === "text")
           .map((part) => part.text)
           .join(" ")
         : status === "cancelled"
@@ -4190,7 +4255,10 @@ export class WebStore {
     const attachments = this.database
       .prepare("SELECT * FROM attachments WHERE message_id = ? AND origin = 'upload' ORDER BY created_at, id")
       .all(row.id) as unknown as AttachmentRow[];
-    const storedParts = parseParts(row.parts_json);
+    const rawParts = parseParts(row.parts_json);
+    const storedParts = row.role === "assistant" && row.status === "complete" && row.turn_id !== null
+      && this.hasMonitorTurnAssociation(row.turn_id)
+      ? normalizeMonitorTerminalReply(rawParts).parts : rawParts;
     const quote = quoteFromParts(storedParts);
     const liveInputStatus = liveInputStatusFromParts(storedParts);
     return {
@@ -4230,10 +4298,10 @@ export class WebStore {
   }
 
   private lastMessagePreview(threadId: string): string | undefined {
-    const row = this.database.prepare("SELECT parts_json FROM messages WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
-      .get(threadId) as unknown as { parts_json: string } | undefined;
+    const row = this.database.prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
+      .get(threadId) as unknown as MessageRow | undefined;
     if (row === undefined) return undefined;
-    const text = parseParts(row.parts_json)
+    const text = this.mapMessage(row).parts
       .filter((part): part is Extract<WebMessagePart, { type: "text" | "reasoning" }> => part.type === "text" || part.type === "reasoning")
       .map((part) => part.text)
       .join(" ")

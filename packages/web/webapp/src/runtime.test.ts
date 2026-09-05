@@ -598,3 +598,22 @@ describe("runtime capability gates", () => {
     ).toBe(false);
   });
 });
+
+
+it("renders a normalized Monitor answer below reasoning and activity", () => {
+  const converted = convertWebMessage(message({ role: "assistant", parts: [
+    { type: "monitor-activity", monitors: [{ projection: monitor(), deliveryKeys: ["monitor:one:1"] }] },
+    { type: "reasoning", text: "Inspecting the pane." },
+    { type: "text", text: "The worker is ready for Robert's review." },
+    { type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "assistant_message_boundary" } },
+    { type: "reasoning", text: "No new update." },
+    { type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "assistant_message_boundary" } },
+  ] }));
+  if (typeof converted.content === "string") throw new Error("Expected structured content");
+  expect(converted.content.at(-1)).toEqual({ type: "text", text: "The worker is ready for Robert's review." });
+  expect(converted.content.filter((part) => part.type === "reasoning")).toEqual([
+    { type: "reasoning", text: "Inspecting the pane." }, { type: "reasoning", text: "No new update." },
+  ]);
+  expect(converted.content.some((part) => part.type === "data-monitor-activity")).toBe(true);
+  expect(converted.content.some((part) => part.type === "data-note")).toBe(false);
+});

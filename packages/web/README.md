@@ -59,7 +59,10 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   delivery identity plus a payload hash for fail-closed duplicate handling, and
   group their secret-free projections into one compact Monitor activity row per
   assistant run. Raw event text and delivery keys never reach the rendered row;
-  Monitor wakes have no browser-side stop control.
+  Monitor wakes have no browser-side stop control. For a verified Monitor wake,
+  a terminal no-op assistant message is suppressed while an earlier meaningful
+  answer and rich content remain visible. Push delivery waits for an outstanding
+  steering receipt and uses the normalized reply.
 
 ## Install / Usage
 

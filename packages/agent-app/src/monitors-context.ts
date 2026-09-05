@@ -106,7 +106,14 @@ export function bindMonitorWakeContextToResponder(
   }).startNewSession;
   return {
     respond: async (request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> => {
-      const context = wakeContext.getStore();
+      const ambient = wakeContext.getStore();
+      const deliveryKey = monitorWakeDeliveryKey(request.metadata);
+      const flights = deliveryKey === undefined ? [] : wakeFlightsByDeliveryKey.get(deliveryKey) ?? [];
+      // HTTP callbacks reconstruct the host-only symbol outside AsyncLocalStorage.
+      // A key is authority only while exactly one registered flight owns it.
+      const context = deliveryKey === undefined
+        ? ambient
+        : flights.length === 1 ? flights[0] : undefined;
       let installed: { readonly token: object; readonly flight: MonitorWakeFlight } | undefined;
       if (context !== undefined) {
         if (request.metadata === undefined) {

@@ -111,3 +111,37 @@ describe("monitor wake reply suppression", () => {
     expect(reply).toEqual({ text: "NOTHING_TO_REPORT" });
   });
 });
+
+
+describe("disjoint Monitor callback", () => {
+  it.each(["NOTHING_TO_REPORT", "No change.\nNOTHING_TO_REPORT"])("recovers a live exact key and suppresses %s", async (text) => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const flight = runWithMonitorWakeContext({ monitorId: "disjoint", chainDepth: 2 }, () => pending, "monitor:disjoint:1");
+    const responder = bindMonitorWakeContextToResponder({ respond: async (request) => {
+      expect(monitorWakeContextForRequest(request)).toEqual({ kind: "resolved", context: { monitorId: "disjoint", chainDepth: 2 } });
+      return { text, parts: [{ kind: "attachment" }] } as unknown as AgentResponse;
+    } } as AgentResponder);
+    try {
+      expect(await responder.respond(wakeRequest("monitor:disjoint:1"), stream)).toEqual({ text: "" });
+    } finally { release(); await flight; }
+    expect(await bindMonitorWakeContextToResponder(responderReturning({ text })).respond(wakeRequest("monitor:disjoint:1"), stream)).toEqual({ text });
+  });
+
+  it("fails closed for ambiguous and unknown keys and preserves ordinary rich replies", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const flights = [0, 1].map((chainDepth) => runWithMonitorWakeContext({ monitorId: "ambiguous", chainDepth }, () => pending, "monitor:ambiguous:1"));
+    const response = { text: "NOTHING_TO_REPORT", parts: [{ kind: "attachment" }] } as unknown as AgentResponse;
+    const responder = bindMonitorWakeContextToResponder(responderReturning(response));
+    try {
+      for (const key of ["monitor:ambiguous:1", "monitor:unknown:1"]) {
+        expect(await responder.respond(wakeRequest(key), stream)).toEqual(response);
+      }
+    } finally { release(); await Promise.all(flights); }
+    await runWithMonitorWakeContext({ monitorId: "rich", chainDepth: 0 }, async () => {
+      const rich = { ...response, text: "NOTHING_TO_REPORT is a literal in this report." };
+      expect(await bindMonitorWakeContextToResponder(responderReturning(rich)).respond(wakeRequest("monitor:rich:1"), stream)).toEqual(rich);
+    }, "monitor:rich:1");
+  });
+});

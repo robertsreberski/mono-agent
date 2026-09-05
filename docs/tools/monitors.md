@@ -110,7 +110,12 @@ owner-private loopback ingress can accept wakes. The browser tab may be closed:
 the service still runs the turn, persists any visible assistant reply in the
 thread, and sends the normal response-ready Web Push when configured. A silent
 `NOTHING_TO_REPORT` result completes delivery without a Web Push. Web SQLite
-retains the Monitor delivery identity and payload hash for duplicate
+normalizes only the terminal provider message after verifying its exact Monitor
+delivery association. Earlier meaningful prose stays the answer; reasoning,
+activity, attachments, and rich output remain intact. Ordinary user replies that
+quote the sentinel are unaffected. Pending pushes wait for the exact steering
+receipt, and old affected messages are normalized when read without a database
+migration. Web SQLite retains the Monitor delivery identity and payload hash for duplicate
 suppression plus the secret-free Monitor projection used by the activity row;
 the fenced event text remains memory-only. Host-owned Monitor input steered into
 an active run is applied to that provider run but excluded from canonical user

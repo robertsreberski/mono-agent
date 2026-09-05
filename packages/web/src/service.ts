@@ -1274,12 +1274,15 @@ export class WebService {
         response.finalText,
         response.metadata,
         response.parts,
-        { suppressResponsePush: silentMonitorWake },
+        {
+          suppressResponsePush: silentMonitorWake,
+          ...(hostWakeDeliveryKey === undefined ? {} : { monitorWakeDeliveryKey: hostWakeDeliveryKey }),
+        },
       );
       this.emit("turn.changed", started.thread.id, { turn: detail.thread.runState });
       this.emit("thread.changed", started.thread.id, { revision: detail.thread.revision });
       this.emit("threads.changed", started.thread.id);
-      if (!silentMonitorWake) this.announcePushEvent(`turn:${started.turnId}:terminal`);
+      this.announcePushEvent(`turn:${started.turnId}:terminal`);
       // Detached: the turn is already finished and reported, and keeping a copy
       // must neither delay nor fail it. The agent is still connected here, which
       // is when a fetch is most likely to succeed.
@@ -1624,6 +1627,7 @@ export class WebService {
         && connection.info.supportsLiveInput
         && input.wakePrompt.length <= AGENT_LIVE_INPUT_MAX_CHARACTERS) {
         try {
+          this.store.setMonitorWakeSteeringTurn(input.sourceId, input.deliveryKey, active.turnId, true);
           const settlement = await active.client.liveInput({
             conversationId: `web:${input.threadId}`,
             id: input.deliveryKey,
@@ -1645,6 +1649,7 @@ export class WebService {
             }
             return { delivered: true, disposition: "steered" };
           }
+          this.store.setMonitorWakeSteeringTurn(input.sourceId, input.deliveryKey, active.turnId, false);
         } catch (error) {
           this.options.logger?.warn?.("Web Monitor steering outcome is unknown; automatic fallback is suppressed.", {
             threadId: input.threadId,
