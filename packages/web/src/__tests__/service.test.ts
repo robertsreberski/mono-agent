@@ -173,6 +173,72 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("revalidates a persisted catalog-only default on restart and rejects it after catalog drift", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const catalogModel = {
+      id: "catalog-model",
+      name: "Catalog Model",
+      provider: "provider",
+      providerLabel: "Provider",
+      reasoning: true,
+      effortLevels: ["low", "high"],
+    };
+    const modelRequests: string[] = [];
+    const create = async (models: readonly Record<string, unknown>[], generation = 1) =>
+      WebService.create({
+        stateDir,
+        discoveryIntervalMs: 0,
+        purgeIntervalMs: 0,
+        discoverImpl: async () => [fakeDiscoveredAgent(generation === 1 ? {} : {
+          source: {
+            ...fakeDiscoveredAgent().source,
+            pid: 123 + generation,
+            startedAt: `2026-07-${16 + generation}T09:00:00.000Z`,
+          },
+        })],
+        fetchImpl: operatorFetch({
+          modelsPage: { models, truncated: false },
+          onModelsRequest: (url) => modelRequests.push(url),
+        }),
+      });
+
+    let service = await create([catalogModel]);
+    await service.agentModels("agent-one", { provider: "provider", limit: 50 });
+    service.setAgentRunDefaults("agent-one", { model: "provider:catalog-model", effort: "high" });
+    expect(service.createThread("agent-one")).toMatchObject({
+      runModel: "provider:catalog-model",
+      runEffort: "high",
+    });
+    await service.stop();
+
+    service = await create([catalogModel]);
+    expect(modelRequests.at(-1)).toContain("q=catalog-model");
+    expect(service.createThread("agent-one")).toMatchObject({
+      runModel: "provider:catalog-model",
+      runEffort: "high",
+    });
+    await service.stop();
+
+    service = await create([catalogModel], 2);
+    expect(service.createThread("agent-one")).toMatchObject({
+      runModel: "provider:catalog-model",
+      runEffort: "high",
+    });
+    await service.stop();
+
+    service = await create([{ ...catalogModel, effortLevels: ["low"] }], 3);
+    expect(() => service.createThread("agent-one"))
+      .toThrowError(expect.objectContaining({ code: "invalid_effort" }));
+    await service.stop();
+
+    service = await create([{ ...catalogModel, id: "catalog-model-v2" }], 4);
+    expect(() => service.createThread("agent-one"))
+      .toThrowError(expect.objectContaining({ code: "invalid_model" }));
+    await service.stop();
+  });
+
   it("delegates conversation search to the store and emits nothing for it", async () => {
     const service = await createService({});
     const thread = service.createThread("agent-one");

@@ -103,6 +103,39 @@ describe("ModelControls", () => {
     expect(store.setModel).toHaveBeenCalledWith(MODEL);
   });
 
+  it("labels a blank draft with the web default that creation will snapshot", () => {
+    const webModel = "provider:web-default";
+    storeMock.current = {
+      ...storeMock.current,
+      effectiveModel: webModel,
+      effectiveEffort: "high",
+      selectedAgent: agent("agent", {
+        models: [MODEL, webModel],
+        defaultModel: MODEL,
+        defaultEffort: "medium",
+        modelOptions: {
+          [MODEL]: { label: "Config model", reasoning: true, effortLevels: ["medium", "high"] },
+          [webModel]: { label: "Web default", reasoning: true, effortLevels: ["medium", "high"] },
+        },
+        runSettings: {
+          config: { model: MODEL, effort: "medium" },
+          override: { model: webModel, effort: "high" },
+          effective: {
+            model: webModel,
+            modelSource: "override",
+            effort: "high",
+            effortSource: "override",
+          },
+        },
+      }),
+    };
+
+    render(<ModelControls />);
+    const trigger = screen.getByRole("button", { name: "Model and reasoning effort" });
+    expect(trigger).toHaveTextContent("Default · Web default");
+    expect(trigger).toHaveTextContent("High");
+  });
+
   it("keeps a catalog-only override and its shared effort controls visible while its lazy row loads", async () => {
     const selectedModel = "anthropic:claude-fable-5";
     storeMock.current = {
@@ -228,6 +261,7 @@ describe("ModelControls", () => {
   it("names a provider-selected default without guessing its effort", async () => {
     storeMock.current = {
       ...storeMock.current,
+      effectiveEffort: "",
       selectedAgent: agent("agent", {
         models: [MODEL],
         defaultModel: MODEL,
@@ -252,6 +286,7 @@ describe("ModelControls", () => {
   it("renders the configured default through a toggle model's on/off vocabulary", async () => {
     storeMock.current = {
       ...storeMock.current,
+      effectiveEffort: "none",
       selectedAgent: agent("agent", {
         models: [MODEL],
         defaultModel: MODEL,

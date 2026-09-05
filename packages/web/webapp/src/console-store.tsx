@@ -53,7 +53,7 @@ interface ConsoleStoreValue {
   readonly hiddenOfflineAgentCount: number;
   readonly model: string;
   readonly effort: string;
-  /** What the next turn will actually run on, override or agent default. */
+  /** What this thread, or the next draft thread, will actually run on. */
   readonly effectiveModel: string;
   readonly effectiveEffort: string;
   /** True while this conversation overrides what the agent would start with. */
@@ -2628,6 +2628,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const preferenceKey = selectedAgentId
     ? preferenceKeyForThread(selectedAgentId, selectedThreadId)
     : "";
+  const localModelPresent = preferenceKey !== "" && Object.hasOwn(modelByContext, preferenceKey);
+  const localEffortPresent = preferenceKey !== "" && Object.hasOwn(effortByContext, preferenceKey);
   // Overrides live on the thread (persisted by the server). Browser-local
   // prefs survive only for threads that have not been migrated yet, which keeps
   // the one-time PATCH that adopts them from ever overriding a real server
@@ -2655,19 +2657,29 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     catalogModels,
   );
   const model = validatedPreference.model;
-  const effectiveModel = selectedAgent
-    ? effectiveModelForAgent(selectedAgent, model) ?? ""
-    : "";
+  const configModel = selectedAgent ? effectiveModelForAgent(selectedAgent, "") ?? "" : "";
+  const draftInheritsWebModel = selectedThread === null && !localModelPresent;
+  const inheritedModel = draftInheritsWebModel
+    ? selectedAgent?.runSettings.effective.model ?? configModel
+    : configModel;
+  const effectiveModel = model || inheritedModel;
   const effortOptions = effortLevelsForAgentModel(
     selectedAgent,
     effectiveModel,
     findCatalogModel(catalogModels, effectiveModel),
   );
   const effort = validatedPreference.effort;
-  const effectiveEffort = effort || selectedAgent?.defaultEffort || "";
+  const configEffort = selectedAgent?.defaultEffort ?? "";
+  const draftInheritsWebEffort = selectedThread === null && !localEffortPresent;
+  const inheritedEffort = draftInheritsWebEffort
+    ? selectedAgent?.runSettings.effective.effort ?? configEffort
+    : configEffort;
+  const effectiveEffort = effort || inheritedEffort;
   // An override is what the operator chose for THIS conversation, as opposed to
   // whatever the agent would otherwise start with.
-  const hasRunOverride = model.length > 0 || effort.length > 0;
+  const hasRunOverride = selectedThread === null
+    ? localModelPresent || localEffortPresent
+    : model.length > 0 || effort.length > 0;
 
   useEffect(() => {
     if (!preferenceKey || serverOverrideActive) return;
@@ -2870,12 +2882,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         nextEffectiveModel,
         findCatalogModel(catalogModels, nextEffectiveModel),
       );
-      setEffortByContext((current) => ({
-        ...current,
-        [preferenceKey]: nextEfforts.includes(current[preferenceKey] ?? "")
-          ? (current[preferenceKey] ?? "")
-          : "",
-      }));
+      setEffortByContext((current) => {
+        const authored = Object.hasOwn(current, preferenceKey);
+        const candidate = authored
+          ? current[preferenceKey] ?? ""
+          : selectedAgent?.runSettings.effective.effort ?? "";
+        if (candidate === "" || nextEfforts.includes(candidate)) return current;
+        // Deliberately materialize explicit null only when the inherited or
+        // authored effort cannot run on the newly selected draft model.
+        return { ...current, [preferenceKey]: "" };
+      });
     },
     [
       catalogModels,

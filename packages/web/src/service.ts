@@ -877,17 +877,7 @@ export class WebService {
     // the reply -- fetched from a process that is gone -- was written straight
     // into the freshly reconciled map, where `source: "page"` overwrites
     // unconditionally. Generation 1's ladder then judged generation 2's turns.
-    this.admitCatalogRefs(sourceId, generation, page.models.flatMap((model) => {
-      const record: CatalogModelRecord = { source: "page", efforts: advertisedEffortLevels(model) };
-      // The wire carries provider-local ids while every selection surface
-      // speaks the canonical `<provider>:<model>` reference. Admit both, or a
-      // turn is judged against metadata the page did advertise but under a
-      // name nothing ever asks for.
-      const reference = model.provider ? `${model.provider}:${model.id}` : model.id;
-      const entries: (readonly [string, CatalogModelRecord])[] = [[model.id, record]];
-      if (reference !== model.id) entries.push([reference, record]);
-      return entries;
-    }));
+    this.admitModelPage(sourceId, generation, page);
     return page;
   }
 
@@ -1890,6 +1880,12 @@ export class WebService {
         const info = await client.info(AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]));
         nextConnections.set(agent.source.sourceId, { client, info });
         this.seedModelCatalogFromOptions(agent.source.sourceId, generation, info.modelOptions);
+        await this.restorePersistedModelAdmission(
+          client,
+          agent.source.sourceId,
+          generation,
+          signal,
+        );
         const efforts = collectEfforts(info);
         return {
           sourceId: agent.source.sourceId,
@@ -2206,6 +2202,58 @@ export class WebService {
       generation,
       Object.keys(modelOptions).map((key) => [key, { source: "shortlist", efforts: undefined }] as const),
     );
+  }
+
+  /**
+   * A catalog-only web default outlives this process, while the admission cache
+   * deliberately does not. Revalidate that one persisted ref against the live
+   * generation during discovery so first-use thread creation never depends on
+   * a browser having opened the model picker. An exact match is mandatory: a
+   * retired ref remains unadmitted even if the search returns close names.
+   */
+  private async restorePersistedModelAdmission(
+    client: OperatorClient,
+    sourceId: string,
+    generation: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const model = this.store.getAgent(sourceId)?.runSettings.override?.model;
+    if (model === undefined || this.modelCatalogCache.get(sourceId)?.models.has(model) === true) return;
+    const separator = model.indexOf(":");
+    const query = separator === -1 ? model : model.slice(separator + 1);
+    try {
+      const page = await client.models({
+        q: query,
+        limit: 200,
+        signal: AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]),
+      });
+      this.admitModelPage(sourceId, generation, page, model);
+    } catch (error) {
+      this.options.logger?.debug?.("Persisted web model default could not be revalidated.", {
+        sourceId,
+        error: errorMessage(error),
+      });
+    }
+  }
+
+  private admitModelPage(
+    sourceId: string,
+    generation: string | undefined,
+    page: WebModelPage,
+    exactReference?: string,
+  ): void {
+    this.admitCatalogRefs(sourceId, generation, page.models.flatMap((model) => {
+      const record: CatalogModelRecord = { source: "page", efforts: advertisedEffortLevels(model) };
+      // The wire carries provider-local ids while every selection surface
+      // speaks the canonical `<provider>:<model>` reference. Admit both, or a
+      // turn is judged against metadata the page did advertise but under a
+      // name nothing ever asks for.
+      const reference = model.provider ? `${model.provider}:${model.id}` : model.id;
+      if (exactReference !== undefined && reference !== exactReference && model.id !== exactReference) return [];
+      const entries: (readonly [string, CatalogModelRecord])[] = [[model.id, record]];
+      if (reference !== model.id) entries.push([reference, record]);
+      return entries;
+    }));
   }
 
   private admitModelRef(
