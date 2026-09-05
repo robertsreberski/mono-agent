@@ -5,6 +5,7 @@ import type { AgentReplyPart, MonitorProjection, ProcessJobProjection } from "@m
 
 import type { WebThreadNotificationTriggerKind } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
+import { fetchLongLivedHostWake } from "./long-lived-fetch.js";
 import { resolveWebStatePaths, type WebStatePathOptions } from "./state-paths.js";
 
 const NOTIFICATION_INGRESS_SCHEMA = 1;
@@ -82,16 +83,16 @@ export async function deliverWebNotification(
 ): Promise<DeliverWebNotificationResult> {
   const path = resolveWebStatePaths(options).notificationIngress;
   const ingress = await readIngressRecord(path);
-  const fetchImpl = options.fetchImpl ?? fetch;
+  const carriesWakeTurn = input.triggerKind === "monitor"
+    || (input.triggerKind === "job" && input.wakePrompt !== undefined);
+  const fetchImpl = options.fetchImpl ?? (carriesWakeTurn ? fetchLongLivedHostWake : fetch);
   let response: Response;
   try {
     response = await fetchImpl(ingress.url, {
       method: "POST",
       redirect: "error",
       signal: AbortSignal.timeout(options.timeoutMs
-        ?? ((input.triggerKind === "job" && input.wakePrompt !== undefined) || input.triggerKind === "monitor"
-          ? 10 * 60 * 1_000
-          : DEFAULT_TIMEOUT_MS)),
+        ?? (carriesWakeTurn ? 10 * 60 * 1_000 : DEFAULT_TIMEOUT_MS)),
       headers: {
         authorization: `Bearer ${ingress.token}`,
         "content-type": "application/json",

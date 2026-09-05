@@ -37,7 +37,8 @@
     "@earendil-works/pi-tui": "0.85.1",
     "@mono-agent/agent-contracts": "workspace:0.20.14",
     "@mono-agent/config": "workspace:0.20.14",
-    "@mono-agent/observability": "workspace:0.20.14"
+    "@mono-agent/observability": "workspace:0.20.14",
+    "undici": "8.9.0"
   },
   "publishConfig": {
     "access": "public"

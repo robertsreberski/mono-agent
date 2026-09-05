@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Agent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
 
 import {
   isAgentResponseCancelledError,
@@ -137,6 +138,40 @@ describe("RemoteAgentResponder", () => {
         ]);
       },
     );
+  });
+
+  it("keeps a silent remote turn alive beyond the transport body timeout", async () => {
+    const previousDispatcher = getGlobalDispatcher();
+    const testAgent = new Agent();
+    setGlobalDispatcher(testAgent.compose(
+      (dispatch) => (options, handler) => dispatch({
+        ...options,
+        bodyTimeout: options.bodyTimeout === 0 ? 0 : 100,
+      }, handler),
+    ));
+    try {
+      await withAdapter(
+        {
+          respond: async (_request, stream) => {
+            await stream.append("waiting");
+            await new Promise((resolve) => setTimeout(resolve, 1_500));
+            return { text: "answered" };
+          },
+        },
+        async (adapter) => {
+          const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
+          const collected = collectingStream();
+          await expect(client.respond(
+            request({ abortSignal: AbortSignal.timeout(4_000) }),
+            collected.stream,
+          )).resolves.toEqual({ text: "answered" });
+          expect(collected.text).toEqual(["waiting"]);
+        },
+      );
+    } finally {
+      setGlobalDispatcher(previousDispatcher);
+      await testAgent.close();
+    }
   });
 
   it("reads /v1/info", async () => {

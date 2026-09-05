@@ -37,6 +37,7 @@
     "@mono-agent/observability": "workspace:0.20.14",
     "compression": "1.8.1",
     "express": "^5.1.0",
+    "undici": "8.9.0",
     "web-push": "3.6.7"
   },
   "devDependencies": {

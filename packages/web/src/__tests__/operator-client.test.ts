@@ -1,4 +1,7 @@
+import { createServer } from "node:http";
+
 import { describe, expect, it } from "vitest";
+import { Agent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
 
 import {
   MAX_INFO_PROVIDER_ID_BYTES,
@@ -529,6 +532,83 @@ describe("OperatorClient", () => {
       metadata: { runtime: { model: "actual" } },
       parts: [{ type: "attachment", reference: { id: "artifact-1" } }],
     });
+  });
+
+  it("keeps a silent turn stream alive beyond the transport body timeout", async () => {
+    const server = createServer((request, response) => {
+      request.resume();
+      response.writeHead(200, { "content-type": "application/x-ndjson" });
+      response.write(`${JSON.stringify({ kind: "status", text: "waiting" })}\n`);
+      const finish = setTimeout(() => {
+        response.end(`${JSON.stringify({ kind: "finish", finalText: "answered" })}\n`);
+      }, 1_500);
+      response.once("close", () => clearTimeout(finish));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    const previousDispatcher = getGlobalDispatcher();
+    const testAgent = new Agent();
+    setGlobalDispatcher(testAgent.compose(
+      (dispatch) => (options, handler) => dispatch({
+        ...options,
+        // Undici's fast parser timer is intentionally coarse; 100ms reliably
+        // fires at about one second while keeping this regression quick.
+        bodyTimeout: options.bodyTimeout === 0 ? 0 : 100,
+      }, handler),
+    ));
+    try {
+      const client = new OperatorClient({ baseUrl: `http://127.0.0.1:${String(port)}` });
+      await expect(client.turn({
+        ...turnInput(),
+        signal: AbortSignal.timeout(4_000),
+      })).resolves.toEqual({ finalText: "answered" });
+    } finally {
+      setGlobalDispatcher(previousDispatcher);
+      await testAgent.close();
+      await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+    }
+  });
+
+  it("still tears down a long-lived turn when its caller aborts", async () => {
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let markClosed: (() => void) | undefined;
+    const closed = new Promise<void>((resolve) => {
+      markClosed = resolve;
+    });
+    const server = createServer((request, response) => {
+      request.resume();
+      response.writeHead(200, { "content-type": "application/x-ndjson" });
+      response.write(`${JSON.stringify({ kind: "status", text: "waiting" })}\n`);
+      response.once("close", () => markClosed?.());
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    try {
+      const controller = new AbortController();
+      const client = new OperatorClient({ baseUrl: `http://127.0.0.1:${String(port)}` });
+      const turn = client.turn({
+        ...turnInput(),
+        signal: controller.signal,
+        onFrame() {
+          markStarted?.();
+        },
+      });
+      await started;
+      controller.abort(new Error("operator cancelled"));
+
+      await expect(turn).rejects.toBeDefined();
+      await expect(Promise.race([
+        closed,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("socket did not close")), 2_000)),
+      ])).resolves.toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+    }
   });
 
   it("streams integrity-bound artifacts and uses exact MCP App connection headers", async () => {

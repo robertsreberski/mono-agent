@@ -44,6 +44,7 @@ import type {
 } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
 import { isTrustedOperatorBaseUrl } from "./discovery.js";
+import { fetchLongLivedTurn } from "./long-lived-fetch.js";
 
 const OPERATOR_WIRE_SCHEMA = 1;
 const MAX_PROCESS_JOBS_BODY_BYTES = 16 * 1024 * 1024;
@@ -157,6 +158,7 @@ export class OperatorClient {
   private readonly processJobsBearer: string | undefined;
   private readonly monitorsBearer: string | undefined;
   private readonly fetchImpl: typeof fetch;
+  private readonly turnFetchImpl: typeof fetch;
 
   constructor(options: OperatorClientOptions) {
     if (!isTrustedOperatorBaseUrl(options.baseUrl)) {
@@ -167,6 +169,7 @@ export class OperatorClient {
     this.processJobsBearer = options.processJobsBearer;
     this.monitorsBearer = options.monitorsBearer;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.turnFetchImpl = options.fetchImpl ?? fetchLongLivedTurn;
   }
 
   async info(signal?: AbortSignal): Promise<OperatorInfo> {
@@ -219,22 +222,27 @@ export class OperatorClient {
   }
 
   async turn(input: OperatorTurnInput): Promise<OperatorTurnResult> {
-    const response = await this.request(`${this.baseUrl}/v1/turns`, {
-      method: "POST",
-      headers: { ...this.headers(true), ...this.monitorWakeHeaders(input.processJobWakeDeliveryKey) },
-      signal: input.signal,
-      body: JSON.stringify({
-        conversationId: input.conversationId,
-        text: input.text,
-        client: input.client ?? "web",
-        metadata: input.metadata,
-        ...(input.processJobWakeDeliveryKey === undefined
-          ? {}
-          : { processJobWakeDeliveryKey: input.processJobWakeDeliveryKey }),
-        ...(input.toolEnvironment === undefined ? {} : { toolEnvironment: input.toolEnvironment }),
-        ...(input.attachments.length === 0 ? {} : { attachments: input.attachments }),
-      }),
-    });
+    const response = await this.request(
+      `${this.baseUrl}/v1/turns`,
+      {
+        method: "POST",
+        headers: { ...this.headers(true), ...this.monitorWakeHeaders(input.processJobWakeDeliveryKey) },
+        signal: input.signal,
+        body: JSON.stringify({
+          conversationId: input.conversationId,
+          text: input.text,
+          client: input.client ?? "web",
+          metadata: input.metadata,
+          ...(input.processJobWakeDeliveryKey === undefined
+            ? {}
+            : { processJobWakeDeliveryKey: input.processJobWakeDeliveryKey }),
+          ...(input.toolEnvironment === undefined ? {} : { toolEnvironment: input.toolEnvironment }),
+          ...(input.attachments.length === 0 ? {} : { attachments: input.attachments }),
+        }),
+      },
+      undefined,
+      this.turnFetchImpl,
+    );
     if (!response.headers.get("content-type")?.toLowerCase().includes("application/x-ndjson")) {
       await response.body?.cancel().catch(() => undefined);
       throw new WebConsoleError("invalid_operator_content_type", "The agent turn endpoint did not return NDJSON.", 502);
@@ -679,10 +687,11 @@ export class OperatorClient {
     url: string,
     init: RequestInit,
     preservedErrors?: ReadonlyMap<string, number>,
+    fetchImpl: typeof fetch = this.fetchImpl,
   ): Promise<Response> {
     let response: Response;
     try {
-      response = await this.fetchImpl(url, { ...init, redirect: "error" });
+      response = await fetchImpl(url, { ...init, redirect: "error" });
     } catch (error) {
       if (init.signal?.aborted === true) throw error;
       throw new WebConsoleError("agent_unreachable", `Agent is unreachable (${errorMessage(error)}).`, 502);
