@@ -62,7 +62,8 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   Monitor wakes have no browser-side stop control. For a verified Monitor wake,
   a terminal no-op assistant message is suppressed while an earlier meaningful
   answer and rich content remain visible. Push delivery waits for an outstanding
-  steering receipt and uses the normalized reply.
+  steering receipt and uses the normalized reply. Monitor callbacks use the
+  independent owner credential derived from the advertised private state directory.
 
 ## Install / Usage
 

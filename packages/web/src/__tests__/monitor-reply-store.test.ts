@@ -91,10 +91,10 @@ describe("Monitor terminal reply persistence", () => {
     } finally { s.store.close(); }
   });
 
-  it.each(["ordinary", "unknown-key", "wrong-thread", "accepted-only"])("does not treat %s as a Monitor association", async (kind) => {
+  it.each(["ordinary", "unknown-key", "wrong-thread", "accepted-without-callback-key"])("does not treat %s as a Monitor association", async (kind) => {
     const s = await setup();
     try {
-      if (kind === "accepted-only" || kind === "unknown-key") s.reserve();
+      if (kind === "accepted-without-callback-key" || kind === "unknown-key") s.reserve();
       if (kind === "wrong-thread") {
         s.reserve(); s.settle();
         const other = s.store.createThread("agent-one");
@@ -103,7 +103,7 @@ describe("Monitor terminal reply persistence", () => {
         expect(s.store.getMessage(turn.assistantMessageId)?.parts).toContainEqual({ type: "text", text: "NOTHING_TO_REPORT" });
       } else {
         s.store.applyStreamFrames(s.turn.turnId, [text("NOTHING_TO_REPORT"), boundary]);
-        s.store.completeTurn(s.turn.turnId, "NOTHING_TO_REPORT", undefined, undefined, { monitorWakeDeliveryKey: "monitor:unknown:1" });
+        s.store.completeTurn(s.turn.turnId, "NOTHING_TO_REPORT", undefined, undefined, kind === "accepted-without-callback-key" ? {} : { monitorWakeDeliveryKey: "monitor:unknown:1" });
         expect(s.parts()).toContainEqual({ type: "text", text: "NOTHING_TO_REPORT" });
       }
     } finally { s.store.close(); }

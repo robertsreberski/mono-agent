@@ -35,6 +35,7 @@ export function fakeDiscoveredAgent(overrides: Partial<DiscoveredOperatorAgent> 
       warnings: [],
     },
     baseUrl: "http://127.0.0.1:45123/gui",
+    monitorsBearer: "test-owner-monitor-key",
     ...overrides,
   };
 }

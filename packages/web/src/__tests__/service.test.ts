@@ -1056,6 +1056,7 @@ describe("WebService", () => {
     const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
     await expect(service.deliverNotification({ sourceId: "agent-one", triggerKind: "monitor", threadId: thread.id,
       deliveryKey: `monitor:${monitor.monitorId}:1`, monitor, wakePrompt: "Inspect the event." })).resolves.toMatchObject({ delivery: { delivered: true, disposition: "follow_up" } });
+    expect(JSON.stringify(await service.bootstrap())).not.toContain("test-owner-monitor-key");
     const message = service.thread(thread.id).messages.at(-1)!;
     expect(message.parts.filter((part) => part.type === "text")).toEqual(earlier === "" ? [] : [{ type: "text", text: earlier }]);
     expect(message.parts).toContainEqual({ type: "reasoning", text: "No new update." });

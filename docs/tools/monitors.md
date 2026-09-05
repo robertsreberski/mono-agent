@@ -107,7 +107,8 @@ waiting.
 
 For web conversations, the managed web service must remain running so the
 owner-private loopback ingress can accept wakes. The browser tab may be closed:
-the service still runs the turn, persists any visible assistant reply in the
+the service authenticates callbacks with the independent owner Monitor credential,
+runs the turn, persists any visible assistant reply in the
 thread, and sends the normal response-ready Web Push when configured. A silent
 `NOTHING_TO_REPORT` result completes delivery without a Web Push. Web SQLite
 normalizes only the terminal provider message after verifying its exact Monitor

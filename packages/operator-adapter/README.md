@@ -79,7 +79,10 @@ Keep bearer values out of source config when possible. Set
   shared TUI override lane before the responder runs. The response is chunked
   `application/x-ndjson` with frames
   (`status | append | replace | event | finish | error`). Closing the socket
-  aborts the in-flight turn.
+  aborts the in-flight turn. Host Monitor wake keys in turn submissions or live
+  input additionally require the independent Monitor owner bearer in
+  `x-mono-agent-monitor-wake-authorization`; an ordinary operator API key cannot
+  authorize a Monitor flight.
 - `GET {basePath}/v1/conversations/:id/ask` - the current pending `AskUser`
   snapshot, or `{ ask: null }`.
 - `GET {basePath}/v1/interactions/:interactionId` - an exact pending or bounded

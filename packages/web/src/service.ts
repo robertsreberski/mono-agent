@@ -1832,6 +1832,7 @@ export class WebService {
         baseUrl: agent.baseUrl,
         ...(agent.apiKey === undefined ? {} : { apiKey: agent.apiKey }),
         ...(agent.processJobsBearer === undefined ? {} : { processJobsBearer: agent.processJobsBearer }),
+        ...(agent.monitorsBearer === undefined ? {} : { monitorsBearer: agent.monitorsBearer }),
         ...(this.options.fetchImpl === undefined ? {} : { fetchImpl: this.options.fetchImpl }),
       });
       try {
