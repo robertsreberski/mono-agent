@@ -14,6 +14,7 @@ import {
   GLOBAL_EFFORT_LEVELS,
   groupSelectorModels,
   providerOfModel,
+  selectorProvides,
 } from "./model-catalog";
 
 const codex = "pi:openai-codex:gpt-5.5";
@@ -30,6 +31,7 @@ const catalogModel = (
   provider: string,
   providerLabel: string,
   overrides: {
+    readonly name?: string;
     readonly contextWindow?: number;
     readonly reasoning?: boolean;
     readonly effortLevels?: readonly string[];
@@ -37,7 +39,7 @@ const catalogModel = (
   } = {},
 ): CatalogModel => ({
   id,
-  name: id,
+  name: overrides.name ?? id,
   provider,
   providerLabel,
   ...(overrides.contextWindow !== undefined
@@ -239,6 +241,47 @@ describe("buildSelectorModels", () => {
     expect(rows[0].efforts.map((option) => option.id)).toEqual(["", "medium", "high"]);
   });
 
+  it("uses catalog names when shortlist metadata has no label", () => {
+    const unlabeled = agent("agent", {
+      models: shortlist,
+      defaultModel: sonnet,
+      modelOptions: {
+        [codex]: { reasoning: true, effortLevels: ["low", "high"] },
+        [sonnet]: { reasoning: true, effortLevels: ["medium", "high"] },
+      },
+    });
+    const rows = buildSelectorModels({
+      agent: unlabeled,
+      modelOptions: shortlist,
+      defaultEffort: "high",
+      catalogByProvider: {
+        anthropic: [catalogModel("claude-sonnet-4.5", "anthropic", "Anthropic", {
+          name: "Claude Sonnet, configured",
+        })],
+      },
+    });
+
+    expect(rows[0]?.name).toBe("Default · Claude Sonnet, configured");
+    expect(rows.find((row) => row.id === sonnet)?.name)
+      .toBe("Claude Sonnet, configured");
+  });
+
+  it("keeps /v1/info labels ahead of catalog fallback names", () => {
+    const rows = buildSelectorModels({
+      agent: source,
+      modelOptions: shortlist,
+      defaultEffort: "high",
+      catalogByProvider: {
+        anthropic: [catalogModel("claude-sonnet-4.5", "anthropic", "Anthropic", {
+          name: "Catalog fallback only",
+        })],
+      },
+    });
+
+    expect(rows[0]?.name).toBe("Default · Claude Sonnet 4.5");
+    expect(rows.find((row) => row.id === sonnet)?.name).toBe("Claude Sonnet 4.5");
+  });
+
   it("offers each catalog row only the grades its own page advertised", () => {
     const rows = buildSelectorModels({
       agent: source,
@@ -282,6 +325,23 @@ describe("groupSelectorModels", () => {
     expect(groups[0]?.label).toBe("pi");
     expect(groups[1]?.label).toBe("Anthropic");
     expect(groups[1]?.models.map((model) => model.id)).toEqual([sonnet]);
+  });
+
+  it("keeps first-seen provider order while preferring advertised labels", () => {
+    const groups = [
+      { provider: "codex", label: "codex", models: [] },
+      { provider: "anthropic", label: "anthropic", models: [] },
+    ];
+
+    expect(selectorProvides(groups, [
+      { id: "anthropic", label: "Anthropic" },
+      { id: "codex", label: "OpenAI Codex" },
+      { id: "ollama", label: "Ollama" },
+    ])).toEqual([
+      { provider: "codex", label: "OpenAI Codex" },
+      { provider: "anthropic", label: "Anthropic" },
+      { provider: "ollama", label: "Ollama" },
+    ]);
   });
 });
 describe("the shared effort module", () => {
