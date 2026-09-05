@@ -63,8 +63,9 @@ export function useRunControls() {
       modelOptions,
       defaultEffort: agentDefaultEffort || selectedAgent?.defaultEffort || "",
       catalogByProvider: catalogModels,
+      selectedModel: model,
     });
-  }, [agentDefaultEffort, catalogByProvider, modelOptions, selectedAgent]);
+  }, [agentDefaultEffort, catalogByProvider, model, modelOptions, selectedAgent]);
 
   const catalogStatusByProvider = useMemo(
     () => Object.fromEntries(

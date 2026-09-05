@@ -138,10 +138,17 @@ Pointer/touch opening and model or effort changes do not focus the search input;
 keyboard opening retains search navigation. Local LM Studio and Ollama models
 confirmed as embedding-only by native metadata are omitted from chat choices.
 Unknown metadata preserves compatibility; model names are not used as a heuristic.
-Exact
-choices come from the running agent's startup capability snapshot; when a model
-does not advertise exact levels, the console offers provider/config default
-only instead of the global effort ladder. Usage telemetry remains internal
+A persisted catalog-only selection stays visible by its canonical reference when
+lazy provider metadata is absent, fails, or omits that model. While no metadata
+describes that model at all, its current effort and the shared compatibility
+ladder the agent accepts remain controllable, without reverting to the agent
+default; once exact metadata loads it supplies the catalog display name and the
+advertised ladder, which may narrow, keep, or remove those choices. Exact choices
+come from the running agent's startup capability snapshot. Silence about a model
+is not a claim and keeps the compatibility ladder, but metadata that marks a
+model as reasoning-capable without enumerating its levels hides the effort
+control entirely, default row included, rather than guessing cloud grades.
+Usage telemetry remains internal
 and is summarized through a context display that keeps exact Pi, Codex,
 OpenCode, and ACP provider-request snapshots separate from last-turn processed
 tokens and conversation cost. Running turns are labeled `Updating`; failed

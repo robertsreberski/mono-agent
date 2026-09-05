@@ -158,6 +158,8 @@ export type BuildSelectorModelsInput = {
   readonly modelOptions: readonly string[];
   readonly defaultEffort: string;
   readonly catalogByProvider?: Readonly<Record<string, readonly CatalogModel[]>>;
+  /** Current nonblank override, retained while its lazy catalog row is unavailable. */
+  readonly selectedModel?: string;
 };
 
 /**
@@ -172,6 +174,7 @@ export const buildSelectorModels = ({
   modelOptions,
   defaultEffort,
   catalogByProvider,
+  selectedModel,
 }: BuildSelectorModelsInput): readonly ModelSelectorOption[] => {
   if (!agent) return [];
   const shortlistIds = new Set(modelOptions);
@@ -245,6 +248,32 @@ export const buildSelectorModels = ({
         providerLabel: catalogModel.providerLabel || provider,
       });
     }
+  }
+
+  // A thread override is server-owned and can outlive this tab's lazy catalog
+  // cache. Never let the selector substitute the automatic row during that
+  // gap. The canonical reference is truthful, and the shared effort rule keeps
+  // the same compatibility ladder the store and server accept until exact
+  // model metadata can narrow it.
+  if (
+    selectedModel
+    && !rows.some((row) => row.id === selectedModel)
+  ) {
+    const provider = providerOfModel(selectedModel);
+    rows.push({
+      id: selectedModel,
+      name: displayNameForReference(selectedModel) ?? selectedModel,
+      description: selectedModel,
+      efforts: buildEffortOptions(
+        agent,
+        defaultEffort,
+        modelOptions,
+        selectedModel,
+        findCatalogModel(catalogByProvider, selectedModel),
+      ),
+      provider,
+      providerLabel: agent.providers?.find((entry) => entry.id === provider)?.label ?? provider,
+    });
   }
   return rows;
 };

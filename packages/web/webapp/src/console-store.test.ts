@@ -229,13 +229,31 @@ describe("run setting isolation", () => {
   });
 
   it("keeps an override whose row left the shortlist while its provider stays advertised", () => {
+    const source = agent("agent", {
+      models: ["current"],
+      providers: [{ id: "anthropic", label: "Anthropic" }],
+    });
     expect(
       validateRunPreference(
-        agent("agent", { models: ["current"] }),
+        source,
         { model: "anthropic:claude-sonnet-4.5", effort: "" },
-        ["agent", "anthropic"],
+        source.providers?.map((provider) => provider.id),
       ),
     ).toEqual({ model: "anthropic:claude-sonnet-4.5", effort: "" });
+  });
+
+  it("clears a model from an unadvertised provider when other providers exist", () => {
+    const source = agent("agent", {
+      models: ["current"],
+      providers: [{ id: "anthropic", label: "Anthropic" }],
+    });
+    expect(
+      validateRunPreference(
+        source,
+        { model: "mystery:retired", effort: "" },
+        source.providers?.map((provider) => provider.id),
+      ),
+    ).toEqual({ model: "", effort: "" });
   });
 
   it("judges a catalog-only model's effort against the ladder its page advertised", () => {
