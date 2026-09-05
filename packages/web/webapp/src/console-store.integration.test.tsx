@@ -2656,6 +2656,81 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.showArchived).toBe(false);
     });
 
+    it("keeps a conversation the operator opened when a bootstrap lands before its read", async () => {
+      // `agents.changed` alone re-applies a bootstrap, and a conversation the
+      // operator deliberately opened from search or a push link is by
+      // definition absent from the active bucket. Re-arming the restore marker
+      // for a selection that did not CHANGE turned that routine refresh into an
+      // ejection out of the conversation they had just opened.
+      const archivedElsewhere = thread("archived-elsewhere", "alpha", {
+        archivedAt: "2026-07-17T09:30:00.000Z",
+        updatedAt: "2026-07-17T09:30:00.000Z",
+      });
+      const store = await openOnAlpha([alphaThread]);
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      let release: (() => void) | undefined;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId !== "archived-elsewhere") return detail(alphaThread, "hello");
+        await held;
+        return detail(archivedElsewhere, "hello");
+      });
+
+      act(() => { store.current.selectThread("archived-elsewhere"); });
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("archived-elsewhere"));
+      emit("agents.changed");
+      await waitFor(() => expect(api.bootstrap).toHaveBeenCalledTimes(2));
+      await act(async () => {
+        release?.();
+        await held;
+      });
+      await quiet();
+
+      expect(store.current.selectedThreadId).toBe("archived-elsewhere");
+      expect(store.current.detail?.thread.id).toBe("archived-elsewhere");
+    });
+
+    it("leaves the conversation the operator created while a restored read was in flight", async () => {
+      // The restored read answers late and about a conversation nobody is
+      // looking at any more. Applying its repair blind blanked the pane the
+      // operator had just opened.
+      const archivedElsewhere = thread("archived-elsewhere", "alpha", {
+        archivedAt: "2026-07-17T09:30:00.000Z",
+        updatedAt: "2026-07-17T09:30:00.000Z",
+      });
+      const fresh = thread("fresh-thread", "alpha", { updatedAt: "2026-07-17T13:00:00.000Z" });
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: "archived-elsewhere" }));
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alphaThread],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+      let release: (() => void) | undefined;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId === "fresh-thread") return detail(fresh, "hello");
+        if (threadId !== "archived-elsewhere") return detail(alphaThread, "hello");
+        await held;
+        return detail(archivedElsewhere, "hello");
+      });
+      vi.mocked(api.createThread).mockResolvedValue(fresh);
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("archived-elsewhere"));
+
+      await act(async () => { await store.current.createThread(); });
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("fresh-thread"));
+      await act(async () => {
+        release?.();
+        await held;
+      });
+      await quiet();
+
+      expect(store.current.selectedThreadId).toBe("fresh-thread");
+      expect(store.current.detail?.thread.id).toBe("fresh-thread");
+    });
+
     it("drops a conversation a listing event says was removed, without a page", async () => {
       // The removal arrives as a pair, and the `threads.changed` half names a
       // conversation this tab does not list. Read as a bare listing event it

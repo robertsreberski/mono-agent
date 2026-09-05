@@ -1258,6 +1258,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [showArchived]);
 
   const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number, archived: boolean) => {
+    const previouslySelected = selectedThreadRef.current;
     // A bootstrap is a wholesale replacement, so a deleted conversation it
     // still lists is re-added, selected, and routed to. It is also the single
     // most likely response to be in flight across a delete: `refreshNow` issues
@@ -1309,12 +1310,19 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const selection = routeThread === undefined
       ? baseSelection
       : { agentId: routeThread.sourceId, threadId: routeThread.id };
-    // Resolved from a stored id this answer did not carry, so nothing has
-    // confirmed it yet. See `restoredSelectionRef` and `loadThread`.
-    restoredSelectionRef.current = selection.threadId !== null
-      && !next.threads.some((thread) => thread.id === selection.threadId)
-      ? selection.threadId
-      : null;
+    // Only a selection this answer CHANGED can be a restore, and only when the
+    // answer does not carry it. A bootstrap re-apply is routine -- one lands on
+    // every `agents.changed` -- and a conversation the operator opened from
+    // search or a push link is by definition absent from the active bucket, so
+    // re-arming for a selection that did not move ejected them out of it the
+    // moment their own read answered. A KEPT selection has already issued its
+    // read; whatever that read settles, it settles.
+    if (selection.threadId !== previouslySelected) {
+      restoredSelectionRef.current = selection.threadId !== null
+        && !next.threads.some((thread) => thread.id === selection.threadId)
+        ? selection.threadId
+        : null;
+    }
     selectedAgentRef.current = selection.agentId;
     selectedThreadRef.current = selection.threadId;
     setSelectedAgentId(selection.agentId);
@@ -1487,15 +1495,23 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * the same way rather than opened where the sidebar cannot list it and the
    * archive toggle says nothing about it.
    */
-  const leaveRestoredArchivedThread = useCallback((thread: ThreadSummary) => {
+  const leaveRestoredArchivedThread = useCallback((thread: ThreadSummary): boolean => {
+    // Only while this is still the conversation on screen. A read of a restored
+    // selection can answer long after the operator has created, archived,
+    // unarchived or simply opened something else, and a repair applied blind
+    // then moves them off what they are actually looking at.
+    if (selectedThreadRef.current !== thread.id) return false;
+    // Never the conversation being left, however stale the row holding it says
+    // it is -- the same exclusion `archiveThread` makes.
     const replacement = [...threadsRef.current]
-      .filter((item) => item.sourceId === thread.sourceId && !item.archivedAt)
+      .filter((item) => item.sourceId === thread.sourceId && !item.archivedAt && item.id !== thread.id)
       .sort(byMostRecent)[0];
     selectedThreadRef.current = replacement?.id ?? null;
     setSelectedThreadId(replacement?.id ?? null);
     setDetail(null);
     persistThreadId(thread.sourceId, replacement?.id ?? null);
     updateThreadRoute(replacement, true);
+    return true;
   }, []);
 
   const loadThread = useCallback(async (threadId: string, signal: AbortSignal) => {
@@ -1514,10 +1530,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // This read is what confirms a RESTORED selection -- nothing else does.
       if (restoredSelectionRef.current === threadId) {
         restoredSelectionRef.current = null;
-        if (next.thread.archivedAt !== null && !showArchivedRef.current) {
-          leaveRestoredArchivedThread(next.thread);
-          return;
-        }
+        if (next.thread.archivedAt !== null
+          && !showArchivedRef.current
+          && leaveRestoredArchivedThread(next.thread)) return;
       }
       if (selectedThreadRef.current === threadId) setDetail(next);
     } catch (loadError) {
@@ -2363,6 +2378,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         return next;
       });
       operatorSelectionRef.current += 1;
+      // See `restoredSelectionRef`: what the operator opens is theirs, and a
+      // read still in flight for what they left has nothing to settle here.
+      restoredSelectionRef.current = null;
       selectedThreadRef.current = thread.id;
       setSelectedThreadId(thread.id);
       persistThreadId(selectedAgentId, thread.id);
@@ -2439,6 +2457,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         applyThreadUpdate(thread, issuedAt);
         if (selectedThreadRef.current === target.id || selectedThreadRef.current === threadId) {
           operatorSelectionRef.current += 1;
+          restoredSelectionRef.current = null;
           const replacement = visibleThreads.find((item) => item.id !== target.id);
           selectedThreadRef.current = replacement?.id ?? null;
           setSelectedThreadId(replacement?.id ?? null);
@@ -2463,6 +2482,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         api.patchThread(target.id, { archived: false }, signal));
       applyThreadUpdate(thread, issuedAt);
       operatorSelectionRef.current += 1;
+      restoredSelectionRef.current = null;
       selectedThreadRef.current = thread.id;
       setSelectedThreadId(thread.id);
       persistThreadId(thread.sourceId, thread.id);
