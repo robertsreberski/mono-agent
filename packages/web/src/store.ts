@@ -1,7 +1,7 @@
 import { createECDH, createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, readdir, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 
 import { normalizeMonitorTerminalReply, hasMonitorReplyContent, monitorReplyText } from "./monitor-reply.js";
@@ -31,6 +31,8 @@ import {
   type WebAgentSummary,
   type WebAttachment,
   type WebMessage,
+  type WebMessageDelta,
+  type WebMessageDeltaOp,
   type WebMessagePart,
   type WebMessageStatus,
   type WebCronJob,
@@ -174,6 +176,8 @@ interface MessageRow {
   created_at: string;
   updated_at: string;
   status: string;
+  /** Parts writes so far. See {@link WebMessage.seq}; pre-v17 rows read 0. */
+  seq: number;
   /** `turns.finished_at`, when the query joined the turn; a single-row read looks it up instead. */
   turn_finished_at?: string | null;
 }
@@ -547,6 +551,40 @@ export interface StoredLiveInput {
   readonly createdAt: string;
 }
 
+/**
+ * One parts write's outcome: the stored message, and what changed inside it.
+ *
+ * The delta is absent only when the call found nothing to write — a turn that
+ * already settled — because a write is the only thing that moves a sequence
+ * number, and a delta nobody wrote would be a version that does not exist.
+ */
+export interface StoredMessageWrite {
+  readonly message: WebMessage;
+  readonly delta?: WebMessageDelta;
+}
+
+/**
+ * A settled turn: its conversation as it now reads, and the one parts write
+ * that settling it made.
+ *
+ * The write travels with the detail because the console needs both and they
+ * describe the same moment: the detail is what a fresh reader would see, and
+ * `write.delta` is how a reader already holding the previous version gets
+ * there. Absent when the turn had already settled and nothing was written.
+ */
+export interface StoredTurnFinish extends WebThreadDetail {
+  readonly write?: StoredMessageWrite;
+}
+
+/** The columns a parts write may move alongside `parts_json` and `seq`. */
+interface MessagePartsColumns {
+  readonly status?: WebMessageStatus;
+  /** `null` detaches the row from its turn; omitting it leaves the turn alone. */
+  readonly turnId?: string | null;
+  readonly threadId?: string;
+  readonly createdAt?: string;
+}
+
 export interface ReserveStoredLiveInputResult {
   readonly input: StoredLiveInput;
   readonly message: WebMessage;
@@ -617,6 +655,14 @@ export class WebStore {
    * and it drops ids discovery no longer reports.
    */
   private readonly agentGenerations = new Map<string, string>();
+  /**
+   * `writeMessageParts` statements by the columns they assign. A streaming
+   * answer is written every ~50 ms and the SET list is one of a handful of
+   * shapes, so preparing each shape once keeps the hot path off the SQL
+   * compiler. Keyed by the generated SQL, which is derived solely from which
+   * columns the caller moves.
+   */
+  private readonly partsWriteStatements = new Map<string, StatementSync>();
 
   private constructor(database: DatabaseSync, paths: WebStatePaths, clock: () => Date) {
     this.database = database;
@@ -664,6 +710,9 @@ export class WebStore {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    // Drop the cached statements first: they hold native handles onto the
+    // connection this is about to close.
+    this.partsWriteStatements.clear();
     this.database.close();
   }
 
@@ -1094,8 +1143,7 @@ export class WebStore {
         const parts = parseParts(message.parts_json);
         if (!parts.some((part) => part.type === "text" && part.text === reservation.text)) {
           parts.push({ type: "text", text: reservation.text });
-          this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ? WHERE id = ?")
-            .run(serializeParts(parts), now, assistantMessageId);
+          this.writeMessageParts(assistantMessageId, parts, now);
         }
       }
       this.database.prepare(`
@@ -1526,10 +1574,12 @@ export class WebStore {
           || prior.created_at !== run.orderedAt
           || prior.status !== status
         ) {
-          this.database.prepare(`
-            UPDATE messages SET thread_id = ?, turn_id = ?, parts_json = ?,
-              created_at = ?, updated_at = ?, status = ? WHERE id = ?
-          `).run(channel.thread_id, turnId, serializedParts, run.orderedAt, now, status, messageId);
+          this.writeMessageParts(messageId, parts, now, {
+            threadId: channel.thread_id,
+            turnId,
+            createdAt: run.orderedAt,
+            status,
+          });
           changed = true;
         }
         // Detail is a message projection, not a replacement for the compact
@@ -1710,13 +1760,11 @@ export class WebStore {
       return { thread, duplicate: true, messageId: existing.message_id };
     }
     this.transaction(() => {
-      this.database.prepare(`
-        UPDATE messages SET parts_json = ?, updated_at = ?, status = ? WHERE id = ?
-      `).run(
-        serializeParts([processJobPart(projection, responseText), ...nextReplyParts]),
-        now,
-        isTerminalJobState(projection.state) ? "complete" : "running",
+      this.writeMessageParts(
         existing.message_id,
+        [processJobPart(projection, responseText), ...nextReplyParts],
+        now,
+        { status: isTerminalJobState(projection.state) ? "complete" : "running" },
       );
       this.database.prepare(`
         UPDATE process_job_cards
@@ -1939,9 +1987,7 @@ export class WebStore {
       const activityChanged = upsertMonitorActivity(parts, projection, input.deliveryKey);
       if (turn.status === "complete") this.repairMonitorResponsePush(input.turnId, parts);
       if (!activityChanged && !normalized.changed) return;
-      const now = this.now();
-      this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(serializeParts(parts), now, message.id);
+      this.writeMessageParts(message.id, parts, this.now());
       messageId = message.id;
     });
     return messageId === undefined ? undefined : this.requireMessage(messageId);
@@ -2880,8 +2926,7 @@ export class WebStore {
     const message = this.requireMessage(row.message_id);
     const now = this.now();
     this.transaction(() => {
-      this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(serializeParts(withLiveInputStatus(message.parts, "applied")), now, row.message_id);
+      this.writeMessageParts(row.message_id, withLiveInputStatus(message.parts, "applied"), now);
       this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(id);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, row.thread_id);
@@ -2899,8 +2944,12 @@ export class WebStore {
       this.database.prepare(`
         UPDATE live_inputs SET status = 'queued', active_turn_id = NULL, updated_at = ? WHERE id = ?
       `).run(now, id);
-      this.database.prepare("UPDATE messages SET turn_id = NULL, parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(serializeParts(withLiveInputStatus(message.parts, "queued")), now, row.message_id);
+      this.writeMessageParts(
+        row.message_id,
+        withLiveInputStatus(message.parts, "queued"),
+        now,
+        { turnId: null },
+      );
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, row.thread_id);
       this.recordThreadRevision(row.thread_id, "live_input_queued", now);
@@ -2914,8 +2963,12 @@ export class WebStore {
     const message = this.requireMessage(row.message_id);
     const now = this.now();
     this.transaction(() => {
-      this.database.prepare("UPDATE messages SET turn_id = NULL, parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(serializeParts(withLiveInputStatus(message.parts, "cancelled")), now, row.message_id);
+      this.writeMessageParts(
+        row.message_id,
+        withLiveInputStatus(message.parts, "cancelled"),
+        now,
+        { turnId: null },
+      );
       this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(id);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, row.thread_id);
@@ -2932,12 +2985,14 @@ export class WebStore {
     if (rows.length === 0) return [];
     const now = this.now();
     this.transaction(() => {
-      const update = this.database.prepare(
-        "UPDATE messages SET turn_id = NULL, parts_json = ?, updated_at = ? WHERE id = ?",
-      );
       for (const row of rows) {
         const message = this.requireMessage(row.message_id);
-        update.run(serializeParts(withLiveInputStatus(message.parts, "cancelled")), now, row.message_id);
+        this.writeMessageParts(
+          row.message_id,
+          withLiveInputStatus(message.parts, "cancelled"),
+          now,
+          { turnId: null },
+        );
       }
       this.database.prepare("DELETE FROM live_inputs WHERE thread_id = ?").run(threadId);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
@@ -2979,8 +3034,12 @@ export class WebStore {
           started_at, finished_at, error_code, error_message
         ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, NULL, NULL, NULL)
       `).run(turnId, threadId, row.text, row.model, row.effort, assistantMessageId, now);
-      this.database.prepare("UPDATE messages SET turn_id = ?, parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(turnId, serializeParts(withoutLiveInputTelemetry(userMessage.parts)), now, row.message_id);
+      this.writeMessageParts(
+        row.message_id,
+        withoutLiveInputTelemetry(userMessage.parts),
+        now,
+        { turnId },
+      );
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
         VALUES (?, ?, ?, 'assistant', '[]', ?, ?, 'running')
@@ -3001,36 +3060,41 @@ export class WebStore {
     };
   }
 
-  applyStreamFrame(turnId: string, frame: AgentStreamWireFrame): WebMessage {
+  applyStreamFrame(turnId: string, frame: AgentStreamWireFrame): StoredMessageWrite {
     return this.applyStreamFrames(turnId, [frame]);
   }
 
-  applyStreamFrames(turnId: string, frames: readonly AgentStreamWireFrame[]): WebMessage {
+  applyStreamFrames(turnId: string, frames: readonly AgentStreamWireFrame[]): StoredMessageWrite {
     const turn = this.requireTurn(turnId);
-    if (turn.status !== "running") return this.requireMessage(turn.assistant_message_id);
-    const message = this.requireMessage(turn.assistant_message_id);
-    const parts = [...message.parts];
-    let actualModel: string | undefined;
-    let actualEffort: string | undefined;
-    for (const frame of frames) {
-      if (frame.kind === "status") {
-        parts.push({ type: "telemetry", event: "status", data: { text: frame.text } });
-      } else if (frame.kind === "append") {
-        appendTextPart(parts, "text", frame.delta);
-      } else if (frame.kind === "replace") {
-        replaceWholeText(parts, frame.text);
-      } else if (frame.kind === "event") {
-        applyEvent(parts, frame.event, (deliveryKey) => this.monitorWakeProjection(turnId, deliveryKey));
-        if (frame.event.type === "runtime_telemetry" && frame.event.kind === "run_config") {
-          if (typeof frame.event.data?.model === "string") actualModel = frame.event.data.model;
-          if (typeof frame.event.data?.effort === "string") actualEffort = frame.event.data.effort;
+    // Nothing is written for a turn that already settled, so there is no
+    // version for a delta to name.
+    if (turn.status !== "running") return { message: this.requireMessage(turn.assistant_message_id) };
+    // The base read, the frames applied to it and the write are ONE atomic
+    // span, as they already are on the finish path. A delta whose ops were
+    // diffed against a version other than the one its `baseSeq` names is
+    // self-consistent and WRONG -- the one corruption a sequence number cannot
+    // expose, because the console would apply it without complaint.
+    const delta = this.transaction(() => {
+      const message = this.requireMessage(turn.assistant_message_id);
+      const parts = [...message.parts];
+      let actualModel: string | undefined;
+      let actualEffort: string | undefined;
+      for (const frame of frames) {
+        if (frame.kind === "status") {
+          parts.push({ type: "telemetry", event: "status", data: { text: frame.text } });
+        } else if (frame.kind === "append") {
+          appendTextPart(parts, "text", frame.delta);
+        } else if (frame.kind === "replace") {
+          replaceWholeText(parts, frame.text);
+        } else if (frame.kind === "event") {
+          applyEvent(parts, frame.event, (deliveryKey) => this.monitorWakeProjection(turnId, deliveryKey));
+          if (frame.event.type === "runtime_telemetry" && frame.event.kind === "run_config") {
+            if (typeof frame.event.data?.model === "string") actualModel = frame.event.data.model;
+            if (typeof frame.event.data?.effort === "string") actualEffort = frame.event.data.effort;
+          }
         }
       }
-    }
-    const now = this.now();
-    this.transaction(() => {
-      this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(serializeParts(parts), now, message.id);
+      const written = this.writeMessageDelta(message, parts, this.now());
       if (actualModel !== undefined || actualEffort !== undefined) {
         this.database.prepare(`
           UPDATE turns SET
@@ -3039,8 +3103,9 @@ export class WebStore {
           WHERE id = ?
         `).run(actualModel ?? null, actualModel ?? null, actualEffort ?? null, actualEffort ?? null, turnId);
       }
+      return written;
     });
-    return this.requireMessage(message.id);
+    return { message: this.requireMessage(turn.assistant_message_id), delta };
   }
 
   completeTurn(
@@ -3049,7 +3114,7 @@ export class WebStore {
     metadata?: Readonly<Record<string, unknown>>,
     replyParts?: readonly AgentReplyPart[],
     options: { readonly suppressResponsePush?: boolean; readonly monitorWakeDeliveryKey?: string } = {},
-  ): WebThreadDetail {
+  ): StoredTurnFinish {
     const runtime = runtimeMetadata(metadata);
     return this.finishTurn(
       turnId,
@@ -3064,7 +3129,7 @@ export class WebStore {
     );
   }
 
-  failTurn(turnId: string, error: { readonly message: string; readonly code?: string; readonly cancelled?: boolean }): WebThreadDetail {
+  failTurn(turnId: string, error: { readonly message: string; readonly code?: string; readonly cancelled?: boolean }): StoredTurnFinish {
     return this.finishTurn(
       turnId,
       error.cancelled === true ? "cancelled" : "failed",
@@ -3075,7 +3140,7 @@ export class WebStore {
     );
   }
 
-  interruptTurn(turnId: string, message = "The web service stopped before this turn completed."): WebThreadDetail {
+  interruptTurn(turnId: string, message = "The web service stopped before this turn completed."): StoredTurnFinish {
     return this.finishTurn(turnId, "interrupted", undefined, "interrupted", message, undefined);
   }
 
@@ -3581,7 +3646,8 @@ export class WebStore {
         parts_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        status TEXT NOT NULL
+        status TEXT NOT NULL,
+        seq INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS messages_by_thread ON messages(thread_id, created_at);
       CREATE TABLE IF NOT EXISTS live_inputs (
@@ -3876,6 +3942,18 @@ export class WebStore {
             this.database.exec(
               "ALTER TABLE agents ADD COLUMN discovered INTEGER NOT NULL DEFAULT 1 CHECK (discovered IN (0, 1))",
             );
+          }
+        }
+        // Content deltas count a message's parts writes so a console can tell
+        // the next one from one it missed. Existing rows start the count at 0,
+        // which is exactly what a client that has never seen a delta holds.
+        // Guarded on PRAGMA table_info so the ALTER is skipped when the column
+        // already exists, keeping the migration re-runnable.
+        if (versionRow.user_version < 17) {
+          const columns = new Set((this.database.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>)
+            .map((column) => column.name));
+          if (!columns.has("seq")) {
+            this.database.exec("ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0");
           }
         }
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
@@ -4221,9 +4299,6 @@ export class WebStore {
       const updateInput = this.database.prepare(`
         UPDATE live_inputs SET status = 'queued', active_turn_id = NULL, updated_at = ? WHERE id = ?
       `);
-      const updateMessage = this.database.prepare(
-        "UPDATE messages SET turn_id = NULL, parts_json = ?, updated_at = ? WHERE id = ?",
-      );
       for (const row of rows) {
         const persisted = this.database.prepare("SELECT parts_json FROM messages WHERE id = ?")
           .get(row.message_id) as unknown as { parts_json: string } | undefined;
@@ -4231,10 +4306,11 @@ export class WebStore {
           throw new WebConsoleError("storage_corrupt", `Live input ${row.id} has no message.`, 500);
         }
         updateInput.run(now, row.id);
-        updateMessage.run(
-          serializeParts(withLiveInputStatus(parseParts(persisted.parts_json), "queued")),
-          now,
+        this.writeMessageParts(
           row.message_id,
+          withLiveInputStatus(parseParts(persisted.parts_json), "queued"),
+          now,
+          { turnId: null },
         );
       }
       for (const threadId of threadIds) {
@@ -4263,25 +4339,26 @@ export class WebStore {
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
     monitorWakeDeliveryKey?: string,
-  ): WebThreadDetail {
+  ): StoredTurnFinish {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") {
       return this.requireThreadDetail(turn.thread_id);
     }
-    this.transaction(() => {
-      this.finishTurnInTransaction(
-        turnId,
-        status,
-        finalText,
-        errorCode,
-        errorMessage,
-        runtime,
-        replyParts,
-        suppressResponsePush,
-        monitorWakeDeliveryKey,
-      );
-    });
-    return this.requireThreadDetail(turn.thread_id);
+    const write = this.transaction(() => this.finishTurnInTransaction(
+      turnId,
+      status,
+      finalText,
+      errorCode,
+      errorMessage,
+      runtime,
+      replyParts,
+      suppressResponsePush,
+      monitorWakeDeliveryKey,
+    ));
+    return {
+      ...this.requireThreadDetail(turn.thread_id),
+      ...(write === undefined ? {} : { write }),
+    };
   }
 
   private finishTurnInTransaction(
@@ -4294,9 +4371,9 @@ export class WebStore {
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
     monitorWakeDeliveryKey?: string,
-  ): void {
+  ): StoredMessageWrite | undefined {
     const turn = this.requireTurn(turnId);
-    if (turn.status !== "running") return;
+    if (turn.status !== "running") return undefined;
     const existing = this.requireMessage(turn.assistant_message_id);
     let parts = [...existing.parts];
     if (finalText !== undefined && finalText.length > 0) reconcileFinalText(parts, finalText);
@@ -4331,8 +4408,7 @@ export class WebStore {
         runtime?.effort ?? null,
         turnId,
       );
-    this.database.prepare("UPDATE messages SET parts_json = ?, status = ?, updated_at = ? WHERE id = ?")
-      .run(serializeParts(parts), status, now, existing.id);
+    const delta = this.writeMessageDelta(existing, parts, now, { status });
     this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
       .run(now, turn.thread_id);
     this.recordThreadRevision(turn.thread_id, `turn_${status}`, now);
@@ -4378,6 +4454,9 @@ export class WebStore {
         notBefore: new Date(new Date(now).getTime() + 3_000).toISOString(),
       });
     }
+    // Re-read rather than reuse `existing`: the settled row is what Task 6
+    // pushes beside the delta, and it carries the turn's finish stamp.
+    return { message: this.requireMessage(existing.id), delta };
   }
 
   private mapThread(row: ThreadRow): WebThread {
@@ -4412,6 +4491,103 @@ export class WebStore {
     };
   }
 
+  /**
+   * The ONE statement that persists a message's parts.
+   *
+   * Every parts write bumps `seq`, and that count is what makes a content
+   * delta safe to apply: a console holding version N can tell the write that
+   * follows it from one that skipped ahead, and re-read the message instead of
+   * guessing. A write that went straight to `parts_json` would mint content no
+   * delta describes and no sequence number covers, so this is the only place in
+   * the store that names the column. A caller that also moves the row passes
+   * the columns it changes here rather than issuing a second statement.
+   *
+   * Only the two paths a console watches live -- streaming frames and the write
+   * that settles a turn -- go on to build a {@link WebMessageDelta} from this.
+   * Every other caller (a live-input transition, restart recovery, and the
+   * notification, cron-run, process-job and Monitor reconciliations) bumps the
+   * version without describing the change: those writes reach the browser as an
+   * invalidation it answers by re-reading the message, and the new `seq` is what
+   * tells it the re-read is newer than the delta stream it was applying.
+   */
+  private writeMessageParts(
+    id: string,
+    parts: readonly WebMessagePart[],
+    now: string,
+    columns: MessagePartsColumns = {},
+  ): { readonly baseSeq: number; readonly seq: number } {
+    const assignments: string[] = [];
+    const values: Array<string | null> = [];
+    if (columns.threadId !== undefined) {
+      assignments.push("thread_id = ?");
+      values.push(columns.threadId);
+    }
+    if (columns.turnId !== undefined) {
+      assignments.push("turn_id = ?");
+      values.push(columns.turnId);
+    }
+    assignments.push("parts_json = ?");
+    values.push(serializeParts(parts));
+    if (columns.createdAt !== undefined) {
+      assignments.push("created_at = ?");
+      values.push(columns.createdAt);
+    }
+    assignments.push("updated_at = ?");
+    values.push(now);
+    if (columns.status !== undefined) {
+      assignments.push("status = ?");
+      values.push(columns.status);
+    }
+    const sql = `UPDATE messages SET ${assignments.join(", ")}, seq = seq + 1 WHERE id = ? RETURNING seq`;
+    let statement = this.partsWriteStatements.get(sql);
+    if (statement === undefined) {
+      statement = this.database.prepare(sql);
+      this.partsWriteStatements.set(sql, statement);
+    }
+    const row = statement.get(...values, id) as unknown as { seq: number } | undefined;
+    if (row === undefined) {
+      throw new WebConsoleError("storage_corrupt", `Message ${id} is missing from this conversation.`, 500);
+    }
+    return { baseSeq: row.seq - 1, seq: row.seq };
+  }
+
+  /**
+   * Persist a message's parts and describe the write as a content delta.
+   *
+   * `message` must be the message the new parts were DERIVED from: the diff
+   * compares by reference, so a delta computed against any other read of the
+   * same row would call every part changed.
+   */
+  private writeMessageDelta(
+    message: WebMessage,
+    parts: readonly WebMessagePart[],
+    now: string,
+    columns: MessagePartsColumns = {},
+  ): WebMessageDelta {
+    const { baseSeq, seq } = this.writeMessageParts(message.id, parts, now, columns);
+    // The ops describe `message.parts`; `baseSeq` is what the row actually held
+    // when this statement ran. Every caller reads and writes inside one
+    // transaction on a single-writer database, so these agree -- and if they
+    // ever stopped agreeing, the delta would be a self-consistent description
+    // of a version that never existed, which a console applies in silence.
+    // Refusing here turns that into a failure the caller can see.
+    if (baseSeq !== message.seq) {
+      throw new WebConsoleError(
+        "storage_corrupt",
+        `Message ${message.id} moved from ${String(message.seq)} to ${String(baseSeq)} while its delta was built.`,
+        500,
+      );
+    }
+    return {
+      messageId: message.id,
+      baseSeq,
+      seq,
+      status: columns.status ?? message.status,
+      updatedAt: now,
+      ops: diffParts(message.parts, parts),
+    };
+  }
+
   private mapMessage(row: MessageRow): WebMessage {
     const attachments = this.database
       .prepare("SELECT * FROM attachments WHERE message_id = ? AND origin = 'upload' ORDER BY created_at, id")
@@ -4440,6 +4616,7 @@ export class WebStore {
       ...(finishedAt === undefined ? {} : { finishedAt }),
       status: normalizeMessageStatus(row.status),
       ...(liveInputStatus === undefined ? {} : { liveInputStatus }),
+      seq: row.seq,
     };
   }
 
@@ -5715,6 +5892,91 @@ function replaceWholeText(parts: WebMessagePart[], text: string): void {
     if (index === lastTextIndex) parts[index] = { type: "text", text };
     else parts.splice(index, 1);
   }
+}
+
+/**
+ * The ops that turn `prev` into `next`.
+ *
+ * Parts are compared by REFERENCE, which is sound only because every helper
+ * above replaces the slot it touches with a new object instead of editing the
+ * one already there — `store.test.ts` freezes a write path's previous parts to
+ * keep it that way. A truncate leads, so no later op can name an index the
+ * shortened array no longer has; the rest ascend, so a replay that walks them
+ * in order only ever extends the array by one slot at a time.
+ */
+export function diffParts(
+  prev: readonly WebMessagePart[],
+  next: readonly WebMessagePart[],
+): WebMessageDeltaOp[] {
+  const ops: WebMessageDeltaOp[] = [];
+  if (next.length < prev.length) ops.push({ op: "truncate", length: next.length });
+  for (let index = 0; index < next.length; index += 1) {
+    const after = next[index];
+    if (after === undefined) continue;
+    const before = prev[index];
+    if (before === after) continue;
+    // A streaming answer grows by its tail, which is the whole point of the
+    // exercise: sending the delta rather than the message again is what takes
+    // a long answer's per-frame cost off the wire.
+    if (before !== undefined
+      && (after.type === "text" || after.type === "reasoning")
+      && before.type === after.type
+      && after.text.startsWith(before.text)) {
+      const delta = after.text.slice(before.text.length);
+      if (delta.length > 0) ops.push({ op: "append", index, delta });
+      continue;
+    }
+    ops.push({ op: "set", index, part: after });
+  }
+  return ops;
+}
+
+/**
+ * Replay `ops` onto `parts`, the exact inverse of {@link diffParts}.
+ *
+ * This is the shared definition of what an op MEANS, so the console can apply a
+ * delta without inventing its own reading of one. Anything the ops cannot mean
+ * against these parts throws rather than producing a plausible transcript: a
+ * client that lands here has missed a write and must re-read the message.
+ *
+ * The throws are plain `RangeError`/`TypeError` rather than `WebConsoleError`:
+ * this is a pure function that runs on both sides of the wire, so it has no
+ * request to answer and no HTTP status to pick. Its caller re-reads the message
+ * rather than mapping a code.
+ */
+export function applyDeltaOps(
+  parts: readonly WebMessagePart[],
+  ops: readonly WebMessageDeltaOp[],
+): WebMessagePart[] {
+  let next = [...parts];
+  for (const op of ops) {
+    if (op.op === "truncate") {
+      if (!Number.isInteger(op.length) || op.length < 0 || op.length > next.length) {
+        throw new RangeError(
+          `A message delta truncates to ${String(op.length)} parts, which is out of range for ${String(next.length)}.`,
+        );
+      }
+      next = next.slice(0, op.length);
+      continue;
+    }
+    if (!Number.isInteger(op.index) || op.index < 0 || op.index > next.length) {
+      throw new RangeError(
+        `A message delta names part ${String(op.index)}, which is out of range for ${String(next.length)}.`,
+      );
+    }
+    if (op.op === "set") {
+      next[op.index] = op.part;
+      continue;
+    }
+    const target = next[op.index];
+    if (target === undefined || (target.type !== "text" && target.type !== "reasoning")) {
+      throw new TypeError(
+        `A message delta appends to part ${String(op.index)}, which cannot be appended to.`,
+      );
+    }
+    next[op.index] = { type: target.type, text: `${target.text}${op.delta}` };
+  }
+  return next;
 }
 
 function deriveAutomaticTitle(text: string, attachments: readonly StoredAttachment[]): string {

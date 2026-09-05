@@ -2284,7 +2284,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // cluster, two subagent steps -- would each substitute a message built
     // before the other landed, and the first repair would silently revert to its
     // preview while both reported success. `mergeToolCallPart` is pure and
-    // idempotent, so StrictMode running this twice changes nothing.
+    // idempotent, so StrictMode running this twice changes nothing. The boolean
+    // this function returns therefore answers for `latest` at DECISION time,
+    // not for whatever the updater eventually committed -- it is what stops the
+    // row saying "Loading...", not a claim about what is on screen.
     setDetail((committed) => committed?.thread.id === latest.thread.id
       ? {
           ...committed,
