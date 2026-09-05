@@ -2902,7 +2902,9 @@ describe("ConsoleStoreProvider integration", () => {
 
       await act(async () => { await store.current.loadFullToolCall("tool-big"); });
 
-      expect(api.toolCallPart).toHaveBeenCalledWith(selected.id, "message-tool", "tool-big");
+      // Bounded like every other read, so the call carries the deadline's signal.
+      expect(api.toolCallPart).toHaveBeenCalledWith(
+        selected.id, "message-tool", "tool-big", expect.any(AbortSignal));
       const after = store.current.detail?.messages[0];
       // assistant-ui caches its part conversions by object identity, so the
       // repair has to arrive as new objects or the row keeps its preview.
@@ -2972,6 +2974,59 @@ describe("ConsoleStoreProvider integration", () => {
       const parts = store.current.detail?.messages[0]?.parts ?? [];
       expect(parts.map((part) => (part as { result?: unknown }).result)).toEqual(["WHOLE A", "WHOLE B"]);
       expect(parts.every((part) => (part as { resultTruncated?: boolean }).resultTruncated !== true)).toBe(true);
+    });
+
+    it("abandons a full-body read the transport never answers", async () => {
+      // Every other read is bounded; this one was not. A stalled request left
+      // the notice stuck on "Loading…" with no way back to the button, because
+      // nothing ever settled the promise it was waiting on.
+      const truncated = {
+        id: "message-tool",
+        threadId: selected.id,
+        role: "assistant" as const,
+        parts: [{
+          type: "tool-call" as const,
+          toolCallId: "tool-big",
+          toolName: "Exec",
+          result: "HEAD",
+          resultTruncated: true,
+          resultBytes: 20 * 1_024,
+          status: "complete" as const,
+        }],
+        attachments: [],
+        createdAt: "2026-08-14T08:00:00.000Z",
+        updatedAt: "2026-08-14T08:00:00.000Z",
+        status: "complete" as const,
+      };
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { label: "Alpha" })], [selected]));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [selected] });
+      vi.mocked(api.thread).mockResolvedValue({ thread: selected, messages: [truncated] });
+      const store = await openedOnAlpha();
+
+      // A transport that answers neither the request nor its abort.
+      vi.mocked(api.toolCallPart).mockImplementation(() => new Promise<never>(() => undefined));
+      let settledWith: unknown;
+      vi.useFakeTimers();
+      try {
+        const repairing = store.current.loadFullToolCall("tool-big").then(
+          (replaced) => { settledWith = replaced; },
+          (error: unknown) => { settledWith = error; },
+        );
+        for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
+        expect(settledWith).toBeUndefined();
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(THREAD_READ_TIMEOUT_MS);
+          await repairing;
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+      // Rejected, so the row's notice reports the failure instead of waiting
+      // forever on a promise nothing will settle.
+      expect(settledWith).toBeInstanceOf(Error);
+      expect((settledWith as Error).message).toMatch(/timed out/iu);
+      expect(JSON.stringify(store.current.detail?.messages)).toContain("resultTruncated");
     });
 
     it("reports no repair when the operator leaves the conversation mid-fetch", async () => {

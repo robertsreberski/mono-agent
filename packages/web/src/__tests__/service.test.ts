@@ -3628,13 +3628,17 @@ describe("transcript shaping", () => {
         turns: () => [
           JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "call-1", name: "Exec", arguments: bigArgs } }),
           JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "call-1", name: "Exec", content: bigResult } }),
-          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "ask-1", name: "AskUser", arguments: { question: "R".repeat(5_000) } } }),
+          // MCP-qualified, exactly as an agent that serves AskUser over MCP
+          // names it. `observeAskUserFrame` already recognises this shape, so
+          // shaping must recognise it by the same rule or the card breaks for
+          // precisely the runs that route the tool through a server.
+          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "ask-1", name: "mcp__console__ask_user", arguments: { question: "R".repeat(5_000) } } }),
           JSON.stringify({
             kind: "event",
             event: {
               type: "tool_call_completed",
               id: "ask-1",
-              name: "AskUser",
+              name: "mcp__console__ask_user",
               content: "Q".repeat(5_000),
               structuredContent: { interactionId: "i-1", answered: true },
             },
@@ -3678,7 +3682,7 @@ describe("transcript shaping", () => {
     expect(toolCall("ask-1")).toEqual({
       type: "tool-call",
       toolCallId: "ask-1",
-      toolName: "AskUser",
+      toolName: "mcp__console__ask_user",
       args: { question: "R".repeat(5_000) },
       result: "Q".repeat(5_000),
       structuredResult: { interactionId: "i-1", answered: true },

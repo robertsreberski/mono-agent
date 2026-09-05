@@ -195,6 +195,40 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.queryByRole("button", { name: "Load full output" })).toBeNull();
   });
 
+  it("gives one control to a tool call whose input and output were both cut", () => {
+    // The route returns the WHOLE part, so one round trip repairs both sides.
+    // Two buttons for it read as two different fetches.
+    const preview: WebMessage = {
+      ...assistantMessage("complete"),
+      parts: [
+        {
+          type: "tool-call",
+          toolCallId: "tool-big",
+          toolName: "Exec",
+          args: { command: "run " },
+          argsTruncated: true,
+          argsBytes: 8_192,
+          result: "HEAD-",
+          resultTruncated: true,
+          resultBytes: 20 * 1_024,
+          status: "complete",
+        },
+        { type: "text", text: "Done." },
+      ],
+    };
+    render(
+      <ToolCallRepairProvider repair={async () => true}>
+        <MessageHarness message={preview} />
+      </ToolCallRepairProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(screen.getByText("Exec").closest("summary")!);
+    expect(screen.getByText("Preview only, 8,192 chars.")).toBeVisible();
+    expect(screen.getByText("Preview only, 20,480 chars.")).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "Load full output" })).toHaveLength(1);
+  });
+
   it("states the preview without offering a load where there is no way to fetch one", () => {
     render(<MessageHarness message={truncatedToolMessage()} />);
 

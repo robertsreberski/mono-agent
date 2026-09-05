@@ -222,6 +222,10 @@ export function ActivityPayload({
           {...(onLoadFull === undefined ? {} : { onLoadFull })}
         />
       )}
+      {/* One repair fetches the WHOLE part, so one control asks for it. When
+          both sides are previews the first marker an operator meets owns the
+          button, and the second says only that it is a preview -- two buttons
+          read as two different fetches. */}
       {result !== undefined && (
         <>
           <span>{resultIsError ? "Error" : "Output"}</span>
@@ -231,7 +235,7 @@ export function ActivityPayload({
       {resultTruncated && (
         <TruncationNotice
           {...(resultBytes === undefined ? {} : { characters: resultBytes })}
-          {...(onLoadFull === undefined ? {} : { onLoadFull })}
+          {...(onLoadFull === undefined || argsTruncated ? {} : { onLoadFull })}
         />
       )}
       {error !== undefined && <p className="activity-error">{error}</p>}

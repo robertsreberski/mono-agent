@@ -154,6 +154,20 @@ type WebTelemetryPart = Extract<WebMessagePart, { type: "telemetry" }>;
 type WebToolCallPart = Extract<WebMessagePart, { type: "tool-call" }>;
 type WebSubagentPart = Extract<WebMessagePart, { type: "subagent" }>;
 
+/**
+ * Whether a tool name IS AskUser, however the agent qualified it.
+ *
+ * An MCP server serves it as `mcp__<server>__ask_user`, a forwarding runtime as
+ * `some.namespace:AskUser`, and separators vary. Two places have to agree on
+ * this -- the frame observer that arms the interaction poller, and the shaper
+ * that must leave the card's question and answer alone -- so they read the same
+ * rule rather than two spellings of it. An exact `=== "AskUser"` here silently
+ * shaped the card's payload for every run that routes the tool through a server.
+ */
+function isAskUserToolName(toolName: string): boolean {
+  return toolNameLeaf(toolName).toLowerCase().replace(/[^a-z0-9]+/gu, "") === "askuser";
+}
+
 /** A `runtime_telemetry` event's variant, which the store stores inside `data`. */
 function telemetryKind(data: unknown): string | undefined {
   if (data === null || typeof data !== "object" || Array.isArray(data)) return undefined;
@@ -222,7 +236,7 @@ function shapeToolCall(call: WebToolCall): WebToolCall {
   // AskUser's arguments and answer ARE the card the console renders, and they
   // are bounded at the emitter. `structuredResult` is never touched anywhere:
   // it is the machine-readable outcome, bounded at the emitter too.
-  if (call.toolName === "AskUser") return call;
+  if (isAskUserToolName(call.toolName)) return call;
   const args = shapedArgsObject(call.args) ?? payloadPreview(call.args);
   const result = payloadPreview(call.result);
   if (args === undefined && result === undefined) return call;
@@ -2256,7 +2270,7 @@ export class WebService {
 
   private observeAskUserFrame(threadId: string, turnId: string, frame: AgentStreamWireFrame): void {
     if (this.stopped || frame.kind !== "event" || frame.event.type !== "tool_call_started"
-      || toolNameLeaf(frame.event.name).toLowerCase().replace(/[^a-z0-9]+/gu, "") !== "askuser") return;
+      || !isAskUserToolName(frame.event.name)) return;
     const key = `${threadId}\0${turnId}`;
     if (this.askWatches.has(key)) return;
     const controller = new AbortController();

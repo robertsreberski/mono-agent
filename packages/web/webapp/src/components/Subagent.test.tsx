@@ -155,6 +155,22 @@ describe("SubagentPart", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not load the full output.");
   });
 
+  it("reports a repair the transport never answered", async () => {
+    // What a bounded read does when it times out: the deadline rejects, and the
+    // row has to say so rather than sit on "Loading..." with the button gone.
+    const repair = vi.fn(async (_toolCallId: string) => {
+      throw new Error("Request timed out.");
+    });
+    render(
+      <ToolCallRepairProvider repair={repair}>
+        {part({ ...delegation, result: "HEAD", resultTruncated: true, resultBytes: 20_480 })}
+      </ToolCallRepairProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load the full output.");
+  });
+
   it("offers a loader on a clustered step whose members were truncated", async () => {
     const repair = vi.fn(async (_toolCallId: string) => true);
     render(
@@ -233,6 +249,74 @@ describe("SubagentPart", () => {
     expect(screen.getByText("Preview only, 6,100 chars.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
     await waitFor(() => expect(repair).toHaveBeenCalledWith("call-1"));
+  });
+
+  it("gives one control to a delegation whose task and report were both cut", () => {
+    // One repair fetches the whole part, so one control asks for it. Two buttons
+    // for one round trip is two ways to do the same thing, and the second reads
+    // as if it fetched something else.
+    const repair = vi.fn(async (_toolCallId: string) => true);
+    render(
+      <ToolCallRepairProvider repair={repair}>
+        {part({
+          ...delegation,
+          args: { name: "researcher", prompt: "Read the ro" },
+          argsTruncated: true,
+          argsBytes: 6_100,
+          result: "HEAD of the report",
+          resultTruncated: true,
+          resultBytes: 20_480,
+        })}
+      </ToolCallRepairProvider>,
+    );
+
+    // Both notes still say they are previews; the Task note owns the control.
+    expect(screen.getByText("Preview only, 6,100 chars.")).toBeInTheDocument();
+    expect(screen.getByText("Preview only, 20,480 chars.")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Load full output" })).toHaveLength(1);
+  });
+
+  it("says only that a clustered member is a preview when it carries no size", () => {
+    const repair = vi.fn(async (_toolCallId: string) => true);
+    render(
+      <ToolCallRepairProvider repair={repair}>
+        {part({
+          ...delegation,
+          result: undefined,
+          calls: [
+            { toolCallId: "c1", toolName: "Read", args: { file_path: "/repo/a.ts" }, result: "HEAD", resultTruncated: true, status: "complete" },
+            { toolCallId: "c2", toolName: "Read", args: { file_path: "/repo/b.ts" }, result: "small", status: "complete" },
+          ],
+        })}
+      </ToolCallRepairProvider>,
+    );
+
+    // A member with no reported size must not be summed as zero: "0 chars" is a
+    // measurement, and there is not one.
+    expect(screen.getByText("Preview only.")).toBeInTheDocument();
+    expect(screen.queryByText(/0 chars/u)).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Load full output" })).toHaveLength(1);
+  });
+
+  it("does not undercount a cluster where only some members reported a size", () => {
+    const repair = vi.fn(async (_toolCallId: string) => true);
+    render(
+      <ToolCallRepairProvider repair={repair}>
+        {part({
+          ...delegation,
+          result: undefined,
+          calls: [
+            { toolCallId: "c1", toolName: "Read", args: { file_path: "/repo/a.ts" }, result: "HEAD", resultTruncated: true, resultBytes: 20_480, status: "complete" },
+            { toolCallId: "c2", toolName: "Read", args: { file_path: "/repo/b.ts" }, result: "HEAD", resultTruncated: true, status: "complete" },
+          ],
+        })}
+      </ToolCallRepairProvider>,
+    );
+
+    // Summing the one member that reported would claim 20,480 for two truncated
+    // bodies. Saying nothing is the only honest answer available.
+    expect(screen.getByText("Preview only.")).toBeInTheDocument();
+    expect(screen.queryByText(/20,480 chars/u)).toBeNull();
   });
 
   it("shows durable history only for the parent delegation record", () => {

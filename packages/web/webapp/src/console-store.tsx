@@ -2255,7 +2255,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (current === null) return false;
     const message = current.messages.find((candidate) => holdsToolCall(candidate, toolCallId));
     if (message === undefined) return false;
-    const part = await api.toolCallPart(current.thread.id, message.id, toolCallId);
+    // Bounded like every other read. Unbounded, a wedged transport left the
+    // row's notice on "Loading..." for good: nothing settles the promise it is
+    // waiting on, so it can neither report the failure nor offer the button
+    // again. See {@link THREAD_READ_TIMEOUT_MS}.
+    const part = await boundedRequest(
+      (signal) => api.toolCallPart(current.thread.id, message.id, toolCallId, signal),
+      THREAD_READ_TIMEOUT_MS,
+    );
     // The round trip is not instant, and the operator can leave the conversation
     // (or a refresh can evict the message) while it is in flight. Everything is
     // decided against the freshest COMMITTED detail, before the updater and

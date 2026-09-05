@@ -271,13 +271,34 @@ const clusterTruncation = (
 } => {
   const truncated = calls.filter((call) => call.resultTruncated === true || call.argsTruncated === true);
   if (truncated.length === 0) return {};
-  const total = (of: (call: SubagentCallView) => number | undefined): number =>
-    truncated.reduce((sum, call) => sum + (of(call) ?? 0), 0);
+  /**
+   * The members' sizes added up, or nothing at all.
+   *
+   * A missing count is not a zero, and a partial sum is not a total: either one
+   * puts a number on the panel that no member measured. Only a count every
+   * affected member reported can be stated, and otherwise the notice says that
+   * this is a preview and stops there.
+   */
+  const total = (
+    members: readonly SubagentCallView[],
+    of: (call: SubagentCallView) => number | undefined,
+  ): number | undefined => {
+    const counts = members.map(of);
+    return counts.some((count) => count === undefined)
+      ? undefined
+      : counts.reduce<number>((sum, count) => sum + (count ?? 0), 0);
+  };
   const args = truncated.filter((call) => call.argsTruncated === true);
   const results = truncated.filter((call) => call.resultTruncated === true);
+  const argsBytes = total(args, (call) => call.argsBytes);
+  const resultBytes = total(results, (call) => call.resultBytes);
   return {
-    ...(args.length === 0 ? {} : { argsTruncated: true, argsBytes: total((call) => call.argsBytes) }),
-    ...(results.length === 0 ? {} : { resultTruncated: true, resultBytes: total((call) => call.resultBytes) }),
+    ...(args.length === 0
+      ? {}
+      : { argsTruncated: true, ...(argsBytes === undefined ? {} : { argsBytes }) }),
+    ...(results.length === 0
+      ? {}
+      : { resultTruncated: true, ...(resultBytes === undefined ? {} : { resultBytes }) }),
     // One panel holds every member, so one control repairs every member that
     // needs it. Sequential: each repair rewrites the same conversation state.
     ...(repair === undefined ? {} : {
@@ -396,6 +417,10 @@ export function SubagentPart({ data }: DataMessagePartProps) {
       duration={meta}
     >
       <div className="activity-steps">
+        {/* One repair fetches the whole delegation, so one control asks for it:
+            when both the task and the report are previews the Task note -- the
+            first one an operator meets -- owns the button, exactly as
+            `ActivityPayload` gives it to the Input panel. */}
         {(view.prompt !== undefined || view.argsTruncated === true) && (
           <SubagentNote
             title="Task"
@@ -417,7 +442,9 @@ export function SubagentPart({ data }: DataMessagePartProps) {
             title="Report"
             truncated={view.resultTruncated === true}
             {...(view.resultBytes === undefined ? {} : { characters: view.resultBytes })}
-            {...(view.resultTruncated === true && repairDelegation !== undefined
+            {...(view.resultTruncated === true
+              && view.argsTruncated !== true
+              && repairDelegation !== undefined
               ? { onLoadFull: repairDelegation }
               : {})}
           >
