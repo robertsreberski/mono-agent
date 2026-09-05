@@ -265,7 +265,7 @@ The compact shorthand is designed for agent exploration:
 
 | Call arguments | Result |
 | --- | --- |
-| `{}` | List recent completed runs. |
+| `{}` | List recent settled runs (`succeeded`, `failed`, `cancelled`, or `interrupted`). Start here for an unhinted request to pick up, continue, or recover interrupted work. |
 | `{ "query": "north Spain flights" }` | Search safe trigger and summary metadata, ranked by how many Unicode-normalized, case-folded terms a run carries. A single match also carries that run's compact overview. |
 | `{ "runId": "..." }` | Return a compact overview: metadata and trigger, final visible output, warnings/failures, tool-name call/error counts, and a timeline cursor when detail exists. |
 | `{ "runId": "...", "cursor": "..." }` | Return the next timeline page (at most 10 entries and about 16 KiB). |
@@ -276,7 +276,28 @@ search accept an optional `limit` (default 5, range 1–10) and expose an opaque
 `nextCursor` when more matches remain. Tool-authored
 `navigation.guidance` and `navigation.nextActions[]` are separate from the
 untrusted evidence; each next action contains exact `arguments` the agent can
-submit to continue, narrow, or return to an overview.
+submit to continue, narrow, or return to an overview. Candidate actions carry
+the run's terminal status so a cancelled/interrupted run is not mistaken for a
+successful one.
+
+After inspecting a `cancelled` or `interrupted` candidate, its overview labels
+the output as incomplete evidence and exposes a conditional exact run-scoped
+sibling-tool handoff in `navigation.relatedTools`. Follow it only when
+`SessionHistory` is available:
+
+```json
+{
+  "action": "search",
+  "runIds": ["cancelled-run-id"],
+  "includeIsolated": true
+}
+```
+
+Keep that search free of a `states` filter so every retained terminal tool state
+is considered. If it is empty, do not broaden to another conversation. Use
+`get` with a returned `recordId` and `includeIsolated: true`; `chunkBytes`
+defaults to 4096 and must not exceed 8192. This path recovers grounded evidence
+only—it does not resume a provider session, replay a tool, or relaunch work.
 
 List/search **matching** scans retained summaries once per call. It does not
 open event JSONL to decide what matches and only considers sanitized
@@ -306,7 +327,7 @@ result rather than a tool error.
 
 The current or any running run is excluded, as are unrelated conversations and threads. When daily session rollover is configured, its `#YYYY-MM-DD` buckets are ignored for RunHistory scope, so rollover never partitions one logical conversation's recorded history. The safe projection never returns system prompts, reasoning/thinking, recalled memory or turn-context payloads, raw artifact paths, or provider-session metadata. Ordinary filesystem spans are sanitized in place to `[host-path]` plus a bounded non-sensitive suffix, so surrounding commands, tool results, and assistant diagnostics remain visible; credentials and private run-artifact content are still omitted. Absolute roots, account/home prefixes, artifact roots, and private run paths never survive. Structured and artifact-shaped opaque tool results are scrubbed or omitted; nested `RunHistory` result bodies are always replaced with an omission marker so inspection cannot recursively embed prior inspections. Structured projected values first pass through the shared observability redactor: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. `RunHistory` then applies an additional projection sanitizer to object keys as well as string values, with deterministic collision-safe key disambiguation. In that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible; numeric values under `apiKey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted. Assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel. An optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted. Per-string and per-page bounds still apply, and incomplete event input is announced. All historical content is labelled untrusted evidence, never instructions.
 
-Use active conversation history first for the current exchange. Use `MemoryRecall` for intentionally captured durable facts, and `RunHistory` for exact evidence from an earlier run or tool call. See [Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory).
+Use active conversation history first for the current exchange. Use `MemoryRecall` for intentionally captured durable facts, and `RunHistory` for exact settled evidence from an earlier run or tool call, including interrupted-work recovery. See [Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory).
 
 ## `SessionHistory`: retained tool lifecycles
 
@@ -314,7 +335,7 @@ Use active conversation history first for the current exchange. Use `MemoryRecal
 
 | Call arguments | Result |
 | --- | --- |
-| `{}` or `{ "action": "search" }` | Up to five completed prior calls in the current logical session. |
+| `{}` or `{ "action": "search" }` | Up to five completed prior managed-tool calls in the current logical session. |
 | `{ "query": "needle", "tools": ["Read"], "states": ["error"], "runIds": ["..."], "fromMs": 0, "toMs": 9999999999999, "limit": 10 }` | AND-match redacted stored text and filter by exact tool/state/run/time; returns an opaque `nextCursor` when more remain. |
 | `{ "action": "get", "recordId": "sth1_...", "chunkBytes": 4096 }` | One invocation or result plus a bounded payload chunk, truncation/byte metadata, terminal classification, recovery flag, and opaque artifact availability. |
 | `{ "action": "get", "toolCallId": "..." }` | The newest completed record for that provider call id in scope. Prefer `recordId` when search returned one. |
@@ -324,7 +345,7 @@ Search defaults to five and caps at ten results; tool/state/run filters cap at 2
 
 Every returned preview/chunk is redacted, bounded, path-opaque, and marked `untrusted: true` with an explicit notice. Path opacity applies to object keys as well as string values: an opaque host-root token and at most two non-sensitive trailing components replace each filesystem path while useful command/result text, nested structure, punctuation, line/column suffixes, and web URLs remain. Safe keys retain their spelling, and deterministic bounded suffixes preserve distinct values when sanitized keys collide. Nested `SessionHistory` result bodies are replaced with an omission marker. A retained tombstone says that a known record was removed by age/count/byte retention without recreating its payload. Artifact references expose only an opaque id and availability. The host accepts and rechecks only regular files beneath the configured run-specific `tool-output` root; provider-supplied outside or symlinked paths are dropped without becoming filesystem probes. SessionHistory neither returns a path nor owns the artifact lifetime. Search/get never execute a tool, read an arbitrary path, mutate history, or rerun a recovered/completed call.
 
-Compaction only changes the active prompt projection. Within sidecar retention, older calls remain searchable even after their message context disappears. Cold reseed retains the newest fitting suffix in chronological order and caps the complete UTF-8 projection, including its truncation marker, at 64 KiB. Use `SessionHistory` for exact retained managed-tool invocations/results, and `RunHistory` for broader completed-run context such as warnings and final visible output.
+Compaction only changes the active prompt projection. Within sidecar retention, older calls remain searchable even after their message context disappears. Cold reseed retains the newest fitting suffix in chronological order and caps the complete UTF-8 projection, including its truncation marker, at 64 KiB. Use `SessionHistory` for exact retained managed-tool invocations/results, and `RunHistory` for broader settled-run context such as status, warnings, and final visible output.
 
 :::note
 The **app-owned adapter tools** (`SlackSendMessage`, `TelegramSendMessage`,

@@ -33,7 +33,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   copy so cold/stateless provider replay does not lose the out-of-band exchange;
   cancelled asks are not journaled.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
-  search and paged evidence from completed prior runs in the logical
+  recovery, search, and paged evidence from settled prior runs in the logical
   conversation, independent of daily rollover buckets.
 - Expose the sibling request-scoped read-only `SessionHistory` tool over the
   harness's canonical retained managed-tool lifecycle sidecar.
@@ -461,7 +461,7 @@ route silently drops a required capability.
 allow-all on MCP-capable routes; a restrictive `tools.allowedTools` must name
 `RunHistory` explicitly (`run_history` remains a deprecated policy alias), and
 `disallowedTools` can remove it. Direct OpenCode and other MCP-incompatible
-routes suppress it. The agent-facing shorthand is `{}` to list recent runs,
+routes suppress it. The agent-facing shorthand is `{}` to list recent settled runs,
 `{ "query": "topic terms" }` to search safe trigger and summary metadata,
 `{ "runId": "..." }` for a compact overview, and
 `{ "runId": "...", "cursor": "..." }` for the next timeline page. The
@@ -469,7 +469,11 @@ routes suppress it. The agent-facing shorthand is `{}` to list recent runs,
 compatible. List/search defaults to 5 results (maximum 10); timeline pages hold
 at most 10 entries and about 16 KiB. Each result includes tool-authored
 `navigation.guidance` and exact `navigation.nextActions[].arguments` for
-continuing exploration.
+continuing exploration. For an unhinted request to pick up, continue, or
+recover interrupted work, start with `{}`, select a `cancelled` or
+`interrupted` candidate, and inspect its `runId`. That overview marks output as
+incomplete evidence and returns a conditional exact `navigation.relatedTools`
+handoff to follow only when `SessionHistory` is available.
 List and search read retained summaries once; search never reads event JSONL
 and matches all normalized terms only against sanitized trigger/user input,
 run id, dates, status/failure kind, source/detail, model, and effort. Daily
@@ -527,6 +531,12 @@ root, or private run path. Only regular files beneath the configured run-specifi
 `tool-output` root are accepted or checked for availability; provider-supplied
 outside or symlinked paths are dropped. Isolated/proactive
 runs persist but search excludes them unless explicitly requested.
+
+For tool evidence from a cancelled or interrupted `RunHistory` candidate, use
+`{ "action": "search", "runIds": ["..."], "includeIsolated": true }` without
+a `states` filter. If it returns no records, do not broaden into another
+conversation. Use `get` with a returned `recordId`, retain
+`includeIsolated: true`, and keep `chunkBytes` at or below 8192.
 
 `{ "action": "search" }` returns at most 10 bounded previews with text,
 tool/state/run/time filters and a query-bound opaque cursor.
@@ -619,7 +629,8 @@ title remains the fallback.
 
 For missing context, the agent should use active conversation history first,
 `MemoryRecall` for intentionally captured durable facts, `RunHistory` for exact
-prior-run evidence, and `SessionHistory` for retained managed-tool calls and
+settled prior-run evidence (including cancelled/interrupted work), and
+`SessionHistory` for retained managed-tool calls and
 results. Answered or expired blocking `AskUser` exchanges
 are written into the assistant history copy before the final response;
 cancelled asks are not journaled. The copy is explicitly labelled as untrusted

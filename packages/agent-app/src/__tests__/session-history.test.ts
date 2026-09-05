@@ -702,6 +702,10 @@ describe("SessionHistory MCP tool", () => {
 
     const opened = await openClient(root, "chat:42#2026-08-14", "current-run");
     try {
+      const tools = await opened.client.listTools();
+      expect(tools.tools[0]?.description).toContain("settled as succeeded, failed, cancelled, or interrupted");
+      expect(tools.tools[0]?.description).toContain('{action:"search",runIds:[runId],includeIsolated:true}');
+      expect(tools.tools[0]?.description).toContain("must not exceed 8192");
       expect(opened.client.getServerVersion()).toEqual({
         name: SESSION_HISTORY_MCP_SERVER_NAME,
         version: "1.0.0",

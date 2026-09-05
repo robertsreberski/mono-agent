@@ -126,18 +126,18 @@ The adapter's own allowlist (channels/chats it may post to) remains the destinat
 
 ## RunHistory
 
-`RunHistory` is an app-owned, read-only, request-scoped MCP tool for listing, searching, and cursor-inspecting safe normalized evidence from completed prior runs in the logical current conversation. Configured daily rollover buckets do not partition that scope. It has no separate config key:
+`RunHistory` is an app-owned, read-only, request-scoped MCP tool for listing, searching, and cursor-inspecting safe normalized evidence from settled prior runs (`succeeded`, `failed`, `cancelled`, or `interrupted`) in the logical current conversation. Configured daily rollover buckets do not partition that scope. It has no separate config key:
 
 - Under allow-all, it is available automatically on every route.
 - Under a specific allowlist, include `RunHistory` explicitly.
 - `disallowedTools` can remove it, with deny still winning.
 - `run_history` is accepted only as a deprecated policy alias; the registered/model-facing name is `RunHistory`. Tool input also accepts `run_id` as an alias for `runId`.
 
-The tool excludes the current/running run, unrelated conversations or threads, system prompts, reasoning, recalled memory, and raw artifact paths. See [MCP servers](/tools/mcp/#runhistory-prior-run-evidence) for its list/search/overview/timeline interface and [Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory) for its evidence boundary.
+The tool excludes the current/running run, unrelated conversations or threads, system prompts, reasoning, recalled memory, and raw artifact paths. Cancelled/interrupted overviews label output as incomplete evidence and provide the exact run-scoped `SessionHistory` recovery handoff when available. See [MCP servers](/tools/mcp/#runhistory-prior-run-evidence) for its list/search/overview/timeline interface and [Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory) for its evidence boundary.
 
 ## SessionHistory
 
-`SessionHistory` is the separate read-only, request-scoped tool for redacted and bounded managed-tool invocations/results retained in the current logical session. Under a specific allowlist, include `SessionHistory`; `session_history` is a deprecated policy alias, and deny still wins. It excludes the current run and isolated/proactive records by default, keeps foreign conversations opaque, and cannot execute, mutate, or rerun anything. See [MCP servers](/tools/mcp/#sessionhistory-retained-tool-lifecycles) for search/get, cursor, tombstone, artifact, and untrusted-data bounds.
+`SessionHistory` is the separate read-only, request-scoped tool for redacted and bounded managed-tool invocations/results retained in the current logical session. Under a specific allowlist, include `SessionHistory`; `session_history` is a deprecated policy alias, and deny still wins. Recovery from a cancelled/interrupted `RunHistory` candidate uses a run-scoped search with `includeIsolated: true` and no `states` narrowing, followed by bounded `get` calls with the same isolation flag. It excludes the current run and isolated/proactive records by default, keeps foreign conversations opaque, and cannot execute, mutate, or rerun anything. See [MCP servers](/tools/mcp/#sessionhistory-retained-tool-lifecycles) for search/get, cursor, tombstone, artifact, and untrusted-data bounds.
 
 ## SetConversationTitle
 
