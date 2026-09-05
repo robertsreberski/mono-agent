@@ -24,6 +24,7 @@ import type {
   AgentSkillRegistry,
   AgentSummary,
   CronOverview,
+  MessagePart,
   ThreadDetail,
   ThreadSummary,
   WebEvent,
@@ -2917,6 +2918,58 @@ describe("ConsoleStoreProvider integration", () => {
       });
       // The preview and its marker are gone together.
       expect(before).toMatchObject({ parts: [{ resultTruncated: true }] });
+    });
+
+    it("reports no repair when the operator leaves the conversation mid-fetch", async () => {
+      // The full body is a round trip, and the operator can walk away from the
+      // conversation during it. Reporting success for a replacement that never
+      // landed leaves the row looking settled on the preview it still shows.
+      const truncated = {
+        id: "message-tool",
+        threadId: selected.id,
+        role: "assistant" as const,
+        parts: [{
+          type: "tool-call" as const,
+          toolCallId: "tool-big",
+          toolName: "Exec",
+          result: "HEAD",
+          resultTruncated: true,
+          resultBytes: 20 * 1_024,
+          status: "complete" as const,
+        }],
+        attachments: [],
+        createdAt: "2026-08-14T08:00:00.000Z",
+        updatedAt: "2026-08-14T08:00:00.000Z",
+        status: "complete" as const,
+      };
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { label: "Alpha" })], [selected, other]));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [selected, other] });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => threadId === selected.id
+        ? { thread: selected, messages: [truncated] }
+        : detail(other, "elsewhere"));
+      let answer!: (part: MessagePart) => void;
+      vi.mocked(api.toolCallPart).mockImplementation(async () =>
+        new Promise<MessagePart>((resolve) => { answer = resolve; }));
+      const store = await openedOnAlpha();
+
+      const repairing = store.current.loadFullToolCall("tool-big");
+      await waitFor(() => expect(api.toolCallPart).toHaveBeenCalledTimes(1));
+      act(() => { store.current.selectThread(other.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(other.id));
+
+      await act(async () => {
+        answer({
+          type: "tool-call",
+          toolCallId: "tool-big",
+          toolName: "Exec",
+          result: "THE WHOLE BODY",
+          status: "complete",
+        });
+        await repairing;
+      });
+      await expect(repairing).resolves.toBe(false);
+      expect(store.current.detail?.thread.id).toBe(other.id);
+      expect(JSON.stringify(store.current.detail?.messages)).not.toContain("THE WHOLE BODY");
     });
 
     it("fetches nothing for a message in a conversation nobody is looking at", async () => {

@@ -244,9 +244,13 @@ function shapeToolCallPart(part: WebToolCallPart): WebToolCallPart {
  * A delegation's arguments are not opaque the way an arbitrary tool's are: the
  * console reads `prompt` out of them for the row summary and the Task note, and
  * a JSON-text head is neither. Nothing is added or removed, so the object keeps
- * its shape and every key keeps its place; the longest string pays first, and
- * the loop settles because slicing a string by N characters shortens its JSON
- * form by at least N.
+ * its shape and every key keeps its place, and the longest string pays first.
+ *
+ * Termination is the bounded pass count, NOT an assumption that every slice
+ * shrinks the serialization: cutting between a surrogate pair leaves a lone
+ * surrogate that `JSON.stringify` writes as `\udXXX`, which can make one pass
+ * longer than the last. Anything still over budget after eight passes falls
+ * back to the whole-value head.
  */
 function shapedArgsObject(args: unknown): { readonly preview: unknown; readonly length: number } | undefined {
   if (args === null || typeof args !== "object" || Array.isArray(args)) return undefined;

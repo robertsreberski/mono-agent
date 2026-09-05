@@ -180,6 +180,61 @@ describe("SubagentPart", () => {
     await waitFor(() => expect(repair.mock.calls.map(([id]) => id)).toEqual(["c1", "c3"]));
   });
 
+  it("marks a truncated report even when the server sent no size for it", async () => {
+    // The flags and the byte count are independent: `resultBytes` is optional on
+    // the wire, and a note that only marked the sized ones rendered the head of
+    // a report as if it were the whole of it.
+    const repair = vi.fn(async (_toolCallId: string) => true);
+    render(
+      <ToolCallRepairProvider repair={repair}>
+        {part({ ...delegation, result: "HEAD of the report", resultTruncated: true })}
+      </ToolCallRepairProvider>,
+    );
+
+    expect(screen.getByText("Preview only.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+    await waitFor(() => expect(repair).toHaveBeenCalledWith("call-1"));
+  });
+
+  it("keeps a Task note for a delegation whose arguments came back as a JSON head", async () => {
+    // `shapedArgsObject` falls back to the whole-value head when no string leaf
+    // can pay the budget. The note used to disappear with the object, taking the
+    // only way to ask for the real arguments with it.
+    const repair = vi.fn(async (_toolCallId: string) => true);
+    render(
+      <ToolCallRepairProvider repair={repair}>
+        {part({
+          ...delegation,
+          args: '{"name":"researcher","prompt":"Read the ro',
+          argsTruncated: true,
+          argsBytes: 6_100,
+        })}
+      </ToolCallRepairProvider>,
+    );
+
+    expect(screen.getByText("Task")).toBeInTheDocument();
+    expect(screen.getByText('{"name":"researcher","prompt":"Read the ro')).toBeInTheDocument();
+    expect(screen.getByText("Preview only, 6,100 chars.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+    await waitFor(() => expect(repair).toHaveBeenCalledWith("call-1"));
+  });
+
+  it("still offers the arguments when truncation left nothing readable of them", async () => {
+    const repair = vi.fn(async (_toolCallId: string) => true);
+    render(
+      <ToolCallRepairProvider repair={repair}>
+        {part({ ...delegation, args: " ", argsTruncated: true, argsBytes: 6_100 })}
+      </ToolCallRepairProvider>,
+    );
+
+    // No prose to show, but the delegation still has arguments and the operator
+    // can still ask for them.
+    expect(screen.getByText("Task")).toBeInTheDocument();
+    expect(screen.getByText("Preview only, 6,100 chars.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+    await waitFor(() => expect(repair).toHaveBeenCalledWith("call-1"));
+  });
+
   it("shows durable history only for the parent delegation record", () => {
     const { container } = render(part({
       ...delegation,

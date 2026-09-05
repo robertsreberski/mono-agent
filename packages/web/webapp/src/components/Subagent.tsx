@@ -82,8 +82,16 @@ const nonEmptyString = (value: unknown): string | undefined => {
   return text.length === 0 ? undefined : text;
 };
 
-/** The task the delegation was given, which the store keeps on the `Agent` call's arguments. */
+/**
+ * The task the delegation was given, which the store keeps on the `Agent` call's
+ * arguments.
+ *
+ * Arguments the server could not cut down leaf by leaf arrive as the head of
+ * their JSON text instead of as an object. That head is what there is of the
+ * task, so it is shown as such rather than leaving the note empty.
+ */
 const delegationPrompt = (args: unknown): string | undefined => {
+  if (typeof args === "string") return nonEmptyString(args);
   if (args === null || typeof args !== "object" || Array.isArray(args)) return undefined;
   const prompt = (args as Record<string, unknown>).prompt;
   return typeof prompt === "string" && prompt.trim().length > 0 ? prompt.trim() : undefined;
@@ -318,23 +326,27 @@ function SubagentClusterStep({ cluster }: { readonly cluster: SubagentCallCluste
  */
 function SubagentNote({
   title,
+  truncated = false,
   characters,
   onLoadFull,
   children,
 }: {
   readonly title: string;
-  /** Set when this note is showing the head of a truncated payload. */
+  /** This note is showing the head of a truncated payload. */
+  readonly truncated?: boolean;
+  /** Its untruncated size, when the server reported one. Independent of the flag. */
   readonly characters?: number;
   readonly onLoadFull?: () => Promise<boolean>;
-  readonly children: ReactNode;
+  /** Absent when truncation left nothing readable; the notice still stands alone. */
+  readonly children?: ReactNode;
 }) {
   return (
     <ActivityStep toolName={title}>
       <div className="activity-payload">
-        <pre>{children}</pre>
-        {characters !== undefined && (
+        {children !== undefined && <pre>{children}</pre>}
+        {truncated && (
           <TruncationNotice
-            characters={characters}
+            {...(characters === undefined ? {} : { characters })}
             {...(onLoadFull === undefined ? {} : { onLoadFull })}
           />
         )}
@@ -384,18 +396,16 @@ export function SubagentPart({ data }: DataMessagePartProps) {
       duration={meta}
     >
       <div className="activity-steps">
-        {view.prompt !== undefined && (
+        {(view.prompt !== undefined || view.argsTruncated === true) && (
           <SubagentNote
             title="Task"
-            {...(view.argsTruncated === true && view.argsBytes !== undefined
-              ? { characters: view.argsBytes }
-              : {})}
+            truncated={view.argsTruncated === true}
+            {...(view.argsBytes === undefined ? {} : { characters: view.argsBytes })}
             {...(view.argsTruncated === true && repairDelegation !== undefined
               ? { onLoadFull: repairDelegation }
               : {})}
-          >
-            {view.prompt}
-          </SubagentNote>
+            {...(view.prompt === undefined ? {} : { children: view.prompt })}
+          />
         )}
         {view.calls.length === 0
           ? <p className="subagent-empty">No tool calls recorded.</p>
@@ -405,9 +415,8 @@ export function SubagentPart({ data }: DataMessagePartProps) {
         {view.result !== undefined && (
           <SubagentNote
             title="Report"
-            {...(view.resultTruncated === true && view.resultBytes !== undefined
-              ? { characters: view.resultBytes }
-              : {})}
+            truncated={view.resultTruncated === true}
+            {...(view.resultBytes === undefined ? {} : { characters: view.resultBytes })}
             {...(view.resultTruncated === true && repairDelegation !== undefined
               ? { onLoadFull: repairDelegation }
               : {})}

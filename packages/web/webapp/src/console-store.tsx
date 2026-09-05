@@ -2256,25 +2256,29 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const message = current.messages.find((candidate) => holdsToolCall(candidate, toolCallId));
     if (message === undefined) return false;
     const part = await api.toolCallPart(current.thread.id, message.id, toolCallId);
-    // Decided HERE, not inside the updater: a state updater is not guaranteed to
-    // run synchronously and StrictMode runs it twice, so a flag set in there
-    // reports scheduling rather than whether anything was actually replaced.
-    const merged = message.parts.map((existing) => mergeToolCallPart(existing, part));
-    if (merged.every((next, index) => next === message.parts[index])) return false;
-    setDetail((latest) => {
-      if (latest?.thread.id !== current.thread.id) return latest;
-      if (!latest.messages.some((candidate) => candidate.id === message.id)) return latest;
-      // A NEW message object, and new part objects inside it: assistant-ui
-      // caches its conversions by object identity, so mutating in place would
-      // leave the transcript showing the preview it already rendered. Re-merged
-      // against the freshest copy rather than the snapshot the read started on.
-      return {
-        ...latest,
-        messages: latest.messages.map((candidate) => candidate.id === message.id
-          ? { ...candidate, parts: candidate.parts.map((existing) => mergeToolCallPart(existing, part)) }
-          : candidate),
-      };
-    });
+    // The round trip is not instant, and the operator can leave the conversation
+    // (or a refresh can evict the message) while it is in flight. Everything is
+    // decided against the freshest COMMITTED detail, before the updater and
+    // never inside it: a state updater is not guaranteed to run synchronously
+    // and StrictMode runs it twice, so a flag set in there reports scheduling
+    // rather than whether anything was replaced.
+    const latest = detailRef.current;
+    if (latest === null || latest.thread.id !== current.thread.id) return false;
+    const target = latest.messages.find((candidate) => candidate.id === message.id);
+    if (target === undefined) return false;
+    const merged = target.parts.map((existing) => mergeToolCallPart(existing, part));
+    if (merged.every((next, index) => next === target.parts[index])) return false;
+    // A NEW message object, and new part objects inside it: assistant-ui caches
+    // its conversions by object identity, so mutating in place would leave the
+    // transcript showing the preview it already rendered.
+    const repaired = { ...target, parts: merged };
+    setDetail((committed) => committed?.thread.id === latest.thread.id
+      ? {
+          ...committed,
+          messages: committed.messages.map((candidate) =>
+            candidate.id === message.id ? repaired : candidate),
+        }
+      : committed);
     return true;
   }, []);
 
