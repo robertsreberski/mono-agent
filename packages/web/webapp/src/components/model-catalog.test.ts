@@ -230,6 +230,52 @@ describe("buildSelectorModels", () => {
     expect(rows.filter((row) => row.id === sonnet)).toHaveLength(1);
   });
 
+  it("keeps a selected catalog-only model visible while its metadata is unavailable", () => {
+    const selectedModel = "anthropic:claude-fable-5";
+    const advertised = agent("agent", {
+      models: [codex],
+      defaultModel: codex,
+      providers: [{ id: "anthropic", label: "Anthropic" }],
+      modelOptions: {
+        [codex]: { label: "GPT-5.5 Codex", reasoning: true, effortLevels: ["low", "high"] },
+      },
+    });
+
+    const pending = buildSelectorModels({
+      agent: advertised,
+      modelOptions: advertised.models ?? [],
+      defaultEffort: "high",
+      selectedModel,
+    });
+    expect(pending.filter((row) => row.id === selectedModel)).toEqual([{
+      id: selectedModel,
+      name: selectedModel,
+      description: selectedModel,
+      efforts: [],
+      provider: "anthropic",
+      providerLabel: "Anthropic",
+    }]);
+
+    const loaded = buildSelectorModels({
+      agent: advertised,
+      modelOptions: advertised.models ?? [],
+      defaultEffort: "high",
+      selectedModel,
+      catalogByProvider: {
+        anthropic: [catalogModel("claude-fable-5", "anthropic", "Anthropic", {
+          name: "Claude Fable 5",
+          reasoning: true,
+          effortLevels: ["low", "high"],
+        })],
+      },
+    });
+    expect(loaded.filter((row) => row.id === selectedModel)).toHaveLength(1);
+    expect(loaded.find((row) => row.id === selectedModel)).toMatchObject({
+      name: "Claude Fable 5",
+      efforts: [{ id: "", name: "Default · High" }, { id: "low", name: "Low" }, { id: "high", name: "High" }],
+    });
+  });
+
   it("falls back to the reference prefix for providers the catalog has not widened", () => {
     const rows = buildSelectorModels({ agent: source, modelOptions: shortlist, defaultEffort: "high" });
     expect(rows[1]).toMatchObject({ id: codex, provider: "pi", providerLabel: "pi" });

@@ -103,6 +103,50 @@ describe("ModelControls", () => {
     expect(store.setModel).toHaveBeenCalledWith(MODEL);
   });
 
+  it("keeps a catalog-only override visible while its lazy row loads", () => {
+    const selectedModel = "anthropic:claude-fable-5";
+    storeMock.current = {
+      ...storeMock.current,
+      model: selectedModel,
+      effort: "high",
+      hasRunOverride: true,
+      selectedAgent: agent("agent", {
+        models: [MODEL],
+        defaultModel: MODEL,
+        providers: [{ id: "anthropic", label: "Anthropic" }],
+        modelOptions: {
+          [MODEL]: { label: "GPT-5.5 Codex", reasoning: true, effortLevels: ["low", "high"] },
+        },
+      }),
+    };
+    const { rerender } = render(<ModelControls />);
+    const trigger = screen.getByRole("button", { name: "Model and reasoning effort" });
+    expect(trigger).toHaveTextContent(selectedModel);
+    expect(trigger).toHaveTextContent("High");
+    expect(trigger).not.toHaveTextContent("Default · GPT-5.5 Codex");
+
+    storeMock.current = {
+      ...storeMock.current,
+      catalogByProvider: {
+        anthropic: {
+          status: "loaded",
+          models: [{
+            id: "claude-fable-5",
+            name: "Claude Fable 5",
+            provider: "anthropic",
+            providerLabel: "Anthropic",
+            reasoning: true,
+            effortLevels: ["low", "high"],
+          }],
+        },
+      },
+    };
+    rerender(<ModelControls />);
+    expect(trigger).toHaveTextContent("Claude Fable 5");
+    expect(trigger).toHaveTextContent("High");
+    expect(trigger).not.toHaveTextContent("Default · GPT-5.5 Codex");
+  });
+
   it("marks a conversation override and offers to clear it", async () => {
     storeMock.current = { ...storeMock.current, model: MODEL, hasRunOverride: true };
     render(<ModelControls />);

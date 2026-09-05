@@ -196,6 +196,29 @@ describe("ModelSelector", () => {
     expect(screen.getByRole("dialog", { name: "Model and reasoning effort" })).toBeVisible();
   });
 
+  it("never labels a missing controlled model as the default row", async () => {
+    const selectedModel = "anthropic:claude-fable-5";
+    render(
+      <ModelSelector
+        models={models.slice(0, 1)}
+        value={selectedModel}
+        effort="high"
+        onValueChange={vi.fn()}
+        onEffortChange={vi.fn()}
+      />,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Model and reasoning effort" });
+    expect(trigger).toHaveTextContent(selectedModel);
+    expect(trigger).toHaveTextContent("High");
+    expect(trigger).not.toHaveTextContent("Default model");
+    fireEvent.click(trigger);
+    const popup = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
+    expect(within(popup).getByRole("option", { name: /Default model/u }))
+      .not.toHaveAttribute("data-model-selected");
+    expect(within(popup).queryByRole("radiogroup", { name: "Reasoning effort" })).toBeNull();
+  });
+
   it("disables the trigger while a turn is running", () => {
     render(
       <ModelSelector

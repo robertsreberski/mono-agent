@@ -977,6 +977,42 @@ describe("ConsoleStoreProvider integration", () => {
       });
     });
 
+    it("retains a persisted catalog-only model before its provider page loads", async () => {
+      const providerOnly = agent("alpha", {
+        label: "Alpha",
+        generation: "gen-1",
+        models: ["localx:one"],
+        defaultModel: "localx:one",
+        providers: [
+          { id: "localx", label: "Local X" },
+          { id: "openai", label: "OpenAI" },
+        ],
+      });
+      const selected = thread("alpha-thread", "alpha", {
+        runModel: "openai:gpt-x",
+        runEffort: "high",
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([providerOnly], [selected]));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [selected] });
+      vi.mocked(api.thread).mockResolvedValue(detail(selected));
+      vi.mocked(api.agentModels).mockResolvedValue({
+        models: [{ id: "gpt-x", name: "GPT X", provider: "openai", providerLabel: "OpenAI" }],
+        truncated: false,
+      });
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      expect(store.current.catalogByProvider.openai).toBeUndefined();
+      expect(store.current.model).toBe("openai:gpt-x");
+      expect(store.current.effort).toBe("high");
+      expect(store.current.hasRunOverride).toBe(true);
+
+      await act(async () => { await store.current.ensureProviderCatalog("openai"); });
+      expect(store.current.model).toBe("openai:gpt-x");
+      expect(store.current.effort).toBe("high");
+      expect(store.current.catalogByProvider.openai?.models[0]?.name).toBe("GPT X");
+    });
+
     it("refetches a provider once the agent process behind it is a different one", async () => {
       // A source id outlives the process behind it. Keyed on the id alone the
       // tab kept offering the retired generation's models until it was
