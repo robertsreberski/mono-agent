@@ -513,8 +513,10 @@ An enabled local operator endpoint exposes bearer-protected
 only while the controller and its owner bearer are present. List responses keep
 every queued, starting, and running projection and add a deterministic
 newest-terminal prefix within the 16 MiB response ceiling. The web console keeps
-running and terminal job cards in the transcript. Each nonterminal card polls
-only its exact authenticated, source- and thread-bound
+running and terminal jobs in the transcript as compact Activity rows (tool,
+purpose, state and elapsed time on the row; output preview, artifact paths, wake
+state and the wake's response behind it). Each nonterminal row polls only its
+exact authenticated, source- and thread-bound
 `GET /api/v1/threads/:id/jobs/:jobId` proxy with bounded backoff; it does not
 clone or serialize the retained job list on every refresh.
 

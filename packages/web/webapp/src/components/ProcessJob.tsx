@@ -1,0 +1,240 @@
+import type { DataMessagePartProps } from "@assistant-ui/react";
+import { type ReactNode, useEffect, useState } from "react";
+
+import { api } from "../api";
+import type { ProcessJobProjection, ProcessJobState } from "../types";
+import { ActivityRow, type ActivityStatus } from "./ActivityRow";
+import { ActivityElapsed, type ActivityTiming } from "./assistant-ui/ActivityElapsed";
+
+export const TERMINAL_PROCESS_JOB_STATES: ReadonlySet<ProcessJobState> = new Set<ProcessJobState>([
+  "succeeded",
+  "failed",
+  "timed_out",
+  "cancelled",
+  "spawn_failed",
+  "queue_expired",
+  "interrupted",
+]);
+const PROCESS_JOB_POLL_INITIAL_MS = 1_000;
+const PROCESS_JOB_POLL_MAX_MS = 10_000;
+
+/**
+ * Where a state sits in the job's lifecycle. The lifecycle only moves forward
+ * (`queued` → `starting` → `running` → one terminal state), and the retained
+ * store enforces exactly that on every card update, so rank is the ordering two
+ * projections of the same job can be compared by. Every terminal state shares
+ * the top rank: none of them is "after" another.
+ */
+const PROCESS_JOB_STATE_RANK: Readonly<Record<ProcessJobState, number>> = {
+  queued: 0,
+  starting: 1,
+  running: 2,
+  succeeded: 3,
+  failed: 3,
+  timed_out: 3,
+  cancelled: 3,
+  spawn_failed: 3,
+  queue_expired: 3,
+  interrupted: 3,
+};
+
+/** Whether `to` is further along the lifecycle than `from`. Same state, or terminal to terminal, is not. */
+export const processJobAdvances = (from: ProcessJobState, to: ProcessJobState): boolean =>
+  PROCESS_JOB_STATE_RANK[to] > PROCESS_JOB_STATE_RANK[from];
+
+/**
+ * Whether a projection fetched by the poll should replace the one the row has.
+ * Rank decides across states. Within one nonterminal state the row renders a
+ * single field the producer fills without a transition: the process start,
+ * which the host records while the job is still `starting` and only then
+ * promotes to `running`. So a same-state answer counts exactly when it brings
+ * that start where none was known; one that adds nothing, or that would
+ * forget a start already known, is the slower answer and is left alone.
+ */
+export const processJobSupersedes = (current: ProcessJobProjection, next: ProcessJobProjection): boolean => {
+  if (processJobAdvances(current.state, next.state)) return true;
+  if (current.state !== next.state || TERMINAL_PROCESS_JOB_STATES.has(next.state)) return false;
+  return current.timestamps.startedAt === null && next.timestamps.startedAt !== null;
+};
+
+/** The retained web thread a job reports to, or nothing for an origin the console cannot poll. */
+export const processJobThreadId = (job: ProcessJobProjection): string | undefined => {
+  const base = job.origin.conversationId.split("#", 1)[0];
+  if (base === undefined || !base.startsWith("web:") || base === "web:new") return undefined;
+  return base.slice("web:".length) || undefined;
+};
+
+/**
+ * `succeeded` is the only good ending. Queued and starting jobs are still work,
+ * so they pulse like a running one; every other terminal state ended without a
+ * result and reads as a failure, with the row's tag saying which kind.
+ */
+export const processJobStatus = (state: ProcessJobState): ActivityStatus =>
+  state === "queued" || state === "starting" || state === "running"
+    ? "running"
+    : state === "succeeded" ? "complete" : "failed";
+
+export const processJobStateLabel = (state: ProcessJobState): string => state.replaceAll("_", " ");
+
+/**
+ * The job's own window. It opens when the host started the process — or, while
+ * the job still waits, when it was admitted — and closes at the host's reported
+ * duration, falling back to the completion stamp. Host stamps and the console's
+ * server clock come from the same machine, so the live figure ticks in server
+ * time like the Activity header.
+ */
+export const processJobTiming = (job: ProcessJobProjection): ActivityTiming | undefined => {
+  const startedAt = Date.parse(job.timestamps.startedAt ?? job.timestamps.admittedAt);
+  if (!Number.isFinite(startedAt)) return undefined;
+  if (job.durationMs !== null && Number.isFinite(job.durationMs) && job.durationMs >= 0) {
+    return { startedAt, finishedAt: startedAt + job.durationMs };
+  }
+  const completedAt = job.timestamps.completedAt === null ? Number.NaN : Date.parse(job.timestamps.completedAt);
+  return Number.isFinite(completedAt) ? { startedAt, finishedAt: completedAt } : { startedAt };
+};
+
+/** `exit 137 · SIGKILL`, either half alone, or nothing before the process has ended. */
+export const processJobExitLabel = (job: ProcessJobProjection): string | undefined => {
+  const pieces = [
+    ...(job.exitCode === null ? [] : [`exit ${String(job.exitCode)}`]),
+    ...(job.signal === null ? [] : [job.signal]),
+  ];
+  return pieces.length === 0 ? undefined : pieces.join(" · ");
+};
+
+const joinMeta = (items: readonly ReactNode[]): ReactNode =>
+  items.flatMap((item, index) => (index === 0 ? [item] : [" · ", item]));
+
+/**
+ * What the time slot says: the state word (unless the tag already says it), the
+ * elapsed or final duration, how the process ended, and a failed wake — the one
+ * wake outcome an operator has to act on.
+ */
+const processJobMeta = (job: ProcessJobProjection, terminal: boolean): ReactNode => {
+  const timing = processJobTiming(job);
+  const exit = processJobExitLabel(job);
+  const items: ReactNode[] = [];
+  if (processJobStatus(job.state) !== "failed") items.push(processJobStateLabel(job.state));
+  // A settled job with no finish stamp has nothing honest to show; leave the slot out.
+  if (timing !== undefined && (!terminal || timing.finishedAt !== undefined)) {
+    items.push(<ActivityElapsed key="elapsed" timing={timing} live={!terminal} />);
+  }
+  if (exit !== undefined) items.push(exit);
+  // Its own element: a phone-width row lets the meta wrap, and this is the one
+  // token that must neither split across lines nor be the part that clips.
+  if (terminal && job.wake.state === "failed") {
+    items.push(<span key="wake" className="activity-row-alert">wake failed</span>);
+  }
+  return items.length === 0 ? undefined : joinMeta(items);
+};
+
+const wakeLabel = (wake: ProcessJobProjection["wake"]): string =>
+  wake.attempts === 0
+    ? wake.state
+    : `${wake.state} (${String(wake.attempts)} ${wake.attempts === 1 ? "attempt" : "attempts"})`;
+
+/**
+ * One background `Exec`/`Bash` job as an Activity row. The row is the card the
+ * host keeps updating in place: it reads the retained projection it was given,
+ * takes any newer projection the store hands it after a `message.changed`
+ * refresh, and polls its exact thread-bound job endpoint with backoff until the
+ * job settles. Everything but tool, purpose, state and time waits behind the
+ * disclosure.
+ */
+export function ProcessJobPart({ data }: DataMessagePartProps) {
+  const payload = data as { readonly job?: ProcessJobProjection; readonly responseText?: unknown };
+  const initial = payload.job;
+  const [live, setLive] = useState(initial);
+  const threadId = initial === undefined ? undefined : processJobThreadId(initial);
+  const jobId = initial?.jobId;
+  const terminal = live === undefined || TERMINAL_PROCESS_JOB_STATES.has(live.state);
+
+  // The store's projection is authoritative and already monotonic (the web
+  // server rejects a card update that moves backwards), so it always lands.
+  useEffect(() => {
+    setLive(initial);
+  }, [initial]);
+
+  useEffect(() => {
+    if (terminal || threadId === undefined || jobId === undefined) return;
+    const controller = new AbortController();
+    let timer: number | undefined;
+    let delayMs = PROCESS_JOB_POLL_INITIAL_MS;
+    const refresh = async () => {
+      try {
+        const next = await api.threadJob(threadId, jobId, controller.signal);
+        if (controller.signal.aborted) return;
+        // A poll answer counts only when it moves the job forward. The store can
+        // hand the row a newer projection while a request is out: a slower
+        // answer that is further back in the lifecycle must not drag the row
+        // back, one that says the same state counts only for the start stamp
+        // it may bring, and a terminal one is progress however the request and
+        // the store interleaved. Judged against the latest state, not the
+        // closure's.
+        setLive((current) => current === undefined || processJobSupersedes(current, next) ? next : current);
+        // Terminal always advances the nonterminal row this effect exists for,
+        // so the answer that ends the loop is one the row has taken.
+        if (TERMINAL_PROCESS_JOB_STATES.has(next.state)) return;
+      } catch {
+        // The retained card remains authoritative while its owner is offline.
+      }
+      if (controller.signal.aborted) return;
+      timer = window.setTimeout(() => void refresh(), delayMs);
+      delayMs = Math.min(PROCESS_JOB_POLL_MAX_MS, delayMs * 2);
+    };
+    void refresh();
+    return () => {
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [jobId, terminal, threadId]);
+
+  if (live === undefined) return null;
+  const responseText = typeof payload.responseText === "string" && payload.responseText.trim().length > 0
+    ? payload.responseText
+    : undefined;
+  const status = processJobStatus(live.state);
+  const stateLabel = processJobStateLabel(live.state);
+  const outputRefs = [live.output.stdoutRef, live.output.stderrRef].filter((ref): ref is string => ref !== null);
+  return (
+    <ActivityRow
+      variant="job"
+      status={status}
+      label={`${live.tool} job`}
+      summary={live.summary}
+      failed={status === "failed" ? stateLabel : undefined}
+      duration={processJobMeta(live, terminal)}
+      ariaLabel={`${live.tool} background job ${stateLabel}`}
+    >
+      <div className="activity-payload is-indented">
+        <dl className="process-job-facts">
+          <div><dt>State</dt><dd>{stateLabel}</dd></div>
+          {live.exitCode !== null && <div><dt>Exit</dt><dd>{live.exitCode}</dd></div>}
+          {live.signal !== null && <div><dt>Signal</dt><dd>{live.signal}</dd></div>}
+          <div><dt>Wake</dt><dd>{wakeLabel(live.wake)}</dd></div>
+        </dl>
+        {live.output.preview.length > 0 && (
+          <>
+            <span>Output{live.output.truncated ? " (truncated)" : ""}</span>
+            <pre>{live.output.preview}</pre>
+          </>
+        )}
+        {outputRefs.length > 0 && (
+          <>
+            <span>Artifacts</span>
+            <pre>{outputRefs.join("\n")}</pre>
+          </>
+        )}
+        {live.lastError !== null && (
+          <p className="activity-error"><strong>{live.lastError.code}</strong> {live.lastError.message}</p>
+        )}
+        {responseText !== undefined && (
+          <>
+            <span>Response</span>
+            <pre>{responseText}</pre>
+          </>
+        )}
+      </div>
+    </ActivityRow>
+  );
+}
