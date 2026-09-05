@@ -206,6 +206,49 @@ describe("WebStore first-class cron channels", () => {
     store.close();
   });
 
+  it("gives each cron and notification reconciliation write its own message version", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const threadId = syncCronJob(store).jobs[0]!.threadId;
+    const runId = "cron:daily%3Abrief:2026-08-14T10:00:00.000Z";
+
+    // The insert starts the count, which is exactly what a console that has
+    // never seen a delta for this message holds.
+    const [inserted] = store.reconcileCronRuns("agent-one", "daily:brief", [
+      cronRun({ runId, sequence: 1, status: "running", text: "Early narration" }),
+    ]);
+    expect(inserted?.seq).toBe(0);
+
+    const [updated] = store.reconcileCronRuns("agent-one", "daily:brief", [
+      cronRun({ runId, sequence: 1, status: "succeeded", text: "Final narration" }),
+    ]);
+    expect(updated?.seq).toBe(1);
+
+    // A reconciliation that changes nothing writes nothing, so the version a
+    // console holds stays valid.
+    const [unchanged] = store.reconcileCronRuns("agent-one", "daily:brief", [
+      cronRun({ runId, sequence: 1, status: "succeeded", text: "Final narration" }),
+    ]);
+    expect(unchanged?.seq).toBe(1);
+
+    // The delivery folds its text into the same run message.
+    const reservation = store.reserveNotification({
+      sourceId: "agent-one",
+      triggerKind: "cron",
+      deliveryKey: `${runId}:success`,
+      jobId: "daily:brief",
+      runId,
+      text: "The digest is ready",
+    });
+    store.completeNotification(reservation);
+    const message = store.getThreadDetail(threadId)?.messages.at(-1);
+    expect(message).toMatchObject({ seq: 2 });
+    expect(message?.parts).toContainEqual({ type: "text", text: "The digest is ready" });
+    store.close();
+  });
+
   it("marks an omitted job snapshot removed while retaining its offline channel and run history", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

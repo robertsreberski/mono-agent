@@ -91,6 +91,8 @@ export type {
   WebEventType,
   WebLiveInputReceipt,
   WebMessage,
+  WebMessageDelta,
+  WebMessageDeltaOp,
   WebMessagePart,
   WebMessageStatus,
   WebModelOption,

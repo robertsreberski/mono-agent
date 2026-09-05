@@ -412,6 +412,14 @@ export interface WebMessage {
   readonly finishedAt?: string;
   readonly status: WebMessageStatus;
   readonly liveInputStatus?: "pending" | "applied" | "queued" | "cancelled";
+  /**
+   * How many times this message's parts have been persisted, counted from the
+   * row's creation. It is what makes a {@link WebMessageDelta} safe to apply:
+   * a holder of `seq` can tell the very next write from one that skipped ahead
+   * of it, and re-read the message instead of guessing. Rows written before the
+   * console counted read 0.
+   */
+  readonly seq: number;
 }
 
 export interface WebQuote {
@@ -607,6 +615,7 @@ export type WebEventType =
   | "threads.changed"
   | "thread.changed"
   | "message.changed"
+  | "message.delta"
   | "turn.changed"
   | "attachment.changed"
   | "push.pending";
@@ -636,6 +645,56 @@ export type WebThreadChangedPayload =
 export type WebAgentsChangedPayload =
   | { readonly sourceId: string; readonly pinned: boolean }
   | undefined;
+
+/**
+ * One edit to a message's part array.
+ *
+ * Ops are ordered so that applying them front to back is always well defined: a
+ * `truncate` comes first when the array shrank, and the rest ascend by index,
+ * which is also why an index never names a slot the shortened array lost.
+ */
+export type WebMessageDeltaOp =
+  /** Text streamed onto the end of the `text`/`reasoning` part at `index`. */
+  | { readonly op: "append"; readonly index: number; readonly delta: string }
+  /** The whole part at `index`, replaced or appended one past the end. */
+  | { readonly op: "set"; readonly index: number; readonly part: WebMessagePart }
+  /** Drop every part from `length` onward. Emitted first when it is emitted. */
+  | { readonly op: "truncate"; readonly length: number };
+
+/**
+ * One persisted parts write, as content rather than an invalidation hint.
+ *
+ * A streaming answer is rewritten every ~50 ms, and a hint made every console
+ * answer each one by re-reading the whole conversation. This says what actually
+ * changed instead. `baseSeq` is the version the ops apply to and `seq` the one
+ * they produce: a client whose message is not at `baseSeq` has missed a write
+ * and must re-read that message rather than apply anything.
+ */
+export interface WebMessageDelta {
+  readonly messageId: string;
+  /** The message's {@link WebMessage.seq} BEFORE this write. */
+  readonly baseSeq: number;
+  /** The message's `seq` after it, always `baseSeq + 1`. */
+  readonly seq: number;
+  readonly status: WebMessageStatus;
+  readonly updatedAt: string;
+  readonly ops: readonly WebMessageDeltaOp[];
+}
+
+/**
+ * The payload of a `message.changed`: the message moved, go and read it.
+ *
+ * `deltaDeclined` is NOT part of the wire contract -- the event stream strips
+ * it, and a browser reads the same two fields either way. It marks the hint the
+ * delta path emits when the delta it built would have cost more than the
+ * message it describes, so the stream layer can tell one write-rate frame from
+ * a reconciliation and rate-limit only the first.
+ */
+export interface WebMessageChangedPayload {
+  readonly messageId: string;
+  readonly updatedAt: string;
+  readonly deltaDeclined?: true;
+}
 
 export interface WebEvent {
   readonly id: string;

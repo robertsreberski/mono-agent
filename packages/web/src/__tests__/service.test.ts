@@ -12,8 +12,8 @@ import {
   type AgentReplyPart,
 } from "@mono-agent/agent-contracts";
 
-import type { WebEvent, WebMessagePart } from "../contracts.js";
-import { WEB_MESSAGE_PAGE_DEFAULT, WEB_THREAD_PAGE_DEFAULT } from "../store.js";
+import type { WebEvent, WebMessageDelta, WebMessagePart } from "../contracts.js";
+import { applyDeltaOps, WEB_MESSAGE_PAGE_DEFAULT, WEB_THREAD_PAGE_DEFAULT } from "../store.js";
 import { agentGeneration, WebService, WeightedTurnBudget } from "../service.js";
 import { fakeDiscoveredAgent, fakeMonitor, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
 
@@ -2456,18 +2456,43 @@ describe("WebService", () => {
     ];
     const service = await createService({ fetchImpl: operatorFetch({ turns: () => lines.join("\n") }) });
     const thread = service.createThread("agent-one");
-    let messageInvalidations = 0;
+    const deltas: WebMessageDelta[] = [];
+    const hints: unknown[] = [];
     const unsubscribe = service.subscribe((event) => {
-      if (event.type === "message.changed") {
-        messageInvalidations += 1;
-        expect(event.payload).not.toHaveProperty("message");
-      }
+      if (event.type === "message.delta") deltas.push(event.payload as WebMessageDelta);
+      if (event.type === "message.changed") hints.push(event.payload);
     });
     await service.startTurn(thread.id, { text: "prompt" });
     await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
 
     const detail = service.thread(thread.id);
-    expect(messageInvalidations).toBeLessThanOrEqual(2);
+    const assistant = detail.messages.at(-1);
+    // Content, not an invalidation. Every flush used to tell each console that
+    // something about the message had changed, and each of them answered by
+    // re-reading the whole conversation.
+    expect(hints).toEqual([]);
+    expect(deltas.length).toBeLessThanOrEqual(2);
+    expect(deltas.length).toBeGreaterThan(0);
+    for (const [index, delta] of deltas.entries()) {
+      expect(delta).toMatchObject({
+        messageId: assistant?.id,
+        status: expect.any(String),
+        updatedAt: expect.any(String),
+        ops: expect.any(Array),
+      });
+      expect(delta).not.toHaveProperty("message");
+      expect(delta.seq).toBe(delta.baseSeq + 1);
+      // Contiguous: the first names the empty row the turn opened, and each one
+      // after it names the version its predecessor produced. A gap here is what
+      // sends a console back to the message read instead.
+      expect(delta.baseSeq).toBe(index === 0 ? 0 : deltas[index - 1]?.seq);
+    }
+    expect(deltas.at(-1)?.seq).toBe(assistant?.seq);
+    // Replaying every op onto an empty transcript rebuilds exactly what a
+    // reader of the settled conversation is served.
+    let replayed: readonly WebMessagePart[] = [];
+    for (const delta of deltas) replayed = applyDeltaOps(replayed, delta.ops);
+    expect(replayed).toEqual(assistant?.parts);
     expect(detail.thread.runState).toMatchObject({ model: "actual/model", effort: "high" });
     expect(detail.messages.at(-1)?.parts).toEqual([
       { type: "text", text: "a" },
@@ -2476,6 +2501,318 @@ describe("WebService", () => {
       { type: "text", text: `${"x".repeat(1_000)}b` },
     ]);
     unsubscribe();
+    await service.stop();
+  });
+
+  it("puts the write that settled a turn on the wire ahead of the listing events", async () => {
+    const service = await createService();
+    const thread = service.createThread("agent-one");
+    const types: string[] = [];
+    const unsubscribe = service.subscribe((event) => { types.push(event.type); });
+    await service.startTurn(thread.id, { text: "hello" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    unsubscribe();
+
+    // The settling write comes first so a console applies the answer and then
+    // the run state it belongs to, never the other way round.
+    const finish = types.lastIndexOf("turn.changed");
+    expect(types.slice(finish - 1, finish + 3)).toEqual([
+      "message.delta",
+      "turn.changed",
+      "thread.changed",
+      "threads.changed",
+    ]);
+    await service.stop();
+  });
+
+  it("puts the write that failed a turn on the wire ahead of the listing events", async () => {
+    const service = await createService({
+      fetchImpl: operatorFetch({ turns: () => { throw new Error("upstream exploded"); } }),
+    });
+    const thread = service.createThread("agent-one");
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+    await service.startTurn(thread.id, { text: "hello" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "failed");
+    unsubscribe();
+
+    const types = events.map((event) => event.type);
+    const finish = types.lastIndexOf("turn.changed");
+    expect(types.slice(finish - 1, finish + 3)).toEqual([
+      "message.delta",
+      "turn.changed",
+      "thread.changed",
+      "threads.changed",
+    ]);
+    // The error part the failure appended, as content rather than a hint.
+    const delta = events[finish - 1]?.payload as WebMessageDelta;
+    expect(delta.status).toBe("failed");
+    expect(delta.ops).toEqual([
+      {
+        op: "set",
+        index: 0,
+        part: { type: "error", code: "agent_unreachable", message: "Agent is unreachable (upstream exploded)." },
+      },
+    ]);
+    await service.stop();
+  });
+
+  it("hints instead of a delta that would cost more than the message it describes", async () => {
+    // A write whose op envelopes outweigh the whole shaped message is not worth
+    // describing: a finish that absorbs twenty-one streamed text parts re-sets
+    // every part it shifted. Those writes reach the console as the invalidation
+    // every other message writer emits, and it re-reads the row.
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "message.delta" || event.type === "message.changed") events.push(event);
+    });
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => stream !== undefined);
+    const push = (frame: Record<string, unknown>): void => {
+      stream?.enqueue(encoder.encode(`${JSON.stringify(frame)}\n`));
+    };
+
+    // One small write still travels as content.
+    push({ kind: "append", delta: "a" });
+    await waitFor(() => events.length >= 1);
+    expect(events[0]?.type).toBe("message.delta");
+
+    // Reasoning between two text parts keeps them one answer, so the finish can
+    // absorb every one of them.
+    const texts = Array.from({ length: 20 }, (_unused, index) => `t${String(index)}`);
+    for (const [index, text] of texts.entries()) {
+      push({ kind: "event", event: { type: "assistant_thought", text: `why ${String(index)}` } });
+      push({ kind: "append", delta: text });
+    }
+    push({ kind: "finish", finalText: `Za${texts.join("")}` });
+    stream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    unsubscribe();
+
+    const assistant = service.thread(thread.id).messages.at(-1);
+    expect(assistant?.parts).toHaveLength(21);
+    expect(assistant?.parts.at(-1)).toEqual({ type: "text", text: `Za${texts.join("")}` });
+    // The settling write: a truncate plus a `set` for all twenty-one survivors.
+    expect(events.at(-1)).toMatchObject({
+      type: "message.changed",
+      payload: { messageId: assistant?.id, updatedAt: assistant?.updatedAt },
+    });
+    await service.stop();
+  });
+
+  it("shapes the parts a delta carries exactly as a read would serve them", async () => {
+    // The store keeps payloads whole; the console is served a preview. A `set`
+    // op crosses the same boundary a transcript read does, or a console holding
+    // a delta would end up with a tool result no re-read could reproduce.
+    const body = "R".repeat(30 * 1_024);
+    const lines = [
+      JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "t", name: "Read", arguments: { path: "big" } } }),
+      JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "t", content: body } }),
+      JSON.stringify({ kind: "finish", finalText: "done" }),
+      "",
+    ];
+    const service = await createService({ fetchImpl: operatorFetch({ turns: () => lines.join("\n") }) });
+    const thread = service.createThread("agent-one");
+    const deltas: WebMessageDelta[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "message.delta") deltas.push(event.payload as WebMessageDelta);
+    });
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    unsubscribe();
+
+    const assistant = service.thread(thread.id).messages.at(-1);
+    let replayed: readonly WebMessagePart[] = [];
+    for (const delta of deltas) replayed = applyDeltaOps(replayed, delta.ops);
+    expect(replayed).toEqual(assistant?.parts);
+    expect(replayed[0]).toMatchObject({ type: "tool-call", resultTruncated: true, resultBytes: body.length });
+    // The whole result never reaches the wire, only the read that repairs it.
+    expect(JSON.stringify(deltas)).not.toContain(body);
+    expect(service.toolCallPart(thread.id, assistant?.id ?? "", "t")).toMatchObject({ result: body });
+    await service.stop();
+  });
+
+  it("leaves the next delta chained to the write the cap declined to describe", async () => {
+    // The hint a declined delta emits carries no sequence number, so the delta
+    // AFTER it does not chain onto the last one a console applied. That
+    // mismatch is the console's cue to re-read the message, and it only works
+    // if the declined write really did move the version.
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const deltas: WebMessageDelta[] = [];
+    const declinedSeqs: number[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "message.delta") deltas.push(event.payload as WebMessageDelta);
+      if (event.type === "message.changed") {
+        // What a console asks the message route for the moment it is told the
+        // message moved and not how.
+        const { messageId } = event.payload as { readonly messageId: string };
+        declinedSeqs.push(service.message(thread.id, messageId).seq);
+      }
+    });
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => stream !== undefined);
+    const push = (frame: Record<string, unknown>): void => {
+      stream?.enqueue(encoder.encode(`${JSON.stringify(frame)}\n`));
+    };
+
+    push({ kind: "append", delta: "a" });
+    await waitFor(() => deltas.length === 1);
+    // A burst of forty parts in one flush costs more as ops than as a re-read.
+    for (let index = 0; index < 40; index += 1) push({ kind: "status", text: `step ${String(index)}` });
+    await waitFor(() => declinedSeqs.length === 1);
+    push({ kind: "append", delta: "b" });
+    await waitFor(() => deltas.length === 2);
+    push({ kind: "finish", finalText: "ab" });
+    stream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    unsubscribe();
+
+    expect(deltas[0]).toMatchObject({ baseSeq: 0, seq: 1 });
+    // The write nobody described still took a version.
+    expect(declinedSeqs).toEqual([2]);
+    expect(deltas[1]?.baseSeq).toBe(2);
+    expect(deltas[1]?.baseSeq).not.toBe(deltas[0]?.seq);
+    // And the settling write, which changed only the status, still chains.
+    const settled = deltas.at(-1);
+    expect(settled?.ops).toEqual([]);
+    expect(settled?.status).toBe("complete");
+    expect(settled?.baseSeq).toBe(deltas.at(-2)?.seq);
+    expect(settled?.seq).toBe(service.thread(thread.id).messages.at(-1)?.seq);
+    await service.stop();
+  });
+
+  it("compares against the message only when a write could outweigh it", async () => {
+    // The comparison shapes the WHOLE message -- reply capabilities re-minted
+    // and all -- and the streaming path runs it every 50 ms. An `append`
+    // carries strictly less than the part it grew, so it can never win the
+    // comparison and never asks for one.
+    const shapeMessage = vi.spyOn(
+      WebService.prototype as unknown as { shapeMessage: (...args: never[]) => unknown },
+      "shapeMessage",
+    );
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    let writes = 0;
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "message.delta" || event.type === "message.changed") writes += 1;
+    });
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => stream !== undefined);
+    const push = (frame: Record<string, unknown>): void => {
+      stream?.enqueue(encoder.encode(`${JSON.stringify(frame)}\n`));
+    };
+
+    // A `set`: this one can outweigh the message, so it asks.
+    push({ kind: "append", delta: "a" });
+    await waitFor(() => writes === 1);
+    const afterSet = shapeMessage.mock.calls.length;
+    expect(afterSet).toBeGreaterThan(0);
+
+    push({ kind: "append", delta: "b" });
+    await waitFor(() => writes === 2);
+    expect(shapeMessage.mock.calls.length).toBe(afterSet);
+
+    push({ kind: "status", text: "and one more part" });
+    await waitFor(() => writes === 3);
+    expect(shapeMessage.mock.calls.length).toBeGreaterThan(afterSet);
+
+    push({ kind: "finish", finalText: "ab" });
+    stream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    unsubscribe();
+    await service.stop();
+  });
+
+  it("says nothing about a write that did not happen, and refuses to describe a user row", async () => {
+    // Both states are unreachable through the three callers by construction:
+    // they pass the assistant row of a turn, and a settled turn answers with no
+    // delta at all. This reaches the emitter directly rather than pretending to
+    // provoke a state the service cannot be driven into.
+    const service = await createService();
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "hello" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    const messages = service.thread(thread.id).messages;
+    const user = messages.find((message) => message.role === "user");
+    const assistant = messages.find((message) => message.role === "assistant");
+    if (user === undefined || assistant === undefined) throw new Error("Expected both rows of the turn.");
+
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+    const emitWrite = (service as unknown as {
+      emitMessageWrite: (threadId: string, write: unknown) => void;
+    }).emitMessageWrite.bind(service);
+
+    // The two shapes that both mean "this call wrote nothing": stream frames
+    // against a settled turn, and a finish that found the turn already settled.
+    emitWrite(thread.id, undefined);
+    emitWrite(thread.id, { message: assistant });
+    expect(events).toEqual([]);
+
+    expect(() => emitWrite(thread.id, {
+      message: user,
+      delta: {
+        messageId: user.id,
+        baseSeq: 0,
+        seq: 1,
+        status: user.status,
+        updatedAt: user.updatedAt,
+        ops: [],
+      },
+    })).toThrow(TypeError);
+    expect(events).toEqual([]);
+    unsubscribe();
+    await service.stop();
+  });
+
+  it("never describes a user row with a delta", async () => {
+    // `mapMessage` filters quote and live-input telemetry off user rows, so a
+    // delta diffed against them would describe parts no reader is ever served.
+    // Only the two assistant writes a console watches live carry content.
+    const service = await createService();
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "hello" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    const deltaIds = new Set<string>();
+    const hintIds: string[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "message.delta") deltaIds.add((event.payload as WebMessageDelta).messageId);
+      if (event.type === "message.changed") hintIds.push((event.payload as { readonly messageId: string }).messageId);
+    });
+    // This agent advertises no live input, so the offer lands on a user row and
+    // is then promoted to a turn of its own.
+    service.submitLiveInput(thread.id, "and one more thing");
+    await waitFor(() => service.thread(thread.id).messages.length >= 4
+      && service.store.getThread(thread.id)?.runState.status === "complete");
+    unsubscribe();
+
+    const messages = service.thread(thread.id).messages;
+    const roleOf = (id: string): string | undefined => messages.find((message) => message.id === id)?.role;
+    expect(deltaIds.size).toBeGreaterThan(0);
+    expect([...deltaIds].map(roleOf)).toEqual([...deltaIds].map(() => "assistant"));
+    expect(hintIds.map(roleOf)).toContain("user");
     await service.stop();
   });
 
@@ -3859,6 +4196,42 @@ describe("transcript shaping", () => {
     parts: readonly WebMessagePart[],
   ): readonly Extract<WebMessagePart, { type: "telemetry" }>[] =>
     parts.filter((part): part is Extract<WebMessagePart, { type: "telemetry" }> => part.type === "telemetry");
+
+  it("leaves a tool call that fits exactly as recorded", async () => {
+    // The diet is for oversized payloads only. A call under the budget must
+    // come back byte-identical and unflagged: the console reads
+    // `argsTruncated`/`resultTruncated` to decide whether to offer the repair
+    // read, so a flag on a whole payload is a button that fetches what the
+    // reader already has, and any rewriting at all would put a `set` op on the
+    // delta stream for a part that did not change.
+    const args = { command: "ls -la", cwd: "/tmp" };
+    const result = "total 0\ndrwxr-xr-x  2 robert  staff   64 Sep  6 10:00 .";
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => [
+          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "t", name: "Exec", arguments: args } }),
+          JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "t", content: result } }),
+          JSON.stringify({ kind: "finish", finalText: "done" }),
+          "",
+        ].join("\n"),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    const stored = service.store.getThreadDetail(thread.id)?.messages.at(-1)?.parts.find(
+      (part) => part.type === "tool-call",
+    );
+    const served = service.thread(thread.id).messages.at(-1)?.parts.find((part) => part.type === "tool-call");
+    expect(served).toEqual({ type: "tool-call", toolCallId: "t", toolName: "Exec", args, result, status: "complete" });
+    // Byte-identical, not merely equal: nothing was added, removed or reordered.
+    expect(JSON.stringify(served)).toBe(JSON.stringify(stored));
+    for (const flag of ["argsTruncated", "argsBytes", "resultTruncated", "resultBytes"]) {
+      expect(served).not.toHaveProperty(flag);
+    }
+    await service.stop();
+  });
 
   it("keeps telemetry data only for what the console renders, and moves no part", async () => {
     const service = await createService({ fetchImpl: operatorFetch({ turns: telemetryTurn }) });

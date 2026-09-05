@@ -216,6 +216,23 @@ describe("Monitor terminal reply persistence", () => {
     } finally { reopened?.close(); s.store.close(); }
   });
 
+  it("counts the Monitor activity settlement as its own message version", async () => {
+    const s = await setup();
+    try {
+      s.reserve();
+      s.store.applyStreamFrames(s.turn.turnId, [text("Inspecting the worker.")]);
+      const before = s.store.getMessage(s.turn.assistantMessageId)?.seq;
+      expect(before).toBe(1);
+
+      // Settlement writes the activity row onto the same message, so a console
+      // holding version 1 must be told the message moved.
+      s.settle();
+
+      expect(s.store.getMessage(s.turn.assistantMessageId)?.seq).toBe(2);
+      expect(s.parts().some((part) => part.type === "monitor-activity")).toBe(true);
+    } finally { s.store.close(); }
+  });
+
   it("isolates provider boundaries, preserves rich output, and uses anchored classification", () => {
     const marker: WebMessagePart = { type: "telemetry", event: "runtime_telemetry", data: boundary.event };
     const rich: WebMessagePart = { type: "attachment", id: "file", artifactId: "artifact", name: "report.txt", mediaType: "text/plain", sizeBytes: 1, integrityId: `sha256:${"a".repeat(64)}` };

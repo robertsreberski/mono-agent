@@ -465,6 +465,8 @@ WebEvent
 WebEventType
 WebLiveInputReceipt
 WebMessage
+WebMessageDelta
+WebMessageDeltaOp
 WebMessagePart
 WebMessageStatus
 WebModelOption

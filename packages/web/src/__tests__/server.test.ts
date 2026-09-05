@@ -6,7 +6,8 @@ import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { isAllowedWebHostname, startWebServer, type WebServerHandle } from "../server.js";
+import { WEB_API_VERSION, type WebEvent } from "../contracts.js";
+import { createWebEventDispatch, isAllowedWebHostname, startWebServer, type WebServerHandle } from "../server.js";
 import { deliverWebNotification } from "../notification-client.js";
 import { prepareWebStatePaths } from "../state-paths.js";
 import { fakeDiscoveredAgent, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
@@ -1883,7 +1884,10 @@ describe("web HTTP server", () => {
     // its own agents/limits/push overhead -- a factor of about 1. The boundary
     // sits at 2 so both sides have most of a factor of margin, and a row growing
     // a field cannot trip it.
-    expect(everyBucket).toBeGreaterThan(50 * 1_024);
+    // Anti-vacuity, derived from the fixture rather than from a measured byte
+    // count: 180 conversation rows cannot serialise in under 200 bytes each,
+    // whatever a summary grows or loses.
+    expect(everyBucket).toBeGreaterThan(agents.length * 60 * 200);
     expect(scoped.body.length).toBeLessThan(everyBucket / 2);
   });
 
@@ -1948,6 +1952,195 @@ describe("web HTTP server", () => {
     }
   });
 
+  it("streams content for the conversation a console subscribed to and hints for everything else", async () => {
+    const lines = [
+      JSON.stringify({ kind: "append", delta: "hello " }),
+      JSON.stringify({ kind: "append", delta: "world" }),
+      JSON.stringify({ kind: "finish", finalText: "hello world" }),
+      "",
+    ];
+    const { baseUrl } = await start({ fetchImpl: operatorFetch({ turns: () => lines.join("\n") }) });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const otherId = await createThread(baseUrl, "agent-one");
+
+    const subscribed = await fetch(`${baseUrl}/api/v1/events?thread=${encodeURIComponent(threadId)}`);
+    const unsubscribed = await fetch(`${baseUrl}/api/v1/events`);
+    const subscribedReader = subscribed.body?.getReader();
+    const unsubscribedReader = unsubscribed.body?.getReader();
+    if (subscribedReader === undefined || unsubscribedReader === undefined) {
+      throw new Error("Expected two SSE response bodies.");
+    }
+    const nextSubscribed = sseEventReader(subscribedReader);
+    const nextUnsubscribed = sseEventReader(unsubscribedReader);
+    expect(await nextSubscribed()).toMatchObject({ type: "ready" });
+    expect(await nextUnsubscribed()).toMatchObject({ type: "ready" });
+
+    await settleTurn(baseUrl, threadId, "go");
+    const streamed = await drainTurn(nextSubscribed);
+    const hinted = await drainTurn(nextUnsubscribed);
+
+    // The subscribed console is served what changed, and never a hint about the
+    // conversation it is looking at.
+    const deltas = streamed.filter((event) => event.type === "message.delta");
+    expect(deltas.length).toBeGreaterThanOrEqual(2);
+    expect(streamed.filter((event) => event.type === "message.changed")).toEqual([]);
+    for (const event of deltas) {
+      expect(event.threadId).toBe(threadId);
+      expect(event.payload).toMatchObject({
+        messageId: expect.any(String),
+        baseSeq: expect.any(Number),
+        seq: expect.any(Number),
+        status: expect.any(String),
+        ops: expect.any(Array),
+      });
+    }
+
+    // Every other console keeps the invalidation it already understands, and the
+    // two writes above reach it as ONE hint rather than one per flush.
+    expect(hinted.filter((event) => event.type === "message.delta")).toEqual([]);
+    const hints = hinted.filter((event) => event.type === "message.changed");
+    // Told about it, and never more often than the writes themselves. How many
+    // writes actually land inside one DELTA_HINT_INTERVAL_MS is a property of
+    // the machine, not of this code, so the limit itself is proven against a
+    // fake clock in the `web event dispatch` suite instead.
+    expect(hints.length).toBeGreaterThanOrEqual(1);
+    expect(hints.length).toBeLessThanOrEqual(deltas.length);
+    expect(hints[0]?.payload).toEqual({ messageId: expect.any(String), updatedAt: expect.any(String) });
+
+    // A delta for a conversation this console is NOT in is downgraded too.
+    await settleTurn(baseUrl, otherId, "elsewhere");
+    const elsewhere = await drainTurn(nextSubscribed);
+    expect(elsewhere.filter((event) => event.type === "message.delta")).toEqual([]);
+    const elsewhereHints = elsewhere.filter((event) => event.type === "message.changed");
+    // Same reason: that this collapses to exactly one frame is the fake-clock
+    // suite's assertion, not a race this fixture should be running.
+    expect(elsewhereHints.length).toBeGreaterThanOrEqual(1);
+    expect(elsewhereHints.every((event) => event.threadId === otherId)).toBe(true);
+
+    await Promise.all([subscribedReader.cancel(), unsubscribedReader.cancel()]);
+  });
+
+  it("rejects a conversation subscription that names nothing usable", async () => {
+    const { baseUrl } = await start();
+    // Oversized, empty and blank alike: a console that asked for a conversation
+    // and silently got none would read as a delta stream that had stopped.
+    for (const query of [`thread=${"t".repeat(600)}`, "thread=", "thread=%20%20"]) {
+      const refused = await fetch(`${baseUrl}/api/v1/events?${query}`);
+      expect(refused.status).toBe(400);
+      expect(await json(refused)).toMatchObject({ error: { code: "invalid_subscription" } });
+    }
+  });
+
+  /**
+   * A conversation with a tool-heavy turn already in it, whose NEXT turn streams
+   * a long prose answer -- the shape that made this stream expensive: every
+   * flush invalidated a transcript that had nothing to do with the few
+   * characters that had arrived.
+   */
+  function historyThenStreamedAnswerFetch(): typeof fetch {
+    const answer = `${"word ".repeat(400)}end`;
+    let turn = 0;
+    const heavy = toolHeavyAgentFetch();
+    return ((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!url.includes("/v1/turns")) return heavy(input, init);
+      turn += 1;
+      if (turn === 1) return heavy(input, init);
+      return operatorFetch({
+        turns: () => [
+          ...answer.split(" ").map((word) => JSON.stringify({ kind: "append", delta: `${word} ` })),
+          JSON.stringify({ kind: "finish", finalText: answer }),
+          "",
+        ].join("\n"),
+      })(input, init);
+    }) as typeof fetch;
+  }
+
+  it("costs a subscribed console what changed, not the conversation once per write", async () => {
+    const { baseUrl } = await start({ fetchImpl: historyThenStreamedAnswerFetch() });
+    const threadId = await createThread(baseUrl, "agent-one");
+    // One tool-heavy turn of history, so a re-read is nothing like the size of
+    // the write that provokes it.
+    await settleTurn(baseUrl, threadId, "first");
+
+    const stream = await fetch(`${baseUrl}/api/v1/events?thread=${encodeURIComponent(threadId)}`);
+    const reader = stream.body?.getReader();
+    if (reader === undefined) throw new Error("Expected an SSE response body.");
+    let streamBytes = 0;
+    const next = sseEventReader(reader, (count) => { streamBytes += count; });
+    expect(await next()).toMatchObject({ type: "ready" });
+    const readyBytes = streamBytes;
+
+    await settleTurn(baseUrl, threadId, "second");
+    const streamed = await drainTurn(next);
+    const deltas = streamed.filter((event) => event.type === "message.delta");
+    const turnBytes = streamBytes - readyBytes;
+
+    // What the same turn costs a console that answers each write by re-reading
+    // the conversation it is looking at.
+    const read = await rawGet(baseUrl, `/api/v1/threads/${threadId}`);
+    expect(read.status).toBe(200);
+    expect(read.body.length).toBeGreaterThan(10 * 1_024);
+    expect(deltas.length).toBeGreaterThanOrEqual(2);
+    expect(streamed.filter((event) => event.type === "message.changed")).toEqual([]);
+    // The whole turn -- deltas, run state and both conversation summaries --
+    // costs less than ONE of the re-reads it replaces, of which there would
+    // have been one per write.
+    expect(turnBytes).toBeLessThan(read.body.length / 2);
+
+    await reader.cancel();
+  });
+
+  it("answers a message read with the version the delta stream last named", async () => {
+    const { baseUrl } = await start({ fetchImpl: toolHeavyAgentFetch() });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const other = await createThread(baseUrl, "agent-one");
+    const stream = await fetch(`${baseUrl}/api/v1/events?thread=${encodeURIComponent(threadId)}`);
+    const reader = stream.body?.getReader();
+    if (reader === undefined) throw new Error("Expected an SSE response body.");
+    const next = sseEventReader(reader);
+    expect(await next()).toMatchObject({ type: "ready" });
+
+    const detail = await settleTurn(baseUrl, threadId, "go");
+    const message = wireMessages(detail).at(-1);
+    if (message === undefined) throw new Error("Expected an assistant message.");
+    const streamed = await drainTurn(next);
+    const seq = streamed
+      .filter((event) => event.type === "message.delta")
+      .map((event) => (event.payload as { readonly seq: number }).seq)
+      .at(-1);
+    expect(seq).toBeTypeOf("number");
+
+    // The recovery a console reaches for when a delta no longer chains: the one
+    // message, at the version the stream just named.
+    const found = await fetch(`${baseUrl}/api/v1/threads/${threadId}/messages/${message.id}`);
+    expect(found.status).toBe(200);
+    const shaped = (await json(found)).message as WireMessage & { readonly seq: number };
+    expect(shaped.id).toBe(message.id);
+    expect(shaped.seq).toBe(seq);
+    expect(shaped.parts.filter((part) => part.resultTruncated === true)).toHaveLength(3);
+
+    const whole = (await json(await fetch(
+      `${baseUrl}/api/v1/threads/${threadId}/messages/${message.id}?full=1`,
+    ))).message as WireMessage & { readonly seq: number };
+    expect(whole.seq).toBe(seq);
+    expect(whole.parts.filter((part) => part.resultTruncated === true)).toHaveLength(0);
+    expect(whole.parts.find((part) => part.type === "tool-call")).toMatchObject({
+      result: "R".repeat(20 * 1_024),
+    });
+
+    // A message id is not a capability: it answers only inside its own conversation.
+    for (const path of [
+      `/api/v1/threads/${threadId}/messages/no-such-message`,
+      `/api/v1/threads/${other}/messages/${message.id}`,
+    ]) {
+      const refused = await fetch(`${baseUrl}${path}`);
+      expect(refused.status).toBe(404);
+      expect(await json(refused)).toMatchObject({ error: { code: "message_not_found" } });
+    }
+    await reader.cancel();
+  });
+
   it("answers a conversation and its message page with one screenful by default", async () => {
     const { baseUrl } = await start();
     const threadId = await createThread(baseUrl, "agent-one");
@@ -1994,6 +2187,7 @@ describe("web HTTP server", () => {
 
 function sseEventReader(
   reader: ReadableStreamDefaultReader<Uint8Array>,
+  onBytes?: (count: number) => void,
 ): () => Promise<Record<string, unknown>> {
   const decoder = new TextDecoder();
   let buffered = "";
@@ -2009,9 +2203,26 @@ function sseEventReader(
       }
       const chunk = await readSseChunk(reader);
       if (chunk.done) throw new Error("SSE stream ended before the next event.");
+      onBytes?.(chunk.value?.byteLength ?? 0);
       buffered += decoder.decode(chunk.value, { stream: true });
     }
   };
+}
+
+/**
+ * Everything one settling turn put on a stream, up to the conversation summary
+ * the finish emits. `threads.changed` is no boundary: a turn emits one when it
+ * STARTS too.
+ */
+async function drainTurn(
+  next: () => Promise<Record<string, unknown>>,
+): Promise<readonly Record<string, unknown>[]> {
+  const events: Record<string, unknown>[] = [];
+  for (;;) {
+    const event = await next();
+    events.push(event);
+    if (event.type === "thread.changed") return events;
+  }
 }
 
 async function readSseChunk(
@@ -2041,3 +2252,145 @@ async function waitForFreeSseSlot(baseUrl: string, timeoutMs = 5_000): Promise<R
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
   }
 }
+
+/**
+ * The per-connection view of the event stream, exercised without a socket.
+ *
+ * Neither of the two things that matter here is observable through an HTTP
+ * fixture: the rate limit is a clock decision, and a frame a connection cannot
+ * write must close it rather than leave a socket that reads live.
+ */
+describe("web event dispatch", () => {
+  const AT = "2026-09-05T10:00:00.000Z";
+
+  function event(type: WebEvent["type"], threadId: string, payload: unknown): WebEvent {
+    return { id: `${type}:${threadId}`, version: WEB_API_VERSION, type, at: AT, threadId, payload };
+  }
+  function delta(seq: number): Record<string, unknown> {
+    return { messageId: "m1", baseSeq: seq - 1, seq, status: "running", updatedAt: AT, ops: [] };
+  }
+  function changed(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return { messageId: "m1", updatedAt: AT, ...extra };
+  }
+
+  interface Harness {
+    readonly send: (event: WebEvent) => boolean;
+    readonly written: WebEvent[];
+    readonly closes: () => number;
+    advance: (ms: number) => void;
+  }
+
+  function harness(subscribed?: string, write?: (event: WebEvent) => boolean): Harness {
+    const written: WebEvent[] = [];
+    let closes = 0;
+    let clock = 1_000;
+    const send = createWebEventDispatch({
+      ...(subscribed === undefined ? {} : { subscribed }),
+      write: write ?? ((event) => { written.push(event); return true; }),
+      close: () => { closes += 1; },
+      now: () => clock,
+    });
+    return {
+      send,
+      written,
+      closes: () => closes,
+      advance: (ms: number) => { clock += ms; },
+    };
+  }
+
+  it("serves everything about the conversation a console named, unthrottled", async () => {
+    const stream = harness("thread-1");
+    // Content, the delta path declining, and an ordinary reconciliation: all
+    // three are things the console rendering this conversation must act on.
+    expect(stream.send(event("message.delta", "thread-1", delta(1)))).toBe(true);
+    expect(stream.send(event("message.changed", "thread-1", changed({ deltaDeclined: true })))).toBe(true);
+    expect(stream.send(event("message.changed", "thread-1", changed()))).toBe(true);
+    expect(stream.send(event("turn.changed", "thread-1", { turn: { status: "running" } }))).toBe(true);
+
+    expect(stream.written.map((written) => written.type)).toEqual([
+      "message.delta",
+      "message.changed",
+      "message.changed",
+      "turn.changed",
+    ]);
+    expect(stream.written[0]?.payload).toEqual(delta(1));
+    // `deltaDeclined` is the stream layer's own signal and never reaches a browser.
+    expect(stream.written[1]?.payload).toEqual({ messageId: "m1", updatedAt: AT });
+  });
+
+  it("rate-limits a conversation the console did not name to one frame a second", async () => {
+    const stream = harness("thread-1");
+    expect(stream.send(event("message.delta", "other", delta(1)))).toBe(true);
+    expect(stream.send(event("message.delta", "other", delta(2)))).toBe(true);
+    expect(stream.send(event("message.changed", "other", changed()))).toBe(true);
+    // Dropped, not queued.
+    expect(stream.written).toHaveLength(1);
+    expect(stream.written[0]).toMatchObject({
+      type: "message.changed",
+      threadId: "other",
+      payload: { messageId: "m1", updatedAt: AT },
+    });
+
+    stream.advance(1_000);
+    stream.send(event("message.delta", "other", delta(3)));
+    expect(stream.written).toHaveLength(2);
+    // A different conversation has its own budget.
+    stream.send(event("message.delta", "third", delta(1)));
+    expect(stream.written).toHaveLength(3);
+  });
+
+  it("keeps every reconciliation for a console that named no conversation, and bounds only the delta path", async () => {
+    const stream = harness();
+    // This console may well be looking at the conversation, and nothing else
+    // will tell it that a live-input offer or a job card moved.
+    stream.send(event("message.changed", "thread-1", changed()));
+    stream.send(event("message.changed", "thread-1", changed()));
+    expect(stream.written).toHaveLength(2);
+
+    // The write-rate traffic is the whole reason the limit exists, and a
+    // declined delta is exactly that traffic wearing the other event's name.
+    stream.send(event("message.delta", "thread-1", delta(1)));
+    stream.send(event("message.changed", "thread-1", changed({ deltaDeclined: true })));
+    stream.send(event("message.delta", "thread-1", delta(2)));
+    expect(stream.written).toHaveLength(3);
+    expect(stream.written[2]?.type).toBe("message.changed");
+    expect(stream.written[2]?.payload).toEqual({ messageId: "m1", updatedAt: AT });
+  });
+
+  it("bounds what one connection remembers, dropping the conversation it heard about longest ago", async () => {
+    // A burst wider than the bound inside a single tick would otherwise grow
+    // the map faster than the window can retire it, on a server that runs for
+    // weeks. Three hundred conversations at one instant, then the two ends.
+    const stream = harness();
+    for (let index = 0; index < 300; index += 1) {
+      stream.send(event("message.delta", `thread-${String(index)}`, delta(1)));
+    }
+    expect(stream.written).toHaveLength(300);
+
+    // The first 44 were evicted to hold the bound at 256, so the oldest is
+    // hinted about again even though its window has not passed...
+    stream.send(event("message.delta", "thread-0", delta(2)));
+    expect(stream.written).toHaveLength(301);
+    // ...while the most recent is still suppressed.
+    stream.send(event("message.delta", "thread-299", delta(2)));
+    expect(stream.written).toHaveLength(301);
+  });
+
+  it("closes a stream it cannot make sense of rather than dropping the frame", async () => {
+    const malformed = harness("thread-1");
+    expect(malformed.send(event("message.delta", "other", { messageId: "m1" }))).toBe(false);
+    expect(malformed.closes()).toBe(1);
+    expect(malformed.written).toEqual([]);
+
+    const nameless = harness("thread-1");
+    expect(nameless.send(event("message.changed", "thread-1", { updatedAt: AT }))).toBe(false);
+    expect(nameless.closes()).toBe(1);
+
+    // A write that throws is the same problem seen from the socket: the
+    // subscriber is dropped either way, and a stream nobody writes to must not
+    // stay open reading "live".
+    const throwing = harness("thread-1", () => { throw new Error("socket is gone"); });
+    expect(throwing.send(event("message.delta", "thread-1", delta(1)))).toBe(false);
+    expect(throwing.closes()).toBe(1);
+  });
+});

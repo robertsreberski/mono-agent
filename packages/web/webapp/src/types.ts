@@ -502,6 +502,12 @@ export interface WebMessage {
   readonly finishedAt?: string;
   readonly status: "running" | "complete" | "failed" | "cancelled" | "interrupted";
   readonly liveInputStatus?: "pending" | "applied" | "queued" | "cancelled";
+  /**
+   * How many times the server has persisted this message's parts. It is what a
+   * content delta applies against; absent on a message this console minted
+   * itself, and on one read back from a server that predates the count.
+   */
+  readonly seq?: number;
 }
 
 export interface WebQuote {
@@ -661,6 +667,7 @@ export interface WebEvent {
     | "threads.changed"
     | "thread.changed"
     | "message.changed"
+    | "message.delta"
     | "turn.changed"
     | "attachment.changed"
     | "push.pending";

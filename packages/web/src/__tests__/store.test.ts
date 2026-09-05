@@ -3,19 +3,36 @@ import { chmod, lstat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { MAX_AGENT_REPLY_PARTS, type AgentReplyPart } from "@mono-agent/agent-contracts";
+import {
+  MAX_AGENT_REPLY_PARTS,
+  type AgentReplyPart,
+  type AgentStreamWireFrame,
+} from "@mono-agent/agent-contracts";
 
-import type { WebAgentSummary } from "../contracts.js";
+import type {
+  WebAgentSummary,
+  WebMessage,
+  WebMessageDelta,
+  WebMessageDeltaOp,
+  WebMessagePart,
+} from "../contracts.js";
 import {
   WEB_SEARCH_HIGHLIGHT_CLOSE,
   WEB_SEARCH_HIGHLIGHT_OPEN,
   WEB_THREAD_SEARCH_MAX,
   WEB_THREAD_SEARCH_MIN_QUERY,
   WebStore,
+  applyDeltaOps,
+  diffParts,
+  type StoredTurnFinish,
 } from "../store.js";
+import { WebConsoleError } from "../errors.js";
 import { fakeMonitor, fakeProcessJob, temporaryRoot } from "./helpers.js";
+// The console replays these same vectors, so they live where both suites can
+// take them verbatim rather than each inventing its own reading of an op.
+import { MESSAGE_DELTA_VECTORS } from "../../webapp/src/test/message-delta-vectors.js";
 
 const cleanup: string[] = [];
 
@@ -3661,7 +3678,7 @@ describe("WebStore turn timing", () => {
     const thread = store.createThread("agent-one");
     const turn = store.beginTurn({ threadId: thread.id, text: "time me", attachmentIds: [] });
     clockMs += 4_000;
-    const running = store.applyStreamFrames(turn.turnId, [
+    const { message: running } = store.applyStreamFrames(turn.turnId, [
       { kind: "event", event: { type: "assistant_thought", text: "Thinking" } },
     ]);
     expect(running.createdAt).toBe("2026-09-04T10:00:00.000Z");
@@ -3680,5 +3697,624 @@ describe("WebStore turn timing", () => {
     const failed = store.failTurn(second.turnId, { message: "boom", code: "provider_unavailable" });
     expect(failed.messages.at(-1)?.finishedAt).toBe("2026-09-04T10:00:13.500Z");
     store.close();
+  });
+});
+
+/**
+ * The shared delta table, read as this package's own types.
+ *
+ * The annotation is the point: it is a compile-time proof that every vector in
+ * the dependency-free table is a valid {@link WebMessagePart} and a valid
+ * {@link WebMessageDeltaOp} here, so the console cannot hold the diff to a
+ * contract the store does not share.
+ */
+const DELTA_VECTORS: readonly {
+  readonly name: string;
+  readonly prev: readonly WebMessagePart[];
+  readonly next: readonly WebMessagePart[];
+  readonly ops: readonly WebMessageDeltaOp[];
+}[] = MESSAGE_DELTA_VECTORS;
+
+describe("WebStore message sequence and part deltas", () => {
+  interface StreamingStore {
+    readonly store: WebStore;
+    readonly stateDir: string;
+    readonly threadId: string;
+    readonly turnId: string;
+    readonly messageId: string;
+    readonly userMessageId: string;
+  }
+
+  /** One conversation with a running turn, ready to be streamed into. */
+  async function openStreamingStore(): Promise<StreamingStore> {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "stream it", attachmentIds: [] });
+    return {
+      store,
+      stateDir,
+      threadId: thread.id,
+      turnId: turn.turnId,
+      messageId: turn.assistantMessageId,
+      userMessageId: turn.userMessageId,
+    };
+  }
+
+  /**
+   * Apply `frames` and return the write's delta, having first proved that its
+   * ops rebuild the persisted parts from the parts a reader held beforehand.
+   *
+   * The round trip is the whole contract, and it fails in both directions: a
+   * wrong op reconstructs the wrong array, and a part helper that ever mutated
+   * a part IN PLACE would compare reference-equal, emit no op at all, and leave
+   * the replay holding stale content.
+   */
+  function stream(
+    context: Pick<StreamingStore, "store" | "turnId" | "messageId">,
+    frames: readonly AgentStreamWireFrame[],
+  ): WebMessageDelta {
+    const before = context.store.getMessage(context.messageId);
+    if (before === undefined) throw new Error("The assistant message is missing.");
+    const { message, delta } = context.store.applyStreamFrames(context.turnId, frames);
+    if (delta === undefined) throw new Error("A parts write reported no delta.");
+    expect(delta.messageId).toBe(context.messageId);
+    expect(delta.baseSeq).toBe(before.seq);
+    expect(delta.seq).toBe(before.seq + 1);
+    expect(message.seq).toBe(delta.seq);
+    expect(delta.updatedAt).toBe(message.updatedAt);
+    expect(delta.status).toBe(message.status);
+    expect(applyDeltaOps(before.parts, delta.ops)).toEqual(message.parts);
+    return delta;
+  }
+
+  function deepFreeze(value: unknown): void {
+    if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
+    Object.freeze(value);
+    for (const nested of Object.values(value as Record<string, unknown>)) deepFreeze(nested);
+  }
+
+  it("refuses a delta whose ops and version describe different writes", async () => {
+    // Every caller reads the base and writes inside one transaction on a
+    // single-writer database, so this cannot happen today. It is guarded
+    // because the failure is silent if it ever does: ops diffed against one
+    // version, carrying the sequence number of another, are a self-consistent
+    // description of a transcript that never existed, and a console applies
+    // that without complaint. A detectable gap is the only safe answer.
+    const context = await openStreamingStore();
+    stream(context, [{ kind: "append", delta: "a" }]);
+
+    const internals = context.store as unknown as {
+      writeMessageParts: (
+        id: string,
+        parts: readonly WebMessagePart[],
+        now: string,
+        columns?: unknown,
+      ) => { readonly baseSeq: number; readonly seq: number };
+      database: DatabaseSync;
+    };
+    const write = internals.writeMessageParts.bind(context.store);
+    const spy = vi.spyOn(internals, "writeMessageParts").mockImplementation((id, parts, now, columns) => {
+      // Another writer moved the row after the parts were derived from it.
+      internals.database.prepare("UPDATE messages SET seq = seq + 1 WHERE id = ?").run(id);
+      return write(id, parts, now, columns);
+    });
+    try {
+      expect(() => context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "b" }]))
+        .toThrow(WebConsoleError);
+      expect(() => context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "b" }]))
+        .toThrow(/moved from 1 to 2 while its delta was built/u);
+    } finally {
+      spy.mockRestore();
+    }
+
+    // The refused write rolled back with its transaction: the row still holds
+    // the version, and the parts, the last honest delta described.
+    const message = context.store.getMessage(context.messageId);
+    expect(message?.seq).toBe(1);
+    expect(message?.parts).toEqual([{ type: "text", text: "a" }]);
+    context.store.close();
+  });
+
+  it.each(DELTA_VECTORS)("diffs and replays a vector that $name", ({ prev, next, ops }) => {
+    expect(diffParts(prev, next)).toEqual(ops);
+    expect(applyDeltaOps(prev, ops)).toEqual(next);
+  });
+
+  /**
+   * As {@link stream}, for the write that settles a turn — the most rewritten
+   * of them all: final-text reconciliation splices absorbed parts away, reply
+   * parts land after them, and an error part is pushed on the end.
+   */
+  function finish(
+    context: Pick<StreamingStore, "store" | "messageId">,
+    run: () => StoredTurnFinish,
+  ): WebMessageDelta {
+    const before = context.store.getMessage(context.messageId);
+    if (before === undefined) throw new Error("The assistant message is missing.");
+    const detail = run();
+    const write = detail.write;
+    if (write?.delta === undefined) throw new Error("A finish reported no delta.");
+    expect(write.delta.messageId).toBe(context.messageId);
+    expect(write.delta.baseSeq).toBe(before.seq);
+    expect(write.delta.seq).toBe(before.seq + 1);
+    expect(write.message.seq).toBe(write.delta.seq);
+    expect(write.delta.status).toBe(write.message.status);
+    expect(applyDeltaOps(before.parts, write.delta.ops)).toEqual(write.message.parts);
+    // The transcript the console renders and the delta it applies are the same
+    // message; a delta that disagreed with the read would desync the browser.
+    expect(detail.messages.at(-1)?.parts).toEqual(write.message.parts);
+    return write.delta;
+  }
+
+  it("describes the final-text reconciliation that absorbs earlier text parts", async () => {
+    const context = await openStreamingStore();
+    stream(context, [{ kind: "append", delta: "Part one." }]);
+    stream(context, [{ kind: "event", event: { type: "assistant_thought", text: "Thinking." } }]);
+    stream(context, [{ kind: "append", delta: "Part two." }]);
+
+    // The answer owns the trailing run of text, so reconciliation writes it
+    // into the last text part and splices the absorbed one away.
+    const delta = finish(context, () =>
+      context.store.completeTurn(context.turnId, "Here goes: Part one.Part two."));
+
+    expect(delta.ops).toEqual([
+      { op: "truncate", length: 2 },
+      { op: "set", index: 0, part: { type: "reasoning", text: "Thinking." } },
+      { op: "set", index: 1, part: { type: "text", text: "Here goes: Part one.Part two." } },
+    ]);
+    expect(delta.status).toBe("complete");
+    context.store.close();
+  });
+
+  it("describes the reply parts a finish appends after the answer", async () => {
+    const context = await openStreamingStore();
+    stream(context, [{ kind: "append", delta: "Rendered it." }]);
+
+    const delta = finish(context, () => context.store.completeTurn(
+      context.turnId,
+      "Rendered it.",
+      undefined,
+      [
+        {
+          type: "attachment",
+          id: "chart",
+          reference: { scheme: "mono-agent-artifact", id: "artifact-one" },
+          name: "chart.png",
+          mediaType: "image/png",
+          sizeBytes: 24,
+          integrityId: `sha256:${"b".repeat(64)}`,
+        },
+        {
+          type: "failure",
+          id: "second-chart",
+          code: "artifact_missing",
+          message: "The second chart was gone.",
+        },
+      ] as const satisfies readonly AgentReplyPart[],
+    ));
+
+    expect(delta.ops).toEqual([
+      {
+        op: "set",
+        index: 1,
+        part: {
+          type: "attachment",
+          id: "chart",
+          artifactId: "artifact-one",
+          name: "chart.png",
+          mediaType: "image/png",
+          sizeBytes: 24,
+          integrityId: `sha256:${"b".repeat(64)}`,
+        },
+      },
+      {
+        op: "set",
+        index: 2,
+        part: {
+          type: "failure",
+          id: "second-chart",
+          code: "artifact_missing",
+          message: "The second chart was gone.",
+        },
+      },
+    ]);
+    context.store.close();
+  });
+
+  it("describes the error part a failed turn pushes onto the transcript", async () => {
+    const context = await openStreamingStore();
+    stream(context, [{ kind: "append", delta: "Working on it." }]);
+
+    const delta = finish(context, () => context.store.failTurn(context.turnId, {
+      message: "The provider went away.",
+      code: "provider_unavailable",
+    }));
+
+    expect(delta.ops).toEqual([{
+      op: "set",
+      index: 1,
+      part: { type: "error", code: "provider_unavailable", message: "The provider went away." },
+    }]);
+    expect(delta.status).toBe("failed");
+    context.store.close();
+  });
+
+  it("sequences the reconciliation writes that carry no delta of their own", async () => {
+    const context = await openStreamingStore();
+    const { store, threadId, turnId } = context;
+
+    // Promotion rewrites the queued follow-up's parts as it attaches the row
+    // to the turn it just started.
+    const queued = store.reserveLiveInput(threadId, "and then this");
+    expect(store.queueLiveInput(queued.input.id)?.seq).toBe(1);
+    store.completeTurn(turnId, "first");
+    expect(store.promoteNextQueuedLiveInput(threadId)).toBeDefined();
+    expect(store.getMessage(queued.message.id)?.seq).toBe(2);
+
+    // Restart recovery re-queues a follow-up the stopped turn had offered.
+    const offered = store.reserveLiveInput(threadId, "offered when it stopped");
+    expect(store.getMessage(offered.message.id)?.seq).toBe(0);
+    store.close();
+    const reopened = await WebStore.open({ stateDir: context.stateDir });
+    expect(reopened.getMessage(offered.message.id)).toMatchObject({ seq: 1, liveInputStatus: "queued" });
+
+    // A process-job card is one message rewritten in place as the job moves.
+    const jobThread = reopened.createThread("agent-one");
+    const running = fakeProcessJob({ conversationId: `web:${jobThread.id}` });
+    const card = reopened.upsertProcessJobCard({
+      sourceId: "agent-one",
+      threadId: jobThread.id,
+      deliveryKey: running.wake.deliveryKey,
+      processJob: running,
+    });
+    expect(reopened.getMessage(card.messageId)?.seq).toBe(0);
+    reopened.upsertProcessJobCard({
+      sourceId: "agent-one",
+      threadId: jobThread.id,
+      deliveryKey: running.wake.deliveryKey,
+      processJob: fakeProcessJob({ conversationId: `web:${jobThread.id}`, state: "succeeded" }),
+    });
+    expect(reopened.getMessage(card.messageId)?.seq).toBe(1);
+    reopened.close();
+  });
+
+  it("describes an append-only text stream as one append op per write", async () => {
+    const context = await openStreamingStore();
+
+    // The first write has no part to grow, so it sets the new index instead.
+    expect(stream(context, [{ kind: "append", delta: "Hello" }])).toMatchObject({
+      baseSeq: 0,
+      seq: 1,
+      ops: [{ op: "set", index: 0, part: { type: "text", text: "Hello" } }],
+    });
+    expect(stream(context, [{ kind: "append", delta: ", world" }])).toMatchObject({
+      baseSeq: 1,
+      seq: 2,
+      ops: [{ op: "append", index: 0, delta: ", world" }],
+    });
+    expect(stream(context, [{ kind: "append", delta: "!" }]).ops)
+      .toEqual([{ op: "append", index: 0, delta: "!" }]);
+    expect(context.store.getMessage(context.messageId)?.parts)
+      .toEqual([{ type: "text", text: "Hello, world!" }]);
+    context.store.close();
+  });
+
+  it("sets the tool part at its own index when a tool call is upserted", async () => {
+    const context = await openStreamingStore();
+    stream(context, [{ kind: "append", delta: "Reading it." }]);
+
+    expect(stream(context, [{
+      kind: "event",
+      event: { type: "tool_call_started", id: "t1", name: "Read", arguments: { path: "a.ts" } },
+    }]).ops).toEqual([{
+      op: "set",
+      index: 1,
+      part: { type: "tool-call", toolCallId: "t1", toolName: "Read", args: { path: "a.ts" }, status: "running" },
+    }]);
+
+    // The completion replaces the same slot: transcript indexes are stable,
+    // which is what lets a client apply an op without re-reading the thread.
+    expect(stream(context, [{
+      kind: "event",
+      event: { type: "tool_call_completed", id: "t1", name: "Read", content: "file body" },
+    }]).ops).toEqual([{
+      op: "set",
+      index: 1,
+      part: {
+        type: "tool-call",
+        toolCallId: "t1",
+        toolName: "Read",
+        args: { path: "a.ts" },
+        result: "file body",
+        status: "complete",
+      },
+    }]);
+    context.store.close();
+  });
+
+  it("sets each new index when a write adds parts to the end", async () => {
+    const context = await openStreamingStore();
+
+    expect(stream(context, [
+      { kind: "status", text: "Thinking" },
+      { kind: "append", delta: "done" },
+    ]).ops).toEqual([
+      { op: "set", index: 0, part: { type: "telemetry", event: "status", data: { text: "Thinking" } } },
+      { op: "set", index: 1, part: { type: "text", text: "done" } },
+    ]);
+    context.store.close();
+  });
+
+  it("truncates first when a whole-text replacement drops earlier parts", async () => {
+    const context = await openStreamingStore();
+    stream(context, [{ kind: "append", delta: "first" }]);
+    stream(context, [{
+      kind: "event",
+      event: { type: "tool_call_completed", id: "t1", name: "Read", content: "body" },
+    }]);
+    stream(context, [{ kind: "append", delta: "second" }]);
+
+    const replaced = stream(context, [{ kind: "replace", text: "the whole answer" }]);
+
+    // `replaceWholeText` splices the earlier text part away, so the array both
+    // shrinks and shifts. Truncate leads, so every index below it names a slot
+    // the new array actually has.
+    expect(replaced.ops).toEqual([
+      { op: "truncate", length: 2 },
+      {
+        op: "set",
+        index: 0,
+        part: { type: "tool-call", toolCallId: "t1", toolName: "Read", result: "body", status: "complete" },
+      },
+      { op: "set", index: 1, part: { type: "text", text: "the whole answer" } },
+    ]);
+    expect(context.store.getMessage(context.messageId)?.parts).toEqual([
+      { type: "tool-call", toolCallId: "t1", toolName: "Read", result: "body", status: "complete" },
+      { type: "text", text: "the whole answer" },
+    ]);
+    context.store.close();
+  });
+
+  it("diffs and replays an arbitrary pair of part arrays symmetrically", () => {
+    const previous: readonly WebMessagePart[] = [
+      { type: "text", text: "alpha" },
+      { type: "reasoning", text: "why" },
+      { type: "error", message: "boom" },
+    ];
+    const next: readonly WebMessagePart[] = [previous[0]!, { type: "reasoning", text: "why not" }];
+
+    const ops = diffParts(previous, next);
+
+    expect(ops).toEqual([
+      { op: "truncate", length: 2 },
+      { op: "append", index: 1, delta: " not" },
+    ]);
+    expect(applyDeltaOps(previous, ops)).toEqual(next);
+    // An untouched array is no ops at all, and replaying none is the identity.
+    expect(diffParts(previous, [...previous])).toEqual([]);
+    expect(applyDeltaOps(previous, [])).toEqual(previous);
+  });
+
+  it("refuses a delta op that names a part it cannot mean", () => {
+    const parts: readonly WebMessagePart[] = [{ type: "text", text: "alpha" }];
+    const beyondAppend: readonly WebMessageDeltaOp[] = [{ op: "append", index: 4, delta: "x" }];
+    const beyondSet: readonly WebMessageDeltaOp[] = [{ op: "set", index: 3, part: { type: "text", text: "x" } }];
+    const beyondTruncate: readonly WebMessageDeltaOp[] = [{ op: "truncate", length: 2 }];
+    const untextable: readonly WebMessageDeltaOp[] = [{ op: "append", index: 0, delta: "x" }];
+
+    // Plain RangeError/TypeError: a pure replay has no request to answer.
+    expect(() => applyDeltaOps(parts, beyondAppend)).toThrowError(RangeError);
+    expect(() => applyDeltaOps(parts, beyondSet)).toThrowError(/out of range/u);
+    expect(() => applyDeltaOps(parts, beyondTruncate)).toThrowError(/out of range/u);
+    expect(() => applyDeltaOps([{ type: "error", message: "boom" }], untextable))
+      .toThrowError(TypeError);
+    expect(() => applyDeltaOps([{ type: "error", message: "boom" }], untextable))
+      .toThrowError(/cannot be appended to/u);
+  });
+
+  it("gives every persisted parts write its own sequence number", async () => {
+    const context = await openStreamingStore();
+    const { store, threadId, turnId, messageId } = context;
+    expect(store.getMessage(messageId)?.seq).toBe(0);
+    expect(store.getMessage(context.userMessageId)?.seq).toBe(0);
+
+    stream(context, [{ kind: "append", delta: "one" }]);
+    expect(store.getMessage(messageId)?.seq).toBe(1);
+
+    // A live follow-up owns its own row, and each transition rewrites its parts.
+    const offered = store.reserveLiveInput(threadId, "and one more");
+    expect(store.getMessage(offered.message.id)?.seq).toBe(0);
+    expect(store.queueLiveInput(offered.input.id)?.seq).toBe(1);
+
+    store.completeTurn(turnId, "one");
+    // Reconciliation found nothing to change, but the status write is still a
+    // write: a client's copy of this message is now one version behind.
+    expect(store.getMessage(messageId)).toMatchObject({ seq: 2, status: "complete" });
+
+    const applied = store.reserveLiveInput(threadId, "apply me");
+    expect(store.markLiveInputApplied(applied.input.id)?.seq).toBe(1);
+    const cancelled = store.reserveLiveInput(threadId, "cancel me");
+    expect(store.cancelLiveInput(cancelled.input.id)?.seq).toBe(1);
+
+    const swept = store.reserveLiveInput(threadId, "sweep me");
+    const sweptSeqs = new Map(store.cancelLiveInputs(threadId).map((message) => [message.id, message.seq]));
+    expect(sweptSeqs.get(swept.message.id)).toBe(1);
+    expect(sweptSeqs.get(offered.message.id)).toBe(2);
+    store.close();
+  });
+
+  it("sequences the finish write and reconciles the final text into it", async () => {
+    const context = await openStreamingStore();
+    stream(context, [{ kind: "append", delta: "Half an ans" }]);
+
+    context.store.completeTurn(context.turnId, "Half an answer, then the rest.");
+
+    expect(context.store.getMessage(context.messageId)).toMatchObject({
+      seq: 2,
+      status: "complete",
+      parts: [{ type: "text", text: "Half an answer, then the rest." }],
+    });
+    context.store.close();
+  });
+
+  it("adds the sequence column to a schema 16 database, whose rows read zero", async () => {
+    const context = await openStreamingStore();
+    stream(context, [{ kind: "append", delta: "written before the migration" }]);
+    // Left running on purpose: recovery settles it on reopen, which is a parts
+    // write onto a row that predates the column.
+    context.store.close();
+
+    const database = new DatabaseSync(join(context.stateDir, "state.sqlite"));
+    database.exec("ALTER TABLE messages DROP COLUMN seq");
+    database.exec("PRAGMA user_version = 16");
+    database.close();
+
+    const reopened = await WebStore.open({ stateDir: context.stateDir });
+
+    expect(reopened.getMessage(context.userMessageId)?.seq).toBe(0);
+    expect(reopened.getMessage(context.messageId)).toMatchObject({ seq: 1, status: "interrupted" });
+    expect(
+      new DatabaseSync(join(context.stateDir, "state.sqlite"), { readOnly: true })
+        .prepare("PRAGMA user_version").get(),
+    ).toMatchObject({ user_version: 17 });
+    reopened.close();
+  });
+
+  it("never edits a stored part in place, which is what makes the diff sound", async () => {
+    const context = await openStreamingStore();
+    const monitor = fakeMonitor({ conversationId: `web:${context.threadId}` });
+    const deliveryKey = `monitor:${monitor.monitorId}:1`;
+    context.store.reserveMonitorWake({
+      sourceId: "agent-one",
+      threadId: context.threadId,
+      monitorId: monitor.monitorId,
+      deliveryKey,
+      payloadSha256: "a".repeat(64),
+      monitor,
+    });
+    // Every write path reads its previous parts through `requireMessage`, and
+    // the diff calls a part that compares reference-equal unchanged. Freeze what
+    // those paths read, so an in-place edit throws instead of vanishing.
+    const internal = context.store as unknown as { requireMessage: (id: string) => WebMessage };
+    const read = internal.requireMessage.bind(context.store);
+    let frozen = 0;
+    internal.requireMessage = (id: string): WebMessage => {
+      const message = read(id);
+      for (const part of message.parts) deepFreeze(part);
+      frozen += 1;
+      return message;
+    };
+    const subagent = { subagent: { id: "call-1", name: "researcher", callIndex: 0 }, synthetic: true };
+
+    stream(context, [{ kind: "append", delta: "Looking" }]);
+    stream(context, [{ kind: "append", delta: " into it" }]);
+    stream(context, [{ kind: "event", event: { type: "assistant_thought", text: "Consider the ladder." } }]);
+    stream(context, [{
+      kind: "event",
+      event: { type: "tool_call_started", id: "t1", name: "Bash", arguments: { command: "ls" } },
+    }]);
+    stream(context, [{
+      kind: "event",
+      event: { type: "tool_call_completed", id: "t1", name: "Bash", content: "a.ts" },
+    }]);
+    // One delegation, from the parent call through the group that replaces it
+    // and the child calls that group owns.
+    stream(context, [{
+      kind: "event",
+      event: { type: "tool_call_started", id: "call-1", name: "Agent", arguments: { name: "researcher" } },
+    }]);
+    stream(context, [{
+      kind: "event",
+      event: {
+        type: "tool_call_started",
+        id: "agent:call-1",
+        name: "Agent(researcher)",
+        metadata: { ...subagent, subagentLifecycle: true },
+      },
+    }]);
+    stream(context, [{
+      kind: "event",
+      event: {
+        type: "tool_call_started",
+        id: "agent:call-1:t2",
+        name: "researcher▸Read",
+        arguments: { file_path: "/repo/a.ts" },
+        metadata: subagent,
+      },
+    }]);
+    stream(context, [{
+      kind: "event",
+      event: {
+        type: "tool_call_completed",
+        id: "agent:call-1:t2",
+        name: "researcher▸Read",
+        content: "file body",
+        metadata: subagent,
+      },
+    }]);
+    stream(context, [{
+      kind: "event",
+      event: { type: "tool_call_completed", id: "call-1", name: "Agent", content: "<subagent: researcher · ok>" },
+    }]);
+    // Compaction upserts one telemetry part per operation id, so the second
+    // event replaces the slot the first one took rather than adding another.
+    for (const phase of ["started", "completed"]) {
+      stream(context, [{
+        kind: "event",
+        event: {
+          type: "runtime_telemetry",
+          kind: "context_compaction",
+          data: { operationId: "compaction-1", phase },
+        },
+      }]);
+    }
+    // A Monitor wake receipt folds into the single activity row.
+    stream(context, [{
+      kind: "event",
+      event: {
+        type: "tool_call_completed",
+        id: "monitor-wake",
+        name: "MonitorWake",
+        metadata: { liveInput: true, synthetic: true, inputId: deliveryKey },
+      },
+    }]);
+    stream(context, [{ kind: "append", delta: "One file." }]);
+    stream(context, [{ kind: "replace", text: "Exactly one file." }]);
+
+    // The finish rewrites hardest of all: reconciliation, reply parts, and the
+    // Monitor terminal normalization the delivery key turns on.
+    finish(context, () => context.store.completeTurn(
+      context.turnId,
+      "Exactly one file. Nothing else.",
+      undefined,
+      [{
+        type: "attachment",
+        id: "listing",
+        reference: { scheme: "mono-agent-artifact", id: "artifact-two" },
+        name: "listing.txt",
+        mediaType: "text/plain",
+        sizeBytes: 5,
+        integrityId: `sha256:${"c".repeat(64)}`,
+      }] as const satisfies readonly AgentReplyPart[],
+      { monitorWakeDeliveryKey: deliveryKey },
+    ));
+
+    expect(frozen).toBeGreaterThan(0);
+    expect(context.store.getMessage(context.messageId)?.parts.map((part) => part.type)).toEqual([
+      "reasoning",
+      "tool-call",
+      "subagent",
+      "telemetry",
+      "monitor-activity",
+      "text",
+      "attachment",
+    ]);
+    expect(context.store.getMessage(context.messageId)?.parts.at(-2))
+      .toEqual({ type: "text", text: "Exactly one file. Nothing else." });
+    context.store.close();
   });
 });
