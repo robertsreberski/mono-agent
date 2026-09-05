@@ -12,6 +12,8 @@ import {
   type AgentResponse,
 } from "@mono-agent/agent-contracts";
 
+import { fetchLongLivedTurn } from "./long-lived-fetch.js";
+
 const MAX_REMOTE_FRAME_BYTES = 1024 * 1024;
 
 export interface RemoteAgentResponderOptions {
@@ -63,11 +65,13 @@ export class RemoteAgentResponder implements AgentResponder {
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
   private readonly fetchImpl: typeof fetch;
+  private readonly turnFetchImpl: typeof fetch;
 
   constructor(options: RemoteAgentResponderOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/u, "");
     this.apiKey = options.apiKey;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.turnFetchImpl = options.fetchImpl ?? fetchLongLivedTurn;
   }
 
   private headers(json: boolean): Record<string, string> {
@@ -130,17 +134,21 @@ export class RemoteAgentResponder implements AgentResponder {
   }
 
   async respond(request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> {
-    const response = await this.request(`${this.baseUrl}/v1/turns`, {
-      method: "POST",
-      headers: this.headers(true),
-      body: JSON.stringify({
-        conversationId: request.conversationId,
-        text: request.text,
-        ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
-      }),
-      // Aborting tears down the socket; the adapter aborts the in-flight turn.
-      signal: request.abortSignal,
-    });
+    const response = await this.request(
+      `${this.baseUrl}/v1/turns`,
+      {
+        method: "POST",
+        headers: this.headers(true),
+        body: JSON.stringify({
+          conversationId: request.conversationId,
+          text: request.text,
+          ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
+        }),
+        // Aborting tears down the socket; the adapter aborts the in-flight turn.
+        signal: request.abortSignal,
+      },
+      this.turnFetchImpl,
+    );
     if (response.body === null) {
       throw new RemoteAgentResponderError("Agent returned an empty stream body.");
     }
@@ -200,10 +208,14 @@ export class RemoteAgentResponder implements AgentResponder {
     }).catch(() => undefined);
   }
 
-  private async request(url: string, init: Parameters<typeof fetch>[1]): Promise<globalThis.Response> {
+  private async request(
+    url: string,
+    init: Parameters<typeof fetch>[1],
+    fetchImpl: typeof fetch = this.fetchImpl,
+  ): Promise<globalThis.Response> {
     let response: globalThis.Response;
     try {
-      response = await this.fetchImpl(url, init);
+      response = await fetchImpl(url, init);
     } catch (error) {
       if (init?.signal !== undefined && (init.signal as AbortSignal).aborted) {
         throw new AgentResponseCancelledError();

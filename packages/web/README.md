@@ -535,7 +535,9 @@ filesystem failure after the database commit.
 
 The server depends only on the `core` `@mono-agent/agent-contracts` and
 `@mono-agent/config` packages, the `observability` trace-source registry, and
-Express. Its compiled browser bundle additionally contains the production graph
+Express. Its Node-side operator clients use Undici to keep deliberately
+long-lived turn and host-wake streams under their explicit lifecycle owners.
+Its compiled browser bundle additionally contains the production graph
 from the isolated `webapp` lockfile: assistant-ui, Base UI, cmdk, React, and
 Workbox plus their transitive dependencies. The repository advisory and license
 gates audit that nested production graph separately because it ships inside this

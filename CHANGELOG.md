@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve no-expiry `AskUser` waits in web and remote-TUI turns by removing
+  Undici's implicit five-minute inactivity deadline from long-lived operator
+  streams. Host-wake delivery keeps its explicit ten-minute request bound.
 - Upgrade the exact-pinned Pi AI, Agent Core, and TUI dependencies to 0.85.1,
   exposing GPT-6 Astra as `openai:gpt-6-astra` for OpenAI API keys and
   `openai-codex:gpt-6-astra` for Codex subscriptions. Adopt Pi's corrected
