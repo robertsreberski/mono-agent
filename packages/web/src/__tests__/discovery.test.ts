@@ -191,6 +191,7 @@ describe("operator discovery", () => {
             kind: "running",
             baseUrl: "http://127.0.0.1:5555/gui",
             processJobs: { stateDir },
+            monitors: { stateDir },
           },
         },
       },
@@ -202,9 +203,14 @@ describe("operator discovery", () => {
     await expect(discoverOperatorAgents({ registryDirs: [registry], env: {} }))
       .resolves.toEqual([expect.objectContaining({ processJobsBearer: expected })]);
 
+    const monitorBearer = createHmac("sha256", secret).update("mono-agent-monitor-operator-v1").digest("base64url");
+    await expect(discoverOperatorAgents({ registryDirs: [registry], env: {} }))
+      .resolves.toEqual([expect.objectContaining({ monitorsBearer: monitorBearer })]);
+
     await chmod(secretPath, 0o644);
     const permissive = await discoverOperatorAgents({ registryDirs: [registry], env: {} });
     expect(permissive[0]).not.toHaveProperty("processJobsBearer");
+    expect(permissive[0]).not.toHaveProperty("monitorsBearer");
   });
 
   it("resolves the documented per-agent dotenv key from an attested background snapshot", async () => {

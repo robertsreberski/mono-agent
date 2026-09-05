@@ -1035,6 +1035,38 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it.each([["", ""], ["NOTHING_TO_REPORT", ""], ["", "Ready for Robert to review."]])("normalizes Monitor follow-up finalText=%s with earlier answer=%s", async (finalText, earlier) => {
+    const frames = [
+      ...(earlier === "" ? [] : [
+        { kind: "append", delta: earlier },
+        { kind: "event", event: { type: "runtime_telemetry", kind: "assistant_message_boundary", data: {} } },
+      ]),
+      { kind: "event", event: { type: "assistant_thought", text: "No new update." } },
+      { kind: "append", delta: "NOTHING_TO_REPORT" },
+      { kind: "event", event: { type: "runtime_telemetry", kind: "assistant_message_boundary", data: {} } },
+      { kind: "finish", finalText },
+    ];
+    const service = await createService({ fetchImpl: operatorFetch({ turns: () => frames.map((frame) => JSON.stringify(frame)).join("\n") + "\n" }) });
+    const events: string[] = [];
+    service.subscribe((event) => { events.push(event.type); });
+    const key = Buffer.concat([Buffer.from([4]), Buffer.alloc(64)]);
+    service.store.registerWebPushSubscription({ endpoint: "https://push.example.test/monitor", p256dh: key.toString("base64url"),
+      auth: Buffer.alloc(16, 7).toString("base64url"), siteOrigin: "https://console.example.test", keyFingerprint: "test" });
+    const thread = service.createThread("agent-one");
+    const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
+    await expect(service.deliverNotification({ sourceId: "agent-one", triggerKind: "monitor", threadId: thread.id,
+      deliveryKey: `monitor:${monitor.monitorId}:1`, monitor, wakePrompt: "Inspect the event." })).resolves.toMatchObject({ delivery: { delivered: true, disposition: "follow_up" } });
+    expect(JSON.stringify(await service.bootstrap())).not.toContain("test-owner-monitor-key");
+    const message = service.thread(thread.id).messages.at(-1)!;
+    expect(message.parts.filter((part) => part.type === "text")).toEqual(earlier === "" ? [] : [{ type: "text", text: earlier }]);
+    expect(message.parts).toContainEqual({ type: "reasoning", text: "No new update." });
+    const push = service.store.webPushEventByLogicalKey(`turn:${message.turnId}:terminal`);
+    if (earlier === "") expect(push).toBeUndefined();
+    else expect(push?.body).toBe(earlier);
+    expect(events.filter((type) => type === "push.pending")).toHaveLength(earlier === "" ? 0 : 1);
+    await service.stop();
+  });
+
   it("rejects conflicting content while the same Monitor delivery key is still active", async () => {
     const encoder = new TextEncoder();
     let stream: ReadableStreamDefaultController<Uint8Array> | undefined;

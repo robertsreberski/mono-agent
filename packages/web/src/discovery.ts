@@ -33,6 +33,7 @@ export interface DiscoveredOperatorAgent {
   readonly baseUrl?: string;
   readonly apiKey?: string;
   readonly processJobsBearer?: string;
+  readonly monitorsBearer?: string;
 }
 
 export function defaultTraceRegistryDir(env: Readonly<Record<string, string | undefined>> = process.env): string {
@@ -52,24 +53,26 @@ export async function discoverOperatorAgents(
     .map(async (source): Promise<DiscoveredOperatorAgent> => {
       const baseUrl = operatorBaseUrlFromMetadata(source.metadata);
       const apiKey = baseUrl === undefined ? undefined : await resolveOperatorApiKey(source, env);
-      const processJobsBearer = baseUrl === undefined ? undefined : await resolveProcessJobsBearer(source);
+      const processJobsBearer = baseUrl === undefined ? undefined : await resolveOwnerBearer(source, "processJobs");
+      const monitorsBearer = baseUrl === undefined ? undefined : await resolveOwnerBearer(source, "monitors");
       return {
         source,
         ...(baseUrl === undefined ? {} : { baseUrl }),
         ...(apiKey === undefined ? {} : { apiKey }),
         ...(processJobsBearer === undefined ? {} : { processJobsBearer }),
+        ...(monitorsBearer === undefined ? {} : { monitorsBearer }),
       };
     }));
 }
 
-async function resolveProcessJobsBearer(source: TraceSourceListItem): Promise<string | undefined> {
+async function resolveOwnerBearer(source: TraceSourceListItem, kind: "processJobs" | "monitors"): Promise<string | undefined> {
   const channels = record(source.metadata?.channels);
   const tui = record(channels?.tui);
-  const processJobs = record(tui?.processJobs);
-  if (tui?.kind !== "running" || typeof processJobs?.stateDir !== "string" || !isAbsolute(processJobs.stateDir)) {
+  const owner = record(tui?.[kind]);
+  if (tui?.kind !== "running" || typeof owner?.stateDir !== "string" || !isAbsolute(owner.stateDir)) {
     return undefined;
   }
-  const secretPath = resolve(processJobs.stateDir, "process-jobs-secret");
+  const secretPath = resolve(owner.stateDir, "process-jobs-secret");
   try {
     const info = await lstat(secretPath);
     const currentUid = typeof process.getuid === "function" ? process.getuid() : undefined;
@@ -93,7 +96,7 @@ async function resolveProcessJobsBearer(source: TraceSourceListItem): Promise<st
     const secret = Buffer.from(value, "base64url");
     if (secret.byteLength !== 32 || secret.toString("base64url") !== value) return undefined;
     return createHmac("sha256", secret)
-      .update("mono-agent-process-job-operator-v1")
+      .update(kind === "monitors" ? "mono-agent-monitor-operator-v1" : "mono-agent-process-job-operator-v1")
       .digest("base64url");
   } catch {
     return undefined;
