@@ -13,6 +13,8 @@ import { recordServerTime } from "./server-clock";
 import {
   createThreadCache,
   holdsToolCall,
+  newerProjection,
+  readMessageDelta,
   type ThreadCache,
   type ThreadCacheEntry,
 } from "./thread-cache";
@@ -23,7 +25,6 @@ import type {
   CatalogModel,
   CronOverview,
   MessageDelta,
-  MessageDeltaOp,
   RunState,
   SkillRegistryState,
   StartTurnInput,
@@ -132,12 +133,6 @@ const cronChannelKey = (sourceId: string, jobId: string): string => `${sourceId}
 const unlistedThreadKey = (sourceId: string, archived: boolean, threadId: string): string =>
   `${threadBucketKey(sourceId, archived)}\0${threadId}`;
 
-/** The later of two projections of one conversation, by the server's revision. */
-const newerProjection = (
-  held: ThreadSummary,
-  fetched: ThreadSummary | undefined,
-): ThreadSummary => (fetched === undefined || fetched.revision < held.revision ? held : fetched);
-
 /**
  * One bucket's rows and one answer about them, as one listing.
  *
@@ -179,47 +174,6 @@ const projectDetail = (entry: ThreadCacheEntry): ThreadDetail => ({
     ? {}
     : { messagesNextCursor: entry.messagesNextCursor }),
 });
-
-/** The ops a `message.delta` carries, refused rather than half-read. */
-const readDeltaOps = (value: unknown): readonly MessageDeltaOp[] | undefined => {
-  if (!Array.isArray(value)) return undefined;
-  for (const candidate of value as readonly Partial<MessageDeltaOp>[]) {
-    if (candidate === null || typeof candidate !== "object") return undefined;
-    if (candidate.op === "truncate") {
-      if (typeof (candidate as { length?: unknown }).length !== "number") return undefined;
-      continue;
-    }
-    if (typeof (candidate as { index?: unknown }).index !== "number") return undefined;
-    if (candidate.op === "append") {
-      if (typeof (candidate as { delta?: unknown }).delta !== "string") return undefined;
-      continue;
-    }
-    if (candidate.op !== "set") return undefined;
-    const part = (candidate as { part?: unknown }).part;
-    if (part === null || typeof part !== "object") return undefined;
-  }
-  return value as readonly MessageDeltaOp[];
-};
-
-/**
- * A `message.delta` payload, or nothing.
- *
- * A frame this console cannot make sense of is never applied as a partial
- * reading: the message it names is re-read instead. Everything the replay
- * depends on -- both versions, the status, the ops -- has to be there.
- */
-export const readMessageDelta = (payload: unknown): MessageDelta | undefined => {
-  if (payload === null || typeof payload !== "object") return undefined;
-  const candidate = payload as Partial<MessageDelta>;
-  const ops = readDeltaOps(candidate.ops);
-  if (typeof candidate.messageId !== "string"
-    || typeof candidate.baseSeq !== "number"
-    || typeof candidate.seq !== "number"
-    || typeof candidate.status !== "string"
-    || typeof candidate.updatedAt !== "string"
-    || ops === undefined) return undefined;
-  return { ...(candidate as MessageDelta), ops };
-};
 
 export const cronChannelPath = (sourceId: string, jobId: string): string =>
   `/agents/${encodeURIComponent(sourceId)}/cron/${encodeURIComponent(jobId)}`;
@@ -1029,6 +983,22 @@ const admitThreads = (
 ): readonly ThreadSummary[] =>
   incoming.filter((thread) => admitThread(removed, thread, issuedAt));
 
+/**
+ * One message repair, and what became known while it was on the wire.
+ *
+ * The join is what keeps a copy that fell behind from buying a request per
+ * streamed frame; `wantedSeq` and `dirty` are what keep the join from being a
+ * silent drop, because the read was issued before those versions existed and
+ * its answer cannot be assumed to carry them.
+ */
+interface MessageRepair {
+  promise: Promise<void>;
+  /** The highest version a delta named while this was out. */
+  wantedSeq: number;
+  /** A hint arrived while this was out, and hints carry no version. */
+  dirty: boolean;
+}
+
 export interface ThreadWriteChain {
   readonly enqueue: <T>(
     threadId: string,
@@ -1300,9 +1270,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    *
    * A running turn writes a message every ~50 ms, so a copy that has fallen
    * behind sees a gap on every frame until the read that fixes it answers. One
-   * read answers all of them.
+   * read answers all of them -- and `wantedSeq`/`dirty` are what a version that
+   * became known WHILE that read was out is recorded in, so joining the read
+   * does not silently swallow it.
    */
-  const messageRepairsRef = useRef<Map<string, Promise<void>>>(new Map());
+  const messageRepairsRef = useRef<Map<string, MessageRepair>>(new Map());
   /** See {@link UNLISTED_THREAD_MEMORY}. */
   const unlistedThreadsRef = useRef<Set<string>>(new Set());
   /** The conversations the next bucket revalidation is being asked about. */
@@ -1682,6 +1654,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (cold) setDetailLoading(true);
     try {
       const issuedAt = removedThreadsRef.current.epoch();
+      // The cache's own clock, quoted the same way: anything observed while
+      // this read is on the wire is something it cannot have seen.
+      const observedAt = threadCacheRef.current.clock();
       const next = await boundedRequest(
         (deadline) => api.thread(threadId, anySignal(signal, deadline)),
         THREAD_READ_TIMEOUT_MS,
@@ -1701,8 +1676,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // A WINDOW read: it carries the newest page of the transcript, so the
       // pages this tab walked back to survive it and anything inside the window
       // it no longer carries was deleted. See `mergeMessages`.
-      threadCacheRef.current.upsertFull(next, { reset: true });
+      const entry = threadCacheRef.current.upsertFull(next, { reset: true, issuedAt: observedAt });
       publishDetail(threadId);
+      // Something moved while this read was out -- a delta that arrived before
+      // there was anything to apply it to, above all. The answer is already
+      // behind, so it costs exactly one more read rather than leaving a
+      // transcript on screen that looks settled and is not.
+      // Through the ref, not the callback: this runs before `scheduleRefresh`
+      // is defined, and it is async so the ref is always assigned by then.
+      if (entry?.stale === true && selectedThreadRef.current === threadId) {
+        scheduleRefreshRef.current({ detail: true });
+      }
     } catch (loadError) {
       if (signal.aborted) return;
       if (loadError instanceof ApiError
@@ -1766,6 +1750,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     refreshInFlightRef.current = true;
     try {
       const issuedAt = removedThreadsRef.current.epoch();
+      const observedAt = threadCacheRef.current.clock();
       const selectedForRefresh = scope.detail ? selectedThreadRef.current : null;
       const bucket = bootstrapScope();
       const [nextBootstrap, nextDetail] = await Promise.all([
@@ -1791,8 +1776,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // is the listing's business, and `threads.changed` carries a new summary
       // when the server has one.
       ) {
-        threadCacheRef.current.upsertFull(nextDetail, { reset: true });
+        const entry = threadCacheRef.current.upsertFull(
+          nextDetail,
+          { reset: true, issuedAt: observedAt },
+        );
         publishDetail(nextDetail.thread.id);
+        // See `loadThread`: an answer overtaken by an observation is already
+        // behind, and one more read is what settles it.
+        if (entry?.stale === true) scheduleRefreshRef.current({ detail: true });
       }
     } catch (refreshError) {
       setActionError(errorMessage(refreshError));
@@ -1943,21 +1934,53 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * until this answers; without the join, one missed write would buy a request
    * per frame for the rest of the turn.
    */
-  const repairMessage = useCallback((threadId: string, messageId: string): Promise<void> => {
+  const repairMessage = useCallback((
+    threadId: string,
+    messageId: string,
+    /** The version the caller knows about, when it knows one. */
+    wantedSeq?: number,
+  ): Promise<void> => {
     const key = `${threadId}\u0000${messageId}`;
     const running = messageRepairsRef.current.get(key);
-    if (running !== undefined) return running;
-    // Declared before the body so the body can retire ITS OWN entry: a later
-    // repair of the same message owns the slot by then, and clearing it blind
-    // would let a third ask start while the second was still on the wire.
-    let attempt!: Promise<void>;
-    attempt = (async () => {
+    if (running !== undefined) {
+      // JOINED, but not swallowed. The read already on the wire was issued
+      // before this version was known, so its answer may not carry it; record
+      // what is now wanted and let the read that lands decide whether it has
+      // to go again.
+      if (wantedSeq === undefined) running.dirty = true;
+      else running.wantedSeq = Math.max(running.wantedSeq, wantedSeq);
+      return running.promise;
+    }
+    const pending: MessageRepair = {
+      promise: Promise.resolve(),
+      wantedSeq: wantedSeq ?? Number.NEGATIVE_INFINITY,
+      dirty: wantedSeq === undefined,
+    };
+    pending.promise = (async () => {
       try {
-        const message = await boundedRequest(
-          (signal) => api.message(threadId, messageId, signal),
-          THREAD_READ_TIMEOUT_MS,
-        );
-        if (threadCacheRef.current.upsertMessage(threadId, message)) publishDetail(threadId);
+        // Each round answers everything observed BEFORE it went out, so the
+        // wants are cleared here and anything recorded during the read is what
+        // sends it round again.
+        for (;;) {
+          pending.dirty = false;
+          pending.wantedSeq = Number.NEGATIVE_INFINITY;
+          const message = await boundedRequest(
+            (signal) => api.message(threadId, messageId, signal),
+            THREAD_READ_TIMEOUT_MS,
+          );
+          const cache = threadCacheRef.current;
+          if (cache.get(threadId) === undefined) {
+            // The conversation was evicted or removed while this was out, so
+            // there is nowhere for the answer to land. Never spend a request
+            // and drop what it said: leave the observation behind so whatever
+            // read opens this conversation next lands stale.
+            cache.markStale(threadId);
+            return;
+          }
+          if (cache.upsertMessage(threadId, message)) publishDetail(threadId);
+          const landedSeq = message.seq ?? Number.NEGATIVE_INFINITY;
+          if (!pending.dirty && pending.wantedSeq <= landedSeq) return;
+        }
       } catch {
         // The message read failed, so this conversation's transcript is not
         // what this tab is showing -- and saying nothing would leave a stale
@@ -1971,11 +1994,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         threadCacheRef.current.markStale(threadId);
         if (threadId === selectedThreadRef.current) refreshSelectedThread();
       } finally {
-        if (messageRepairsRef.current.get(key) === attempt) messageRepairsRef.current.delete(key);
+        if (messageRepairsRef.current.get(key) === pending) messageRepairsRef.current.delete(key);
       }
     })();
-    messageRepairsRef.current.set(key, attempt);
-    return attempt;
+    messageRepairsRef.current.set(key, pending);
+    return pending.promise;
   }, [publishDetail, refreshSelectedThread]);
 
   /**
@@ -2004,8 +2027,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // for a write this tab already has.
       case "stale":
         return;
+      case "unheld":
+        // Nothing to apply it to and nowhere for a message read to LAND -- the
+        // cold read of this conversation is on the wire, or is about to be.
+        // Spending a request here bought an answer `upsertMessage` then dropped
+        // on the floor; the observation is what makes that conversation read
+        // land stale and read once more instead.
+        cache.markStale(threadId);
+        return;
       default:
-        void repairMessage(threadId, delta.messageId);
+        void repairMessage(threadId, delta.messageId, delta.seq);
     }
   }, [publishDetail, repairMessage]);
 
@@ -2639,6 +2670,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         .sort(byMostRecent)[0];
       selectedThreadRef.current = recent?.id ?? null;
       setSelectedThreadId(recent?.id ?? null);
+      // In the SAME batch as the selection. Publishing the cached transcript
+      // from the selection effect instead puts them in different commits, so
+      // the header, the composer and the run controls switch a frame before the
+      // transcript does and the conversation being left flashes under the new
+      // one. A conversation the cache does not hold publishes as empty, which
+      // is also what the operator should see while it is read.
+      publishDetail(recent?.id ?? null);
       // Only a row this tab HOLDS is evidence. With one bucket per bootstrap,
       // holding none for an agent means its bucket has not been fetched yet --
       // not that the operator's last conversation there is gone -- and clearing
@@ -2648,7 +2686,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setShowArchived(false);
       setActionError(null);
     },
-    [threads],
+    [publishDetail, threads],
   );
 
   const setAgentPinned = useCallback(async (sourceId: string, pinned: boolean) => {
@@ -2689,6 +2727,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       }
       selectedThreadRef.current = threadId;
       setSelectedThreadId(threadId);
+      // See `selectAgent`: same batch, so a cached conversation is on screen in
+      // the commit that selects it rather than the one after.
+      publishDetail(threadId);
       setActionError(null);
       if (thread === undefined) {
         const issuedAt = removedThreadsRef.current.epoch();
@@ -2883,6 +2924,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           const replacement = visibleThreads.find((item) => item.id !== target.id);
           selectedThreadRef.current = replacement?.id ?? null;
           setSelectedThreadId(replacement?.id ?? null);
+          publishDetail(replacement?.id ?? null);
           persistThreadId(thread.sourceId, replacement?.id ?? null);
           updateThreadRoute(replacement, true);
         } else if (readPersistedThreadIds()[thread.sourceId] === target.id) {
@@ -2893,7 +2935,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         throw archiveError;
       }
     },
-    [applyThreadUpdate, enqueueThreadWrite, fetchThreadSummary, visibleThreads],
+    [applyThreadUpdate, enqueueThreadWrite, fetchThreadSummary, publishDetail, visibleThreads],
   );
 
   const unarchiveThread = useCallback(async (threadId: string) => {

@@ -4,6 +4,8 @@ import {
   createThreadCache,
   MessageDeltaError,
   mergeMessages,
+  newerProjection,
+  readMessageDelta,
 } from "./thread-cache";
 import { thread } from "./test/fixtures";
 import { MESSAGE_DELTA_VECTORS } from "./test/message-delta-vectors";
@@ -217,7 +219,11 @@ describe("mergeMessages", () => {
     const kept = message("kept", { createdAt: "2026-08-14T08:00:00.000Z" });
     const deleted = message("deleted", { createdAt: "2026-08-14T08:30:00.000Z" });
 
-    const merged = mergeMessages([older, kept, deleted], [kept], { resetWindow: true });
+    const merged = mergeMessages(
+      [older, kept, deleted],
+      [kept],
+      { resetWindow: true, bounded: true, pagedIn: new Set(["older"]) },
+    );
 
     expect(merged.map((item) => item.id)).toEqual(["older", "kept"]);
     expect(merged[0]).toBe(older);
@@ -226,6 +232,113 @@ describe("mergeMessages", () => {
 
   it("keeps nothing when a window read says the conversation is empty", () => {
     expect(mergeMessages([message("m1")], [], { resetWindow: true })).toEqual([]);
+  });
+
+  it("drops history an UNBOUNDED answer does not carry, however old it is", () => {
+    // No cursor means the answer IS the whole transcript, so an absence at any
+    // age is a deletion -- which is what a compaction looks like.
+    const older = message("older", { createdAt: "2026-08-14T07:00:00.000Z" });
+    const kept = message("kept", { createdAt: "2026-08-14T08:00:00.000Z" });
+
+    expect(mergeMessages([older, kept], [kept], { resetWindow: true }).map((item) => item.id))
+      .toEqual(["kept"]);
+  });
+
+  it("interleaves what an answer did not carry at the position it already had", () => {
+    // A conditional read answers with the messages that MOVED, not with a
+    // window. Concatenating the rest in front of it reordered the transcript.
+    const messages = ["m1", "m2", "m3", "m4"].map((id) => message(id));
+    const [m1, m2, m3, m4] = messages as [WebMessage, WebMessage, WebMessage, WebMessage];
+    const moved = [
+      { ...m2, seq: 9 },
+      { ...m4, seq: 9 },
+    ];
+
+    expect(mergeMessages(messages, moved).map((item) => item.id))
+      .toEqual(["m1", "m2", "m3", "m4"]);
+    expect(mergeMessages(messages, moved)[0]).toBe(m1);
+    expect(mergeMessages(messages, moved)[2]).toBe(m3);
+  });
+
+  it("keeps paged history a bounded answer cannot speak for, wherever it sits", () => {
+    // `insertionIndexFor` places a recovered message by `createdAt` alone, so a
+    // row the answer DOES carry can end up in front of history the answer's
+    // window starts after. Taking the first overlap as the boundary would then
+    // drop every page the operator had scrolled back to.
+    const recovered = message("recovered", { createdAt: "2026-08-14T06:00:00.000Z" });
+    const paged = message("paged", { createdAt: "2026-08-14T07:00:00.000Z" });
+    const windowed = message("windowed", { createdAt: "2026-08-14T08:00:00.000Z" });
+
+    const merged = mergeMessages(
+      [recovered, paged, windowed],
+      [recovered, windowed],
+      { resetWindow: true, bounded: true, pagedIn: new Set(["paged"]) },
+    );
+
+    expect(merged.map((item) => item.id)).toEqual(["recovered", "paged", "windowed"]);
+  });
+});
+
+describe("newerProjection", () => {
+  it("keeps the projection the server made later, and takes an equal one", () => {
+    const held = thread("t", "alpha", { revision: 3, title: "held" });
+    expect(newerProjection(held, thread("t", "alpha", { revision: 2 }))).toBe(held);
+    expect(newerProjection(held, undefined)).toBe(held);
+    const equal = thread("t", "alpha", { revision: 3, title: "optimistic" });
+    expect(newerProjection(held, equal)).toBe(equal);
+  });
+});
+
+describe("readMessageDelta", () => {
+  const wire = {
+    messageId: "m1",
+    baseSeq: 1,
+    seq: 2,
+    status: "running",
+    updatedAt: "2026-08-14T08:00:01.000Z",
+    ops: [] as unknown[],
+  };
+
+  it("reads a well-formed frame", () => {
+    expect(readMessageDelta({ ...wire, ops: [{ op: "append", index: 0, delta: "x" }] }))
+      .toEqual({ ...wire, ops: [{ op: "append", index: 0, delta: "x" }] });
+  });
+
+  it("refuses a frame missing anything the replay depends on", () => {
+    for (const key of ["messageId", "baseSeq", "seq", "status", "updatedAt", "ops"]) {
+      const broken: Record<string, unknown> = { ...wire };
+      delete broken[key];
+      expect(readMessageDelta(broken)).toBeUndefined();
+    }
+    expect(readMessageDelta(null)).toBeUndefined();
+    expect(readMessageDelta("nope")).toBeUndefined();
+  });
+
+  it("refuses a set op whose part the transcript could not render", () => {
+    const setOp = (part: unknown) => readMessageDelta({ ...wire, ops: [{ op: "set", index: 0, part }] });
+
+    expect(setOp({ type: "text", text: "hello" })).toBeDefined();
+    expect(setOp({
+      type: "tool-call", toolCallId: "t1", toolName: "Read", status: "complete",
+    })).toBeDefined();
+    // A part with no type at all, a text part with no text, a tool call with no
+    // id, and a type this console has never heard of: every one of them is a
+    // frame to re-read the message for, not one to render.
+    expect(setOp({ text: "hello" })).toBeUndefined();
+    expect(setOp({ type: "text" })).toBeUndefined();
+    expect(setOp({ type: "tool-call", toolName: "Read", status: "complete" })).toBeUndefined();
+    expect(setOp({ type: "tool-call", toolCallId: "t1", toolName: "Read", status: "sideways" }))
+      .toBeUndefined();
+    expect(setOp({ type: "something-newer", payload: 1 })).toBeUndefined();
+    expect(setOp(null)).toBeUndefined();
+  });
+
+  it("refuses an op whose own shape is wrong", () => {
+    expect(readMessageDelta({ ...wire, ops: [{ op: "truncate" }] })).toBeUndefined();
+    expect(readMessageDelta({ ...wire, ops: [{ op: "append", index: 0 }] })).toBeUndefined();
+    expect(readMessageDelta({ ...wire, ops: [{ op: "append", delta: "x" }] })).toBeUndefined();
+    expect(readMessageDelta({ ...wire, ops: [{ op: "nudge", index: 0 }] })).toBeUndefined();
+    expect(readMessageDelta({ ...wire, ops: "none" })).toBeUndefined();
   });
 });
 
@@ -327,14 +440,6 @@ describe("createThreadCache", () => {
     expect(cache.applyDelta("alpha-thread", delta({ baseSeq: 3, seq: 4 }))).toBe("stale");
   });
 
-  it("reports an unheld message and an unheld conversation as unknown", () => {
-    const cache = createThreadCache();
-    cache.upsertFull(detail([message("m1")]));
-
-    expect(cache.applyDelta("alpha-thread", delta({ messageId: "never-loaded" }))).toBe("unknown");
-    expect(cache.applyDelta("other-thread", delta())).toBe("unknown");
-  });
-
   it("keeps a loaded full tool result through a later write of its slot", () => {
     const cache = createThreadCache();
     const truncated: MessagePart = {
@@ -413,11 +518,82 @@ describe("createThreadCache", () => {
     const cache = createThreadCache();
     cache.upsertFull(detail([]));
 
-    cache.patchThread("alpha-thread", thread("alpha-thread", "alpha", { title: "Renamed" }));
+    cache.patchThread("alpha-thread", thread("alpha-thread", "alpha", {
+      title: "Renamed",
+      revision: 2,
+    }));
     cache.patchThread("never-held", thread("never-held", "alpha"));
 
     expect(cache.get("alpha-thread")?.thread.title).toBe("Renamed");
     expect(cache.get("never-held")).toBeUndefined();
+  });
+
+  it("keeps the summary the server made later when a delayed answer arrives", () => {
+    // A POST answer that lost its race to the event carrying the same row would
+    // otherwise roll the cached summary back -- and `detail.thread` is what the
+    // console falls back to for a conversation the sidebar does not list.
+    const cache = createThreadCache();
+    cache.upsertFull(detail([]));
+    cache.patchThread("alpha-thread", thread("alpha-thread", "alpha", {
+      revision: 3,
+      title: "newest",
+    }));
+
+    cache.patchThread("alpha-thread", thread("alpha-thread", "alpha", {
+      revision: 2,
+      title: "delayed",
+    }));
+
+    expect(cache.get("alpha-thread")?.thread.revision).toBe(3);
+    expect(cache.get("alpha-thread")?.thread.title).toBe("newest");
+
+    // An OPTIMISTIC edit is made at the revision it is patching, so an equal
+    // revision still lands.
+    cache.patchThread("alpha-thread", thread("alpha-thread", "alpha", {
+      revision: 3,
+      title: "optimistic",
+    }));
+    expect(cache.get("alpha-thread")?.thread.title).toBe("optimistic");
+  });
+
+  it("tells an unheld conversation apart from an unheld message", () => {
+    const cache = createThreadCache();
+    cache.upsertFull(detail([message("m1")]));
+
+    // Nothing to apply a delta TO and nothing a message read could land in:
+    // the conversation read that is coming owns this.
+    expect(cache.applyDelta("never-opened", delta())).toBe("unheld");
+    // The conversation IS held, so one message read repairs it.
+    expect(cache.applyDelta("alpha-thread", delta({ messageId: "never-loaded" }))).toBe("unknown");
+  });
+
+  it("lands a read stale when something changed after it was issued", () => {
+    const cache = createThreadCache();
+    cache.upsertFull(detail([]), { reset: true });
+    const issuedAt = cache.clock();
+
+    cache.markStale("alpha-thread");
+    cache.upsertFull(detail([]), { reset: true, issuedAt });
+
+    expect(cache.get("alpha-thread")?.stale).toBe(true);
+
+    // A read issued AFTER the observation answers it.
+    cache.upsertFull(detail([]), { reset: true, issuedAt: cache.clock() });
+    expect(cache.get("alpha-thread")?.stale).toBe(false);
+  });
+
+  it("remembers a change to a conversation it is not holding yet", () => {
+    // The cold read of the conversation the operator just opened is on the
+    // wire, and a delta for it arrives while it is out. There is nothing to
+    // apply it to and nothing a message read could land in, so the observation
+    // is all there is -- and it has to outlive the entry not existing.
+    const cache = createThreadCache();
+    const issuedAt = cache.clock();
+
+    cache.markStale("alpha-thread");
+    cache.upsertFull(detail([message("m1")]), { reset: true, issuedAt });
+
+    expect(cache.get("alpha-thread")?.stale).toBe(true);
   });
 
   it("marks an entry stale and clears that only when a read lands", () => {

@@ -29,6 +29,24 @@ import type {
 /** How many conversations one tab keeps, before the least recent is dropped. */
 export const THREAD_CACHE_ENTRIES = 8;
 
+/**
+ * How many conversations an observation is remembered for.
+ *
+ * An observation outlives the ENTRY -- that is the whole point: a delta that
+ * arrives while the cold read of the conversation the operator just opened is
+ * on the wire has nowhere to land, and the only way that read does not land
+ * looking current is for the observation to still be there when it does.
+ * Bounded oldest-first, so a tab that watches a busy fleet all day cannot grow
+ * it; losing the oldest costs at most one read that lands fresher than it
+ * should, which the next event corrects.
+ */
+export const OBSERVED_CONVERSATIONS = 256;
+
+/** The statuses a message -- and so a delta that finishes one -- may carry. */
+const MESSAGE_STATUSES: ReadonlySet<string> = new Set<WebMessage["status"]>([
+  "running", "complete", "failed", "cancelled", "interrupted",
+]);
+
 export interface ThreadCacheEntry {
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];
@@ -52,6 +70,15 @@ export interface ThreadCacheEntry {
    * rather than silently reverting to 4 KB of it.
    */
   readonly repairedToolCallIds: ReadonlySet<string>;
+  /**
+   * The messages this tab reached by paging BACKWARDS.
+   *
+   * See {@link MergeMessagesOptions.pagedIn}: it is the only reliable evidence
+   * that a row sits outside the range a windowed answer can speak for, so it is
+   * what keeps a refresh from reading the operator's scrolled-back history as a
+   * deletion.
+   */
+  readonly pagedInIds: ReadonlySet<string>;
 }
 
 /**
@@ -66,11 +93,15 @@ export interface ThreadCacheEntry {
  *   there is nothing to apply and nothing to ask for. Told apart from `gap`
  *   because the two want opposite things: a delta still in flight when a repair
  *   read answered would otherwise buy another read, and then another.
- * - `unknown`: the message is not held at all -- a bootstrap that raced the
- *   write, or a conversation this tab is not keeping. The caller reads that
- *   message.
+ * - `unknown`: the CONVERSATION is held but this message is not -- a read that
+ *   raced the write that created it. The caller reads that one message.
+ * - `unheld`: the conversation itself is not held, so there is nowhere for a
+ *   message read to land and no request worth spending: whatever read is on the
+ *   wire (or is coming) owns it, and the observation this leaves behind is what
+ *   makes that read land stale. Told apart from `unknown` because answering it
+ *   with a message GET spent a request and then dropped its answer on the floor.
  */
-export type DeltaOutcome = "applied" | "gap" | "stale" | "unknown";
+export type DeltaOutcome = "applied" | "gap" | "stale" | "unknown" | "unheld";
 
 /** A delta that cannot be replayed onto the message it names. */
 export class MessageDeltaError extends Error {
@@ -94,6 +125,14 @@ export class MessageDeltaError extends Error {
  * place a message no answer positioned: after the last one that is not newer,
  * which keeps a same-stamp sibling where the server put it and still puts a
  * genuinely older row in front of what follows it.
+ *
+ * THE ONLY client-side placement decision in this module, and the only one that
+ * can be wrong: it has nothing to go on but `createdAt`, so ties are appended
+ * and a row whose stamp disagrees with the server's ordering keys lands in the
+ * wrong slot until the next whole-conversation answer repositions it. Nothing
+ * else may grow a second opinion about order -- `mergeMessages` guards against
+ * this one going wrong by never letting a position alone decide that history
+ * was deleted.
  */
 const insertionIndexFor = (messages: readonly WebMessage[], message: WebMessage): number => {
   for (let index = messages.length; index > 0; index -= 1) {
@@ -134,6 +173,21 @@ const isNewerMessage = (incoming: WebMessage, held: WebMessage): boolean => {
   if (incoming.seq !== held.seq) return incoming.seq > held.seq;
   return movedForward(held.updatedAt, incoming.updatedAt);
 };
+
+/**
+ * The later of two projections of one conversation, by the SERVER's revision.
+ *
+ * Ordered by the revision and not by arrival, because two answers about one row
+ * are not ordered against each other: the POST that renamed it, the event
+ * carrying the same row, and a listing page all describe it, and the last one
+ * to reach the tab is not the newest one the server made. An EQUAL revision is
+ * the same server state, and the incoming one wins so an optimistic edit made
+ * at the revision it patches still lands.
+ */
+export const newerProjection = (
+  held: ThreadSummary,
+  fetched: ThreadSummary | undefined,
+): ThreadSummary => (fetched === undefined || fetched.revision < held.revision ? held : fetched);
 
 /** Everything a truncated payload and its untruncated original have in common. */
 interface TruncatablePayload {
@@ -335,32 +389,144 @@ export const applyMessageDelta = (
   };
 };
 
+/**
+ * Whether a part a `set` op carries is one this transcript could render.
+ *
+ * A frame carrying a part the renderer cannot read is not something to apply
+ * halfway: an op that names a shape this console does not understand means the
+ * message has to be re-read, the same as any other unreadable frame. An
+ * unrecognised `type` is refused for the same reason -- a newer server's new
+ * part kind costs one message read here rather than a slot the transcript
+ * cannot draw.
+ */
+const isMessagePart = (value: unknown): value is MessagePart => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const part = value as Record<string, unknown>;
+  const text = (key: string): boolean => typeof part[key] === "string";
+  const status = (): boolean =>
+    part.status === "running" || part.status === "complete" || part.status === "failed";
+  switch (part.type) {
+    case "text":
+    case "reasoning":
+      return text("text");
+    case "tool-call":
+      return text("toolCallId") && text("toolName") && status();
+    case "subagent":
+      return text("toolCallId") && text("name") && status() && Array.isArray(part.calls);
+    case "process-job":
+      return typeof part.job === "object" && part.job !== null;
+    case "monitor-activity":
+      return Array.isArray(part.monitors);
+    case "telemetry":
+      return text("event");
+    case "error":
+      return text("message");
+    case "attachment":
+      return text("id") && text("artifactId") && text("name") && text("mediaType")
+        && text("integrityId") && typeof part.sizeBytes === "number";
+    case "mcp_app":
+      return text("id") && text("invocationId") && text("connectionId") && text("serverName")
+        && text("toolName") && text("resourceUri") && text("mediaType")
+        && text("protocolVersion");
+    case "failure":
+      return text("id") && text("code") && text("message");
+    default:
+      return false;
+  }
+};
+
+/** The ops a `message.delta` carries, refused rather than half-read. */
+const readDeltaOps = (value: unknown): readonly MessageDeltaOp[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  for (const candidate of value as readonly unknown[]) {
+    if (candidate === null || typeof candidate !== "object") return undefined;
+    const op = candidate as Record<string, unknown>;
+    if (op.op === "truncate") {
+      if (typeof op.length !== "number") return undefined;
+      continue;
+    }
+    if (typeof op.index !== "number") return undefined;
+    if (op.op === "append") {
+      if (typeof op.delta !== "string") return undefined;
+      continue;
+    }
+    if (op.op !== "set" || !isMessagePart(op.part)) return undefined;
+  }
+  return value as readonly MessageDeltaOp[];
+};
+
+/**
+ * A `message.delta` payload, or nothing.
+ *
+ * A frame this console cannot make sense of is never applied as a partial
+ * reading: the message it names is re-read instead. Everything the replay
+ * depends on -- both versions, the status, and every op down to the shape of
+ * the parts a `set` carries -- has to be there.
+ */
+export const readMessageDelta = (payload: unknown): MessageDelta | undefined => {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const candidate = payload as Partial<MessageDelta>;
+  const ops = readDeltaOps(candidate.ops);
+  if (typeof candidate.messageId !== "string"
+    || typeof candidate.baseSeq !== "number"
+    || typeof candidate.seq !== "number"
+    || !MESSAGE_STATUSES.has(candidate.status as string)
+    || typeof candidate.updatedAt !== "string"
+    || ops === undefined) return undefined;
+  return { ...(candidate as MessageDelta), ops };
+};
+
 export interface MergeMessagesOptions {
   /**
-   * The incoming array is the newest WINDOW of the transcript rather than the
-   * whole of it -- what `GET /threads/:id` answers with.
+   * The answer is AUTHORITATIVE over the range it covers: a message it does not
+   * carry, inside that range, was DELETED rather than merely unmentioned.
    *
-   * Held messages that come BEFORE that window are kept, because they are the
-   * pages this tab walked back to and the answer says nothing about them. Held
-   * messages INSIDE it that the answer does not carry were deleted, and go.
-   *
-   * Where the window starts is read from the HELD array's own order -- the
-   * first held message the answer also carries -- and never from a key the
-   * client would have to invent. See {@link insertionIndexFor}.
+   * Every whole-conversation read is one. A conditional or partial answer --
+   * "here is what moved" -- is not, and leaves everything it did not name
+   * exactly where it was.
    */
   readonly resetWindow?: boolean;
+  /**
+   * The answer has more transcript BEFORE it (it came with a
+   * `messagesNextCursor`), so it is a window and cannot speak for anything
+   * older than the oldest row it carries -- which is precisely the history the
+   * operator paged back to.
+   *
+   * Without this an authoritative answer IS the whole transcript, and an
+   * absence at any age is a deletion. That is what makes a compaction visible
+   * rather than leaving rows on screen the server no longer has.
+   */
+  readonly bounded?: boolean;
+  /**
+   * The messages this tab reached by paging BACKWARDS, which is the only thing
+   * that is reliably outside a bounded answer's range.
+   *
+   * Read from what `prependOlder` actually brought in rather than inferred from
+   * a position or a stamp: `insertionIndexFor` can put a recovered row in front
+   * of paged history, and a client cannot reproduce the server's ordering from
+   * the wire, so neither a position nor a `createdAt` may be what decides that
+   * the operator's scrolled-back history was deleted.
+   */
+  readonly pagedIn?: ReadonlySet<string>;
   /** See {@link ThreadCacheEntry.repairedToolCallIds}. */
   readonly repaired?: ReadonlySet<string>;
 }
 
 /**
- * The held transcript and one whole-conversation answer about it, as one
- * transcript.
+ * The held transcript and one answer about it, as one transcript.
  *
- * The answer's ORDER is the server's and is preserved exactly; the only thing
- * that goes in front of it is history this tab paged back to, in the order it
- * already had. Nothing is re-sorted -- see {@link insertionIndexFor} for why a
- * client cannot reproduce the server's ordering from what is on the wire.
+ * The answer's ORDER is the server's and is preserved exactly. Anything the
+ * answer did not carry keeps the position it already had, immediately before
+ * whichever answered message used to follow it -- concatenating the remainder
+ * in front of the answer reordered a transcript whenever the answer was a
+ * subset rather than a window, which is what a conditional read is.
+ *
+ * Nothing is re-sorted -- see {@link insertionIndexFor} for why a client cannot
+ * reproduce the server's ordering from what is on the wire. Which is also why a
+ * POSITION alone may never decide that history was deleted: the boundary a
+ * bounded answer implies is checked against `createdAt` as well, so a row that
+ * ended up in the wrong slot cannot take the operator's paged-back history with
+ * it.
  *
  * The other contract is IDENTITY: a message the answer did not move comes back
  * as the very object that was held, and the array comes back as the very array
@@ -376,42 +542,78 @@ export const mergeMessages = (
   options: MergeMessagesOptions = {},
 ): readonly WebMessage[] => {
   const repaired = options.repaired ?? new Set<string>();
-  const incomingIds = new Set(incoming.map((message) => message.id));
-  const windowStart = held.findIndex((message) => incomingIds.has(message.id));
-  const kept = windowStart < 0
-    // The answer overlaps nothing this tab holds. Either the transcript was
-    // replaced wholesale or the window has moved entirely past what was kept,
-    // and neither is something to reconstruct an order from: the answer is the
-    // transcript, exactly as it used to be before there was a cache.
-    ? []
-    : held.slice(0, windowStart).concat(
-        // Only a window read claims to be complete over its own range, so only
-        // a window read may read an absence as a deletion.
-        options.resetWindow === true
-          ? []
-          : held.slice(windowStart).filter((message) => !incomingIds.has(message.id)),
-      );
   const heldById = new Map(held.map((message) => [message.id, message]));
-  const merged = [
-    ...kept,
-    ...incoming.map((message) => {
-      const previous = heldById.get(message.id);
-      if (previous === undefined) return message;
-      if (!isNewerMessage(message, previous)) return previous;
-      const parts = restoreRepairs(previous.parts, message.parts, repaired);
-      return parts === message.parts ? message : { ...message, parts };
-    }),
-  ];
-  return merged.length === held.length && merged.every((message, index) => message === held[index])
-    ? held
-    : merged;
+  const chosen = (message: WebMessage): WebMessage => {
+    const previous = heldById.get(message.id);
+    if (previous === undefined) return message;
+    if (!isNewerMessage(message, previous)) return previous;
+    const parts = restoreRepairs(previous.parts, message.parts, repaired);
+    return parts === message.parts ? message : { ...message, parts };
+  };
+  const settle = (result: readonly WebMessage[]): readonly WebMessage[] =>
+    (result.length === held.length && result.every((message, index) => message === held[index])
+      ? held
+      : result);
+
+  const positionOf = new Map(incoming.map((message, index) => [message.id, index]));
+  const overlaps = held.some((message) => positionOf.has(message.id));
+  if (!overlaps) {
+    // Nothing to interleave against. An authoritative answer that shares
+    // nothing with what is held IS the transcript; a partial one leaves the
+    // held rows in front of it, which is where every caller's held rows are.
+    const kept = options.resetWindow === true ? [] : [...held];
+    return settle([...kept, ...incoming.map(chosen)]);
+  }
+
+  // What an authoritative answer's silence CANNOT mean. A bounded answer has
+  // more transcript before it, and the rows this tab paged back to are exactly
+  // that transcript; everything else it does not carry, it deleted. An
+  // UNBOUNDED answer is the whole conversation, so its silence is a deletion
+  // at any age -- which is what makes a compaction visible.
+  const pagedIn = options.pagedIn ?? new Set<string>();
+  const outsideAnswer = (message: WebMessage): boolean =>
+    options.bounded === true && pagedIn.has(message.id);
+
+  // Held rows the answer did not carry, banked until the next row it did --
+  // which is the position they must keep.
+  const before = new Map<number, WebMessage[]>();
+  let bank: WebMessage[] = [];
+  for (const message of held) {
+    const at = positionOf.get(message.id);
+    if (at !== undefined) {
+      if (bank.length > 0) {
+        before.set(at, [...(before.get(at) ?? []), ...bank]);
+        bank = [];
+      }
+      continue;
+    }
+    if (options.resetWindow === true && !outsideAnswer(message)) continue;
+    bank.push(message);
+  }
+  const trailing = bank;
+
+  const merged: WebMessage[] = [];
+  for (const [index, message] of incoming.entries()) {
+    const preceding = before.get(index);
+    if (preceding !== undefined) merged.push(...preceding);
+    merged.push(chosen(message));
+  }
+  merged.push(...trailing);
+  return settle(merged);
 };
 
 export interface ThreadCache {
   readonly get: (threadId: string) => ThreadCacheEntry | undefined;
   /** Whether this conversation holds a projection of that message. */
   readonly holdsMessage: (threadId: string, messageId: string) => boolean;
-  readonly ids: () => readonly string[];
+  /**
+   * The token a read quotes when it is ISSUED, so the answer can be told
+   * whether anything was observed while it was on the wire.
+   *
+   * The same shape as the listing's admission epoch: read it before the
+   * request, hand it back when the response lands.
+   */
+  readonly clock: () => number;
   /**
    * The conversation on screen. It is never evicted, however long ago it was
    * last read: dropping what the operator is LOOKING AT to keep a background
@@ -426,7 +628,12 @@ export interface ThreadCache {
    */
   readonly upsertFull: (
     detail: ThreadDetail,
-    options?: { readonly reset?: boolean; readonly etag?: string },
+    options?: {
+      readonly reset?: boolean;
+      readonly etag?: string;
+      /** {@link ThreadCache.clock} read when this read was issued. */
+      readonly issuedAt?: number;
+    },
   ) => ThreadCacheEntry | undefined;
   /**
    * One message: a repair read, a live-input receipt, a cron run's card.
@@ -457,6 +664,13 @@ export interface ThreadCache {
     toolCallId: string,
     part: MessagePart,
   ) => boolean;
+  /**
+   * Something changed in this conversation that this tab did not apply.
+   *
+   * RECORDED EVEN WHEN NO ENTRY IS HELD, and that is the point: a read already
+   * on the wire quotes {@link ThreadCache.clock} from before this, so it lands
+   * stale rather than looking like the newest thing the server said.
+   */
   readonly markStale: (threadId: string) => void;
   /**
    * Everything held is suspect: a reconnect, or coming back online. Nothing
@@ -512,7 +726,30 @@ export const createThreadCache = (
   // Insertion order IS recency order: every touch deletes before it sets, so
   // the first key is always the least recently used.
   const entries = new Map<string, ThreadCacheEntry>();
+  // Bumped by every observation. A read quotes it when it is ISSUED and hands
+  // it back when it lands, which is the only way an answer can tell "nothing
+  // changed while I was out" from "I am simply the last thing to arrive".
+  let clock = 0;
+  // When each conversation was last observed to have changed, INDEPENDENT of
+  // whether an entry is held -- see {@link OBSERVED_CONVERSATIONS}. Insertion
+  // order is recency order, so eviction takes the oldest.
+  const observedAt = new Map<string, number>();
   let selectedId: string | null = null;
+
+  const observe = (threadId: string): void => {
+    clock += 1;
+    observedAt.delete(threadId);
+    observedAt.set(threadId, clock);
+    while (observedAt.size > OBSERVED_CONVERSATIONS) {
+      const oldest = observedAt.keys().next();
+      if (oldest.done === true) break;
+      observedAt.delete(oldest.value);
+    }
+  };
+
+  /** Whether anything was observed AFTER the read that is landing was issued. */
+  const overtaken = (threadId: string, issuedAt: number | undefined): boolean =>
+    issuedAt !== undefined && (observedAt.get(threadId) ?? 0) > issuedAt;
 
   const prune = (): void => {
     while (entries.size > maxEntries) {
@@ -563,7 +800,7 @@ export const createThreadCache = (
     get: (threadId) => entries.get(threadId),
     holdsMessage: (threadId, messageId) =>
       entries.get(threadId)?.messages.some((message) => message.id === messageId) === true,
-    ids: () => [...entries.keys()],
+    clock: () => clock,
     setSelected: (threadId) => {
       selectedId = threadId;
       if (threadId !== null) touch(threadId);
@@ -573,14 +810,18 @@ export const createThreadCache = (
       const threadId = detail.thread.id;
       const held = entries.get(threadId);
       const reset = options.reset === true;
+      // Anything observed AFTER this read went out is something it cannot have
+      // seen, so it lands stale however complete it looks.
+      const stale = overtaken(threadId, options.issuedAt);
       if (held === undefined) {
         const entry = withCursor(
           {
             thread: detail.thread,
             messages: detail.messages,
-            stale: false,
+            stale,
             syncedAt: now(),
             repairedToolCallIds: new Set<string>(),
+            pagedInIds: new Set<string>(),
             ...(options.etag === undefined ? {} : { etag: options.etag }),
           },
           detail.messagesNextCursor,
@@ -590,6 +831,10 @@ export const createThreadCache = (
       }
       const messages = mergeMessages(held.messages, detail.messages, {
         resetWindow: reset,
+        // The answer came with a cursor, so it has more transcript before it
+        // and cannot speak for what this tab paged back to.
+        bounded: detail.messagesNextCursor !== undefined,
+        pagedIn: held.pagedInIds,
         repaired: held.repairedToolCallIds,
       });
       // The answer's cursor points at the page BEFORE its own window, which is
@@ -600,13 +845,17 @@ export const createThreadCache = (
       // history this tab is still protecting.
       const keptOlder = messages.length > detail.messages.length;
       const cursor = keptOlder ? held.messagesNextCursor : detail.messagesNextCursor;
+      // Only what SURVIVED stays remembered as paged-in, so the set cannot
+      // outgrow the transcript it describes.
+      const surviving = new Set(messages.map((message) => message.id));
       const entry = withCursor(
         {
-          thread: detail.thread,
+          thread: newerProjection(held.thread, detail.thread),
           messages,
-          stale: false,
+          stale,
           syncedAt: now(),
           repairedToolCallIds: held.repairedToolCallIds,
+          pagedInIds: new Set([...held.pagedInIds].filter((id) => surviving.has(id))),
           ...(options.etag === undefined
             ? (held.etag === undefined ? {} : { etag: held.etag })
             : { etag: options.etag }),
@@ -645,17 +894,33 @@ export const createThreadCache = (
       // order, so it goes in front unchanged rather than being re-sorted.
       const messages = older.length === 0 ? entry.messages : [...older, ...entry.messages];
       const { messagesNextCursor: _cursor, ...withoutCursor } = entry;
-      const next = withCursor({ ...withoutCursor, messages }, page.nextCursor);
+      const next = withCursor({
+        ...withoutCursor,
+        messages,
+        // Remembered by ID: this is the only thing a later windowed answer can
+        // be measured against to tell paged-back history from a deletion.
+        pagedInIds: older.length === 0
+          ? entry.pagedInIds
+          : new Set([...entry.pagedInIds, ...older.map((message) => message.id)]),
+      }, page.nextCursor);
       return messages === entry.messages && next.messagesNextCursor === entry.messagesNextCursor
         ? entry
         : next;
     }),
-    patchThread: (threadId, thread) => patchEntry(threadId, (entry) => ({ ...entry, thread })),
+    patchThread: (threadId, thread) => patchEntry(threadId, (entry) => {
+      // ORDERED BY THE SERVER'S REVISION, exactly as the listing is. A POST
+      // answer that lost its race to the event carrying the same row would
+      // otherwise roll the cached summary back while the sidebar kept the newer
+      // one -- and `detail.thread` is what the console falls back to for a
+      // conversation the sidebar does not list at all.
+      const next = newerProjection(entry.thread, thread);
+      return next === entry.thread ? entry : { ...entry, thread: next };
+    }),
     patchRunState: (threadId, runState) => patchEntry(threadId, (entry) =>
       ({ ...entry, thread: { ...entry.thread, runState } })),
     applyDelta: (threadId, delta) => {
       const entry = entries.get(threadId);
-      if (entry === undefined) return "unknown";
+      if (entry === undefined) return "unheld";
       const index = entry.messages.findIndex((message) => message.id === delta.messageId);
       const held = index < 0 ? undefined : entry.messages[index];
       if (held === undefined) return "unknown";
@@ -694,10 +959,12 @@ export const createThreadCache = (
       return true;
     },
     markStale: (threadId) => {
+      observe(threadId);
       patchEntry(threadId, (entry) => (entry.stale ? entry : { ...entry, stale: true }));
     },
     markAllStale: () => {
       for (const [threadId, entry] of entries) {
+        observe(threadId);
         if (!entry.stale) entries.set(threadId, { ...entry, stale: true });
       }
     },

@@ -3806,6 +3806,24 @@ describe("ConsoleStoreProvider integration", () => {
       await act(async () => { await new Promise((resolve) => { setTimeout(resolve, ms); }); });
     };
 
+    /**
+     * Every render's (selection, transcript) pair, captured DURING render.
+     *
+     * An effect cannot see this: `act` flushes effects, so a transcript
+     * published one commit late still looks right by the time the test asks.
+     * What the operator sees is the commit itself.
+     */
+    let paints: readonly (readonly [string | null, string | undefined])[] = [];
+    function PaintProbe() {
+      const store = useConsoleStore();
+      paints = [...paints, [store.selectedThreadId, store.detail?.thread.id]];
+      return null;
+    }
+
+    /** A commit that drew ANOTHER conversation's transcript under this header. */
+    const mispaints = () =>
+      paints.filter(([selected, shown]) => shown !== undefined && shown !== selected);
+
     /** The transcript the operator is actually looking at, as text. */
     function Transcript() {
       const store = useConsoleStore();
@@ -3825,9 +3843,11 @@ describe("ConsoleStoreProvider integration", () => {
     const renderConsole = async () => {
       let current: Store | undefined;
       const onChange = (store: Store) => { current = store; };
+      paints = [];
       render(
         <ConsoleStoreProvider>
           <StoreProbe onChange={onChange} />
+          <PaintProbe />
           <Transcript />
         </ConsoleStoreProvider>,
       );
@@ -3979,6 +3999,82 @@ describe("ConsoleStoreProvider integration", () => {
       expect(await screen.findByTestId("message-m1")).toHaveTextContent("Helloabc");
     });
 
+    it("spends no message read on a conversation it has not opened yet", async () => {
+      // The cold read of the conversation the operator just opened is on the
+      // wire when a delta for it arrives. There is nothing to apply it to and
+      // nowhere for a message read to land -- one issued here bought an answer
+      // the cache then dropped on the floor.
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alpha, beta],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alpha, beta] });
+      vi.mocked(api.thread).mockResolvedValue({
+        thread: alpha,
+        messages: [streamed("m1", "Hello", { seq: 2, status: "complete" })],
+      });
+      let releaseRead!: (detail: ThreadDetail) => void;
+      vi.mocked(api.thread).mockImplementationOnce(async () =>
+        new Promise<ThreadDetail>((resolve) => { releaseRead = resolve; }));
+      const store = await renderConsole();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(alpha.id));
+      await waitFor(() => expect(releaseRead).toBeDefined());
+
+      emitDelta(alpha.id, { baseSeq: 1, seq: 2, ops: [{ op: "append", index: 0, delta: "lo" }] });
+      await quiet();
+      expect(api.message).not.toHaveBeenCalled();
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(1);
+
+      // The answer this read carries predates that write, so it lands BEHIND --
+      // and costs exactly one more read rather than leaving a transcript on
+      // screen that looks settled and is not.
+      await act(async () => {
+        releaseRead({ thread: alpha, messages: [streamed("m1", "Hel", { seq: 1 })] });
+        await new Promise((resolve) => { setTimeout(resolve, 0); });
+      });
+      await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(2));
+      await waitFor(async () =>
+        expect(await screen.findByTestId("message-m1")).toHaveTextContent("Hello"));
+      await quiet();
+
+      expect(api.message).not.toHaveBeenCalled();
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(2);
+    });
+
+    it("reads again for a version that became known while the repair was out", async () => {
+      // The join is what keeps a copy that fell behind from buying a request
+      // per streamed frame. It must not also swallow the frames: the read on
+      // the wire was issued before those versions existed.
+      seedTwo();
+      const store = await openedOnAlpha();
+      const answers: ((message: WebMessage) => void)[] = [];
+      vi.mocked(api.message).mockImplementation(async () =>
+        new Promise<WebMessage>((resolve) => { answers.push(resolve); }));
+
+      emitDelta(alpha.id, { baseSeq: 4, seq: 5, ops: [{ op: "append", index: 0, delta: "a" }] });
+      await waitFor(() => expect(answers.length).toBe(1));
+      // A LATER version, learned while the first read was still out.
+      emitDelta(alpha.id, { baseSeq: 5, seq: 6, ops: [{ op: "append", index: 0, delta: "b" }] });
+
+      await act(async () => {
+        answers[0]?.(streamed("m1", "Helloa", { seq: 5 }));
+        await new Promise((resolve) => { setTimeout(resolve, 0); });
+      });
+      await waitFor(() => expect(answers.length).toBe(2));
+
+      await act(async () => {
+        answers[1]?.(streamed("m1", "Helloab", { seq: 6, status: "complete" }));
+        await new Promise((resolve) => { setTimeout(resolve, 0); });
+      });
+      await quiet();
+
+      expect(api.message).toHaveBeenCalledTimes(2);
+      expect(store.current.detail?.messages[0]?.seq).toBe(6);
+      expect(await screen.findByTestId("message-m1")).toHaveTextContent("Helloab");
+      // Still never the conversation around it.
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(1);
+    });
+
     it("ignores a write it is already past instead of reading for it", async () => {
       seedTwo([streamed("m1", "Hello", { seq: 6 })]);
       const store = await openedOnAlpha();
@@ -4088,6 +4184,49 @@ describe("ConsoleStoreProvider integration", () => {
       expect(vi.mocked(api.thread).mock.calls.map((call) => call[0]))
         .toEqual([alpha.id, gamma.id]);
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
+    });
+
+    it("never paints the conversation the operator just left under the new header", async () => {
+      // The selection is state and the transcript is state, and publishing the
+      // cached one from an EFFECT puts them in different commits: the header,
+      // the composer and the run controls switch a frame before the transcript
+      // does, so a cached A->B->A flashes the previous conversation.
+      seedTwo();
+      const store = await openedOnAlpha();
+      act(() => { store.current.selectThread(beta.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(beta.id));
+
+      paints = [];
+      act(() => { store.current.selectThread(alpha.id); });
+
+      expect(store.current.detail?.thread.id).toBe(alpha.id);
+      expect(mispaints()).toEqual([]);
+      // And the same on the way back, where the cache is warm both ways.
+      paints = [];
+      act(() => { store.current.selectThread(beta.id); });
+      expect(mispaints()).toEqual([]);
+    });
+
+    it("never paints another agent's conversation while switching agents", async () => {
+      const gamma = thread("gamma-thread", "beta");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [alpha],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [gamma] });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => threadId === gamma.id
+        ? { thread: gamma, messages: [] }
+        : { thread: alpha, messages: [streamed("m1", "Hel")] });
+      const store = await openedOnAlpha();
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(gamma.id));
+
+      paints = [];
+      act(() => { store.current.selectAgent("alpha"); });
+
+      expect(mispaints()).toEqual([]);
     });
 
     it("re-reads a background conversation whose summary event moved its transcript", async () => {
