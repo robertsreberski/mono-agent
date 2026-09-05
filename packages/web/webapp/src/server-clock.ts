@@ -4,6 +4,13 @@
  * the live figure drift from the value it freezes at, so the `at` stamp on
  * every SSE event (the `ready` ping included) keeps an estimate of the offset
  * and live arithmetic is done in server time. Module state, like `api`.
+ *
+ * The estimate includes the frame's one-way delivery delay, which reads as the
+ * browser running that much ahead. The header shows whole seconds and a frame
+ * crosses the tailnet in milliseconds, so that is noise; and the latest sample
+ * always wins, so a clock step on either side heals on the next event, where
+ * a minimum-latency filter would hold a stale offset until reload. The frozen
+ * figure never uses this at all: it comes from two server stamps.
  */
 let offsetMs = 0;
 

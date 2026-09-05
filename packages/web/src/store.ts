@@ -163,6 +163,8 @@ interface MessageRow {
   created_at: string;
   updated_at: string;
   status: string;
+  /** `turns.finished_at`, when the query joined the turn; a single-row read looks it up instead. */
+  turn_finished_at?: string | null;
 }
 
 interface TurnRow {
@@ -2122,7 +2124,8 @@ export class WebStore {
     }
     values.push(limit + 1);
     const rows = this.database.prepare(`
-      SELECT m.*, ${orderedAt} AS ordered_at, ${rank} AS role_rank, m.rowid AS storage_rowid
+      SELECT m.*, ${orderedAt} AS ordered_at, ${rank} AS role_rank, m.rowid AS storage_rowid,
+        t.finished_at AS turn_finished_at
       FROM messages m
       LEFT JOIN turns t ON t.id = m.turn_id
       WHERE m.thread_id = ? ${beforeSql}
@@ -4194,7 +4197,7 @@ export class WebStore {
     const quote = quoteFromParts(storedParts);
     const liveInputStatus = liveInputStatusFromParts(storedParts);
     const role = normalizeRole(row.role);
-    const finishedAt = role === "assistant" ? this.turnFinishedAt(row.turn_id) : undefined;
+    const finishedAt = role === "assistant" ? this.turnFinishedAt(row) : undefined;
     return {
       id: row.id,
       threadId: row.thread_id,
@@ -4214,12 +4217,17 @@ export class WebStore {
     };
   }
 
-  /** The turn's terminal stamp, which `finishTurnInTransaction` writes with the message status. */
-  private turnFinishedAt(turnId: string | null): string | undefined {
-    if (turnId === null) return undefined;
-    const row = this.database.prepare("SELECT finished_at FROM turns WHERE id = ?")
-      .get(turnId) as unknown as { finished_at: string | null } | undefined;
-    return row?.finished_at ?? undefined;
+  /**
+   * The turn's terminal stamp, which `finishTurnInTransaction` writes with the
+   * message status. A page query projects it from its own join; only a
+   * single-row read pays for a lookup.
+   */
+  private turnFinishedAt(row: MessageRow): string | undefined {
+    if (row.turn_id === null) return undefined;
+    if (row.turn_finished_at !== undefined) return row.turn_finished_at ?? undefined;
+    const turn = this.database.prepare("SELECT finished_at FROM turns WHERE id = ?")
+      .get(row.turn_id) as unknown as { finished_at: string | null } | undefined;
+    return turn?.finished_at ?? undefined;
   }
 
   private latestRunState(threadId: string): WebRunState {
