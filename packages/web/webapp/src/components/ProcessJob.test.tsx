@@ -7,6 +7,7 @@ import { processJob } from "../test/fixtures";
 import type { ProcessJobState } from "../types";
 import {
   ProcessJobPart,
+  processJobAdvances,
   processJobExitLabel,
   processJobStatus,
   processJobThreadId,
@@ -102,6 +103,23 @@ describe("processJobExitLabel", () => {
   });
 });
 
+describe("processJobAdvances", () => {
+  it("orders the lifecycle queued < starting < running < terminal", () => {
+    expect(processJobAdvances("queued", "starting")).toBe(true);
+    expect(processJobAdvances("starting", "running")).toBe(true);
+    expect(processJobAdvances("queued", "succeeded")).toBe(true);
+    expect(processJobAdvances("running", "timed_out")).toBe(true);
+    expect(processJobAdvances("running", "starting")).toBe(false);
+    expect(processJobAdvances("starting", "queued")).toBe(false);
+  });
+
+  it("treats the same state, and one terminal state against another, as no advance", () => {
+    expect(processJobAdvances("running", "running")).toBe(false);
+    expect(processJobAdvances("succeeded", "failed")).toBe(false);
+    expect(processJobAdvances("cancelled", "running")).toBe(false);
+  });
+});
+
 describe("ProcessJobPart", () => {
   it("collapses a finished job to one row and keeps the details behind it", () => {
     render(part({ type: "process-job", job: processJob(), responseText: "Completed normally." }));
@@ -191,25 +209,33 @@ describe("ProcessJobPart", () => {
     expect(summary.querySelector(".activity-row-time .activity-row-alert")).toHaveTextContent("wake failed");
   });
 
-  it("does not let a poll answer that was in flight overwrite a newer projection from the store", async () => {
+  const handoffFixtures = () => {
     const base = processJob();
     const pending = { ...base.wake, state: "pending" as const, attempts: 0, lastAttemptAt: null };
-    const starting = processJob({
-      state: "starting",
-      exitCode: null,
-      durationMs: null,
-      timestamps: { ...base.timestamps, startedAt: null, completedAt: null },
-      wake: pending,
-    });
-    const running = processJob({
-      state: "running",
-      exitCode: null,
-      durationMs: null,
-      timestamps: { ...base.timestamps, completedAt: null },
-      wake: pending,
-    });
+    return {
+      starting: processJob({
+        state: "starting",
+        exitCode: null,
+        durationMs: null,
+        timestamps: { ...base.timestamps, startedAt: null, completedAt: null },
+        wake: pending,
+      }),
+      running: processJob({
+        state: "running",
+        exitCode: null,
+        durationMs: null,
+        timestamps: { ...base.timestamps, completedAt: null },
+        wake: pending,
+      }),
+      succeeded: base,
+    };
+  };
+
+  it("does not let a poll answer that was in flight overwrite a newer projection from the store, and keeps polling", async () => {
+    vi.useFakeTimers();
+    const { starting, running } = handoffFixtures();
     let answerFirstPoll: ((job: typeof starting) => void) | undefined;
-    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise((resolve) => {
+    const threadJob = vi.spyOn(api, "threadJob").mockImplementation(() => new Promise((resolve) => {
       answerFirstPoll ??= resolve;
     }));
     const { rerender } = render(part({ type: "process-job", job: starting }));
@@ -226,6 +252,43 @@ describe("ProcessJobPart", () => {
     });
     expect(screen.getByRole("group", { name: "Exec background job running" })).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "Exec background job starting" })).toBeNull();
+
+    // A dropped answer settles nothing, so the fallback poll must go on.
+    expect(threadJob).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(2);
+  });
+
+  it("settles the row when the in-flight poll answers with a terminal state after a store handoff", async () => {
+    vi.useFakeTimers();
+    const { starting, running, succeeded } = handoffFixtures();
+    let answerFirstPoll: ((job: typeof starting) => void) | undefined;
+    const threadJob = vi.spyOn(api, "threadJob").mockImplementation(() => new Promise((resolve) => {
+      answerFirstPoll ??= resolve;
+    }));
+    const { rerender } = render(part({ type: "process-job", job: starting }));
+    rerender(part({ type: "process-job", job: running }));
+    expect(screen.getByRole("group", { name: "Exec background job running" })).toBeInTheDocument();
+
+    // The lifecycle only moves forward, so a terminal answer is progress even
+    // though the store moved the card while the request was out.
+    await act(async () => {
+      answerFirstPoll!(succeeded);
+      await Promise.resolve();
+    });
+    const row = screen.getByRole("group", { name: "Exec background job succeeded" });
+    expect(row).toHaveClass("is-complete");
+    expect(row.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0");
+
+    // Settled: nothing more to ask for.
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(1);
   });
 
   it("marks truncated output and shows the preview and refs it has", () => {

@@ -1,5 +1,5 @@
 import type { DataMessagePartProps } from "@assistant-ui/react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 import { api } from "../api";
 import type { ProcessJobProjection, ProcessJobState } from "../types";
@@ -17,6 +17,30 @@ export const TERMINAL_PROCESS_JOB_STATES: ReadonlySet<ProcessJobState> = new Set
 ]);
 const PROCESS_JOB_POLL_INITIAL_MS = 1_000;
 const PROCESS_JOB_POLL_MAX_MS = 10_000;
+
+/**
+ * Where a state sits in the job's lifecycle. The lifecycle only moves forward
+ * (`queued` → `starting` → `running` → one terminal state), and the retained
+ * store enforces exactly that on every card update, so rank is the ordering two
+ * projections of the same job can be compared by. Every terminal state shares
+ * the top rank: none of them is "after" another.
+ */
+const PROCESS_JOB_STATE_RANK: Readonly<Record<ProcessJobState, number>> = {
+  queued: 0,
+  starting: 1,
+  running: 2,
+  succeeded: 3,
+  failed: 3,
+  timed_out: 3,
+  cancelled: 3,
+  spawn_failed: 3,
+  queue_expired: 3,
+  interrupted: 3,
+};
+
+/** Whether `to` is further along the lifecycle than `from`. Same state, or terminal to terminal, is not. */
+export const processJobAdvances = (from: ProcessJobState, to: ProcessJobState): boolean =>
+  PROCESS_JOB_STATE_RANK[to] > PROCESS_JOB_STATE_RANK[from];
 
 /** The retained web thread a job reports to, or nothing for an origin the console cannot poll. */
 export const processJobThreadId = (job: ProcessJobProjection): string | undefined => {
@@ -106,16 +130,13 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
   const payload = data as { readonly job?: ProcessJobProjection; readonly responseText?: unknown };
   const initial = payload.job;
   const [live, setLive] = useState(initial);
-  // The projection the store handed over most recently. A poll answer that was
-  // already in flight when the store moved on is older than what it would
-  // replace, so the poll checks this before applying what it fetched.
-  const retainedRef = useRef(initial);
   const threadId = initial === undefined ? undefined : processJobThreadId(initial);
   const jobId = initial?.jobId;
   const terminal = live === undefined || TERMINAL_PROCESS_JOB_STATES.has(live.state);
 
+  // The store's projection is authoritative and already monotonic (the web
+  // server rejects a card update that moves backwards), so it always lands.
   useEffect(() => {
-    retainedRef.current = initial;
     setLive(initial);
   }, [initial]);
 
@@ -125,11 +146,18 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
     let timer: number | undefined;
     let delayMs = PROCESS_JOB_POLL_INITIAL_MS;
     const refresh = async () => {
-      const retained = retainedRef.current;
       try {
         const next = await api.threadJob(threadId, jobId, controller.signal);
         if (controller.signal.aborted) return;
-        if (retainedRef.current === retained) setLive(next);
+        // A poll answer counts only when it moves the job forward. The store can
+        // hand the row a newer projection while a request is out: a slower
+        // answer that is further back in the lifecycle must not drag the row
+        // back, one that says the same state changes nothing the row renders,
+        // and a terminal one is progress however the request and the store
+        // interleaved. Judged against the latest state, not the closure's.
+        setLive((current) => current === undefined || processJobAdvances(current.state, next.state) ? next : current);
+        // Terminal always advances the nonterminal row this effect exists for,
+        // so the answer that ends the loop is one the row has taken.
         if (TERMINAL_PROCESS_JOB_STATES.has(next.state)) return;
       } catch {
         // The retained card remains authoritative while its owner is offline.
