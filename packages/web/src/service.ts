@@ -1555,7 +1555,7 @@ export class WebService {
   ): Promise<void> {
     const coalescer = new StreamFrameCoalescer(
       async (frames) => {
-        const message = this.store.applyStreamFrames(started.turnId, frames);
+        const { message } = this.store.applyStreamFrames(started.turnId, frames);
         this.emit("message.changed", started.thread.id, { messageId: message.id, updatedAt: message.updatedAt });
       },
       (error) => controller.abort(error),

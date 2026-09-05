@@ -31,6 +31,8 @@ import {
   type WebAgentSummary,
   type WebAttachment,
   type WebMessage,
+  type WebMessageDelta,
+  type WebMessageDeltaOp,
   type WebMessagePart,
   type WebMessageStatus,
   type WebCronJob,
@@ -174,6 +176,8 @@ interface MessageRow {
   created_at: string;
   updated_at: string;
   status: string;
+  /** Parts writes so far. See {@link WebMessage.seq}; pre-v17 rows read 0. */
+  seq: number;
   /** `turns.finished_at`, when the query joined the turn; a single-row read looks it up instead. */
   turn_finished_at?: string | null;
 }
@@ -545,6 +549,27 @@ export interface StoredLiveInput {
   readonly text: string;
   readonly status: "offered" | "queued";
   readonly createdAt: string;
+}
+
+/**
+ * One parts write's outcome: the stored message, and what changed inside it.
+ *
+ * The delta is absent only when the call found nothing to write — a turn that
+ * already settled — because a write is the only thing that moves a sequence
+ * number, and a delta nobody wrote would be a version that does not exist.
+ */
+export interface StoredMessageWrite {
+  readonly message: WebMessage;
+  readonly delta?: WebMessageDelta;
+}
+
+/** The columns a parts write may move alongside `parts_json` and `seq`. */
+interface MessagePartsColumns {
+  readonly status?: WebMessageStatus;
+  /** `null` detaches the row from its turn; omitting it leaves the turn alone. */
+  readonly turnId?: string | null;
+  readonly threadId?: string;
+  readonly createdAt?: string;
 }
 
 export interface ReserveStoredLiveInputResult {
@@ -1094,8 +1119,7 @@ export class WebStore {
         const parts = parseParts(message.parts_json);
         if (!parts.some((part) => part.type === "text" && part.text === reservation.text)) {
           parts.push({ type: "text", text: reservation.text });
-          this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ? WHERE id = ?")
-            .run(serializeParts(parts), now, assistantMessageId);
+          this.writeMessageParts(assistantMessageId, parts, now);
         }
       }
       this.database.prepare(`
@@ -1526,10 +1550,12 @@ export class WebStore {
           || prior.created_at !== run.orderedAt
           || prior.status !== status
         ) {
-          this.database.prepare(`
-            UPDATE messages SET thread_id = ?, turn_id = ?, parts_json = ?,
-              created_at = ?, updated_at = ?, status = ? WHERE id = ?
-          `).run(channel.thread_id, turnId, serializedParts, run.orderedAt, now, status, messageId);
+          this.writeMessageParts(messageId, parts, now, {
+            threadId: channel.thread_id,
+            turnId,
+            createdAt: run.orderedAt,
+            status,
+          });
           changed = true;
         }
         // Detail is a message projection, not a replacement for the compact
@@ -1710,13 +1736,11 @@ export class WebStore {
       return { thread, duplicate: true, messageId: existing.message_id };
     }
     this.transaction(() => {
-      this.database.prepare(`
-        UPDATE messages SET parts_json = ?, updated_at = ?, status = ? WHERE id = ?
-      `).run(
-        serializeParts([processJobPart(projection, responseText), ...nextReplyParts]),
-        now,
-        isTerminalJobState(projection.state) ? "complete" : "running",
+      this.writeMessageParts(
         existing.message_id,
+        [processJobPart(projection, responseText), ...nextReplyParts],
+        now,
+        { status: isTerminalJobState(projection.state) ? "complete" : "running" },
       );
       this.database.prepare(`
         UPDATE process_job_cards
@@ -1939,9 +1963,7 @@ export class WebStore {
       const activityChanged = upsertMonitorActivity(parts, projection, input.deliveryKey);
       if (turn.status === "complete") this.repairMonitorResponsePush(input.turnId, parts);
       if (!activityChanged && !normalized.changed) return;
-      const now = this.now();
-      this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(serializeParts(parts), now, message.id);
+      this.writeMessageParts(message.id, parts, this.now());
       messageId = message.id;
     });
     return messageId === undefined ? undefined : this.requireMessage(messageId);
@@ -2880,8 +2902,7 @@ export class WebStore {
     const message = this.requireMessage(row.message_id);
     const now = this.now();
     this.transaction(() => {
-      this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(serializeParts(withLiveInputStatus(message.parts, "applied")), now, row.message_id);
+      this.writeMessageParts(row.message_id, withLiveInputStatus(message.parts, "applied"), now);
       this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(id);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, row.thread_id);
@@ -2899,8 +2920,12 @@ export class WebStore {
       this.database.prepare(`
         UPDATE live_inputs SET status = 'queued', active_turn_id = NULL, updated_at = ? WHERE id = ?
       `).run(now, id);
-      this.database.prepare("UPDATE messages SET turn_id = NULL, parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(serializeParts(withLiveInputStatus(message.parts, "queued")), now, row.message_id);
+      this.writeMessageParts(
+        row.message_id,
+        withLiveInputStatus(message.parts, "queued"),
+        now,
+        { turnId: null },
+      );
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, row.thread_id);
       this.recordThreadRevision(row.thread_id, "live_input_queued", now);
@@ -2914,8 +2939,12 @@ export class WebStore {
     const message = this.requireMessage(row.message_id);
     const now = this.now();
     this.transaction(() => {
-      this.database.prepare("UPDATE messages SET turn_id = NULL, parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(serializeParts(withLiveInputStatus(message.parts, "cancelled")), now, row.message_id);
+      this.writeMessageParts(
+        row.message_id,
+        withLiveInputStatus(message.parts, "cancelled"),
+        now,
+        { turnId: null },
+      );
       this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(id);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, row.thread_id);
@@ -2932,12 +2961,14 @@ export class WebStore {
     if (rows.length === 0) return [];
     const now = this.now();
     this.transaction(() => {
-      const update = this.database.prepare(
-        "UPDATE messages SET turn_id = NULL, parts_json = ?, updated_at = ? WHERE id = ?",
-      );
       for (const row of rows) {
         const message = this.requireMessage(row.message_id);
-        update.run(serializeParts(withLiveInputStatus(message.parts, "cancelled")), now, row.message_id);
+        this.writeMessageParts(
+          row.message_id,
+          withLiveInputStatus(message.parts, "cancelled"),
+          now,
+          { turnId: null },
+        );
       }
       this.database.prepare("DELETE FROM live_inputs WHERE thread_id = ?").run(threadId);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
@@ -2979,8 +3010,12 @@ export class WebStore {
           started_at, finished_at, error_code, error_message
         ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, NULL, NULL, NULL)
       `).run(turnId, threadId, row.text, row.model, row.effort, assistantMessageId, now);
-      this.database.prepare("UPDATE messages SET turn_id = ?, parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(turnId, serializeParts(withoutLiveInputTelemetry(userMessage.parts)), now, row.message_id);
+      this.writeMessageParts(
+        row.message_id,
+        withoutLiveInputTelemetry(userMessage.parts),
+        now,
+        { turnId },
+      );
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
         VALUES (?, ?, ?, 'assistant', '[]', ?, ?, 'running')
@@ -3001,13 +3036,15 @@ export class WebStore {
     };
   }
 
-  applyStreamFrame(turnId: string, frame: AgentStreamWireFrame): WebMessage {
+  applyStreamFrame(turnId: string, frame: AgentStreamWireFrame): StoredMessageWrite {
     return this.applyStreamFrames(turnId, [frame]);
   }
 
-  applyStreamFrames(turnId: string, frames: readonly AgentStreamWireFrame[]): WebMessage {
+  applyStreamFrames(turnId: string, frames: readonly AgentStreamWireFrame[]): StoredMessageWrite {
     const turn = this.requireTurn(turnId);
-    if (turn.status !== "running") return this.requireMessage(turn.assistant_message_id);
+    // Nothing is written for a turn that already settled, so there is no
+    // version for a delta to name.
+    if (turn.status !== "running") return { message: this.requireMessage(turn.assistant_message_id) };
     const message = this.requireMessage(turn.assistant_message_id);
     const parts = [...message.parts];
     let actualModel: string | undefined;
@@ -3028,9 +3065,8 @@ export class WebStore {
       }
     }
     const now = this.now();
-    this.transaction(() => {
-      this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ? WHERE id = ?")
-        .run(serializeParts(parts), now, message.id);
+    const delta = this.transaction(() => {
+      const written = this.writeMessageDelta(message, parts, now);
       if (actualModel !== undefined || actualEffort !== undefined) {
         this.database.prepare(`
           UPDATE turns SET
@@ -3039,8 +3075,9 @@ export class WebStore {
           WHERE id = ?
         `).run(actualModel ?? null, actualModel ?? null, actualEffort ?? null, actualEffort ?? null, turnId);
       }
+      return written;
     });
-    return this.requireMessage(message.id);
+    return { message: this.requireMessage(message.id), delta };
   }
 
   completeTurn(
@@ -3581,7 +3618,8 @@ export class WebStore {
         parts_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        status TEXT NOT NULL
+        status TEXT NOT NULL,
+        seq INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS messages_by_thread ON messages(thread_id, created_at);
       CREATE TABLE IF NOT EXISTS live_inputs (
@@ -3876,6 +3914,18 @@ export class WebStore {
             this.database.exec(
               "ALTER TABLE agents ADD COLUMN discovered INTEGER NOT NULL DEFAULT 1 CHECK (discovered IN (0, 1))",
             );
+          }
+        }
+        // Content deltas count a message's parts writes so a console can tell
+        // the next one from one it missed. Existing rows start the count at 0,
+        // which is exactly what a client that has never seen a delta holds.
+        // Guarded on PRAGMA table_info so the ALTER is skipped when the column
+        // already exists, keeping the migration re-runnable.
+        if (versionRow.user_version < 17) {
+          const columns = new Set((this.database.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>)
+            .map((column) => column.name));
+          if (!columns.has("seq")) {
+            this.database.exec("ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0");
           }
         }
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
@@ -4221,9 +4271,6 @@ export class WebStore {
       const updateInput = this.database.prepare(`
         UPDATE live_inputs SET status = 'queued', active_turn_id = NULL, updated_at = ? WHERE id = ?
       `);
-      const updateMessage = this.database.prepare(
-        "UPDATE messages SET turn_id = NULL, parts_json = ?, updated_at = ? WHERE id = ?",
-      );
       for (const row of rows) {
         const persisted = this.database.prepare("SELECT parts_json FROM messages WHERE id = ?")
           .get(row.message_id) as unknown as { parts_json: string } | undefined;
@@ -4231,10 +4278,11 @@ export class WebStore {
           throw new WebConsoleError("storage_corrupt", `Live input ${row.id} has no message.`, 500);
         }
         updateInput.run(now, row.id);
-        updateMessage.run(
-          serializeParts(withLiveInputStatus(parseParts(persisted.parts_json), "queued")),
-          now,
+        this.writeMessageParts(
           row.message_id,
+          withLiveInputStatus(parseParts(persisted.parts_json), "queued"),
+          now,
+          { turnId: null },
         );
       }
       for (const threadId of threadIds) {
@@ -4294,9 +4342,9 @@ export class WebStore {
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
     monitorWakeDeliveryKey?: string,
-  ): void {
+  ): StoredMessageWrite | undefined {
     const turn = this.requireTurn(turnId);
-    if (turn.status !== "running") return;
+    if (turn.status !== "running") return undefined;
     const existing = this.requireMessage(turn.assistant_message_id);
     let parts = [...existing.parts];
     if (finalText !== undefined && finalText.length > 0) reconcileFinalText(parts, finalText);
@@ -4331,8 +4379,7 @@ export class WebStore {
         runtime?.effort ?? null,
         turnId,
       );
-    this.database.prepare("UPDATE messages SET parts_json = ?, status = ?, updated_at = ? WHERE id = ?")
-      .run(serializeParts(parts), status, now, existing.id);
+    const delta = this.writeMessageDelta(existing, parts, now, { status });
     this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
       .run(now, turn.thread_id);
     this.recordThreadRevision(turn.thread_id, `turn_${status}`, now);
@@ -4378,6 +4425,7 @@ export class WebStore {
         notBefore: new Date(new Date(now).getTime() + 3_000).toISOString(),
       });
     }
+    return { message: this.requireMessage(existing.id), delta };
   }
 
   private mapThread(row: ThreadRow): WebThread {
@@ -4412,6 +4460,78 @@ export class WebStore {
     };
   }
 
+  /**
+   * The ONE statement that persists a message's parts.
+   *
+   * Every parts write bumps `seq`, and that count is what makes a content
+   * delta safe to apply: a console holding version N can tell the write that
+   * follows it from one that skipped ahead, and re-read the message instead of
+   * guessing. A write that went straight to `parts_json` would mint content no
+   * delta describes and no sequence number covers, so this is the only place in
+   * the store that names the column. A caller that also moves the row passes
+   * the columns it changes here rather than issuing a second statement.
+   */
+  private writeMessageParts(
+    id: string,
+    parts: readonly WebMessagePart[],
+    now: string,
+    columns: MessagePartsColumns = {},
+  ): { readonly baseSeq: number; readonly seq: number } {
+    const assignments: string[] = [];
+    const values: Array<string | null> = [];
+    if (columns.threadId !== undefined) {
+      assignments.push("thread_id = ?");
+      values.push(columns.threadId);
+    }
+    if (columns.turnId !== undefined) {
+      assignments.push("turn_id = ?");
+      values.push(columns.turnId);
+    }
+    assignments.push("parts_json = ?");
+    values.push(serializeParts(parts));
+    if (columns.createdAt !== undefined) {
+      assignments.push("created_at = ?");
+      values.push(columns.createdAt);
+    }
+    assignments.push("updated_at = ?");
+    values.push(now);
+    if (columns.status !== undefined) {
+      assignments.push("status = ?");
+      values.push(columns.status);
+    }
+    const row = this.database.prepare(
+      `UPDATE messages SET ${assignments.join(", ")}, seq = seq + 1 WHERE id = ? RETURNING seq`,
+    ).get(...values, id) as unknown as { seq: number } | undefined;
+    if (row === undefined) {
+      throw new WebConsoleError("storage_corrupt", `Message ${id} is missing from this conversation.`, 500);
+    }
+    return { baseSeq: row.seq - 1, seq: row.seq };
+  }
+
+  /**
+   * Persist a message's parts and describe the write as a content delta.
+   *
+   * `message` must be the message the new parts were DERIVED from: the diff
+   * compares by reference, so a delta computed against any other read of the
+   * same row would call every part changed.
+   */
+  private writeMessageDelta(
+    message: WebMessage,
+    parts: readonly WebMessagePart[],
+    now: string,
+    columns: MessagePartsColumns = {},
+  ): WebMessageDelta {
+    const { baseSeq, seq } = this.writeMessageParts(message.id, parts, now, columns);
+    return {
+      messageId: message.id,
+      baseSeq,
+      seq,
+      status: columns.status ?? message.status,
+      updatedAt: now,
+      ops: diffParts(message.parts, parts),
+    };
+  }
+
   private mapMessage(row: MessageRow): WebMessage {
     const attachments = this.database
       .prepare("SELECT * FROM attachments WHERE message_id = ? AND origin = 'upload' ORDER BY created_at, id")
@@ -4440,6 +4560,7 @@ export class WebStore {
       ...(finishedAt === undefined ? {} : { finishedAt }),
       status: normalizeMessageStatus(row.status),
       ...(liveInputStatus === undefined ? {} : { liveInputStatus }),
+      seq: row.seq,
     };
   }
 
@@ -5715,6 +5836,92 @@ function replaceWholeText(parts: WebMessagePart[], text: string): void {
     if (index === lastTextIndex) parts[index] = { type: "text", text };
     else parts.splice(index, 1);
   }
+}
+
+/**
+ * The ops that turn `prev` into `next`.
+ *
+ * Parts are compared by REFERENCE, which is sound only because every helper
+ * above replaces the slot it touches with a new object instead of editing the
+ * one already there — `store.test.ts` freezes a write path's previous parts to
+ * keep it that way. A truncate leads, so no later op can name an index the
+ * shortened array no longer has; the rest ascend, so a replay that walks them
+ * in order only ever extends the array by one slot at a time.
+ */
+export function diffParts(
+  prev: readonly WebMessagePart[],
+  next: readonly WebMessagePart[],
+): WebMessageDeltaOp[] {
+  const ops: WebMessageDeltaOp[] = [];
+  if (next.length < prev.length) ops.push({ op: "truncate", length: next.length });
+  for (let index = 0; index < next.length; index += 1) {
+    const after = next[index];
+    if (after === undefined) continue;
+    const before = prev[index];
+    if (before === after) continue;
+    // A streaming answer grows by its tail, which is the whole point of the
+    // exercise: sending the delta rather than the message again is what takes
+    // a long answer's per-frame cost off the wire.
+    if (before !== undefined
+      && (after.type === "text" || after.type === "reasoning")
+      && before.type === after.type
+      && after.text.startsWith(before.text)) {
+      const delta = after.text.slice(before.text.length);
+      if (delta.length > 0) ops.push({ op: "append", index, delta });
+      continue;
+    }
+    ops.push({ op: "set", index, part: after });
+  }
+  return ops;
+}
+
+/**
+ * Replay `ops` onto `parts`, the exact inverse of {@link diffParts}.
+ *
+ * This is the shared definition of what an op MEANS, so the console can apply a
+ * delta without inventing its own reading of one. Anything the ops cannot mean
+ * against these parts throws rather than producing a plausible transcript: a
+ * client that lands here has missed a write and must re-read the message.
+ */
+export function applyDeltaOps(
+  parts: readonly WebMessagePart[],
+  ops: readonly WebMessageDeltaOp[],
+): WebMessagePart[] {
+  let next = [...parts];
+  for (const op of ops) {
+    if (op.op === "truncate") {
+      if (!Number.isInteger(op.length) || op.length < 0 || op.length > next.length) {
+        throw new WebConsoleError(
+          "message_delta_invalid",
+          `A message delta truncates to ${String(op.length)} parts, which is out of range for ${String(next.length)}.`,
+          500,
+        );
+      }
+      next = next.slice(0, op.length);
+      continue;
+    }
+    if (!Number.isInteger(op.index) || op.index < 0 || op.index > next.length) {
+      throw new WebConsoleError(
+        "message_delta_invalid",
+        `A message delta names part ${String(op.index)}, which is out of range for ${String(next.length)}.`,
+        500,
+      );
+    }
+    if (op.op === "set") {
+      next[op.index] = op.part;
+      continue;
+    }
+    const target = next[op.index];
+    if (target === undefined || (target.type !== "text" && target.type !== "reasoning")) {
+      throw new WebConsoleError(
+        "message_delta_invalid",
+        `A message delta appends to part ${String(op.index)}, which cannot be appended to.`,
+        500,
+      );
+    }
+    next[op.index] = { type: target.type, text: `${target.text}${op.delta}` };
+  }
+  return next;
 }
 
 function deriveAutomaticTitle(text: string, attachments: readonly StoredAttachment[]): string {
