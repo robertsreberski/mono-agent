@@ -21,6 +21,7 @@ function fakeFactory(overrides = {}) {
       request: vi.fn(async (method, params) => {
         requests.push({ method, params });
         if (method === "initialize") return {};
+        if (method === "account/rateLimits/read") return overrides.quota ?? { rateLimits: { primary: { usedPercent: 10, resetsAt: Math.floor(Date.now() / 1000) + 3600 } } };
         if (method === "account/read") {
           return overrides.account ?? { account: { type: "chatgpt", email: "not-exposed@example.com", planType: "pro" } };
         }
@@ -112,6 +113,7 @@ describe("Codex subscription search broker", () => {
       "account/read",
       "modelProvider/capabilities/read",
       "model/list",
+      "account/rateLimits/read",
       "thread/start",
       "turn/start",
     ]);
@@ -209,3 +211,36 @@ describe("Codex subscription search broker", () => {
     expect(turns.map((entry) => entry.params.input[0].text)).toEqual(["first query", "second query"]);
   });
 });
+
+describe("Codex quota and structured result validation", () => {
+  it("reserves the final ten percent without starting a search turn", async () => {
+    const { factory, clients } = fakeFactory({ quota: { rateLimits: { primary: { usedPercent: 90, resetsAt: Math.floor(Date.now() / 1000) + 3600 } } } });
+    const result = await searchCodexSubscription("python docs", { clientFactory: factory });
+    expect(result).toMatchObject({ ok: false, code: "quota_reserved", quotaSkipped: true });
+    expect(clients[0].requests.some((r) => r.method === "turn/start")).toBe(false);
+  });
+  it("does not search with unrecognized quota information", async () => {
+    const { factory } = fakeFactory({ quota: {} });
+    expect(await searchCodexSubscription("python docs", { clientFactory: factory })).toMatchObject({ ok: false, code: "quota_unavailable" });
+  });
+  it("rejects missing results instead of claiming the web has no matches", async () => {
+    const { factory } = fakeFactory({ items: [{ type: "webSearch", query: "python docs" }] });
+    expect((await searchCodexSubscription("python docs", { clientFactory: factory })).ok).toBe(false);
+  });
+});
+
+  it("cancels a stalled startup before it can create a turn", async () => {
+    const abort = new AbortController();
+    const { factory, clients } = fakeFactory();
+    const stalledFactory = (options) => {
+      const client = factory(options);
+      client.request = vi.fn(() => new Promise(() => {}));
+      queueMicrotask(() => abort.abort());
+      return client;
+    };
+    const result = await searchCodexSubscription("docs", { clientFactory: stalledFactory, signal: abort.signal });
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("aborted");
+    expect(clients[0].close).toHaveBeenCalled();
+    expect(clients[0].request.mock.calls.map(([method]) => method)).toEqual(["initialize"]);
+  });

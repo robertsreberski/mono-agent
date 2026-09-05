@@ -13,7 +13,7 @@ import {
 } from "./launchd.js";
 import { parseWebLogMaintenanceArguments } from "./web-log-maintenance-command.js";
 
-export const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "bridge", "install-skill", "backfill", "runs", "memory", "continuations", "jobs", "monitors"] as const;
+export const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "bridge", "install-skill", "backfill", "runs", "memory", "continuations", "jobs", "monitors", "web-control"] as const;
 const KNOWN_COMMANDS = [
   ...PUBLIC_COMMANDS,
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
@@ -35,12 +35,13 @@ export const JSON_CAPABLE_COMMANDS = [
   "continuations",
   "jobs",
   "monitors",
+  "web-control",
 ] as const;
 
 // Human-facing list for the rejection message: the two subcommand-gated surfaces
 // are qualified so the error points at the exact invocation that accepts `--json`.
 const JSON_CAPABLE_COMMANDS_DISPLAY =
-  "validate, config, presets, status, sandbox status, install-skill --project --check, runs, memory, continuations, jobs, monitors";
+  "validate, config, presets, status, sandbox status, install-skill --project --check, runs, memory, continuations, jobs, monitors, web-control";
 
 // Commands removed outright before the KNOWN_COMMANDS gate. Parsing throws with the
 // replacement, and runCli maps that parse error to exit code 2 (usage-error).

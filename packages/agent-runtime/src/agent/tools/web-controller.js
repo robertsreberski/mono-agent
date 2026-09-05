@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
-import { performWebFetch } from "./web-fetch.js";
+import { performWebFetch, formatWebFetchDocument } from "./web-fetch.js";
 import { performWebSearch } from "./web-search.js";
 
 const MAX_CACHE_ENTRIES = 64;
@@ -28,9 +28,10 @@ const sharedSearchCache = new Map();
  * cleanup. Search results are the exception: they live in the process-wide
  * cache above so sibling subagents and later turns can reuse them.
  *
- * @param {{searchConfig?: any, fetchConfig?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, fetchImpl?: typeof fetch, browserRenderer?: any, codexSearch?: any}} [options]
+ * @param {{coordinator?: any, searchConfig?: any, fetchConfig?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, fetchImpl?: typeof fetch, browserRenderer?: any, codexSearch?: any}} [options]
  */
 export function createWebToolController({
+  coordinator,
   searchConfig,
   fetchConfig,
   sandboxPolicy,
@@ -74,7 +75,7 @@ export function createWebToolController({
       const result = await task;
       if (!result.error) {
         cache.set(key, cloneResult(result));
-        while (cache.size > MAX_CACHE_ENTRIES) {
+        while (cache.size > MAX_CACHE_ENTRIES || [...cache.values()].reduce((n, r) => n + Buffer.byteLength(r.document?.body || "", "utf8"), 0) > 32 * 1024 * 1024) {
           cache.delete(cache.keys().next().value);
         }
       }
@@ -111,6 +112,7 @@ export function createWebToolController({
     namespace,
 
     async search(params, execution = {}) {
+      if (execution.signal?.aborted) return { text: "Error: WebSearch was aborted.", error: true, outcome: { status: "error", code: "aborted" } };
       // The key must pin the backend, the endpoint AND the network policy the
       // search actually ran under. A params-only key was safe while the cache
       // lived and died with one run; process-wide it would let controllers with
@@ -132,8 +134,9 @@ export function createWebToolController({
       // strict as the key claims.
       const resolvedCtx = ctx ?? readToolRuntime();
       const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
-      const key = stableKey({ params, searchConfig, policy });
+      const key = stableKey({ params, searchConfig, policy, coordination: coordinator?.scope });
       return cachedSearch(key, async () => performWebSearch(params, {
+        coordinator,
         searchConfig,
         sandboxPolicy: policy,
         ctx: resolvedCtx,
@@ -144,18 +147,23 @@ export function createWebToolController({
     },
 
     async fetch(params, execution = {}) {
-      const key = stableKey(params);
-      return cachedRun(fetchCache, fetchInFlight, key, async () => performWebFetch(params, {
-        fetchConfig,
-        sandboxPolicy,
-        sandboxEngine,
-        ctx,
-        fetchImpl,
-        browserRenderer,
-        signal: execution.signal,
-        namespace,
-        registerCleanup,
+      if (execution.signal?.aborted) return { text: "Error: WebFetch was aborted.", error: true, outcome: { status: "error", code: "aborted" } };
+      const resolvedCtx = ctx ?? readToolRuntime();
+      const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
+      const { start_line, max_lines, max_output_chars, ...request } = params;
+      if ((start_line !== undefined && (!Number.isSafeInteger(start_line) || start_line < 1))
+        || (max_lines !== undefined && (!Number.isSafeInteger(max_lines) || max_lines < 1 || max_lines > 10000))) {
+        return { text: "Error: Invalid WebFetch line range.", error: true, outcome: { status: "error", code: "invalid_range" } };
+      }
+      const key = stableKey({ request, fetchConfig, policy, coordination: coordinator?.scope });
+      const result = await cachedRun(fetchCache, fetchInFlight, key, async () => performWebFetch(request, {
+        documentOnly: true, coordinator, fetchConfig, sandboxPolicy: policy, sandboxEngine,
+        ctx: resolvedCtx, fetchImpl, browserRenderer, signal: execution.signal,
+        namespace, registerCleanup,
       }));
+      if (result.error || !result.document) return result;
+      const sliced = formatWebFetchDocument({ ...result.document, outcome: result.outcome }, params, resolvedCtx);
+      return { ...sliced, document: undefined, outcome: { ...sliced.outcome, cacheHit: result.outcome.cacheHit } };
     },
 
     async close() {
@@ -228,6 +236,8 @@ function withCacheHit(result) {
     outcome: {
       ...(result.outcome || {}),
       cacheHit: true,
+      attempts: 0, durationMs: 0, queueWaitMs: 0, backendDurationMs: 0,
+      cooldownSkipCount: 0, quotaSkipCount: 0,
     },
   };
 }

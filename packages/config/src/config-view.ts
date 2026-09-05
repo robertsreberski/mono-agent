@@ -132,6 +132,7 @@ export const CONFIG_ENV_KEYS = {
   "tools.continuationServers": "MONO_AGENT_CONTINUATION_SERVERS",
   "tools.mcpCallTimeoutMs": "MONO_AGENT_MCP_CALL_TIMEOUT_MS",
   "tools.mcpCallMaxTotalTimeoutMs": "MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS",
+  "tools.web.coordination": "MONO_AGENT_WEB_COORDINATION",
   "tools.web.search.backend": "MONO_AGENT_WEB_SEARCH_BACKEND",
   "tools.web.search.endpoint": "MONO_AGENT_WEB_SEARCH_ENDPOINT",
   "tools.web.search.codex.model": "MONO_AGENT_WEB_SEARCH_CODEX_MODEL",
@@ -791,6 +792,14 @@ function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSect
           ? "runtime default (45 min)"
           : `${tools.mcpCallMaxTotalTimeoutMs}ms`,
         jsonPresent: json.tools?.mcpCallMaxTotalTimeoutMs !== undefined,
+      }),
+      toField(env, {
+        id: "tools.web.coordination",
+        label: "Web request coordination",
+        value: tools.web?.coordination ?? "process",
+        jsonPresent: json.tools?.web?.coordination !== undefined,
+        jsonValue: json.tools?.web?.coordination,
+        defaultValue: "process",
       }),
       toField(env, {
         id: "tools.web.search.backend",

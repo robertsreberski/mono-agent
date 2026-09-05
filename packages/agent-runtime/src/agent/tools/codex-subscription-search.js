@@ -9,7 +9,8 @@ import { createCodexAppServerClient } from "../../ai/providers/codex/app-server-
 export const DEFAULT_CODEX_SEARCH_MODEL = "gpt-5.6-luna";
 
 const REQUEST_TIMEOUT_MS = 30_000;
-const IDLE_CLOSE_MS = 1_000;
+const IDLE_CLOSE_MS = 30_000;
+let quotaSnapshot;
 const MAX_MODEL_PAGES = 10;
 const MAX_RESULTS = 100;
 const SEARCH_ONLY_INSTRUCTIONS = [
@@ -59,16 +60,23 @@ export async function inspectCodexSubscriptionSearch(options = {}) {
  * turns or cross-wire app-server notifications between requests.
  *
  * @param {string} query
- * @param {{model?: string, signal?: AbortSignal, clientFactory?: typeof createCodexAppServerClient}} [options]
+ * @param {{model?: string, signal?: AbortSignal, clientFactory?: typeof createCodexAppServerClient, coordinator?: any, language?: string, timeRange?: string}} [options]
  */
 export function searchCodexSubscription(query, options = {}) {
-  return enqueue(async () => {
+  let executing = false;
+  const pending = enqueue(async () => {
+    executing = true;
     if (options.signal?.aborted) return abortedResult();
     const model = normalizeModel(options.model);
     let current;
     try {
-      current = await getBroker(model, options.clientFactory);
-      const result = await runSearch(current, query, model, options.signal);
+      current = await getBroker(model, options.clientFactory, options.signal);
+      options.signal?.throwIfAborted();
+      await checkQuota(current, options.coordinator, options.signal);
+      options.signal?.throwIfAborted();
+      const quotaBefore = quotaSnapshot?.checkedAt;
+      const result = await runSearch(current, query, model, options.signal, options);
+      if (quotaSnapshot && quotaSnapshot.checkedAt !== quotaBefore) await options.coordinator?.writeQuota(quotaSnapshot.value);
       scheduleIdleClose();
       return result;
     } catch (error) {
@@ -78,9 +86,70 @@ export function searchCodexSubscription(query, options = {}) {
         backend: "codex",
         message: `Codex subscription search unavailable: ${publicReason(error)}`,
         retryable: isRetryable(error),
+        code: options.signal?.aborted ? (options.signal.reason?.code === "deadline_exceeded" ? "deadline_exceeded" : "aborted") : error?.code,
+        quotaSkipped: ["quota_reserved", "quota_unavailable"].includes(error?.code),
+        retryAfterMs: error?.retryAfterMs,
       };
     }
   });
+  return abortable(pending, options.signal, () => executing);
+}
+
+function abortable(pending, signal, executing) {
+  if (!signal) return pending;
+  return new Promise((resolve, reject) => {
+    const aborted = () => { if (!executing()) reject(signal.reason || Object.assign(new Error("WebSearch was aborted."), { name: "AbortError" })); };
+    if (signal.aborted) aborted();
+    else signal.addEventListener("abort", aborted, { once: true });
+    pending.then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
+  });
+}
+
+async function checkQuota(current, coordinator, signal) {
+  const shared = coordinator ? await coordinator.readQuota() : quotaSnapshot;
+  let snapshot = shared;
+  if (!snapshot || Date.now() - snapshot.checkedAt > 60_000 || snapshot.checkedAt > Date.now()) {
+    let response;
+    try { response = await searchRequest(current.client, "account/rateLimits/read", {}, { timeoutMs: 5000 }, signal); }
+    catch { throw Object.assign(new Error("Codex quota information is unavailable."), { code: "quota_unavailable" }); }
+    snapshot = { checkedAt: Date.now(), value: quotaValue(response) };
+    quotaSnapshot = snapshot;
+    await coordinator?.writeQuota(snapshot.value);
+  }
+  quotaSnapshot = snapshot;
+  const windows = snapshot.value?.windows;
+  if (!Array.isArray(windows) || windows.length === 0 || !windows.every((w) =>
+    Number.isFinite(w.usedPercent) && w.usedPercent >= 0 && w.usedPercent <= 100
+      && Number.isSafeInteger(w.resetsAt) && w.resetsAt * 1000 > Date.now())) {
+    throw Object.assign(new Error("Codex quota information is unavailable."), { code: "quota_unavailable" });
+  }
+  const reserved = windows.filter((w) => w.usedPercent >= 90);
+  if (reserved.length) throw Object.assign(new Error("Codex search preserves the remaining subscription allowance."), {
+    code: "quota_reserved", retryAfterMs: Math.max(...reserved.map((w) => w.resetsAt * 1000 - Date.now())),
+  });
+}
+
+function quotaValue(response) {
+  const bucket = response?.rateLimitsByLimitId?.codex ?? response?.rateLimits;
+  return { windows: [bucket?.primary, bucket?.secondary].filter(Boolean).map((w) => ({ usedPercent: w.usedPercent, resetsAt: w.resetsAt })) };
+}
+
+// Close the transport before releasing admission on abort, including startup
+// and thread/start. A queued or late request cannot launch a new search turn.
+async function searchRequest(client, method, params, options, signal) {
+  signal?.throwIfAborted();
+  if (!signal) return await client.request(method, params, options);
+  let abort;
+  const cancelled = new Promise((_, reject) => {
+    abort = () => {
+      Promise.resolve(client.close()).then(
+        () => reject(signal.reason), () => reject(signal.reason),
+      );
+    };
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  try { return await Promise.race([client.request(method, params, options), cancelled]); }
+  finally { signal.removeEventListener("abort", abort); }
 }
 
 function enqueue(task) {
@@ -89,14 +158,16 @@ function enqueue(task) {
   return result;
 }
 
-async function getBroker(model, clientFactory) {
+async function getBroker(model, clientFactory, signal) {
   clearIdleTimer();
   if (broker?.models.has(model)) return broker;
   if (broker && !broker.models.has(model)) await closeBroker();
   if (!brokerOpening) {
     brokerOpening = (async () => {
-      const owned = await openBroker(clientFactory);
-      const ready = await inspectClient(owned.client, model);
+      const owned = await openBroker(clientFactory, signal);
+      let ready;
+      try { ready = await inspectClient(owned.client, model, signal); }
+      catch (error) { await closeOwnedBroker(owned); throw error; }
       if (!ready.ok) {
         await closeOwnedBroker(owned);
         throw new Error(ready.reason);
@@ -109,7 +180,7 @@ async function getBroker(model, clientFactory) {
   return await brokerOpening;
 }
 
-async function openBroker(clientFactory = createCodexAppServerClient) {
+async function openBroker(clientFactory = createCodexAppServerClient, signal) {
   const directory = await mkdtemp(join(tmpdir(), "mono-agent-codex-search-"));
   /** @type {{handler: (message: any) => void}} */
   const target = { handler: () => {} };
@@ -117,16 +188,19 @@ async function openBroker(clientFactory = createCodexAppServerClient) {
   try {
     client = clientFactory({
       cwd: directory,
-      onNotification: (message) => target.handler(message),
+      onNotification: (message) => {
+        if (message?.method === "account/rateLimits/updated") quotaSnapshot = { checkedAt: Date.now(), value: quotaValue(message.params) };
+        target.handler(message);
+      },
       onServerRequest: (message) => {
         target.handler(message);
         throw new Error("Codex subscription search rejected an unexpected server request.");
       },
     });
-    await client.request("initialize", {
+    await searchRequest(client, "initialize", {
       clientInfo: { name: "mono-agent-web-search", title: "mono-agent WebSearch", version: "0" },
       capabilities: { experimentalApi: true },
-    }, { timeoutMs: REQUEST_TIMEOUT_MS });
+    }, { timeoutMs: REQUEST_TIMEOUT_MS }, signal);
     return { client, directory, models: new Set(), target };
   } catch (error) {
     await Promise.resolve(client?.close?.()).catch(() => {});
@@ -135,8 +209,8 @@ async function openBroker(clientFactory = createCodexAppServerClient) {
   }
 }
 
-async function inspectClient(client, model) {
-  const account = await client.request("account/read", { refreshToken: false }, { timeoutMs: REQUEST_TIMEOUT_MS });
+async function inspectClient(client, model, signal) {
+  const account = await searchRequest(client, "account/read", { refreshToken: false }, { timeoutMs: REQUEST_TIMEOUT_MS }, signal);
   if (account?.account?.type !== "chatgpt") {
     return {
       ok: false,
@@ -146,10 +220,10 @@ async function inspectClient(client, model) {
       models: new Set(),
     };
   }
-  const capabilities = await client.request(
+  const capabilities = await searchRequest(client,
     "modelProvider/capabilities/read",
     {},
-    { timeoutMs: REQUEST_TIMEOUT_MS },
+    { timeoutMs: REQUEST_TIMEOUT_MS }, signal,
   );
   if (capabilities?.webSearch !== true) {
     return {
@@ -160,7 +234,7 @@ async function inspectClient(client, model) {
       models: new Set(),
     };
   }
-  const models = await readModels(client);
+  const models = await readModels(client, signal);
   if (!models.has(model)) {
     return {
       ok: false,
@@ -179,15 +253,15 @@ async function inspectClient(client, model) {
   };
 }
 
-async function readModels(client) {
+async function readModels(client, signal) {
   const models = new Set();
   let cursor = null;
   for (let page = 0; page < MAX_MODEL_PAGES; page += 1) {
-    const response = await client.request("model/list", {
+    const response = await searchRequest(client, "model/list", {
       includeHidden: false,
       limit: 100,
       ...(cursor === null ? {} : { cursor }),
-    }, { timeoutMs: REQUEST_TIMEOUT_MS });
+    }, { timeoutMs: REQUEST_TIMEOUT_MS }, signal);
     if (!Array.isArray(response?.data)) throw new Error("Codex returned an invalid model catalog.");
     for (const row of response.data) {
       if (typeof row?.id === "string" && row.id.trim()) models.add(row.id.trim());
@@ -198,7 +272,8 @@ async function readModels(client) {
   throw new Error("Codex model catalog exceeded the pagination bound.");
 }
 
-async function runSearch(current, query, model, signal) {
+async function runSearch(current, query, model, signal, preferences = {}) {
+  signal?.throwIfAborted();
   const state = /** @type {any} */ ({
     threadId: "",
     turnId: "",
@@ -221,7 +296,7 @@ async function runSearch(current, query, model, signal) {
   };
   signal?.addEventListener?.("abort", onAbort, { once: true });
   try {
-    const thread = await current.client.request("thread/start", {
+    const thread = await searchRequest(current.client, "thread/start", {
       model,
       modelProvider: "openai",
       allowProviderModelFallback: false,
@@ -234,17 +309,20 @@ async function runSearch(current, query, model, signal) {
         project_doc_max_bytes: 0,
         mcp_servers: {},
       },
-      developerInstructions: SEARCH_ONLY_INSTRUCTIONS,
+      developerInstructions: SEARCH_ONLY_INSTRUCTIONS + (
+        preferences.language || preferences.timeRange
+          ? ` Search preferences (keep query text unchanged): language=${JSON.stringify(preferences.language || "default")}; time range=${JSON.stringify(preferences.timeRange || "any")}. Use supported search filters; do not invent dates.` : ""
+      ),
       ephemeral: true,
       sessionStartSource: "startup",
       environments: [],
       dynamicTools: [],
       selectedCapabilityRoots: [],
       experimentalRawEvents: false,
-    }, { timeoutMs: REQUEST_TIMEOUT_MS });
+    }, { timeoutMs: REQUEST_TIMEOUT_MS }, signal);
     state.threadId = thread?.thread?.id || "";
     if (!state.threadId) throw new Error("Codex did not return a search thread id.");
-    const turn = await current.client.request("turn/start", {
+    const turn = await searchRequest(current.client, "turn/start", {
       threadId: state.threadId,
       input: [{ type: "text", text: String(query), text_elements: [] }],
       cwd: current.directory,
@@ -255,7 +333,7 @@ async function runSearch(current, query, model, signal) {
       effort: "low",
       summary: "none",
       environments: [],
-    }, { timeoutMs: REQUEST_TIMEOUT_MS });
+    }, { timeoutMs: REQUEST_TIMEOUT_MS }, signal);
     state.turnId = turn?.turn?.id || state.turnId;
     if (state.violation && state.turnId) {
       await current.client.request("turn/interrupt", {
@@ -275,6 +353,9 @@ async function runSearch(current, query, model, signal) {
       : String(query);
     if (actualQuery !== String(query)) {
       throw new Error("Codex changed the exact web search query.");
+    }
+    if (!Array.isArray(item.results) || item.results.some((row) => !row || typeof row.url !== "string" || !validResultUrl(row.url))) {
+      throw new Error("Codex returned malformed structured search results.");
     }
     const results = normalizeResults(item.results);
     return {
@@ -327,6 +408,13 @@ function handleNotification(message, state, client) {
     state.violation ||= "Codex subscription search attempted an unsupported server request.";
     state.resolve();
   }
+}
+
+function validResultUrl(value) {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && Boolean(url.hostname) && !url.username && !url.password;
+  } catch { return false; }
 }
 
 function normalizeResults(rows) {
@@ -430,6 +518,7 @@ function abortedResult() {
 
 /** Test hook for process-shared broker state. */
 export async function __resetCodexSubscriptionSearchForTests() {
+  quotaSnapshot = undefined;
   await enqueue(async () => { await closeBroker(); });
   brokerOpening = null;
 }

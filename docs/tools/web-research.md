@@ -13,17 +13,20 @@ Mono-agent's Pi runtime exposes two complementary public-web tools:
 
 Both tools run inside one ephemeral controller per model run. Identical calls
 share in-flight work and a bounded in-memory cache; the controller and any
-browser namespace close at the end of the run. Nothing creates a durable search
-history, cookie jar, or browser profile.
+browser namespace close at the end of the run. Successful searches also share
+a bounded process cache for 15 minutes. Host coordination persists operational
+limits only; it creates no durable search history, cookie jar, or browser profile.
 
 ## Recommended configuration
 
-The framework defaults to keyless search fallback and static fetch extraction:
+The framework defaults to `auto` search and static fetch extraction. For several
+agents running under the same OS user, opt into host coordination:
 
 ```json
 {
   "tools": {
     "web": {
+      "coordination": "host",
       "search": {
         "backend": "auto",
         "endpoint": "http://127.0.0.1:8088",
@@ -52,6 +55,7 @@ Environment equivalents:
 
 | Config key | Environment variable | Default |
 | --- | --- | --- |
+| `tools.web.coordination` | `MONO_AGENT_WEB_COORDINATION` | `process` |
 | `tools.web.search.backend` | `MONO_AGENT_WEB_SEARCH_BACKEND` | `auto` |
 | `tools.web.search.endpoint` | `MONO_AGENT_WEB_SEARCH_ENDPOINT` | unset |
 | `tools.web.search.codex.model` | `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` | `gpt-5.6-luna` |
@@ -71,8 +75,10 @@ Search backends have explicit behavior:
 
 The tool accepts one `query`, up to three `alternate_queries`, a result `limit`
 from 1–10, `domains`, `exclude_domains`, `language`, and a `time_range` of
-`day`, `month`, or `year`. Query variants run concurrently in a deterministic
-order for local and keyless search. Quotes and `site:` operators are never
+`day`, `month`, or `year`. The primary query runs first. Supplied alternates run in order only while no
+relevant result has been accepted. A transport failure, quota skip or block ends
+that stage immediately; alternate wording cannot repair it. Codex gets at most
+one exact-query turn. Quotes and `site:` operators are never
 stripped or relaxed. Results are normalized, tracking parameters are removed,
 duplicates are fused with reciprocal-rank fusion, and include/exclude domain
 filters plus a deterministic query-term/quoted-phrase relevance gate are
@@ -95,8 +101,21 @@ instructions, and capability roots are empty. Mono-agent consumes only the one
 completed structured `webSearch.results` item; assistant prose and any URLs it
 contains are ignored. A server interaction, a second search item, or any
 non-search tool item interrupts and rejects the fallback. Concurrent
-subscription searches are serialized process-wide, while the ordinary
+subscription searches are serialized process-wide (and across opted-in host
+processes), while the ordinary
 successful-result cache still prevents repeated calls for the same request.
+
+Search reads `account/rateLimits/read` or its update notification and caches the
+snapshot for at most 60 seconds. It preserves a 10% allowance reserve: if either
+reported Codex window is at least 90% used, it skips the turn until quota is
+available. Missing, invalid, or stale/unrefreshable quota also skips Codex.
+This uses subscription allowance, not unlimited free search. No automatic credit
+purchase or account rotation is involved. Language and time-range preferences
+are sent separately from the unchanged query; they are advisory for Codex.
+SearXNG supports both filters, DuckDuckGo receives its date parameter and a
+language hint, and Startpage receives an advisory date parameter. These HTML
+endpoints do not guarantee freshness.
+`outcome.filterSupport` reports these limitations; verify dates in fetched sources.
 
 An empty result set is a successful answer (`No results.`) **only when the
 backend that produced it was actually working**. A tool error means every
@@ -148,15 +167,29 @@ No credentials are ever sent to these endpoints, so a `403` can only mean
 Redirects are never followed for search: on these engines a redirect *is* the
 block, so following it only costs a round trip and still yields no results.
 
-Three bounds keep an agent from provoking the block in the first place. All are
-process-wide, because a single turn can fan out four query variants per search
-and every subagent runs its own web controller:
+The default `process` mode retains the process-wide keyless bounds: three
+requests in flight, 1.5 seconds between starts to the same engine, and a
+five-minute throttle cooldown. `host` adds admission shared by every opted-in
+agent and subagent under the same OS user:
 
-- at most **3** keyless requests in flight at once;
-- at least **1.5 s** between two requests to the same engine (only a multi-query
-  fan-out pays this; a single-query search never waits);
-- an engine that signals throttling is **skipped for 5 minutes**, so the chain
-  falls through to the next backend instead of re-hitting a blocked one.
+| Backend scope | Concurrent requests | Minimum start spacing |
+| --- | --- | --- |
+| SearXNG endpoint | 1 | 2 seconds |
+| DuckDuckGo / Startpage, separately | 1 each | 3 seconds |
+| Codex subscription | 1 | serialized |
+| Fetch origin (HTTP and renderer admission) | 2 | 500 ms |
+
+Host mode honors `Retry-After`; without it, throttled searches cool down for five
+minutes and fetch origins for one minute. Repeated throttling doubles that delay
+up to an hour. Two infrastructure failures open a one-minute cooldown. Only one
+probe is admitted when a cooldown expires. A later successful probe resets the
+failure streak. Cooldown skips make no provider request.
+
+A search has a 60-second deadline including admission, startup and I/O; automatic
+SearXNG admission and execution get a three-second stage budget before fallback.
+Strict SearXNG retains its 15-second per-request timeout within the total budget.
+Cancellation closes active Codex transport before releasing admission; process
+shutdown may add its bounded cleanup time.
 
 Successful searches are cached process-wide for **15 minutes**, keyed by the
 query parameters *and* the backend configuration, so sibling subagents and later
@@ -165,21 +198,31 @@ turns reuse a result instead of re-querying. Failures are never cached.
 `outcome.rateLimited` and `outcome.cooldownBackends` report throttling even when
 a fallback backend rescued the query, so a silent degradation stays visible.
 
-### Search-heavy agents should not rely on the keyless chain
+### Host state and recovery
 
-The keyless engines are a fallback, not a budget. An agent that issues tens of
-searches per turn — subagent fan-out especially — will eventually be blocked no
-matter how politely it is throttled. Point such an agent at a local SearXNG:
+`~/.mono-agent/web-control/state.json` stores hashed backend keys, cooldowns,
+PID/incarnation leases, and quota counters. Owner-private locking and atomic
+replacement coordinate processes without a daemon. The directory is `0700`,
+state is `0600`, capped at 256 KiB and 512 buckets. Query text, fetched content,
+headers and credentials are never written there. Expired leases and proven-dead
+owners are reclaimed during admission. Unsafe or corrupt state fails closed;
+there is no uncoordinated network fallback.
 
-```json
-{ "tools": { "web": { "search": { "backend": "searxng", "endpoint": "http://127.0.0.1:8088" } } } }
+```bash
+mono-agent web-control status --json
+mono-agent web-control reset --json
 ```
 
-Provision the instance independently with the exact
-[loopback-only, JSON-capable operator recipe](/playbooks/local-web-research/#1-provision-an-optional-searxng-instance).
-It sets the current upstream Compose host binding and `search.formats`
-explicitly, verifies both contracts, and covers migration of the retired
-repository-managed Compose project without touching a live service.
+Status reports only operational metadata. Reset clears validated state only when
+there are no active requests. It does not repair unsafe permissions or corrupt
+JSON; stop opted-in consumers and inspect the private directory before manual
+recovery. Ordinary session reset and restart do not clear host cooldowns.
+
+SearXNG remains dependent on upstream engine limits. A VPN changes the network
+path, but does not expand account quota or provide a reliable search budget;
+shared exits can themselves be blocked. Prefer fewer queries, cached results,
+working operator-selected engines and respected cooldowns. The framework does
+not rotate accounts, proxies or VPN exits.
 
 ## WebFetch
 
@@ -211,6 +254,26 @@ two bounded retries. `Retry-After` is honored up to five seconds. Non-success
 HTTP responses, unsupported content, and policy denials are returned as
 structured tool failures; browser rendering never runs for those responses.
 
+### Read a bounded page slice
+
+Use `start_line` (one-based) and `max_lines` (1–10000, default 200 when slicing).
+Omitting both preserves the normal capped document output. `max_output_chars`
+still bounds the selected text. The result reports `startLine`, `endLine`,
+`totalLines` and `nextLine`, plus a continuation hint. A line too large for the
+budget requires a larger character cap or reading the saved output artifact;
+it is never silently skipped.
+
+```json
+{ "url": "https://example.com/guide", "start_line": 201, "max_lines": 100 }
+```
+
+The run caches at most 64 extracted documents and 32 MiB of document text.
+Changing the slice reuses extraction without refetching or rerendering. Cache
+keys retain headers, extraction/render settings and resolved network policy.
+Cache eviction or run completion requires a fresh fetch. One 45-second deadline
+covers admission, redirects, retry waits and rendering, plus bounded cleanup.
+In host mode a throttle starts an origin cooldown, so a retry cannot bypass it.
+
 ### Browser rendering
 
 The tool call may request `render: "never"`, `"auto"`, or `"always"`, but the
@@ -221,7 +284,8 @@ agent config is the authority:
 - Config `auto` lets individual calls request or automatically trigger browser
   rendering.
 - Call `always` is strict: a rendering failure is a tool error.
-- Call `auto` falls back to the successful static extraction if rendering fails.
+- Call `auto` falls back only when the static extraction is readable. An unusable
+  loading shell is an error; cancellation is never returned as static success.
 
 Automatic rendering is attempted only for successful HTML whose extracted text
 is sparse and whose markup looks like a client-rendered application. JSON,
@@ -262,7 +326,8 @@ untrusted. WebSearch output includes bounded backend/query/provenance metadata
 so fallback behavior is inspectable, while sanitized failures expose only a
 backend and stable category. Timing events retain only bounded operational
 fields such as status, error code, backend, attempt count, byte count,
-HTTP/exit status, timeout, rendered, cache-hit, and truncation flags; request
+HTTP/exit status, timeout, rendered, cache-hit, truncation flags, queue wait,
+backend time, cooldown skips and quota skips; request
 headers and command arguments stay out of them.
 
 The tools are public-web readers, not an authenticated browsing surface. Codex

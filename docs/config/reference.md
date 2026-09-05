@@ -216,6 +216,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `tools.mcpCallTimeoutMs` | `integer` | `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | 120000 | `120000` | Configures mcpCallTimeoutMs for the tools section. |
 | `tools.mcpConfigPath` | `string` | `MONO_AGENT_MCP_CONFIG_PATH` | unset | `example` | Configures mcpConfigPath for the tools section. |
 | `tools.mcpRequestContextServers` | `string[]` | `MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS` | [] | `["transcribe"]` | Configured stdio MCP server names that receive trusted per-request conversation, run, output-directory, and scoped progress context. |
+| `tools.web.coordination` | `string` | `MONO_AGENT_WEB_COORDINATION` | process | `process` | Host mode shares web request budgets and cooldowns across participating local mono-agent processes; process preserves isolated coordination. |
 | `tools.web.fetch.browserCommand` | `string` | `MONO_AGENT_WEB_BROWSER_COMMAND` | agent-browser | `agent-browser` | Direct executable name or path for agent-browser; shell fragments are not evaluated. |
 | `tools.web.fetch.render` | `string` | `MONO_AGENT_WEB_FETCH_RENDER` | never | `never` | Browser-render capability for sparse JavaScript pages. never forces every call to static extraction; auto permits an isolated agent-browser session when needed. |
 | `tools.web.search.backend` | `string` | `MONO_AGENT_WEB_SEARCH_BACKEND` | auto | `auto` | WebSearch backend: auto tries configured local SearXNG, then ChatGPT-subscription Codex search, then keyless fallbacks; searxng, codex, and keyless are strict. |

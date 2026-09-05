@@ -265,6 +265,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     ...(mcpCallTimeoutMs === undefined ? {} : { mcpCallTimeoutMs }),
     ...(mcpCallMaxTotalTimeoutMs === undefined ? {} : { mcpCallMaxTotalTimeoutMs }),
     web: {
+      coordination: readChoice(input.env.MONO_AGENT_WEB_COORDINATION, "MONO_AGENT_WEB_COORDINATION", ["process", "host"] as const, "process", invalidEnv),
       search: {
         backend: webSearchBackend,
         ...(webSearchEndpoint === undefined ? {} : { endpoint: webSearchEndpoint }),
@@ -448,6 +449,7 @@ export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgen
       disallowedTools: [...config.tools.disallowedTools],
       ...(config.tools.web === undefined ? {} : {
         web: {
+          coordination: config.tools.web.coordination ?? "process",
           search: {
             ...config.tools.web.search,
             ...(config.tools.web.search.codex === undefined

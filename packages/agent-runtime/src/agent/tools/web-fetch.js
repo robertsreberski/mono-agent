@@ -1,3 +1,4 @@
+import { withWebDeadline, coordinatedWebRequest, webRequestFailure } from "./web-request.js";
 // @ts-check
 
 import { Readability } from "@mozilla/readability";
@@ -28,22 +29,23 @@ class WebFetchError extends Error {
   /**
    * @param {string} code
    * @param {string} message
-   * @param {{retryable?: boolean, statusCode?: number}} [options]
+   * @param {{retryable?: boolean, statusCode?: number, retryAfterMs?: number}} [options]
    */
-  constructor(code, message, { retryable = false, statusCode } = {}) {
+  constructor(code, message, { retryable = false, statusCode, retryAfterMs } = {}) {
     super(message);
     this.name = "WebFetchError";
     this.code = code;
     this.retryable = retryable;
     this.statusCode = statusCode;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
 /**
  * Compatibility wrapper for direct callers.
  *
- * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string}} params
- * @param {{sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
+ * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number}} params
+ * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
 export async function webFetchToolImpl(params, options = {}) {
   return (await performWebFetch(params, options)).text;
@@ -52,18 +54,41 @@ export async function webFetchToolImpl(params, options = {}) {
 /**
  * Fetch and locally extract one public URL.
  *
- * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string}} params
- * @param {{sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
+ * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number}} params
+ * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
  */
-export async function performWebFetch(
+export async function performWebFetch(params, options = {}) {
+  const started = Date.now();
+  try {
+    return await withWebDeadline(options.signal, 45_000, async (signal) => {
+      const result = await performFetch(params, { ...options, signal });
+      if (signal.aborted && !result.error) return failure("Error: WebFetch was aborted or exceeded its deadline.", signal.reason?.code === "deadline_exceeded" ? "deadline_exceeded" : "aborted", started);
+      return result;
+    });
+  } catch (error) {
+    const normalized = webRequestFailure(error, "http", options.signal);
+    return failure(`Error: ${normalized.message}`, normalized.code, started, { retryAfterMs: normalized.retryAfterMs });
+  }
+}
+
+/**
+ * Fetch and locally extract one public URL.
+ *
+ * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number, format?: string, render?: string, start_line?: number, max_lines?: number}} params
+ * @param {{documentOnly?: boolean, coordinator?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, signal?: AbortSignal, retryDelaysMs?: number[], fetchConfig?: any, fetchImpl?: typeof fetch, browserRenderer?: typeof renderWithAgentBrowser, namespace?: string, registerCleanup?: (cleanup: () => Promise<void>) => () => void}} [options]
+ */
+async function performFetch(
   {
     url,
     headers = {},
     max_output_chars,
     format = "markdown",
     render,
+    start_line, max_lines,
   },
   {
+    coordinator,
+    documentOnly = false,
     sandboxPolicy,
     sandboxEngine,
     ctx,
@@ -77,6 +102,10 @@ export async function performWebFetch(
   } = {},
 ) {
   const startedAt = Date.now();
+  if ((start_line !== undefined && (!Number.isSafeInteger(start_line) || start_line < 1))
+    || (max_lines !== undefined && (!Number.isSafeInteger(max_lines) || max_lines < 1 || max_lines > 10_000))) {
+    return failure("Error: start_line must be positive; max_lines must be between 1 and 10000.", "invalid_range", startedAt);
+  }
   let parsed;
   try { parsed = new URL(url); } catch {
     return failure("Error: Invalid URL", "invalid_url", startedAt);
@@ -123,18 +152,23 @@ export async function performWebFetch(
   let finalUrl = parsed.href;
   let redirectCount = 0;
   let responseBytes = 0;
+  let queueWaitMs = 0;
+  let backendDurationMs = 0;
   let bytes;
 
   for (let attempt = 0; attempt <= delays.length; attempt += 1) {
     attempts += 1;
     try {
       const fetched = await fetchFollowingRedirects(parsed, {
+        coordinator,
         headers: requestHeaders.headers,
         sandbox,
         policy,
         signal,
         fetchImpl,
       });
+      queueWaitMs += fetched.queueWaitMs;
+      backendDurationMs += fetched.backendDurationMs;
       response = fetched.response;
       finalUrl = fetched.url;
       redirectCount = fetched.redirects;
@@ -144,12 +178,12 @@ export async function performWebFetch(
         await waitForRetry(delay, signal);
         continue;
       }
-      bytes = await readResponseBytes(response);
+      bytes = fetched.bytes;
       responseBytes = bytes.byteLength;
       break;
     } catch (error) {
       if (signal?.aborted) {
-        return failure("Error fetching URL: request aborted", "aborted", startedAt, {
+        return failure("Error fetching URL: request aborted", signal.reason?.code === "deadline_exceeded" ? "deadline_exceeded" : "aborted", startedAt, {
           attempts,
           retryable: false,
         });
@@ -176,6 +210,7 @@ export async function performWebFetch(
         attempts,
         retryable: normalized.retryable,
         statusCode: normalized.statusCode ?? response?.status,
+        retryAfterMs: normalized.retryAfterMs, queueWaitMs, backendDurationMs,
       });
     }
   }
@@ -241,7 +276,7 @@ export async function performWebFetch(
   let renderFailed = false;
   if (shouldRender) {
     try {
-      const rendered = await browserRenderer(finalUrl, {
+      const renderedResult = await coordinatedWebRequest(coordinator, "fetch", new URL(finalUrl).origin, signal, async () => ({ ok: true, text: await browserRenderer(finalUrl, {
         browserCommand: fetchSettings.browserCommand,
         namespace,
         sandboxPolicy,
@@ -249,7 +284,11 @@ export async function performWebFetch(
         ctx: resolvedCtx,
         signal,
         registerCleanup,
-      });
+      }) }));
+      queueWaitMs += renderedResult.coordinationWaitMs;
+      backendDurationMs += renderedResult.backendDurationMs;
+      const rendered = renderedResult.text;
+      signal?.throwIfAborted();
       extracted = {
         body: outputFormat === "text" ? markdownToText(rendered) : rendered,
         readableText: markdownToText(rendered),
@@ -257,7 +296,8 @@ export async function performWebFetch(
       };
       backend = "agent-browser";
     } catch (error) {
-      if (requestedRender === "always") {
+      if (signal?.aborted) return failure("Error: WebFetch rendering was aborted.", "aborted", startedAt);
+      if (requestedRender === "always" || error?.code === "coordination_unavailable") {
         return failure(`Error rendering URL: ${error?.message || String(error)}`, "browser_render_failed", startedAt, {
           attempts,
           statusCode: response.status,
@@ -270,15 +310,11 @@ export async function performWebFetch(
     }
   }
 
+  if (responseKind === "html" && backend === "http" && shouldAutoRender(extracted.readableText, decodeBytes(bytes, contentType))) {
+    return failure("Error: Page contains an unusable loading shell; no readable evidence was retrieved.", "unusable_content", startedAt, { backend, rendered: false, renderFailed });
+  }
   const body = extracted.body || "(no readable content)";
-  const capped = capChars(body, { label: "WebFetch", maxChars, ctx: resolvedCtx });
-  const text = [
-    `[BEGIN UNTRUSTED WEB CONTENT source=${JSON.stringify(finalUrl)}]`,
-    capped,
-    "[END UNTRUSTED WEB CONTENT]",
-  ].join("\n");
-  return {
-    text,
+  const document = { body, finalUrl,
     outcome: {
       status: "ok",
       code: renderFailed ? "ok_static_render_failed" : "ok",
@@ -288,6 +324,7 @@ export async function performWebFetch(
       cacheHit: false,
       durationMs: Date.now() - startedAt,
       bytes: responseBytes,
+      queueWaitMs, backendDurationMs,
       truncated: body.length > maxChars,
       statusCode: response.status,
       redirectCount,
@@ -295,12 +332,15 @@ export async function performWebFetch(
       renderFailed,
       contentKind: responseKind,
     },
-    error: false,
-  };
+    };
+  return documentOnly ? { text: "", error: false, outcome: document.outcome, document }
+    : formatWebFetchDocument(document, { start_line, max_lines, max_output_chars: maxChars }, resolvedCtx);
 }
 
 async function fetchFollowingRedirects(initialUrl, options) {
   let current = new URL(initialUrl.href);
+  let queueWaitMs = 0;
+  let backendDurationMs = 0;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
     if (!options.sandbox.networkAllowsUrl(options.policy, current.href)) {
       throw new WebFetchError(
@@ -310,14 +350,25 @@ async function fetchFollowingRedirects(initialUrl, options) {
           : "Network access denied by sandbox policy (redirect).",
       );
     }
-    const response = await options.fetchImpl(current, {
-      headers: options.headers,
-      redirect: "manual",
-      signal: requestSignal(options.signal),
-    });
+    const fetched = await coordinatedWebRequest(options.coordinator, "fetch", current.origin, options.signal, async () => {
+      const response = await options.fetchImpl(current, {
+        headers: options.headers, redirect: "manual", signal: requestSignal(options.signal),
+      });
+      const redirect = response.status >= 300 && response.status < 400 && response.headers.has("location");
+      let bytes;
+      if (redirect) { await response.body?.cancel(); bytes = new Uint8Array(); }
+      else bytes = await readResponseBytes(response);
+      return { response, bytes };
+    }, ({ response }) => ({
+      status: response.status === 429 ? "rate_limited" : response.status >= 500 ? "unavailable" : "ok",
+      ...(response.status === 429 ? { retryAfterMs: retryAfterMilliseconds(response) } : {}),
+    }));
+    queueWaitMs += fetched.coordinationWaitMs;
+    backendDurationMs += fetched.backendDurationMs;
+    const { response, bytes } = fetched;
     const location = response.headers.get("location");
     if (response.status < 300 || response.status >= 400 || !location) {
-      return { response, url: current.href, redirects: hop };
+      return { response, bytes, url: current.href, redirects: hop, queueWaitMs, backendDurationMs };
     }
     if (hop === MAX_REDIRECTS) {
       try { await response.body?.cancel(); } catch { /* best effort */ }
@@ -662,7 +713,7 @@ function normalizeFetchError(error) {
   return new WebFetchError(
     timedOut ? "timeout" : (aborted ? "aborted" : (code || "request_failed")),
     error?.message || String(error),
-    { retryable: transient },
+    { retryable: transient, retryAfterMs: error?.retryAfterMs },
   );
 }
 
@@ -688,4 +739,45 @@ function failure(text, code, startedAt, extra = {}) {
 function positiveInteger(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
+}
+
+function retryAfterMilliseconds(response) {
+  const raw = response.headers.get("retry-after");
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(raw) - Date.now();
+  return Number.isFinite(delay) ? Math.max(0, delay) : undefined;
+}
+
+export function formatWebFetchDocument(document, params, ctx) {
+  if ((params.start_line !== undefined && (!Number.isSafeInteger(params.start_line) || params.start_line < 1))
+    || (params.max_lines !== undefined && (!Number.isSafeInteger(params.max_lines) || params.max_lines < 1 || params.max_lines > 10000))) {
+    return failure("Error: Invalid WebFetch line range.", "invalid_range", Date.now());
+  }
+  const { body, finalUrl } = document;
+  const ranged = params.start_line !== undefined || params.max_lines !== undefined;
+  const lines = body.split("\n");
+  const start = params.start_line ?? 1;
+  const count = params.max_lines ?? 200;
+  const selected = ranged ? lines.slice(start - 1, start - 1 + count).join("\n") : body;
+  const maxChars = positiveInteger(params.max_output_chars, DEFAULT_MAX_TOOL_OUTPUT_CHARS);
+  const capped = capChars(selected, { label: "WebFetch", maxChars, ctx });
+  const shownLines = capped === selected ? (selected ? selected.split("\n").length : 0)
+    : Math.max(0, capped.slice(0, capped.lastIndexOf("[truncated WebFetch output:")).split("\n").length - 1);
+  const end = Math.min(lines.length, start - 1 + shownLines);
+  const continuation = end < lines.length ? Math.max(start, end + 1) : null;
+  const continuationHint = continuation === start && capped !== selected
+    ? `The next line exceeds the output budget. Increase max_output_chars or read the saved output artifact; repeating this range with the same budget cannot advance.`
+    : `Continue with WebFetch url=${JSON.stringify(finalUrl)} start_line=${continuation} max_lines=${count}.`;
+  return {
+    text: [`[BEGIN UNTRUSTED WEB CONTENT source=${JSON.stringify(finalUrl)}]`,
+      ...(ranged || continuation ? [`[Lines ${start}-${end} of ${lines.length}.]`] : []),
+      capped,
+      ...(continuation ? [`[${continuationHint}]`] : []),
+      "[END UNTRUSTED WEB CONTENT]"].join("\n"),
+    outcome: { ...document.outcome, truncated: selected.length > maxChars || end < lines.length,
+      startLine: start, endLine: end, totalLines: lines.length, nextLine: continuation },
+    error: false,
+    document,
+  };
 }

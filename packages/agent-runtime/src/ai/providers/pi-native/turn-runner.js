@@ -78,6 +78,7 @@ export async function buildTurnTools(runState, {
     ? null
     : createWebToolController({
       searchConfig: options.webSearchConfig,
+      coordinator: options.webRequestCoordinator,
       fetchConfig: options.webFetchConfig,
       sandboxPolicy: options.sandboxPolicy,
       sandboxEngine,

@@ -387,6 +387,7 @@ export interface MonoAgentConfig {
     readonly mcpCallMaxTotalTimeoutMs?: number;
     /** Local-first public web research tools. */
     readonly web?: {
+      readonly coordination?: "process" | "host";
       readonly search: {
         readonly backend: WebSearchBackend;
         /** SearXNG must be unauthenticated loopback HTTP. */

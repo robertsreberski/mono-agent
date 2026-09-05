@@ -13,6 +13,7 @@ vi.mock("../managed-runtime-publication.js", async (importOriginal) => {
   return { ...actual, waitForManagedRuntimePublication: mocks.waitForManagedRuntimePublication };
 });
 
+import { JSON_CAPABLE_COMMANDS } from "../cli-args.js";
 import { describeChannelStatus, loadCliEnvFile, monoAgentVersion, parseCliArgs, renderHelp, renderHelpTopic, runCli, shouldLoadCommandDotenv } from "../cli.js";
 
 /** Resolve a help topic to its rendered detail text, failing if it is not a valid topic. */
@@ -679,8 +680,8 @@ describe("parseCliArgs", () => {
     expect(help).not.toContain("--artifact-dir");
     expect(help).not.toContain("web reset --all --yes");
 
-    // Exactly the eleven JSON surfaces carry a [--json] marker.
-    expect(help.split("[--json]").length - 1).toBe(11);
+    // Every JSON-capable surface carry a [--json] marker.
+    expect(help.split("[--json]").length - 1).toBe(JSON_CAPABLE_COMMANDS.length);
     const lineFor = (short: string): string => lines.find((line) => line.includes(short)) ?? "";
     expect(lineFor("runs [report|audit]")).toContain("[--json]");
     expect(lineFor("memory <subcommand>")).toContain("[--json]");

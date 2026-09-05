@@ -965,6 +965,9 @@ export function layerJsonOntoEnv(
   if (json.tools?.mcpCallMaxTotalTimeoutMs !== undefined) {
     fromJson.MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS = String(json.tools.mcpCallMaxTotalTimeoutMs);
   }
+  if (json.tools?.web?.coordination !== undefined) {
+    fromJson.MONO_AGENT_WEB_COORDINATION = json.tools.web.coordination;
+  }
   if (json.tools?.web?.search?.backend !== undefined) {
     fromJson.MONO_AGENT_WEB_SEARCH_BACKEND = json.tools.web.search.backend;
   }

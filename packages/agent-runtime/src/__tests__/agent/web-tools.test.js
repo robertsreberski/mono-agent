@@ -60,7 +60,7 @@ describe("WebSearch", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("queries strict loopback SearXNG, fuses alternates, filters domains, and canonicalizes URLs", async () => {
+  it("queries strict loopback SearXNG, skips unneeded alternates, filters domains, and canonicalizes URLs", async () => {
     const calls = [];
     const fetchImpl = vi.fn(async (url, init) => {
       calls.push({ url: String(url), init });
@@ -103,13 +103,13 @@ describe("WebSearch", () => {
     expect(result.outcome).toMatchObject({
       status: "ok",
       backend: "searxng",
-      attempts: 2,
+      attempts: 1,
       resultCount: 1,
     });
     expect(result.text).toContain("https://example.com/article");
     expect(result.text).not.toContain("utm_source");
     expect(result.text).not.toContain("docs.example.com");
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
     for (const call of calls) {
       expect(call.url).toBe("http://127.0.0.1:8088/search");
       expect(call.init.method).toBe("POST");
@@ -560,13 +560,11 @@ describe("WebSearch", () => {
       inFlight -= 1;
       // DuckDuckGo markup, so every query is answered by the first backend and
       // the call count reflects the fan-out alone.
-      return new Response('<div class="result"><a class="result__a" href="https://example.com/a">A</a></div>');
+      return new Response('<div class="result"><a class="result__a" href="https://example.com/a">one two three four</a></div>');
     });
 
-    const search = performWebSearch({
-      query: "one",
-      alternate_queries: ["two", "three", "four"],
-    }, { searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext() });
+    const search = Promise.all(["one", "two", "three", "four"].map((query) => performWebSearch({ query },
+      { searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext() })));
 
     // Two run, two stay queued: proves the fan-out is concurrent AND capped.
     await vi.waitFor(() => { expect(inFlight).toBe(2); });
@@ -810,8 +808,8 @@ describe("WebFetch", () => {
       ctx: runtimeContext(),
     });
     expect(staticFallback).toMatchObject({
-      error: false,
-      outcome: { backend: "http", renderFailed: true, code: "ok_static_render_failed" },
+      error: true,
+      outcome: { renderFailed: true, code: "unusable_content" },
     });
 
     const errorRenderer = vi.fn();
@@ -836,7 +834,7 @@ describe("WebFetch", () => {
       },
     );
     expect(staticallyEnforced).toMatchObject({
-      error: false,
+      error: true,
       outcome: { backend: "http", rendered: false },
     });
     expect(disabledRenderer).not.toHaveBeenCalled();
@@ -1092,3 +1090,83 @@ function minimalPdf(text) {
   body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(body, "binary");
 }
+
+describe("web research regressions", () => {
+  it("tries Startpage when DuckDuckGo returns irrelevant results and forwards recency", async () => {
+    const calls = [];
+    const result = await performWebSearch({ query: "python documentation", time_range: "day" }, {
+      searchConfig: { backend: "keyless" }, ctx: runtimeContext(),
+      fetchImpl: async (url) => {
+        calls.push(String(url));
+        return new Response(String(url).includes("duckduckgo")
+          ? '<div class="result"><a class="result__a" href="https://example.com/shop">Fashion shop</a></div>'
+          : '<div class="result"><a class="result-link" href="https://docs.python.org/">Python documentation</a><p>Official guide</p></div>');
+      },
+    });
+    expect(calls[0]).toContain("df=d");
+    expect(calls).toHaveLength(2);
+    expect(result).toMatchObject({ error: false, outcome: { backend: "startpage" } });
+  });
+  it("passes Codex preferences separately without modifying the query", async () => {
+    const codexSearch = vi.fn(async () => ({ ok: true, backend: "codex", results: [] }));
+    await performWebSearch({ query: '"python docs"', language: "pl", time_range: "day" }, {
+      searchConfig: { backend: "codex" }, codexSearch, ctx: runtimeContext(),
+    });
+    expect(codexSearch).toHaveBeenCalledWith('"python docs"', expect.objectContaining({ language: "pl", timeRange: "day" }));
+  });
+  it("does not send traffic or fall back when the shared coordinator fails", async () => {
+    const fetchImpl = vi.fn(); const codexSearch = vi.fn();
+    const result = await performWebSearch({ query: "python docs" }, {
+      searchConfig: { backend: "auto", endpoint: "http://127.0.0.1:8088" }, ctx: runtimeContext(), fetchImpl, codexSearch,
+      coordinator: { acquire: async () => { throw Object.assign(new Error("unavailable"), { code: "coordination_unavailable" }); } },
+    });
+    expect(result.outcome.code).toBe("coordination_unavailable");
+    expect(fetchImpl).not.toHaveBeenCalled(); expect(codexSearch).not.toHaveBeenCalled();
+  });
+  it("reads later page slices from one extraction and validates cached range inputs", async () => {
+    const fetchImpl = vi.fn(async () => new Response(Array.from({ length: 40 }, (_, i) => `Evidence line ${i + 1}`).join("\n"), { headers: { "content-type": "text/plain" } }));
+    const controller = createWebToolController({ fetchImpl, ctx: runtimeContext() });
+    try {
+      const first = await controller.fetch({ url: "https://example.com/long", start_line: 1, max_lines: 10 });
+      const second = await controller.fetch({ url: "https://example.com/long", start_line: first.outcome.nextLine, max_lines: 10 });
+      expect(first.outcome.nextLine).toBe(11);
+      expect(second.outcome).toMatchObject({ startLine: 11, endLine: 20, cacheHit: true });
+      expect(second.text).toContain("Evidence line 20");
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect((await controller.fetch({ url: "https://example.com/long", start_line: -1 })).error).toBe(true);
+    } finally { await controller.close(); }
+  });
+  it("preserves cancellation during auto rendering", async () => {
+    const abort = new AbortController();
+    const result = await performWebFetch({ url: "https://example.com/app" }, {
+      ctx: runtimeContext(), signal: abort.signal, fetchConfig: { render: "auto" },
+      fetchImpl: async () => new Response('<div id="app">Loading</div><script></script><script></script>', { headers: { "content-type": "text/html" } }),
+      browserRenderer: async () => { abort.abort(); throw new Error("aborted"); },
+    });
+    expect(result).toMatchObject({ error: true, outcome: { code: "aborted" } });
+  });
+});
+
+ it("does not skip a partially shown long line or refetch an invalid range", async () => {
+   const fetchImpl = vi.fn(async () => new Response("a".repeat(1000) + "\nlast", { headers: { "content-type": "text/plain" } }));
+   const controller = createWebToolController({ fetchImpl, ctx: runtimeContext() });
+   const invalid = await controller.fetch({ url: "https://example.com/long", start_line: 0 });
+   expect(invalid.outcome.code).toBe("invalid_range");
+   expect(fetchImpl).not.toHaveBeenCalled();
+   const first = await controller.fetch({ url: "https://example.com/long", start_line: 1, max_lines: 1, max_output_chars: 300 });
+   expect(first.outcome.nextLine).toBe(1);
+   expect(first.text).toContain("Increase max_output_chars");
+   const complete = await controller.fetch({ url: "https://example.com/long", start_line: 1, max_lines: 1, max_output_chars: 2000 });
+   expect(complete.outcome.nextLine).toBe(2);
+   expect(fetchImpl).toHaveBeenCalledTimes(1);
+   await controller.close();
+ });
+
+ it("does not spend alternate queries on a failed SearXNG transport", async () => {
+   const fetchImpl = vi.fn(async () => new Response("unavailable", { status: 503 }));
+   const result = await performWebSearch({ query: "Python", alternate_queries: ["Python tutorial", "Python docs"] }, {
+     ctx: runtimeContext(), fetchImpl, searchConfig: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+   });
+   expect(result.error).toBe(true);
+   expect(fetchImpl).toHaveBeenCalledTimes(1);
+ });

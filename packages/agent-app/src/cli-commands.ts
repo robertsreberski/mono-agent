@@ -228,6 +228,16 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return 0;
     case "init":
       return await runInit(args, { shellEnv, dotenvEnv, dotenvPath: envFilePath });
+    case "web-control": {
+      const { createHostWebRequestCoordinator } = await import("./web-request-coordinator.js");
+      const action = args.positionals[0] ?? "status";
+      if (args.positionals.length > 1 || !["status", "reset"].includes(action)) throw new Error("Usage: mono-agent web-control [status|reset] [--json]");
+      const coordinator = createHostWebRequestCoordinator();
+      if (action === "reset") await coordinator.reset();
+      const result = { ok: true, action, state: await coordinator.inspect() };
+      process.stdout.write(JSON.stringify(result, null, args.json ? undefined : 2) + "\n");
+      return 0;
+    }
     case "validate":
       return await runValidate(args);
     case "auth":

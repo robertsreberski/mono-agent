@@ -35,6 +35,11 @@ function toolResultOutcome(result) {
   };
   const numbers = {
     attempts: "attempts",
+    queueWaitMs: "queue_wait_ms",
+    backendDurationMs: "backend_duration_ms",
+    retryAfterMs: "retry_after_ms",
+    cooldownSkipCount: "cooldown_skip_count",
+    quotaSkipCount: "quota_skip_count",
     bytes: "bytes",
     exitCode: "exit_code",
     statusCode: "status_code",

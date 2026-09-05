@@ -429,6 +429,16 @@ export interface RuntimeRunOptions {
   readonly piMaxRetries?: number;
   readonly maxRetryDelayMs?: number;
   readonly piSessionsRoot?: string;
+  /** Host-owned shared web admission; never model-configurable. */
+  readonly webRequestCoordinator?: {
+    readonly scope: string;
+    acquire(request: { kind: "searxng" | "duckduckgo" | "startpage" | "codex" | "fetch"; key: string; deadlineMs: number; signal?: AbortSignal }): Promise<{
+      readonly waitMs: number;
+      complete(outcome: { status: "ok" | "rate_limited" | "unavailable" | "cancelled"; retryAfterMs?: number }): Promise<void>;
+    }>;
+    readQuota(): Promise<{ checkedAt: number; value: unknown } | undefined>;
+    writeQuota(value: unknown): Promise<void>;
+  };
   /** Local-first WebSearch backend selection for this run. */
   readonly webSearchConfig?: {
     readonly backend?: "auto" | "searxng" | "codex" | "keyless";

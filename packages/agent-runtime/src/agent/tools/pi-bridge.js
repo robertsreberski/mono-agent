@@ -692,6 +692,8 @@ export function getPiBuiltinTools(allowedTools, {
       : null,
     WebFetch: createBuiltinTool("WebFetch", "Web Fetch", "Fetch and extract one HTTP(S) URL locally. Static extraction is preferred; browser rendering is available only through the configured render policy.", objectSchema({
       url: { type: "string" },
+      start_line: { type: "integer", minimum: 1, description: "First line to read; use nextLine from a truncated page." },
+      max_lines: { type: "integer", minimum: 1, maximum: 10000, description: "Lines to read, default 200 when selecting a range. Later ranges reuse the extracted page." },
       headers: { type: "object", additionalProperties: { type: "string" } },
       max_output_chars: textLimitSchema,
       format: { type: "string", enum: ["markdown", "text", "raw"] },
@@ -703,7 +705,7 @@ export function getPiBuiltinTools(allowedTools, {
         outcome: { status: "error", code: "controller_unavailable", retryable: false, attempts: 0 },
         error: true,
       }), toolContext),
-    WebSearch: createBuiltinTool("WebSearch", "Web Search", "Search the public web through local SearXNG, ChatGPT-subscription Codex search, and keyless fallbacks according to the configured backend, then return relevance-filtered deduplicated results.", objectSchema({
+    WebSearch: createBuiltinTool("WebSearch", "Web Search", "Search the public web through local SearXNG, ChatGPT-subscription Codex search, and keyless fallbacks according to the configured backend, then return relevance-filtered deduplicated results. Start with one precise query; alternates run only when needed. Respect cooldowns; verify dates and language in fetched sources.", objectSchema({
       query: { type: "string" },
       limit: { type: "integer" },
       alternate_queries: { type: "array", items: { type: "string" }, maxItems: 3 },
