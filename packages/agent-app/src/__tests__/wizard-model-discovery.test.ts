@@ -124,11 +124,12 @@ describe("supported wizard model catalog", () => {
       authState: "auth_required",
       setupRequired: true,
     });
-    expect(pi.find((candidate) => candidate.value === "openai-codex:gpt-5.6-sol")).toMatchObject({
+    expect(pi.find((candidate) => candidate.value === "openai-codex:gpt-6-astra")).toMatchObject({
       authState: "auth_required",
       setupRequired: true,
+      supportedEfforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
     });
-    expect(pi.find((candidate) => candidate.value === "openai-codex:gpt-5.6-sol")?.defaultEffort).toBeUndefined();
+    expect(pi.find((candidate) => candidate.value === "openai-codex:gpt-6-astra")?.defaultEffort).toBeUndefined();
   });
 
 

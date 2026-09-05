@@ -55,6 +55,18 @@ describe("resolvePricing precedence", () => {
     expect(codex.priced).toBe(false);
   });
 
+  it.each(["openai", "openai-codex"])("prices GPT-6 Astra for %s from Pi's real catalog", (provider) => {
+    const pricing = resolvePricing({ model: `${provider}:gpt-6-astra` });
+    expect(pricing).toMatchObject({
+      source: "pi-catalog",
+      priced: true,
+      input: 10,
+      output: 50,
+      cacheRead: 1,
+      cacheWrite: 12.5,
+    });
+  });
+
   it("preserves colons inside model ids when consulting the catalog", () => {
     getBuiltinModel.mockReturnValue(undefined);
     const pricing = resolvePricing({ model: "amazon-bedrock:anthropic.claude-opus-4-5-20251101-v1:0" });
@@ -104,6 +116,14 @@ describe("estimateCost", () => {
 
     expect(atThreshold).toBeCloseTo(1.36 + 30, 6);
     expect(aboveThreshold).toBeCloseTo(2.72001 + 45, 6);
+  });
+
+  it.each(["openai", "openai-codex"])("delegates GPT-6 Astra tier selection for %s", (provider) => {
+    const model = `${provider}:gpt-6-astra`;
+    expect(estimateCost({ model, inputTokens: 272_000, outputTokens: 1_000_000 }))
+      .toBeCloseTo(2.72 + 50, 6);
+    expect(estimateCost({ model, inputTokens: 272_001, outputTokens: 1_000_000 }))
+      .toBeCloseTo(5.44002 + 75, 6);
   });
 
   it("uses Pi's cache-write rate in the native catalog estimate", () => {

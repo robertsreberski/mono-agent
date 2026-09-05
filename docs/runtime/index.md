@@ -29,7 +29,7 @@ A minimal runtime block selects a provider model and (optionally) backup models:
 
 The `runtime.model` string is always `<provider>:<model>`. A leading `pi:` prefix is canonicalized away. Override it without touching config via `MONO_AGENT_MODEL`.
 
-Guided init searches every bundled model for the Pi catalog — Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go — plus discovered local models. Hand-authored `providers` refs remain compatible outside the guided cloud-provider set. Every provider listed in the [Providers](/runtime/providers/) map makes its full catalog selectable; `ollama` and `lmstudio` are zero-config autodiscovered. The offline entry does not fabricate effort metadata, so only provider-default effort is available until live discovery succeeds. GPT-5.6 Sol can be selected explicitly as `openai-codex:gpt-5.6-sol`.
+Guided init searches every bundled model for the Pi catalog — Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go — plus discovered local models. Hand-authored `providers` refs remain compatible outside the guided cloud-provider set. Every provider listed in the [Providers](/runtime/providers/) map makes its full catalog selectable; `ollama` and `lmstudio` are zero-config autodiscovered. The offline entry does not fabricate effort metadata, so only provider-default effort is available until live discovery succeeds. GPT-6 Astra can be selected as `openai-codex:gpt-6-astra` for Codex subscriptions; the hand-authored `openai:gpt-6-astra` route uses an OpenAI API key. GPT-5.6 Sol remains available as `openai-codex:gpt-5.6-sol`.
 
 | Key | Env var | Default | Notes |
 | --- | --- | --- | --- |

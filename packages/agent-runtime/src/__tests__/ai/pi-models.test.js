@@ -126,3 +126,57 @@ describe("resolvePiRuntimeModel — OpenAI Codex GPT-5.6 metadata", () => {
     expect(thinkingLevelForEffort("minimal", capabilities)).toBe("minimal");
   });
 });
+
+describe("resolvePiRuntimeModel — GPT-6 Astra metadata", () => {
+  const expected = {
+    openai: {
+      api: "openai-responses",
+      reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+    },
+    "openai-codex": {
+      api: "openai-codex-responses",
+      reasoningLevels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+    },
+  };
+
+  for (const [provider, metadata] of Object.entries(expected)) {
+    it(`resolves ${provider}:gpt-6-astra through the real Pi catalog`, () => {
+      const resolved = resolvePiRuntimeModel({
+        provider,
+        model: "gpt-6-astra",
+        reference: `${provider}:gpt-6-astra`,
+      }, {});
+
+      expect(resolved.model).toMatchObject({
+        id: "gpt-6-astra",
+        name: "GPT-6 Astra",
+        api: metadata.api,
+        provider,
+        reasoning: true,
+        input: ["text", "image"],
+        contextWindow: 272_000,
+        maxTokens: 128_000,
+        cost: {
+          input: 10,
+          output: 50,
+          cacheRead: 1,
+          cacheWrite: 12.5,
+          tiers: [{
+            inputTokensAbove: 272_000,
+            input: 20,
+            output: 75,
+            cacheRead: 2,
+            cacheWrite: 25,
+          }],
+        },
+      });
+      expect(resolved.capabilities).toMatchObject({
+        reasoning: true,
+        reasoning_mode: "effort",
+        reasoning_levels: metadata.reasoningLevels,
+        vision: true,
+      });
+      expect(thinkingLevelForEffort("max", resolved.capabilities)).toBe("max");
+    });
+  }
+});
