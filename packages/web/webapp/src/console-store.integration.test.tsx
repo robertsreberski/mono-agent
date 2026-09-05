@@ -2,6 +2,7 @@ import { act, render, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "./api";
+import { resetServerClock, serverNow } from "./server-clock";
 import {
   CATALOG_TTL_MS,
   ConsoleStoreProvider,
@@ -153,7 +154,22 @@ describe("ConsoleStoreProvider integration", () => {
   });
 
   afterEach(() => {
+    resetServerClock();
     vi.unstubAllGlobals();
+  });
+
+  it("keeps the server's clock from the stamp on every event", async () => {
+    await renderStore();
+    const before = Date.now();
+    act(() => FakeEventSource.latest?.emit("agents.changed", {
+      id: "event-clock",
+      version: 1,
+      type: "agents.changed",
+      at: new Date(before - 3_000).toISOString(),
+    }));
+    const drift = Date.now() - serverNow();
+    expect(drift).toBeGreaterThanOrEqual(3_000);
+    expect(drift).toBeLessThan(3_500);
   });
 
   it("applies the returned pin state and moves the agent into the favorite group", async () => {

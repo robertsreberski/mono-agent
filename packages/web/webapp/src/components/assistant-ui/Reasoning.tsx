@@ -23,9 +23,11 @@ import {
   useState,
 } from "react";
 import { ActivityRow } from "../ActivityRow";
-import { formatToolDuration } from "../duration";
+import { ActivityElapsed, type ActivityTiming } from "./ActivityElapsed";
 import { Icon } from "../Icon";
 import { isReplyImage } from "../reply-image";
+
+export type { ActivityTiming } from "./ActivityElapsed";
 
 const ANIMATION_DURATION_MS = 200;
 
@@ -344,8 +346,8 @@ export interface ReasoningGroupProps extends PropsWithChildren {
 
 export interface ActivityGroupProps extends PropsWithChildren {
   readonly className?: string;
-  /** Summed tool durations, omitted when the turn reported none. */
-  readonly elapsedMs?: number;
+  /** The turn's window; omitted for bands that are not the one still open. */
+  readonly timing?: ActivityTiming;
   readonly status?: { readonly type: string };
   readonly stepCount?: number;
   readonly streaming?: boolean;
@@ -394,17 +396,15 @@ ReasoningGroup.displayName = "ReasoningGroup";
 const ActivityGroupImpl = ({
   children,
   className,
-  elapsedMs,
   status,
   stepCount,
   streaming,
+  timing,
 }: ActivityGroupProps) => {
   const isStreaming = streaming ?? status?.type === "running";
-  const elapsed = elapsedMs === undefined ? undefined : formatToolDuration(elapsedMs);
-  const meta = [
-    stepCount === undefined ? undefined : `${String(stepCount)} ${stepCount === 1 ? "step" : "steps"}`,
-    elapsed,
-  ].filter((value): value is string => value !== undefined).join(" \u00b7 ");
+  const steps = stepCount === undefined
+    ? undefined
+    : `${String(stepCount)} ${stepCount === 1 ? "step" : "steps"}`;
   return (
     <ReasoningRoot
       className={joinClassNames("activity-root", className)}
@@ -420,8 +420,13 @@ const ActivityGroupImpl = ({
         {/* Scanning aids only. They change on every streaming snapshot, so keeping
             them out of the accessible name stops the trigger being re-announced
             each tick; the rows themselves carry the same detail. */}
-        {meta.length > 0 && (
-          <span className="activity-meta" aria-hidden="true">{meta}</span>
+        {(steps !== undefined || timing !== undefined) && (
+          <span className="activity-meta" aria-hidden="true">
+            {steps}
+            {timing !== undefined && (
+              <ActivityElapsed timing={timing} live={isStreaming} leading={steps !== undefined} />
+            )}
+          </span>
         )}
         <Icon className="activity-chevron" name="chevron-down" size={14} />
       </ReasoningTrigger>

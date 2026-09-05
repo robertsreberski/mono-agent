@@ -356,6 +356,7 @@ export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
       custom: {
         turnId: message.turnId,
         updatedAt: message.updatedAt,
+        ...(message.finishedAt === undefined ? {} : { finishedAt: message.finishedAt }),
         ...(message.liveInputStatus === undefined ? {} : { liveInputStatus: message.liveInputStatus }),
         ...(message.quote === undefined ? {} : { quote: message.quote }),
       },

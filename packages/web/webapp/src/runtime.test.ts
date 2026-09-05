@@ -562,6 +562,20 @@ describe("convertWebMessage", () => {
 
     expect(converted.metadata?.custom?.liveInputStatus).toBe("queued");
   });
+  it("exposes the turn's finish stamp as message metadata, and nothing while running", () => {
+    const base = {
+      role: "assistant" as const,
+      parts: [{ type: "text" as const, text: "Done." }],
+      createdAt: "2026-09-04T10:00:00.000Z",
+      updatedAt: "2026-09-04T10:00:12.000Z",
+    };
+    const settled = convertWebMessage(message({ ...base, status: "complete", finishedAt: "2026-09-04T10:00:12.000Z" }));
+    expect(settled.createdAt).toEqual(new Date("2026-09-04T10:00:00.000Z"));
+    expect(settled.metadata?.custom?.finishedAt).toBe("2026-09-04T10:00:12.000Z");
+
+    const running = convertWebMessage(message({ ...base, status: "running" }));
+    expect(running.metadata?.custom).not.toHaveProperty("finishedAt");
+  });
 });
 
 describe("runtime capability gates", () => {

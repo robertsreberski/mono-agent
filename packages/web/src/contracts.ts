@@ -349,6 +349,13 @@ export interface WebMessage {
   readonly attachments: readonly WebAttachment[];
   readonly createdAt: string;
   readonly updatedAt: string;
+  /**
+   * When the turn that produced this assistant message reached a terminal state
+   * (complete, failed, cancelled or interrupted). `createdAt` is that turn's
+   * start, so the pair is the turn's wall-clock window. Absent while the turn
+   * runs, on user and system rows, and on assistant rows with no turn.
+   */
+  readonly finishedAt?: string;
   readonly status: WebMessageStatus;
   readonly liveInputStatus?: "pending" | "applied" | "queued" | "cancelled";
 }
