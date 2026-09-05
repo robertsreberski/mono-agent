@@ -219,6 +219,41 @@ describe("provider-model-catalog", () => {
     expect(catalog.listModels("google").models).toEqual([]);
   });
 
+  it("advertises GPT-6 Astra for configured OpenAI and OpenAI Codex routes", () => {
+    const references = [
+      parseMonoRuntimeModelReference("openai:gpt-6-astra"),
+      parseMonoRuntimeModelReference("openai-codex:gpt-6-astra"),
+    ];
+    const catalog = buildProviderModelCatalog({
+      providers: [{ id: "openai" }],
+      configuredRoutes: [references[1]!],
+    });
+    const expectedLevels = {
+      openai: ["low", "medium", "high", "xhigh", "max"],
+      "openai-codex": ["minimal", "low", "medium", "high", "xhigh", "max"],
+    };
+
+    for (const reference of references) {
+      expect(catalog.listModels(reference.provider).models).toContainEqual(expect.objectContaining({
+        id: "gpt-6-astra",
+        name: "GPT-6 Astra",
+        provider: reference.provider,
+        reasoning: true,
+        reasoningMode: "effort",
+        effortLevels: expectedLevels[reference.provider as keyof typeof expectedLevels],
+        contextWindow: 272_000,
+      }));
+      expect(catalog.describe([reference])[reference.reference]).toMatchObject({
+        label: "GPT-6 Astra",
+        provider: reference.provider,
+        reasoning: true,
+        reasoningMode: "effort",
+        effortLevels: expectedLevels[reference.provider as keyof typeof expectedLevels],
+        contextWindow: 272_000,
+      });
+    }
+  });
+
   it("does not advertise a provider disabled with `enabled: false`", () => {
     const catalog = buildProviderModelCatalog({
       providers: [{ id: "anthropic", enabled: false }, { id: "openai" }],

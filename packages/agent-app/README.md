@@ -157,9 +157,12 @@ primary/fallback pickers combine every bundled model
 for the guided Pi providers (Anthropic, GitHub Copilot, OpenAI Codex, and
 OpenCode-Go), Codex's live account catalog, the Claude SDK catalog, and local
 discovery. The live Codex provider default leads when available; offline setup
-falls back to curated `codex:gpt-5.6-terra` without guessing effort metadata, so
-only **Provider default** is offered until live `model/list` succeeds. GPT-5.6 Sol is selectable as
-`codex:gpt-5.6-sol` or `pi:openai-codex:gpt-5.6-sol`.
+falls back to curated `openai-codex:gpt-5.6-terra` without guessing effort metadata, so
+only **Provider default** is offered until live `model/list` succeeds. GPT-6
+Astra is selectable as `openai-codex:gpt-6-astra` for Codex subscriptions;
+`openai:gpt-6-astra` is also runtime-compatible for OpenAI API keys through the
+existing hand-authored provider path, without adding direct OpenAI to guided
+setup. GPT-5.6 Sol remains selectable as `openai-codex:gpt-5.6-sol`.
 OpenCode-Go Pi refs can save `OPENCODE_API_KEY` into
 the Pi auth store or remain environment-provided, and any number of fallback
 models are selected from the same discovered choices one at a time. Each route

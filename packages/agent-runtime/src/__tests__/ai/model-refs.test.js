@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { listPiBuiltinModels, listPiBuiltinProviders } from "../../ai/pi-interop.js";
+import {
+  getPiBuiltinModel,
+  listPiBuiltinModels,
+  listPiBuiltinProviders,
+  reasoningLevelsForPiModel,
+} from "../../ai/pi-interop.js";
 import { parseRuntimeModelReference } from "../../ai/runtime/model-refs.js";
 
 const utf8 = (value) => new TextEncoder().encode(value).length;
@@ -252,5 +257,24 @@ describe("parseRuntimeModelReference bounds what it accepts", () => {
     expect(refused).toEqual([]);
     const longest = references.reduce((a, b) => (utf8(b) > utf8(a) ? b : a));
     expect(utf8(longest)).toBe(77);
+  });
+
+  it("exposes GPT-6 Astra for OpenAI API keys and Codex subscriptions", () => {
+    const expectedLevels = {
+      openai: ["low", "medium", "high", "xhigh", "max"],
+      "openai-codex": ["minimal", "low", "medium", "high", "xhigh", "max"],
+    };
+
+    for (const [provider, levels] of Object.entries(expectedLevels)) {
+      expect(listPiBuiltinModels(provider).some((model) => model.id === "gpt-6-astra")).toBe(true);
+      const model = getPiBuiltinModel(provider, "gpt-6-astra");
+      expect(model).toMatchObject({
+        id: "gpt-6-astra",
+        name: "GPT-6 Astra",
+        provider,
+        reasoning: true,
+      });
+      expect(reasoningLevelsForPiModel(model)).toEqual(levels);
+    }
   });
 });

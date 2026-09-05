@@ -75,6 +75,12 @@ Four surfaces share names with the deleted runtime bridges and are unaffected by
 
 `<provider>:<model>` resolves through the Pi SDK provider gateway, which fronts 15+ providers including `openai`, `openai-codex`, `anthropic`, `github-copilot`, `opencode-go`, `openrouter`, `ollama`, and `lmstudio`. Subscription/account-backed providers are reachable here, including OpenAI-Codex, Anthropic, GitHub Copilot, and OpenCode-Go.
 
+Pi 0.85.1 includes GPT-6 Astra under both first-party OpenAI providers:
+`openai:gpt-6-astra` uses an OpenAI API key, while
+`openai-codex:gpt-6-astra` uses a Codex subscription. The Codex route is part of
+guided setup; the direct OpenAI route remains compatible through hand-authored
+provider configuration.
+
 ```json
 {
   "runtime": {

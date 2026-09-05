@@ -628,6 +628,10 @@ defensively cloned model snapshots; `getPiBuiltinModel(providerId, modelId)`
 returns one cloned snapshot or `undefined`; and
 `reasoningLevelsForPiModel(model)` translates a Pi model into mono-agent's
 reasoning vocabulary, including `none` rather than Pi's `off`.
+Pi 0.85.1 exposes GPT-6 Astra through these same catalog APIs as
+`openai:gpt-6-astra` for OpenAI API keys and
+`openai-codex:gpt-6-astra` for Codex subscriptions; no separate model allowlist
+is maintained by mono-agent.
 `resolvePiOAuthApiKey(providerId, credentials)` refreshes a caller-owned
 credential snapshot and returns `{ apiKey, newCredentials }` or `null`, while
 `loginPiOAuth(providerId, callbacks)` runs the selected supported login flow.
