@@ -34,6 +34,7 @@ import {
   ACTIVITY_DATA_PARTS,
   ACTIVITY_GROUP_BY,
   ActivityGroup,
+  type ActivityTiming,
   Reasoning,
 } from "./assistant-ui/Reasoning";
 import {
@@ -1201,43 +1202,48 @@ const dataPartName = (part: Record<string, unknown>): string | undefined => {
     : undefined;
 };
 
+/** The parts an Activity band is made of: the same set `ACTIVITY_GROUP_BY` coalesces. */
+const isActivityContentPart = (raw: unknown): boolean => {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const part = raw as Record<string, unknown>;
+  if (part.type === "reasoning" || part.type === "tool-call") return true;
+  const name = dataPartName(part);
+  return name !== undefined && ACTIVITY_DATA_PARTS.has(name);
+};
+
 /**
- * How much work the turn did, for the collapsed Activity header. Elapsed time
- * is summed only over the calls whose duration the runtime reported, and stays
- * undefined when none did rather than claiming a turn took no time.
+ * How much work a band holds, for its collapsed header. Every clustered call
+ * counts on its own so the figure matches what expanding reveals.
  */
-const activityMetrics = (
-  content: readonly unknown[],
-): { readonly stepCount: number; readonly elapsedMs?: number } => {
+const activityStepCount = (content: readonly unknown[]): number => {
   let stepCount = 0;
-  let elapsedMs = 0;
-  let hasElapsed = false;
-  const addDuration = (duration: number | undefined): void => {
-    if (duration === undefined) return;
-    elapsedMs += duration;
-    hasElapsed = true;
-  };
   for (const raw of content) {
-    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
+    if (!isActivityContentPart(raw)) continue;
     const part = raw as Record<string, unknown>;
-    if (part.type === "reasoning") {
-      stepCount += 1;
-      continue;
-    }
-    if (part.type === "tool-call") {
-      stepCount += 1;
-      addDuration(finiteDuration(toolCallArtifact(part.artifact)?.executionMs));
-      continue;
-    }
-    // Counted against the same set that decides what the band contains, so the
-    // header can never advertise a step that renders outside it.
-    const name = dataPartName(part);
-    if (name === undefined || !ACTIVITY_DATA_PARTS.has(name)) continue;
-    const data = asRecord(part.data);
-    stepCount += name === "tool-cluster" && Array.isArray(data.calls) ? data.calls.length : 1;
-    addDuration(finiteDuration(name === "tool-cluster" ? data.totalMs : data.executionMs));
+    const cluster = dataPartName(part) === "tool-cluster" ? asRecord(part.data) : undefined;
+    stepCount += cluster !== undefined && Array.isArray(cluster.calls) ? cluster.calls.length : 1;
   }
-  return { stepCount, ...(hasElapsed ? { elapsedMs } : {}) };
+  return stepCount;
+};
+
+/** Index of the last part that belongs to an Activity band, or -1. */
+const lastActivityIndex = (content: readonly unknown[]): number => {
+  for (let index = content.length - 1; index >= 0; index -= 1) {
+    if (isActivityContentPart(content[index])) return index;
+  }
+  return -1;
+};
+
+/**
+ * The turn's wall-clock window from the two server stamps the message carries:
+ * `createdAt` is when the turn started and `custom.finishedAt` when it settled.
+ * A window, not a sum: thinking, tool calls, waits and parallel calls all fall
+ * inside it exactly once.
+ */
+const activityTiming = (startedAt: number, finishedAt: unknown): ActivityTiming | undefined => {
+  if (!Number.isFinite(startedAt)) return undefined;
+  const finished = typeof finishedAt === "string" ? Date.parse(finishedAt) : Number.NaN;
+  return Number.isFinite(finished) ? { startedAt, finishedAt: finished } : { startedAt };
 };
 
 function AssistantParts() {
@@ -1245,21 +1251,27 @@ function AssistantParts() {
     (state) => state.message.status?.type === "running",
   );
   const content = useAuiState((state) => state.message.content);
+  const startedAt = useAuiState((state) => state.message.createdAt.getTime());
+  const finishedAt = useAuiState((state) => state.message.metadata.custom?.finishedAt);
+  const timing = useMemo(() => activityTiming(startedAt, finishedAt), [startedAt, finishedAt]);
+  // Grouping coalesces ADJACENT parts, so prose between two runs of work
+  // splits a streaming turn into several Activity bands. Each counts its own
+  // steps; the clock belongs to the band holding the turn's last activity —
+  // the one the turn is still working in — because earlier bands are finished
+  // and the window is the turn's, not theirs. A settled turn folds to a single
+  // band, which then owns it.
+  const openBandIndex = lastActivityIndex(content);
   return (
     <MessagePrimitive.GroupedParts groupBy={ACTIVITY_GROUP_BY} indicator="no-text">
       {({ part, children }) => {
         switch (part.type) {
           case "group-activity": {
-            // Grouping coalesces ADJACENT parts, so prose between two runs of
-            // work splits a turn into several Activity bands. Each one must
-            // summarize its own parts; message-wide totals would make every
-            // band claim the whole turn's work.
-            const metrics = activityMetrics(part.indices.map((index) => content[index]));
+            const band = part.indices.map((index) => content[index]);
             return (
               <ActivityGroup
                 streaming={isMessageRunning}
-                stepCount={metrics.stepCount}
-                elapsedMs={metrics.elapsedMs}
+                stepCount={activityStepCount(band)}
+                timing={part.indices.includes(openBandIndex) ? timing : undefined}
               >
                 {children}
               </ActivityGroup>
