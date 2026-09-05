@@ -4,10 +4,11 @@ import { chmod, open, readFile, rename, unlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isIP } from "node:net";
 import { hostname as systemHostname } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import { constants as zlibConstants } from "node:zlib";
 
 import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
@@ -17,6 +18,7 @@ import {
   normalizeHostForBind,
   type ChannelAskAnswer,
 } from "@mono-agent/agent-contracts";
+import compression from "compression";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import {
@@ -53,6 +55,11 @@ export const DEFAULT_WEB_PORT = 5050;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const MAX_SSE_CLIENTS = 64;
 const MAX_MCP_APP_BRIDGE_REQUEST_BYTES = 64 * 1024;
+/**
+ * Content-addressed build output and write-once upload bytes never change under
+ * their URL, so the browser may hold them for a year and skip the request.
+ */
+const IMMUTABLE_MAX_AGE_SECONDS = 365 * 24 * 60 * 60;
 const WEB_THEME_CHROME: Readonly<Record<WebTheme, { readonly light: string; readonly dark: string }>> = {
   evergreen: { light: "#eeefeb", dark: "#0f1110" },
   ocean: { light: "#edf1f4", dark: "#0d1115" },
@@ -105,11 +112,22 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   let stopPromise: Promise<void> | undefined;
 
   app.disable("x-powered-by");
+  // Mounted first so every response body, error JSON included, is negotiated.
+  // Brotli quality 4 keeps a phone-sized payload under a few milliseconds of
+  // CPU; the default filter already declines anything the response marked
+  // `no-transform` (SSE, attachment bytes) or that is not compressible.
+  app.use(compression({
+    threshold: 1024,
+    level: 6,
+    brotli: { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 4 } },
+  }));
   app.use(securityHeaders);
   app.use(validateLocalRequest(host, allowedHosts));
+  // Console state is private to this operator but not secret from their own
+  // browser: `no-cache` still forces revalidation on every read, and lets
+  // Express answer an unchanged payload with a 304 instead of resending it.
   app.use("/api", (_req, res, next) => {
-    res.setHeader("Cache-Control", "no-store");
-    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Cache-Control", "private, no-cache");
     next();
   });
   app.use("/api/v1", express.json({ limit: "256kb", strict: true }));
@@ -653,12 +671,28 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     res.status(404).json({ error: { code: "not_found", message: "Not found." } });
   });
 
-  app.use(express.static(staticDir, { fallthrough: true, index: false, redirect: false }));
+  // Vite fingerprints everything under assets/, so those URLs are immutable and
+  // must be mounted ahead of the revalidating root. The root then covers the
+  // service workers, icons, and the shell, which keep their names across builds
+  // and so have to be revalidated (cheaply, against their ETag) every load.
+  app.use("/assets", express.static(join(staticDir, "assets"), {
+    fallthrough: true,
+    index: false,
+    redirect: false,
+    immutable: true,
+    maxAge: IMMUTABLE_MAX_AGE_SECONDS * 1000,
+  }));
+  app.use(express.static(staticDir, {
+    fallthrough: true,
+    index: false,
+    redirect: false,
+    setHeaders: (res) => res.setHeader("Cache-Control", "no-cache"),
+  }));
   app.get("/{*splat}", (_req, res, next) => {
     // Keep the managed runtime's hidden ~/.mono-agent parent out of the
     // request-relative path. Express otherwise applies its dotfile policy to
     // the absolute path and rejects an existing index.html as Not Found.
-    res.sendFile("index.html", { root: staticDir }, (error) => {
+    res.sendFile("index.html", { root: staticDir, headers: { "Cache-Control": "no-cache" } }, (error) => {
       if (error !== undefined && error !== null) next(error);
     });
   });
@@ -865,6 +899,10 @@ async function handleDownloadContent(id: string, res: Response, service: WebServ
   res.status(200);
   res.setHeader("Content-Type", image ? attachment.contentType : "application/octet-stream");
   res.setHeader("Content-Length", String(info.size));
+  // An upload id is a fresh UUID whose bytes are written exactly once, so this
+  // URL can never change meaning. `no-transform` keeps the declared length
+  // honest for the client that streams these bytes back into a Blob.
+  res.setHeader("Cache-Control", `private, max-age=${IMMUTABLE_MAX_AGE_SECONDS}, immutable, no-transform`);
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
   res.setHeader("Content-Disposition", contentDisposition(attachment.name, image ? "inline" : "attachment"));
@@ -898,7 +936,9 @@ function setReplyDownloadHeaders(
   res.setHeader("Content-Length", String(part.sizeBytes));
   res.setHeader("Accept-Ranges", "none");
   res.setHeader("Content-Disposition", contentDisposition(part.name, "attachment"));
-  res.setHeader("Cache-Control", "private, no-store, max-age=0");
+  // The client refuses a part whose Content-Length disagrees with the declared
+  // size, so this response must reach it byte-for-byte.
+  res.setHeader("Cache-Control", "private, no-store, max-age=0, no-transform");
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'");
   res.setHeader("Cross-Origin-Resource-Policy", "same-origin");

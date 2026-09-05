@@ -35,10 +35,12 @@
     "@mono-agent/agent-contracts": "workspace:0.20.14",
     "@mono-agent/config": "workspace:0.20.14",
     "@mono-agent/observability": "workspace:0.20.14",
+    "compression": "1.8.1",
     "express": "^5.1.0",
     "web-push": "3.6.7"
   },
   "devDependencies": {
+    "@types/compression": "^1.8.1",
     "@types/express": "^5.0.2",
     "@types/web-push": "3.6.4"
   },
