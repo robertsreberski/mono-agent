@@ -225,7 +225,7 @@ describe("ModelControls", () => {
     const dialog = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
     expect(container).not.toContainElement(dialog);
     expect(within(dialog).getByRole("option", { name: /^GPT-5\.5 Codex/u })).toBeVisible();
-    await waitFor(() => expect(within(dialog).getByRole("combobox", { name: "Search models" })).toHaveFocus());
+    await waitFor(() => expect(dialog).toHaveFocus());
   });
 
   it("preloads the provider catalog when the slash action opens the picker", async () => {

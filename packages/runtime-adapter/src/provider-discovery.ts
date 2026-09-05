@@ -1,6 +1,7 @@
 import { isPlainObject } from "./runtime-helpers.js";
 import {
   localProviderDefinitionFor,
+  discoverEmbeddingOnlyModelIds,
   modelsEndpointForProvider,
   validateLocalProviderDefinition,
 } from "./local-providers.js";
@@ -116,10 +117,8 @@ async function discoverCachedProvider(
   input: DiscoverLocalProvidersInput,
 ): Promise<DiscoveredProvider | undefined> {
   const normalized = validateLocalProviderDefinition(provider);
-  // Key by the probed endpoint, not the raw baseUrl: `type` participates in the
-  // URL, so `{id:"ollama", type:"openai_compat"}` addresses a different endpoint
-  // than the same id and baseUrl with the inferred ollama type.
-  const key = `${normalized.id}|${modelsEndpointForProvider(normalized)}`;
+  // Native metadata depends on type even when the /v1/models URL is identical.
+  const key = `${normalized.id}|${normalized.type}|${modelsEndpointForProvider(normalized)}`;
   const now = Date.now();
   const cached = discoveryCache.get(key);
   const cacheIsWarm = cached !== undefined && cached.expiresAt > now;
@@ -173,7 +172,11 @@ function advertisedProvider(
   }
   const advertised = provider.models === undefined
     ? liveModels
-    : provider.models.filter((model) => model.enabled ?? true);
+    : provider.models.filter((model) => model.enabled ?? true).map((model) => {
+      const live = liveModels.find((entry) => entry.name === model.name);
+      return live?.capabilities?.advertised_capabilities?.includes("embedding")
+        ? { ...model, capabilities: { ...model.capabilities, ...live.capabilities } } : model;
+    });
   return {
     ...provider,
     baseUrl: provider.baseUrl as string,
@@ -211,7 +214,12 @@ async function probeProvider(
       if (!isPlainObject(body) || !Array.isArray(body.data)) {
         return undefined;
       }
-      return modelsFromResponse(body.data);
+      const models = modelsFromResponse(body.data);
+      const embeddingIds = await discoverEmbeddingOnlyModelIds(
+        provider, models.map((model) => model.name), input.fetch ?? fetch, controller.signal,
+      );
+      return models.map((model) => embeddingIds.has(model.name)
+        ? { ...model, capabilities: { advertised_capabilities: ["embedding"] } } : model);
     } finally {
       clearTimeout(timer);
       input.signal?.removeEventListener("abort", forwardAbort);
