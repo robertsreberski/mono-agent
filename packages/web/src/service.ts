@@ -40,6 +40,7 @@ import {
   type PutWebAgentRunSettingsInput,
   type StartWebTurnInput,
   type WebAgentSummary,
+  type WebAgentProvider,
   type WebAttachment,
   type WebBootstrap,
   type WebChannelConfigView,
@@ -102,6 +103,10 @@ const INFO_TIMEOUT_MS = 2_500;
 const ASK_DISCOVERY_TIMEOUT_MS = 120_000;
 /** Bounded per-agent catalog-admitted model refs; beyond it, oldest go first. */
 const MODEL_CATALOG_CACHE_CAP = 2_048;
+/** Matches the browser picker: enough for today's 200-row provider ceiling,
+ * with slack for an older or independently implemented operator. */
+const MODEL_CATALOG_RESTORE_PAGE_SIZE = 100;
+const MODEL_CATALOG_RESTORE_PAGE_LIMIT = 5;
 const REPLY_ACCESS_TTL_MS = 10 * 60 * 1_000;
 /**
  * Raster types the console keeps its own copy of. `image/svg+xml` is absent on
@@ -274,6 +279,17 @@ interface CatalogCacheEntry {
   readonly generation: string;
   readonly models: Map<string, CatalogModelRecord>;
 }
+
+type PersistedCatalogTarget =
+  | {
+      readonly kind: "canonical";
+      readonly provider: string;
+      readonly modelId: string;
+    }
+  | {
+      readonly kind: "bare";
+      readonly modelId: string;
+    };
 
 export class WebService {
   readonly store: WebStore;
@@ -1884,6 +1900,7 @@ export class WebService {
           client,
           agent.source.sourceId,
           generation,
+          info.providers,
           signal,
         );
         const efforts = collectEfforts(info);
@@ -2215,19 +2232,56 @@ export class WebService {
     client: OperatorClient,
     sourceId: string,
     generation: string,
+    providers: readonly WebAgentProvider[] | undefined,
     signal: AbortSignal,
   ): Promise<void> {
     const model = this.store.getAgent(sourceId)?.runSettings.override?.model;
     if (model === undefined || this.modelCatalogCache.get(sourceId)?.models.has(model) === true) return;
     const separator = model.indexOf(":");
-    const query = separator === -1 ? model : model.slice(separator + 1);
+    // The runtime wire makes only the first colon structural: provider ids may
+    // not contain one, while opaque model ids commonly do. Keeping that exact
+    // split also prevents a malformed colon-bearing provider from colliding
+    // with a legitimate provider plus colon-bearing model id.
+    const target: PersistedCatalogTarget = separator > 0 && separator < model.length - 1
+      ? {
+          kind: "canonical",
+          provider: model.slice(0, separator),
+          modelId: model.slice(separator + 1),
+        }
+      : { kind: "bare", modelId: model };
+    const boundedSignal = AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]);
     try {
-      const page = await client.models({
-        q: query,
-        limit: 200,
-        signal: AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]),
+      if (target.kind === "canonical") {
+        await this.restorePersistedModelFromProvider(
+          client,
+          sourceId,
+          generation,
+          target.provider,
+          target,
+          boundedSignal,
+        );
+        return;
+      }
+
+      // Bare ids have no provider address. Keep the cheap global search, but
+      // accept only an exact id; if its 100-row fuzzy cap hides the target,
+      // traverse the bounded provider window advertised in `/v1/info`.
+      const search = await client.models({
+        q: target.modelId,
+        limit: MODEL_CATALOG_RESTORE_PAGE_SIZE,
+        signal: boundedSignal,
       });
-      this.admitModelPage(sourceId, generation, page, model);
+      if (this.admitModelPage(sourceId, generation, search, target)) return;
+      for (const provider of new Set((providers ?? []).map((entry) => entry.id))) {
+        if (await this.restorePersistedModelFromProvider(
+          client,
+          sourceId,
+          generation,
+          provider,
+          target,
+          boundedSignal,
+        )) return;
+      }
     } catch (error) {
       this.options.logger?.debug?.("Persisted web model default could not be revalidated.", {
         sourceId,
@@ -2236,24 +2290,55 @@ export class WebService {
     }
   }
 
+  private async restorePersistedModelFromProvider(
+    client: OperatorClient,
+    sourceId: string,
+    generation: string,
+    provider: string,
+    target: PersistedCatalogTarget,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    let cursor: string | undefined;
+    const seenCursors = new Set<string>();
+    for (let pageIndex = 0; pageIndex < MODEL_CATALOG_RESTORE_PAGE_LIMIT; pageIndex += 1) {
+      if (this.modelCatalogCache.get(sourceId)?.generation !== generation) return false;
+      const page = await client.models({
+        provider,
+        ...(cursor === undefined ? {} : { cursor }),
+        limit: MODEL_CATALOG_RESTORE_PAGE_SIZE,
+        signal,
+      });
+      if (this.modelCatalogCache.get(sourceId)?.generation !== generation) return false;
+      if (this.admitModelPage(sourceId, generation, page, target)) return true;
+      const nextCursor = page.truncated ? page.nextCursor : undefined;
+      if (nextCursor === undefined || nextCursor.length === 0 || seenCursors.has(nextCursor)) return false;
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+    return false;
+  }
+
   private admitModelPage(
     sourceId: string,
     generation: string | undefined,
     page: WebModelPage,
-    exactReference?: string,
-  ): void {
-    this.admitCatalogRefs(sourceId, generation, page.models.flatMap((model) => {
+    exactTarget?: PersistedCatalogTarget,
+  ): boolean {
+    const refs = page.models.flatMap((model) => {
       const record: CatalogModelRecord = { source: "page", efforts: advertisedEffortLevels(model) };
       // The wire carries provider-local ids while every selection surface
       // speaks the canonical `<provider>:<model>` reference. Admit both, or a
       // turn is judged against metadata the page did advertise but under a
       // name nothing ever asks for.
       const reference = model.provider ? `${model.provider}:${model.id}` : model.id;
-      if (exactReference !== undefined && reference !== exactReference && model.id !== exactReference) return [];
+      if (exactTarget?.kind === "canonical"
+        && (model.provider !== exactTarget.provider || model.id !== exactTarget.modelId)) return [];
+      if (exactTarget?.kind === "bare" && model.id !== exactTarget.modelId) return [];
       const entries: (readonly [string, CatalogModelRecord])[] = [[model.id, record]];
       if (reference !== model.id) entries.push([reference, record]);
       return entries;
-    }));
+    });
+    return refs.length > 0 && this.admitCatalogRefs(sourceId, generation, refs);
   }
 
   private admitModelRef(
