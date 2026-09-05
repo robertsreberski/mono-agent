@@ -10,20 +10,26 @@ import {
 } from "react";
 import { api, ApiError, THREAD_PAGE_LIMIT, type BootstrapScope } from "./api";
 import { recordServerTime } from "./server-clock";
+import {
+  createThreadCache,
+  holdsToolCall,
+  type ThreadCache,
+  type ThreadCacheEntry,
+} from "./thread-cache";
 import { DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
   AgentSummary,
   Bootstrap,
   CatalogModel,
   CronOverview,
-  MessagePart,
+  MessageDelta,
+  MessageDeltaOp,
   RunState,
   SkillRegistryState,
   StartTurnInput,
   ThreadDetail,
   ThreadSummary,
   WebEvent,
-  WebMessage,
 } from "./types";
 import {
   effectiveModelForAgent,
@@ -31,6 +37,8 @@ import {
   findCatalogModel,
   providerOfModel,
 } from "./components/model-catalog";
+
+export { holdsToolCall, mergeToolCallPart } from "./thread-cache";
 
 export type ConnectionState = "connecting" | "live" | "reconnecting" | "offline";
 
@@ -124,13 +132,93 @@ const cronChannelKey = (sourceId: string, jobId: string): string => `${sourceId}
 const unlistedThreadKey = (sourceId: string, archived: boolean, threadId: string): string =>
   `${threadBucketKey(sourceId, archived)}\0${threadId}`;
 
+/** The later of two projections of one conversation, by the server's revision. */
+const newerProjection = (
+  held: ThreadSummary,
+  fetched: ThreadSummary | undefined,
+): ThreadSummary => (fetched === undefined || fetched.revision < held.revision ? held : fetched);
+
+/**
+ * One bucket's rows and one answer about them, as one listing.
+ *
+ * ORDERED BY THE SERVER'S REVISION, not by the order the responses reached the
+ * tab. Two reads of one bucket are not ordered against each other -- a page, a
+ * bootstrap and a `{thread}` payload all describe the same rows -- so taking
+ * the last arrival unconditionally let a delayed revision 2 overwrite a
+ * revision 3 the tab had already applied, rolling back a title, an archive
+ * state or a run override the server had accepted. An EQUAL revision is the
+ * same server state, and the incoming one wins so an optimistic edit made at
+ * the revision it is patching still lands.
+ */
 const mergeThreads = (
   current: readonly ThreadSummary[],
   incoming: readonly ThreadSummary[],
 ): ThreadSummary[] => {
   const merged = new Map(current.map((thread) => [thread.id, thread]));
-  for (const thread of incoming) merged.set(thread.id, thread);
+  for (const thread of incoming) {
+    const held = merged.get(thread.id);
+    merged.set(thread.id, held === undefined ? thread : newerProjection(held, thread));
+  }
   return [...merged.values()].sort(byMostRecent);
+};
+
+/**
+ * What the transcript reads from one cached conversation.
+ *
+ * `detail` stays exactly the shape it was -- the open conversation's summary
+ * and messages -- so `runtime.tsx`, `Chat.tsx` and `notifications.tsx` are
+ * untouched by the cache behind it. What changed is that the arrays inside it
+ * are the CACHE's, and the cache reuses them: an untouched transcript projects
+ * to the same `messages` array it did last time, which is what assistant-ui
+ * short-circuits its whole store update on.
+ */
+const projectDetail = (entry: ThreadCacheEntry): ThreadDetail => ({
+  thread: entry.thread,
+  messages: entry.messages,
+  ...(entry.messagesNextCursor === undefined
+    ? {}
+    : { messagesNextCursor: entry.messagesNextCursor }),
+});
+
+/** The ops a `message.delta` carries, refused rather than half-read. */
+const readDeltaOps = (value: unknown): readonly MessageDeltaOp[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  for (const candidate of value as readonly Partial<MessageDeltaOp>[]) {
+    if (candidate === null || typeof candidate !== "object") return undefined;
+    if (candidate.op === "truncate") {
+      if (typeof (candidate as { length?: unknown }).length !== "number") return undefined;
+      continue;
+    }
+    if (typeof (candidate as { index?: unknown }).index !== "number") return undefined;
+    if (candidate.op === "append") {
+      if (typeof (candidate as { delta?: unknown }).delta !== "string") return undefined;
+      continue;
+    }
+    if (candidate.op !== "set") return undefined;
+    const part = (candidate as { part?: unknown }).part;
+    if (part === null || typeof part !== "object") return undefined;
+  }
+  return value as readonly MessageDeltaOp[];
+};
+
+/**
+ * A `message.delta` payload, or nothing.
+ *
+ * A frame this console cannot make sense of is never applied as a partial
+ * reading: the message it names is re-read instead. Everything the replay
+ * depends on -- both versions, the status, the ops -- has to be there.
+ */
+export const readMessageDelta = (payload: unknown): MessageDelta | undefined => {
+  if (payload === null || typeof payload !== "object") return undefined;
+  const candidate = payload as Partial<MessageDelta>;
+  const ops = readDeltaOps(candidate.ops);
+  if (typeof candidate.messageId !== "string"
+    || typeof candidate.baseSeq !== "number"
+    || typeof candidate.seq !== "number"
+    || typeof candidate.status !== "string"
+    || typeof candidate.updatedAt !== "string"
+    || ops === undefined) return undefined;
+  return { ...(candidate as MessageDelta), ops };
 };
 
 export const cronChannelPath = (sourceId: string, jobId: string): string =>
@@ -200,43 +288,6 @@ const asciiNoCase = (value: string): string =>
   value.replace(/[A-Z]/g, (character) =>
     String.fromCharCode(character.charCodeAt(0) + 32),
   );
-
-/**
- * Whether a message is the one that owns a tool call -- as a part of its own,
- * or as one of a delegation's children.
- *
- * The full-body route is addressed by (conversation, message, call) because a
- * tool-call id is not a capability, so the console has to name the message it
- * already holds the preview in.
- */
-export const holdsToolCall = (message: WebMessage, toolCallId: string): boolean =>
-  message.parts.some((part) =>
-    (part.type === "tool-call" || part.type === "subagent")
-      && (part.toolCallId === toolCallId
-        || (part.type === "subagent"
-          && part.calls.some((call) => call.toolCallId === toolCallId))));
-
-/**
- * Put an untruncated tool call back where its preview was, as NEW objects.
- *
- * assistant-ui caches its part conversions by object identity, so a transcript
- * repaired in place goes on rendering the preview it already converted.
- */
-export const mergeToolCallPart = (existing: MessagePart, full: MessagePart): MessagePart => {
-  if (full.type !== "tool-call" && full.type !== "subagent") return existing;
-  if (existing.type !== "tool-call" && existing.type !== "subagent") return existing;
-  if (existing.toolCallId === full.toolCallId) return full;
-  if (existing.type !== "subagent" || full.type !== "tool-call") return existing;
-  if (!existing.calls.some((call) => call.toolCallId === full.toolCallId)) return existing;
-  // A delegation's child owns no part of its own, so the route answers with the
-  // tool call it would have been and it goes back into the group.
-  const { type: _type, ...call } = full;
-  return {
-    ...existing,
-    calls: existing.calls.map((candidate) =>
-      candidate.toolCallId === full.toolCallId ? call : candidate),
-  };
-};
 
 export const sortAgentsPinnedFirst = (
   agents: readonly AgentSummary[],
@@ -935,12 +986,6 @@ export const reconcileFailedDelete = async (
   }
 };
 
-/** The later of two projections of one conversation, by the server's revision. */
-const newerProjection = (
-  held: ThreadSummary,
-  fetched: ThreadSummary | undefined,
-): ThreadSummary => (fetched === undefined || fetched.revision < held.revision ? held : fetched);
-
 /**
  * Whether one response may put one conversation into the projection.
  *
@@ -1239,7 +1284,25 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const threadsRef = useRef<readonly ThreadSummary[]>([]);
   /** The open conversation's own summary, which outlives its row in the listing. */
   const detailThreadRef = useRef<ThreadSummary | null>(null);
-  const detailRef = useRef<ThreadDetail | null>(null);
+  /**
+   * Every conversation this tab is keeping, not just the one on screen.
+   *
+   * A ref rather than state on purpose: it is the console's copy of the SERVER,
+   * and `detail` is a projection of one entry in it. Writes to it are made from
+   * event handlers, from responses and from an operator action, and they have
+   * to be visible to the next one immediately -- a repair that read a
+   * pre-commit snapshot is exactly the defect the previous round had to guard
+   * against with a decision made outside the state updater.
+   */
+  const threadCacheRef = useRef<ThreadCache>(createThreadCache());
+  /**
+   * The message repairs on the wire, by (conversation, message).
+   *
+   * A running turn writes a message every ~50 ms, so a copy that has fallen
+   * behind sees a gap on every frame until the read that fixes it answers. One
+   * read answers all of them.
+   */
+  const messageRepairsRef = useRef<Map<string, Promise<void>>>(new Map());
   /** See {@link UNLISTED_THREAD_MEMORY}. */
   const unlistedThreadsRef = useRef<Set<string>>(new Set());
   /** The conversations the next bucket revalidation is being asked about. */
@@ -1303,6 +1366,39 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   useEffect(() => {
     showArchivedRef.current = showArchived;
   }, [showArchived]);
+
+  /**
+   * Show what the cache holds for one conversation -- and nothing else.
+   *
+   * The ONE place `detail` is written. Every path that used to build a
+   * transcript and hand it to `setDetail` now writes it to the cache and calls
+   * this, so there is a single answer to "what is on screen": the projection of
+   * the selected entry. A publish for a conversation that is no longer selected
+   * is a no-op, which is what makes every late response inert without each of
+   * them having to remember to check.
+   *
+   * The updater returns the CURRENT value when nothing in the entry moved, so
+   * React bails out of the render rather than handing assistant-ui a new
+   * container around arrays it has already converted.
+   */
+  const publishDetail = useCallback((threadId: string | null) => {
+    if (threadId === null) {
+      setDetail(null);
+      return;
+    }
+    if (selectedThreadRef.current !== threadId) return;
+    const entry = threadCacheRef.current.get(threadId);
+    if (entry === undefined) {
+      setDetail(null);
+      return;
+    }
+    setDetail((current) => (current !== null
+      && current.thread === entry.thread
+      && current.messages === entry.messages
+      && current.messagesNextCursor === entry.messagesNextCursor)
+      ? current
+      : projectDetail(entry));
+  }, []);
 
   const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number, archived: boolean) => {
     const previouslySelected = selectedThreadRef.current;
@@ -1463,6 +1559,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     );
     const key = threadBucketKey(sourceId, archived);
     const admitted = admitThreads(removedThreadsRef.current, page.threads, issuedAt);
+    // The authoritative fill DELIVERS this bucket, exactly as a bootstrap does,
+    // so the sidebar effect must not buy it again -- an agent switch back and
+    // forth, or an archive toggle, otherwise re-read the same page every time.
+    // A revalidation does not count (it merges into rows already held) and
+    // neither does a page walk (it carries the older window, not the bucket).
+    // `applyBootstrap` REPLACES this set, so a new snapshot re-arms every other
+    // bucket for the read that fills it.
+    if (before === undefined && mode === "replace") seededBucketsRef.current.add(key);
     setBootstrap((current) => {
       if (current === null) return current;
       const retained = before === undefined && mode === "replace"
@@ -1525,6 +1629,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const closeMissingThread = useCallback((threadId: string) => {
     selectedThreadRef.current = null;
     setSelectedThreadId(null);
+    threadCacheRef.current.evict(threadId);
     setDetail(null);
     const sourceId = selectedAgentRef.current;
     if (sourceId !== null && readPersistedThreadIds()[sourceId] === threadId) {
@@ -1555,14 +1660,26 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       .sort(byMostRecent)[0];
     selectedThreadRef.current = replacement?.id ?? null;
     setSelectedThreadId(replacement?.id ?? null);
-    setDetail(null);
+    publishDetail(replacement?.id ?? null);
     persistThreadId(thread.sourceId, replacement?.id ?? null);
     updateThreadRoute(replacement, true);
     return true;
-  }, []);
+  }, [publishDetail]);
 
-  const loadThread = useCallback(async (threadId: string, signal: AbortSignal) => {
-    setDetailLoading(true);
+  /**
+   * Read one conversation in full and put it into the cache.
+   *
+   * `cold` is whether the operator is looking at an empty pane while this runs.
+   * A conversation the cache already holds is on screen from the moment it is
+   * selected, and a revalidation behind it is not something to show a spinner
+   * for -- that spinner replaced a transcript the tab already had.
+   */
+  const loadThread = useCallback(async (
+    threadId: string,
+    signal: AbortSignal,
+    cold: boolean,
+  ) => {
+    if (cold) setDetailLoading(true);
     try {
       const issuedAt = removedThreadsRef.current.epoch();
       const next = await boundedRequest(
@@ -1581,7 +1698,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           && !showArchivedRef.current
           && leaveRestoredArchivedThread(next.thread)) return;
       }
-      if (selectedThreadRef.current === threadId) setDetail(next);
+      // A WINDOW read: it carries the newest page of the transcript, so the
+      // pages this tab walked back to survive it and anything inside the window
+      // it no longer carries was deleted. See `mergeMessages`.
+      threadCacheRef.current.upsertFull(next, { reset: true });
+      publishDetail(threadId);
     } catch (loadError) {
       if (signal.aborted) return;
       if (loadError instanceof ApiError
@@ -1595,19 +1716,37 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     } finally {
       if (selectedThreadRef.current === threadId) setDetailLoading(false);
     }
-  }, [closeMissingThread, leaveRestoredArchivedThread]);
+  }, [closeMissingThread, leaveRestoredArchivedThread, publishDetail]);
 
   useEffect(() => {
+    const cache = threadCacheRef.current;
+    cache.setSelected(selectedThreadId);
     if (!selectedThreadId) {
       setDetail(null);
       setDetailLoading(false);
       return;
     }
-    setDetail((current) => (current?.thread.id === selectedThreadId ? current : null));
+    const entry = cache.get(selectedThreadId);
+    if (entry !== undefined) {
+      // Already held: the transcript is on screen this render, with no request
+      // and no empty pane. Leaving a conversation and coming back is what the
+      // cache is for, and it is what used to cost a full read every time.
+      publishDetail(selectedThreadId);
+      setDetailLoading(false);
+    } else {
+      setDetail(null);
+    }
+    // A RESTORED selection is one the operator did not make and one bucket page
+    // could not confirm -- see `restoredSelectionRef` -- and the read is the
+    // only thing that can say the conversation was deleted or archived
+    // elsewhere. A cached copy of it is not that evidence.
+    if (entry !== undefined
+      && !entry.stale
+      && restoredSelectionRef.current !== selectedThreadId) return;
     const controller = new AbortController();
-    void loadThread(selectedThreadId, controller.signal);
+    void loadThread(selectedThreadId, controller.signal, entry === undefined);
     return () => controller.abort();
-  }, [loadThread, selectedThreadId]);
+  }, [loadThread, publishDetail, selectedThreadId]);
 
   /**
    * One refresh, fetching exactly what the events behind it invalidated.
@@ -1651,7 +1790,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // FRESHER listing row it had no way to compare itself to. The sidebar row
       // is the listing's business, and `threads.changed` carries a new summary
       // when the server has one.
-      ) setDetail(nextDetail);
+      ) {
+        threadCacheRef.current.upsertFull(nextDetail, { reset: true });
+        publishDetail(nextDetail.thread.id);
+      }
     } catch (refreshError) {
       setActionError(errorMessage(refreshError));
     } finally {
@@ -1661,7 +1803,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         scheduleRefreshRef.current({});
       }
     }
-  }, [applyBootstrap, bootstrapScope]);
+  }, [applyBootstrap, bootstrapScope, publishDetail]);
 
   const scheduleRefresh = useCallback((scope: Partial<RefreshScope>) => {
     // A refresh that settles after the tree is gone re-queues through the
@@ -1694,7 +1836,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * delete whose outcome could not be established.
    */
   const queueRefresh = useCallback(
-    () => { scheduleRefresh({ bootstrap: true, detail: true }); },
+    () => {
+      // The refresh re-reads the OPEN conversation. Every other one this tab is
+      // keeping missed the same window and has nothing to say it is current, so
+      // opening one has to pay for a read rather than show what it held.
+      threadCacheRef.current.markAllStale();
+      scheduleRefresh({ bootstrap: true, detail: true });
+    },
     [scheduleRefresh],
   );
 
@@ -1774,10 +1922,92 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           threads: current.threads.map((item) =>
             item.id === threadId ? { ...item, runState } : item),
         });
-    setDetail((current) => current?.thread.id === threadId
-      ? { ...current, thread: { ...current.thread, runState } }
-      : current);
-  }, []);
+    // On the CACHED entry, not just the one on screen: a conversation the
+    // operator switched away from keeps the run state its event carried, so
+    // coming back to it shows what is running there without a read.
+    if (threadCacheRef.current.patchRunState(threadId, runState)) publishDetail(threadId);
+  }, [publishDetail]);
+
+  /**
+   * Re-read ONE message, because the console cannot say what it now holds.
+   *
+   * The answer to every gap: a delta whose base is not the version held, a
+   * `message.changed` naming a message this tab already has, a replay these
+   * parts cannot mean. Four assistant-row write paths -- notification
+   * reconciliation, cron-run reconciliation, the process-job card, Monitor
+   * activity -- bump a message's version with NO delta and arrive as a hint, so
+   * the mismatch is the ordinary, intended signal rather than an error.
+   *
+   * One read per (conversation, message) at a time. A turn rewrites its message
+   * every ~50 ms, so a copy that has fallen behind sees a gap on every frame
+   * until this answers; without the join, one missed write would buy a request
+   * per frame for the rest of the turn.
+   */
+  const repairMessage = useCallback((threadId: string, messageId: string): Promise<void> => {
+    const key = `${threadId}\u0000${messageId}`;
+    const running = messageRepairsRef.current.get(key);
+    if (running !== undefined) return running;
+    // Declared before the body so the body can retire ITS OWN entry: a later
+    // repair of the same message owns the slot by then, and clearing it blind
+    // would let a third ask start while the second was still on the wire.
+    let attempt!: Promise<void>;
+    attempt = (async () => {
+      try {
+        const message = await boundedRequest(
+          (signal) => api.message(threadId, messageId, signal),
+          THREAD_READ_TIMEOUT_MS,
+        );
+        if (threadCacheRef.current.upsertMessage(threadId, message)) publishDetail(threadId);
+      } catch {
+        // The message read failed, so this conversation's transcript is not
+        // what this tab is showing -- and saying nothing would leave a stale
+        // one on screen looking settled. The whole-conversation read is the
+        // fallback, and it is the very thing the delta stream exists to avoid,
+        // so it is reached only when the cheap repair could not answer.
+        // Nothing is put in front of the operator. A message that has been
+        // DELETED answers 404 here, which is not a fault, and a frame of a
+        // running turn is not something they can act on either way -- the
+        // conversation read above is what settles both.
+        threadCacheRef.current.markStale(threadId);
+        if (threadId === selectedThreadRef.current) refreshSelectedThread();
+      } finally {
+        if (messageRepairsRef.current.get(key) === attempt) messageRepairsRef.current.delete(key);
+      }
+    })();
+    messageRepairsRef.current.set(key, attempt);
+    return attempt;
+  }, [publishDetail, refreshSelectedThread]);
+
+  /**
+   * One persisted parts write, applied rather than asked about.
+   *
+   * The whole point of the delta stream: a streamed answer costs its own text
+   * and nothing else. Anything this cannot apply for certain re-reads the ONE
+   * message -- never the conversation, and never a guess.
+   */
+  const applyMessageDeltaEvent = useCallback((threadId: string, delta: MessageDelta) => {
+    const cache = threadCacheRef.current;
+    if (threadId !== selectedThreadRef.current) {
+      // The stream only sends deltas for the conversation a connection names,
+      // so this is a downgrade or a subscription that has not caught up. Either
+      // way the transcript is not on screen: remember that it moved and read it
+      // when the operator opens it.
+      cache.markStale(threadId);
+      return;
+    }
+    switch (cache.applyDelta(threadId, delta)) {
+      case "applied":
+        publishDetail(threadId);
+        return;
+      // Already at or past the version this produces: applying it again would
+      // walk the transcript backwards, and reading for it would buy a request
+      // for a write this tab already has.
+      case "stale":
+        return;
+      default:
+        void repairMessage(threadId, delta.messageId);
+    }
+  }, [publishDetail, repairMessage]);
 
   const applyThreadUpdate = useCallback((nextThread: ThreadSummary, issuedAt: number) => {
     // A response can outlive the conversation it describes: the migration's
@@ -1792,10 +2022,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     setBootstrap((current) =>
       current ? { ...current, threads: mergeThreads(current.threads, [nextThread]) } : current,
     );
-    setDetail((current) =>
-      current?.thread.id === nextThread.id ? { ...current, thread: nextThread } : current,
-    );
-  }, []);
+    if (threadCacheRef.current.patchThread(nextThread.id, nextThread)) {
+      publishDetail(nextThread.id);
+    }
+  }, [publishDetail]);
 
   useEffect(() => {
     const events = new EventSource("/api/v1/events");
@@ -1826,6 +2056,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       const payload = (webEvent.payload ?? {}) as {
         readonly thread?: ThreadSummary;
         readonly threadId?: string;
+        readonly messageId?: string;
         readonly removed?: boolean;
         readonly sourceId?: string;
         readonly pinned?: boolean;
@@ -1910,6 +2141,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         case "threads.changed":
           if (payload.thread !== undefined) {
             applyThreadUpdate(payload.thread, removedThreadsRef.current.epoch());
+            // The summary is applied above at no cost; the MESSAGES are not in
+            // it. A turn that started, a cron page that reconciled and a
+            // notification that landed all move a transcript and say so only
+            // here, so a conversation this tab is KEEPING has to be told it can
+            // no longer answer from what it holds.
+            if (payload.thread.id !== selectedThreadRef.current) {
+              threadCacheRef.current.markStale(payload.thread.id);
+            }
             return;
           }
           // The removal is the `thread.changed` half's business: it holds the
@@ -1921,6 +2160,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             // A conversation this tab already lists needs nothing from the
             // listing: whatever changed about it arrives as its own
             // `thread.changed` or `turn.changed`.
+            if (threadId !== selectedThreadRef.current) {
+              threadCacheRef.current.markStale(threadId);
+            }
             if (threadsRef.current.some((item) => item.id === threadId)) return;
             // Asked about once already, and the page of THIS bucket that
             // answered did not carry it. These events name no agent, so every
@@ -1947,8 +2189,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             // conversation, at no cost. The MESSAGES are not in it: a finished
             // turn, a reconciled cron run and an appended notification all end
             // in this event and nothing else says the transcript moved. Only
-            // the conversation on screen has anything to show for that.
-            if (threadId === selectedThreadRef.current) refreshSelectedThread();
+            // the conversation on screen reads for it NOW; one this tab is
+            // keeping in the background reads when it is opened.
+            if (payload.thread.id === selectedThreadRef.current) refreshSelectedThread();
+            else threadCacheRef.current.markStale(payload.thread.id);
             return;
           }
           if (payload.removed === true && threadId !== undefined) {
@@ -1979,6 +2223,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             // operator something the server has destroyed. Clearing the
             // selection also makes a detail read still in flight for it inert:
             // `loadThread` only applies what the selection still points at.
+            threadCacheRef.current.evict(threadId);
             if (threadId === selectedThreadRef.current) {
               selectedThreadRef.current = null;
               setSelectedThreadId(null);
@@ -1987,18 +2232,49 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             }
             return;
           }
-          // A revision bump or a message id, and no summary to apply: only the
-          // conversation on screen has anything to show for it.
-          if (threadId !== undefined && threadId === selectedThreadRef.current) {
-            refreshSelectedThread();
-          }
+          // A revision bump or a message id, and no summary to apply.
+          if (threadId === undefined) return;
+          if (threadId === selectedThreadRef.current) refreshSelectedThread();
+          else threadCacheRef.current.markStale(threadId);
           return;
 
-        case "message.changed":
-          if (threadId !== undefined && threadId === selectedThreadRef.current) {
-            refreshSelectedThread();
+        case "message.delta": {
+          if (threadId === undefined) return;
+          const delta = readMessageDelta(webEvent.payload);
+          // A frame this console cannot read is never applied as a partial
+          // reading. Re-reading the conversation is the honest answer, and it
+          // is what every event used to cost.
+          if (delta === undefined) {
+            if (threadId === selectedThreadRef.current) refreshSelectedThread();
+            else threadCacheRef.current.markStale(threadId);
+            return;
           }
+          applyMessageDeltaEvent(threadId, delta);
           return;
+        }
+
+        case "message.changed": {
+          if (threadId === undefined) return;
+          if (threadId !== selectedThreadRef.current) {
+            // Not on screen: remember that its transcript moved, and read it
+            // when the operator opens it rather than now.
+            threadCacheRef.current.markStale(threadId);
+            return;
+          }
+          // A hint that names a message this tab ALREADY HOLDS is one message
+          // to re-read, not a conversation. One that names an unknown message
+          // is a row this transcript does not have at all -- a new turn, an
+          // appended notification -- and only the conversation read can place
+          // it.
+          const { messageId } = payload;
+          if (messageId !== undefined
+            && threadCacheRef.current.holdsMessage(threadId, messageId)) {
+            void repairMessage(threadId, messageId);
+            return;
+          }
+          refreshSelectedThread();
+          return;
+        }
 
         case "turn.changed":
           // The run state IS the payload, so there is nothing to go and ask
@@ -2023,6 +2299,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       "threads.changed",
       "thread.changed",
       "message.changed",
+      "message.delta",
       "turn.changed",
       "attachment.changed",
       "push.pending",
@@ -2060,11 +2337,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       streamOpenedRef.current = false;
     };
   }, [
+    applyMessageDeltaEvent,
     applyThreadUpdate,
     loadAgents,
     patchRunState,
     queueRefresh,
     refreshSelectedThread,
+    repairMessage,
     revalidateBucket,
   ]);
 
@@ -2105,7 +2384,6 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // Assigned during render, like `threadsRef`: a removal event has to be able
   // to name a conversation the listing has moved past.
   detailThreadRef.current = detail?.thread ?? null;
-  detailRef.current = detail;
   const visibleThreads = useMemo(
     () =>
       [...threads]
@@ -2146,14 +2424,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (current === null) return;
     if (current.messagesNextCursor !== undefined) {
       const page = await api.messages(current.thread.id, current.messagesNextCursor);
-      setDetail((latest) => {
-        if (latest?.thread.id !== current.thread.id) return latest;
-        const ids = new Set(latest.messages.map((message) => message.id));
-        const messages = [...page.messages.filter((message) => !ids.has(message.id)), ...latest.messages];
-        if (page.nextCursor !== undefined) return { ...latest, messages, messagesNextCursor: page.nextCursor };
-        const { messagesNextCursor: _cursor, ...withoutCursor } = latest;
-        return { ...withoutCursor, messages };
+      // Into the CACHE, which is what makes a walked-back transcript survive
+      // the next refresh: a window read keeps everything older than its own
+      // window rather than dropping the pages the operator scrolled to.
+      threadCacheRef.current.prependOlder(current.thread.id, {
+        messages: page.messages,
+        ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
       });
+      publishDetail(current.thread.id);
       return;
     }
     if (
@@ -2170,18 +2448,20 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       ...latest,
       [selectedCronChannelKey]: page.nextCursor ?? null,
     }));
-    setDetail((latest) => {
-      if (latest?.thread.id !== current.thread.id) return latest;
-      const ids = new Set(latest.messages.map((message) => message.id));
-      const messages = [
-        ...(page.messages ?? []).filter((message) => !ids.has(message.id)),
-        ...latest.messages,
-      ];
-      return { ...latest, messages };
+    const older = page.messages ?? [];
+    // The agent-owned run page carries no message cursor of its own; the
+    // channel's cursor above is what walks it, so this only adds rows.
+    threadCacheRef.current.prependOlder(current.thread.id, {
+      messages: older,
+      ...(current.messagesNextCursor === undefined
+        ? {}
+        : { nextCursor: current.messagesNextCursor }),
     });
+    publishDetail(current.thread.id);
   }, [
     cronRunCursorByChannel,
     detail,
+    publishDetail,
     selectedAgent?.cron?.read,
     selectedAgentId,
     selectedCronChannelKey,
@@ -2231,76 +2511,56 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     setCronError(null);
     try {
       const message = await api.cronRun(sourceId, jobId, runId);
-      setDetail((current) => {
-        if (current?.thread.id !== threadId) return current;
-        const exists = current.messages.some((candidate) => candidate.id === message.id);
-        return {
-          ...current,
-          messages: exists
-            ? current.messages.map((candidate) => candidate.id === message.id ? message : candidate)
-            : [...current.messages, message].sort((left, right) =>
-                left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)),
-        };
-      });
+      // REPLACED, not merged: the operator asked for this run's activity and
+      // the answer is the same row at the same version with the detail filled
+      // in, which a version comparison would read as nothing new.
+      if (threadCacheRef.current.upsertMessage(threadId, message, { replace: true })) {
+        publishDetail(threadId);
+      }
     } catch (loadError) {
       setCronError(errorMessage(loadError));
     } finally {
       setCronLoading(false);
     }
-  }, [selectedAgentId, selectedCronJobId, selectedCronThreadId]);
+  }, [publishDetail, selectedAgentId, selectedCronJobId, selectedCronThreadId]);
 
   // Deliberately stable: this is handed to the transcript through a context, and
   // a new identity on every streamed token would re-render every tool row for
   // the whole of a running turn.
   const loadFullToolCall = useCallback(async (toolCallId: string): Promise<boolean> => {
-    const current = detailRef.current;
-    if (current === null) return false;
-    const message = current.messages.find((candidate) => holdsToolCall(candidate, toolCallId));
+    const cache = threadCacheRef.current;
+    const threadId = selectedThreadRef.current;
+    if (threadId === null) return false;
+    const message = cache.get(threadId)?.messages.find((candidate) =>
+      holdsToolCall(candidate, toolCallId));
     if (message === undefined) return false;
     // Bounded like every other read. Unbounded, a wedged transport left the
     // row's notice on "Loading..." for good: nothing settles the promise it is
     // waiting on, so it can neither report the failure nor offer the button
     // again. See {@link THREAD_READ_TIMEOUT_MS}.
     const part = await boundedRequest(
-      (signal) => api.toolCallPart(current.thread.id, message.id, toolCallId, signal),
+      (signal) => api.toolCallPart(threadId, message.id, toolCallId, signal),
       THREAD_READ_TIMEOUT_MS,
     );
-    // The round trip is not instant, and the operator can leave the conversation
-    // (or a refresh can evict the message) while it is in flight. Everything is
-    // decided against the freshest COMMITTED detail, before the updater and
-    // never inside it: a state updater is not guaranteed to run synchronously
-    // and StrictMode runs it twice, so a flag set in there reports scheduling
-    // rather than whether anything was replaced.
-    const latest = detailRef.current;
-    if (latest === null || latest.thread.id !== current.thread.id) return false;
-    const target = latest.messages.find((candidate) => candidate.id === message.id);
-    if (target === undefined) return false;
-    const merged = target.parts.map((existing) => mergeToolCallPart(existing, part));
-    if (merged.every((next, index) => next === target.parts[index])) return false;
-    // The MERGE runs inside the updater, against whatever React has committed by
-    // then. `detailRef` is assigned during render, so it is stale for the whole
-    // stretch between one async repair's `setDetail` and the re-render that
-    // follows: two calls repaired in the same message -- two clicks on a
-    // cluster, two subagent steps -- would each substitute a message built
-    // before the other landed, and the first repair would silently revert to its
-    // preview while both reported success. `mergeToolCallPart` is pure and
-    // idempotent, so StrictMode running this twice changes nothing. The boolean
-    // this function returns therefore answers for `latest` at DECISION time,
-    // not for whatever the updater eventually committed -- it is what stops the
-    // row saying "Loading...", not a claim about what is on screen.
-    setDetail((committed) => committed?.thread.id === latest.thread.id
-      ? {
-          ...committed,
-          messages: committed.messages.map((candidate) => candidate.id === message.id
-            // A NEW message object, and new part objects inside it: assistant-ui
-            // caches its conversions by object identity, so a transcript
-            // repaired in place goes on rendering the preview it converted.
-            ? { ...candidate, parts: candidate.parts.map((existing) => mergeToolCallPart(existing, part)) }
-            : candidate),
-        }
-      : committed);
+    // Straight into the cache, which is the console's own copy of the server
+    // and is written synchronously. Two repairs in one message -- two clicks on
+    // a cluster, two subagent steps -- used to each substitute a message built
+    // from a pre-commit snapshot, so the first silently reverted to its preview
+    // while both reported success; the second one now reads the first.
+    //
+    // The cache also REMEMBERS the call, so the untruncated body survives a
+    // later write of that slot instead of reverting to the preview the delta
+    // carries. See `ThreadCacheEntry.repairedToolCallIds`.
+    const replaced = cache.repairToolCall(threadId, message.id, toolCallId, part);
+    if (!replaced) return false;
+    // The round trip is not instant and the operator can leave the conversation
+    // during it. The repair is kept either way -- it is the server's answer, and
+    // coming back to this conversation should not have to ask again -- but the
+    // boolean answers for the row that asked, and that row is gone.
+    if (selectedThreadRef.current !== threadId) return false;
+    publishDetail(threadId);
     return true;
-  }, []);
+  }, [publishDetail]);
 
   useEffect(() => {
     void refreshCron();
@@ -2443,18 +2703,19 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           setBootstrap((current) => current === null
             ? current
             : { ...current, threads: mergeThreads(current.threads, [canonical]) });
-          setDetail(next);
+          threadCacheRef.current.upsertFull(next, { reset: true });
           selectedAgentRef.current = canonical.sourceId;
           selectedThreadRef.current = canonical.id;
           setSelectedAgentId(canonical.sourceId);
           setSelectedThreadId(canonical.id);
           localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, canonical.sourceId);
+          publishDetail(canonical.id);
           if (!canonical.archivedAt) persistThreadId(canonical.sourceId, canonical.id);
           updateThreadRoute(canonical, true);
         }).catch((selectionError: unknown) => setActionError(errorMessage(selectionError)));
       }
     },
-    [threads],
+    [publishDetail, threads],
   );
 
   useEffect(() => {
@@ -2516,14 +2777,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setBootstrap((current) =>
         current ? { ...current, threads: mergeThreads(current.threads, [thread]) } : current,
       );
-      setDetail({ thread, messages: [] });
+      threadCacheRef.current.upsertFull({ thread, messages: [] });
+      publishDetail(thread.id);
       setActionError(null);
       return thread;
     } catch (createError) {
       setActionError(errorMessage(createError));
       throw createError;
     }
-  }, [effortByContext, modelByContext, selectedAgentId]);
+  }, [effortByContext, modelByContext, publishDetail, selectedAgentId]);
 
   const applyAgentUpdate = useCallback((agent: AgentSummary) => {
     setBootstrap((current) => current === null
@@ -2680,18 +2942,20 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     setBootstrap((current) => current
       ? { ...current, threads: current.threads.filter((item) => item.id !== thread.id) }
       : current);
+    threadCacheRef.current.evict(thread.id);
+    threadCacheRef.current.evict(requestedId);
     if (selectedThreadRef.current === thread.id || selectedThreadRef.current === requestedId) {
       const replacement = visibleThreads.find((item) => item.id !== thread.id);
       selectedThreadRef.current = replacement?.id ?? null;
       setSelectedThreadId(replacement?.id ?? null);
-      setDetail(null);
+      publishDetail(replacement?.id ?? null);
       updateThreadRoute(replacement, true);
     }
     if (readPersistedThreadIds()[thread.sourceId] === thread.id) {
       persistThreadId(thread.sourceId, null);
     }
     setActionError(null);
-  }, [visibleThreads]);
+  }, [publishDetail, visibleThreads]);
   // Assigned during render: it changes with the visible listing, and putting it
   // in the SSE effect's dependencies would tear down and reopen the event
   // stream every time a conversation moved.
@@ -3282,11 +3546,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
               }
             : current,
         );
-        setDetail((current) =>
-          current?.thread.id === result.thread.id
-            ? { ...current, thread: result.thread }
-            : current,
-        );
+        if (threadCacheRef.current.patchThread(result.thread.id, result.thread)) {
+          publishDetail(result.thread.id);
+        }
         setActionError(null);
         // The POST already returned the conversation's new summary, applied
         // above; only its messages have to be read back.
@@ -3296,16 +3558,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         throw turnError;
       }
     },
-    [createThread, refreshSelectedThread, selectedThread, settleThreadWrites],
+    [createThread, publishDetail, refreshSelectedThread, selectedThread, settleThreadWrites],
   );
 
   const cancelTurn = useCallback(async () => {
     if (!selectedThreadId) return;
     try {
       const result = await api.cancelTurn(selectedThreadId);
-      setDetail((current) =>
-        current?.thread.id === result.thread.id ? { ...current, thread: result.thread } : current,
-      );
+      if (threadCacheRef.current.patchThread(result.thread.id, result.thread)) {
+        publishDetail(result.thread.id);
+      }
       // The sidebar row carries the "responding" marker, and it used to be
       // cleared by the bootstrap this cancel triggered. The cancel's own answer
       // already says the run is over, so apply it rather than wait for an event
@@ -3316,29 +3578,22 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setActionError(errorMessage(cancelError));
       throw cancelError;
     }
-  }, [patchRunState, refreshSelectedThread, selectedThreadId]);
+  }, [patchRunState, publishDetail, refreshSelectedThread, selectedThreadId]);
 
   const sendLiveInput = useCallback(async (text: string) => {
     if (!selectedThreadId) throw new Error("Select a conversation before sending a follow-up.");
     try {
       const receipt = await api.liveInput(selectedThreadId, text);
-      setDetail((current) => {
-        if (current?.thread.id !== selectedThreadId) return current;
-        const exists = current.messages.some((message) => message.id === receipt.message.id);
-        return {
-          ...current,
-          messages: exists
-            ? current.messages.map((message) => message.id === receipt.message.id ? receipt.message : message)
-            : [...current.messages, receipt.message],
-        };
-      });
+      if (threadCacheRef.current.upsertMessage(selectedThreadId, receipt.message, { replace: true })) {
+        publishDetail(selectedThreadId);
+      }
       setActionError(null);
       refreshSelectedThread();
     } catch (liveInputError) {
       setActionError(errorMessage(liveInputError));
       throw liveInputError;
     }
-  }, [refreshSelectedThread, selectedThreadId]);
+  }, [publishDetail, refreshSelectedThread, selectedThreadId]);
 
   const value = useMemo<ConsoleStoreValue>(
     () => ({

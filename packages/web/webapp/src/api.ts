@@ -326,6 +326,27 @@ export const api = {
     return result.part;
   },
 
+  /**
+   * ONE message, by id.
+   *
+   * What a console reads when a `message.delta` cannot be applied: the version
+   * it holds is not the one the ops were diffed against, the message is not
+   * held at all, or a hint named a row it already has. Repairing one message is
+   * the alternative to re-reading the whole conversation around it, which is
+   * the cost the delta stream exists to remove.
+   *
+   * Never `?full=1`: deltas describe the DEFAULT shape, and a transcript read
+   * untruncated could not take one.
+   */
+  message: async (threadId: string, messageId: string, signal?: AbortSignal) => {
+    const result = await request<{ readonly message: WebMessage }>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}`
+      + `/messages/${encodeURIComponent(messageId)}`,
+      { ...(signal === undefined ? {} : { signal }) },
+    );
+    return result.message;
+  },
+
   messages: (threadId: string, before: string, signal?: AbortSignal) => {
     const query = new URLSearchParams({ before, limit: "100" });
     return request<MessagePage>(

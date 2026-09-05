@@ -1,4 +1,4 @@
-import { act, cleanup as cleanupDom, render, waitFor } from "@testing-library/react";
+import { act, cleanup as cleanupDom, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode, useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, THREAD_PAGE_LIMIT } from "./api";
@@ -24,10 +24,12 @@ import type {
   AgentSkillRegistry,
   AgentSummary,
   CronOverview,
+  MessageDelta,
   MessagePart,
   ThreadDetail,
   ThreadSummary,
   WebEvent,
+  WebMessage,
 } from "./types";
 
 // `importOriginal` so `ApiError` stays the REAL class: the store branches on
@@ -55,6 +57,8 @@ vi.mock("./api", async (importOriginal) => ({
     cronRuns: vi.fn(),
     cronRun: vi.fn(),
     toolCallPart: vi.fn(),
+    message: vi.fn(),
+    liveInput: vi.fn(),
   },
 }));
 
@@ -3745,6 +3749,408 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.detail).toBeNull();
       expect([...store.current.threads].map((item) => item.id).sort())
         .toEqual(["alpha-thread", "other-thread"]);
+    });
+  });
+  describe("a conversation cache, message deltas applied to it", () => {
+    const alpha = thread("alpha-thread", "alpha");
+    const beta = thread("beta-thread", "alpha", { updatedAt: "2026-07-17T09:00:00.000Z" });
+    let eventSequence = 0;
+
+    const streamed = (
+      id: string,
+      text: string,
+      overrides: Partial<WebMessage> = {},
+    ): WebMessage => ({
+      id,
+      threadId: alpha.id,
+      role: "assistant",
+      parts: [{ type: "text", text }],
+      attachments: [],
+      createdAt: "2026-08-14T08:00:00.000Z",
+      updatedAt: "2026-08-14T08:00:00.000Z",
+      status: "running",
+      seq: 1,
+      ...overrides,
+    });
+
+    const emit = (
+      type: WebEvent["type"],
+      extra: { readonly threadId?: string; readonly payload?: unknown } = {},
+    ) => {
+      eventSequence += 1;
+      act(() => FakeEventSource.latest?.emit(type, {
+        id: `cache-event-${String(eventSequence)}`,
+        version: 1,
+        type,
+        at: "2026-08-14T09:00:00.000Z",
+        ...extra,
+      }));
+    };
+
+    const emitDelta = (threadId: string, delta: Partial<MessageDelta> = {}) => {
+      emit("message.delta", {
+        threadId,
+        payload: {
+          messageId: "m1",
+          baseSeq: 1,
+          seq: 2,
+          status: "running",
+          updatedAt: "2026-08-14T09:00:00.000Z",
+          ops: [],
+          ...delta,
+        },
+      });
+    };
+
+    const quiet = async (ms = 400) => {
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, ms); }); });
+    };
+
+    /** The transcript the operator is actually looking at, as text. */
+    function Transcript() {
+      const store = useConsoleStore();
+      return (
+        <ol>
+          {(store.detail?.messages ?? []).map((message) => (
+            <li key={message.id} data-testid={`message-${message.id}`}>
+              {message.parts
+                .map((part) => (part.type === "text" ? part.text : ""))
+                .join("")}
+            </li>
+          ))}
+        </ol>
+      );
+    }
+
+    const renderConsole = async () => {
+      let current: Store | undefined;
+      const onChange = (store: Store) => { current = store; };
+      render(
+        <ConsoleStoreProvider>
+          <StoreProbe onChange={onChange} />
+          <Transcript />
+        </ConsoleStoreProvider>,
+      );
+      await waitFor(() => expect(current?.loading).toBe(false));
+      return {
+        get current() {
+          if (!current) throw new Error("Store did not initialize.");
+          return current;
+        },
+      };
+    };
+
+    const seedTwo = (messages: readonly WebMessage[] = [streamed("m1", "Hel")]) => {
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alpha, beta],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alpha, beta] });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => threadId === alpha.id
+        ? { thread: alpha, messages }
+        : { thread: beta, messages: [streamed("b1", "beta", { threadId: beta.id, seq: 1 })] });
+    };
+
+    const openedOnAlpha = async () => {
+      const store = await renderConsole();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+      return store;
+    };
+
+    it("reads a conversation once however often the operator comes back to it", async () => {
+      seedTwo();
+      const store = await openedOnAlpha();
+
+      act(() => { store.current.selectThread(beta.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(beta.id));
+      act(() => { store.current.selectThread(alpha.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+      await quiet();
+
+      // One read each, and the return trip is answered from what this tab
+      // already holds. It used to cost a full transcript every single time.
+      expect(vi.mocked(api.thread).mock.calls.map((call) => call[0]))
+        .toEqual([alpha.id, beta.id]);
+      expect(store.current.detailLoading).toBe(false);
+      expect(await screen.findByTestId("message-m1")).toHaveTextContent("Hel");
+    });
+
+    it("keeps the history the operator paged back to through a refresh", async () => {
+      const recent = streamed("recent", "recent", { createdAt: "2026-08-14T08:00:00.000Z" });
+      seedTwo([recent]);
+      vi.mocked(api.thread).mockImplementation(async () =>
+        ({ thread: alpha, messages: [recent], messagesNextCursor: "cursor-1" }));
+      vi.mocked(api.messages).mockResolvedValue({
+        messages: [streamed("older", "older", { createdAt: "2026-08-14T07:00:00.000Z" })],
+      });
+      const store = await openedOnAlpha();
+
+      await act(async () => { await store.current.loadOlderMessages(); });
+      expect(store.current.detail?.messages.map((message) => message.id))
+        .toEqual(["older", "recent"]);
+
+      // A hint naming a message this transcript does not hold re-reads the
+      // conversation -- and that read carries only the newest window.
+      emit("message.changed", {
+        threadId: alpha.id,
+        payload: { messageId: "brand-new", updatedAt: "2026-08-14T09:00:00.000Z" },
+      });
+      await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(2));
+      await quiet();
+
+      expect(store.current.detail?.messages.map((message) => message.id))
+        .toEqual(["older", "recent"]);
+      // The page it walked back to is still reachable from the cursor that
+      // reached it, not from the one the window read carries.
+      expect(store.current.hasOlderMessages).toBe(false);
+    });
+
+    it("applies a streamed write to the open transcript and asks for nothing", async () => {
+      const settled = streamed("m0", "earlier", {
+        createdAt: "2026-08-14T07:00:00.000Z",
+        status: "complete",
+        seq: 3,
+      });
+      seedTwo([settled, streamed("m1", "Hel")]);
+      const store = await openedOnAlpha();
+      const reads = vi.mocked(api.thread).mock.calls.length;
+      const before = store.current.detail?.messages ?? [];
+
+      emitDelta(alpha.id, { ops: [{ op: "append", index: 0, delta: "lo" }] });
+      await waitFor(async () =>
+        expect(await screen.findByTestId("message-m1")).toHaveTextContent("Hello"));
+      await quiet();
+
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads);
+      expect(api.message).not.toHaveBeenCalled();
+      const after = store.current.detail?.messages ?? [];
+      // The message the write did not touch is the SAME object: assistant-ui
+      // caches its conversion under that identity, so replacing it re-converts
+      // a transcript nothing happened to.
+      expect(after[0]).toBe(before[0]);
+      expect(after[1]).not.toBe(before[1]);
+      expect(after[1]?.seq).toBe(2);
+    });
+
+    it("consumes a status-only write so the next one still applies", async () => {
+      seedTwo();
+      const store = await openedOnAlpha();
+
+      emitDelta(alpha.id, { baseSeq: 1, seq: 2, status: "complete", ops: [] });
+      await waitFor(() => expect(store.current.detail?.messages[0]?.status).toBe("complete"));
+      emitDelta(alpha.id, {
+        baseSeq: 2,
+        seq: 3,
+        status: "complete",
+        ops: [{ op: "append", index: 0, delta: "lo" }],
+      });
+      await waitFor(async () =>
+        expect(await screen.findByTestId("message-m1")).toHaveTextContent("Hello"));
+
+      expect(api.message).not.toHaveBeenCalled();
+    });
+
+    it("reads the one message a missed write moved, and reads it once", async () => {
+      seedTwo();
+      const store = await openedOnAlpha();
+      const reads = vi.mocked(api.thread).mock.calls.length;
+      let answer!: (message: WebMessage) => void;
+      vi.mocked(api.message).mockImplementation(async () =>
+        new Promise<WebMessage>((resolve) => { answer = resolve; }));
+
+      // Three frames of a turn this tab has fallen behind on. Without the join
+      // every frame of the rest of the turn would buy its own request.
+      emitDelta(alpha.id, { baseSeq: 4, seq: 5, ops: [{ op: "append", index: 0, delta: "a" }] });
+      emitDelta(alpha.id, { baseSeq: 5, seq: 6, ops: [{ op: "append", index: 0, delta: "b" }] });
+      emitDelta(alpha.id, { baseSeq: 6, seq: 7, ops: [{ op: "append", index: 0, delta: "c" }] });
+      await waitFor(() => expect(api.message).toHaveBeenCalledTimes(1));
+
+      await act(async () => {
+        answer(streamed("m1", "Helloabc", { seq: 7, status: "complete" }));
+        await new Promise((resolve) => { setTimeout(resolve, 0); });
+      });
+      await quiet();
+
+      expect(api.message).toHaveBeenCalledTimes(1);
+      expect(api.message).toHaveBeenCalledWith(alpha.id, "m1", expect.any(AbortSignal));
+      // ONE message, never the conversation around it.
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads);
+      expect(store.current.detail?.messages[0]?.seq).toBe(7);
+      expect(await screen.findByTestId("message-m1")).toHaveTextContent("Helloabc");
+    });
+
+    it("ignores a write it is already past instead of reading for it", async () => {
+      seedTwo([streamed("m1", "Hello", { seq: 6 })]);
+      const store = await openedOnAlpha();
+      const reads = vi.mocked(api.thread).mock.calls.length;
+
+      emitDelta(alpha.id, { baseSeq: 3, seq: 4, ops: [{ op: "append", index: 0, delta: "!" }] });
+      await quiet();
+
+      expect(api.message).not.toHaveBeenCalled();
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads);
+      expect(store.current.detail?.messages[0]?.seq).toBe(6);
+    });
+
+    it("repairs the one message a hint names when the transcript already holds it", async () => {
+      seedTwo();
+      const store = await openedOnAlpha();
+      const reads = vi.mocked(api.thread).mock.calls.length;
+      vi.mocked(api.message).mockResolvedValue(
+        streamed("m1", "reconciled", { seq: 4, status: "complete" }),
+      );
+
+      emit("message.changed", {
+        threadId: alpha.id,
+        payload: { messageId: "m1", updatedAt: "2026-08-14T09:00:00.000Z" },
+      });
+      await waitFor(async () =>
+        expect(await screen.findByTestId("message-m1")).toHaveTextContent("reconciled"));
+      await quiet();
+
+      expect(api.message).toHaveBeenCalledTimes(1);
+      // The four reconciliation write paths bump a version with no delta, and
+      // this is the read they cost: one message, not the conversation.
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads);
+      expect(store.current.detail?.messages[0]?.status).toBe("complete");
+    });
+
+    it("keeps a background conversation's run state without reading it again", async () => {
+      seedTwo();
+      const store = await openedOnAlpha();
+      act(() => { store.current.selectThread(beta.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(beta.id));
+      const reads = vi.mocked(api.thread).mock.calls.length;
+
+      emit("turn.changed", {
+        threadId: alpha.id,
+        payload: { turn: { id: "turn-9", status: "running", startedAt: "2026-08-14T09:00:00.000Z" } },
+      });
+      act(() => { store.current.selectThread(alpha.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+      await quiet();
+
+      expect(store.current.detail?.thread.runState).toEqual({
+        id: "turn-9",
+        status: "running",
+        startedAt: "2026-08-14T09:00:00.000Z",
+      });
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads);
+    });
+
+    it("re-reads a conversation whose transcript moved while it was not on screen", async () => {
+      seedTwo();
+      const store = await openedOnAlpha();
+      act(() => { store.current.selectThread(beta.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(beta.id));
+      const reads = vi.mocked(api.thread).mock.calls.length;
+
+      // Nothing is fetched WHILE it is in the background...
+      emit("message.changed", {
+        threadId: alpha.id,
+        payload: { messageId: "m1", updatedAt: "2026-08-14T09:00:00.000Z" },
+      });
+      await quiet();
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads);
+      expect(api.message).not.toHaveBeenCalled();
+
+      // ...and opening it is what pays for what it missed.
+      act(() => { store.current.selectThread(alpha.id); });
+      await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 1));
+    });
+
+    it("buys each bucket's page once, however often the operator switches back", async () => {
+      const gamma = thread("gamma-thread", "beta");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [alpha],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [gamma] });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => threadId === gamma.id
+        ? { thread: gamma, messages: [] }
+        : { thread: alpha, messages: [streamed("m1", "Hel")] });
+      const store = await openedOnAlpha();
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(gamma.id));
+      act(() => { store.current.selectAgent("alpha"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(gamma.id));
+      await quiet();
+
+      // Alpha's bucket came with the bootstrap and beta's was read once. The
+      // return trips cost neither a page nor a transcript.
+      expect(vi.mocked(api.threads).mock.calls.map((call) => [call[0], call[1]]))
+        .toEqual([["beta", false]]);
+      expect(vi.mocked(api.thread).mock.calls.map((call) => call[0]))
+        .toEqual([alpha.id, gamma.id]);
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+    });
+
+    it("re-reads a background conversation whose summary event moved its transcript", async () => {
+      // A cron page that reconciled and a turn that started both move a
+      // transcript and say so only through the conversation's own summary
+      // event. Held from before, it would answer the next open from a
+      // transcript that is behind, with nothing left to correct it.
+      seedTwo();
+      const store = await openedOnAlpha();
+      act(() => { store.current.selectThread(beta.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(beta.id));
+      const reads = vi.mocked(api.thread).mock.calls.length;
+
+      emit("thread.changed", {
+        threadId: alpha.id,
+        payload: { thread: { ...alpha, revision: 2, messageCount: 4 } },
+      });
+      await quiet();
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads);
+
+      act(() => { store.current.selectThread(alpha.id); });
+      await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 1));
+    });
+
+    it("trusts nothing it kept across a reconnect", async () => {
+      seedTwo();
+      const store = await openedOnAlpha();
+      // The stream's own first `ready`, so the one below is known to be a
+      // RECONNECT rather than the snapshot the mount already asked for.
+      emit("ready", { payload: { version: 1 } });
+      act(() => { store.current.selectThread(beta.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(beta.id));
+      const reads = vi.mocked(api.thread).mock.calls.length;
+
+      // Nothing was observed while the link was down, so no held conversation
+      // can say it is current.
+      act(() => FakeEventSource.latest?.onerror?.(new Event("error")));
+      await waitFor(() => expect(store.current.connection).toBe("reconnecting"));
+      act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
+      emit("ready", { payload: { version: 1 } });
+      await waitFor(() => expect(api.bootstrap).toHaveBeenCalledTimes(2));
+      await quiet();
+
+      act(() => { store.current.selectThread(alpha.id); });
+      // The reconnect read the open conversation; this is the one it kept.
+      await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 2));
+    });
+
+    it("hands a transcript nothing touched back as the very array it held", async () => {
+      seedTwo();
+      const store = await openedOnAlpha();
+      const before = store.current.detail?.messages;
+
+      emit("message.changed", {
+        threadId: alpha.id,
+        payload: { messageId: "unheld", updatedAt: "2026-08-14T09:00:00.000Z" },
+      });
+      await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(2));
+      await quiet();
+
+      // assistant-ui short-circuits its entire store update on this identity,
+      // so a refresh that rebuilt the array re-converted every message in it.
+      expect(store.current.detail?.messages).toBe(before);
     });
   });
 });
