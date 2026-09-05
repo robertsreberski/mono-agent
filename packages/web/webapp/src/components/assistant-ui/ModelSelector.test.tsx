@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import "../../styles.css";
 import {
   ModelSelector,
   type ModelSelectorOption,
@@ -110,38 +111,24 @@ describe("ModelSelector", () => {
     expect(within(popup).queryByRole("option", { name: /GPT-5\.5 Codex/u })).toBeNull();
   });
 
-  it("selects a model and then exposes that model's effort radio group", async () => {
-    const onValueChange = vi.fn();
-    const onEffortChange = vi.fn();
-    const { rerender } = render(
-      <ModelSelector
-        models={models}
-        value=""
-        effort=""
-        onValueChange={onValueChange}
-        onEffortChange={onEffortChange}
-      />,
-    );
+  it("keeps the dialog open after model selection so effort can be chosen, then closes explicitly", async () => {
+    render(<ControlledSelector />);
 
     fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
     fireEvent.click(await screen.findByRole("option", { name: /GPT-5\.5 Codex/u }));
-    expect(onValueChange).toHaveBeenCalledWith("pi:openai-codex:gpt-5.5");
-    expect(screen.queryByRole("dialog", { name: "Model and reasoning effort" })).toBeNull();
+    const popup = screen.getByRole("dialog", { name: "Model and reasoning effort" });
+    expect(popup).toBeVisible();
+    expect(screen.getByRole("button", { name: "Model and reasoning effort" }))
+      .toHaveTextContent("GPT-5.5 Codex");
 
-    rerender(
-      <ModelSelector
-        models={models}
-        value="pi:openai-codex:gpt-5.5"
-        effort=""
-        onValueChange={onValueChange}
-        onEffortChange={onEffortChange}
-      />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
-    const effortGroup = await screen.findByRole("radiogroup", { name: "Reasoning effort" });
+    const effortGroup = within(popup).getByRole("radiogroup", { name: "Reasoning effort" });
     fireEvent.click(within(effortGroup).getByRole("radio", { name: "High" }));
+    expect(within(effortGroup).getByRole("radio", { name: "High" })).toBeChecked();
 
-    expect(onEffortChange).toHaveBeenCalledWith("high");
+    fireEvent.click(within(popup).getByRole("button", { name: "Close" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Model and reasoning effort" })).toBeNull();
+    });
   });
 
   it("opens from the trigger with arrow keys and supports cmdk keyboard selection", async () => {
@@ -166,6 +153,7 @@ describe("ModelSelector", () => {
     fireEvent.keyDown(search, { key: "Enter" });
 
     expect(onValueChange).toHaveBeenCalledWith("pi:openai-codex:gpt-5.5");
+    expect(screen.getByRole("dialog", { name: "Model and reasoning effort" })).toBeVisible();
   });
 
   it("disables the trigger while a turn is running", () => {
@@ -270,6 +258,48 @@ describe("ModelSelector provider grouping", () => {
     expect(within(popup).queryByRole("option", { name: /Codex θ/u })).toBeNull();
     expect(within(popup).getByRole("option", { name: /Opus 5/u })).toBeVisible();
     expect(within(popup).getByRole("option", { name: /Default model/u })).toBeVisible();
+  });
+
+  it("keeps provider chip labels, order, and dimensions stable when selection changes", async () => {
+    renderSelector({
+      agentProviders: [
+        { id: "codex", label: "OpenAI Codex" },
+        { id: "anthropic", label: "Anthropic" },
+      ],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+    const popup = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
+    const providers = within(popup).getByRole("radiogroup", { name: "Filter by provider" });
+    const labels = () => within(providers).getAllByRole("radio").map((radio) => radio.textContent);
+    const anthropic = within(providers).getByRole("radio", { name: "Anthropic" });
+    const before = getComputedStyle(anthropic);
+    const beforeDimensions = {
+      height: before.height,
+      minWidth: before.minWidth,
+      padding: before.padding,
+      borderWidth: before.borderWidth,
+      boxSizing: before.boxSizing,
+      fontSize: before.fontSize,
+      fontWeight: before.fontWeight,
+    };
+
+    expect(labels()).toEqual(["All", "OpenAI Codex", "Anthropic"]);
+    expect(beforeDimensions.height).toBe("28px");
+    fireEvent.click(anthropic);
+
+    const selected = within(providers).getByRole("radio", { name: "Anthropic" });
+    const after = getComputedStyle(selected);
+    expect(selected).toBe(anthropic);
+    expect(labels()).toEqual(["All", "OpenAI Codex", "Anthropic"]);
+    expect({
+      height: after.height,
+      minWidth: after.minWidth,
+      padding: after.padding,
+      borderWidth: after.borderWidth,
+      boxSizing: after.boxSizing,
+      fontSize: after.fontSize,
+      fontWeight: after.fontWeight,
+    }).toEqual(beforeDimensions);
   });
 
   it("requests a provider page when its chip is tapped", async () => {

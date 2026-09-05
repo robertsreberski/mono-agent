@@ -70,6 +70,31 @@ describe("provider-model-catalog", () => {
     expect(models[0]?.effortLevels).toEqual(resolved.effortLevels);
   });
 
+  it("uses the configured display name in catalog pages and shortlist descriptions", () => {
+    const real = listPiBuiltinModels("anthropic")[0]!;
+    const catalog = buildProviderModelCatalog({
+      providers: [{
+        id: "anthropic",
+        models: [{
+          name: real.id,
+          alias: "preferred-claude",
+          displayName: "Robert's preferred Claude",
+        }],
+      }],
+    });
+    const ref = parseMonoRuntimeModelReference(`anthropic:${real.id}`);
+    const aliasRef = parseMonoRuntimeModelReference("anthropic:preferred-claude");
+
+    expect(catalog.listModels("anthropic").models[0]).toMatchObject({
+      id: real.id,
+      name: "Robert's preferred Claude",
+    });
+    expect(catalog.describe([ref])[ref.reference]?.label)
+      .toBe("Robert's preferred Claude");
+    expect(catalog.describe([aliasRef])[aliasRef.reference]?.label)
+      .toBe("Robert's preferred Claude");
+  });
+
   it("an explicit models allowlist bypasses the cap and preserves order", () => {
     const catalog = buildProviderModelCatalog({
       providers: [
