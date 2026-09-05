@@ -4,9 +4,12 @@ import { describe, expect, it } from "vitest";
 import { sessionContextBlock } from "../harness/session-context.js";
 
 const replyTo = { conversationId: "slack:C0A1B2C3D:1750000000.000100" };
+// The push branch never renders the request conversation id; it is supplied
+// because the block needs it for the console branch.
+const conversationId = "slack:C0A1B2C3D:1750000000.000100";
 
 function block(surface?: AgentSurface): string {
-  return sessionContextBlock({ replyTo, ...(surface === undefined ? {} : { surface }) });
+  return sessionContextBlock({ conversationId, replyTo, ...(surface === undefined ? {} : { surface }) });
 }
 
 describe("sessionContextBlock surface disclosure", () => {
@@ -62,7 +65,9 @@ describe("sessionContextBlock surface disclosure", () => {
   });
 
   it("is byte-identical to the pre-surface block when the channel discloses none", () => {
-    // The backwards-compatibility contract for TUI, web, and custom channels.
+    // The backwards-compatibility contract for a custom push channel that sets a
+    // reply target without a surface. Console turns (web, TUI) are classified
+    // separately below and disclose their own conversation id.
     expect(block()).toBe([
       "You are handling an interactive push conversation. The host owns its exact channel and thread destination.",
       "Never copy, request, infer, or pass a conversation id, channel id, callback URL, or delivery token. You may promise a later reply only after a continuation-capable tool explicitly confirms that a destination-bound continuation was registered; otherwise finish synchronously or explain that background delivery was not scheduled.",
@@ -70,8 +75,8 @@ describe("sessionContextBlock surface disclosure", () => {
   });
 
   it("explains backgrounding only when the host injected the background schema", () => {
-    const without = sessionContextBlock({ replyTo });
-    const withJobs = sessionContextBlock({ replyTo }, { backgroundProcessJobs: true });
+    const without = sessionContextBlock({ conversationId, replyTo });
+    const withJobs = sessionContextBlock({ conversationId, replyTo }, { backgroundProcessJobs: true });
 
     expect(without).not.toContain("background: true");
     expect(withJobs).toContain("`Exec` and `Bash` accept `background: true` on this turn.");
@@ -82,20 +87,20 @@ describe("sessionContextBlock surface disclosure", () => {
   it("stops calling a started job unscheduled once background jobs are available", () => {
     // Without process jobs the unqualified rule would have the agent announce
     // that background delivery was not scheduled for work it just handed off.
-    expect(sessionContextBlock({ replyTo })).toContain(
+    expect(sessionContextBlock({ conversationId, replyTo })).toContain(
       "was registered; otherwise finish synchronously",
     );
     const confirmation =
       "was registered — a background process job or a monitor that reports itself started is such a confirmation; otherwise finish synchronously";
-    expect(sessionContextBlock({ replyTo }, { backgroundProcessJobs: true })).toContain(confirmation);
+    expect(sessionContextBlock({ conversationId, replyTo }, { backgroundProcessJobs: true })).toContain(confirmation);
     // A monitor is the same kind of host-owned continuation, so it earns the
     // same qualification even when background jobs are unavailable.
-    expect(sessionContextBlock({ replyTo }, { monitors: true })).toContain(confirmation);
+    expect(sessionContextBlock({ conversationId, replyTo }, { monitors: true })).toContain(confirmation);
   });
 
   it("describes monitors only when the host actually registered the tools", () => {
-    expect(sessionContextBlock({ replyTo })).not.toContain("`Monitor` and `MonitorStop`");
-    const rendered = sessionContextBlock({ replyTo }, { monitors: true });
+    expect(sessionContextBlock({ conversationId, replyTo })).not.toContain("`Monitor` and `MonitorStop`");
+    const rendered = sessionContextBlock({ conversationId, replyTo }, { monitors: true });
     expect(rendered).toContain("`Monitor` and `MonitorStop` are available on this turn.");
     expect(rendered).toContain("do not poll it, sleep, wait, or re-run its command");
     expect(rendered).toContain("`NOTHING_TO_REPORT`");
@@ -104,7 +109,7 @@ describe("sessionContextBlock surface disclosure", () => {
 
   it("carries monitor guidance into a request-driven run that has the tools", () => {
     const rendered = sessionContextBlock(
-      { metadata: { cron: { jobId: "nightly" } } },
+      { conversationId: "cron:nightly", metadata: { cron: { jobId: "nightly" } } },
       { monitors: true },
     );
     expect(rendered).toContain("This is a request-driven run");
@@ -113,6 +118,7 @@ describe("sessionContextBlock surface disclosure", () => {
 
   it("leaves a request-driven cron turn untouched", () => {
     const rendered = sessionContextBlock({
+      conversationId: "cron:nightly",
       metadata: { cron: { jobId: "nightly" } },
       surface: { kind: "channel", name: "team-example", id: "C0A1B2C3D" },
     });
@@ -209,6 +215,135 @@ describe("sessionContextBlock surface sanitizing", () => {
         messageBudget: { maxChars, overflow: "thread" },
       });
       expect(rendered).not.toContain("characters;");
+    }
+  });
+});
+
+describe("sessionContextBlock console conversations", () => {
+  const webConversationId = "web:234b8561-1f0a-417b-884a-fa3ec5b132a8";
+  const webRequest = {
+    conversationId: webConversationId,
+    metadata: {
+      source: "web",
+      web: { threadId: "234b8561-1f0a-417b-884a-fa3ec5b132a8", turnId: "turn-1" },
+      webRequestId: "req-1",
+    },
+  };
+  const tuiRequest = {
+    conversationId: "tui-agent",
+    metadata: { source: "tui", tuiRequestId: "req-2" },
+  };
+
+  it("names the web console and discloses the exact conversation id", () => {
+    const rendered = sessionContextBlock(webRequest);
+
+    expect(rendered).toContain(
+      "You are handling an interactive console conversation on the web console.",
+    );
+    expect(rendered).toContain(`Conversation id: \`${webConversationId}\`.`);
+    expect(rendered).toContain("quote it exactly when such a tool asks for it");
+    expect(rendered).toContain("It is not a delivery target");
+    // A console turn is neither of the two older classifications.
+    expect(rendered).not.toContain("This is a request-driven run");
+    expect(rendered).not.toContain("You are handling an interactive push conversation");
+    // The blanket prohibition would contradict the id the block just disclosed.
+    expect(rendered).not.toContain("Never copy, request, infer, or pass a conversation id");
+    // The route half survives: no callback URLs or delivery tokens, and the id
+    // never becomes a place to send things.
+    expect(rendered).toContain("never use it, a callback URL, or a delivery token to send or redirect this turn's reply");
+  });
+
+  it("names the terminal console for a TUI turn", () => {
+    const rendered = sessionContextBlock(tuiRequest);
+
+    expect(rendered).toContain(
+      "You are handling an interactive console conversation on the terminal console.",
+    );
+    expect(rendered).toContain("Conversation id: `tui-agent`.");
+    expect(rendered).not.toContain("web console");
+    expect(rendered).not.toContain("This is a request-driven run");
+  });
+
+  it("keeps the continuation confirmation and tool guidance on a console turn", () => {
+    const plain = sessionContextBlock(webRequest);
+    const withTools = sessionContextBlock(webRequest, { backgroundProcessJobs: true, monitors: true, hostManagedMemory: true });
+
+    expect(plain).toContain("was registered; otherwise finish synchronously");
+    expect(withTools).toContain(
+      "was registered — a background process job or a monitor that reports itself started is such a confirmation; otherwise finish synchronously",
+    );
+    expect(withTools).toContain("`Exec` and `Bash` accept `background: true` on this turn.");
+    expect(withTools).toContain("`Monitor` and `MonitorStop` are available on this turn.");
+    expect(withTools).toContain("Long-term memory state is owned by the host");
+    // The console line still leads the block.
+    expect(withTools.startsWith("You are handling an interactive console conversation")).toBe(true);
+  });
+
+  it("lets a scheduled or webhook trigger win over a console source", () => {
+    const cron = sessionContextBlock({
+      conversationId: webConversationId,
+      metadata: { source: "web", cron: { jobId: "nightly" } },
+    });
+    const webhook = sessionContextBlock({
+      conversationId: webConversationId,
+      metadata: { source: "web", webhook: { endpointName: "deploy" } },
+    });
+
+    for (const rendered of [cron, webhook]) {
+      expect(rendered).toContain("This is a request-driven run");
+      expect(rendered).not.toContain("interactive console conversation");
+      expect(rendered).not.toContain(webConversationId);
+    }
+  });
+
+  it("lets a push reply target win over a console source", () => {
+    const rendered = sessionContextBlock({
+      conversationId: webConversationId,
+      metadata: { source: "web" },
+      replyTo: { conversationId: "slack:C0A1B2C3D:1750000000.000100" },
+    });
+
+    expect(rendered).toContain("You are handling an interactive push conversation");
+    expect(rendered).not.toContain("interactive console conversation");
+    expect(rendered).not.toContain(webConversationId);
+    expect(rendered).not.toContain("slack:C0A1B2C3D");
+  });
+
+  it("omits the id line rather than rendering a mangled id", () => {
+    const hostile = "web:abc\ndef";
+    const oversized = `web:${"x".repeat(400)}`;
+    const quoted = 'web:abc"def';
+
+    for (const conversationId of [hostile, oversized, quoted]) {
+      const rendered = sessionContextBlock({ conversationId, metadata: { source: "web" } });
+      expect(rendered).toContain("You are handling an interactive console conversation on the web console.");
+      expect(rendered).not.toContain("Conversation id:");
+      expect(rendered).not.toContain("abc\ndef");
+      expect(rendered).not.toContain("x".repeat(300));
+      // The route prohibition still applies when no id is disclosed.
+      expect(rendered).toContain("Never use a callback URL or delivery token to send or redirect this turn's reply.");
+    }
+  });
+
+  it("leaves every other request-driven source untouched", () => {
+    const acp = sessionContextBlock({
+      conversationId: "acp:session-1",
+      metadata: { source: "acp", acpRequestId: "req-3" },
+    });
+    const api = sessionContextBlock({
+      conversationId: "openai-api:request-1",
+      metadata: { openaiApi: { requestId: "request-1" } },
+    });
+    const bare = sessionContextBlock({ conversationId: "custom:thread-9" });
+
+    for (const [rendered, conversationId] of [
+      [acp, "acp:session-1"],
+      [api, "openai-api:request-1"],
+      [bare, "custom:thread-9"],
+    ] as const) {
+      expect(rendered).toContain("This is a request-driven run");
+      expect(rendered).not.toContain("interactive console conversation");
+      expect(rendered).not.toContain(conversationId);
     }
   });
 });
