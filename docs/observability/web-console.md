@@ -116,7 +116,11 @@ Activity is one panel, and every entry in it is the same row: a status glyph, a
 name, a summary of what it acted on, a failure tag when there is one, a duration,
 and a chevron. A single tool call, a folded run of them, a thought, and a subagent
 delegation all read as that row — only the glyph and what expanding reveals
-differ. The panel header summarizes the turn as a step count and elapsed time.
+differ. The panel header summarizes the turn as a step count and its wall-clock
+elapsed time — from the moment the turn started until it settled, so thinking,
+tool calls and waits are all counted once. It ticks while the turn runs and
+freezes at the recorded finish; a historical record with no finish stamp shows
+the step count alone.
 
 Repeated tool calls fold together: a run of two or more consecutive calls to the
 same tool renders as one row (**Read ×4**) carrying a deduplicated summary, a
