@@ -117,10 +117,8 @@ async function discoverCachedProvider(
   input: DiscoverLocalProvidersInput,
 ): Promise<DiscoveredProvider | undefined> {
   const normalized = validateLocalProviderDefinition(provider);
-  // Key by the probed endpoint, not the raw baseUrl: `type` participates in the
-  // URL, so `{id:"ollama", type:"openai_compat"}` addresses a different endpoint
-  // than the same id and baseUrl with the inferred ollama type.
-  const key = `${normalized.id}|${modelsEndpointForProvider(normalized)}`;
+  // Native metadata depends on type even when the /v1/models URL is identical.
+  const key = `${normalized.id}|${normalized.type}|${modelsEndpointForProvider(normalized)}`;
   const now = Date.now();
   const cached = discoveryCache.get(key);
   const cacheIsWarm = cached !== undefined && cached.expiresAt > now;

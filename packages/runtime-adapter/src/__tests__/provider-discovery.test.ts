@@ -197,6 +197,23 @@ describe("discoverLocalProviders", () => {
       .toEqual([{ name: "http://localhost:11434/api/v1/models" }]);
   });
 
+  it("does not reuse native metadata when a type change keeps the same models URL", async () => {
+    const fetchImpl = vi.fn(async (url: FetchInput) => response(
+      urlString(url).endsWith("/api/v1/models")
+        ? { models: [{ key: "vector", type: "embedding" }] } : { data: [{ id: "vector" }] },
+    )) as unknown as typeof fetch;
+    const defaultsOff = [{ id: "ollama", enabled: false }] as const;
+    const first = await discoverLocalProviders({ fetch: fetchImpl, configured: [
+      ...defaultsOff, { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234" },
+    ] });
+    expect(first[0]?.models[0]?.capabilities?.advertised_capabilities).toEqual(["embedding"]);
+    const second = await discoverLocalProviders({ fetch: fetchImpl, configured: [
+      ...defaultsOff, { id: "lmstudio", type: "openai_compat", baseUrl: "http://localhost:1234" },
+    ] });
+    expect(second[0]?.models).toEqual([{ name: "vector" }]);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
   it("probes a declared provider for liveness but advertises only its listed models", async () => {
     const fetchImpl = vi.fn(() => Promise.resolve(response({ data: [{ id: "live-but-hidden" }] }))) as unknown as typeof fetch;
     const providers = await discoverLocalProviders({

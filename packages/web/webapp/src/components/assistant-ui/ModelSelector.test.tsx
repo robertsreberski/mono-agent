@@ -160,6 +160,17 @@ describe("ModelSelector", () => {
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 
+  it.each(["Tab", "ArrowLeft"])("does not let %s mark a later controlled open as keyboard initiated", async (key) => {
+    render(<ExternallyOpenedSelector />);
+    const trigger = screen.getByRole("button", { name: "Model and reasoning effort" });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key });
+    fireEvent.click(screen.getByRole("button", { name: "Open run settings" }), { detail: 1 });
+    const popup = await screen.findByRole("dialog");
+    await waitFor(() => expect(popup).toHaveFocus());
+    expect(screen.getByRole("combobox")).not.toHaveFocus();
+  });
+
   it("opens from the trigger with arrow keys and supports cmdk keyboard selection", async () => {
     const onValueChange = vi.fn();
     render(

@@ -190,7 +190,8 @@ export function buildProviderModelCatalog(
     (input.discoveredModels ?? []).filter((model) => model.embeddingOnly).map((model) => model.ref),
   );
   for (const provider of [...providers, ...(localProviders ?? [])]) {
-    if (provider.type !== "ollama" && provider.type !== "lmstudio") continue;
+    const localType = provider.type ?? provider.id;
+    if (localType !== "ollama" && localType !== "lmstudio") continue;
     for (const model of provider.models ?? []) {
       const capabilities = model.capabilities?.advertised_capabilities;
       if (capabilities?.includes("embedding") && !capabilities.includes("completion")) {

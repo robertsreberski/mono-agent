@@ -157,8 +157,8 @@ export function ModelSelector({
         disabled={disabled}
         onPointerDown={() => { keyboardOpenRef.current = false; }}
         onKeyDown={(event) => {
-          keyboardOpenRef.current = true;
           if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+          keyboardOpenRef.current = true;
           event.preventDefault();
           setOpen(true);
         }}
