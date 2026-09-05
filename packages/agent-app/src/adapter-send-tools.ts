@@ -100,7 +100,7 @@ export interface TelegramSendToolSettings {
 export interface AskUserToolSettings {
   readonly bridgeUrl: string;
   readonly bridgeToken: string;
-  readonly timeoutMs: number;
+  readonly timeoutMs: number | null;
   readonly producerConversationId?: string;
   readonly interactionConversationId?: string;
   readonly runId?: string;
@@ -138,6 +138,7 @@ export interface AdapterSendToolsDeliveryHistoryCapabilityIssuer {
 export interface AdapterSendToolsRuntimeExtension {
   readonly runtimeOptions: {
     readonly mcpServers: Record<string, unknown>;
+    readonly mcpCallNoTotalTimeoutTools?: readonly string[];
   };
   readonly cleanup: () => Promise<void>;
   readonly settleCleanup?: () => Promise<void>;
@@ -219,9 +220,13 @@ function resolveAskUserToolSettings(
   if (bridgeUrl === undefined || bridgeToken === undefined) {
     return undefined;
   }
-  const timeoutRaw = Number(optionalString(env.MONO_AGENT_ASK_USER_TIMEOUT_MS));
-  const timeoutMs = interaction?.timeoutMs
-    ?? (Number.isFinite(timeoutRaw) && timeoutRaw >= 1000 ? timeoutRaw : 600_000);
+  const timeoutValue = optionalString(env.MONO_AGENT_ASK_USER_TIMEOUT_MS);
+  const timeoutRaw = Number(timeoutValue);
+  const timeoutMs = interaction?.timeoutMs !== undefined
+    ? interaction.timeoutMs
+    : timeoutValue === "none"
+      ? null
+      : Number.isFinite(timeoutRaw) && timeoutRaw >= 1000 ? timeoutRaw : 600_000;
   const producerConversationId = optionalString(env.MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID);
   const interactionConversationId = optionalString(env.MONO_AGENT_ADAPTER_TOOLS_INTERACTION_CONVERSATION_ID);
   const runId = optionalString(env.MONO_AGENT_ADAPTER_TOOLS_PRODUCING_RUN_ID);
@@ -282,7 +287,7 @@ export interface AdapterSendToolsChildContext {
 export interface AdapterSendToolsInteractionEnv {
   readonly bridgeUrl: string;
   readonly bridgeToken: string;
-  readonly timeoutMs: number;
+  readonly timeoutMs: number | null;
 }
 
 export function adapterSendToolsMcpEnv(
@@ -323,7 +328,7 @@ export function adapterSendToolsMcpEnv(
       : {
           MONO_AGENT_INTERACTION_BRIDGE_URL: interaction.bridgeUrl,
           MONO_AGENT_INTERACTION_BRIDGE_TOKEN: interaction.bridgeToken,
-          MONO_AGENT_ASK_USER_TIMEOUT_MS: String(interaction.timeoutMs),
+          MONO_AGENT_ASK_USER_TIMEOUT_MS: interaction.timeoutMs === null ? "none" : String(interaction.timeoutMs),
         }),
   };
 }
@@ -453,6 +458,9 @@ export function createAdapterSendToolsRuntimeExtension(
       : undefined;
     return {
       runtimeOptions: {
+        ...(interaction?.timeoutMs === null && allowedTools.includes("AskUser")
+          ? { mcpCallNoTotalTimeoutTools: [`${ADAPTER_SEND_TOOLS_MCP_SERVER_NAME}:AskUser`] }
+          : {}),
         mcpServers: {
           [ADAPTER_SEND_TOOLS_MCP_SERVER_NAME]: adapterSendToolsMcpServerSpec(
             configPath,
@@ -579,7 +587,10 @@ function registerAskUserTool(
     {
       title: "Ask the user and wait",
       description:
-        "Ask 1–5 related questions and WAIT for the user to answer them in the current conversation. Each question must offer 2–3 concise options with descriptions; the UI also permits a custom reply. Use multiSelect only when several choices may be combined. Put long decision context or a draft in message. A second concurrent AskUser call fails. If the wait expires, finish gracefully using the returned partial answers and state any assumptions.",
+        "Ask 1–5 related questions and WAIT for the user to answer them in the current conversation. Each question must offer 2–3 concise options with descriptions; the UI also permits a custom reply. Use multiSelect only when several choices may be combined. Put long decision context or a draft in message. A second concurrent AskUser call fails. "
+        + (settings.timeoutMs === null
+          ? "This interaction has no automatic expiry; keep waiting until the user answers or cancels."
+          : "If the wait expires, finish gracefully using the returned partial answers and state any assumptions."),
       inputSchema: {
         message: z.string().min(1).max(4_096).optional().describe("Optional context or draft shown above the questions."),
         questions: z.array(z.object({

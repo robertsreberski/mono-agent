@@ -18,6 +18,8 @@
 //   workspace        — fallback for tool workdir resolution. Default: process.cwd().
 //   repoRoot         — secondary allowed root (the host's installation root).
 //                      Tool path-allowlist checks accept this in addition to workspace.
+//   additionalReadRoots  — extra read-only roots for managed filesystem tools.
+//   additionalWriteRoots — extra read/write roots for managed filesystem tools.
 //   runId            — used as the subdirectory under toolArtifactDir for tool output.
 //   toolArtifactDir  — root for {dir}/tool-output/{runId}/{file} artifact writes
 //                      from capChars/formatSearchLines. Null = no persistence.
@@ -52,6 +54,8 @@ import { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } from "../../../runtime-bra
  * @typedef {Object} ToolContext
  * @property {string} [workspace]
  * @property {string} [repoRoot]
+ * @property {ReadonlyArray<string>} [additionalReadRoots]
+ * @property {ReadonlyArray<string>} [additionalWriteRoots]
  * @property {string} [runId]
  * @property {string} [toolArtifactDir]
  * @property {string} [ripgrepPath]
@@ -69,6 +73,8 @@ import { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } from "../../../runtime-bra
 const TOOL_CONTEXT_KEYS = /** @type {const} */ ([
   "workspace",
   "repoRoot",
+  "additionalReadRoots",
+  "additionalWriteRoots",
   "runId",
   "toolArtifactDir",
   "ripgrepPath",
@@ -89,6 +95,8 @@ export function createToolContext(input = {}) {
   const ctx = {
     workspace: undefined,
     repoRoot: undefined,
+    additionalReadRoots: undefined,
+    additionalWriteRoots: undefined,
     runId: undefined,
     toolArtifactDir: undefined,
     ripgrepPath: undefined,

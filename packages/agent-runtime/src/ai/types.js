@@ -214,6 +214,8 @@
  * @property {import('../agent/sandbox-seam.js').RuntimeSandboxEngine} [sandboxEngine] Per-run concrete sandbox engine handed to the active sandbox implementation.
  * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox] Per-run sandbox IMPLEMENTATION override; when set it enforces this run's tools instead of the host/ToolContext impl (precedence run > host > passthrough). Policy DATA still merges monotonically (I13); this overrides only the enforcing code.
  * @property {RuntimeToolLimits} [toolLimits] Typed per-run tool-output limits (supported replacement for the deprecated `settings` tool keys).
+ * @property {readonly string[]} [mcpCallNoTotalTimeoutTools] Exact `server:tool`
+ *   names whose host-owned lifecycle has no total deadline. Inactivity and abort still apply.
  * @property {RuntimeCompactionPolicy} [compaction] Typed per-run compaction policy (supported replacement for the deprecated `settings` compaction keys).
  * @property {RuntimePromptOverrides} [prompts] Per-run prompt-fragment overrides (run wins over the host default).
  * @property {any} [webRequestCoordinator] Host-owned shared web admission and quota state.
@@ -408,6 +410,8 @@
  * host-integration callbacks (bound once, applied to every run via hostDefaults).
  * @property {string} [workspace]
  * @property {string} [repoRoot]
+ * @property {ReadonlyArray<string>} [additionalReadRoots]
+ * @property {ReadonlyArray<string>} [additionalWriteRoots]
  * @property {string} [ripgrepPath]
  * @property {string} [qaOutputDir]
  * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy]
@@ -433,6 +437,8 @@
  * (createRuntime's TOOL_RUNTIME_KEYS pick).
  * @property {string} [workspace]
  * @property {string} [repoRoot]
+ * @property {ReadonlyArray<string>} [additionalReadRoots]
+ * @property {ReadonlyArray<string>} [additionalWriteRoots]
  * @property {string} [ripgrepPath]
  * @property {string} [qaOutputDir]
  * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy]

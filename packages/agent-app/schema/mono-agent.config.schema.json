@@ -1016,6 +1016,36 @@
           },
           "default": []
         },
+        "filesystem": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "readableRoots": {
+              "description": "Extra roots for managed Read, Glob, and Grep while sandbox.mode is off. Access requires lexical and realpath containment; native sandbox roots remain authoritative when sandboxing is enabled.",
+              "examples": [
+                [
+                  "/srv/shared/reference"
+                ]
+              ],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "writableRoots": {
+              "description": "Extra roots for managed Write and Edit while sandbox.mode is off; writable roots are also readable. Access requires lexical and realpath containment; native sandbox roots remain authoritative when sandboxing is enabled.",
+              "examples": [
+                [
+                  "/srv/shared/output"
+                ]
+              ],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
         "mcpConfigPath": {
           "description": "Configures mcpConfigPath for the tools section.",
           "examples": [
@@ -1841,11 +1871,14 @@
           "additionalProperties": false,
           "properties": {
             "timeoutMs": {
-              "description": "Maximum wait for one AskUser interaction (one to five questions).",
+              "description": "Maximum wait for one AskUser interaction (one to five questions); set null to disable automatic expiry.",
               "examples": [
                 600000
               ],
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "default": 600000
             }
           }

@@ -1,7 +1,10 @@
 import type { ChannelAskSnapshot, ChannelInteractionSink } from "@mono-agent/agent-contracts";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { startInteractionBridge, type InteractionBridgeHandle } from "../interaction-bridge.js";
+import { loadInteractionSettings, startInteractionBridge, type InteractionBridgeHandle } from "../interaction-bridge.js";
 
 const handles: InteractionBridgeHandle[] = [];
 
@@ -32,7 +35,7 @@ function questions() {
   ];
 }
 
-async function createHarness(timeoutMs = 5_000): Promise<{
+async function createHarness(timeoutMs: number | null = 5_000): Promise<{
   handle: InteractionBridgeHandle;
   presented: ChannelAskSnapshot[];
   updated: ChannelAskSnapshot[];
@@ -86,6 +89,24 @@ async function pollAsk(handle: InteractionBridgeHandle, interactionId: string): 
 }
 
 describe("structured AskUser interaction bridge", () => {
+  it("loads null or the none env sentinel as an explicit no-expiry setting", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-interaction-settings-"));
+    try {
+      const configPath = join(dir, "mono-agent.config.json");
+      await writeFile(configPath, JSON.stringify({ interaction: { askUser: { timeoutMs: null } } }));
+      await expect(loadInteractionSettings({ env: {}, configPath })).resolves.toMatchObject({
+        configured: true,
+        askTimeoutMs: null,
+      });
+      await expect(loadInteractionSettings({
+        env: { MONO_AGENT_ASK_USER_TIMEOUT_MS: "none" },
+        configPath,
+      })).resolves.toMatchObject({ askTimeoutMs: null });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("presents 1-5 structured questions and atomically accepts all remaining web answers", async () => {
     const { handle, presented, updated } = await createHarness();
     const created = await createAsk(handle, {
@@ -246,6 +267,21 @@ describe("structured AskUser interaction bridge", () => {
     );
     expect(terminal.answers).toHaveLength(1);
     expect(updated.at(-1)?.status).toBe("expired");
+  });
+
+  it("keeps an explicitly unbounded interaction pending without synthesizing an expiry date", async () => {
+    const { handle, presented } = await createHarness(null);
+    const created = await createAsk(handle, {
+      conversationId: "web:no-expiry",
+      questions: [questions()[0]],
+      timeoutMs: 20,
+    });
+    const interactionId = created.body.interactionId as string;
+    expect(created).toMatchObject({ status: 201, body: { timeoutMs: null } });
+    expect(presented[0]).toMatchObject({ interactionId, status: "pending", expiresAt: null });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(handle.getPendingAsk("web:no-expiry")).toMatchObject({ interactionId, status: "pending", expiresAt: null });
+    handle.cancelAsks("web:no-expiry");
   });
 
   it("retains cancellation for exact-id reconciliation after the active entry is deleted", async () => {

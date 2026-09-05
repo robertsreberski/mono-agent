@@ -2044,7 +2044,10 @@ export class WebService {
       sourceId: thread.sourceId,
       title: `${agent?.label ?? "mono-agent"} needs input`,
       body: `${question.header}: ${question.question}`,
-      expiresAt: snapshot.expiresAt,
+      // Push delivery remains bounded even when the underlying AskUser wait is
+      // unbounded. Expiring this notification does not expire the interaction.
+      expiresAt: snapshot.expiresAt
+        ?? new Date(this.currentDate().getTime() + ASK_PUSH_DELIVERY_TTL_MS).toISOString(),
     });
     if (event !== undefined) this.announcePushEvent(event.logicalKey);
   }
@@ -2069,7 +2072,8 @@ export class WebService {
           );
       return snapshot?.interactionId === interactionId
         && snapshot.status === "pending"
-        && new Date(snapshot.expiresAt).getTime() > this.currentDate().getTime()
+        && (snapshot.expiresAt === null
+          || new Date(snapshot.expiresAt).getTime() > this.currentDate().getTime())
         ? "current"
         : "stale";
     } catch {
@@ -2516,11 +2520,14 @@ function abortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {
 }
 
 function isFuturePendingAsk(snapshot: ChannelAskSnapshot, now: Date): boolean {
+  if (snapshot.status !== "pending") return false;
+  if (snapshot.expiresAt === null) return true;
   const expiresAt = new Date(snapshot.expiresAt).getTime();
-  return snapshot.status === "pending" && Number.isFinite(expiresAt) && expiresAt > now.getTime();
+  return Number.isFinite(expiresAt) && expiresAt > now.getTime();
 }
 
 const STREAM_FLUSH_INTERVAL_MS = 50;
+const ASK_PUSH_DELIVERY_TTL_MS = 24 * 60 * 60 * 1_000;
 
 class WebTurnCancellation extends Error {
   constructor(readonly kind: "user" | "shutdown", message: string) {

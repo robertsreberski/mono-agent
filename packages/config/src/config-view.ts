@@ -127,6 +127,8 @@ export const CONFIG_ENV_KEYS = {
   "memory.consolidation.cron": "MONO_AGENT_MEMORY_CONSOLIDATION_CRON",
   "tools.allowedTools": "MONO_AGENT_ALLOWED_TOOLS",
   "tools.disallowedTools": "MONO_AGENT_DISALLOWED_TOOLS",
+  "tools.filesystem.readableRoots": "MONO_AGENT_FILE_TOOL_READABLE_ROOTS",
+  "tools.filesystem.writableRoots": "MONO_AGENT_FILE_TOOL_WRITABLE_ROOTS",
   "tools.mcpConfigPath": "MONO_AGENT_MCP_CONFIG_PATH",
   "tools.mcpRequestContextServers": "MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS",
   "tools.continuationServers": "MONO_AGENT_CONTINUATION_SERVERS",
@@ -760,6 +762,18 @@ function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSect
         label: "Disallowed tools",
         value: tools.disallowedTools.length === 0 ? "none" : tools.disallowedTools.join(", "),
         jsonPresent: json.tools?.disallowedTools !== undefined,
+      }),
+      toField(env, {
+        id: "tools.filesystem.readableRoots",
+        label: "Additional file-tool read roots",
+        value: tools.filesystem?.readableRoots.join(", ") ?? "none",
+        jsonPresent: json.tools?.filesystem?.readableRoots !== undefined,
+      }),
+      toField(env, {
+        id: "tools.filesystem.writableRoots",
+        label: "Additional file-tool write roots",
+        value: tools.filesystem?.writableRoots.join(", ") ?? "none",
+        jsonPresent: json.tools?.filesystem?.writableRoots !== undefined,
       }),
       toField(env, {
         id: "tools.mcpConfigPath",

@@ -54,6 +54,15 @@ tool must serialize, or leave the default `"safe-parallel"` mode to overlap
 only independent read-only built-ins. Stateful, mutating, and MCP tools remain
 sequential in the default mode.
 
+Trusted hosts running with process sandboxing off can extend the managed
+filesystem tools beyond `workspace` with `additionalReadRoots` and
+`additionalWriteRoots` on `CreateMonoRuntimeOptions`. Writable roots are also
+readable. These roots apply to `Read`, `Write`, `Edit`, `Glob`, and `Grep`; they
+do not sandbox arbitrary shell commands. Both lexical and resolved real paths
+must remain within an additional root, preventing symlink escapes. When a
+native sandbox policy is active, its readable and writable roots remain the
+authoritative boundary.
+
 Provider-owned project discovery no longer applies: the Pi runtime does not read
 another tool's filesystem settings, hooks, or project documents. The five
 options that carried that behaviour on the deleted bridges —

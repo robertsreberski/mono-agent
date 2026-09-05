@@ -166,11 +166,13 @@ They are tolerated so stale environments do not break startup, but they are igno
 | --- | --- | --- |
 | `MONO_AGENT_ALLOWED_TOOLS` | `tools.allowedTools` | Allowlist. **Unset** keeps the allow-all default; `*` is allow-all; an empty value (`""`) is the explicit chat-only `[]`. See [tool policy](/tools/policy/). |
 | `MONO_AGENT_DISALLOWED_TOOLS` | `tools.disallowedTools` | Denylist (deny wins; overlap rejected). |
+| `MONO_AGENT_FILE_TOOL_READABLE_ROOTS` | `tools.filesystem.readableRoots` | Comma-separated extra roots for managed Read, Glob, and Grep while the process sandbox is off. Lexical and realpath containment prevent symlink escapes. |
+| `MONO_AGENT_FILE_TOOL_WRITABLE_ROOTS` | `tools.filesystem.writableRoots` | Comma-separated extra roots for managed Write and Edit while the process sandbox is off; writable roots are also readable. |
 | `MONO_AGENT_MCP_CONFIG_PATH` | `tools.mcpConfigPath` | Path to `mcp.json`. See [MCP configuration](/tools/mcp/). |
 | `MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS` | `tools.mcpRequestContextServers` | Comma-separated stdio MCP server names that receive trusted request-scoped context and progress capabilities. |
 | `MONO_AGENT_CONTINUATION_SERVERS` | `tools.continuationServers` | Comma-separated stdio or loopback-HTTP MCP server names that receive trusted request-bound continuation claim capabilities. See [durable continuations](/tools/durable-continuations/). |
 | `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | `tools.mcpCallTimeoutMs` | Inactivity timeout per MCP tool call; tool progress notifications reset it. Default 120000. |
-| `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | `tools.mcpCallMaxTotalTimeoutMs` | Hard wall clock per MCP tool call that progress cannot extend. Default 2700000 (45 min). |
+| `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | `tools.mcpCallMaxTotalTimeoutMs` | Hard wall clock per MCP tool call that progress cannot extend. Default 2700000 (45 min). An AskUser configured with no automatic expiry is narrowly exempt. |
 | `MONO_AGENT_WEB_SEARCH_BACKEND` | `tools.web.search.backend` | `auto` (default), strict `searxng`, strict `codex`, or `keyless`. Auto uses local SearXNG → ChatGPT-subscription Codex → keyless. |
 | `MONO_AGENT_WEB_SEARCH_ENDPOINT` | `tools.web.search.endpoint` | Optional unauthenticated loopback HTTP SearXNG base URL; required by strict `searxng`. |
 | `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` | `tools.web.search.codex.model` | Codex app-server subscription-search model; default `gpt-5.6-luna`. |
@@ -193,7 +195,7 @@ Opted project stdio MCPs also receive host-owned filesystem context after all MC
 | --- | --- | --- |
 | `MONO_AGENT_INTERACTION_BRIDGE_HOST` | `interaction.bridge.host` | Bind host. Default `127.0.0.1`; keep it loopback because non-loopback values are not rejected. |
 | `MONO_AGENT_INTERACTION_BRIDGE_PORT` | `interaction.bridge.port` | Bridge port. Default `0` (ephemeral — consumers get the URL via env). |
-| `MONO_AGENT_ASK_USER_TIMEOUT_MS` | `interaction.askUser.timeoutMs` | Max wait for one `AskUser` interaction (one to five questions). Default 600000 (10 min). |
+| `MONO_AGENT_ASK_USER_TIMEOUT_MS` | `interaction.askUser.timeoutMs` | Max wait for one `AskUser` interaction (one to five questions). Default 600000 (10 min); set `none` to disable automatic expiry, equivalent to JSON `null`. |
 | `MONO_AGENT_PROGRESS_ENABLED` | `interaction.progress.enabled` | Route tool progress posts to channel status messages. Default true. |
 
 ## Sandbox

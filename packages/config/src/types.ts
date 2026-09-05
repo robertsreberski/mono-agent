@@ -369,6 +369,16 @@ export interface MonoAgentConfig {
   readonly tools: {
     readonly allowedTools: readonly string[];
     readonly disallowedTools: readonly string[];
+    /**
+     * Extra roots for the managed Read/Write/Edit/Glob/Grep tools while the
+     * process sandbox is off. These extend the workspace boundary without
+     * widening it to a common parent directory; native sandbox roots remain
+     * authoritative when sandboxing is enabled.
+     */
+    readonly filesystem?: {
+      readonly readableRoots: readonly string[];
+      readonly writableRoots: readonly string[];
+    };
     readonly mcpConfigPath?: string;
     /**
      * Names of configured stdio MCP servers that receive trusted per-request

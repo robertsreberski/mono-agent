@@ -281,6 +281,9 @@ and are rejected at load; emit `runtime.fallbacks[]` only.
   "telegram": { "enabled": true, "allowedChatIds": ["123456789"], "apiRoot": "http://127.0.0.1:8081", "attachments": { "maxBytes": 268435456, "maxUploadBytes": 268435456 } }
 }
 ```
+Set `interaction.askUser.timeoutMs` to `null` when this workflow must keep the
+question pending until the user answers or cancels; the default remains ten
+minutes.
 **Steps:** run a loopback self-hosted Bot API server if files exceed 20 MB, wire a long-running MCP tool in `.mcp.json`, `validate`, `start`.
 **Smoke:** send media with no caption, answer the `AskUser` question, watch progress update during the long job, and receive both an explicit `TelegramSendFile` send and a final generated reply file published with `PublishReplyFile` as native documents.
 

@@ -1165,6 +1165,38 @@ describe("loadMonoAgentConfig", () => {
     });
   });
 
+  it("loads additional file-tool roots relative to the config directory", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/agent",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_FILE_TOOL_READABLE_ROOTS: "../framework, ../worktrees",
+        MONO_AGENT_FILE_TOOL_WRITABLE_ROOTS: "../worktrees",
+      },
+    });
+
+    expect(config.tools.filesystem).toEqual({
+      readableRoots: ["/framework", "/worktrees"],
+      writableRoots: ["/worktrees"],
+    });
+  });
+
+  it("rejects malformed JSON-like file-tool root values instead of splitting them as CSV", () => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/agent",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_FILE_TOOL_READABLE_ROOTS: '["/projects/repo,archive"',
+      },
+    })).toThrowError(expect.objectContaining({
+      code: "invalid_env",
+      details: expect.objectContaining({
+        env: "MONO_AGENT_FILE_TOOL_READABLE_ROOTS",
+        reason: "invalid_string_array",
+      }),
+    }));
+  });
+
   it("loads memory embeddings from env with the Ollama default model", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",

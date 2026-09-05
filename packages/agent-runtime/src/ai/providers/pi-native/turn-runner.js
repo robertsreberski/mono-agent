@@ -164,6 +164,7 @@ export async function buildTurnTools(runState, {
       qaOutputDir,
       onTruncate,
       limits: toolLimits,
+      mcpCallNoTotalTimeoutTools: options.mcpCallNoTotalTimeoutTools,
       toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
       sandboxPolicy: options.sandboxPolicy,
       sandboxEngine,

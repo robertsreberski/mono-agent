@@ -516,7 +516,9 @@ export async function adapterSendToolsRuntimeOptions(controller: ResponderContro
     : {
         bridgeUrl: controller.interactionBridge.url,
         bridgeToken: controller.interactionBridge.token,
-        timeoutMs: Number(bridgeEnv.MONO_AGENT_ASK_USER_TIMEOUT_MS),
+        timeoutMs: bridgeEnv.MONO_AGENT_ASK_USER_TIMEOUT_MS === "none"
+          ? null
+          : Number(bridgeEnv.MONO_AGENT_ASK_USER_TIMEOUT_MS),
       };
   const settings = await resolveAdapterSendToolsSettings(input, {
     allowedTools: coreConfig.tools.allowedTools,

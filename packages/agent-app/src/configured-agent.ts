@@ -1887,6 +1887,12 @@ async function createConfiguredMemoryInternal(
 function runtimeHostOptionsForConfig(config: MonoAgentConfig): Parameters<typeof createMonoRuntime>[0] {
   return {
     workspace: config.runtime.workspace,
+    ...(config.tools.filesystem === undefined
+      ? {}
+      : {
+          additionalReadRoots: config.tools.filesystem.readableRoots,
+          additionalWriteRoots: config.tools.filesystem.writableRoots,
+        }),
     qaOutputDir: config.artifacts.dir,
     ...(config.providers?.piAuthPath === undefined
       ? {}

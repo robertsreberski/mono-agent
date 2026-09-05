@@ -302,7 +302,7 @@ const waitForAskPollDelay = async (delayMs: number, signal: AbortSignal): Promis
 };
 
 const expiredSnapshot = (snapshot: AskSnapshot): AskSnapshot =>
-  snapshot.status === "pending" && Date.parse(snapshot.expiresAt) <= Date.now()
+  snapshot.status === "pending" && snapshot.expiresAt !== null && Date.parse(snapshot.expiresAt) <= Date.now()
     ? { ...snapshot, status: "expired" }
     : snapshot;
 

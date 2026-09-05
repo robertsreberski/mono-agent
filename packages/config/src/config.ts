@@ -251,6 +251,16 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     invalidEnv,
   );
   const webBrowserCommand = readWebBrowserCommand(input.env.MONO_AGENT_WEB_BROWSER_COMMAND);
+  const fileToolReadableRoots = readFileToolRoots(
+    input.env.MONO_AGENT_FILE_TOOL_READABLE_ROOTS,
+    "MONO_AGENT_FILE_TOOL_READABLE_ROOTS",
+  )
+    .map((path) => readPath(path, cwd));
+  const fileToolWritableRoots = readFileToolRoots(
+    input.env.MONO_AGENT_FILE_TOOL_WRITABLE_ROOTS,
+    "MONO_AGENT_FILE_TOOL_WRITABLE_ROOTS",
+  )
+    .map((path) => readPath(path, cwd));
   const tools: MonoAgentConfig["tools"] = {
     // Omitted `tools.allowedTools` (env unset) → allow-all default; an explicit empty
     // list arrives as `MONO_AGENT_ALLOWED_TOOLS=""` (readCsv → []) meaning chat-only.
@@ -259,6 +269,14 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
         ? [ALLOW_ALL_TOOLS]
         : readCsv(input.env.MONO_AGENT_ALLOWED_TOOLS),
     disallowedTools: readCsv(input.env.MONO_AGENT_DISALLOWED_TOOLS),
+    ...(fileToolReadableRoots.length === 0 && fileToolWritableRoots.length === 0
+      ? {}
+      : {
+          filesystem: {
+            readableRoots: fileToolReadableRoots,
+            writableRoots: fileToolWritableRoots,
+          },
+        }),
     ...(mcpConfigPath === undefined ? {} : { mcpConfigPath }),
     ...(mcpRequestContextServers.length === 0 ? {} : { mcpRequestContextServers }),
     ...(continuationServers.length === 0 ? {} : { continuationServers }),
@@ -447,6 +465,12 @@ export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgen
       ...config.tools,
       allowedTools: [...config.tools.allowedTools],
       disallowedTools: [...config.tools.disallowedTools],
+      ...(config.tools.filesystem === undefined ? {} : {
+        filesystem: {
+          readableRoots: [...config.tools.filesystem.readableRoots],
+          writableRoots: [...config.tools.filesystem.writableRoots],
+        },
+      }),
       ...(config.tools.web === undefined ? {} : {
         web: {
           coordination: config.tools.web.coordination ?? "process",
@@ -2280,6 +2304,30 @@ function readPath(raw: string | undefined, cwd: string, defaultPath?: string): s
     throw new MonoAgentConfigError("invalid_env", "Path value is required.");
   }
   return resolve(cwd, normalized);
+}
+
+// JSON config arrays cross the layered loader's string-only env surface as a
+// JSON array so path names containing commas retain their element boundaries.
+// Direct environment configuration remains backward-compatible with CSV.
+function readFileToolRoots(raw: string | undefined, name: string): string[] {
+  const normalized = normalizeOptionalString(raw);
+  if (normalized === undefined) return [];
+  if (normalized.startsWith("[")) {
+    try {
+      const parsed: unknown = JSON.parse(normalized);
+      if (Array.isArray(parsed) && parsed.every((value) => typeof value === "string")) {
+        return parsed;
+      }
+    } catch {
+      // Report the same deterministic error as a parsed non-string array below.
+    }
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${name} must be a comma-separated path list or a JSON array of strings.`,
+      { env: name, reason: "invalid_string_array" },
+    );
+  }
+  return readCsv(raw);
 }
 
 function readUserPath(raw: string | undefined, cwd: string, defaultPath?: string): string {

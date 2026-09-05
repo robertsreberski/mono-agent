@@ -31,6 +31,8 @@ describe("createRuntime", () => {
     const runtime = createRuntime({
       workspace: "/tmp/work",
       repoRoot: "/tmp/repo",
+      additionalReadRoots: ["/tmp/read"],
+      additionalWriteRoots: ["/tmp/write"],
       ripgrepPath: "/usr/bin/rg",
       qaOutputDir: "/tmp/qa",
     });
@@ -42,6 +44,8 @@ describe("createRuntime", () => {
     expect(executeMock.mock.calls[0][1].toolContext).toMatchObject({
       workspace: "/tmp/work",
       repoRoot: "/tmp/repo",
+      additionalReadRoots: ["/tmp/read"],
+      additionalWriteRoots: ["/tmp/write"],
       ripgrepPath: "/usr/bin/rg",
       qaOutputDir: "/tmp/qa",
     });

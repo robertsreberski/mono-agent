@@ -919,10 +919,11 @@ function withTimeout(promise, timeoutMs, signal, label, registerReset) {
 /**
  * @param {any} mcpConfig
  * @param {Set<any>} [reservedNames]
- * @param {{limits?: any, cwd?: any, persistArtifact?: any, qaOutputDir?: any, onTruncate?: any, toolPayloadMaxBytes?: number, sandboxPolicy?: any, sandboxEngine?: any, onToolProgress?: any, ctx?: any, mcpApps?: any, runId?: string}} [options]
+ * @param {{limits?: any, mcpCallNoTotalTimeoutTools?: readonly string[], cwd?: any, persistArtifact?: any, qaOutputDir?: any, onTruncate?: any, toolPayloadMaxBytes?: number, sandboxPolicy?: any, sandboxEngine?: any, onToolProgress?: any, ctx?: any, mcpApps?: any, runId?: string}} [options]
  */
 export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   limits = {},
+  mcpCallNoTotalTimeoutTools = [],
   cwd = null,
   persistArtifact = null,
   qaOutputDir = null,
@@ -1032,12 +1033,13 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
           // Pass it explicitly so the SDK request timeout matches our cap instead of pre-empting it.
           const mcpCallTimeoutMs = limits.mcpCallTimeoutMs || 120000;
           // Inactivity vs total: mcpCallTimeoutMs is reset by every progress
-          // notification (keep-alive for long tools like transcription or an
-          // ask-the-user wait); mcpCallMaxTotalTimeoutMs is the unresettable cap.
+          // notification. A host may exempt one exact server:tool lifecycle
+          // from the total cap; abort and the resettable inactivity cap remain.
           const mcpCallMaxTotalTimeoutMs = Math.max(
             limits.mcpCallMaxTotalTimeoutMs || DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS,
             mcpCallTimeoutMs,
           );
+          const hasTotalTimeout = !mcpCallNoTotalTimeoutTools.includes(`${serverName}:${sourceTool.name}`);
           // The SDK only attaches a progressToken (and thus honors
           // resetTimeoutOnProgress) when an onprogress callback is present, so one
           // is always attached: it rearms the outer wall clock and optionally
@@ -1064,7 +1066,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
             {
               timeout: mcpCallTimeoutMs,
               resetTimeoutOnProgress: true,
-              maxTotalTimeout: mcpCallMaxTotalTimeoutMs,
+              ...(hasTotalTimeout ? { maxTotalTimeout: mcpCallMaxTotalTimeoutMs } : {}),
               signal: callAbort.signal,
               onprogress,
             },

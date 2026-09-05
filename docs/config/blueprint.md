@@ -202,7 +202,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "mcpRequestContextServers": ["transcribe"], // trusted stdio servers receiving scoped request/progress context
     "continuationServers": ["work-control"], // trusted stdio or loopback-HTTP async result owners
     "mcpCallTimeoutMs": 120000,            // inactivity cap per MCP call; tool progress resets it
-    "mcpCallMaxTotalTimeoutMs": 2700000,   // hard per-call wall clock (45 min); progress cannot extend it
+    "mcpCallMaxTotalTimeoutMs": 2700000,   // hard per-call wall clock (45 min); no-expiry AskUser is exempt
     "web": {
       "search": {
         "backend": "auto",                 // auto | searxng | codex | keyless
@@ -262,7 +262,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // tools.mcpRequestContextServers names at least one opted project MCP server.
   "interaction": {
     "bridge": { "host": "127.0.0.1", "port": 0 }, // keep loopback; 0 = ephemeral
-    "askUser": { "timeoutMs": 600000 },           // max wait per interaction (10 min)
+    "askUser": { "timeoutMs": 600000 },           // max wait per interaction; null = no automatic expiry
     "progress": { "enabled": true }
   },
 

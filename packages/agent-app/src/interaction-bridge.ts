@@ -30,8 +30,8 @@ export interface InteractionBridgeOptions {
   readonly host?: string;
   /** TCP port; 0 picks an ephemeral port. Default {@link DEFAULT_INTERACTION_BRIDGE_PORT}. */
   readonly port?: number;
-  /** Default + upper bound for a single ask's wait (ms). Default 10 minutes. */
-  readonly askTimeoutMs?: number;
+  /** Default + upper bound for a single ask's wait (ms); null disables automatic expiry. */
+  readonly askTimeoutMs?: number | null;
   /** Injectable wall clock for deterministic interaction-history timestamps. */
   readonly now?: () => Date;
   /** Record one already-delivered adapter message in its destination history. */
@@ -95,7 +95,7 @@ export interface InteractionSettings {
   readonly configured: boolean;
   readonly host: string;
   readonly port: number;
-  readonly askTimeoutMs: number;
+  readonly askTimeoutMs: number | null;
   readonly progressEnabled: boolean;
 }
 
@@ -127,7 +127,7 @@ export async function loadInteractionSettings(input: {
   const progress = (block.progress ?? {}) as Record<string, unknown>;
   const envHost = trimmed(input.env.MONO_AGENT_INTERACTION_BRIDGE_HOST);
   const envPort = integerOf(input.env.MONO_AGENT_INTERACTION_BRIDGE_PORT);
-  const envTimeout = integerOf(input.env.MONO_AGENT_ASK_USER_TIMEOUT_MS);
+  const envTimeout = askTimeoutValue(input.env.MONO_AGENT_ASK_USER_TIMEOUT_MS);
   const envProgress = trimmed(input.env.MONO_AGENT_PROGRESS_ENABLED);
   const configured =
     present || envHost !== undefined || envPort !== undefined || envTimeout !== undefined || envProgress !== undefined;
@@ -135,7 +135,11 @@ export async function loadInteractionSettings(input: {
     configured,
     host: envHost ?? (typeof bridge.host === "string" ? bridge.host : "127.0.0.1"),
     port: envPort ?? integerValue(bridge.port) ?? DEFAULT_INTERACTION_BRIDGE_PORT,
-    askTimeoutMs: envTimeout ?? integerValue(askUser.timeoutMs) ?? DEFAULT_ASK_USER_TIMEOUT_MS,
+    askTimeoutMs: envTimeout !== undefined
+      ? envTimeout
+      : askUser.timeoutMs === null
+        ? null
+        : integerValue(askUser.timeoutMs) ?? DEFAULT_ASK_USER_TIMEOUT_MS,
     progressEnabled: envProgress !== undefined ? envProgress !== "false" : progress.enabled !== false,
   };
 }
@@ -151,6 +155,12 @@ function integerOf(value: string | undefined): number | undefined {
     return undefined;
   }
   return Number.parseInt(normalized, 10);
+}
+
+function askTimeoutValue(value: string | undefined): number | null | undefined {
+  const normalized = trimmed(value);
+  if (normalized === "none") return null;
+  return integerOf(normalized);
 }
 
 function integerValue(value: unknown): number | undefined {
@@ -201,7 +211,7 @@ interface PendingAsk {
   readonly questions: readonly ChannelAskQuestion[];
   readonly answers: Map<string, ChannelAskAnswer>;
   readonly createdAt: string;
-  readonly expiresAt: string;
+  readonly expiresAt: string | null;
   status: AskStatus;
   expiryTimer?: ReturnType<typeof setTimeout>;
   readonly waiters: Set<(snapshot: ChannelAskSnapshot) => void>;
@@ -265,7 +275,7 @@ export async function startInteractionBridge(
   options: InteractionBridgeOptions = {},
 ): Promise<InteractionBridgeHandle> {
   const host = options.host ?? "127.0.0.1";
-  const askTimeoutMs = options.askTimeoutMs ?? DEFAULT_ASK_USER_TIMEOUT_MS;
+  const askTimeoutMs = options.askTimeoutMs === undefined ? DEFAULT_ASK_USER_TIMEOUT_MS : options.askTimeoutMs;
   const token = randomBytes(24).toString("base64url");
   const nowDate = (): Date => options.now?.() ?? new Date();
   const nowIso = (): string => nowDate().toISOString();
@@ -416,7 +426,7 @@ export async function startInteractionBridge(
       readonly runId?: string;
       readonly message?: string;
       readonly questions: readonly AskQuestionInput[];
-      readonly timeoutMs: number;
+      readonly timeoutMs: number | null;
     },
   ): PendingAsk {
     pruneTerminalAskHistory();
@@ -439,7 +449,9 @@ export async function startInteractionBridge(
       })),
       answers: new Map(),
       createdAt,
-      expiresAt: new Date(new Date(createdAt).getTime() + input.timeoutMs).toISOString(),
+      expiresAt: input.timeoutMs === null
+        ? null
+        : new Date(new Date(createdAt).getTime() + input.timeoutMs).toISOString(),
       status: "pending",
       waiters: new Set(),
     };
@@ -448,8 +460,8 @@ export async function startInteractionBridge(
     return ask;
   }
 
-  function armAskExpiry(ask: PendingAsk, timeoutMs: number): void {
-    if (ask.status !== "pending" || ask.expiryTimer !== undefined) {
+  function armAskExpiry(ask: PendingAsk, timeoutMs: number | null): void {
+    if (timeoutMs === null || ask.status !== "pending" || ask.expiryTimer !== undefined) {
       return;
     }
     ask.expiryTimer = setTimeout(() => settleAsk(ask, "expired"), timeoutMs);
@@ -516,7 +528,7 @@ export async function startInteractionBridge(
       sendJson(response, 409, { error: "a question is already pending on this conversation; wait for its answer." });
       return;
     }
-    const requested = numberField(body, "timeoutMs");
+    const requested = body.timeoutMs === null ? null : numberField(body, "timeoutMs");
     const producerConversationId = stringField(body, "producerConversationId") ?? conversationIdRaw;
     const runId = stringField(body, "runId");
     const message = optionalStringField(body, "message", MAX_INTERACTION_FIELD_CHARS);
@@ -524,9 +536,14 @@ export async function startInteractionBridge(
       sendJson(response, 400, { error: `message must be a non-empty string up to ${String(MAX_INTERACTION_FIELD_CHARS)} characters.` });
       return;
     }
-    // The config value is both the default and the ceiling: tools may wait less,
-    // never more, than the operator allowed.
-    const timeoutMs = Math.min(requested ?? askTimeoutMs, askTimeoutMs);
+    // A numeric config is both the default and the ceiling: tools may wait less,
+    // never more, than the operator allowed. Null is an explicit operator policy
+    // that disables automatic expiry rather than a missing numerical ceiling.
+    const timeoutMs = askTimeoutMs === null
+      ? null
+      : requested === null
+        ? askTimeoutMs
+        : Math.min(requested ?? askTimeoutMs, askTimeoutMs);
     const ask = registerAsk(conversationId, {
       producerConversationId,
       ...(runId === undefined ? {} : { runId }),
@@ -879,7 +896,7 @@ export async function startInteractionBridge(
       return {
         MONO_AGENT_INTERACTION_BRIDGE_URL: url,
         MONO_AGENT_INTERACTION_BRIDGE_TOKEN: token,
-        MONO_AGENT_ASK_USER_TIMEOUT_MS: String(askTimeoutMs),
+        MONO_AGENT_ASK_USER_TIMEOUT_MS: askTimeoutMs === null ? "none" : String(askTimeoutMs),
       };
     },
     issueProgressCapability(input) {

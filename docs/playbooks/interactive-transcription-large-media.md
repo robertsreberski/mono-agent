@@ -126,11 +126,16 @@ mono-agent start --config ./mono-agent.config.json
 5. **Timeout path**: leave the `AskUser` interaction incomplete past
    `askUser.timeoutMs` — the tool returns any answers already submitted, marks
    the remaining questions unanswered, and treats your later reply as a normal
-   next turn.
+   next turn. For an agent that must wait indefinitely, set
+   `interaction.askUser.timeoutMs` to `null`; then answer or cancel the ask
+   explicitly before continuing.
 
 ## Notes & limits
 
 - Inbound attachment bytes travel as base64 through the request, so keep `attachments.maxBytes` at or below ~256 MiB (peak transient memory ≈ 3.4× the file size). For files beyond that, send a local path in a message instead — the agent runs on the same host.
 - One pending `AskUser` per physical conversation; the model must consolidate related decisions into one call of at most five questions. On an app restart a pending ask degrades to normal multi-turn (the reply arrives as the next message).
-- `mcpCallMaxTotalTimeoutMs` is the unresettable ceiling (default 45 min); a job longer than that is cut off regardless of progress.
+- `mcpCallMaxTotalTimeoutMs` is the unresettable ceiling (default 45 min); a job
+  longer than that is cut off regardless of progress. An AskUser configured
+  with `timeoutMs: null` is narrowly exempt and instead ends on answer,
+  cancellation, or app shutdown.
 - Everything here is loopback-only: the interaction bridge binds `127.0.0.1`, and the self-hosted Bot API server must be started with `--http-ip-address=127.0.0.1`. Long polling means nothing inbound is exposed.

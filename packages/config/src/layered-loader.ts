@@ -950,6 +950,12 @@ export function layerJsonOntoEnv(
   if (json.tools?.disallowedTools !== undefined) {
     fromJson.MONO_AGENT_DISALLOWED_TOOLS = csv(json.tools.disallowedTools);
   }
+  if (json.tools?.filesystem?.readableRoots !== undefined) {
+    fromJson.MONO_AGENT_FILE_TOOL_READABLE_ROOTS = JSON.stringify(json.tools.filesystem.readableRoots);
+  }
+  if (json.tools?.filesystem?.writableRoots !== undefined) {
+    fromJson.MONO_AGENT_FILE_TOOL_WRITABLE_ROOTS = JSON.stringify(json.tools.filesystem.writableRoots);
+  }
   if (json.tools?.mcpConfigPath !== undefined) {
     fromJson.MONO_AGENT_MCP_CONFIG_PATH = json.tools.mcpConfigPath;
   }

@@ -418,6 +418,8 @@ export interface RuntimeRunOptions {
   readonly nativeSubagents?: never;
   /** Typed tool-output limits (supported replacement for the `settings` tool keys). */
   readonly toolLimits?: RuntimeToolLimits;
+  /** Exact `server:tool` names whose host-owned lifecycle has no total deadline. */
+  readonly mcpCallNoTotalTimeoutTools?: readonly string[];
   /** Typed compaction policy (supported replacement for the `settings` compaction keys). */
   readonly compaction?: RuntimeCompactionPolicy;
   /** Per-run prompt-fragment overrides. */
@@ -482,6 +484,8 @@ export interface MonoRuntimeLike {
 export interface RuntimeToolOptions {
   readonly workspace?: string;
   readonly repoRoot?: string;
+  readonly additionalReadRoots?: readonly string[];
+  readonly additionalWriteRoots?: readonly string[];
   readonly ripgrepPath?: string;
   readonly qaOutputDir?: string;
   readonly sandboxPolicy?: SandboxPolicy;
