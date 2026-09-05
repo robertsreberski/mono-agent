@@ -9,6 +9,7 @@ import {
 } from "@assistant-ui/react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WebUploadAttachmentAdapter } from "./attachment-adapter";
+import { ToolCallRepairProvider } from "./components/tool-call-repair";
 import { canSendInConsole, canUploadInConsole } from "./capabilities";
 import { clusterToolCalls } from "./activity-clustering";
 import { useConsoleStore, useUploadLimits } from "./console-store";
@@ -140,14 +141,20 @@ type ConvertedPart = Exclude<ThreadMessageLike["content"], string>[number];
  * `artifact` slot, so they are wrapped rather than fighting over it. Returns undefined
  * when neither is present, keeping ordinary tool calls unchanged.
  */
-const toolCallArtifact = (part: ToolCall): ToolCallArtifact | undefined =>
-  part.history === undefined && part.structuredResult === undefined && part.executionMs === undefined
-    ? undefined
-    : {
-        ...(part.history === undefined ? {} : { history: part.history }),
-        ...(part.structuredResult === undefined ? {} : { structuredResult: part.structuredResult }),
-        ...(part.executionMs === undefined ? {} : { executionMs: part.executionMs }),
-      };
+const toolCallArtifact = (part: ToolCall): ToolCallArtifact | undefined => {
+  const artifact: ToolCallArtifact = {
+    ...(part.history === undefined ? {} : { history: part.history }),
+    ...(part.structuredResult === undefined ? {} : { structuredResult: part.structuredResult }),
+    ...(part.executionMs === undefined ? {} : { executionMs: part.executionMs }),
+    // Whether the row is showing a preview rides here too: a row that cannot
+    // say so would present 4 KB of a 20 KB result as the whole output.
+    ...(part.resultTruncated === true ? { resultTruncated: true } : {}),
+    ...(part.resultBytes === undefined ? {} : { resultBytes: part.resultBytes }),
+    ...(part.argsTruncated === true ? { argsTruncated: true } : {}),
+    ...(part.argsBytes === undefined ? {} : { argsBytes: part.argsBytes }),
+  };
+  return Object.keys(artifact).length === 0 ? undefined : artifact;
+};
 
 const convertPart = (part: MessagePart): ConvertedPart | null => {
   switch (part.type) {
@@ -657,5 +664,9 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     })();
   }, [attachmentAdapter, recoveries, runtime, selectedCanUpload, turnStarting]);
 
-  return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <ToolCallRepairProvider repair={store.loadFullToolCall}>{children}</ToolCallRepairProvider>
+    </AssistantRuntimeProvider>
+  );
 }

@@ -261,7 +261,8 @@ describe("WebStore first-class cron channels", () => {
       expect(reservation.threadId).toBe(threadId);
       expect(store.completeNotification(reservation)).toMatchObject({ thread: { id: threadId }, duplicate: false });
     }
-    expect(store.listThreads().filter((thread) => thread.trigger?.kind === "cron")).toHaveLength(1);
+    expect(store.listThreadsPage({ sourceId: "agent-one", archived: false }).threads
+      .filter((thread) => thread.trigger?.kind === "cron")).toHaveLength(1);
 
     store.patchThread(threadId, { archived: true });
     await expect(store.deleteArchivedThread(threadId)).rejects.toMatchObject({ code: "cron_channel_configured" });
@@ -847,7 +848,7 @@ describe("WebStore first-class cron channels", () => {
     reopened.close();
   });
 
-  it("keeps bootstrap and keyset pages bounded per source and archive bucket", async () => {
+  it("keeps keyset pages bounded per source and archive bucket", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     let clockMs = Date.parse("2026-08-14T00:00:00.000Z");
@@ -866,10 +867,11 @@ describe("WebStore first-class cron channels", () => {
       advance();
       store.patchThread(thread.id, { archived: true });
     }
-    const bootstrap = store.listThreads();
-    expect(bootstrap.filter((thread) => thread.sourceId === "alpha" && thread.archivedAt === null)).toHaveLength(200);
-    expect(bootstrap.filter((thread) => thread.sourceId === "alpha" && thread.archivedAt !== null)).toHaveLength(200);
-    expect(bootstrap.find((thread) => thread.id === beta.id)).toBeDefined();
+    // 205 rows in each bucket, and no page can reach past the cap.
+    expect(store.listThreadsPage({ sourceId: "alpha", archived: false, limit: 200 }).threads).toHaveLength(200);
+    expect(store.listThreadsPage({ sourceId: "alpha", archived: true, limit: 200 }).threads).toHaveLength(200);
+    expect(() => store.listThreadsPage({ sourceId: "alpha", archived: false, limit: 201 }))
+      .toThrowError(expect.objectContaining({ code: "invalid_page" }));
 
     const first = store.listThreadsPage({ sourceId: "alpha", archived: false, limit: 2 });
     advance();

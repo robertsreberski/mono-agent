@@ -8,10 +8,13 @@ import {
   ActivityStep,
   clusterSummary,
   failedLabel,
+  TruncationNotice,
+  truncationProps,
 } from "./ActivityRow";
 import { finiteDuration, formatToolDuration } from "./duration";
 import { safeJson } from "./json";
 import { toolHistoryFailure } from "./tool-history";
+import { useToolCallRepair } from "./tool-call-repair";
 
 type ToolCallStatus = "running" | "complete" | "failed";
 
@@ -23,6 +26,11 @@ interface SubagentCallView {
   readonly executionMs?: number;
   readonly history?: Record<string, unknown>;
   readonly status: ToolCallStatus;
+  /** The server sent only the head of this payload; the row offers to fetch the rest. */
+  readonly resultTruncated?: boolean;
+  readonly resultBytes?: number;
+  readonly argsTruncated?: boolean;
+  readonly argsBytes?: number;
 }
 
 interface SubagentCallCluster {
@@ -34,6 +42,8 @@ interface SubagentCallCluster {
 }
 
 interface SubagentView {
+  /** The parent `Agent` call, which is how the full-body route addresses this. */
+  readonly toolCallId?: string;
   readonly name: string;
   readonly label?: string;
   readonly prompt?: string;
@@ -43,7 +53,25 @@ interface SubagentView {
   readonly history?: Record<string, unknown>;
   readonly status: ToolCallStatus;
   readonly calls: readonly SubagentCallView[];
+  /** The delegation's OWN report/arguments were truncated; see {@link truncation}. */
+  readonly resultTruncated?: boolean;
+  readonly resultBytes?: number;
+  readonly argsTruncated?: boolean;
+  readonly argsBytes?: number;
 }
+
+/** Read the truncation flags off a JSON-normalized call record. */
+const truncation = (record: Record<string, unknown>): {
+  readonly resultTruncated?: boolean;
+  readonly resultBytes?: number;
+  readonly argsTruncated?: boolean;
+  readonly argsBytes?: number;
+} => ({
+  ...(record.resultTruncated === true ? { resultTruncated: true } : {}),
+  ...(typeof record.resultBytes === "number" ? { resultBytes: record.resultBytes } : {}),
+  ...(record.argsTruncated === true ? { argsTruncated: true } : {}),
+  ...(typeof record.argsBytes === "number" ? { argsBytes: record.argsBytes } : {}),
+});
 
 const toolCallStatus = (value: unknown): ToolCallStatus =>
   value === "complete" || value === "failed" ? value : "running";
@@ -54,8 +82,16 @@ const nonEmptyString = (value: unknown): string | undefined => {
   return text.length === 0 ? undefined : text;
 };
 
-/** The task the delegation was given, which the store keeps on the `Agent` call's arguments. */
+/**
+ * The task the delegation was given, which the store keeps on the `Agent` call's
+ * arguments.
+ *
+ * Arguments the server could not cut down leaf by leaf arrive as the head of
+ * their JSON text instead of as an object. That head is what there is of the
+ * task, so it is shown as such rather than leaving the note empty.
+ */
 const delegationPrompt = (args: unknown): string | undefined => {
+  if (typeof args === "string") return nonEmptyString(args);
   if (args === null || typeof args !== "object" || Array.isArray(args)) return undefined;
   const prompt = (args as Record<string, unknown>).prompt;
   return typeof prompt === "string" && prompt.trim().length > 0 ? prompt.trim() : undefined;
@@ -86,15 +122,24 @@ const PREVIEW_KEYS = [
  * says which files were read instead of repeating the tool's name.
  */
 export function toolArgumentPreview(args: unknown): string | undefined {
+  // Arguments the server truncated arrive as the head of their JSON text rather
+  // than as an object. A row still has to say what it acted on, so the string
+  // is previewed as itself instead of leaving the row anonymous.
+  if (typeof args === "string") return nonEmptyString(args) === undefined ? undefined : shortened(args);
   if (args === null || typeof args !== "object" || Array.isArray(args)) return undefined;
   const record = args as Record<string, unknown>;
   const named = PREVIEW_KEYS.map((key) => nonEmptyString(record[key])).find((value) => value !== undefined);
   const value = named ?? Object.values(record).map(nonEmptyString).find((entry) => entry !== undefined);
-  if (value === undefined || value.length <= PREVIEW_MAX) return value;
-  // A path's tail identifies it, so keep the end; anything else reads forwards.
-  return value.includes("/")
-    ? `…${value.slice(value.length - (PREVIEW_MAX - 1))}`
-    : `${value.slice(0, PREVIEW_MAX - 1)}…`;
+  return value === undefined ? undefined : shortened(value);
+}
+
+/** A path's tail identifies it, so keep the end; anything else reads forwards. */
+function shortened(value: string): string {
+  const text = value.replace(/\s+/gu, " ").trim();
+  if (text.length <= PREVIEW_MAX) return text;
+  return text.includes("/")
+    ? `…${text.slice(text.length - (PREVIEW_MAX - 1))}`
+    : `${text.slice(0, PREVIEW_MAX - 1)}…`;
 }
 
 /**
@@ -109,6 +154,10 @@ const subagentView = (data: unknown): SubagentView | undefined => {
   const calls = Array.isArray(record.calls) ? record.calls : [];
   const prompt = delegationPrompt(record.args);
   return {
+    ...(typeof record.toolCallId === "string" && record.toolCallId.length > 0
+      ? { toolCallId: record.toolCallId }
+      : {}),
+    ...truncation(record),
     name: record.name,
     ...(typeof record.label === "string" && record.label.length > 0 ? { label: record.label } : {}),
     ...(prompt === undefined ? {} : { prompt }),
@@ -138,6 +187,7 @@ const subagentView = (data: unknown): SubagentView | undefined => {
         ...(call.history !== null && typeof call.history === "object" && !Array.isArray(call.history)
           ? { history: call.history as Record<string, unknown> }
           : {}),
+        ...truncation(call),
         status: toolCallStatus(call.status),
       }];
     }),
@@ -186,6 +236,7 @@ const joinPayloads = (values: readonly unknown[]): unknown =>
   values.length === 1 ? values[0] : values.map((value) => safeJson(value)).join("\n\n");
 
 function SubagentStep({ call }: { readonly call: SubagentCallView }) {
+  const repairToolCall = useToolCallRepair();
   const historyFailure = toolHistoryFailure(call.history);
   return (
     <ActivityStep
@@ -201,12 +252,67 @@ function SubagentStep({ call }: { readonly call: SubagentCallView }) {
         result={call.result}
         resultIsError={call.status === "failed"}
         error={historyFailure}
+        {...truncationProps(call, call.toolCallId, repairToolCall)}
       />
     </ActivityStep>
   );
 }
 
+/** Every member of a joined panel that is showing a preview, and what it cost. */
+const clusterTruncation = (
+  calls: readonly SubagentCallView[],
+  repair: ((toolCallId: string) => Promise<boolean>) | undefined,
+): {
+  readonly argsTruncated?: boolean;
+  readonly argsBytes?: number;
+  readonly resultTruncated?: boolean;
+  readonly resultBytes?: number;
+  readonly onLoadFull?: () => Promise<boolean>;
+} => {
+  const truncated = calls.filter((call) => call.resultTruncated === true || call.argsTruncated === true);
+  if (truncated.length === 0) return {};
+  /**
+   * The members' sizes added up, or nothing at all.
+   *
+   * A missing count is not a zero, and a partial sum is not a total: either one
+   * puts a number on the panel that no member measured. Only a count every
+   * affected member reported can be stated, and otherwise the notice says that
+   * this is a preview and stops there.
+   */
+  const total = (
+    members: readonly SubagentCallView[],
+    of: (call: SubagentCallView) => number | undefined,
+  ): number | undefined => {
+    const counts = members.map(of);
+    return counts.some((count) => count === undefined)
+      ? undefined
+      : counts.reduce<number>((sum, count) => sum + (count ?? 0), 0);
+  };
+  const args = truncated.filter((call) => call.argsTruncated === true);
+  const results = truncated.filter((call) => call.resultTruncated === true);
+  const argsBytes = total(args, (call) => call.argsBytes);
+  const resultBytes = total(results, (call) => call.resultBytes);
+  return {
+    ...(args.length === 0
+      ? {}
+      : { argsTruncated: true, ...(argsBytes === undefined ? {} : { argsBytes }) }),
+    ...(results.length === 0
+      ? {}
+      : { resultTruncated: true, ...(resultBytes === undefined ? {} : { resultBytes }) }),
+    // One panel holds every member, so one control repairs every member that
+    // needs it. Sequential: each repair rewrites the same conversation state.
+    ...(repair === undefined ? {} : {
+      onLoadFull: async () => {
+        let repaired = true;
+        for (const call of truncated) repaired = await repair(call.toolCallId) && repaired;
+        return repaired;
+      },
+    }),
+  };
+};
+
 function SubagentClusterStep({ cluster }: { readonly cluster: SubagentCallCluster }) {
+  const repairToolCall = useToolCallRepair();
   const results = cluster.calls.flatMap((call) => call.result === undefined ? [] : [call.result]);
   const failures = cluster.calls.flatMap((call) => {
     const failure = toolHistoryFailure(call.history);
@@ -229,17 +335,42 @@ function SubagentClusterStep({ cluster }: { readonly cluster: SubagentCallCluste
         result={results.length === 0 ? undefined : joinPayloads(results)}
         resultIsError={cluster.failedCount > 0}
         error={failures.length === 0 ? undefined : [...new Set(failures)].join("\n")}
+        {...clusterTruncation(cluster.calls, repairToolCall)}
       />
     </ActivityStep>
   );
 }
 
-/** The delegation's own prose — its task and its report — folded like every other step. */
-function SubagentNote({ title, children }: { readonly title: string; readonly children: ReactNode }) {
+/**
+ * The delegation's own prose — its task and its report — folded like every other
+ * step, and honest about being a preview when the server sent only its head.
+ */
+function SubagentNote({
+  title,
+  truncated = false,
+  characters,
+  onLoadFull,
+  children,
+}: {
+  readonly title: string;
+  /** This note is showing the head of a truncated payload. */
+  readonly truncated?: boolean;
+  /** Its untruncated size, when the server reported one. Independent of the flag. */
+  readonly characters?: number;
+  readonly onLoadFull?: () => Promise<boolean>;
+  /** Absent when truncation left nothing readable; the notice still stands alone. */
+  readonly children?: ReactNode;
+}) {
   return (
     <ActivityStep toolName={title}>
       <div className="activity-payload">
-        <pre>{children}</pre>
+        {children !== undefined && <pre>{children}</pre>}
+        {truncated && (
+          <TruncationNotice
+            {...(characters === undefined ? {} : { characters })}
+            {...(onLoadFull === undefined ? {} : { onLoadFull })}
+          />
+        )}
       </div>
     </ActivityStep>
   );
@@ -253,9 +384,15 @@ function SubagentNote({ title, children }: { readonly title: string; readonly ch
  * work together.
  */
 export function SubagentPart({ data }: DataMessagePartProps) {
+  const repairToolCall = useToolCallRepair();
   const view = subagentView(data);
   if (view === undefined) return null;
   const historyFailure = toolHistoryFailure(view.history);
+  // The delegation's own arguments and report belong to the parent `Agent` call,
+  // so one id repairs both notes.
+  const repairDelegation = repairToolCall === undefined || view.toolCallId === undefined
+    ? undefined
+    : async () => repairToolCall(view.toolCallId as string);
   const clusteredCalls = clusterSubagentCalls(view.calls);
   // The summary names *which* delegation this is; the meta slot carries what it
   // cost. A delegation is the one part of a turn that can quietly cost more than
@@ -280,13 +417,40 @@ export function SubagentPart({ data }: DataMessagePartProps) {
       duration={meta}
     >
       <div className="activity-steps">
-        {view.prompt !== undefined && <SubagentNote title="Task">{view.prompt}</SubagentNote>}
+        {/* One repair fetches the whole delegation, so one control asks for it:
+            when both the task and the report are previews the Task note -- the
+            first one an operator meets -- owns the button, exactly as
+            `ActivityPayload` gives it to the Input panel. */}
+        {(view.prompt !== undefined || view.argsTruncated === true) && (
+          <SubagentNote
+            title="Task"
+            truncated={view.argsTruncated === true}
+            {...(view.argsBytes === undefined ? {} : { characters: view.argsBytes })}
+            {...(view.argsTruncated === true && repairDelegation !== undefined
+              ? { onLoadFull: repairDelegation }
+              : {})}
+            {...(view.prompt === undefined ? {} : { children: view.prompt })}
+          />
+        )}
         {view.calls.length === 0
           ? <p className="subagent-empty">No tool calls recorded.</p>
           : clusteredCalls.map((call) => "kind" in call
             ? <SubagentClusterStep key={call.calls[0]!.toolCallId} cluster={call} />
             : <SubagentStep key={call.toolCallId} call={call} />)}
-        {view.result !== undefined && <SubagentNote title="Report">{safeJson(view.result)}</SubagentNote>}
+        {view.result !== undefined && (
+          <SubagentNote
+            title="Report"
+            truncated={view.resultTruncated === true}
+            {...(view.resultBytes === undefined ? {} : { characters: view.resultBytes })}
+            {...(view.resultTruncated === true
+              && view.argsTruncated !== true
+              && repairDelegation !== undefined
+              ? { onLoadFull: repairDelegation }
+              : {})}
+          >
+            {safeJson(view.result)}
+          </SubagentNote>
+        )}
         {historyFailure !== undefined && <SubagentNote title="History">{historyFailure}</SubagentNote>}
       </div>
     </ActivityRow>
