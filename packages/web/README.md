@@ -114,11 +114,15 @@ managed agent protects its loopback operator endpoint, discovery reads only
 
 On desktop, the agent rail has fixed compact and expanded layouts selected by
 an explicit expand/collapse control. That choice is remembered by the browser.
-Offline agents are hidden behind a subtle count by default; pinned agents and
-the currently selected agent remain visible even while offline. The same
-filter applies to the desktop rail, mobile picker, and command palette. Pin or
-unpin with the star control; pins live in the web service so favorites stay
-consistent over localhost, LAN, and Tailscale.
+Offline agents that remain in the current discovery result are hidden behind a
+subtle count by default; pinned agents and the currently selected agent remain
+visible even while offline. An agent omitted by a successful discovery refresh
+is removed from every picker and from that count regardless of its prior pin or
+selection. Its rows, conversations, and pin stay retained in SQLite and return
+if the same source id is discovered again. The same filter applies to the
+desktop rail, mobile picker, and command palette. Pin or unpin with the star
+control; pins live in the web service so favorites stay consistent over
+localhost, LAN, and Tailscale.
 
 The assistant-ui run-settings popover combines searchable model selection with
 the selected model's supported reasoning-effort choices and becomes a

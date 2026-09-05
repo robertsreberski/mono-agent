@@ -125,6 +125,29 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("keeps discovery-failure offline state separate from authoritative removal", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([
+      agent("online"),
+      { ...agent("already-offline"), status: "offline" },
+    ]);
+
+    expect(store.markDiscoveredAgentsOffline()).toBe(true);
+    expect(store.listAgents().map(({ sourceId, status }) => ({ sourceId, status }))).toEqual([
+      { sourceId: "already-offline", status: "offline" },
+      { sourceId: "online", status: "offline" },
+    ]);
+    expect(store.markDiscoveredAgentsOffline()).toBe(false);
+
+    // Even an already-offline source leaving an authoritative result is a
+    // notable removal and disappears from the live projection.
+    expect(store.replaceAgents([])).toBe(true);
+    expect(store.listAgents()).toEqual([]);
+    store.close();
+  });
+
   it("applies a conditional run-config patch and its refusal in one transaction", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -241,29 +264,39 @@ describe("WebStore", () => {
     store.close();
   });
 
-  it("persists agent pins independently of discovery and sorts pinned agents first", async () => {
+  it("hides departed agents while preserving their pins and conversations for restoration", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
     const store = await WebStore.open({ stateDir });
     store.replaceAgents([agent("alpha"), agent("zulu")]);
+    const retained = store.createThread("zulu");
 
     expect(store.listAgents().map(({ sourceId, pinned }) => ({ sourceId, pinned }))).toEqual([
       { sourceId: "alpha", pinned: false },
       { sourceId: "zulu", pinned: false },
     ]);
     expect(store.setAgentPinned("zulu", true)).toMatchObject({ sourceId: "zulu", pinned: true });
-    store.replaceAgents([agent("alpha")]);
-    expect(store.listAgents()[0]).toMatchObject({
-      sourceId: "zulu",
-      pinned: true,
-      status: "offline",
-    });
+    expect(store.replaceAgents([agent("alpha")])).toBe(true);
+    expect(store.listAgents().map((entry) => entry.sourceId)).toEqual(["alpha"]);
+    expect(store.getAgent("zulu")).toBeUndefined();
+    expect(store.listThreads().map((entry) => entry.id)).not.toContain(retained.id);
+    expect(() => store.setAgentPinned("zulu", false))
+      .toThrowError(expect.objectContaining({ code: "agent_not_found" }));
+
+    const inspected = new DatabaseSync(store.paths.database, { readOnly: true });
+    expect(inspected.prepare("SELECT discovered FROM agents WHERE source_id = 'zulu'").get())
+      .toMatchObject({ discovered: 0 });
+    expect(inspected.prepare("SELECT COUNT(*) AS count FROM threads WHERE source_id = 'zulu'").get())
+      .toMatchObject({ count: 1 });
+    inspected.close();
+
     store.replaceAgents([agent("zulu"), agent("alpha")]);
     expect(store.listAgents().map(({ sourceId, pinned }) => ({ sourceId, pinned }))).toEqual([
       { sourceId: "zulu", pinned: true },
       { sourceId: "alpha", pinned: false },
     ]);
+    expect(store.listThreads().map((entry) => entry.id)).toContain(retained.id);
     store.close();
 
     const reopened = await WebStore.open({ stateDir });
@@ -2127,7 +2160,7 @@ describe("WebStore", () => {
     reopened.close();
   });
 
-  it("migrates a seeded schema v10 database to v15 keeping its thread rows", async () => {
+  it("migrates a seeded schema v10 database to v16 keeping its thread rows", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -2162,12 +2195,13 @@ describe("WebStore", () => {
     const agentColumns = new Set((inspected.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
       .map((column) => column.name));
     inspected.close();
-    expect(version.user_version).toBe(15);
+    expect(version.user_version).toBe(16);
     expect(agentColumns.has("providers_json")).toBe(true);
+    expect(agentColumns.has("discovered")).toBe(true);
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(["run_model", "run_effort"]));
   });
 
-  it("re-runs the v11-v15 migrations without failing when current columns and tables already exist", async () => {
+  it("re-runs the v11-v16 migrations without failing when current columns and tables already exist", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -2188,7 +2222,38 @@ describe("WebStore", () => {
     reopened.close();
     expect(
       new DatabaseSync(databasePath, { readOnly: true }).prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 15 });
+    ).toMatchObject({ user_version: 16 });
+  });
+
+  it("migrates schema v15 agents as discovered without losing their threads", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const seeded = await WebStore.open({ stateDir });
+    seeded.replaceAgents([agent()]);
+    const thread = seeded.createThread("agent-one");
+    const databasePath = seeded.paths.database;
+    seeded.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec("ALTER TABLE agents DROP COLUMN discovered; PRAGMA user_version = 15");
+    legacy.close();
+
+    const migrated = await WebStore.open({ stateDir });
+    expect(migrated.listAgents()).toEqual([
+      expect.objectContaining({ sourceId: "agent-one" }),
+    ]);
+    expect(migrated.listThreads()).toEqual([
+      expect.objectContaining({ id: thread.id, sourceId: "agent-one" }),
+    ]);
+    migrated.close();
+
+    const inspected = new DatabaseSync(databasePath, { readOnly: true });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 16 });
+    expect(inspected.prepare(
+      "SELECT discovered FROM agents WHERE source_id = 'agent-one'",
+    ).get()).toMatchObject({ discovered: 1 });
+    inspected.close();
   });
 
   it("migrates schema v12 by creating the Monitor wake ledger", async () => {
@@ -2206,7 +2271,7 @@ describe("WebStore", () => {
     const migrated = await WebStore.open({ stateDir });
     migrated.close();
     const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 15 });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 16 });
     expect(inspected.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'monitor_wake_deliveries'",
     ).get()).toBeDefined();
@@ -2270,7 +2335,7 @@ describe("WebStore", () => {
 
     const migrated = await WebStore.open({ stateDir });
     const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 15 });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 16 });
     const threadForeignKey = (inspected.prepare("PRAGMA foreign_key_list(monitor_wake_deliveries)").all() as Array<{
       from: string;
       on_delete: string;
@@ -2397,7 +2462,7 @@ describe("WebStore", () => {
     const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
     const processJobCards = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'").get();
     inspected.close();
-    expect(version.user_version).toBe(15);
+    expect(version.user_version).toBe(16);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
     expect(liveInputs).toBeDefined();
@@ -2424,7 +2489,7 @@ describe("WebStore", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'",
     ).get();
     inspected.close();
-    expect(version.user_version).toBe(15);
+    expect(version.user_version).toBe(16);
     expect(processJobCards).toBeDefined();
   });
 
@@ -2437,7 +2502,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 16");
+    future.exec("PRAGMA user_version = 17");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 
@@ -3492,7 +3557,7 @@ describe("WebStore conversation search", () => {
     expect(
       new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true })
         .prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 15 });
+    ).toMatchObject({ user_version: 16 });
     reopened.close();
   });
 });

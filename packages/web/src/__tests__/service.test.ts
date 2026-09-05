@@ -1711,6 +1711,80 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("hides an authoritatively removed agent and restores its retained history by source id", async () => {
+    const first = fakeDiscoveredAgent();
+    const second = fakeDiscoveredAgent({
+      source: { ...first.source, sourceId: "agent-two", label: "Agent Two" },
+    });
+    let discovered = [first, second];
+    const service = await createService({ discoverImpl: async () => discovered });
+    service.patchAgent("agent-two", { pinned: true });
+    const retained = service.createThread("agent-two");
+    const events: unknown[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "agents.changed") events.push(event.payload);
+    });
+
+    discovered = [first];
+    await service.refreshAgents();
+    const removed = await service.bootstrap();
+    expect(removed.agents.map((entry) => entry.sourceId)).toEqual(["agent-one"]);
+    expect(removed.threads.map((entry) => entry.id)).not.toContain(retained.id);
+    expect(removed.currentThreadId).toBeUndefined();
+    expect(() => service.patchAgent("agent-two", { pinned: false }))
+      .toThrowError(expect.objectContaining({ code: "agent_not_found" }));
+    expect(() => service.createThread("agent-two"))
+      .toThrowError(expect.objectContaining({ code: "agent_not_found" }));
+
+    const database = new DatabaseSync(service.store.paths.database, { readOnly: true });
+    expect(database.prepare("SELECT discovered FROM agents WHERE source_id = 'agent-two'").get())
+      .toMatchObject({ discovered: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM threads WHERE source_id = 'agent-two'").get())
+      .toMatchObject({ count: 1 });
+    database.close();
+
+    discovered = [first, second];
+    await service.refreshAgents();
+    const restored = await service.bootstrap();
+    expect(restored.agents.find((entry) => entry.sourceId === "agent-two"))
+      .toMatchObject({ pinned: true });
+    expect(restored.threads.map((entry) => entry.id)).toContain(retained.id);
+    expect(restored.currentThreadId).toBe(retained.id);
+    expect(events).toEqual([undefined, undefined]);
+    unsubscribe();
+    await service.stop();
+  });
+
+  it("keeps agents visible as offline when discovery itself fails", async () => {
+    let failDiscovery = false;
+    const service = await createService({
+      discoverImpl: async () => {
+        if (failDiscovery) throw new Error("registry unavailable");
+        return [fakeDiscoveredAgent()];
+      },
+    });
+    const thread = service.createThread("agent-one");
+    const events: unknown[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "agents.changed") events.push(event.payload);
+    });
+
+    failDiscovery = true;
+    await service.refreshAgents();
+    expect((await service.bootstrap())).toMatchObject({
+      agents: [expect.objectContaining({ sourceId: "agent-one", status: "offline" })],
+      threads: [expect.objectContaining({ id: thread.id })],
+      currentThreadId: thread.id,
+    });
+    expect(events).toEqual([undefined]);
+
+    // A repeated failure is not another state transition or invalidation.
+    await service.refreshAgents();
+    expect(events).toEqual([undefined]);
+    unsubscribe();
+    await service.stop();
+  });
+
   it("keeps a losing second service from mutating live turns", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

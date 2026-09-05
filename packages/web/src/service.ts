@@ -383,6 +383,11 @@ export class WebService {
 
   async bootstrap(): Promise<Omit<WebBootstrap, "console">> {
     const currentThreadId = this.store.currentThreadId();
+    const currentThread = currentThreadId === undefined ? undefined : this.store.getThread(currentThreadId);
+    const discoveredCurrentThreadId = currentThread !== undefined
+      && this.store.getAgent(currentThread.sourceId) !== undefined
+      ? currentThreadId
+      : undefined;
     return {
       version: WEB_API_VERSION,
       push: {
@@ -392,7 +397,7 @@ export class WebService {
       },
       agents: this.store.listAgents(),
       threads: this.store.listThreads(),
-      ...(currentThreadId === undefined ? {} : { currentThreadId }),
+      ...(discoveredCurrentThreadId === undefined ? {} : { currentThreadId: discoveredCurrentThreadId }),
       limits: {
         maxFileBytes: DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
         maxFilesPerTurn: WEB_MAX_FILES_PER_TURN,
@@ -900,7 +905,13 @@ export class WebService {
     if (this.stopped) {
       throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
     }
-    if (this.store.getAgent(input.sourceId) === undefined) await this.refreshAgents();
+    // Monitor wakes are addressed to a retained thread, so they must reach the
+    // wake-specific retry/abandon path even after discovery has removed the
+    // source from the picker. New source-scoped deliveries still refresh before
+    // the store decides whether the agent exists.
+    if (input.triggerKind !== "monitor" && this.store.getAgent(input.sourceId) === undefined) {
+      await this.refreshAgents();
+    }
     if (this.stopped) {
       throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
     }
@@ -1805,7 +1816,7 @@ export class WebService {
       });
     } catch (error) {
       this.options.logger?.warn?.("Web agent discovery failed.", { error: errorMessage(error) });
-      const changed = this.store.replaceAgents([]);
+      const changed = this.store.markDiscoveredAgentsOffline();
       this.connections = new Map();
       if (changed) this.emit("agents.changed");
       return;

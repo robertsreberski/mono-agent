@@ -64,6 +64,7 @@ interface AgentRow {
   source_id: string;
   label: string;
   status: string;
+  discovered: number;
   pinned: number;
   health: string | null;
   supports_attachments: number;
@@ -446,7 +447,7 @@ export function escapeLikeTerm(raw: string): string {
   return raw.replaceAll(/[\\%_]/gu, (character) => `\\${character}`);
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 15;
+const WEB_STORAGE_SCHEMA_VERSION = 16;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
 export const WEB_MESSAGE_PAGE_MAX = 100;
@@ -646,7 +647,10 @@ export class WebStore {
     const current = this.listAgents();
     const currentById = new Map(current.map((agent) => [agent.sourceId, agent]));
     const incomingIds = new Set(agents.map((agent) => agent.sourceId));
-    const departed = current.some((agent) => !incomingIds.has(agent.sourceId) && agent.status !== "offline");
+    // Presence is separate from reachability. An offline summary still belongs
+    // in the picker because discovery found its source; an omitted source does
+    // not, even when it was already offline before it disappeared.
+    const departed = current.some((agent) => !incomingIds.has(agent.sourceId));
     const differs = (agent: WebAgentSummary, ignoreHeartbeat: boolean): boolean => {
       const prior = currentById.get(agent.sourceId);
       if (prior === undefined) return true;
@@ -684,16 +688,21 @@ export class WebStore {
       return false;
     }
     this.transaction(() => {
-      this.database.prepare("UPDATE agents SET status = 'offline'").run();
+      // Rows stay as foreign-key parents for retained conversations and
+      // delivery ledgers. Discovery presence controls whether they are part of
+      // the live console projection; it is restored by the upsert below when a
+      // source id returns.
+      this.database.prepare("UPDATE agents SET status = 'offline', discovered = 0 WHERE discovered = 1").run();
       const statement = this.database.prepare(`
         INSERT INTO agents (
-          source_id, label, status, health, supports_attachments, models_json,
+          source_id, label, status, discovered, health, supports_attachments, models_json,
           default_model, default_effort, efforts_json, model_options_json,
           providers_json, cron_read, cron_actions, ask_by_id, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_id) DO UPDATE SET
           label = excluded.label,
           status = excluded.status,
+          discovered = 1,
           health = excluded.health,
           supports_attachments = excluded.supports_attachments,
           models_json = excluded.models_json,
@@ -731,13 +740,39 @@ export class WebStore {
     return notable;
   }
 
+  /**
+   * A failed registry walk is not an authoritative empty registry. Keep every
+   * currently discovered source in the console, but make its lack of a live
+   * connection explicit until a later successful discovery reconciles it.
+   */
+  markDiscoveredAgentsOffline(): boolean {
+    const changed = this.listAgents().some((agent) => agent.status !== "offline");
+    this.agentGenerations.clear();
+    if (!changed) return false;
+    this.database.prepare(`
+      UPDATE agents SET status = 'offline'
+      WHERE discovered = 1 AND status != 'offline'
+    `).run();
+    return true;
+  }
+
   listAgents(): WebAgentSummary[] {
-    const rows = this.database.prepare(agentSelectSql("ORDER BY pinned DESC, a.label COLLATE NOCASE, a.source_id")).all() as unknown as AgentRow[];
+    const rows = this.database.prepare(agentSelectSql(
+      "WHERE a.discovered = 1 ORDER BY pinned DESC, a.label COLLATE NOCASE, a.source_id",
+    )).all() as unknown as AgentRow[];
     return rows.map((row) => this.withGeneration(mapAgent(row)));
   }
 
   getAgent(sourceId: string): WebAgentSummary | undefined {
-    const row = this.database.prepare(agentSelectSql("WHERE a.source_id = ?")).get(sourceId) as unknown as AgentRow | undefined;
+    const row = this.database.prepare(agentSelectSql(
+      "WHERE a.source_id = ? AND a.discovered = 1",
+    )).get(sourceId) as unknown as AgentRow | undefined;
+    return row === undefined ? undefined : this.withGeneration(mapAgent(row));
+  }
+
+  private getStoredAgent(sourceId: string): WebAgentSummary | undefined {
+    const row = this.database.prepare(agentSelectSql("WHERE a.source_id = ?"))
+      .get(sourceId) as unknown as AgentRow | undefined;
     return row === undefined ? undefined : this.withGeneration(mapAgent(row));
   }
 
@@ -995,7 +1030,7 @@ export class WebStore {
         UPDATE notification_deliveries SET thread_id = ?, message_id = ?, completed_at = ?
         WHERE source_id = ? AND delivery_key = ? AND completed_at IS NULL
       `).run(completedThreadId, assistantMessageId, now, reservation.sourceId, reservation.deliveryKey);
-      const agent = this.getAgent(reservation.sourceId);
+      const agent = this.getStoredAgent(reservation.sourceId);
       this.enqueueWebPushEventInTransaction({
         logicalKey: notificationPushLogicalKey(reservation.sourceId, reservation.deliveryKey),
         kind: "response.ready",
@@ -1884,7 +1919,7 @@ export class WebStore {
   /** Bounded bootstrap: at most one 200-row bucket per (source_id, archived). */
   listThreads(): WebThread[] {
     const rows = this.database.prepare(threadSelectSql(`
-      WHERE t.id IN (
+      WHERE a.discovered = 1 AND t.id IN (
         SELECT id FROM (
           SELECT id,
                  ROW_NUMBER() OVER (
@@ -3369,6 +3404,7 @@ export class WebStore {
         source_id TEXT PRIMARY KEY,
         label TEXT NOT NULL,
         status TEXT NOT NULL,
+        discovered INTEGER NOT NULL DEFAULT 1 CHECK (discovered IN (0, 1)),
         health TEXT,
         supports_attachments INTEGER NOT NULL DEFAULT 0,
         models_json TEXT,
@@ -3701,6 +3737,19 @@ export class WebStore {
             .map((column) => column.name));
           if (!columns.has("projection_json")) {
             this.database.exec("ALTER TABLE monitor_wake_deliveries ADD COLUMN projection_json TEXT");
+          }
+        }
+        // Discovery presence is not reachability: retained rows may own
+        // history after their source leaves the registry, while a present
+        // source can still be temporarily offline. Legacy rows start present;
+        // WebService.create awaits one authoritative refresh before listening.
+        if (versionRow.user_version < 16) {
+          const columns = new Set((this.database.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
+            .map((column) => column.name));
+          if (!columns.has("discovered")) {
+            this.database.exec(
+              "ALTER TABLE agents ADD COLUMN discovered INTEGER NOT NULL DEFAULT 1 CHECK (discovered IN (0, 1))",
+            );
           }
         }
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
@@ -4088,7 +4137,7 @@ export class WebStore {
     }
     const now = this.now();
     const thread = this.requireThread(turn.thread_id);
-    const agent = this.getAgent(thread.sourceId);
+    const agent = this.getStoredAgent(thread.sourceId);
     this.database.prepare(`
         UPDATE turns SET status = ?, finished_at = ?, error_code = ?, error_message = ?,
           model = CASE WHEN ? IS NULL THEN model ELSE ? END,
