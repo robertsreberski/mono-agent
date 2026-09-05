@@ -790,7 +790,7 @@ describe("message actions", () => {
     expect(screen.getByText("image/png · 2 KiB")).toBeVisible();
   });
 
-  it("renders one durable process-job card with its rich reply siblings", () => {
+  it("renders one durable process-job row with its rich reply siblings", () => {
     render(<MessageHarness message={{
       ...assistantMessage("complete"),
       parts: [
@@ -820,16 +820,26 @@ describe("message actions", () => {
       ],
     }} />);
 
-    expect(screen.getByRole("region", { name: "Exec background job succeeded" })).toBeVisible();
-    expect(screen.getByText("node worker.js --safe-summary")).toBeVisible();
-    expect(screen.getByText("2 s")).toBeVisible();
+    // The job is a standalone one-row Activity block, not a band: no Activity
+    // header wraps it, and the row itself carries tool, purpose, state and time.
+    expect(screen.queryByRole("button", { name: "Activity" })).toBeNull();
+    const row = screen.getByRole("group", { name: "Exec background job succeeded" });
+    expect(row).toHaveClass("activity-row", "is-job", "is-complete");
+    expect(within(row).getByText("Exec job")).toBeVisible();
+    expect(within(row).getByText("node worker.js --safe-summary")).toBeVisible();
+    expect(row.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0");
+    expect(row).not.toHaveAttribute("open");
+    expect(screen.getByText("Completed normally.")).not.toBeVisible();
+
+    fireEvent.click(row.querySelector("summary")!);
     expect(screen.getByText("Completed normally.")).toBeVisible();
+    expect(screen.getByText("done")).toBeVisible();
+    expect(screen.getByText(/stdout\.log/u)).toBeVisible();
+
     expect(screen.getByRole("region", { name: "File attachment: report.txt" })).toBeVisible();
     expect(screen.getByRole("region", { name: "Interactive app: Job chart" })).toBeVisible();
     expect(screen.getByRole("alert")).toHaveTextContent("artifact_missing");
     expect(screen.getByRole("alert")).toHaveTextContent("File expired.");
-    const disclosure = screen.getByText("Output");
-    expect(disclosure.closest("details")).not.toHaveAttribute("open");
   });
 
   it("polls only one job with backoff and stops after the terminal projection", async () => {
@@ -854,6 +864,7 @@ describe("message actions", () => {
     await act(async () => { await Promise.resolve(); });
     expect(threadJob).toHaveBeenCalledTimes(1);
     expect(threadJob).toHaveBeenLastCalledWith("thread", running.jobId, expect.any(AbortSignal));
+    expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
     await act(async () => {
       vi.advanceTimersByTime(1_000);
       await Promise.resolve();
@@ -869,13 +880,39 @@ describe("message actions", () => {
       await Promise.resolve();
     });
     expect(threadJob).toHaveBeenCalledTimes(3);
-    expect(screen.getByRole("region", { name: "Exec background job succeeded" })).toBeVisible();
+    // A closed <details> is "not visible" to jest-dom; its state is in the class and name.
+    expect(screen.getByRole("group", { name: "Exec background job succeeded" })).toHaveClass("is-complete");
 
     await act(async () => {
       vi.advanceTimersByTime(30_000);
       await Promise.resolve();
     });
     expect(threadJob).toHaveBeenCalledTimes(3);
+  });
+
+  it("takes a newer projection from the store without waiting for its own poll", async () => {
+    const complete = processJob();
+    const running = processJob({
+      state: "running",
+      timestamps: { ...complete.timestamps, completedAt: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      exitCode: null,
+      durationMs: null,
+    });
+    // The poll never settles; only the store does.
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const { rerender } = render(<MessageHarness message={{
+      ...assistantMessage("running"),
+      parts: [{ type: "process-job", job: running }],
+    }} />);
+    expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
+
+    rerender(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      parts: [{ type: "process-job", job: complete, responseText: "Completed normally." }],
+    }} />);
+    const settled = await screen.findByRole("group", { name: "Exec background job succeeded" });
+    expect(settled.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0");
   });
 
   it("keeps the copy action mounted before hover so revealing it cannot shift layout", () => {

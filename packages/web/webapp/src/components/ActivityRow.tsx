@@ -56,9 +56,9 @@ export const failedLabel = (failedCount: number, clustered: boolean): string | u
 
 /**
  * One row for every activity entry. A single call, a `Read ×4` cluster, a
- * thought, and a subagent delegation are the same shape — only the leading
- * glyph and what expanding reveals differ. Keeping them identical is what
- * makes a long Activity log scannable.
+ * thought, a subagent delegation, and a background job are the same shape —
+ * only the leading glyph and what expanding reveals differ. Keeping them
+ * identical is what makes a long Activity log scannable.
  */
 export function ActivityRow({
   variant = "tool",
@@ -68,22 +68,27 @@ export function ActivityRow({
   failed,
   duration,
   open,
+  ariaLabel,
   children,
 }: {
-  readonly variant?: "tool" | "thinking" | "subagent";
+  /** `job` is a tool run detached into the background: same dot as a tool row, its own chrome. */
+  readonly variant?: "tool" | "thinking" | "subagent" | "job";
   readonly status?: ActivityStatus;
   readonly label?: string;
   readonly summary?: string;
   readonly failed?: string;
-  readonly duration?: string;
+  /** A string for a settled figure, or a node such as `ActivityElapsed` that keeps ticking. */
+  readonly duration?: ReactNode;
   readonly open?: boolean;
+  /** Accessible name for the disclosure; rows without one are named by their contents. */
+  readonly ariaLabel?: string;
   readonly children: ReactNode;
 }) {
   return (
-    <details className={`activity-row is-${variant} is-${status}`} open={open}>
+    <details className={`activity-row is-${variant} is-${status}`} open={open} aria-label={ariaLabel}>
       <summary>
         <span className="activity-row-glyph">
-          {variant === "tool" && <i className="activity-dot" />}
+          {(variant === "tool" || variant === "job") && <i className="activity-dot" />}
           {variant === "thinking" && <Icon name="bulb" size={14} />}
           {variant === "subagent" && <Icon name="agent" size={14} />}
         </span>
