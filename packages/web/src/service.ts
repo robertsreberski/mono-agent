@@ -54,6 +54,7 @@ import {
   type WebEventType,
   type WebLiveInputReceipt,
   type WebMessage,
+  type WebMessageChangedPayload,
   type WebMessageDelta,
   type WebMessagePart,
   type WebModelOption,
@@ -2336,28 +2337,40 @@ export class WebService {
    *   sequence number without changing a part, and a console that never heard
    *   about it would reject the next delta as a gap.
    * - The parts inside a `set` are shaped exactly as a read would serve them,
-   *   and a delta that would cost more than re-reading the message is demoted
-   *   to the invalidation hint every other writer emits. A splice-driven finish
+   *   and a delta that would cost more than re-reading the message declines to
+   *   the invalidation hint every other writer emits. A splice-driven finish
    *   re-sets every part it shifted, which is bigger than the message itself.
+   *   That hint carries no sequence number, so the NEXT delta will not chain
+   *   onto the last one a console applied -- which is exactly the mismatch that
+   *   sends it to the message read.
    */
   private emitMessageWrite(threadId: string, write: StoredMessageWrite | undefined): void {
     if (write === undefined || write.delta === undefined) return;
     const { message, delta } = write;
-    const hint = (): void => {
-      this.emit("message.changed", threadId, { messageId: message.id, updatedAt: message.updatedAt });
-    };
-    // User rows are mapped with their quote and live-input telemetry filtered
-    // out, so a delta diffed against them would describe parts no reader holds.
+    // An invariant, not a case: all three callers pass the assistant row of a
+    // turn. `mapMessage` filters quote and live-input telemetry off user rows,
+    // so a delta diffed against one would describe parts no reader ever holds,
+    // and quietly downgrading here would hide the day that stops being true.
     if (message.role !== "assistant") {
-      hint();
-      return;
+      throw new TypeError(`A ${message.role} message reached the delta path.`);
     }
     const shaped: WebMessageDelta = {
       ...delta,
       ops: delta.ops.map((op) => (op.op === "set" ? { ...op, part: this.shapePart(message, op.part, {}) } : op)),
     };
-    if (JSON.stringify(shaped.ops).length > JSON.stringify(this.shapeMessage(message)).length) {
-      hint();
+    // Only a write that REWRITES parts can outweigh the message it describes: an
+    // `append` carries strictly less than the part it grew, and the message
+    // carries that whole part plus its own envelope. Worth the check, because
+    // the comparison shapes the entire message -- reply capabilities re-minted
+    // and all -- and the streaming path runs this every 50 ms.
+    if (shaped.ops.some((op) => op.op !== "append")
+      && JSON.stringify(shaped.ops).length > JSON.stringify(this.shapeMessage(message)).length) {
+      const declined: WebMessageChangedPayload = {
+        messageId: message.id,
+        updatedAt: message.updatedAt,
+        deltaDeclined: true,
+      };
+      this.emit("message.changed", threadId, declined);
       return;
     }
     this.emit("message.delta", threadId, shaped);

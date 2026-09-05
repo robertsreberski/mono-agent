@@ -681,6 +681,21 @@ export interface WebMessageDelta {
   readonly ops: readonly WebMessageDeltaOp[];
 }
 
+/**
+ * The payload of a `message.changed`: the message moved, go and read it.
+ *
+ * `deltaDeclined` is NOT part of the wire contract -- the event stream strips
+ * it, and a browser reads the same two fields either way. It marks the hint the
+ * delta path emits when the delta it built would have cost more than the
+ * message it describes, so the stream layer can tell one write-rate frame from
+ * a reconciliation and rate-limit only the first.
+ */
+export interface WebMessageChangedPayload {
+  readonly messageId: string;
+  readonly updatedAt: string;
+  readonly deltaDeclined?: true;
+}
+
 export interface WebEvent {
   readonly id: string;
   readonly version: typeof WEB_API_VERSION;

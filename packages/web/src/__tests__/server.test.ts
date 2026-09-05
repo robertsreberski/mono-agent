@@ -6,7 +6,8 @@ import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { isAllowedWebHostname, startWebServer, type WebServerHandle } from "../server.js";
+import { WEB_API_VERSION, type WebEvent } from "../contracts.js";
+import { createWebEventDispatch, isAllowedWebHostname, startWebServer, type WebServerHandle } from "../server.js";
 import { deliverWebNotification } from "../notification-client.js";
 import { prepareWebStatePaths } from "../state-paths.js";
 import { fakeDiscoveredAgent, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
@@ -1995,7 +1996,10 @@ describe("web HTTP server", () => {
     // two writes above reach it as ONE hint rather than one per flush.
     expect(hinted.filter((event) => event.type === "message.delta")).toEqual([]);
     const hints = hinted.filter((event) => event.type === "message.changed");
-    expect(hints).toHaveLength(1);
+    // Bounded rather than counted: how many writes land inside one second is a
+    // property of the machine, but fewer frames than writes is the guarantee.
+    expect(hints.length).toBeGreaterThanOrEqual(1);
+    expect(hints.length).toBeLessThan(deltas.length);
     expect(hints[0]?.payload).toEqual({ messageId: expect.any(String), updatedAt: expect.any(String) });
 
     // A delta for a conversation this console is NOT in is downgraded too.
@@ -2013,7 +2017,7 @@ describe("web HTTP server", () => {
     const { baseUrl } = await start();
     const refused = await fetch(`${baseUrl}/api/v1/events?thread=${"t".repeat(600)}`);
     expect(refused.status).toBe(400);
-    expect(await json(refused)).toMatchObject({ error: { code: "invalid_page" } });
+    expect(await json(refused)).toMatchObject({ error: { code: "invalid_subscription" } });
   });
 
   /**
@@ -2237,3 +2241,126 @@ async function waitForFreeSseSlot(baseUrl: string, timeoutMs = 5_000): Promise<R
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
   }
 }
+
+/**
+ * The per-connection view of the event stream, exercised without a socket.
+ *
+ * Neither of the two things that matter here is observable through an HTTP
+ * fixture: the rate limit is a clock decision, and a frame a connection cannot
+ * write must close it rather than leave a socket that reads live.
+ */
+describe("web event dispatch", () => {
+  const AT = "2026-09-05T10:00:00.000Z";
+
+  function event(type: WebEvent["type"], threadId: string, payload: unknown): WebEvent {
+    return { id: `${type}:${threadId}`, version: WEB_API_VERSION, type, at: AT, threadId, payload };
+  }
+  function delta(seq: number): Record<string, unknown> {
+    return { messageId: "m1", baseSeq: seq - 1, seq, status: "running", updatedAt: AT, ops: [] };
+  }
+  function changed(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return { messageId: "m1", updatedAt: AT, ...extra };
+  }
+
+  interface Harness {
+    readonly send: (event: WebEvent) => boolean;
+    readonly written: WebEvent[];
+    readonly closes: () => number;
+    advance: (ms: number) => void;
+  }
+
+  function harness(subscribed?: string, write?: (event: WebEvent) => boolean): Harness {
+    const written: WebEvent[] = [];
+    let closes = 0;
+    let clock = 1_000;
+    const send = createWebEventDispatch({
+      ...(subscribed === undefined ? {} : { subscribed }),
+      write: write ?? ((event) => { written.push(event); return true; }),
+      close: () => { closes += 1; },
+      now: () => clock,
+    });
+    return {
+      send,
+      written,
+      closes: () => closes,
+      advance: (ms: number) => { clock += ms; },
+    };
+  }
+
+  it("serves everything about the conversation a console named, unthrottled", async () => {
+    const stream = harness("thread-1");
+    // Content, the delta path declining, and an ordinary reconciliation: all
+    // three are things the console rendering this conversation must act on.
+    expect(stream.send(event("message.delta", "thread-1", delta(1)))).toBe(true);
+    expect(stream.send(event("message.changed", "thread-1", changed({ deltaDeclined: true })))).toBe(true);
+    expect(stream.send(event("message.changed", "thread-1", changed()))).toBe(true);
+    expect(stream.send(event("turn.changed", "thread-1", { turn: { status: "running" } }))).toBe(true);
+
+    expect(stream.written.map((written) => written.type)).toEqual([
+      "message.delta",
+      "message.changed",
+      "message.changed",
+      "turn.changed",
+    ]);
+    expect(stream.written[0]?.payload).toEqual(delta(1));
+    // `deltaDeclined` is the stream layer's own signal and never reaches a browser.
+    expect(stream.written[1]?.payload).toEqual({ messageId: "m1", updatedAt: AT });
+  });
+
+  it("rate-limits a conversation the console did not name to one frame a second", async () => {
+    const stream = harness("thread-1");
+    expect(stream.send(event("message.delta", "other", delta(1)))).toBe(true);
+    expect(stream.send(event("message.delta", "other", delta(2)))).toBe(true);
+    expect(stream.send(event("message.changed", "other", changed()))).toBe(true);
+    // Dropped, not queued.
+    expect(stream.written).toHaveLength(1);
+    expect(stream.written[0]).toMatchObject({
+      type: "message.changed",
+      threadId: "other",
+      payload: { messageId: "m1", updatedAt: AT },
+    });
+
+    stream.advance(1_000);
+    stream.send(event("message.delta", "other", delta(3)));
+    expect(stream.written).toHaveLength(2);
+    // A different conversation has its own budget.
+    stream.send(event("message.delta", "third", delta(1)));
+    expect(stream.written).toHaveLength(3);
+  });
+
+  it("keeps every reconciliation for a console that named no conversation, and bounds only the delta path", async () => {
+    const stream = harness();
+    // This console may well be looking at the conversation, and nothing else
+    // will tell it that a live-input offer or a job card moved.
+    stream.send(event("message.changed", "thread-1", changed()));
+    stream.send(event("message.changed", "thread-1", changed()));
+    expect(stream.written).toHaveLength(2);
+
+    // The write-rate traffic is the whole reason the limit exists, and a
+    // declined delta is exactly that traffic wearing the other event's name.
+    stream.send(event("message.delta", "thread-1", delta(1)));
+    stream.send(event("message.changed", "thread-1", changed({ deltaDeclined: true })));
+    stream.send(event("message.delta", "thread-1", delta(2)));
+    expect(stream.written).toHaveLength(3);
+    expect(stream.written[2]?.type).toBe("message.changed");
+    expect(stream.written[2]?.payload).toEqual({ messageId: "m1", updatedAt: AT });
+  });
+
+  it("closes a stream it cannot make sense of rather than dropping the frame", async () => {
+    const malformed = harness("thread-1");
+    expect(malformed.send(event("message.delta", "other", { messageId: "m1" }))).toBe(false);
+    expect(malformed.closes()).toBe(1);
+    expect(malformed.written).toEqual([]);
+
+    const nameless = harness("thread-1");
+    expect(nameless.send(event("message.changed", "thread-1", { updatedAt: AT }))).toBe(false);
+    expect(nameless.closes()).toBe(1);
+
+    // A write that throws is the same problem seen from the socket: the
+    // subscriber is dropped either way, and a stream nobody writes to must not
+    // stay open reading "live".
+    const throwing = harness("thread-1", () => { throw new Error("socket is gone"); });
+    expect(throwing.send(event("message.delta", "thread-1", delta(1)))).toBe(false);
+    expect(throwing.closes()).toBe(1);
+  });
+});

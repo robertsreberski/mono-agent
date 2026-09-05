@@ -35,6 +35,7 @@ import {
   type StartWebTurnInput,
   type WebEvent,
   type WebConsoleIdentity,
+  type WebMessageChangedPayload,
   type WebMessageDelta,
   type WebMessagePart,
   type WebTheme,
@@ -79,6 +80,8 @@ const DELTA_HINT_INTERVAL_MS = 1_000;
  * a hint, so forgetting it changes nothing a console observes.
  */
 const MAX_THROTTLED_THREADS = 256;
+/** Bound on `?thread=`, matching the other bounded query strings. */
+const MAX_SUBSCRIPTION_LENGTH = 512;
 const MAX_MCP_APP_BRIDGE_REQUEST_BYTES = 64 * 1024;
 /**
  * Content-addressed build output and write-once upload bytes never change under
@@ -724,27 +727,14 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   });
 
   /**
-   * The console's live channel.
-   *
-   * Two kinds of frame travel on it. A console names the conversation it is
-   * looking at with `?thread=`, and for THAT conversation it is served
-   * `message.delta` frames carrying what each write changed; a streamed answer
-   * is rewritten every 50 ms, and a console that answered each of those by
-   * re-reading the conversation paid for the whole transcript every time.
-   * Everything else -- another conversation's writes, and every write on a
-   * console that named no conversation -- is downgraded to the
-   * `message.changed` invalidation this stream has always carried, at most one
-   * per conversation per second, dropped rather than queued. Every other event
-   * type passes through untouched.
-   *
-   * `Last-Event-ID` is still ignored and nothing is replayed: this is state
-   * invalidation, not a log. A reconnecting console bootstraps, and `ready`
-   * means resync the conversation it has open.
+   * The console's live channel. {@link createWebEventDispatch} decides what each
+   * connection is served; this owns the socket, the capacity cap and the
+   * heartbeat.
    */
   app.get("/api/v1/events", (req, res, next) => {
     let subscribed: string | undefined;
     try {
-      subscribed = optionalQueryString(req.query.thread, 512);
+      subscribed = optionalThreadSubscription(req.query.thread);
     } catch (error) {
       next(error);
       return;
@@ -761,49 +751,29 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
 
-    // Per connection, and cleared with it: what one console has already been
-    // told about is no reason to keep another quiet.
-    const hintedAt = new Map<string, number>();
     const closeStream = (): void => {
       if (closed) return;
       closed = true;
       clearInterval(heartbeat);
       unsubscribe();
-      hintedAt.clear();
       activeStreams.delete(closeStream);
       res.end();
     };
-    const write = (event: WebEvent): boolean => {
-      const writable = res.write(formatSse(event));
-      if (!writable) {
+    const send = createWebEventDispatch({
+      ...(subscribed === undefined ? {} : { subscribed }),
+      write: (event) => {
+        if (closed || res.writableEnded) return false;
+        if (res.write(formatSse(event))) return true;
         // Events are state-invalidation hints, not an unbounded replay log. A
         // client that cannot drain one frame must reconnect and bootstrap.
         closeStream();
         return false;
-      }
-      return true;
-    };
-    const send = (event: WebEvent): boolean => {
-      if (closed || res.writableEnded) return false;
-      if (event.type !== "message.delta") return write(event);
-      if (event.threadId !== undefined && event.threadId === subscribed) return write(event);
-      const delta = event.payload as WebMessageDelta;
-      const key = event.threadId ?? "";
-      const now = Date.now();
-      const last = hintedAt.get(key);
-      // Dropped, not queued: a hint says only that the message moved, so the
-      // one that was suppressed is answered by the one that follows it.
-      if (last !== undefined && now - last < DELTA_HINT_INTERVAL_MS) return true;
-      if (hintedAt.size > MAX_THROTTLED_THREADS) {
-        for (const [seen, at] of hintedAt) if (now - at >= DELTA_HINT_INTERVAL_MS) hintedAt.delete(seen);
-      }
-      hintedAt.set(key, now);
-      return write({
-        ...event,
-        type: "message.changed",
-        payload: { messageId: delta.messageId, updatedAt: delta.updatedAt },
-      });
-    };
+      },
+      close: closeStream,
+      onFailure: (error) => {
+        logger?.error?.("Web console event stream failed.", { error: errorMessage(error) });
+      },
+    });
     const unsubscribe = service.subscribe(send);
     const heartbeat = setInterval(() => {
       if (!res.write(`: heartbeat ${Date.now()}\n\n`)) closeStream();
@@ -1418,6 +1388,118 @@ function requireRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+/**
+ * One connection's view of the event stream: which frames it is served, and in
+ * what form.
+ *
+ * A console names the conversation it is looking at with `?thread=`. It is
+ * served EVERYTHING about that conversation unthrottled -- `message.delta`
+ * frames carrying what each write changed, and the `message.changed` hints the
+ * delta path emits when it declines (a delta bigger than the message, a
+ * reconciliation that describes nothing), because both are things it must act
+ * on. Anything about any OTHER conversation is reduced to a
+ * `message.changed { messageId, updatedAt }` and rate-limited to one per
+ * conversation per {@link DELTA_HINT_INTERVAL_MS}, dropped rather than queued:
+ * a console is not rendering it.
+ *
+ * A console that named NO conversation is not telling this stream which
+ * conversation it is looking at, so it keeps every reconciliation hint and is
+ * rate-limited only on what the delta path produces -- downgraded deltas and
+ * the declines above -- which is the write-rate traffic the limit exists for. A
+ * turn's `thread.changed` still follows every finish unthrottled, so a dropped
+ * frame never leaves a settled conversation stale.
+ *
+ * Every other event type passes through untouched. `Last-Event-ID` is ignored
+ * and nothing is replayed: this is state invalidation, not a log. A
+ * reconnecting console bootstraps, and `ready` means resync the conversation it
+ * has open.
+ *
+ * Lives outside the route because neither of the two things that matter is
+ * observable through an HTTP fixture: the rate limit is a clock decision, and a
+ * frame this connection cannot serialize or write must CLOSE it rather than
+ * leave a socket that reads live and receives nothing.
+ */
+export function createWebEventDispatch(options: {
+  /** The conversation this connection named, if it named one. */
+  readonly subscribed?: string;
+  readonly write: (event: WebEvent) => boolean;
+  readonly close: () => void;
+  readonly onFailure?: (error: unknown) => void;
+  readonly now?: () => number;
+}): (event: WebEvent) => boolean {
+  const { subscribed, write, close, onFailure } = options;
+  const now = options.now ?? ((): number => Date.now());
+  // Per connection, and cleared with it: what one console has already been told
+  // about is no reason to keep another quiet.
+  const hintedAt = new Map<string, number>();
+
+  const hint = (event: WebEvent, payload: WebMessageChangedPayload): boolean => write({
+    ...event,
+    type: "message.changed",
+    // `deltaDeclined` is this layer's own signal and stops here.
+    payload: { messageId: payload.messageId, updatedAt: payload.updatedAt },
+  });
+
+  const rateLimited = (event: WebEvent, payload: WebMessageChangedPayload): boolean => {
+    const key = event.threadId ?? "";
+    const at = now();
+    const last = hintedAt.get(key);
+    // Dropped, not queued: a hint says only that the message moved, so the one
+    // that was suppressed is answered by the one that follows it.
+    if (last !== undefined && at - last < DELTA_HINT_INTERVAL_MS) return true;
+    if (hintedAt.size > MAX_THROTTLED_THREADS) {
+      for (const [seen, seenAt] of hintedAt) if (at - seenAt >= DELTA_HINT_INTERVAL_MS) hintedAt.delete(seen);
+    }
+    hintedAt.set(key, at);
+    return hint(event, payload);
+  };
+
+  return (event: WebEvent): boolean => {
+    try {
+      if (event.type !== "message.delta" && event.type !== "message.changed") return write(event);
+      const own = event.threadId !== undefined && event.threadId === subscribed;
+      if (event.type === "message.delta") {
+        const delta = requireMessageDelta(event.payload);
+        return own ? write(event) : rateLimited(event, delta);
+      }
+      const payload = requireMessageChanged(event.payload);
+      if (own) return hint(event, payload);
+      if (subscribed === undefined && payload.deltaDeclined !== true) return hint(event, payload);
+      return rateLimited(event, payload);
+    } catch (error) {
+      // A frame this connection cannot make sense of is a server bug, and the
+      // honest answer is to end the stream so the console reconnects and
+      // bootstraps -- never to drop the frame and keep a live-looking socket.
+      onFailure?.(error);
+      close();
+      return false;
+    }
+  };
+}
+
+function requireMessageDelta(payload: unknown): WebMessageDelta {
+  const delta = payload as Partial<WebMessageDelta> | null | undefined;
+  if (delta === null || delta === undefined || typeof delta !== "object"
+    || typeof delta.messageId !== "string"
+    || typeof delta.updatedAt !== "string"
+    || typeof delta.baseSeq !== "number"
+    || typeof delta.seq !== "number"
+    || !Array.isArray(delta.ops)) {
+    throw new TypeError("A message.delta event carried no delta.");
+  }
+  return delta as WebMessageDelta;
+}
+
+function requireMessageChanged(payload: unknown): WebMessageChangedPayload {
+  const changed = payload as Partial<WebMessageChangedPayload> | null | undefined;
+  if (changed === null || changed === undefined || typeof changed !== "object"
+    || typeof changed.messageId !== "string"
+    || typeof changed.updatedAt !== "string") {
+    throw new TypeError("A message.changed event named no message.");
+  }
+  return changed as WebMessageChangedPayload;
+}
+
 function requiredQueryString(value: unknown, field: string, max: number): string {
   if (typeof value !== "string" || value.trim().length === 0 || value.length > max) {
     throw new WebConsoleError("invalid_page", `${field} is required.`, 400);
@@ -1436,6 +1518,25 @@ function optionalSearchQuery(value: unknown, max: number): string {
     throw new WebConsoleError(
       "invalid_page",
       `q must be a string of at most ${String(max)} characters.`,
+      400,
+    );
+  }
+  return value;
+}
+
+/**
+ * The conversation a console subscribes its event stream to.
+ *
+ * Its own code, not the pagination one: an invalid `?thread=` is a bad
+ * subscription, and answering it with "Pagination cursor is invalid." sent a
+ * console looking for a cursor it never sent.
+ */
+function optionalThreadSubscription(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.length === 0 || value.length > MAX_SUBSCRIPTION_LENGTH) {
+    throw new WebConsoleError(
+      "invalid_subscription",
+      `thread must name one conversation, in at most ${String(MAX_SUBSCRIPTION_LENGTH)} characters.`,
       400,
     );
   }
