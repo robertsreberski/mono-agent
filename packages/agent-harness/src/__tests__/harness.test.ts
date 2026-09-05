@@ -709,7 +709,7 @@ describe("AgentHarness", () => {
       readonly conversationId: string;
       readonly replyTo?: { readonly conversationId: string };
       readonly metadata?: Record<string, unknown>;
-      readonly expected: "interactive" | "request-driven";
+      readonly expected: "interactive" | "request-driven" | "console";
     };
     const scenarios: readonly DeliveryScenario[] = [
       {
@@ -734,7 +734,17 @@ describe("AgentHarness", () => {
         name: "TUI request",
         conversationId: "operator-session-1",
         metadata: { source: "tui", tuiRequestId: "tui-request-1" },
-        expected: "request-driven",
+        expected: "console",
+      },
+      {
+        name: "web console thread",
+        conversationId: "web:234b8561-1f0a-417b-884a-fa3ec5b132a8",
+        metadata: {
+          source: "web",
+          web: { threadId: "234b8561-1f0a-417b-884a-fa3ec5b132a8", turnId: "turn-1" },
+          webRequestId: "web-request-1",
+        },
+        expected: "console",
       },
       {
         name: "notify-enabled cron request",
@@ -764,11 +774,20 @@ describe("AgentHarness", () => {
       if (scenario.expected === "interactive") {
         expect(prompt, scenario.name).toContain("You are handling an interactive push conversation");
         expect(prompt, scenario.name).not.toContain("This is a request-driven run");
+        expect(prompt, scenario.name).not.toContain(scenario.conversationId);
+      } else if (scenario.expected === "console") {
+        // A console turn is the one classification whose conversation id IS
+        // model-visible: it is the surface the user is already on, and host
+        // tools that bind work to the thread ask the model to quote it.
+        expect(prompt, scenario.name).toContain("You are handling an interactive console conversation");
+        expect(prompt, scenario.name).toContain(`Conversation id: \`${scenario.conversationId}\`.`);
+        expect(prompt, scenario.name).not.toContain("This is a request-driven run");
+        expect(prompt, scenario.name).not.toContain("You are handling an interactive push conversation");
       } else {
         expect(prompt, scenario.name).toContain("This is a request-driven run");
         expect(prompt, scenario.name).not.toContain("You are handling an interactive push conversation");
+        expect(prompt, scenario.name).not.toContain(scenario.conversationId);
       }
-      expect(prompt, scenario.name).not.toContain(scenario.conversationId);
       if (scenario.replyTo !== undefined) {
         expect(prompt, scenario.name).not.toContain(scenario.replyTo.conversationId);
       }
