@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Icon } from "./Icon";
 import { safeJson } from "./json";
 
@@ -98,6 +98,85 @@ export function ActivityRow({
   );
 }
 
+/** `20480` reads as `20 KB`; a short body reads as its exact character count. */
+export const truncatedLabel = (characters: number): string =>
+  characters >= 1_024
+    ? `${(characters / 1_024).toFixed(characters >= 10 * 1_024 ? 0 : 1)} KB`
+    : `${String(characters)} characters`;
+
+/**
+ * The head of a payload the server did not send whole, plus the one control
+ * that fetches the rest.
+ *
+ * A collapsed row shows a screenful either way, so the console asks for a
+ * preview and repairs it on demand rather than moving hundreds of kilobytes of
+ * tool output nobody opens.
+ */
+function TruncationNotice({
+  characters,
+  onLoadFull,
+}: {
+  readonly characters?: number;
+  readonly onLoadFull?: () => Promise<unknown>;
+}) {
+  const [state, setState] = useState<"idle" | "loading" | "failed">("idle");
+  const size = characters === undefined ? "" : ` (${truncatedLabel(characters)})`;
+  return (
+    <p className="activity-truncated">
+      <span>{`Preview only${size}.`}</span>
+      {onLoadFull !== undefined && state !== "loading" && (
+        <button
+          type="button"
+          onClick={() => {
+            setState("loading");
+            void onLoadFull().then(
+              () => setState("idle"),
+              () => setState("failed"),
+            );
+          }}
+        >
+          Load full output
+        </button>
+      )}
+      {state === "loading" && <span>Loading…</span>}
+      {state === "failed" && <span role="alert">Could not load the full output.</span>}
+    </p>
+  );
+}
+
+export interface TruncationProps {
+  readonly argsTruncated?: boolean;
+  readonly argsBytes?: number;
+  readonly resultTruncated?: boolean;
+  readonly resultBytes?: number;
+  readonly onLoadFull?: () => Promise<unknown>;
+}
+
+/**
+ * A tool call's truncation metadata as the payload panel's props, including the
+ * control that fetches the whole body and puts it back in the transcript.
+ *
+ * Empty for the overwhelming majority of calls, whose payloads arrived whole.
+ */
+export function truncationProps(
+  envelope: { readonly argsTruncated?: boolean; readonly argsBytes?: number;
+    readonly resultTruncated?: boolean; readonly resultBytes?: number } | undefined,
+  toolCallId: string,
+  repair: ((toolCallId: string) => Promise<unknown>) | undefined,
+): TruncationProps {
+  if (envelope?.argsTruncated !== true && envelope?.resultTruncated !== true) return {};
+  return {
+    ...(envelope.argsTruncated === true ? { argsTruncated: true } : {}),
+    ...(envelope.argsBytes === undefined ? {} : { argsBytes: envelope.argsBytes }),
+    ...(envelope.resultTruncated === true ? { resultTruncated: true } : {}),
+    ...(envelope.resultBytes === undefined ? {} : { resultBytes: envelope.resultBytes }),
+    // No repair path (a transcript rendered outside the console) means the row
+    // states the preview and offers nothing, rather than offering a load it
+    // cannot perform.
+    ...(repair === undefined ? {} : { onLoadFull: async () => repair(toolCallId) }),
+  };
+}
+
 /** Input / Output / Error panels, shared by every expandable activity row. */
 export function ActivityPayload({
   args,
@@ -105,6 +184,11 @@ export function ActivityPayload({
   resultIsError = false,
   error,
   indented = false,
+  argsTruncated = false,
+  argsBytes,
+  resultTruncated = false,
+  resultBytes,
+  onLoadFull,
 }: {
   readonly args?: unknown;
   readonly result?: unknown;
@@ -113,16 +197,35 @@ export function ActivityPayload({
   /** Prose failures — a history-writer error, an aborted fetch — read better tinted. */
   readonly error?: string;
   readonly indented?: boolean;
+  /** The server sent only the head of `args`/`result`; see {@link TruncationNotice}. */
+  readonly argsTruncated?: boolean;
+  readonly argsBytes?: number;
+  readonly resultTruncated?: boolean;
+  readonly resultBytes?: number;
+  /** Fetches this call's whole body and replaces it in the transcript. */
+  readonly onLoadFull?: () => Promise<unknown>;
 }) {
   return (
     <div className={`activity-payload${indented ? " is-indented" : ""}`}>
       <span>Input</span>
       <pre>{safeJson(args)}</pre>
+      {argsTruncated && (
+        <TruncationNotice
+          {...(argsBytes === undefined ? {} : { characters: argsBytes })}
+          {...(onLoadFull === undefined ? {} : { onLoadFull })}
+        />
+      )}
       {result !== undefined && (
         <>
           <span>{resultIsError ? "Error" : "Output"}</span>
           <pre>{safeJson(result)}</pre>
         </>
+      )}
+      {resultTruncated && (
+        <TruncationNotice
+          {...(resultBytes === undefined ? {} : { characters: resultBytes })}
+          {...(onLoadFull === undefined ? {} : { onLoadFull })}
+        />
       )}
       {error !== undefined && <p className="activity-error">{error}</p>}
     </div>

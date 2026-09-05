@@ -315,6 +315,11 @@ export interface ToolCallArtifact {
   readonly history?: unknown;
   readonly structuredResult?: unknown;
   readonly executionMs?: number;
+  /** See {@link ToolCall.resultTruncated}; carried through assistant-ui's one metadata slot. */
+  readonly resultTruncated?: boolean;
+  readonly resultBytes?: number;
+  readonly argsTruncated?: boolean;
+  readonly argsBytes?: number;
 }
 
 /** One tool call, whether the agent made it or one of its subagents did. */
@@ -337,6 +342,16 @@ export interface ToolCall {
    */
   readonly executionMs?: number;
   readonly history?: SessionToolHistoryMetadata;
+  /**
+   * Set when the server sent only the head of `result`. The whole body is one
+   * request away at `api.toolCallPart`; a row that shows a preview says so and
+   * offers to fetch the rest.
+   */
+  readonly resultTruncated?: boolean;
+  /** Character length of the untruncated `result` text, when it was truncated. */
+  readonly resultBytes?: number;
+  readonly argsTruncated?: boolean;
+  readonly argsBytes?: number;
 }
 
 export type MessagePart =
@@ -355,6 +370,11 @@ export type MessagePart =
       /** What this delegation cost, when the runtime priced its model. */
       readonly costUsd?: number;
       readonly history?: SessionToolHistoryMetadata;
+      /** See {@link ToolCall.resultTruncated}. */
+      readonly resultTruncated?: boolean;
+      readonly resultBytes?: number;
+      readonly argsTruncated?: boolean;
+      readonly argsBytes?: number;
       readonly status: ToolCallStatus;
       readonly calls: readonly ToolCall[];
     }
@@ -370,7 +390,17 @@ export type MessagePart =
         readonly deliveryKeys: readonly string[];
       }[];
     }
-  | { readonly type: "telemetry"; readonly event: string; readonly data?: unknown }
+  /**
+   * `data` is present only for the telemetry the console renders or sums; every
+   * other diagnostic keeps its identity (and its position) and drops the
+   * payload, with `kind` naming a stripped `runtime_telemetry`'s variant.
+   */
+  | {
+      readonly type: "telemetry";
+      readonly event: string;
+      readonly kind?: string;
+      readonly data?: unknown;
+    }
   | { readonly type: "error"; readonly code?: string; readonly message: string }
   | {
       readonly type: "attachment";

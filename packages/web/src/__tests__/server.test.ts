@@ -1730,9 +1730,173 @@ describe("web HTTP server", () => {
         body: JSON.stringify({ pinned }),
       });
       expect(patch.status).toBe(200);
+      // The tab that pinned already holds this from the PATCH response, and
+      // every other tab can apply it without a bootstrap. Only discovery-driven
+      // invalidations stay payload-less.
+      expect(await nextEvent()).toMatchObject({
+        type: "agents.changed",
+        payload: { sourceId: "agent-one", pinned },
+      });
+    }
+    await reader.cancel();
+  });
+
+  /**
+   * A conversation shaped like the ones that made a thread read cost 231 KB:
+   * three 20 KB tool results and a mixed run of provider telemetry.
+   */
+  function toolHeavyAgentFetch(): typeof fetch {
+    const body = "R".repeat(20 * 1_024);
+    const telemetry = [
+      { type: "provider_status", provider: "anthropic", detail: "d".repeat(600) },
+      { type: "memory_recalled", entries: ["m".repeat(600)] },
+      { type: "runtime_telemetry", kind: "run_config", data: { model: "provider/default", effort: "high", raw: "r".repeat(600) } },
+      { type: "runtime_telemetry", kind: "cache_hit", data: { hits: 3, detail: "c".repeat(600) } },
+      { type: "capabilities_resolved", capabilities: { tools: Array.from({ length: 40 }, (_unused, index) => `tool-${String(index)}`) } },
+      { type: "provider_bridge_latency", ms: 12, samples: Array.from({ length: 100 }, (_unused, index) => index) },
+      { type: "runtime_warning", message: "w".repeat(600) },
+      { type: "runtime_telemetry", kind: "assistant_message_boundary", data: { kind: "assistant_message_boundary" } },
+      { type: "usage_update", data: { tokens: { input: 1_000, output: 200 }, cost: 0.02 } },
+      { type: "runtime_telemetry", kind: "context_usage", data: { used: 12_000, contextWindow: 200_000 } },
+    ];
+    return operatorFetch({
+      turns: () => [
+        ...[0, 1, 2].flatMap((index) => [
+          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: `call-${String(index)}`, name: "Exec", arguments: { command: `run ${String(index)}` } } }),
+          JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: `call-${String(index)}`, name: "Exec", content: body } }),
+        ]),
+        ...telemetry.map((event) => JSON.stringify({ kind: "event", event })),
+        JSON.stringify({ kind: "finish", finalText: "answer" }),
+        "",
+      ].join("\n"),
+    });
+  }
+
+  async function settleTurn(baseUrl: string, threadId: string, text: string): Promise<Record<string, unknown>> {
+    const started = await fetch(`${baseUrl}/api/v1/threads/${threadId}/turns`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    expect(started.status).toBe(202);
+    let detail: Record<string, unknown> = {};
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      detail = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}`));
+      if ((detail.thread as { runState?: { status?: string } }).runState?.status === "complete") break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+    expect(detail).toMatchObject({ thread: { runState: { status: "complete" } } });
+    return detail;
+  }
+
+  interface WireMessage {
+    readonly id: string;
+    readonly parts: readonly Record<string, unknown>[];
+  }
+
+  const wireMessages = (detail: Record<string, unknown>): readonly WireMessage[] =>
+    detail.messages as readonly WireMessage[];
+
+  it("puts a tool-heavy conversation on a diet, and serves the whole thing on request", async () => {
+    const { baseUrl } = await start({ fetchImpl: toolHeavyAgentFetch() });
+    const threadId = await createThread(baseUrl, "agent-one");
+    await settleTurn(baseUrl, threadId, "go");
+
+    const shaped = await rawGet(baseUrl, `/api/v1/threads/${threadId}`, { "accept-encoding": "br" });
+    const whole = await rawGet(baseUrl, `/api/v1/threads/${threadId}?full=1`, { "accept-encoding": "br" });
+    const shapedRaw = await rawGet(baseUrl, `/api/v1/threads/${threadId}`);
+    const wholeRaw = await rawGet(baseUrl, `/api/v1/threads/${threadId}?full=1`);
+    expect(shaped.headers["content-encoding"]).toBe("br");
+    // Three 20 KB bodies and ten telemetry payloads leave the wire; what is left
+    // is three 4 KB previews plus the parts that stayed whole.
+    expect(wholeRaw.body.length).toBeGreaterThan(60 * 1_024);
+    expect(shapedRaw.body.length).toBeLessThan(wholeRaw.body.length / 4);
+    expect(shaped.body.length).toBeLessThan(whole.body.length);
+
+    const shapedDetail = JSON.parse(brotliDecompressSync(shaped.body).toString("utf8")) as Record<string, unknown>;
+    const wholeDetail = JSON.parse(brotliDecompressSync(whole.body).toString("utf8")) as Record<string, unknown>;
+    const shapedParts = wireMessages(shapedDetail).at(-1)?.parts ?? [];
+    const wholeParts = wireMessages(wholeDetail).at(-1)?.parts ?? [];
+    // No part is dropped, at either size: only payloads change.
+    expect(shapedParts.map((part) => part.type)).toEqual(wholeParts.map((part) => part.type));
+    expect(shapedParts.filter((part) => part.type === "tool-call")).toHaveLength(3);
+    expect(shapedParts.filter((part) => part.resultTruncated === true)).toHaveLength(3);
+    expect(wholeParts.filter((part) => part.resultTruncated === true)).toHaveLength(0);
+    // `usage_update`, `context_usage` and `assistant_message_boundary` keep
+    // their payloads; the other seven diagnostics keep only their identity.
+    expect(shapedParts.filter((part) => part.type === "telemetry" && part.data === undefined)).toHaveLength(7);
+    expect(wholeParts.filter((part) => part.type === "telemetry" && part.data === undefined)).toHaveLength(0);
+  });
+
+  it("serves one tool call's whole body, and refuses one that is not in the conversation asked for", async () => {
+    const { baseUrl } = await start({ fetchImpl: toolHeavyAgentFetch() });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const detail = await settleTurn(baseUrl, threadId, "go");
+    const message = wireMessages(detail).at(-1);
+    if (message === undefined) throw new Error("Expected an assistant message.");
+    const other = await createThread(baseUrl, "agent-one");
+
+    const found = await fetch(`${baseUrl}/api/v1/threads/${threadId}/messages/${message.id}/tool-calls/call-1`);
+    expect(found.status).toBe(200);
+    const part = (await json(found)).part as Record<string, unknown>;
+    expect(part).toMatchObject({
+      type: "tool-call",
+      toolCallId: "call-1",
+      toolName: "Exec",
+      result: "R".repeat(20 * 1_024),
+    });
+    expect(part).not.toHaveProperty("resultTruncated");
+
+    for (const path of [
+      `/api/v1/threads/${threadId}/messages/${message.id}/tool-calls/missing`,
+      `/api/v1/threads/${threadId}/messages/no-such-message/tool-calls/call-1`,
+      `/api/v1/threads/${other}/messages/${message.id}/tool-calls/call-1`,
+    ]) {
+      const refused = await fetch(`${baseUrl}${path}`);
+      expect(refused.status).toBe(404);
+      expect(await json(refused)).toMatchObject({ error: { code: "tool_call_not_found" } });
+    }
+  });
+
+  it("answers a conversation and its message page with one screenful by default", async () => {
+    const { baseUrl } = await start();
+    const threadId = await createThread(baseUrl, "agent-one");
+    for (let index = 0; index < 20; index += 1) {
+      await settleTurn(baseUrl, threadId, `turn ${String(index)}`);
+    }
+
+    const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}`));
+    expect(wireMessages(detail)).toHaveLength(30);
+    expect(detail.messagesNextCursor).toBeTypeOf("string");
+
+    const page = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}/messages`));
+    expect(page.messages as unknown[]).toHaveLength(30);
+    expect(page.nextCursor).toBeTypeOf("string");
+    const explicit = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}/messages?limit=100`));
+    expect(explicit.messages as unknown[]).toHaveLength(40);
+    expect((await fetch(`${baseUrl}/api/v1/threads/${threadId}/messages?limit=101`)).status).toBe(400);
+  });
+
+  it("stays silent about what discovery changed", async () => {
+    let discovered = [fakeDiscoveredAgent()];
+    const { baseUrl } = await start({ discoveryIntervalMs: 25, discoverImpl: async () => discovered });
+    const stream = await fetch(`${baseUrl}/api/v1/events`);
+    const reader = stream.body?.getReader();
+    if (reader === undefined) throw new Error("Expected an SSE response body.");
+    const nextEvent = sseEventReader(reader);
+    expect(await nextEvent()).toMatchObject({ type: "ready" });
+
+    // An agent that appeared, went away, or advertises something different can
+    // have changed anything at all, so this one still invalidates the snapshot.
+    discovered = [
+      fakeDiscoveredAgent(),
+      fakeDiscoveredAgent({ source: { ...fakeDiscoveredAgent().source, sourceId: "agent-two", label: "Agent Two" } }),
+    ];
+    for (;;) {
       const event = await nextEvent();
-      expect(event).toMatchObject({ type: "agents.changed" });
+      if (event.type !== "agents.changed") continue;
       expect(event).not.toHaveProperty("payload");
+      break;
     }
     await reader.cancel();
   });

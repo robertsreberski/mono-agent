@@ -37,6 +37,7 @@ import {
   type PatchWebAgentInput,
   type PatchWebThreadInput,
   type StartWebTurnInput,
+  type WebAgentsChangedPayload,
   type WebAgentSummary,
   type WebAttachment,
   type WebBootstrap,
@@ -59,6 +60,7 @@ import {
   type WebThreadDetail,
   type WebThreadPage,
   type WebThreadSearchPage,
+  type WebToolCall,
   type SearchWebThreadsInput,
   type WebMessagePage,
   type WebModelPage,
@@ -110,6 +112,121 @@ const REPLY_ACCESS_TTL_MS = 10 * 60 * 1_000;
  * `setReplyDownloadHeaders` already refuse to treat it as an image.
  */
 const REPLY_IMAGE_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+/**
+ * How much of a tool call's `result`/`args` a browser read carries.
+ *
+ * Measured on a real fleet transcript: a 4-message tool-heavy conversation is
+ * 231 KB, of which 211 KB is `tool-call` result bodies (single `Exec`/`ReadSkill`
+ * results run 14-21 KB). The rows are collapsed, so what the operator sees of
+ * one is its first screenful; the rest is a request away.
+ */
+const TOOL_PAYLOAD_PREVIEW_CHARS = 4_096;
+
+/**
+ * Telemetry whose `data` the console actually reads.
+ *
+ * `webapp/src/runtime.tsx` renders only `runtime_telemetry` of kind
+ * `context_compaction`/`assistant_message_boundary`/`context_usage` plus
+ * `cron_run`; `webapp/src/usage.ts` sums any part labelled `context_usage`,
+ * `context_compaction`, or containing `usage`/`cost`. Everything else --
+ * `provider_status`, `memory_recalled`, `status`, `run_config`, `cache_hit`,
+ * `capabilities_resolved`, ... -- is carried across the wire and dropped, which
+ * is ~10 KB a conversation.
+ */
+const TELEMETRY_DATA_ALLOWLIST: ReadonlySet<string> = new Set([
+  "usage_update",
+  "cron_run",
+  "context_usage",
+  "context_compaction",
+  "assistant_message_boundary",
+]);
+
+/**
+ * `?full=1`: serve the transcript exactly as recorded. The escape hatch for an
+ * operator (or a support read) who needs the payloads the console elides.
+ */
+export interface WebTranscriptShape {
+  readonly full?: boolean;
+}
+
+type WebTelemetryPart = Extract<WebMessagePart, { type: "telemetry" }>;
+type WebToolCallPart = Extract<WebMessagePart, { type: "tool-call" }>;
+type WebSubagentPart = Extract<WebMessagePart, { type: "subagent" }>;
+
+/** A `runtime_telemetry` event's variant, which the store stores inside `data`. */
+function telemetryKind(data: unknown): string | undefined {
+  if (data === null || typeof data !== "object" || Array.isArray(data)) return undefined;
+  const kind = (data as Record<string, unknown>).kind;
+  return typeof kind === "string" && kind.length > 0 ? kind : undefined;
+}
+
+function keepsTelemetryData(part: WebTelemetryPart): boolean {
+  const event = part.event.toLowerCase();
+  if (TELEMETRY_DATA_ALLOWLIST.has(event) || event.includes("usage") || event.includes("cost")) return true;
+  const kind = telemetryKind(part.data)?.toLowerCase();
+  return kind !== undefined && TELEMETRY_DATA_ALLOWLIST.has(kind);
+}
+
+/**
+ * Keep the part, drop the payload. Removing it outright would renumber every
+ * later part, and both the client's part conversion and the index-based
+ * transcript reads that follow this change depend on positions being stable.
+ */
+function shapeTelemetryPart(part: WebTelemetryPart): WebTelemetryPart {
+  if (part.data === undefined || keepsTelemetryData(part)) return part;
+  const kind = telemetryKind(part.data);
+  return { type: "telemetry", event: part.event, ...(kind === undefined ? {} : { kind }) };
+}
+
+/**
+ * The head of an oversized payload, or `undefined` when it is small enough (or
+ * cannot be serialized, in which case it is left exactly as stored).
+ */
+function payloadPreview(value: unknown): { readonly preview: string; readonly length: number } | undefined {
+  if (value === undefined) return undefined;
+  let text: string | undefined;
+  if (typeof value === "string") text = value;
+  else {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      return undefined;
+    }
+  }
+  if (text === undefined || text.length <= TOOL_PAYLOAD_PREVIEW_CHARS) return undefined;
+  return { preview: text.slice(0, TOOL_PAYLOAD_PREVIEW_CHARS), length: text.length };
+}
+
+function shapeToolCall(call: WebToolCall): WebToolCall {
+  // AskUser's arguments and answer ARE the card the console renders, and they
+  // are bounded at the emitter. `structuredResult` is never touched anywhere:
+  // it is the machine-readable outcome, bounded at the emitter too.
+  if (call.toolName === "AskUser") return call;
+  const args = payloadPreview(call.args);
+  const result = payloadPreview(call.result);
+  if (args === undefined && result === undefined) return call;
+  return {
+    ...call,
+    ...(args === undefined ? {} : { args: args.preview, argsTruncated: true, argsBytes: args.length }),
+    ...(result === undefined ? {} : { result: result.preview, resultTruncated: true, resultBytes: result.length }),
+  };
+}
+
+function shapeToolCallPart(part: WebToolCallPart): WebToolCallPart {
+  return { ...shapeToolCall(part), type: "tool-call" };
+}
+
+function shapeSubagentPart(part: WebSubagentPart): WebSubagentPart {
+  const args = payloadPreview(part.args);
+  const result = payloadPreview(part.result);
+  return {
+    ...part,
+    ...(args === undefined ? {} : { args: args.preview, argsTruncated: true, argsBytes: args.length }),
+    ...(result === undefined ? {} : { result: result.preview, resultTruncated: true, resultBytes: result.length }),
+    calls: part.calls.map(shapeToolCall),
+  };
+}
 
 function formatQuotedTurn(quote: string, text: string): string {
   const blockquote = quote
@@ -453,10 +570,10 @@ export class WebService {
     return thread;
   }
 
-  thread(id: string): WebThreadDetail {
+  thread(id: string, options: WebTranscriptShape = {}): WebThreadDetail {
     const detail = this.store.getThreadDetail(id);
     if (detail === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
-    return this.decorateThreadDetail(detail);
+    return this.decorateThreadDetail(detail, options);
   }
 
   threadsPage(input: {
@@ -476,9 +593,41 @@ export class WebService {
     return this.store.searchThreads(input);
   }
 
-  messagePage(threadId: string, input: { readonly limit?: number; readonly before?: string }): WebMessagePage {
+  messagePage(
+    threadId: string,
+    input: { readonly limit?: number; readonly before?: string } & WebTranscriptShape,
+  ): WebMessagePage {
     const page = this.store.listMessagesPage(threadId, input);
-    return { ...page, messages: page.messages.map((message) => this.decorateMessage(message)) };
+    return { ...page, messages: page.messages.map((message) => this.shapeMessage(message, input)) };
+  }
+
+  /**
+   * The untruncated payloads of ONE tool call, for a transcript that was served
+   * a preview of it.
+   *
+   * Addressed by (conversation, message, tool call) rather than by tool-call id
+   * alone: the id is not a capability, and a lookup that took it on its own
+   * would hand any caller any conversation's transcript.
+   */
+  toolCallPart(threadId: string, messageId: string, toolCallId: string): WebMessagePart {
+    const thread = this.store.getThread(threadId);
+    const message = this.store.getMessage(messageId);
+    if (thread === undefined || message === undefined || message.threadId !== thread.id) {
+      throw new WebConsoleError("tool_call_not_found", "The tool call is unavailable.", 404);
+    }
+    const owned = message.parts.find(
+      (part): part is WebToolCallPart | WebSubagentPart =>
+        (part.type === "tool-call" || part.type === "subagent") && part.toolCallId === toolCallId,
+    );
+    if (owned !== undefined) return owned;
+    for (const part of message.parts) {
+      if (part.type !== "subagent") continue;
+      const call = part.calls.find((candidate) => candidate.toolCallId === toolCallId);
+      // A subagent's child owns no part of its own, so it answers as the
+      // tool-call part it would have been outside the delegation.
+      if (call !== undefined) return { type: "tool-call", ...call };
+    }
+    throw new WebConsoleError("tool_call_not_found", "The tool call is unavailable.", 404);
   }
 
   /**
@@ -764,7 +913,12 @@ export class WebService {
 
   patchAgent(sourceId: string, patch: PatchWebAgentInput): WebAgentSummary {
     const agent = this.store.setAgentPinned(sourceId, patch.pinned);
-    this.emit("agents.changed");
+    // A pin says exactly what it changed. The payload-less form means "discovery
+    // saw something move", which costs every open console a bootstrap plus its
+    // skills and cron -- for one boolean the pinning tab already applied from
+    // this call's own response.
+    const payload: WebAgentsChangedPayload = { sourceId: agent.sourceId, pinned: agent.pinned === true };
+    this.emit("agents.changed", undefined, payload);
     return agent;
   }
 
@@ -816,7 +970,7 @@ export class WebService {
       const stored = this.store.storedCronRuns(sourceId, jobId, input.limit);
       return stored.messages === undefined
         ? stored
-        : { ...stored, messages: stored.messages.map((message) => this.decorateMessage(message)) };
+        : { ...stored, messages: stored.messages.map((message) => this.shapeMessage(message)) };
     }
     const page = await connection.client.cronRuns(jobId, {
       limit: input.limit,
@@ -827,7 +981,7 @@ export class WebService {
     if (reconciled.changed) {
       this.emitStoredThread(this.store.cronThread(sourceId, jobId)?.id, ["thread.changed", "threads.changed"]);
     }
-    return { ...page, messages: reconciled.messages.map((message) => this.decorateMessage(message)) };
+    return { ...page, messages: reconciled.messages.map((message) => this.shapeMessage(message)) };
   }
 
   async cronRun(sourceId: string, jobId: string, runId: string): Promise<WebMessage> {
@@ -841,7 +995,7 @@ export class WebService {
     if (reconciled.changed) {
       this.emitStoredThread(message.threadId, ["thread.changed", "threads.changed"]);
     }
-    return this.decorateMessage(message);
+    return this.shapeMessage(message);
   }
 
   async agentModels(sourceId: string, input: {
@@ -2354,18 +2508,31 @@ export class WebService {
     }
   }
 
-  private decorateThreadDetail(detail: WebThreadDetail): WebThreadDetail {
+  private decorateThreadDetail(detail: WebThreadDetail, options: WebTranscriptShape = {}): WebThreadDetail {
     // Backfill: messages that predate this feature, and any turn whose own
     // attempt failed or was interrupted. Idempotent and guarded, so repeated
     // reads of the same thread fetch each image at most once.
     void this.persistReplyImages(detail.thread.id, detail.messages);
-    return { ...detail, messages: detail.messages.map((message) => this.decorateMessage(message)) };
+    return { ...detail, messages: detail.messages.map((message) => this.shapeMessage(message, options)) };
   }
 
-  private decorateMessage(message: WebMessage): WebMessage {
+  /**
+   * The one boundary every browser-facing message crosses: it mints the
+   * short-lived reply capabilities, and it puts the transcript on a diet.
+   *
+   * Shaping lives HERE and never in the store. The store's parts feed the
+   * sidebar preview, the streamed-text split, and the transcript deltas that
+   * follow this change, all of which need the payloads whole and the indexes
+   * exactly as recorded.
+   */
+  private shapeMessage(message: WebMessage, options: WebTranscriptShape = {}): WebMessage {
     const parts = message.parts.map((part): WebMessagePart => {
-      if (part.type !== "attachment" && part.type !== "mcp_app") return part;
-      return this.decorateReplyPart(message, part);
+      if (part.type === "attachment" || part.type === "mcp_app") return this.decorateReplyPart(message, part);
+      if (options.full === true) return part;
+      if (part.type === "telemetry") return shapeTelemetryPart(part);
+      if (part.type === "tool-call") return shapeToolCallPart(part);
+      if (part.type === "subagent") return shapeSubagentPart(part);
+      return part;
     });
     return { ...message, parts };
   }

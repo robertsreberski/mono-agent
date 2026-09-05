@@ -465,6 +465,15 @@ export const WEB_THREAD_PAGE_MAX = 200;
  */
 export const WEB_THREAD_PAGE_DEFAULT = 50;
 export const WEB_MESSAGE_PAGE_MAX = 100;
+/**
+ * What one page of a transcript is when the caller does not say.
+ *
+ * A conversation read used to answer with the whole cap, which on a tool-heavy
+ * thread is hundreds of kilobytes the viewport never shows. The console renders
+ * the tail and pages backwards from `messagesNextCursor`, so the default is the
+ * screenful rather than the ceiling.
+ */
+export const WEB_MESSAGE_PAGE_DEFAULT = 30;
 const MAX_ACTIVE_PUSH_SUBSCRIPTIONS = 32;
 const MAX_PENDING_PUSH_DELIVERIES_PER_SUBSCRIPTION = 200;
 const PUSH_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -2147,11 +2156,14 @@ export class WebStore {
     return row === undefined ? undefined : this.mapThread(row);
   }
 
-  getThreadDetail(id: string): WebThreadDetail | undefined {
+  getThreadDetail(
+    id: string,
+    options: { readonly limit?: number } = {},
+  ): WebThreadDetail | undefined {
     const resolved = this.resolveThreadId(id);
     const thread = this.getThread(resolved);
     if (thread === undefined) return undefined;
-    const page = this.listMessagesPage(resolved);
+    const page = this.listMessagesPage(resolved, { limit: options.limit ?? WEB_MESSAGE_PAGE_DEFAULT });
     return {
       thread,
       messages: page.messages,

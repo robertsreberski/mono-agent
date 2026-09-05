@@ -51,6 +51,7 @@ vi.mock("./api", async (importOriginal) => ({
     cronOverview: vi.fn(),
     cronRuns: vi.fn(),
     cronRun: vi.fn(),
+    toolCallPart: vi.fn(),
   },
 }));
 
@@ -2836,6 +2837,87 @@ describe("ConsoleStoreProvider integration", () => {
       await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
       return store;
     };
+
+    it("applies a pin the event named, and asks the server for nothing", async () => {
+      seedTwoThreads();
+      const store = await openedOnAlpha();
+      const detailReads = vi.mocked(api.thread).mock.calls.length;
+
+      emit("agents.changed", { payload: { sourceId: "alpha", pinned: true } });
+      await quiet();
+
+      expect(store.current.agents.map((item) => [item.sourceId, item.pinned]))
+        .toEqual([["alpha", true]]);
+      // The whole point: a one-boolean write no longer costs a bootstrap, the
+      // skill registry and the cron overview in every open tab.
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads);
+      expect(api.agentSkills).toHaveBeenCalledTimes(1);
+    });
+
+    it("still re-reads everything for an agents.changed that names nothing", async () => {
+      seedTwoThreads();
+      await openedOnAlpha();
+
+      emit("agents.changed");
+      await waitFor(() => expect(api.bootstrap).toHaveBeenCalledTimes(2));
+    });
+
+    it("replaces the message a truncated tool call sits in, rather than repairing it in place", async () => {
+      const truncated = {
+        id: "message-tool",
+        threadId: selected.id,
+        role: "assistant" as const,
+        parts: [
+          {
+            type: "tool-call" as const,
+            toolCallId: "tool-big",
+            toolName: "Exec",
+            args: { command: "run" },
+            result: "HEAD",
+            resultTruncated: true,
+            resultBytes: 20 * 1_024,
+            status: "complete" as const,
+          },
+        ],
+        attachments: [],
+        createdAt: "2026-08-14T08:00:00.000Z",
+        updatedAt: "2026-08-14T08:00:00.000Z",
+        status: "complete" as const,
+      };
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { label: "Alpha" })], [selected]));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [selected] });
+      vi.mocked(api.thread).mockResolvedValue({ thread: selected, messages: [truncated] });
+      vi.mocked(api.toolCallPart).mockResolvedValue({
+        type: "tool-call",
+        toolCallId: "tool-big",
+        toolName: "Exec",
+        args: { command: "run" },
+        result: "THE WHOLE BODY",
+        status: "complete",
+      });
+      const store = await openedOnAlpha();
+      const before = store.current.detail?.messages[0];
+
+      await act(async () => { await store.current.loadFullToolCall("tool-big"); });
+
+      expect(api.toolCallPart).toHaveBeenCalledWith(selected.id, "message-tool", "tool-big");
+      const after = store.current.detail?.messages[0];
+      // assistant-ui caches its part conversions by object identity, so the
+      // repair has to arrive as new objects or the row keeps its preview.
+      expect(after).not.toBe(before);
+      expect(after?.parts[0]).not.toBe(before?.parts[0]);
+      expect(after?.parts[0]).toEqual({
+        type: "tool-call",
+        toolCallId: "tool-big",
+        toolName: "Exec",
+        args: { command: "run" },
+        result: "THE WHOLE BODY",
+        status: "complete",
+      });
+      // The preview and its marker are gone together.
+      expect(before).toMatchObject({ parts: [{ resultTruncated: true }] });
+    });
 
     it("fetches nothing for a message in a conversation nobody is looking at", async () => {
       seedTwoThreads();

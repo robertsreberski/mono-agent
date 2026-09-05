@@ -16,12 +16,14 @@ import type {
   Bootstrap,
   CatalogModel,
   CronOverview,
+  MessagePart,
   RunState,
   SkillRegistryState,
   StartTurnInput,
   ThreadDetail,
   ThreadSummary,
   WebEvent,
+  WebMessage,
 } from "./types";
 import {
   effectiveModelForAgent,
@@ -93,6 +95,11 @@ interface ConsoleStoreValue {
   readonly loadOlderMessages: () => Promise<void>;
   readonly refreshCron: () => Promise<void>;
   readonly loadCronRunActivity: (runId: string) => Promise<void>;
+  /**
+   * Replace one truncated tool call in the open conversation with its whole
+   * body. Resolves to `true` when the transcript changed.
+   */
+  readonly loadFullToolCall: (toolCallId: string) => Promise<boolean>;
 }
 
 const ConsoleStore = createContext<ConsoleStoreValue | null>(null);
@@ -191,6 +198,43 @@ const asciiNoCase = (value: string): string =>
   value.replace(/[A-Z]/g, (character) =>
     String.fromCharCode(character.charCodeAt(0) + 32),
   );
+
+/**
+ * Whether a message is the one that owns a tool call -- as a part of its own,
+ * or as one of a delegation's children.
+ *
+ * The full-body route is addressed by (conversation, message, call) because a
+ * tool-call id is not a capability, so the console has to name the message it
+ * already holds the preview in.
+ */
+export const holdsToolCall = (message: WebMessage, toolCallId: string): boolean =>
+  message.parts.some((part) =>
+    (part.type === "tool-call" || part.type === "subagent")
+      && (part.toolCallId === toolCallId
+        || (part.type === "subagent"
+          && part.calls.some((call) => call.toolCallId === toolCallId))));
+
+/**
+ * Put an untruncated tool call back where its preview was, as NEW objects.
+ *
+ * assistant-ui caches its part conversions by object identity, so a transcript
+ * repaired in place goes on rendering the preview it already converted.
+ */
+export const mergeToolCallPart = (existing: MessagePart, full: MessagePart): MessagePart => {
+  if (full.type !== "tool-call" && full.type !== "subagent") return existing;
+  if (existing.type !== "tool-call" && existing.type !== "subagent") return existing;
+  if (existing.toolCallId === full.toolCallId) return full;
+  if (existing.type !== "subagent" || full.type !== "tool-call") return existing;
+  if (!existing.calls.some((call) => call.toolCallId === full.toolCallId)) return existing;
+  // A delegation's child owns no part of its own, so the route answers with the
+  // tool call it would have been and it goes back into the group.
+  const { type: _type, ...call } = full;
+  return {
+    ...existing,
+    calls: existing.calls.map((candidate) =>
+      candidate.toolCallId === full.toolCallId ? call : candidate),
+  };
+};
 
 export const sortAgentsPinnedFirst = (
   agents: readonly AgentSummary[],
@@ -1193,6 +1237,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const threadsRef = useRef<readonly ThreadSummary[]>([]);
   /** The open conversation's own summary, which outlives its row in the listing. */
   const detailThreadRef = useRef<ThreadSummary | null>(null);
+  const detailRef = useRef<ThreadDetail | null>(null);
   /** See {@link UNLISTED_THREAD_MEMORY}. */
   const unlistedThreadsRef = useRef<Set<string>>(new Set());
   /** The conversations the next bucket revalidation is being asked about. */
@@ -1781,6 +1826,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         readonly threadId?: string;
         readonly removed?: boolean;
         readonly sourceId?: string;
+        readonly pinned?: boolean;
         readonly turn?: RunState;
       };
       const threadId = webEvent.threadId ?? payload.threadId;
@@ -1822,16 +1868,34 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           return;
         }
 
-        case "agents.changed":
-          // Carries no payload, and is emitted only when discovery actually saw
-          // a change: an agent appeared or went away, or one of them advertises
-          // something different. The provider catalog is keyed on the
-          // generation the bootstrap carries, so replacing the snapshot is what
-          // invalidates the model pages.
+        case "agents.changed": {
+          // A PIN names itself. Applying one boolean locally is the whole of
+          // what this event means, so it costs nothing -- the tab that pinned
+          // already applied the PATCH response and re-applies the same value.
+          const { sourceId, pinned } = payload;
+          if (sourceId !== undefined && pinned !== undefined) {
+            setBootstrap((current) => current === null
+              ? current
+              : {
+                  ...current,
+                  agents: sortAgentsPinnedFirst(
+                    current.agents.map((item) => item.sourceId === sourceId
+                      ? { ...item, pinned }
+                      : item),
+                  ),
+                });
+            return;
+          }
+          // Payload-less: emitted only when discovery actually saw a change --
+          // an agent appeared or went away, or one of them advertises something
+          // different. The provider catalog is keyed on the generation the
+          // bootstrap carries, so replacing the snapshot is what invalidates the
+          // model pages.
           loadAgents();
           setSkillRefreshToken((value) => value + 1);
           setCronRefreshToken((value) => value + 1);
           return;
+        }
 
         case "cron.changed":
           // Every agent's cron scheduler emits these; only the one being
@@ -2039,6 +2103,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // Assigned during render, like `threadsRef`: a removal event has to be able
   // to name a conversation the listing has moved past.
   detailThreadRef.current = detail?.thread ?? null;
+  detailRef.current = detail;
   const visibleThreads = useMemo(
     () =>
       [...threads]
@@ -2181,6 +2246,31 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setCronLoading(false);
     }
   }, [selectedAgentId, selectedCronJobId, selectedCronThreadId]);
+
+  // Deliberately stable: this is handed to the transcript through a context, and
+  // a new identity on every streamed token would re-render every tool row for
+  // the whole of a running turn.
+  const loadFullToolCall = useCallback(async (toolCallId: string): Promise<boolean> => {
+    const current = detailRef.current;
+    if (current === null) return false;
+    const message = current.messages.find((candidate) => holdsToolCall(candidate, toolCallId));
+    if (message === undefined) return false;
+    const part = await api.toolCallPart(current.thread.id, message.id, toolCallId);
+    let replaced = false;
+    setDetail((latest) => {
+      if (latest?.thread.id !== current.thread.id) return latest;
+      const messages = latest.messages.map((candidate) => {
+        if (candidate.id !== message.id) return candidate;
+        // A NEW message object, and new part objects inside it: assistant-ui
+        // caches its conversions by object identity, so mutating in place would
+        // leave the transcript showing the preview it already rendered.
+        return { ...candidate, parts: candidate.parts.map((existing) => mergeToolCallPart(existing, part)) };
+      });
+      replaced = true;
+      return { ...latest, messages };
+    });
+    return replaced;
+  }, []);
 
   useEffect(() => {
     void refreshCron();
@@ -3225,6 +3315,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loadOlderMessages,
       refreshCron,
       loadCronRunActivity,
+      loadFullToolCall,
     }),
     [
       actionError,
@@ -3254,6 +3345,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loadMoreThreads,
       loadOlderMessages,
       loadCronRunActivity,
+      loadFullToolCall,
       loading,
       hasRunOverride,
       model,

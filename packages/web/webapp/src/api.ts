@@ -306,6 +306,26 @@ export const api = {
     );
   },
 
+  /**
+   * One tool call's untruncated payloads, for a row the server sent a preview
+   * of. Addressed by (conversation, message, call): the tool-call id alone is
+   * not a capability and the server refuses it on its own.
+   */
+  toolCallPart: async (
+    threadId: string,
+    messageId: string,
+    toolCallId: string,
+    signal?: AbortSignal,
+  ) => {
+    const result = await request<{ readonly part: MessagePart }>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}`
+      + `/messages/${encodeURIComponent(messageId)}`
+      + `/tool-calls/${encodeURIComponent(toolCallId)}`,
+      { ...(signal === undefined ? {} : { signal }) },
+    );
+    return result.part;
+  },
+
   messages: (threadId: string, before: string, signal?: AbortSignal) => {
     const query = new URLSearchParams({ before, limit: "100" });
     return request<MessagePage>(

@@ -12,8 +12,8 @@ import {
   type AgentReplyPart,
 } from "@mono-agent/agent-contracts";
 
-import type { WebEvent } from "../contracts.js";
-import { WEB_THREAD_PAGE_DEFAULT } from "../store.js";
+import type { WebEvent, WebMessagePart } from "../contracts.js";
+import { WEB_MESSAGE_PAGE_DEFAULT, WEB_THREAD_PAGE_DEFAULT } from "../store.js";
 import { agentGeneration, WebService, WeightedTurnBudget } from "../service.js";
 import { fakeDiscoveredAgent, fakeMonitor, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
 
@@ -1952,7 +1952,12 @@ describe("WebService", () => {
 
     expect(service.patchAgent("agent-one", { pinned: true })).toMatchObject({ sourceId: "agent-one", pinned: true });
     expect((await service.bootstrap()).agents[0]).toMatchObject({ sourceId: "agent-one", pinned: true });
-    expect(events).toEqual([undefined]);
+    // A pin names itself, so a console can apply it instead of re-reading the
+    // bootstrap plus that agent's skills and cron for one boolean.
+    expect(events).toEqual([{ sourceId: "agent-one", pinned: true }]);
+    service.patchAgent("agent-one", { pinned: false });
+    expect(events.at(-1)).toEqual({ sourceId: "agent-one", pinned: false });
+    service.patchAgent("agent-one", { pinned: true });
     await service.refreshAgents();
     expect((await service.bootstrap()).agents[0]).toMatchObject({ sourceId: "agent-one", pinned: true });
     expect(() => service.patchAgent("missing", { pinned: true })).toThrowError(expect.objectContaining({ code: "agent_not_found" }));
@@ -3475,6 +3480,249 @@ describe("WebService", () => {
     await expect(service.startTurn(invalid.id, { text: "legacy", model: "other/model" })).rejects.toMatchObject({ code: "invalid_model" });
     await expect(service.startTurn(invalid.id, { text: "legacy", effort: "impossible" })).rejects.toMatchObject({ code: "invalid_effort" });
     await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+});
+
+describe("transcript shaping", () => {
+  /**
+   * One turn emitting every telemetry family the runtime produces, in a fixed
+   * order, so a shaping regression shows up as either a lost `data` or a part
+   * that moved.
+   */
+  const telemetryTurn = (): string => [
+    JSON.stringify({ kind: "event", event: { type: "provider_status", provider: "anthropic", detail: "x".repeat(2_000) } }),
+    JSON.stringify({ kind: "event", event: { type: "memory_recalled", entries: ["y".repeat(2_000)] } }),
+    JSON.stringify({ kind: "status", text: "thinking" }),
+    JSON.stringify({ kind: "event", event: { type: "runtime_telemetry", kind: "cache_hit", data: { hits: 3 } } }),
+    JSON.stringify({ kind: "event", event: { type: "usage_update", data: { tokens: { input: 10, output: 2 }, cost: 0.01 } } }),
+    JSON.stringify({ kind: "event", event: { type: "runtime_telemetry", kind: "context_usage", data: { used: 1_000, contextWindow: 200_000 } } }),
+    JSON.stringify({ kind: "finish", finalText: "answer" }),
+    "",
+  ].join("\n");
+
+  const telemetryParts = (
+    parts: readonly WebMessagePart[],
+  ): readonly Extract<WebMessagePart, { type: "telemetry" }>[] =>
+    parts.filter((part): part is Extract<WebMessagePart, { type: "telemetry" }> => part.type === "telemetry");
+
+  it("keeps telemetry data only for what the console renders, and moves no part", async () => {
+    const service = await createService({ fetchImpl: operatorFetch({ turns: telemetryTurn }) });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    const stored = service.store.getThreadDetail(thread.id)?.messages.at(-1)?.parts ?? [];
+    const served = service.thread(thread.id).messages.at(-1)?.parts ?? [];
+    // Every position survives: Task 6's index-based delta ops depend on it.
+    expect(served.map((part) => part.type)).toEqual(stored.map((part) => part.type));
+
+    expect(telemetryParts(served)).toEqual([
+      { type: "telemetry", event: "provider_status" },
+      { type: "telemetry", event: "memory_recalled" },
+      { type: "telemetry", event: "status" },
+      { type: "telemetry", event: "runtime_telemetry", kind: "cache_hit" },
+      {
+        type: "telemetry",
+        event: "usage_update",
+        data: { type: "usage_update", data: { tokens: { input: 10, output: 2 }, cost: 0.01 } },
+      },
+      // Kept whole, `kind` and all, because the context display reads it from
+      // inside `data`.
+      {
+        type: "telemetry",
+        event: "runtime_telemetry",
+        data: { type: "runtime_telemetry", kind: "context_usage", data: { used: 1_000, contextWindow: 200_000 } },
+      },
+    ]);
+    await service.stop();
+  });
+
+  it("serves the whole transcript when the caller asks for it", async () => {
+    const service = await createService({ fetchImpl: operatorFetch({ turns: telemetryTurn }) });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    const full = service.thread(thread.id, { full: true }).messages.at(-1)?.parts ?? [];
+    expect(full).toEqual(service.store.getThreadDetail(thread.id)?.messages.at(-1)?.parts);
+    expect(telemetryParts(full).every((part) => part.data !== undefined)).toBe(true);
+    await service.stop();
+  });
+
+  /** A tool result the size the fleet actually produces: one Exec/ReadSkill body. */
+  const bigResult = "R".repeat(20 * 1_024);
+  const bigArgs = { command: `echo ${"A".repeat(20 * 1_024)}` };
+
+  it("previews a large tool payload, exempts AskUser, and serves the full body by id", async () => {
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => [
+          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "call-1", name: "Exec", arguments: bigArgs } }),
+          JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "call-1", name: "Exec", content: bigResult } }),
+          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "ask-1", name: "AskUser", arguments: { question: "R".repeat(5_000) } } }),
+          JSON.stringify({
+            kind: "event",
+            event: {
+              type: "tool_call_completed",
+              id: "ask-1",
+              name: "AskUser",
+              content: "Q".repeat(5_000),
+              structuredContent: { interactionId: "i-1", answered: true },
+            },
+          }),
+          JSON.stringify({ kind: "finish", finalText: "answer" }),
+          "",
+        ].join("\n"),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    const message = service.thread(thread.id).messages.at(-1);
+    if (message === undefined) throw new Error("Expected an assistant message.");
+    const toolCall = (id: string): Extract<WebMessagePart, { type: "tool-call" }> => {
+      const part = message.parts.find(
+        (candidate): candidate is Extract<WebMessagePart, { type: "tool-call" }> =>
+          candidate.type === "tool-call" && candidate.toolCallId === id,
+      );
+      if (part === undefined) throw new Error(`Expected a tool call ${id}.`);
+      return part;
+    };
+
+    expect(toolCall("call-1")).toMatchObject({
+      result: "R".repeat(4_096),
+      resultTruncated: true,
+      resultBytes: 20 * 1_024,
+      args: JSON.stringify(bigArgs).slice(0, 4_096),
+      argsTruncated: true,
+      argsBytes: JSON.stringify(bigArgs).length,
+    });
+
+    // AskUser's question and answer ARE the card; a preview would break it.
+    expect(toolCall("ask-1")).toEqual({
+      type: "tool-call",
+      toolCallId: "ask-1",
+      toolName: "AskUser",
+      args: { question: "R".repeat(5_000) },
+      result: "Q".repeat(5_000),
+      structuredResult: { interactionId: "i-1", answered: true },
+      status: "complete",
+    });
+
+    expect(service.toolCallPart(thread.id, message.id, "call-1")).toEqual({
+      type: "tool-call",
+      toolCallId: "call-1",
+      toolName: "Exec",
+      args: bigArgs,
+      result: bigResult,
+      status: "complete",
+    });
+    await service.stop();
+  });
+
+  it("reaches a subagent's own payload and its nested calls, and refuses everything else", async () => {
+    const subagentMetadata = { subagent: { id: "call-1", name: "researcher", callIndex: 0 }, synthetic: true };
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => [
+          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "call-1", name: "Agent", arguments: { name: "researcher", prompt: "find X" } } }),
+          JSON.stringify({
+            kind: "event",
+            event: {
+              type: "tool_call_started",
+              id: "agent:call-1",
+              name: "Agent(researcher)",
+              metadata: { ...subagentMetadata, subagentLifecycle: true },
+            },
+          }),
+          JSON.stringify({
+            kind: "event",
+            event: {
+              type: "tool_call_started",
+              id: "agent:call-1:t1",
+              name: "researcher▸Read",
+              arguments: { file_path: "/repo/a.ts" },
+              metadata: subagentMetadata,
+            },
+          }),
+          JSON.stringify({
+            kind: "event",
+            event: {
+              type: "tool_call_completed",
+              id: "agent:call-1:t1",
+              name: "researcher▸Read",
+              content: bigResult,
+              metadata: subagentMetadata,
+            },
+          }),
+          JSON.stringify({
+            kind: "event",
+            event: {
+              type: "tool_call_completed",
+              id: "agent:call-1",
+              name: "Agent(researcher)",
+              metadata: { ...subagentMetadata, subagentLifecycle: true },
+            },
+          }),
+          JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "call-1", name: "Agent", content: bigResult } }),
+          JSON.stringify({ kind: "finish", finalText: "answer" }),
+          "",
+        ].join("\n"),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    const message = service.thread(thread.id).messages.at(-1);
+    if (message === undefined) throw new Error("Expected an assistant message.");
+    const subagent = message.parts.find(
+      (part): part is Extract<WebMessagePart, { type: "subagent" }> => part.type === "subagent",
+    );
+    if (subagent === undefined) throw new Error("Expected a subagent part.");
+    expect(subagent).toMatchObject({
+      result: "R".repeat(4_096),
+      resultTruncated: true,
+      resultBytes: 20 * 1_024,
+    });
+    expect(subagent.calls[0]).toMatchObject({
+      toolCallId: "agent:call-1:t1",
+      result: "R".repeat(4_096),
+      resultTruncated: true,
+      resultBytes: 20 * 1_024,
+    });
+
+    expect(service.toolCallPart(thread.id, message.id, "call-1"))
+      .toMatchObject({ type: "subagent", toolCallId: "call-1", result: bigResult });
+    // A nested call owns no part of its own, so it comes back shaped as one.
+    expect(service.toolCallPart(thread.id, message.id, "agent:call-1:t1"))
+      .toMatchObject({ type: "tool-call", toolCallId: "agent:call-1:t1", result: bigResult });
+
+    const other = service.createThread("agent-one");
+    expect(() => service.toolCallPart(thread.id, message.id, "missing"))
+      .toThrowError(expect.objectContaining({ code: "tool_call_not_found" }));
+    expect(() => service.toolCallPart(thread.id, "no-such-message", "call-1"))
+      .toThrowError(expect.objectContaining({ code: "tool_call_not_found" }));
+    // Cross-thread: the message exists, but not in the conversation asked for.
+    expect(() => service.toolCallPart(other.id, message.id, "call-1"))
+      .toThrowError(expect.objectContaining({ code: "tool_call_not_found" }));
+    await service.stop();
+  });
+
+  it("answers a conversation read with one page of messages and a cursor for the rest", async () => {
+    const service = await createService();
+    const thread = service.createThread("agent-one");
+    for (let index = 0; index < 20; index += 1) {
+      await service.startTurn(thread.id, { text: `turn ${String(index)}` });
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    }
+    const detail = service.thread(thread.id);
+    expect(WEB_MESSAGE_PAGE_DEFAULT).toBe(30);
+    expect(detail.messages.length).toBe(WEB_MESSAGE_PAGE_DEFAULT);
+    expect(detail.messagesNextCursor).toBeTypeOf("string");
+    expect(service.messagePage(thread.id, { limit: 100 }).messages.length).toBe(40);
     await service.stop();
   });
 });

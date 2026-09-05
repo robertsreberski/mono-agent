@@ -8,10 +8,12 @@ import {
   ActivityStep,
   clusterSummary,
   failedLabel,
+  truncationProps,
 } from "./ActivityRow";
 import { finiteDuration, formatToolDuration } from "./duration";
 import { safeJson } from "./json";
 import { toolHistoryFailure } from "./tool-history";
+import { useToolCallRepair } from "./tool-call-repair";
 
 type ToolCallStatus = "running" | "complete" | "failed";
 
@@ -23,6 +25,11 @@ interface SubagentCallView {
   readonly executionMs?: number;
   readonly history?: Record<string, unknown>;
   readonly status: ToolCallStatus;
+  /** The server sent only the head of this payload; the row offers to fetch the rest. */
+  readonly resultTruncated?: boolean;
+  readonly resultBytes?: number;
+  readonly argsTruncated?: boolean;
+  readonly argsBytes?: number;
 }
 
 interface SubagentCallCluster {
@@ -44,6 +51,19 @@ interface SubagentView {
   readonly status: ToolCallStatus;
   readonly calls: readonly SubagentCallView[];
 }
+
+/** Read the truncation flags off a JSON-normalized call record. */
+const truncation = (record: Record<string, unknown>): {
+  readonly resultTruncated?: boolean;
+  readonly resultBytes?: number;
+  readonly argsTruncated?: boolean;
+  readonly argsBytes?: number;
+} => ({
+  ...(record.resultTruncated === true ? { resultTruncated: true } : {}),
+  ...(typeof record.resultBytes === "number" ? { resultBytes: record.resultBytes } : {}),
+  ...(record.argsTruncated === true ? { argsTruncated: true } : {}),
+  ...(typeof record.argsBytes === "number" ? { argsBytes: record.argsBytes } : {}),
+});
 
 const toolCallStatus = (value: unknown): ToolCallStatus =>
   value === "complete" || value === "failed" ? value : "running";
@@ -86,15 +106,24 @@ const PREVIEW_KEYS = [
  * says which files were read instead of repeating the tool's name.
  */
 export function toolArgumentPreview(args: unknown): string | undefined {
+  // Arguments the server truncated arrive as the head of their JSON text rather
+  // than as an object. A row still has to say what it acted on, so the string
+  // is previewed as itself instead of leaving the row anonymous.
+  if (typeof args === "string") return nonEmptyString(args) === undefined ? undefined : shortened(args);
   if (args === null || typeof args !== "object" || Array.isArray(args)) return undefined;
   const record = args as Record<string, unknown>;
   const named = PREVIEW_KEYS.map((key) => nonEmptyString(record[key])).find((value) => value !== undefined);
   const value = named ?? Object.values(record).map(nonEmptyString).find((entry) => entry !== undefined);
-  if (value === undefined || value.length <= PREVIEW_MAX) return value;
-  // A path's tail identifies it, so keep the end; anything else reads forwards.
-  return value.includes("/")
-    ? `…${value.slice(value.length - (PREVIEW_MAX - 1))}`
-    : `${value.slice(0, PREVIEW_MAX - 1)}…`;
+  return value === undefined ? undefined : shortened(value);
+}
+
+/** A path's tail identifies it, so keep the end; anything else reads forwards. */
+function shortened(value: string): string {
+  const text = value.replace(/\s+/gu, " ").trim();
+  if (text.length <= PREVIEW_MAX) return text;
+  return text.includes("/")
+    ? `…${text.slice(text.length - (PREVIEW_MAX - 1))}`
+    : `${text.slice(0, PREVIEW_MAX - 1)}…`;
 }
 
 /**
@@ -138,6 +167,7 @@ const subagentView = (data: unknown): SubagentView | undefined => {
         ...(call.history !== null && typeof call.history === "object" && !Array.isArray(call.history)
           ? { history: call.history as Record<string, unknown> }
           : {}),
+        ...truncation(call),
         status: toolCallStatus(call.status),
       }];
     }),
@@ -186,6 +216,7 @@ const joinPayloads = (values: readonly unknown[]): unknown =>
   values.length === 1 ? values[0] : values.map((value) => safeJson(value)).join("\n\n");
 
 function SubagentStep({ call }: { readonly call: SubagentCallView }) {
+  const repairToolCall = useToolCallRepair();
   const historyFailure = toolHistoryFailure(call.history);
   return (
     <ActivityStep
@@ -201,6 +232,7 @@ function SubagentStep({ call }: { readonly call: SubagentCallView }) {
         result={call.result}
         resultIsError={call.status === "failed"}
         error={historyFailure}
+        {...truncationProps(call, call.toolCallId, repairToolCall)}
       />
     </ActivityStep>
   );

@@ -210,10 +210,20 @@ describe("toolArgumentPreview", () => {
 
   it("has nothing to show for a non-object or empty argument set", () => {
     expect(toolArgumentPreview(undefined)).toBeUndefined();
-    expect(toolArgumentPreview("just a string")).toBeUndefined();
     expect(toolArgumentPreview([1, 2])).toBeUndefined();
     expect(toolArgumentPreview({})).toBeUndefined();
     expect(toolArgumentPreview({ file_path: "   " })).toBeUndefined();
+    expect(toolArgumentPreview("   ")).toBeUndefined();
+  });
+
+  it("previews arguments the server truncated, which arrive as their JSON head", () => {
+    // Over 4 KB of arguments reach the browser as the head of their JSON text
+    // rather than as an object. A row that showed nothing for those would go
+    // anonymous exactly where it was carrying the most.
+    expect(toolArgumentPreview('{"file_path":"/repo/store.ts","content":"aaa'))
+      .toBe('{"file_path":"/repo/store.ts","content":"aaa');
+    expect(toolArgumentPreview(`{"prompt":"${"word ".repeat(40)}`))
+      .toBe(`{"prompt":"${"word ".repeat(12)}…`);
   });
 
   it("flattens whitespace so a multi-line argument stays one row", () => {

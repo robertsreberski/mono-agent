@@ -6,6 +6,8 @@ import {
   classifyDeleteFailure,
   createRemovedThreadRegistry,
   createThreadWriteChain,
+  holdsToolCall,
+  mergeToolCallPart,
   preferenceKeyForThread,
   readStoredRunPreferences,
   REMOVED_THREAD_TTL_MS,
@@ -19,6 +21,7 @@ import {
 } from "./console-store";
 import { effortLevelsForAgentModel, GLOBAL_EFFORT_LEVELS } from "./components/model-catalog";
 import { agent, bootstrap, thread } from "./test/fixtures";
+import type { MessagePart, WebMessage } from "./types";
 
 describe("resolveBootstrapSelection", () => {
   it("restores the origin-local thread for the selected agent instead of backend global state", () => {
@@ -724,5 +727,66 @@ describe("createRemovedThreadRegistry", () => {
     // not hold: reads had no deadline at all, so no lifetime bounded them.
     expect(REMOVED_THREAD_TTL_MS).toBeGreaterThan(THREAD_READ_TIMEOUT_MS);
     expect(REMOVED_THREAD_TTL_MS).toBeGreaterThan(THREAD_WRITE_TIMEOUT_MS);
+  });
+});
+
+describe("tool-call repair", () => {
+  const call = (toolCallId: string, result: string) => ({
+    type: "tool-call" as const,
+    toolCallId,
+    toolName: "Exec",
+    result,
+    status: "complete" as const,
+  });
+  const message = (parts: readonly MessagePart[]): WebMessage => ({
+    id: "m1",
+    threadId: "t1",
+    role: "assistant",
+    parts,
+    attachments: [],
+    createdAt: "2026-09-05T09:00:00.000Z",
+    updatedAt: "2026-09-05T09:00:00.000Z",
+    status: "complete",
+  });
+  const delegation = (calls: readonly ReturnType<typeof call>[]): MessagePart => ({
+    type: "subagent",
+    toolCallId: "agent-1",
+    name: "researcher",
+    status: "complete",
+    result: "report",
+    calls: calls.map(({ type: _type, ...rest }) => rest),
+  });
+
+  it("finds the message that owns a call, at either depth", () => {
+    expect(holdsToolCall(message([call("own", "x")]), "own")).toBe(true);
+    expect(holdsToolCall(message([delegation([call("child", "x")])]), "child")).toBe(true);
+    expect(holdsToolCall(message([delegation([call("child", "x")])]), "agent-1")).toBe(true);
+    expect(holdsToolCall(message([call("own", "x")]), "other")).toBe(false);
+    expect(holdsToolCall(message([{ type: "text", text: "hi" }]), "own")).toBe(false);
+  });
+
+  it("swaps a top-level call for the whole one, as a new object", () => {
+    const preview = call("own", "HEAD");
+    const whole = call("own", "WHOLE");
+    const merged = mergeToolCallPart(preview, whole);
+    expect(merged).toBe(whole);
+    expect(mergeToolCallPart(preview, call("other", "WHOLE"))).toBe(preview);
+    expect(mergeToolCallPart({ type: "text", text: "hi" }, whole)).toEqual({ type: "text", text: "hi" });
+  });
+
+  it("puts a delegation's child back in the group it belongs to", () => {
+    const group = delegation([call("child-1", "HEAD"), call("child-2", "other")]);
+    const merged = mergeToolCallPart(group, call("child-1", "WHOLE"));
+    expect(merged).not.toBe(group);
+    expect(merged).toMatchObject({
+      type: "subagent",
+      calls: [
+        { toolCallId: "child-1", result: "WHOLE" },
+        { toolCallId: "child-2", result: "other" },
+      ],
+    });
+    // The route answers with a tool-call part; the group holds bare calls.
+    expect(merged).not.toHaveProperty("calls.0.type");
+    expect(mergeToolCallPart(group, call("stranger", "WHOLE"))).toBe(group);
   });
 });
