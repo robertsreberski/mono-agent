@@ -38,6 +38,7 @@ vi.mock("./api", async (importOriginal) => ({
     agentSkills: vi.fn(),
     agentModels: vi.fn(),
     startTurn: vi.fn(),
+    cancelTurn: vi.fn(),
     cronOverview: vi.fn(),
     cronRuns: vi.fn(),
     cronRun: vi.fn(),
@@ -2590,14 +2591,24 @@ describe("ConsoleStoreProvider integration", () => {
       await quiet();
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
       expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads);
+      expect(vi.mocked(api.agentSkills).mock.calls.length).toBe(skillReads);
 
-      // A reconnect: anything may have happened while the stream was down.
+      // A REAL reconnect, in the order a browser produces it: the stream
+      // errors, the connection is re-established, and only then does the
+      // server say `ready`. Emitting `ready` alone models nothing -- it is the
+      // `onerror` leg that marks the registry stale, which is what made a
+      // "refetch only when it is not ready" guard fire every single time.
+      act(() => FakeEventSource.latest?.onerror?.(new Event("error")));
+      await waitFor(() => expect(store.current.connection).toBe("reconnecting"));
+      act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
       emit("ready", { payload: { version: 1 } });
       await quiet();
 
       expect(api.bootstrap).toHaveBeenCalledTimes(2);
       expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads + 1);
-      expect(vi.mocked(api.agentSkills).mock.calls.length).toBe(skillReads);
+      // Exactly one registry read for the reconnect, from the connection
+      // transition alone.
+      expect(vi.mocked(api.agentSkills).mock.calls.length).toBe(skillReads + 1);
       expect(api.cronOverview).not.toHaveBeenCalled();
     });
 
@@ -2628,6 +2639,139 @@ describe("ConsoleStoreProvider integration", () => {
 
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
       expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads + 1);
+    });
+
+    it("tombstones a conversation another client deleted, so a slow response cannot restore it", async () => {
+      // The removal used to fall through to a bootstrap, and that bootstrap
+      // settled the question. Now nothing re-reads afterwards, so a response
+      // ISSUED BEFORE the removal and answered after it is the last word --
+      // and it still lists the conversation the server has destroyed.
+      seedTwoThreads();
+      const store = await openedOnAlpha();
+      let releaseBootstrap: (() => void) | undefined;
+      const heldBootstrap = new Promise<void>((resolve) => { releaseBootstrap = resolve; });
+      vi.mocked(api.bootstrap).mockImplementationOnce(async () => {
+        await heldBootstrap;
+        return bootstrap([agent("alpha", { label: "Alpha" })], [selected, other]);
+      });
+
+      emit("agents.changed");
+      await quiet();
+
+      emit("thread.changed", {
+        threadId: "other-thread",
+        payload: { threadId: "other-thread", removed: true },
+      });
+      await waitFor(() => expect(store.current.threads.map((item) => item.id))
+        .toEqual(["alpha-thread"]));
+
+      releaseBootstrap?.();
+      await quiet();
+
+      expect(store.current.threads.map((item) => item.id)).toEqual(["alpha-thread"]);
+    });
+
+    it("closes the open conversation when the server says it was deleted", async () => {
+      seedTwoThreads();
+      const store = await openedOnAlpha();
+
+      emit("thread.changed", {
+        threadId: "alpha-thread",
+        payload: { threadId: "alpha-thread", removed: true },
+      });
+
+      await waitFor(() => expect(store.current.threads.map((item) => item.id))
+        .toEqual(["other-thread"]));
+      expect(store.current.selectedThreadId).not.toBe("alpha-thread");
+      await quiet();
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the rows a revalidation page does not carry", async () => {
+      // `loadThreadBucket` replaces the bucket it reads, which is right for the
+      // authoritative fill and wrong for a revalidation: answering one bare
+      // event would have cut a bootstrap-seeded window down to one page.
+      const older = thread("older-thread", "alpha", { updatedAt: "2026-07-16T09:00:00.000Z" });
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [selected, other, older],
+      ));
+      vi.mocked(api.thread).mockResolvedValue(detail(selected, "hello"));
+      // The page carries only the top of the bucket.
+      vi.mocked(api.threads).mockResolvedValue({ threads: [selected, other], nextCursor: "cursor-1" });
+      const store = await openedOnAlpha();
+      expect([...store.current.threads].map((item) => item.id).sort())
+        .toEqual(["alpha-thread", "older-thread", "other-thread"]);
+
+      emit("threads.changed");
+      await quiet(THREAD_LIST_REVALIDATE_DEBOUNCE_MS + 200);
+
+      expect(api.threads).toHaveBeenCalledTimes(1);
+      expect([...store.current.threads].map((item) => item.id).sort())
+        .toEqual(["alpha-thread", "older-thread", "other-thread"]);
+      // The bucket had no cursor -- a bootstrap carries none -- so it adopts
+      // this one and "load more" works again.
+      expect(store.current.hasMoreThreads).toBe(true);
+
+      // A later revalidation must NOT overwrite it: its page starts at the top
+      // of the bucket, so its cursor walks rows already merged rather than the
+      // older ones the bucket is pointing at.
+      vi.mocked(api.threads).mockResolvedValue({ threads: [selected, other], nextCursor: "cursor-2" });
+      emit("threads.changed");
+      await quiet(THREAD_LIST_REVALIDATE_DEBOUNCE_MS + 200);
+      await act(async () => { await store.current.loadMoreThreads(); });
+
+      expect(vi.mocked(api.threads).mock.calls.at(-1)?.[2]).toBe("cursor-1");
+    });
+
+    it("asks one page about a conversation it will never list, and no more", async () => {
+      // These events name no agent, so a turn on a BACKGROUND agent emits two
+      // of them -- one at the start, one at the finish -- for a conversation
+      // this tab will never hold.
+      seedTwoThreads();
+      await openedOnAlpha();
+
+      emit("threads.changed", { threadId: "background-agent-thread" });
+      await quiet(THREAD_LIST_REVALIDATE_DEBOUNCE_MS + 200);
+      expect(api.threads).toHaveBeenCalledTimes(1);
+
+      emit("threads.changed", { threadId: "background-agent-thread" });
+      await quiet(THREAD_LIST_REVALIDATE_DEBOUNCE_MS + 200);
+
+      expect(api.threads).toHaveBeenCalledTimes(1);
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+    });
+
+    it("spends no page request on a bootstrap that failed", async () => {
+      // There is no projection for a page to land in -- `loadThreadBucket`
+      // no-ops without one -- so the request would be spent and discarded.
+      vi.mocked(api.bootstrap).mockRejectedValue(new Error("bootstrap unavailable"));
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.error).toBe("bootstrap unavailable"));
+      await quiet();
+
+      expect(api.threads).not.toHaveBeenCalled();
+    });
+
+    it("clears the sidebar's responding marker from the cancel's own answer", async () => {
+      seedTwoThreads();
+      const store = await openedOnAlpha();
+      emit("turn.changed", {
+        threadId: "alpha-thread",
+        payload: { turn: { id: "turn-1", status: "running", startedAt: "2026-08-14T09:00:00.000Z" } },
+      });
+      await waitFor(() => expect(
+        store.current.threads.find((item) => item.id === "alpha-thread")?.runState.status,
+      ).toBe("running"));
+      vi.mocked(api.cancelTurn).mockResolvedValue({
+        cancelled: true,
+        thread: { ...selected, runState: { id: "turn-1", status: "cancelled" } },
+      });
+
+      await act(async () => { await store.current.cancelTurn(); });
+
+      expect(store.current.threads.find((item) => item.id === "alpha-thread")?.runState.status)
+        .toBe("cancelled");
     });
   });
 });
