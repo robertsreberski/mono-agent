@@ -162,7 +162,12 @@ Consequences:
 - On the **pi-native runtime**, `disallowedTools` does **not** filter external MCP-server tools — declaring the server is the only lever. To hard-restrict an external MCP tool on pi, don't declare its server.
 - App-injected MCP tools define their own boundary. `MemoryRecall` and `AskCollaborator` are gated by their own enablement/composition switches; `RunHistory`, `SessionHistory`, `SetConversationTitle`, `Remember`, and adapter send tools are deliberately governed by the normal tool policy.
 
-The `MemoryRecall` description is written to direct **proactive** recall: the agent is told to call it whenever context is missing or uncertain, before assuming or asking. This is behavioral guidance, not a gate — `MemoryRecall`'s availability is still governed by `config.memory.recallTool.enabled`. See [Capture & recall](/memory/capture-and-recall/).
+The `MemoryRecall` description directs proactive recall of intentionally captured
+durable facts, while explicitly routing requests to pick up, continue, or
+recover interrupted work to `RunHistory {}` first. Empty recall results repeat
+that exact conditional handoff instead of inviting repeated query rewrites.
+This is behavioral guidance, not a gate — `MemoryRecall`'s availability is still
+governed by `config.memory.recallTool.enabled`. See [Capture & recall](/memory/capture-and-recall/).
 
 ## `SetConversationTitle`: web conversation naming
 
@@ -294,10 +299,18 @@ sibling-tool handoff in `navigation.relatedTools`. Follow it only when
 ```
 
 Keep that search free of a `states` filter so every retained terminal tool state
-is considered. If it is empty, do not broaden to another conversation. Use
-`get` with a returned `recordId` and `includeIsolated: true`; `chunkBytes`
-defaults to 4096 and must not exceed 8192. This path recovers grounded evidence
-only—it does not resume a provider session, replay a tool, or relaunch work.
+is considered. If it is empty, do not broaden to another run or conversation.
+Each search result distinguishes the invocation `recordId` from its terminal
+`resultRecordId`. Follow the response's trusted navigation to inspect the
+result record when present and the invocation record when its arguments are
+needed. Those exact `get` calls retain `includeIsolated: true`, use the supported
+8192-byte chunk bound, and provide another exact `get` action whenever a cursor
+must be followed. A bounded search preview is not the full record and must not
+substitute for record-level inspection during interrupted-work recovery. This
+path recovers grounded evidence only: it does not resume provider state, replay
+a tool, rerun work, or guarantee continuation from the interrupted point.
+Continuation is fresh work in the current run, using currently available tools
+and fresh verification.
 
 List/search **matching** scans retained summaries once per call. It does not
 open event JSONL to decide what matches and only considers sanitized
@@ -343,7 +356,15 @@ Use active conversation history first for the current exchange. Use `MemoryRecal
 
 Search defaults to five and caps at ten results; tool/state/run filters cap at 20 values, queries at 512 UTF-8 bytes, previews at 1 KiB, and model-facing text blocks at 10,000 characters. Cursors are base64url structural tokens bound to the logical conversation, physical conversation, current run, and original filters; substitution, stale anchors, foreign records, and pruned anchors fail opaquely. Only the exact active `(conversationId, runId)` is blocked, so an older daily bucket that reused the same opaque run id remains visible. Daily rollover buckets share one configured logical-session scope, while a natural `#` in an id remains opaque when rollover is off. Isolated/proactive records require `includeIsolated: true` on both the originating call and any continuation.
 
-Every returned preview/chunk is redacted, bounded, path-opaque, and marked `untrusted: true` with an explicit notice. Path opacity applies to object keys as well as string values: an opaque host-root token and at most two non-sensitive trailing components replace each filesystem path while useful command/result text, nested structure, punctuation, line/column suffixes, and web URLs remain. Safe keys retain their spelling, and deterministic bounded suffixes preserve distinct values when sanitized keys collide. Nested `SessionHistory` result bodies are replaced with an omission marker. A retained tombstone says that a known record was removed by age/count/byte retention without recreating its payload. Artifact references expose only an opaque id and availability. The host accepts and rechecks only regular files beneath the configured run-specific `tool-output` root; provider-supplied outside or symlinked paths are dropped without becoming filesystem probes. SessionHistory neither returns a path nor owns the artifact lifetime. Search/get never execute a tool, read an arbitrary path, mutate history, or rerun a recovered/completed call.
+Search responses provide trusted, structured navigation separately from the
+untrusted previews. A search item uses `recordId` for the invocation and
+`resultRecordId` for the terminal result. Navigation points to the result first
+when it exists and to the invocation when its arguments are relevant, with
+exact `get` arguments that preserve isolation and use `chunkBytes: 8192`.
+Continue a paged `get` with the exact returned cursor action until the record is
+complete. An empty exact-run search explicitly offers no broader search action.
+
+Every returned preview/chunk is redacted, bounded, path-opaque, and marked `untrusted: true` with an explicit notice. Path opacity applies to object keys as well as string values: an opaque host-root token and at most two non-sensitive trailing components replace each filesystem path while useful command/result text, nested structure, punctuation, line/column suffixes, and web URLs remain. Safe keys retain their spelling, and deterministic bounded suffixes preserve distinct values when sanitized keys collide. Nested `SessionHistory` result bodies are replaced with an omission marker. A retained tombstone says that a known record was removed by age/count/byte retention without recreating its payload. Artifact references expose only an opaque id and availability. The host accepts and rechecks only regular files beneath the configured run-specific `tool-output` root; provider-supplied outside or symlinked paths are dropped without becoming filesystem probes. SessionHistory neither returns a path nor owns the artifact lifetime. Search/get never execute a tool, read an arbitrary path, mutate history, resume provider state, replay a tool, rerun work, or guarantee continuation from an interrupted point. Any continuation is fresh work in the current run with currently available tools and fresh verification.
 
 Compaction only changes the active prompt projection. Within sidecar retention, older calls remain searchable even after their message context disappears. Cold reseed retains the newest fitting suffix in chronological order and caps the complete UTF-8 projection, including its truncation marker, at 64 KiB. Use `SessionHistory` for exact retained managed-tool invocations/results, and `RunHistory` for broader settled-run context such as status, warnings, and final visible output.
 

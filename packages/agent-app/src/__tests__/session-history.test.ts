@@ -364,6 +364,139 @@ describe("SessionHistory request handler", () => {
     expect(second.resultId).toMatch(/^sth1_/u);
   });
 
+  it("guides exact isolated search results to distinct invocation and paged result records", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    const resultEnd = "focused-large-result-end";
+    const stored = await writeCall(
+      writer,
+      binding("cancelled-isolated", "chat:42#2026-08-13", "chat:42", true),
+      "large-cancelled-call",
+      {
+        content: {
+          first: `focused-large-result-start|${"x".repeat(3_900)}`,
+          second: "y".repeat(3_900),
+          third: `${"z".repeat(3_900)}|${resultEnd}`,
+        },
+      },
+    );
+    await writer.close();
+    const requestBinding = {
+      reader: new ToolHistoryReader(root),
+      conversationId: "chat:42#2026-08-14",
+      logicalConversationId: "chat:42",
+      runId: "current-run",
+    };
+
+    const hidden = body<{
+      readonly items: readonly unknown[];
+      readonly navigation: { readonly guidance: string; readonly nextActions: readonly unknown[] };
+    }>(handleSessionHistoryRequest(requestBinding, {
+      action: "search",
+      runIds: ["cancelled-isolated"],
+    }));
+    expect(hidden.items).toEqual([]);
+    expect(hidden.navigation.nextActions).toEqual([]);
+    expect(hidden.navigation.guidance).toContain("Do not remove the runIds filter");
+
+    const searchResult = handleSessionHistoryRequest(requestBinding, {
+      action: "search",
+      runIds: ["cancelled-isolated"],
+      includeIsolated: true,
+    });
+    const search = body<{
+      readonly items: ReadonlyArray<{
+        readonly recordId: string;
+        readonly resultRecordId?: string;
+        readonly preview: string;
+      }>;
+      readonly navigation: {
+        readonly guidance: string;
+        readonly nextActions: ReadonlyArray<{
+          readonly kind: string;
+          readonly runId?: string;
+          readonly recordRole?: string;
+          readonly arguments: Readonly<Record<string, unknown>>;
+        }>;
+      };
+    }>(searchResult);
+    expect(search.items).toEqual([expect.objectContaining({
+      recordId: stored.invocationId,
+      resultRecordId: stored.resultId,
+    })]);
+    expect(search.items[0]!.preview).not.toContain(resultEnd);
+    expect(search.navigation.guidance).toContain("preview is bounded and is not the full record");
+    expect((searchResult as { readonly content: ReadonlyArray<{ readonly text?: string }> }).content[0]?.text)
+      .toContain("SessionHistory navigation (tool-authored guidance)");
+
+    const resultAction = search.navigation.nextActions.find((action) => action.kind === "get_result");
+    const invocationAction = search.navigation.nextActions.find((action) => action.kind === "get_invocation");
+    expect(resultAction).toEqual({
+      kind: "get_result",
+      recordRole: "result",
+      runId: "cancelled-isolated",
+      description: expect.stringContaining("result payload"),
+      arguments: {
+        action: "get",
+        recordId: stored.resultId,
+        includeIsolated: true,
+        chunkBytes: 8_192,
+      },
+    });
+    expect(invocationAction).toEqual({
+      kind: "get_invocation",
+      recordRole: "invocation",
+      runId: "cancelled-isolated",
+      description: expect.stringContaining("invocation payload"),
+      arguments: {
+        action: "get",
+        recordId: stored.invocationId,
+        includeIsolated: true,
+        chunkBytes: 8_192,
+      },
+    });
+
+    const invocation = body<{ readonly record: { readonly phase: string; readonly chunk: string } }>(
+      handleSessionHistoryRequest(requestBinding, invocationAction!.arguments as never),
+    );
+    expect(invocation.record.phase).toBe("invocation");
+    expect(invocation.record.chunk).toContain("large-cancelled-call");
+
+    let nextArguments = resultAction!.arguments;
+    let retainedResult = "";
+    let pages = 0;
+    while (true) {
+      const page = body<{
+        readonly record: { readonly phase: string; readonly chunk: string; readonly nextCursor?: string };
+        readonly navigation: {
+          readonly nextActions: ReadonlyArray<{
+            readonly kind: string;
+            readonly arguments: Readonly<Record<string, unknown>>;
+          }>;
+        };
+      }>(handleSessionHistoryRequest(requestBinding, nextArguments as never));
+      pages += 1;
+      retainedResult += page.record.chunk;
+      expect(page.record.phase).toBe("result");
+      if (page.record.nextCursor === undefined) {
+        expect(page.navigation.nextActions).toEqual([]);
+        break;
+      }
+      expect(page.navigation.nextActions).toEqual([expect.objectContaining({
+        kind: "next_get_chunk",
+        arguments: {
+          action: "get",
+          cursor: page.record.nextCursor,
+          includeIsolated: true,
+          chunkBytes: 8_192,
+        },
+      })]);
+      nextArguments = page.navigation.nextActions[0]!.arguments;
+    }
+    expect(pages).toBeGreaterThan(1);
+    expect(retainedResult).toContain(resultEnd);
+  });
+
   it("returns bounded get chunks, rejects negative continuation offsets, and hides nested history results", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });
@@ -705,7 +838,9 @@ describe("SessionHistory MCP tool", () => {
       const tools = await opened.client.listTools();
       expect(tools.tools[0]?.description).toContain("settled as succeeded, failed, cancelled, or interrupted");
       expect(tools.tools[0]?.description).toContain('{action:"search",runIds:[runId],includeIsolated:true}');
-      expect(tools.tools[0]?.description).toContain("must not exceed 8192");
+      expect(tools.tools[0]?.description).toContain("resultRecordId identifies the result payload");
+      expect(tools.tools[0]?.description).toContain("A search preview is bounded and is not the full record");
+      expect(tools.tools[0]?.description).toContain("does not resume provider state");
       expect(opened.client.getServerVersion()).toEqual({
         name: SESSION_HISTORY_MCP_SERVER_NAME,
         version: "1.0.0",

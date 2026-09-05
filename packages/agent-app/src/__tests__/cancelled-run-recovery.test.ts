@@ -71,23 +71,25 @@ async function writeToolCall(
   binding: ToolHistoryRunBinding,
   toolCallId: string,
   state: "success" | "cancelled",
-  content: string,
-): Promise<string> {
+  content: unknown,
+): Promise<{ readonly invocationId: string; readonly resultId: string }> {
   const invocation = await writer.persist(binding, {
     phase: "invocation",
     toolCallId,
     toolName: "Read",
     arguments: { file_path: `/private/work/${toolCallId}.json` },
   });
-  await writer.persist(binding, {
+  const result = await writer.persist(binding, {
     phase: "result",
     toolCallId,
     state,
     ...(state === "cancelled" ? { failureKind: "cancelled_user" } : {}),
     content,
   });
-  if (invocation.recordId === undefined) throw new Error("Tool history invocation was not persisted.");
-  return invocation.recordId;
+  if (invocation.recordId === undefined || result.recordId === undefined) {
+    throw new Error("Tool history invocation/result pair was not persisted.");
+  }
+  return { invocationId: invocation.recordId, resultId: result.recordId };
 }
 
 describe("cancelled run recovery contract", () => {
@@ -173,8 +175,19 @@ describe("cancelled run recovery contract", () => {
       isolated: true,
     };
     const writer = await ToolHistoryWriter.open({ root: historyRoot });
-    const successRecordId = await writeToolCall(writer, runBinding, "inspect-schema", "success", "schema evidence");
-    const cancelledRecordId = await writeToolCall(
+    const largeResultEnd = "schema-result-end-marker";
+    const successRecords = await writeToolCall(
+      writer,
+      runBinding,
+      "inspect-schema",
+      "success",
+      {
+        first: `schema-result-start|${"x".repeat(3_900)}`,
+        second: "y".repeat(3_900),
+        third: `${"z".repeat(3_900)}|${largeResultEnd}`,
+      },
+    );
+    const cancelledRecords = await writeToolCall(
       writer,
       runBinding,
       "verify-checksum",
@@ -259,7 +272,10 @@ describe("cancelled run recovery contract", () => {
         tool: "SessionHistory",
         arguments: { action: "search", runIds: [cancelledRunId], includeIsolated: true },
       });
-      expect(overview.navigation.relatedTools[0]!.description).toContain('includeIsolated:true,chunkBytes:8192');
+      expect(overview.navigation.relatedTools[0]!.arguments).not.toHaveProperty("states");
+      expect(overview.navigation.relatedTools[0]!.description).toContain("resultRecordId");
+      expect(overview.navigation.relatedTools[0]!.description).toContain("not provider-state resumption");
+      expect(overview.navigation.relatedTools[0]!.description).toContain("fresh work in the current run");
       expect(JSON.stringify(overview.navigation)).not.toContain(instructionText);
 
       let cursor = overview.nextCursor;
@@ -292,36 +308,127 @@ describe("cancelled run recovery contract", () => {
         arguments: overview.navigation.relatedTools[0]!.arguments,
       });
       const sessionSearch = structured<{
-        readonly items: ReadonlyArray<{ readonly recordId: string; readonly runId: string; readonly state: string }>;
+        readonly items: ReadonlyArray<{
+          readonly recordId: string;
+          readonly resultRecordId?: string;
+          readonly runId: string;
+          readonly state: string;
+          readonly preview: string;
+        }>;
+        readonly navigation: {
+          readonly guidance: string;
+          readonly nextActions: ReadonlyArray<{
+            readonly kind: string;
+            readonly runId?: string;
+            readonly recordRole?: string;
+            readonly arguments: Readonly<Record<string, unknown>>;
+          }>;
+        };
       }>(sessionSearchResult);
       expect(new Set(sessionSearch.items.map((item) => item.state))).toEqual(new Set(["success", "cancelled"]));
-      expect(new Set(sessionSearch.items.map((item) => item.recordId))).toEqual(new Set([successRecordId, cancelledRecordId]));
+      expect(new Set(sessionSearch.items.map((item) => item.recordId)))
+        .toEqual(new Set([successRecords.invocationId, cancelledRecords.invocationId]));
+      expect(new Set(sessionSearch.items.map((item) => item.resultRecordId)))
+        .toEqual(new Set([successRecords.resultId, cancelledRecords.resultId]));
       expect(sessionSearch.items.every((item) => item.runId === cancelledRunId)).toBe(true);
+      expect(sessionSearch.items.map((item) => item.preview).join("\n")).not.toContain(largeResultEnd);
+      expect(sessionSearch.navigation.guidance).toContain("not the full record");
+      expect(sessionSearch.navigation.guidance).toContain("do not resume provider state");
 
       for (const item of sessionSearch.items) {
-        const sessionGet = structured<{
-          readonly record: { readonly runId: string; readonly state: string; readonly chunk: string };
-        }>(await sessionClient.callTool({
-          name: SESSION_HISTORY_TOOL_NAME,
+        const resultAction = sessionSearch.navigation.nextActions.find((action) =>
+          action.kind === "get_result" && action.arguments.recordId === item.resultRecordId);
+        const invocationAction = sessionSearch.navigation.nextActions.find((action) =>
+          action.kind === "get_invocation" && action.arguments.recordId === item.recordId);
+        expect(resultAction).toMatchObject({
+          runId: cancelledRunId,
+          recordRole: "result",
+          arguments: {
+            action: "get",
+            recordId: item.resultRecordId,
+            includeIsolated: true,
+            chunkBytes: 8_192,
+          },
+        });
+        expect(invocationAction).toMatchObject({
+          runId: cancelledRunId,
+          recordRole: "invocation",
           arguments: {
             action: "get",
             recordId: item.recordId,
             includeIsolated: true,
             chunkBytes: 8_192,
           },
+        });
+
+        const invocationGet = structured<{
+          readonly record: { readonly runId: string; readonly phase: string; readonly chunk: string };
+        }>(await sessionClient.callTool({
+          name: SESSION_HISTORY_TOOL_NAME,
+          arguments: invocationAction!.arguments,
         }));
-        expect(sessionGet.record.runId).toBe(cancelledRunId);
-        expect(sessionGet.record.state).toBe(item.state);
-        expect(sessionGet.record.chunk).toContain("[host-path]");
-        expect(sessionGet.record.chunk).not.toContain("/private/work/");
+        expect(invocationGet.record).toMatchObject({ runId: cancelledRunId, phase: "invocation" });
+        expect(invocationGet.record.chunk).toContain("[host-path]");
+        expect(invocationGet.record.chunk).not.toContain("/private/work/");
+
+        let getArguments = resultAction!.arguments;
+        let resultPayload = "";
+        let resultPages = 0;
+        while (true) {
+          const resultGet = structured<{
+            readonly record: {
+              readonly runId: string;
+              readonly phase: string;
+              readonly state: string;
+              readonly chunk: string;
+              readonly nextCursor?: string;
+            };
+            readonly navigation: {
+              readonly guidance: string;
+              readonly nextActions: ReadonlyArray<{
+                readonly kind: string;
+                readonly arguments: Readonly<Record<string, unknown>>;
+              }>;
+            };
+          }>(await sessionClient.callTool({ name: SESSION_HISTORY_TOOL_NAME, arguments: getArguments }));
+          resultPages += 1;
+          resultPayload += resultGet.record.chunk;
+          expect(resultGet.record).toMatchObject({ runId: cancelledRunId, phase: "result", state: item.state });
+          if (resultGet.record.nextCursor === undefined) {
+            expect(resultGet.navigation.nextActions).toEqual([]);
+            break;
+          }
+          expect(Buffer.byteLength(resultGet.record.chunk, "utf8")).toBeLessThanOrEqual(8_192);
+          expect(resultGet.navigation.nextActions).toEqual([expect.objectContaining({
+            kind: "next_get_chunk",
+            arguments: {
+              action: "get",
+              cursor: resultGet.record.nextCursor,
+              includeIsolated: true,
+              chunkBytes: 8_192,
+            },
+          })]);
+          getArguments = resultGet.navigation.nextActions[0]!.arguments;
+        }
+        if (item.resultRecordId === successRecords.resultId) {
+          expect(resultPages).toBeGreaterThan(1);
+          expect(resultPayload).toContain(largeResultEnd);
+        } else {
+          expect(resultPayload).toContain("checksum was interrupted");
+        }
       }
 
       for (const runId of [currentRunId, "foreign-cancelled-decoy"]) {
-        const unavailable = structured<{ readonly items: readonly unknown[] }>(await sessionClient.callTool({
+        const unavailable = structured<{
+          readonly items: readonly unknown[];
+          readonly navigation: { readonly guidance: string; readonly nextActions: readonly unknown[] };
+        }>(await sessionClient.callTool({
           name: SESSION_HISTORY_TOOL_NAME,
           arguments: { action: "search", runIds: [runId], includeIsolated: true },
         }));
         expect(unavailable.items).toEqual([]);
+        expect(unavailable.navigation.nextActions).toEqual([]);
+        expect(unavailable.navigation.guidance).toContain("Do not remove the runIds filter");
       }
       const serialized = JSON.stringify([listedResult, overviewResult, sessionSearchResult]);
       expect(serialized).not.toContain("foreign-call");

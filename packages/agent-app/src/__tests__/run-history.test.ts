@@ -399,6 +399,7 @@ describe("RunHistory MCP tool", () => {
       expect(tools.tools[0]?.description).toContain("pick up, continue, or recover interrupted work");
       expect(tools.tools[0]?.description).toContain("call with {} first");
       expect(tools.tools[0]?.description).toContain("cancelled, or interrupted");
+      expect(tools.tools[0]?.description).toContain("does not resume provider state");
 
       const listedResult = await history.client.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: {} });
       const listed = structured<{
@@ -451,6 +452,7 @@ describe("RunHistory MCP tool", () => {
       ]));
       expect(inspected.navigation.guidance).toContain("did not complete successfully");
       expect(inspected.navigation.guidance).toContain("incomplete evidence");
+      expect(inspected.navigation.guidance).toContain("Any continuation is fresh work in the current run");
       expect(inspected.navigation.relatedTools).toEqual([{
         tool: "SessionHistory",
         description: expect.stringContaining("do not add a states filter"),
@@ -460,7 +462,8 @@ describe("RunHistory MCP tool", () => {
           includeIsolated: true,
         },
       }]);
-      expect(JSON.stringify(inspectResult.content)).toContain('includeIsolated:true,chunkBytes:8192');
+      expect(JSON.stringify(inspectResult.content)).toContain("resultRecordId");
+      expect(JSON.stringify(inspectResult.content)).toContain("8192-byte get chunks");
 
       for (const runId of ["running-decoy", "foreign-cancelled-decoy", "current-run"]) {
         const unavailable = structured<{ readonly error: { readonly code: string } }>(
