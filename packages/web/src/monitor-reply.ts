@@ -6,10 +6,11 @@ export function normalizeMonitorTerminalReply(parts: readonly WebMessagePart[]):
   parts: WebMessagePart[];
   changed: boolean;
 } {
-  const boundaries = parts.flatMap((part, index) => part.type === "telemetry"
-    && part.data !== null && typeof part.data === "object" && !Array.isArray(part.data)
-    && (part.data as Record<string, unknown>).type === "runtime_telemetry"
-    && (part.data as Record<string, unknown>).kind === "assistant_message_boundary" ? [index] : []);
+  const explicit = parts.flatMap((part, index) => isAssistantMessageBoundary(part, "assistant_message_boundary") ? [index] : []);
+  // Current Pi emits usage and an explicit boundary for the same message.
+  // Usage is a compatibility fallback, never an additional message end.
+  const boundaries = explicit.length > 0 ? explicit
+    : parts.flatMap((part, index) => isAssistantMessageBoundary(part, "context_usage") ? [index] : []);
   const lastBoundary = boundaries.at(-1) ?? -1;
   const hasTrailingContent = parts.slice(lastBoundary + 1).some((part) => part.type === "text" || part.type === "reasoning");
   const end = lastBoundary >= 0 && !hasTrailingContent ? lastBoundary : parts.length;
@@ -18,8 +19,11 @@ export function normalizeMonitorTerminalReply(parts: readonly WebMessagePart[]):
   for (let index = start; index < end; index += 1) {
     if (parts[index]?.type === "tool-call" || parts[index]?.type === "subagent") start = index + 1;
   }
-  const text = parts.slice(start, end)
-    .filter((part) => part.type === "text").map((part) => part.text).join("");
+  const textParts = parts.slice(start, end).filter((part) => part.type === "text");
+  // Without a provider boundary, separate prose parts may be separate assistant
+  // messages. Do not concatenate a prior answer into a narrated no-op reply.
+  if ((boundaries.length === 0 || start === 0) && textParts.length > 1) return { parts: [...parts], changed: false };
+  const text = textParts.map((part) => part.text).join("");
   const suppression = classifyNotifySuppression(text);
   if (suppression !== "sentinel" && suppression !== "narrated-sentinel") {
     return { parts: [...parts], changed: false };
@@ -42,4 +46,19 @@ export function monitorReplyText(parts: readonly WebMessagePart[]): string {
     if (part?.type === "text") return part.text;
   }
   return "";
+}
+
+/** Same bounded legacy telemetry unwrapping contract as the console runtime. */
+function isAssistantMessageBoundary(part: WebMessagePart, kind: "assistant_message_boundary" | "context_usage"): boolean {
+  if (part.type !== "telemetry") return false;
+  let current = part.data;
+  const seen = new Set<object>();
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (current === null || typeof current !== "object" || Array.isArray(current) || seen.has(current)) return false;
+    seen.add(current);
+    const record = current as Record<string, unknown>;
+    if (record.kind === kind) return true;
+    current = record.data;
+  }
+  return false;
 }

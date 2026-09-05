@@ -36,6 +36,8 @@ describe("monitor wake context", () => {
         .toEqual({ kind: "resolved", context: { monitorId: "mon-1", chainDepth: 2 } });
     }, "monitor:mon-1:3");
 
+    expect(monitorWakeContextForRequest(wakeRequest("monitor:mon-1:3"))).toEqual({ kind: "missed" });
+    expect(monitorWakeContextForRequest(wakeRequest("monitor:unmatched:1"))).toEqual({ kind: "missed" });
     expect(monitorWakeContextForRequest(wakeRequest("process-job:job-1"))).toEqual({ kind: "none" });
     expect(monitorWakeContextForRequest({} as Pick<AgentRequestBase, "metadata">)).toEqual({ kind: "none" });
   });

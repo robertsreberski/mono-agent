@@ -331,7 +331,9 @@ export interface ClaimedWebPushDelivery {
 /**
  * The searchable text of one message row, derived in SQL so the index cannot
  * drift from `parts_json`: every write path in this store goes through the
- * triggers below rather than remembering to maintain a second copy.
+ * triggers below rather than remembering to maintain a second copy. Legacy
+ * Monitor history gets an association-verified projection repair at open; its
+ * canonical parts remain untouched.
  *
  * Only `text` parts are indexed. Reasoning is the agent's working-out and tool
  * payloads are machine JSON; both would drown a search of what was actually
@@ -612,6 +614,7 @@ export class WebStore {
       // After recovery, so anything the recovery settled is already indexed by
       // its own trigger and this only sweeps what genuinely stayed running.
       store.reindexUnsettledMessages();
+      store.reindexLegacyMonitorMessages();
       return store;
     } catch (error) {
       store.close();
@@ -4026,6 +4029,45 @@ export class WebStore {
     this.transaction(() => {
       this.database.exec(MESSAGE_SEARCH_UNSETTLED_SQL);
     });
+  }
+
+  /** Repair only the derived search projection of verified legacy Monitor replies.
+   * New completions already normalize before the ordinary indexing triggers run.
+   * Page by rowid so opening a large retained history does not materialize it all.
+   */
+  private reindexLegacyMonitorMessages(): void {
+    const select = this.database.prepare(`
+      SELECT m.rowid AS row_id, m.parts_json FROM messages m
+      JOIN turns ON turns.id = m.turn_id AND turns.thread_id = m.thread_id
+      JOIN threads ON threads.id = m.thread_id
+      WHERE m.rowid > ? AND m.role = 'assistant' AND m.status = 'complete'
+        AND EXISTS (
+          SELECT 1 FROM monitor_wake_deliveries d
+          WHERE d.turn_id = turns.id AND d.thread_id = turns.thread_id
+            AND d.source_id = threads.source_id AND d.state = 'completed'
+            AND d.disposition IN ('steered', 'follow_up')
+        )
+      ORDER BY m.rowid LIMIT 100
+    `);
+    const remove = this.database.prepare("DELETE FROM message_search WHERE rowid = ?");
+    const insert = this.database.prepare(`
+      INSERT INTO message_search(rowid, body)
+      SELECT ?, (${messageSearchBody("m")}) FROM (SELECT ? AS parts_json) m
+    `);
+    let after = 0;
+    while (true) {
+      const rows = select.all(after) as unknown as Array<{ row_id: number; parts_json: string }>;
+      if (rows.length === 0) return;
+      this.transaction(() => {
+        for (const row of rows) {
+          const normalized = normalizeMonitorTerminalReply(parseParts(row.parts_json));
+          if (!normalized.changed) continue;
+          remove.run(row.row_id);
+          insert.run(row.row_id, serializeParts(normalized.parts));
+        }
+      });
+      after = rows[rows.length - 1]!.row_id;
+    }
   }
 
   private recoverInterruptedTurns(): void {

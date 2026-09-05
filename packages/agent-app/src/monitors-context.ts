@@ -211,7 +211,8 @@ export function monitorWakeContextForRequest(
   const deliveryKey = monitorWakeDeliveryKey(request.metadata);
   if (deliveryKey === undefined) return { kind: "none" };
   const flights = wakeFlightsByDeliveryKey.get(deliveryKey) ?? [];
-  if (flights.length === 0) return { kind: "none" };
+  // A host-marked wake cannot regain ordinary depth-zero capabilities after expiry.
+  if (flights.length === 0) return { kind: "missed" };
   return resolveFlights(flights);
 }
 

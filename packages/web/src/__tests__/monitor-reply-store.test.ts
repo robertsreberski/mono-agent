@@ -48,6 +48,8 @@ describe("Monitor terminal reply persistence", () => {
       expect(s.parts().filter((p) => p.type === "text")).toEqual([{ type: "text", text: "Let me inspect the worker." }, { type: "text", text: "The worker is ready for Robert's review." }]);
       expect(s.parts()).toContainEqual({ type: "reasoning", text: "Inspecting the pane." });
       expect(s.parts().some((p) => p.type === "monitor-activity")).toBe(true);
+      expect(s.store.searchThreads({ sourceId: "agent-one", query: "worker" }).hits.map((hit) => hit.thread.id)).toEqual([s.thread.id]);
+      expect(s.store.searchThreads({ sourceId: "agent-one", query: "NOTHING_TO_REPORT" }).hits).toEqual([]);
       s.advance();
       expect(s.store.claimDueWebPushDeliveries(10)[0]?.event.body).toBe("The worker is ready for Robert's review.");
       const raw = new DatabaseSync(s.store.paths.database, { readOnly: true });
@@ -148,6 +150,70 @@ describe("Monitor terminal reply persistence", () => {
     } finally { s.store.close(); }
   });
 
+  it.each(["", "\n\n"])("honors legacy context_usage boundaries regardless of preceding whitespace %j", (space) => {
+    const marker: WebMessagePart = { type: "telemetry", event: "runtime_telemetry", data: {
+      type: "runtime_telemetry", kind: "context_usage", data: {},
+    } };
+    const prior: WebMessagePart[] = [{ type: "text", text: "Let me check." }, marker,
+      { type: "reasoning", text: "Inspecting" }, { type: "text", text: `Meaningful answer${space}` }, marker];
+    for (const sentinel of ["NOTHING_TO_REPORT", "Nothing changed.\nNOTHING_TO_REPORT"]) {
+      const normalized = normalizeMonitorTerminalReply([...prior, { type: "text", text: sentinel }, marker]);
+      expect(normalized.parts).toEqual([...prior, marker]);
+      expect(normalizeMonitorTerminalReply(normalized.parts).parts).toEqual(normalized.parts);
+    }
+  });
+
+  it("uses explicit boundaries when Pi also emits context usage for the same message", () => {
+    const usage: WebMessagePart = { type: "telemetry", event: "runtime_telemetry", data: { kind: "context_usage" } };
+    const explicit: WebMessagePart = { type: "telemetry", event: "runtime_telemetry", data: boundary.event };
+    const answer: WebMessagePart = { type: "text", text: "Meaningful answer" };
+    const normalized = normalizeMonitorTerminalReply([answer, usage, explicit,
+      { type: "text", text: "Nothing changed.\nNOTHING_TO_REPORT" }, usage, explicit]);
+    expect(normalized.parts).toEqual([answer, usage, explicit, usage, explicit]);
+    expect(normalizeMonitorTerminalReply(normalized.parts).parts).toEqual(normalized.parts);
+  });
+
+  it("preserves prior text when boundary-less provider messages cannot be isolated", () => {
+    for (const space of ["", "\n\n"]) {
+      const prior: WebMessagePart[] = [{ type: "reasoning", text: "Plan" },
+        { type: "text", text: `Meaningful answer${space}` }];
+      const parts: WebMessagePart[] = [...prior, { type: "text", text: "Nothing changed.\nNOTHING_TO_REPORT" }];
+      expect(normalizeMonitorTerminalReply(parts)).toEqual({ parts, changed: false });
+    }
+    // With only one text part there is no earlier answer to erase.
+    expect(normalizeMonitorTerminalReply([{ type: "reasoning", text: "Plan" },
+      { type: "text", text: "No update.\nNOTHING_TO_REPORT" }]).parts)
+      .toEqual([{ type: "reasoning", text: "Plan" }]);
+  });
+
+  it("searches normalized legacy Monitor text without rewriting history or ordinary literals", async () => {
+    const s = await setup();
+    let reopened: WebStore | undefined;
+    try {
+      s.reserve(); s.settle(); s.store.completeTurn(s.turn.turnId, "Done");
+      const ordinary = s.store.createThread("agent-one");
+      const turn = s.store.beginTurn({ threadId: ordinary.id, text: "Literal", attachmentIds: [] });
+      s.store.completeTurn(turn.turnId, "Ordinary literal.\nNOTHING_TO_REPORT");
+      const raw = new DatabaseSync(s.store.paths.database);
+      const original = JSON.stringify([
+        { type: "text", text: "Meaningful quantum answer" },
+        { type: "telemetry", event: "runtime_telemetry", data: { kind: "context_usage" } },
+        { type: "text", text: "Suppressed narration.\nNOTHING_TO_REPORT" },
+        { type: "telemetry", event: "runtime_telemetry", data: { kind: "context_usage" } },
+      ]);
+      raw.prepare("UPDATE messages SET parts_json = ? WHERE id = ?").run(original, s.turn.assistantMessageId);
+      s.store.close();
+      reopened = await WebStore.open({ stateDir: s.store.paths.root });
+      const search = (query: string) => reopened!.searchThreads({ sourceId: "agent-one", query }).hits;
+      expect(search("quantum").map((hit) => hit.thread.id)).toEqual([s.thread.id]);
+      expect(search("quantum")[0]?.snippet).not.toMatch(/Suppressed|NOTHING_TO_REPORT/u);
+      expect(search("Suppressed narration")).toEqual([]);
+      expect(search("NOTHING_TO_REPORT").map((hit) => hit.thread.id)).toEqual([ordinary.id]);
+      expect((raw.prepare("SELECT parts_json FROM messages WHERE id = ?").get(s.turn.assistantMessageId) as { parts_json: string }).parts_json).toBe(original);
+      raw.close();
+    } finally { reopened?.close(); s.store.close(); }
+  });
+
   it("isolates provider boundaries, preserves rich output, and uses anchored classification", () => {
     const marker: WebMessagePart = { type: "telemetry", event: "runtime_telemetry", data: boundary.event };
     const rich: WebMessagePart = { type: "attachment", id: "file", artifactId: "artifact", name: "report.txt", mediaType: "text/plain", sizeBytes: 1, integrityId: `sha256:${"a".repeat(64)}` };
@@ -155,7 +221,7 @@ describe("Monitor terminal reply persistence", () => {
     const normalized = normalizeMonitorTerminalReply(parts);
     expect(normalized.parts).toEqual([parts[0], marker, parts[3], marker, rich]);
     expect(normalizeMonitorTerminalReply(normalized.parts).parts).toEqual(normalized.parts);
-    expect(normalizeMonitorTerminalReply(parts.filter((p) => p !== marker)).parts.filter((p) => p.type === "text")).toEqual([]);
+    expect(normalizeMonitorTerminalReply(parts.filter((p) => p !== marker)).parts).toEqual(parts.filter((p) => p !== marker));
     for (const literal of ["NOTHING_TO_REPORT is a sentinel.", "Use NOTHING_TO_REPORT", "NOTHING_TO_REPORT\nThen proceed."]) {
       expect(normalizeMonitorTerminalReply([{ type: "text", text: literal }, marker]).changed).toBe(false);
     }
