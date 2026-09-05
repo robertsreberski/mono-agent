@@ -98,11 +98,15 @@ export function ActivityRow({
   );
 }
 
-/** `20480` reads as `20 KB`; a short body reads as its exact character count. */
+/**
+ * The size of a truncated payload, in the unit it is actually counted in.
+ *
+ * `resultBytes`/`argsBytes` are CHARACTER counts of the serialized text, so the
+ * label says characters. Calling 20,480 characters "20 KB" would be a guess
+ * about the encoding, and a wrong one for anything non-ASCII.
+ */
 export const truncatedLabel = (characters: number): string =>
-  characters >= 1_024
-    ? `${(characters / 1_024).toFixed(characters >= 10 * 1_024 ? 0 : 1)} KB`
-    : `${String(characters)} characters`;
+  `${characters.toLocaleString("en-US")} chars`;
 
 /**
  * The head of a payload the server did not send whole, plus the one control
@@ -112,15 +116,15 @@ export const truncatedLabel = (characters: number): string =>
  * preview and repairs it on demand rather than moving hundreds of kilobytes of
  * tool output nobody opens.
  */
-function TruncationNotice({
+export function TruncationNotice({
   characters,
   onLoadFull,
 }: {
   readonly characters?: number;
-  readonly onLoadFull?: () => Promise<unknown>;
+  readonly onLoadFull?: () => Promise<boolean>;
 }) {
   const [state, setState] = useState<"idle" | "loading" | "failed">("idle");
-  const size = characters === undefined ? "" : ` (${truncatedLabel(characters)})`;
+  const size = characters === undefined ? "" : `, ${truncatedLabel(characters)}`;
   return (
     <p className="activity-truncated">
       <span>{`Preview only${size}.`}</span>
@@ -129,8 +133,11 @@ function TruncationNotice({
           type="button"
           onClick={() => {
             setState("loading");
+            // A repair that resolves FALSE found nothing to replace -- the
+            // conversation moved on, or the call is no longer in it. Returning
+            // to idle there would present the same preview as a completed load.
             void onLoadFull().then(
-              () => setState("idle"),
+              (repaired) => setState(repaired ? "idle" : "failed"),
               () => setState("failed"),
             );
           }}
@@ -149,7 +156,7 @@ export interface TruncationProps {
   readonly argsBytes?: number;
   readonly resultTruncated?: boolean;
   readonly resultBytes?: number;
-  readonly onLoadFull?: () => Promise<unknown>;
+  readonly onLoadFull?: () => Promise<boolean>;
 }
 
 /**
@@ -162,7 +169,7 @@ export function truncationProps(
   envelope: { readonly argsTruncated?: boolean; readonly argsBytes?: number;
     readonly resultTruncated?: boolean; readonly resultBytes?: number } | undefined,
   toolCallId: string,
-  repair: ((toolCallId: string) => Promise<unknown>) | undefined,
+  repair: ((toolCallId: string) => Promise<boolean>) | undefined,
 ): TruncationProps {
   if (envelope?.argsTruncated !== true && envelope?.resultTruncated !== true) return {};
   return {
@@ -203,7 +210,7 @@ export function ActivityPayload({
   readonly resultTruncated?: boolean;
   readonly resultBytes?: number;
   /** Fetches this call's whole body and replaces it in the transcript. */
-  readonly onLoadFull?: () => Promise<unknown>;
+  readonly onLoadFull?: () => Promise<boolean>;
 }) {
   return (
     <div className={`activity-payload${indented ? " is-indented" : ""}`}>

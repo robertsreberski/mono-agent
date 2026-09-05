@@ -161,41 +161,61 @@ function telemetryKind(data: unknown): string | undefined {
   return typeof kind === "string" && kind.length > 0 ? kind : undefined;
 }
 
+/** The allowlist, or the `usage`/`cost` substring rule `usage.ts` applies. */
+function readsTelemetryLabel(label: string | undefined): boolean {
+  if (label === undefined) return false;
+  const normalized = label.toLowerCase();
+  return TELEMETRY_DATA_ALLOWLIST.has(normalized)
+    || normalized.includes("usage")
+    || normalized.includes("cost");
+}
+
 function keepsTelemetryData(part: WebTelemetryPart): boolean {
-  const event = part.event.toLowerCase();
-  if (TELEMETRY_DATA_ALLOWLIST.has(event) || event.includes("usage") || event.includes("cost")) return true;
-  const kind = telemetryKind(part.data)?.toLowerCase();
-  return kind !== undefined && TELEMETRY_DATA_ALLOWLIST.has(kind);
+  // `usage.ts` matches on the event name AND on a nested `kind`, so both are
+  // measured against the same rule -- a `runtime_telemetry{kind:"token_usage"}`
+  // counts towards the run's tokens exactly like a bare `usage_update`.
+  return readsTelemetryLabel(part.event) || readsTelemetryLabel(telemetryKind(part.data));
 }
 
 /**
- * Keep the part, drop the payload. Removing it outright would renumber every
- * later part, and both the client's part conversion and the index-based
- * transcript reads that follow this change depend on positions being stable.
+ * Keep the part, drop the payload the console never reads.
+ *
+ * Removing it outright would renumber every later part, and both the client's
+ * part conversion and the index-based transcript reads that follow this change
+ * depend on positions being stable. `kind` is surfaced whenever the event has
+ * one -- kept or stripped -- so its presence is never a back-channel for "the
+ * payload was dropped".
  */
 function shapeTelemetryPart(part: WebTelemetryPart): WebTelemetryPart {
-  if (part.data === undefined || keepsTelemetryData(part)) return part;
   const kind = telemetryKind(part.data);
-  return { type: "telemetry", event: part.event, ...(kind === undefined ? {} : { kind }) };
+  const keepsData = part.data === undefined || keepsTelemetryData(part);
+  if (keepsData && (kind === undefined || part.kind === kind)) return part;
+  return {
+    type: "telemetry",
+    event: part.event,
+    ...(kind === undefined ? {} : { kind }),
+    ...(keepsData ? { data: part.data } : {}),
+  };
 }
 
 /**
  * The head of an oversized payload, or `undefined` when it is small enough (or
  * cannot be serialized, in which case it is left exactly as stored).
  */
-function payloadPreview(value: unknown): { readonly preview: string; readonly length: number } | undefined {
+function payloadPreview(value: unknown): { readonly preview: unknown; readonly length: number } | undefined {
   if (value === undefined) return undefined;
-  let text: string | undefined;
-  if (typeof value === "string") text = value;
-  else {
-    try {
-      text = JSON.stringify(value);
-    } catch {
-      return undefined;
-    }
-  }
+  const text = typeof value === "string" ? value : jsonTextOf(value);
   if (text === undefined || text.length <= TOOL_PAYLOAD_PREVIEW_CHARS) return undefined;
   return { preview: text.slice(0, TOOL_PAYLOAD_PREVIEW_CHARS), length: text.length };
+}
+
+/** `undefined` for anything JSON cannot express, which is then left as stored. */
+function jsonTextOf(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function shapeToolCall(call: WebToolCall): WebToolCall {
@@ -217,8 +237,41 @@ function shapeToolCallPart(part: WebToolCallPart): WebToolCallPart {
   return { ...shapeToolCall(part), type: "tool-call" };
 }
 
+/**
+ * An oversized ARGUMENTS OBJECT with its string leaves cut back to fit, rather
+ * than replaced by the head of its JSON text.
+ *
+ * A delegation's arguments are not opaque the way an arbitrary tool's are: the
+ * console reads `prompt` out of them for the row summary and the Task note, and
+ * a JSON-text head is neither. Nothing is added or removed, so the object keeps
+ * its shape and every key keeps its place; the longest string pays first, and
+ * the loop settles because slicing a string by N characters shortens its JSON
+ * form by at least N.
+ */
+function shapedArgsObject(args: unknown): { readonly preview: unknown; readonly length: number } | undefined {
+  if (args === null || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const original = jsonTextOf(args);
+  if (original === undefined || original.length <= TOOL_PAYLOAD_PREVIEW_CHARS) return undefined;
+  let shaped: Record<string, unknown> = { ...(args as Record<string, unknown>) };
+  for (let pass = 0; pass < 8; pass += 1) {
+    const text = jsonTextOf(shaped);
+    if (text === undefined) return undefined;
+    if (text.length <= TOOL_PAYLOAD_PREVIEW_CHARS) return { preview: shaped, length: original.length };
+    const longest = Object.entries(shaped)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 1)
+      .sort(([, left], [, right]) => right.length - left.length)[0];
+    if (longest === undefined) return undefined;
+    const [key, value] = longest;
+    const keep = Math.max(1, value.length - (text.length - TOOL_PAYLOAD_PREVIEW_CHARS));
+    shaped = { ...shaped, [key]: value.slice(0, keep) };
+  }
+  // Too many oversized leaves to fit: fall back to the whole-value head rather
+  // than serve an object that is still over budget.
+  return undefined;
+}
+
 function shapeSubagentPart(part: WebSubagentPart): WebSubagentPart {
-  const args = payloadPreview(part.args);
+  const args = shapedArgsObject(part.args) ?? payloadPreview(part.args);
   const result = payloadPreview(part.result);
   return {
     ...part,
@@ -597,8 +650,11 @@ export class WebService {
     threadId: string,
     input: { readonly limit?: number; readonly before?: string } & WebTranscriptShape,
   ): WebMessagePage {
-    const page = this.store.listMessagesPage(threadId, input);
-    return { ...page, messages: page.messages.map((message) => this.shapeMessage(message, input)) };
+    // The store pages; the shape is a view concern and has no business reaching it.
+    const { full, ...query } = input;
+    const page = this.store.listMessagesPage(threadId, query);
+    const shape: WebTranscriptShape = full === undefined ? {} : { full };
+    return { ...page, messages: page.messages.map((message) => this.shapeMessage(message, shape)) };
   }
 
   /**
@@ -1124,7 +1180,9 @@ export class WebService {
       return { thread, duplicate: result.duplicate, delivery: result.receipt };
     }
     if (input.triggerKind === "job") {
-      const completed = this.store.upsertProcessJobCard({
+      // Destructured off: the card's message id is how this service addresses
+      // the invalidation, and it is not part of the delivery result on the wire.
+      const { messageId, ...completed } = this.store.upsertProcessJobCard({
         sourceId: input.sourceId,
         threadId: input.threadId,
         deliveryKey: input.deliveryKey,
@@ -1132,8 +1190,10 @@ export class WebService {
         ...(input.text === undefined ? {} : { responseText: input.text }),
         ...(input.parts === undefined ? {} : { replyParts: input.parts }),
       });
-      const message = this.store.getThreadDetail(input.threadId)?.messages.find((candidate) =>
-        candidate.parts.some((part) => part.type === "process-job" && part.job.jobId === input.processJob.jobId));
+      // Addressed, not searched. Scanning a page of the conversation meant a job
+      // that finished behind thirty later messages emitted no invalidation at
+      // all, and its card sat at "running" until something else forced a read.
+      const message = this.store.getMessage(messageId);
       if (!completed.duplicate && message !== undefined) {
         this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
       }

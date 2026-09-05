@@ -2256,20 +2256,26 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const message = current.messages.find((candidate) => holdsToolCall(candidate, toolCallId));
     if (message === undefined) return false;
     const part = await api.toolCallPart(current.thread.id, message.id, toolCallId);
-    let replaced = false;
+    // Decided HERE, not inside the updater: a state updater is not guaranteed to
+    // run synchronously and StrictMode runs it twice, so a flag set in there
+    // reports scheduling rather than whether anything was actually replaced.
+    const merged = message.parts.map((existing) => mergeToolCallPart(existing, part));
+    if (merged.every((next, index) => next === message.parts[index])) return false;
     setDetail((latest) => {
       if (latest?.thread.id !== current.thread.id) return latest;
-      const messages = latest.messages.map((candidate) => {
-        if (candidate.id !== message.id) return candidate;
-        // A NEW message object, and new part objects inside it: assistant-ui
-        // caches its conversions by object identity, so mutating in place would
-        // leave the transcript showing the preview it already rendered.
-        return { ...candidate, parts: candidate.parts.map((existing) => mergeToolCallPart(existing, part)) };
-      });
-      replaced = true;
-      return { ...latest, messages };
+      if (!latest.messages.some((candidate) => candidate.id === message.id)) return latest;
+      // A NEW message object, and new part objects inside it: assistant-ui
+      // caches its conversions by object identity, so mutating in place would
+      // leave the transcript showing the preview it already rendered. Re-merged
+      // against the freshest copy rather than the snapshot the read started on.
+      return {
+        ...latest,
+        messages: latest.messages.map((candidate) => candidate.id === message.id
+          ? { ...candidate, parts: candidate.parts.map((existing) => mergeToolCallPart(existing, part)) }
+          : candidate),
+      };
     });
-    return replaced;
+    return true;
   }, []);
 
   useEffect(() => {

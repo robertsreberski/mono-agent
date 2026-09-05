@@ -1,8 +1,9 @@
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
 import { SubagentPart, toolArgumentPreview } from "./Subagent";
+import { ToolCallRepairProvider } from "./tool-call-repair";
 
 type SubagentProps = Parameters<typeof SubagentPart>[0];
 
@@ -111,6 +112,72 @@ describe("SubagentPart", () => {
     expect(screen.getByText("Read the router and report what it does.")).toBeInTheDocument();
     expect(screen.getByText("Report")).toBeInTheDocument();
     expect(screen.getByText(/subagent: researcher/u)).toBeInTheDocument();
+  });
+
+  it("says a truncated report is a preview and loads the whole of it", async () => {
+    const repair = vi.fn(async (_toolCallId: string) => true);
+    render(
+      <ToolCallRepairProvider repair={repair}>
+        {part({
+          ...delegation,
+          result: "HEAD of the report",
+          resultTruncated: true,
+          resultBytes: 20_480,
+        })}
+      </ToolCallRepairProvider>,
+    );
+
+    expect(screen.getByText("Preview only, 20,480 chars.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+    // The delegation's own report belongs to the parent `Agent` call, which is
+    // exactly what the full-body route is addressed by.
+    expect(repair).toHaveBeenCalledWith("call-1");
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("says a truncated task is a preview, and reports a repair that found nothing", async () => {
+    const repair = vi.fn(async (_toolCallId: string) => false);
+    render(
+      <ToolCallRepairProvider repair={repair}>
+        {part({
+          ...delegation,
+          args: { name: "researcher", prompt: "Read the router and rep" },
+          argsTruncated: true,
+          argsBytes: 6_100,
+        })}
+      </ToolCallRepairProvider>,
+    );
+
+    expect(screen.getByText("Preview only, 6,100 chars.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+    expect(repair).toHaveBeenCalledWith("call-1");
+    // A repair that replaced nothing is not a load that worked.
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load the full output.");
+  });
+
+  it("offers a loader on a clustered step whose members were truncated", async () => {
+    const repair = vi.fn(async (_toolCallId: string) => true);
+    render(
+      <ToolCallRepairProvider repair={repair}>
+        {part({
+          ...delegation,
+          result: undefined,
+          calls: [
+            { toolCallId: "c1", toolName: "Read", args: { file_path: "/repo/a.ts" }, result: "HEAD", resultTruncated: true, resultBytes: 20_480, status: "complete" },
+            { toolCallId: "c2", toolName: "Read", args: { file_path: "/repo/b.ts" }, result: "small", status: "complete" },
+            { toolCallId: "c3", toolName: "Read", args: { file_path: "/repo/c.ts" }, result: "HEAD", resultTruncated: true, resultBytes: 10_240, status: "complete" },
+          ],
+        })}
+      </ToolCallRepairProvider>,
+    );
+
+    // One joined panel for the run, so the notice counts every truncated member
+    // and its loader repairs each of them.
+    expect(screen.getByText("Preview only, 30,720 chars.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+    // One control, every truncated member, one at a time: each repair rewrites
+    // the same conversation state.
+    await waitFor(() => expect(repair.mock.calls.map(([id]) => id)).toEqual(["c1", "c3"]));
   });
 
   it("shows durable history only for the parent delegation record", () => {

@@ -1332,6 +1332,10 @@ function optionalArchivedQuery(value: unknown): boolean | undefined {
  * `?full=1` (or `full=true`) turns the transcript diet off for one read: no
  * truncated tool payloads, no stripped telemetry. Anything else, including an
  * absent parameter, keeps the shaped transcript.
+ *
+ * It changes the SHAPE of the messages a read answers with, never how many: a
+ * full conversation read still answers with one page and the rest still comes
+ * from `messagesNextCursor` (or an explicit `limit`).
  */
 function fullTranscriptQuery(value: unknown): WebTranscriptShape {
   return value === "1" || value === "true" ? { full: true } : {};

@@ -185,13 +185,13 @@ describe("AssistantMessage grouped parts", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
     fireEvent.click(screen.getByText("Exec").closest("summary")!);
-    expect(screen.getByText("Preview only (20 KB).")).toBeVisible();
+    expect(screen.getByText("Preview only, 20,480 chars.")).toBeVisible();
     expect(screen.queryByText('"WHOLE-BODY"')).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
     expect(repaired).toHaveBeenCalledWith("tool-big");
     await screen.findByText('"WHOLE-BODY"');
-    expect(screen.queryByText("Preview only (20 KB).")).toBeNull();
+    expect(screen.queryByText("Preview only, 20,480 chars.")).toBeNull();
     expect(screen.queryByRole("button", { name: "Load full output" })).toBeNull();
   });
 
@@ -200,7 +200,7 @@ describe("AssistantMessage grouped parts", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
     fireEvent.click(screen.getByText("Exec").closest("summary")!);
-    expect(screen.getByText("Preview only (20 KB).")).toBeVisible();
+    expect(screen.getByText("Preview only, 20,480 chars.")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Load full output" })).toBeNull();
   });
 

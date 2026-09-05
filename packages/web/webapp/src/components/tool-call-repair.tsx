@@ -4,7 +4,7 @@ import { createContext, useContext, type ReactNode } from "react";
  * Fetches one tool call's whole body and replaces the preview the transcript
  * was served with. Resolves to `true` when the transcript changed.
  */
-export type ToolCallRepair = (toolCallId: string) => Promise<unknown>;
+export type ToolCallRepair = (toolCallId: string) => Promise<boolean>;
 
 const ToolCallRepairContext = createContext<ToolCallRepair | null>(null);
 

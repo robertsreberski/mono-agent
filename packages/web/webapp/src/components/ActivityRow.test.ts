@@ -73,11 +73,12 @@ describe("failedLabel", () => {
 });
 
 describe("truncatedLabel", () => {
-  it("reads as a size an operator can judge a click against", () => {
-    expect(truncatedLabel(420)).toBe("420 characters");
-    expect(truncatedLabel(1_024)).toBe("1.0 KB");
-    expect(truncatedLabel(6_144)).toBe("6.0 KB");
-    expect(truncatedLabel(20 * 1_024)).toBe("20 KB");
+  it("counts in the unit the server actually measured, not in guessed bytes", () => {
+    // `resultBytes`/`argsBytes` are characters of serialized text. Calling
+    // 20,480 of them "20 KB" is an encoding guess, and a wrong one off ASCII.
+    expect(truncatedLabel(420)).toBe("420 chars");
+    expect(truncatedLabel(6_144)).toBe("6,144 chars");
+    expect(truncatedLabel(20 * 1_024)).toBe("20,480 chars");
   });
 });
 

@@ -568,6 +568,17 @@ export interface CompleteWebNotificationResult {
   readonly tombstoned?: true;
 }
 
+/**
+ * A process-job card upsert, plus the message it owns.
+ *
+ * The card's message id is what the service invalidates on, and the store is
+ * the only thing that knows it: looking for the card by scanning a page of the
+ * conversation loses every job that finished behind a page of later messages.
+ */
+export interface UpsertWebProcessJobCardResult extends CompleteWebNotificationResult {
+  readonly messageId: string;
+}
+
 export function cronChannelReadOnlyError(): WebConsoleError {
   return new WebConsoleError(
     "cron_channel_read_only",
@@ -1543,7 +1554,7 @@ export class WebStore {
   }
 
   /** Append or update exactly one retained card for a web-origin process job. */
-  upsertProcessJobCard(input: UpsertWebProcessJobCardInput): CompleteWebNotificationResult {
+  upsertProcessJobCard(input: UpsertWebProcessJobCardInput): UpsertWebProcessJobCardResult {
     const projection = parseProcessJobProjection(input.processJob);
     const thread = this.requireThread(input.threadId);
     if (thread.sourceId !== input.sourceId) {
@@ -1602,7 +1613,7 @@ export class WebStore {
           .run(now, input.threadId);
         this.recordThreadRevision(input.threadId, "process_job_card_created", now);
       });
-      return { thread: this.requireThread(input.threadId), duplicate: false };
+      return { thread: this.requireThread(input.threadId), duplicate: false, messageId };
     }
 
     if (existing.thread_id !== input.threadId || existing.delivery_key !== input.deliveryKey) {
@@ -1655,7 +1666,7 @@ export class WebStore {
     if (existing.projection_sha256 === projectionSha256
       && responseText === (existing.response_text ?? undefined)
       && !replyPartsChanged) {
-      return { thread, duplicate: true };
+      return { thread, duplicate: true, messageId: existing.message_id };
     }
     this.transaction(() => {
       this.database.prepare(`
@@ -1675,7 +1686,7 @@ export class WebStore {
         .run(now, input.threadId);
       this.recordThreadRevision(input.threadId, "process_job_card_updated", now);
     });
-    return { thread: this.requireThread(input.threadId), duplicate: false };
+    return { thread: this.requireThread(input.threadId), duplicate: false, messageId: existing.message_id };
   }
 
   /** Durably claim one web process-job wake before touching the operator. */
