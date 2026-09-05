@@ -667,6 +667,7 @@ export interface WebEvent {
     | "threads.changed"
     | "thread.changed"
     | "message.changed"
+    | "message.delta"
     | "turn.changed"
     | "attachment.changed"
     | "push.pending";

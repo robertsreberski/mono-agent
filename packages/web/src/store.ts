@@ -1,7 +1,7 @@
 import { createECDH, createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, readdir, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 
 import { normalizeMonitorTerminalReply, hasMonitorReplyContent, monitorReplyText } from "./monitor-reply.js";
@@ -563,6 +563,19 @@ export interface StoredMessageWrite {
   readonly delta?: WebMessageDelta;
 }
 
+/**
+ * A settled turn: its conversation as it now reads, and the one parts write
+ * that settling it made.
+ *
+ * The write travels with the detail because the console needs both and they
+ * describe the same moment: the detail is what a fresh reader would see, and
+ * `write.delta` is how a reader already holding the previous version gets
+ * there. Absent when the turn had already settled and nothing was written.
+ */
+export interface StoredTurnFinish extends WebThreadDetail {
+  readonly write?: StoredMessageWrite;
+}
+
 /** The columns a parts write may move alongside `parts_json` and `seq`. */
 interface MessagePartsColumns {
   readonly status?: WebMessageStatus;
@@ -642,6 +655,14 @@ export class WebStore {
    * and it drops ids discovery no longer reports.
    */
   private readonly agentGenerations = new Map<string, string>();
+  /**
+   * `writeMessageParts` statements by the columns they assign. A streaming
+   * answer is written every ~50 ms and the SET list is one of a handful of
+   * shapes, so preparing each shape once keeps the hot path off the SQL
+   * compiler. Keyed by the generated SQL, which is derived solely from which
+   * columns the caller moves.
+   */
+  private readonly partsWriteStatements = new Map<string, StatementSync>();
 
   private constructor(database: DatabaseSync, paths: WebStatePaths, clock: () => Date) {
     this.database = database;
@@ -689,6 +710,9 @@ export class WebStore {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    // Drop the cached statements first: they hold native handles onto the
+    // connection this is about to close.
+    this.partsWriteStatements.clear();
     this.database.close();
   }
 
@@ -3086,7 +3110,7 @@ export class WebStore {
     metadata?: Readonly<Record<string, unknown>>,
     replyParts?: readonly AgentReplyPart[],
     options: { readonly suppressResponsePush?: boolean; readonly monitorWakeDeliveryKey?: string } = {},
-  ): WebThreadDetail {
+  ): StoredTurnFinish {
     const runtime = runtimeMetadata(metadata);
     return this.finishTurn(
       turnId,
@@ -3101,7 +3125,7 @@ export class WebStore {
     );
   }
 
-  failTurn(turnId: string, error: { readonly message: string; readonly code?: string; readonly cancelled?: boolean }): WebThreadDetail {
+  failTurn(turnId: string, error: { readonly message: string; readonly code?: string; readonly cancelled?: boolean }): StoredTurnFinish {
     return this.finishTurn(
       turnId,
       error.cancelled === true ? "cancelled" : "failed",
@@ -3112,7 +3136,7 @@ export class WebStore {
     );
   }
 
-  interruptTurn(turnId: string, message = "The web service stopped before this turn completed."): WebThreadDetail {
+  interruptTurn(turnId: string, message = "The web service stopped before this turn completed."): StoredTurnFinish {
     return this.finishTurn(turnId, "interrupted", undefined, "interrupted", message, undefined);
   }
 
@@ -4311,25 +4335,26 @@ export class WebStore {
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
     monitorWakeDeliveryKey?: string,
-  ): WebThreadDetail {
+  ): StoredTurnFinish {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") {
       return this.requireThreadDetail(turn.thread_id);
     }
-    this.transaction(() => {
-      this.finishTurnInTransaction(
-        turnId,
-        status,
-        finalText,
-        errorCode,
-        errorMessage,
-        runtime,
-        replyParts,
-        suppressResponsePush,
-        monitorWakeDeliveryKey,
-      );
-    });
-    return this.requireThreadDetail(turn.thread_id);
+    const write = this.transaction(() => this.finishTurnInTransaction(
+      turnId,
+      status,
+      finalText,
+      errorCode,
+      errorMessage,
+      runtime,
+      replyParts,
+      suppressResponsePush,
+      monitorWakeDeliveryKey,
+    ));
+    return {
+      ...this.requireThreadDetail(turn.thread_id),
+      ...(write === undefined ? {} : { write }),
+    };
   }
 
   private finishTurnInTransaction(
@@ -4425,6 +4450,8 @@ export class WebStore {
         notBefore: new Date(new Date(now).getTime() + 3_000).toISOString(),
       });
     }
+    // Re-read rather than reuse `existing`: the settled row is what Task 6
+    // pushes beside the delta, and it carries the turn's finish stamp.
     return { message: this.requireMessage(existing.id), delta };
   }
 
@@ -4470,6 +4497,14 @@ export class WebStore {
    * delta describes and no sequence number covers, so this is the only place in
    * the store that names the column. A caller that also moves the row passes
    * the columns it changes here rather than issuing a second statement.
+   *
+   * Only the two paths a console watches live -- streaming frames and the write
+   * that settles a turn -- go on to build a {@link WebMessageDelta} from this.
+   * Every other caller (a live-input transition, restart recovery, and the
+   * notification, cron-run, process-job and Monitor reconciliations) bumps the
+   * version without describing the change: those writes reach the browser as an
+   * invalidation it answers by re-reading the message, and the new `seq` is what
+   * tells it the re-read is newer than the delta stream it was applying.
    */
   private writeMessageParts(
     id: string,
@@ -4499,9 +4534,13 @@ export class WebStore {
       assignments.push("status = ?");
       values.push(columns.status);
     }
-    const row = this.database.prepare(
-      `UPDATE messages SET ${assignments.join(", ")}, seq = seq + 1 WHERE id = ? RETURNING seq`,
-    ).get(...values, id) as unknown as { seq: number } | undefined;
+    const sql = `UPDATE messages SET ${assignments.join(", ")}, seq = seq + 1 WHERE id = ? RETURNING seq`;
+    let statement = this.partsWriteStatements.get(sql);
+    if (statement === undefined) {
+      statement = this.database.prepare(sql);
+      this.partsWriteStatements.set(sql, statement);
+    }
+    const row = statement.get(...values, id) as unknown as { seq: number } | undefined;
     if (row === undefined) {
       throw new WebConsoleError("storage_corrupt", `Message ${id} is missing from this conversation.`, 500);
     }
@@ -5882,6 +5921,11 @@ export function diffParts(
  * delta without inventing its own reading of one. Anything the ops cannot mean
  * against these parts throws rather than producing a plausible transcript: a
  * client that lands here has missed a write and must re-read the message.
+ *
+ * The throws are plain `RangeError`/`TypeError` rather than `WebConsoleError`:
+ * this is a pure function that runs on both sides of the wire, so it has no
+ * request to answer and no HTTP status to pick. Its caller re-reads the message
+ * rather than mapping a code.
  */
 export function applyDeltaOps(
   parts: readonly WebMessagePart[],
@@ -5891,20 +5935,16 @@ export function applyDeltaOps(
   for (const op of ops) {
     if (op.op === "truncate") {
       if (!Number.isInteger(op.length) || op.length < 0 || op.length > next.length) {
-        throw new WebConsoleError(
-          "message_delta_invalid",
+        throw new RangeError(
           `A message delta truncates to ${String(op.length)} parts, which is out of range for ${String(next.length)}.`,
-          500,
         );
       }
       next = next.slice(0, op.length);
       continue;
     }
     if (!Number.isInteger(op.index) || op.index < 0 || op.index > next.length) {
-      throw new WebConsoleError(
-        "message_delta_invalid",
+      throw new RangeError(
         `A message delta names part ${String(op.index)}, which is out of range for ${String(next.length)}.`,
-        500,
       );
     }
     if (op.op === "set") {
@@ -5913,10 +5953,8 @@ export function applyDeltaOps(
     }
     const target = next[op.index];
     if (target === undefined || (target.type !== "text" && target.type !== "reasoning")) {
-      throw new WebConsoleError(
-        "message_delta_invalid",
+      throw new TypeError(
         `A message delta appends to part ${String(op.index)}, which cannot be appended to.`,
-        500,
       );
     }
     next[op.index] = { type: target.type, text: `${target.text}${op.delta}` };

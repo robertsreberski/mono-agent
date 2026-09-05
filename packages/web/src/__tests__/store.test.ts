@@ -26,6 +26,7 @@ import {
   WebStore,
   applyDeltaOps,
   diffParts,
+  type StoredTurnFinish,
 } from "../store.js";
 import { fakeMonitor, fakeProcessJob, temporaryRoot } from "./helpers.js";
 
@@ -3695,6 +3696,101 @@ describe("WebStore turn timing", () => {
   });
 });
 
+/** Shared parts, so a vector's unchanged slots keep the identity the diff reads. */
+const VECTOR_PARTS = {
+  alpha: { type: "text", text: "alpha" },
+  alphaGrown: { type: "text", text: "alpha and more" },
+  alphaShrunk: { type: "text", text: "alp" },
+  alphaCopy: { type: "text", text: "alpha" },
+  alphaReasoning: { type: "reasoning", text: "alpha" },
+  why: { type: "reasoning", text: "why" },
+  whyGrown: { type: "reasoning", text: "why not" },
+  toolRunning: { type: "tool-call", toolCallId: "t1", toolName: "Read", status: "running" },
+  toolComplete: { type: "tool-call", toolCallId: "t1", toolName: "Read", result: "body", status: "complete" },
+  failed: { type: "error", code: "provider_unavailable", message: "boom" },
+} as const satisfies Record<string, WebMessagePart>;
+
+/**
+ * The delta vectors the store's diff and replay must satisfy — and the ones
+ * Task 7's client-side replay is expected to satisfy too. Exported so the
+ * console's own suite can take them verbatim rather than inventing a second
+ * reading of what an op means.
+ */
+export const MESSAGE_DELTA_VECTORS: readonly {
+  readonly name: string;
+  readonly prev: readonly WebMessagePart[];
+  readonly next: readonly WebMessagePart[];
+  readonly ops: readonly WebMessageDeltaOp[];
+}[] = [
+  {
+    name: "opens a transcript with its first part",
+    prev: [],
+    next: [VECTOR_PARTS.alpha],
+    ops: [{ op: "set", index: 0, part: VECTOR_PARTS.alpha }],
+  },
+  {
+    name: "grows a text part by its tail",
+    prev: [VECTOR_PARTS.alpha],
+    next: [VECTOR_PARTS.alphaGrown],
+    ops: [{ op: "append", index: 0, delta: " and more" }],
+  },
+  {
+    name: "grows a reasoning part by its tail",
+    prev: [VECTOR_PARTS.alpha, VECTOR_PARTS.why],
+    next: [VECTOR_PARTS.alpha, VECTOR_PARTS.whyGrown],
+    ops: [{ op: "append", index: 1, delta: " not" }],
+  },
+  {
+    name: "replaces a tool call in the slot it already holds",
+    prev: [VECTOR_PARTS.alpha, VECTOR_PARTS.toolRunning],
+    next: [VECTOR_PARTS.alpha, VECTOR_PARTS.toolComplete],
+    ops: [{ op: "set", index: 1, part: VECTOR_PARTS.toolComplete }],
+  },
+  {
+    name: "sets every index the array gained",
+    prev: [VECTOR_PARTS.alpha],
+    next: [VECTOR_PARTS.alpha, VECTOR_PARTS.toolComplete, VECTOR_PARTS.failed],
+    ops: [
+      { op: "set", index: 1, part: VECTOR_PARTS.toolComplete },
+      { op: "set", index: 2, part: VECTOR_PARTS.failed },
+    ],
+  },
+  {
+    name: "truncates before re-setting a spliced array",
+    prev: [VECTOR_PARTS.alpha, VECTOR_PARTS.toolComplete, VECTOR_PARTS.why],
+    next: [VECTOR_PARTS.toolComplete, VECTOR_PARTS.whyGrown],
+    ops: [
+      { op: "truncate", length: 2 },
+      { op: "set", index: 0, part: VECTOR_PARTS.toolComplete },
+      { op: "set", index: 1, part: VECTOR_PARTS.whyGrown },
+    ],
+  },
+  {
+    name: "says nothing about an array nothing touched",
+    prev: [VECTOR_PARTS.alpha, VECTOR_PARTS.toolComplete],
+    next: [VECTOR_PARTS.alpha, VECTOR_PARTS.toolComplete],
+    ops: [],
+  },
+  {
+    name: "says nothing about a text part that only lost its identity",
+    prev: [VECTOR_PARTS.alpha],
+    next: [VECTOR_PARTS.alphaCopy],
+    ops: [],
+  },
+  {
+    name: "sets rather than appends when a part changed type",
+    prev: [VECTOR_PARTS.alpha],
+    next: [VECTOR_PARTS.alphaReasoning],
+    ops: [{ op: "set", index: 0, part: VECTOR_PARTS.alphaReasoning }],
+  },
+  {
+    name: "sets rather than appends when text shrank",
+    prev: [VECTOR_PARTS.alpha],
+    next: [VECTOR_PARTS.alphaShrunk],
+    ops: [{ op: "set", index: 0, part: VECTOR_PARTS.alphaShrunk }],
+  },
+];
+
 describe("WebStore message sequence and part deltas", () => {
   interface StreamingStore {
     readonly store: WebStore;
@@ -3756,6 +3852,169 @@ describe("WebStore message sequence and part deltas", () => {
     Object.freeze(value);
     for (const nested of Object.values(value as Record<string, unknown>)) deepFreeze(nested);
   }
+
+  it.each(MESSAGE_DELTA_VECTORS)("diffs and replays a vector that $name", ({ prev, next, ops }) => {
+    expect(diffParts(prev, next)).toEqual(ops);
+    expect(applyDeltaOps(prev, ops)).toEqual(next);
+  });
+
+  /**
+   * As {@link stream}, for the write that settles a turn — the most rewritten
+   * of them all: final-text reconciliation splices absorbed parts away, reply
+   * parts land after them, and an error part is pushed on the end.
+   */
+  function finish(
+    context: Pick<StreamingStore, "store" | "messageId">,
+    run: () => StoredTurnFinish,
+  ): WebMessageDelta {
+    const before = context.store.getMessage(context.messageId);
+    if (before === undefined) throw new Error("The assistant message is missing.");
+    const detail = run();
+    const write = detail.write;
+    if (write?.delta === undefined) throw new Error("A finish reported no delta.");
+    expect(write.delta.messageId).toBe(context.messageId);
+    expect(write.delta.baseSeq).toBe(before.seq);
+    expect(write.delta.seq).toBe(before.seq + 1);
+    expect(write.message.seq).toBe(write.delta.seq);
+    expect(write.delta.status).toBe(write.message.status);
+    expect(applyDeltaOps(before.parts, write.delta.ops)).toEqual(write.message.parts);
+    // The transcript the console renders and the delta it applies are the same
+    // message; a delta that disagreed with the read would desync the browser.
+    expect(detail.messages.at(-1)?.parts).toEqual(write.message.parts);
+    return write.delta;
+  }
+
+  it("describes the final-text reconciliation that absorbs earlier text parts", async () => {
+    const context = await openStreamingStore();
+    stream(context, [{ kind: "append", delta: "Part one." }]);
+    stream(context, [{ kind: "event", event: { type: "assistant_thought", text: "Thinking." } }]);
+    stream(context, [{ kind: "append", delta: "Part two." }]);
+
+    // The answer owns the trailing run of text, so reconciliation writes it
+    // into the last text part and splices the absorbed one away.
+    const delta = finish(context, () =>
+      context.store.completeTurn(context.turnId, "Here goes: Part one.Part two."));
+
+    expect(delta.ops).toEqual([
+      { op: "truncate", length: 2 },
+      { op: "set", index: 0, part: { type: "reasoning", text: "Thinking." } },
+      { op: "set", index: 1, part: { type: "text", text: "Here goes: Part one.Part two." } },
+    ]);
+    expect(delta.status).toBe("complete");
+    context.store.close();
+  });
+
+  it("describes the reply parts a finish appends after the answer", async () => {
+    const context = await openStreamingStore();
+    stream(context, [{ kind: "append", delta: "Rendered it." }]);
+
+    const delta = finish(context, () => context.store.completeTurn(
+      context.turnId,
+      "Rendered it.",
+      undefined,
+      [
+        {
+          type: "attachment",
+          id: "chart",
+          reference: { scheme: "mono-agent-artifact", id: "artifact-one" },
+          name: "chart.png",
+          mediaType: "image/png",
+          sizeBytes: 24,
+          integrityId: `sha256:${"b".repeat(64)}`,
+        },
+        {
+          type: "failure",
+          id: "second-chart",
+          code: "artifact_missing",
+          message: "The second chart was gone.",
+        },
+      ] as const satisfies readonly AgentReplyPart[],
+    ));
+
+    expect(delta.ops).toEqual([
+      {
+        op: "set",
+        index: 1,
+        part: {
+          type: "attachment",
+          id: "chart",
+          artifactId: "artifact-one",
+          name: "chart.png",
+          mediaType: "image/png",
+          sizeBytes: 24,
+          integrityId: `sha256:${"b".repeat(64)}`,
+        },
+      },
+      {
+        op: "set",
+        index: 2,
+        part: {
+          type: "failure",
+          id: "second-chart",
+          code: "artifact_missing",
+          message: "The second chart was gone.",
+        },
+      },
+    ]);
+    context.store.close();
+  });
+
+  it("describes the error part a failed turn pushes onto the transcript", async () => {
+    const context = await openStreamingStore();
+    stream(context, [{ kind: "append", delta: "Working on it." }]);
+
+    const delta = finish(context, () => context.store.failTurn(context.turnId, {
+      message: "The provider went away.",
+      code: "provider_unavailable",
+    }));
+
+    expect(delta.ops).toEqual([{
+      op: "set",
+      index: 1,
+      part: { type: "error", code: "provider_unavailable", message: "The provider went away." },
+    }]);
+    expect(delta.status).toBe("failed");
+    context.store.close();
+  });
+
+  it("sequences the reconciliation writes that carry no delta of their own", async () => {
+    const context = await openStreamingStore();
+    const { store, threadId, turnId } = context;
+
+    // Promotion rewrites the queued follow-up's parts as it attaches the row
+    // to the turn it just started.
+    const queued = store.reserveLiveInput(threadId, "and then this");
+    expect(store.queueLiveInput(queued.input.id)?.seq).toBe(1);
+    store.completeTurn(turnId, "first");
+    expect(store.promoteNextQueuedLiveInput(threadId)).toBeDefined();
+    expect(store.getMessage(queued.message.id)?.seq).toBe(2);
+
+    // Restart recovery re-queues a follow-up the stopped turn had offered.
+    const offered = store.reserveLiveInput(threadId, "offered when it stopped");
+    expect(store.getMessage(offered.message.id)?.seq).toBe(0);
+    store.close();
+    const reopened = await WebStore.open({ stateDir: context.stateDir });
+    expect(reopened.getMessage(offered.message.id)).toMatchObject({ seq: 1, liveInputStatus: "queued" });
+
+    // A process-job card is one message rewritten in place as the job moves.
+    const jobThread = reopened.createThread("agent-one");
+    const running = fakeProcessJob({ conversationId: `web:${jobThread.id}` });
+    const card = reopened.upsertProcessJobCard({
+      sourceId: "agent-one",
+      threadId: jobThread.id,
+      deliveryKey: running.wake.deliveryKey,
+      processJob: running,
+    });
+    expect(reopened.getMessage(card.messageId)?.seq).toBe(0);
+    reopened.upsertProcessJobCard({
+      sourceId: "agent-one",
+      threadId: jobThread.id,
+      deliveryKey: running.wake.deliveryKey,
+      processJob: fakeProcessJob({ conversationId: `web:${jobThread.id}`, state: "succeeded" }),
+    });
+    expect(reopened.getMessage(card.messageId)?.seq).toBe(1);
+    reopened.close();
+  });
 
   it("describes an append-only text stream as one append op per write", async () => {
     const context = await openStreamingStore();
@@ -3881,9 +4140,12 @@ describe("WebStore message sequence and part deltas", () => {
     const beyondTruncate: readonly WebMessageDeltaOp[] = [{ op: "truncate", length: 2 }];
     const untextable: readonly WebMessageDeltaOp[] = [{ op: "append", index: 0, delta: "x" }];
 
-    expect(() => applyDeltaOps(parts, beyondAppend)).toThrowError(/out of range/u);
+    // Plain RangeError/TypeError: a pure replay has no request to answer.
+    expect(() => applyDeltaOps(parts, beyondAppend)).toThrowError(RangeError);
     expect(() => applyDeltaOps(parts, beyondSet)).toThrowError(/out of range/u);
     expect(() => applyDeltaOps(parts, beyondTruncate)).toThrowError(/out of range/u);
+    expect(() => applyDeltaOps([{ type: "error", message: "boom" }], untextable))
+      .toThrowError(TypeError);
     expect(() => applyDeltaOps([{ type: "error", message: "boom" }], untextable))
       .toThrowError(/cannot be appended to/u);
   });
@@ -3958,6 +4220,16 @@ describe("WebStore message sequence and part deltas", () => {
 
   it("never edits a stored part in place, which is what makes the diff sound", async () => {
     const context = await openStreamingStore();
+    const monitor = fakeMonitor({ conversationId: `web:${context.threadId}` });
+    const deliveryKey = `monitor:${monitor.monitorId}:1`;
+    context.store.reserveMonitorWake({
+      sourceId: "agent-one",
+      threadId: context.threadId,
+      monitorId: monitor.monitorId,
+      deliveryKey,
+      payloadSha256: "a".repeat(64),
+      monitor,
+    });
     // Every write path reads its previous parts through `requireMessage`, and
     // the diff calls a part that compares reference-equal unchanged. Freeze what
     // those paths read, so an in-place edit throws instead of vanishing.
@@ -3970,6 +4242,7 @@ describe("WebStore message sequence and part deltas", () => {
       frozen += 1;
       return message;
     };
+    const subagent = { subagent: { id: "call-1", name: "researcher", callIndex: 0 }, synthetic: true };
 
     stream(context, [{ kind: "append", delta: "Looking" }]);
     stream(context, [{ kind: "append", delta: " into it" }]);
@@ -3982,12 +4255,99 @@ describe("WebStore message sequence and part deltas", () => {
       kind: "event",
       event: { type: "tool_call_completed", id: "t1", name: "Bash", content: "a.ts" },
     }]);
+    // One delegation, from the parent call through the group that replaces it
+    // and the child calls that group owns.
+    stream(context, [{
+      kind: "event",
+      event: { type: "tool_call_started", id: "call-1", name: "Agent", arguments: { name: "researcher" } },
+    }]);
+    stream(context, [{
+      kind: "event",
+      event: {
+        type: "tool_call_started",
+        id: "agent:call-1",
+        name: "Agent(researcher)",
+        metadata: { ...subagent, subagentLifecycle: true },
+      },
+    }]);
+    stream(context, [{
+      kind: "event",
+      event: {
+        type: "tool_call_started",
+        id: "agent:call-1:t2",
+        name: "researcher▸Read",
+        arguments: { file_path: "/repo/a.ts" },
+        metadata: subagent,
+      },
+    }]);
+    stream(context, [{
+      kind: "event",
+      event: {
+        type: "tool_call_completed",
+        id: "agent:call-1:t2",
+        name: "researcher▸Read",
+        content: "file body",
+        metadata: subagent,
+      },
+    }]);
+    stream(context, [{
+      kind: "event",
+      event: { type: "tool_call_completed", id: "call-1", name: "Agent", content: "<subagent: researcher · ok>" },
+    }]);
+    // Compaction upserts one telemetry part per operation id, so the second
+    // event replaces the slot the first one took rather than adding another.
+    for (const phase of ["started", "completed"]) {
+      stream(context, [{
+        kind: "event",
+        event: {
+          type: "runtime_telemetry",
+          kind: "context_compaction",
+          data: { operationId: "compaction-1", phase },
+        },
+      }]);
+    }
+    // A Monitor wake receipt folds into the single activity row.
+    stream(context, [{
+      kind: "event",
+      event: {
+        type: "tool_call_completed",
+        id: "monitor-wake",
+        name: "MonitorWake",
+        metadata: { liveInput: true, synthetic: true, inputId: deliveryKey },
+      },
+    }]);
     stream(context, [{ kind: "append", delta: "One file." }]);
     stream(context, [{ kind: "replace", text: "Exactly one file." }]);
-    context.store.completeTurn(context.turnId, "Exactly one file. Nothing else.");
+
+    // The finish rewrites hardest of all: reconciliation, reply parts, and the
+    // Monitor terminal normalization the delivery key turns on.
+    finish(context, () => context.store.completeTurn(
+      context.turnId,
+      "Exactly one file. Nothing else.",
+      undefined,
+      [{
+        type: "attachment",
+        id: "listing",
+        reference: { scheme: "mono-agent-artifact", id: "artifact-two" },
+        name: "listing.txt",
+        mediaType: "text/plain",
+        sizeBytes: 5,
+        integrityId: `sha256:${"c".repeat(64)}`,
+      }] as const satisfies readonly AgentReplyPart[],
+      { monitorWakeDeliveryKey: deliveryKey },
+    ));
 
     expect(frozen).toBeGreaterThan(0);
-    expect(context.store.getMessage(context.messageId)?.parts.at(-1))
+    expect(context.store.getMessage(context.messageId)?.parts.map((part) => part.type)).toEqual([
+      "reasoning",
+      "tool-call",
+      "subagent",
+      "telemetry",
+      "monitor-activity",
+      "text",
+      "attachment",
+    ]);
+    expect(context.store.getMessage(context.messageId)?.parts.at(-2))
       .toEqual({ type: "text", text: "Exactly one file. Nothing else." });
     context.store.close();
   });
