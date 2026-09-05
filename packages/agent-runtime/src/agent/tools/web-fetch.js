@@ -8,6 +8,7 @@ import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 import { renderWithAgentBrowser } from "./web-browser-render.js";
 import { contentKind, decodeWebBytes, extractWebDocument, markdownToText, shouldAutoRender } from "./web-document-extractor.js";
+import { assertNoWebAccessInterstitial } from "./web-access-interstitial.js";
 
 const FETCH_TIMEOUT_MS = 15_000;
 const MAX_REDIRECTS = 5;
@@ -161,6 +162,7 @@ async function performFetch(
         }),
       }));
       const rendered = normalizeBrowserResult(renderedResult.rendered, parsed.href);
+      assertNoWebAccessInterstitial({ url: rendered.finalUrl, text: rendered.text });
       const renderedBody = outputFormat === "text" ? markdownToText(rendered.text) : rendered.text;
       const document = {
         body: renderedBody,
@@ -265,6 +267,42 @@ async function performFetch(
 
   const contentType = response.headers.get("content-type") || "";
   const responseKind = contentKind(contentType, bytes);
+  let decodedForExtraction;
+  if (["html", "markdown", "text"].includes(responseKind)) {
+    try {
+      decodedForExtraction = decodeWebBytes(bytes, contentType, responseKind);
+      assertNoWebAccessInterstitial({
+        url: finalUrl,
+        text: decodedForExtraction.text,
+        statusCode: response.status,
+      });
+    } catch (error) {
+      if (["access_challenge", "authentication_required"].includes(error?.code)) {
+        return failure(`Error fetching URL: ${error.message}`, error.code, startedAt, {
+          attempts,
+          statusCode: response.status,
+          bytes: responseBytes,
+          backend: "http",
+          redirectCount,
+        });
+      }
+      // Unsupported encodings are still handled by the extraction path below,
+      // where their decoding metadata and browser recommendation are retained.
+      decodedForExtraction = undefined;
+    }
+  } else if ([401, 407].includes(response.status)) {
+    try {
+      assertNoWebAccessInterstitial({ url: finalUrl, statusCode: response.status });
+    } catch (error) {
+      return failure(`Error fetching URL: ${error.message}`, error.code, startedAt, {
+        attempts,
+        statusCode: response.status,
+        bytes: responseBytes,
+        backend: "http",
+        redirectCount,
+      });
+    }
+  }
   if (!response.ok) {
     const preview = responseKind === "binary"
       ? "(binary response body omitted)"
@@ -298,7 +336,7 @@ async function performFetch(
   let extracted;
   let decoding;
   try {
-    decoding = decodeWebBytes(bytes, contentType, responseKind);
+    decoding = decodedForExtraction ?? decodeWebBytes(bytes, contentType, responseKind);
     extracted = await extractWebDocument(bytes, {
       contentType,
       format: outputFormat,
@@ -343,6 +381,7 @@ async function performFetch(
       queueWaitMs += renderedResult.coordinationWaitMs;
       backendDurationMs += renderedResult.backendDurationMs;
       const rendered = normalizeBrowserResult(renderedResult.rendered, finalUrl);
+      assertNoWebAccessInterstitial({ url: rendered.finalUrl, text: rendered.text });
       signal?.throwIfAborted();
       extracted = {
         body: outputFormat === "text" ? markdownToText(rendered.text) : rendered.text,

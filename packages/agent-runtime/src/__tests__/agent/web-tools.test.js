@@ -39,6 +39,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   __resetWebSearchThrottleForTests();
   __resetSharedSearchCacheForTests();
   while (tempDirs.length) rmSync(tempDirs.pop(), { recursive: true, force: true });
@@ -195,7 +196,7 @@ describe("WebSearch", () => {
   it.each([
     [401, "auth_failed"],
     [403, "auth_failed"],
-    [408, "provider_unavailable"],
+    [408, "timeout"],
     [429, "rate_limited"],
     [503, "provider_unavailable"],
   ])("does not route-fallback after local Ollama HTTP %i", async (status, code) => {
@@ -234,6 +235,50 @@ describe("WebSearch", () => {
       expect(invalid).toMatchObject({ error: true, outcome: { code: "invalid_response", attempts: 1 } });
       expect(fetchImpl).toHaveBeenCalledTimes(1);
     }
+  });
+
+  it.each([
+    [Object.assign(new Error("request timed out"), { name: "TimeoutError" }), "timeout", true],
+    [Object.assign(new Error("request aborted"), { name: "AbortError" }), "aborted", false],
+    [Object.assign(new Error("overall deadline"), { code: "deadline_exceeded" }), "deadline_exceeded", true],
+  ])("preserves strict Ollama transport classification for %s", async (transportError, code, retryable) => {
+    const fetchImpl = vi.fn(async () => { throw transportError; });
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: {
+        code,
+        attempts: 1,
+        retryable,
+        attemptedBackends: ["ollama"],
+      },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves strict Ollama response bounds without a compatibility or provider fallback", async () => {
+    const fetchImpl = vi.fn(async () => new Response("x".repeat(2 * 1024 * 1024 + 1)));
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: {
+        code: "response_too_large",
+        attempts: 1,
+        retryable: false,
+        attemptedBackends: ["ollama"],
+      },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("rejects unsafe custom Ollama origins before network access", async () => {
@@ -928,6 +973,73 @@ describe("WebFetch", () => {
     expect(rawPdf.text).toContain("Raw PDF marker");
   });
 
+  it.each([
+    "text/markdown",
+    "text/x-markdown",
+    "text/md",
+    "text/vnd.daringfireball.markdown",
+    "application/markdown",
+    "application/x-markdown",
+  ])("preserves %s as Markdown/raw and removes decoration for text", async (contentType) => {
+    const source = "# Heading\n\n**Bold** and [linked text](https://example.com/source).\n";
+    const retrieve = (format) => performWebFetch({
+      url: "https://example.com/readme",
+      format,
+      render: "never",
+    }, {
+      documentOnly: true,
+      fetchImpl: async () => new Response(source, { headers: { "content-type": contentType } }),
+      ctx: runtimeContext(),
+    });
+
+    const markdown = await retrieve("markdown");
+    const raw = await retrieve("raw");
+    const text = await retrieve("text");
+    expect(markdown.document.body).toBe(source);
+    expect(raw.document.body).toBe(source);
+    expect(text.document.body).toBe("Heading\n\nBold and linked text.");
+    expect(text.outcome).toMatchObject({ contentKind: "markdown", extractionStage: "markdown" });
+  });
+
+  it("rejects bounded static access/auth interstitials without false-positive evidence", async () => {
+    for (const status of [200, 403]) {
+      const cloudflare = await performWebFetch({ url: "https://example.com/protected" }, {
+        fetchImpl: async () => new Response(`
+          <html><head><title>Just a moment...</title></head><body>
+          <h1>Performing security verification</h1>
+          <p>Enable JavaScript and cookies to continue</p>
+          </body></html>
+        `, { status, headers: { "content-type": "text/html" } }),
+        ctx: runtimeContext(),
+      });
+      expect(cloudflare).toMatchObject({
+        error: true,
+        outcome: { code: "access_challenge", backend: "http", statusCode: status },
+      });
+      expect(cloudflare.text).not.toContain("Performing security verification");
+    }
+
+    const authentication = await performWebFetch({ url: "https://example.com/private" }, {
+      fetchImpl: async () => new Response("Sign in to continue to your account.", {
+        headers: { "content-type": "text/plain" },
+      }),
+      ctx: runtimeContext(),
+    });
+    expect(authentication).toMatchObject({ error: true, outcome: { code: "authentication_required" } });
+
+    const ordinary = await performWebFetch({ url: "https://example.com/article" }, {
+      fetchImpl: async () => new Response(`
+        <html><body><article><h1>Access vocabulary</h1>
+        <p>This article compares CAPTCHA tools, Cloudflare products, login pages,
+        and incidental access denied wording without presenting a security gate.</p>
+        </article></body></html>
+      `, { headers: { "content-type": "text/html" } }),
+      ctx: runtimeContext(),
+    });
+    expect(ordinary).toMatchObject({ error: false, outcome: { code: "ok" } });
+    expect(ordinary.text).toContain("Access vocabulary");
+  });
+
   it("rejects unsafe request headers and revalidates every redirect through the sandbox", async () => {
     const noFetch = vi.fn();
     const rejected = await performWebFetch({
@@ -1283,6 +1395,86 @@ describe("run-scoped web controller and browser isolation", () => {
     expect(preparedCommands.at(-1).args.at(-1)).toBe("close");
     expect(cleanups.every((cleanup) => cleanup.mock.calls.length === 1)).toBe(true);
     expect(readdirSync(workspace).filter((name) => name.startsWith(".mono-agent-web-"))).toEqual([]);
+  });
+
+  it("removes inherited browser routing and security overrides from the effective child environment", async () => {
+    const blockedKeys = [
+      "ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+      "all_proxy", "http_proxy", "https_proxy", "no_proxy",
+      "AGENT_BROWSER_PROXY", "AGENT_BROWSER_PROXY_BYPASS",
+      "AGENT_BROWSER_IGNORE_HTTPS_ERRORS", "AGENT_BROWSER_ALLOW_FILE_ACCESS",
+      "AGENT_BROWSER_ARGS", "AGENT_BROWSER_CDP", "AGENT_BROWSER_PROFILE",
+      "AGENT_BROWSER_PROVIDER", "AGENT_BROWSER_STATE", "AGENT_BROWSER_RESTORE",
+      "NODE_OPTIONS", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE",
+    ];
+    for (const key of blockedKeys) vi.stubEnv(key, `sentinel-${key.toLowerCase()}`);
+    const workspace = tempWorkspace();
+    const sandbox = {
+      mergePolicies: (_configured, request) => request,
+      networkAllowsUrl: () => true,
+      async prepareCommand({ command }) {
+        const output = command.args.includes("read")
+          ? "process.stdout.write(JSON.stringify({text:JSON.stringify(process.env)}))"
+          : command.args.includes("get")
+            ? "process.stdout.write(JSON.stringify({text:'https://example.com/page'}))"
+            : "";
+        return {
+          command: process.execPath,
+          args: ["--eval", output],
+          cwd: workspace,
+          env: command.env,
+          cleanup: async () => {},
+        };
+      },
+    };
+
+    const rendered = await renderWithAgentBrowser("https://example.com/page", {
+      namespace: "effective-env",
+      ctx: { workspace, sandbox },
+    });
+    const effectiveEnv = JSON.parse(rendered.text);
+    for (const key of blockedKeys) expect(effectiveEnv[key]).toBeUndefined();
+    expect(effectiveEnv).toMatchObject({
+      AGENT_BROWSER_AUTO_CONNECT: "false",
+      AGENT_BROWSER_AUTOSAVE_INTERVAL_MS: "0",
+      AGENT_BROWSER_RESTORE_SAVE: "never",
+      NO_COLOR: "1",
+    });
+    expect(effectiveEnv.AGENT_BROWSER_CONFIG).toMatch(/\.mono-agent-web-/u);
+    expect(effectiveEnv.PATH).toBe(process.env.PATH);
+  });
+
+  it("rejects a representative rendered Cloudflare interstitial and accepts incidental words", async () => {
+    const workspace = tempWorkspace();
+    const render = async (body) => {
+      const sandbox = {
+        mergePolicies: (_configured, request) => request,
+        networkAllowsUrl: () => true,
+        async prepareCommand({ command }) {
+          const output = command.args.includes("read")
+            ? JSON.stringify({ text: body })
+            : command.args.includes("get") ? JSON.stringify({ text: "https://example.com/page" }) : "";
+          return {
+            command: process.execPath,
+            args: ["--eval", `process.stdout.write(${JSON.stringify(output)})`],
+            cwd: workspace,
+            env: command.env,
+            cleanup: async () => {},
+          };
+        },
+      };
+      return renderWithAgentBrowser("https://example.com/page", {
+        namespace: "challenge-test",
+        ctx: { workspace, sandbox },
+      });
+    };
+
+    await expect(render("# Just a moment...\n\nPerforming security verification\n\nEnable JavaScript and cookies to continue"))
+      .rejects.toMatchObject({ code: "access_challenge" });
+    await expect(render("Authentication required. Sign in to continue."))
+      .rejects.toMatchObject({ code: "authentication_required" });
+    await expect(render("# Browser security article\n\nCAPTCHA and access denied are incidental terms in this ordinary article."))
+      .resolves.toMatchObject({ text: expect.stringContaining("ordinary article") });
   });
 
   it("bounds browser namespace and session ids for macOS Unix socket paths", async () => {

@@ -136,7 +136,7 @@ input.once("end", () => {
  * or exceeds that cap.
  *
  * @param {{command: string, args?: string[], cwd?: string, env?: Record<string, string|undefined>}} commandSpec
- * @param {{timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, input?: string|Buffer}} [options]
+ * @param {{timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, input?: string|Buffer, exactEnvironment?: boolean}} [options]
  */
 export function runPreparedProcess(
   commandSpec,
@@ -145,6 +145,7 @@ export function runPreparedProcess(
     signal,
     maxBufferBytes = DEFAULT_PROCESS_BUFFER_BYTES,
     input,
+    exactEnvironment = false,
   } = {},
 ) {
   return startPreparedProcess(commandSpec, {
@@ -152,6 +153,7 @@ export function runPreparedProcess(
     signal,
     maxBufferBytes,
     input,
+    exactEnvironment,
   }).completion;
 }
 

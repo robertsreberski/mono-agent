@@ -8,6 +8,14 @@ import TurndownService from "turndown";
 import { extractText as extractPdfText, getDocumentProxy } from "unpdf";
 
 export const MAX_STRUCTURED_DOCUMENT_BYTES = 8 * 1024 * 1024;
+const MARKDOWN_MIME_TYPES = new Set([
+  "application/markdown",
+  "application/x-markdown",
+  "text/markdown",
+  "text/md",
+  "text/vnd.daringfireball.markdown",
+  "text/x-markdown",
+]);
 
 export function contentKind(contentType, bytes) {
   const mime = String(contentType || "").split(";", 1)[0].trim().toLowerCase();
@@ -15,6 +23,7 @@ export function contentKind(contentType, bytes) {
   if (mime.includes("json") || mime.endsWith("+json")) return "json";
   if (mime.includes("xml") || mime.includes("rss") || mime.includes("atom") || mime.endsWith("+xml")) return "xml";
   if (mime.includes("html")) return "html";
+  if (MARKDOWN_MIME_TYPES.has(mime)) return "markdown";
   if (mime.startsWith("text/") || [
     "application/ecmascript", "application/graphql", "application/javascript", "application/rtf",
     "application/sql", "application/x-httpd-php", "application/x-yaml", "application/yaml",
@@ -57,6 +66,19 @@ export async function extractWebDocument(bytes, { contentType, format, url }) {
     throw extractionError("parser_input_too_large", `Structured document exceeded ${MAX_STRUCTURED_DOCUMENT_BYTES} bytes.`);
   }
   if (kind === "pdf") return { ...(await extractPdf(bytes)), kind, ...decoded };
+  if (kind === "markdown") {
+    const readableText = markdownToText(decoded.text);
+    return {
+      body: format === "text" ? readableText : decoded.text,
+      readableText,
+      title: "",
+      extractionStage: "markdown",
+      parserFailureCount: 0,
+      parserFailures: [],
+      kind,
+      ...decoded,
+    };
+  }
   if (kind === "json") {
     let parsed;
     try { parsed = JSON.parse(decoded.text); }

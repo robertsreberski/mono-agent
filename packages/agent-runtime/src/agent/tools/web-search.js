@@ -596,12 +596,13 @@ async function searchOllama(query, options) {
           ok: false,
           backend: "ollama",
           code: [401, 403].includes(response.status) ? "auth_failed"
-            : response.status === 429 ? "rate_limited"
+            : response.status === 408 ? "timeout"
+              : response.status === 429 ? "rate_limited"
               : response.status >= 500 ? "provider_unavailable" : "provider_unavailable",
           message: `Ollama Web Search HTTP ${response.status}`,
           rateLimited: response.status === 429,
           retryAfterMs: parseRetryAfter(response),
-          retryable: response.status === 429 || response.status >= 500,
+          retryable: [408, 429].includes(response.status) || response.status >= 500,
         };
       }
       let data;
@@ -621,7 +622,7 @@ async function searchOllama(query, options) {
         results,
       };
     } catch (error) {
-      return { ...fetchFailure("ollama", error, "Ollama Web Search"), code: "provider_unavailable" };
+      return ollamaFetchFailure(error, options.signal);
     }
   }
   return { ok: false, backend: "ollama", message: "Ollama Web Search endpoint is unavailable.", retryable: false };
@@ -1118,7 +1119,7 @@ async function readLimitedText(response) {
   if (!reader) {
     const text = await response.text();
     if (Buffer.byteLength(text, "utf8") > SEARCH_RESPONSE_MAX_BYTES) {
-      throw new Error(`search response exceeded ${SEARCH_RESPONSE_MAX_BYTES} bytes`);
+      throw Object.assign(new Error(`search response exceeded ${SEARCH_RESPONSE_MAX_BYTES} bytes`), { code: "response_too_large" });
     }
     return text;
   }
@@ -1130,7 +1131,7 @@ async function readLimitedText(response) {
     bytes += next.value.byteLength;
     if (bytes > SEARCH_RESPONSE_MAX_BYTES) {
       try { await reader.cancel(); } catch { /* best effort */ }
-      throw new Error(`search response exceeded ${SEARCH_RESPONSE_MAX_BYTES} bytes`);
+      throw Object.assign(new Error(`search response exceeded ${SEARCH_RESPONSE_MAX_BYTES} bytes`), { code: "response_too_large" });
     }
     chunks.push(Buffer.from(next.value));
   }
@@ -1166,6 +1167,26 @@ function fetchFailure(backend, error, label = backend) {
     backend,
     message: `${label} request failed: ${detail}`,
     retryable,
+  };
+}
+
+function ollamaFetchFailure(error, signal) {
+  const base = fetchFailure("ollama", error, "Ollama Web Search");
+  const abortCode = signal?.aborted
+    ? (signal.reason?.code === "deadline_exceeded" ? "deadline_exceeded" : "aborted")
+    : undefined;
+  const suppliedCode = error?.code ?? error?.cause?.code;
+  const code = abortCode
+    || (suppliedCode === "deadline_exceeded" ? "deadline_exceeded" : undefined)
+    || (suppliedCode === "response_too_large" ? "response_too_large" : undefined)
+    || (suppliedCode === "invalid_response" ? "invalid_response" : undefined)
+    || (error?.name === "AbortError" ? "aborted" : undefined)
+    || (error?.name === "TimeoutError" ? "timeout" : undefined)
+    || "provider_unavailable";
+  return {
+    ...base,
+    code,
+    retryable: !["aborted", "response_too_large", "invalid_response"].includes(code),
   };
 }
 
