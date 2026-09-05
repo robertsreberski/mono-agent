@@ -1,7 +1,9 @@
+import { createServer } from "node:http";
 import { chmod, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Agent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
 
 import { deliverWebNotification } from "../notification-client.js";
 import { prepareWebStatePaths } from "../state-paths.js";
@@ -128,6 +130,109 @@ describe("deliverWebNotification", () => {
       delivery: { delivered: true, disposition: "steered" },
     });
     expect(deliveredBody).toEqual(input);
+  });
+
+  it("keeps Monitor and job wake delivery under the explicit request deadline", async () => {
+    const responseBody = JSON.stringify({
+      threadId: "thread-one",
+      duplicate: false,
+      delivery: { delivered: true, disposition: "follow_up" },
+    });
+    let calls = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      calls += 1;
+      if (calls === 1) {
+        const finish = setTimeout(() => {
+          response.writeHead(201, { "content-type": "application/json" });
+          response.end(responseBody);
+        }, 1_500);
+        response.once("close", () => clearTimeout(finish));
+        return;
+      }
+      response.writeHead(201, { "content-type": "application/json" });
+      response.write(responseBody.slice(0, 1));
+      const finish = setTimeout(() => response.end(responseBody.slice(1)), 1_500);
+      response.once("close", () => clearTimeout(finish));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    await writeIngressRecord(stateDir, {
+      url: `http://127.0.0.1:${String(port)}/internal/v1/notifications`,
+    });
+    const previousDispatcher = getGlobalDispatcher();
+    const testAgent = new Agent();
+    setGlobalDispatcher(testAgent.compose(
+      (dispatch) => (options, handler) => dispatch({
+        ...options,
+        headersTimeout: options.headersTimeout === 0 ? 0 : 100,
+        bodyTimeout: options.bodyTimeout === 0 ? 0 : 100,
+      }, handler),
+    ));
+    const monitor = fakeMonitor({ conversationId: "web:thread-one", seq: 5 });
+    const processJob = fakeProcessJob({ conversationId: "web:thread-one" });
+    try {
+      await expect(deliverWebNotification({
+        sourceId: "agent-one",
+        triggerKind: "monitor",
+        deliveryKey: `monitor:${monitor.monitorId}:5`,
+        threadId: "thread-one",
+        monitor,
+        wakePrompt: "Wait for the operator.",
+      }, { stateDir, timeoutMs: 4_000 })).resolves.toMatchObject({
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      await expect(deliverWebNotification({
+        sourceId: "agent-one",
+        triggerKind: "job",
+        deliveryKey: processJob.wake.deliveryKey,
+        threadId: "thread-one",
+        processJob,
+        wakePrompt: "Wait for the operator.",
+      }, { stateDir, timeoutMs: 4_000 })).resolves.toMatchObject({
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      expect(calls).toBe(2);
+    } finally {
+      setGlobalDispatcher(previousDispatcher);
+      await testAgent.close();
+      await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+    }
+  }, 10_000);
+
+  it("still enforces the explicit host-wake request deadline", async () => {
+    const server = createServer((request, response) => {
+      request.resume();
+      response.once("close", () => undefined);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    await writeIngressRecord(stateDir, {
+      url: `http://127.0.0.1:${String(port)}/internal/v1/notifications`,
+    });
+    const monitor = fakeMonitor({ conversationId: "web:thread-one", seq: 6 });
+    try {
+      await expect(deliverWebNotification({
+        sourceId: "agent-one",
+        triggerKind: "monitor",
+        deliveryKey: `monitor:${monitor.monitorId}:6`,
+        threadId: "thread-one",
+        monitor,
+        wakePrompt: "Wait for the operator.",
+      }, { stateDir, timeoutMs: 25 })).rejects.toMatchObject({
+        code: "notification_ingress_timeout",
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+    }
   });
 
   it("fails closed for missing, permissive, symlinked, or non-loopback ingress records", async () => {
