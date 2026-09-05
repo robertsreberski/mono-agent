@@ -235,17 +235,61 @@ const cronMutation = async <T>(path: string, body: Readonly<Record<string, unkno
   return await response.json() as CronMutationResult<T>;
 };
 
+/**
+ * How much of one bucket the sidebar asks for.
+ *
+ * It used to ask for 200 rows -- the server's whole per-bucket cap -- on every
+ * agent switch, every archive toggle and every cron refresh, which is the same
+ * page the bootstrap had just delivered. A sidebar shows a handful of rows and
+ * pages from there, so a page is what it now requests.
+ */
+export const THREAD_PAGE_LIMIT = 50;
+
+/**
+ * What a bootstrap should carry, when the caller knows.
+ *
+ * Accepted and sent now, ignored by the server until the bootstrap is scoped
+ * per agent. Nothing in the console passes one yet: `selectAgent` resolves the
+ * conversation to open from the threads of EVERY agent the bootstrap carried,
+ * so narrowing it is a behaviour change that belongs with the code that
+ * replaces that lookup, not with this transport.
+ */
+export interface BootstrapScope {
+  readonly sourceId?: string;
+  readonly archived?: boolean;
+  readonly limit?: number;
+}
+
 export const api = {
-  bootstrap: (signal?: AbortSignal) =>
-    request<Bootstrap>("/api/v1/bootstrap", { signal }),
+  bootstrap: (signal?: AbortSignal, scope?: BootstrapScope) => {
+    const query = new URLSearchParams();
+    if (scope?.sourceId !== undefined) query.set("sourceId", scope.sourceId);
+    if (scope?.archived !== undefined) query.set("archived", String(scope.archived));
+    if (scope?.limit !== undefined) query.set("limit", String(scope.limit));
+    const search = query.toString();
+    return request<Bootstrap>(
+      search === "" ? "/api/v1/bootstrap" : `/api/v1/bootstrap?${search}`,
+      { signal },
+    );
+  },
 
   thread: (threadId: string, signal?: AbortSignal) =>
     request<ThreadDetail>(`/api/v1/threads/${encodeURIComponent(threadId)}`, {
       signal,
     }),
 
-  threads: (sourceId: string, archived: boolean, before?: string, signal?: AbortSignal) => {
-    const query = new URLSearchParams({ sourceId, archived: String(archived), limit: "200" });
+  threads: (
+    sourceId: string,
+    archived: boolean,
+    before?: string,
+    signal?: AbortSignal,
+    limit: number = THREAD_PAGE_LIMIT,
+  ) => {
+    const query = new URLSearchParams({
+      sourceId,
+      archived: String(archived),
+      limit: String(limit),
+    });
     if (before !== undefined) query.set("before", before);
     return request<ThreadPage>(`/api/v1/threads?${query.toString()}`, { signal });
   },

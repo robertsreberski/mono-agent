@@ -108,9 +108,34 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
   const handledDeepLink = useRef<string | null>(null);
   const pendingThreadSelection = useRef<string | null>(null);
   const reconciling = useRef(false);
+  /**
+   * The three fields reconciliation actually reads, pulled out of the bootstrap
+   * one by one.
+   *
+   * `reconcile` used to depend on the bootstrap OBJECT, and every refresh
+   * answers with a new one -- so a console watching a running turn re-read the
+   * server subscription and re-ran the service-worker version handshake on
+   * every event, for a push identity that had not moved since the tab opened.
+   * Only these three values can change what it decides.
+   */
+  const push: PushBootstrap | undefined = store.bootstrap?.push;
+  const pushApplicationServerKey = push?.applicationServerKey;
+  const pushKeyFingerprint = push?.keyFingerprint;
+  const pushServiceWorkerVersion = push?.serviceWorkerVersion;
 
   const reconcile = useCallback(async (allowCreate: boolean) => {
-    if (reconciling.current || !store.bootstrap || !pushSupported()) return;
+    if (
+      reconciling.current
+      || pushApplicationServerKey === undefined
+      || pushKeyFingerprint === undefined
+      || pushServiceWorkerVersion === undefined
+      || !pushSupported()
+    ) return;
+    const pushIdentity: PushBootstrap = {
+      applicationServerKey: pushApplicationServerKey,
+      keyFingerprint: pushKeyFingerprint,
+      serviceWorkerVersion: pushServiceWorkerVersion,
+    };
     reconciling.current = true;
     const wantsPush = localStorage.getItem(NOTIFICATIONS_STORAGE_KEY) === "1"
       && Notification.permission === "granted";
@@ -121,7 +146,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
         return;
       }
       const registration = await navigator.serviceWorker.ready;
-      const controlled = await assertServiceWorkerVersion(store.bootstrap.push);
+      const controlled = await assertServiceWorkerVersion(pushIdentity);
       if (!controlled) {
         setPushActive(false);
         setCurrentPreference("degraded");
@@ -146,7 +171,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
         && storedEndpointDigest !== null
         && endpointDigest !== storedEndpointDigest;
       const keyChanged = serverSubscription !== undefined
-        && serverSubscription.keyFingerprint !== store.bootstrap.push.keyFingerprint;
+        && serverSubscription.keyFingerprint !== pushIdentity.keyFingerprint;
       const currentEndpointInactive = serverSubscription !== undefined
         && serverSubscription.state !== "active"
         && !rotated;
@@ -159,7 +184,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
       if (!browserSubscription && allowCreate) {
         browserSubscription = await registration.pushManager.subscribe({
           userVisibleOnly: true,
-          applicationServerKey: applicationServerKey(store.bootstrap.push.applicationServerKey),
+          applicationServerKey: applicationServerKey(pushIdentity.applicationServerKey),
         });
         endpointDigest = await pushEndpointDigest(browserSubscription.endpoint);
       }
@@ -184,7 +209,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
       const configError = serverSubscription?.lastErrorCode === "push_service_401"
         || serverSubscription?.lastErrorCode === "push_service_403";
       const active = Boolean(browserSubscription && serverSubscription?.state === "active" && !configError
-        && serverSubscription.keyFingerprint === store.bootstrap.push.keyFingerprint);
+        && serverSubscription.keyFingerprint === pushIdentity.keyFingerprint);
       setPushActive(active);
       setCurrentPreference(active ? "enabled" : "degraded");
     } catch {
@@ -193,7 +218,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
     } finally {
       reconciling.current = false;
     }
-  }, [store.bootstrap]);
+  }, [pushApplicationServerKey, pushKeyFingerprint, pushServiceWorkerVersion]);
 
   const toggle = useCallback(async () => {
     if (!pageNotificationsSupported()) {
@@ -251,9 +276,12 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
   }, [currentPreference, reconcile]);
 
   useEffect(() => {
-    if (!store.bootstrap) return;
+    // `reconcile` changes identity only when the push identity does, so this
+    // runs when the first bootstrap arrives and then only when the server
+    // rotates its key or ships a new service worker.
+    if (pushKeyFingerprint === undefined) return;
     void reconcile(Notification.permission === "granted");
-  }, [reconcile, store.bootstrap]);
+  }, [pushKeyFingerprint, reconcile]);
 
   useEffect(() => {
     const onPending = (event: Event) => {
