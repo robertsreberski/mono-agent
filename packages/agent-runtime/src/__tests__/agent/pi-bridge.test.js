@@ -567,6 +567,44 @@ describe("pi MCP tool helpers", () => {
     }
   });
 
+  it("omits only the total deadline for an exact host-exempted MCP tool", async () => {
+    const connectSpy = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const listSpy = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+      tools: [
+        { name: "AskUser", description: "d", inputSchema: { type: "object", properties: {} } },
+        { name: "other", description: "d", inputSchema: { type: "object", properties: {} } },
+      ],
+    });
+    const callSpy = vi.spyOn(McpClient.prototype, "callTool")
+      .mockResolvedValue({ content: [{ type: "text", text: "ok" }] });
+    try {
+      const { tools } = await initPiMcpTools(
+        { adapter: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+        new Set(),
+        {
+          limits: {
+            mcpCallTimeoutMs: 90_000,
+            mcpCallMaxTotalTimeoutMs: 500_000,
+          },
+          mcpCallNoTotalTimeoutTools: ["adapter:AskUser"],
+        },
+      );
+      await tools.find((entry) => entry.name === "AskUser").execute("call-ask", {}, undefined);
+      await tools.find((entry) => entry.name === "other").execute("call-other", {}, undefined);
+
+      expect(callSpy.mock.calls[0]?.[2]).toMatchObject({
+        timeout: 90_000,
+        resetTimeoutOnProgress: true,
+      });
+      expect(callSpy.mock.calls[0]?.[2]).not.toHaveProperty("maxTotalTimeout");
+      expect(callSpy.mock.calls[1]?.[2]).toMatchObject({ maxTotalTimeout: 500_000 });
+    } finally {
+      connectSpy.mockRestore();
+      listSpy.mockRestore();
+      callSpy.mockRestore();
+    }
+  });
+
   // CONTRACT PIN (not an endorsement): host approval gates cover BUILT-IN tools
   // only. `getPiBuiltinTools` wraps its tools with wrapToolsWithApprovalGate;
   // `initPiMcpTools` has no approvalManager option at all, and pi-native's

@@ -67,6 +67,8 @@ const HOST_KEYS = [
 const TOOL_RUNTIME_KEYS = [
   "workspace",
   "repoRoot",
+  "additionalReadRoots",
+  "additionalWriteRoots",
   "ripgrepPath",
   "qaOutputDir",
   "sandboxPolicy",

@@ -513,6 +513,21 @@ class MonitorsService implements MonitorsServiceHandle {
     this.stopping = true;
     this.wakesActive = false;
     for (const monitor of this.live.values()) {
+      const record = this.records.get(monitor.monitorId);
+      // Fence completion before signalling the watcher. A graceful shutdown's
+      // cancel can resolve as an ordinary SIGTERM exit, but it is still the
+      // agent restart that ended this live watch. Marking it first prevents the
+      // completion callback from replacing the documented restart state with
+      // `exited` (or `cancelled`) while shutdown waits for the group to leave.
+      if (record !== undefined && !isTerminalMonitorState(record.state)) {
+        record.state = "interrupted";
+        record.completedAt ??= this.now().toISOString();
+        record.terminalWakePending = true;
+        record.lastError = {
+          code: "monitor_agent_restarted",
+          message: monitorPublicError("monitor_agent_restarted").message,
+        };
+      }
       this.disarmTimers(monitor);
       try { monitor.handle.cancel(); } catch { /* completion remains authoritative */ }
     }

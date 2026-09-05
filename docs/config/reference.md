@@ -57,7 +57,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `cron.operatorActions.enabled` | `boolean` | `MONO_AGENT_CRON_OPERATOR_ACTIONS_ENABLED` | false | `true` | Allows API-key-authenticated, explicitly confirmed run-now and runtime enable/disable actions. Defaults off and never rewrites cron config sources. |
 | `cron.prompt` | `string` | `MONO_AGENT_CRON_PROMPT` | unset | `example` | Configures prompt for the cron section. |
 | `cron.timezone` | `string` | `MONO_AGENT_CRON_TIMEZONE` | UTC | `UTC` | Configures timezone for the cron section. |
-| `interaction.askUser.timeoutMs` | `integer` | `MONO_AGENT_ASK_USER_TIMEOUT_MS` | 600000 | `600000` | Maximum wait for one AskUser interaction (one to five questions). |
+| `interaction.askUser.timeoutMs` | `integer` | `MONO_AGENT_ASK_USER_TIMEOUT_MS` | 600000 | `600000` | Maximum wait for one AskUser interaction (one to five questions); set null to disable automatic expiry. |
 | `interaction.bridge.host` | `string` | `MONO_AGENT_INTERACTION_BRIDGE_HOST` | 127.0.0.1 | `127.0.0.1` | Bind host for the app-owned AskUser/tool-progress bridge. Defaults to loopback; keep it local because non-loopback values are not rejected. |
 | `interaction.bridge.port` | `integer` | `MONO_AGENT_INTERACTION_BRIDGE_PORT` | 0 | `0` | Bridge port. 0 chooses an ephemeral port. |
 | `interaction.progress.enabled` | `boolean` | `MONO_AGENT_PROGRESS_ENABLED` | true | `true` | Whether tool progress posts are relayed to channel status messages. |
@@ -212,6 +212,8 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `tools.allowedTools` | `string[]` | `MONO_AGENT_ALLOWED_TOOLS` | ["*"] | `["Read","Grep"]` | Configures allowedTools for the tools section. |
 | `tools.continuationServers` | `string[]` | `MONO_AGENT_CONTINUATION_SERVERS` | unset | `["example"]` | Configures continuationServers for the tools section. |
 | `tools.disallowedTools` | `string[]` | `MONO_AGENT_DISALLOWED_TOOLS` | [] | `["Read","Grep"]` | Configures disallowedTools for the tools section. |
+| `tools.filesystem.readableRoots` | `string[]` | `MONO_AGENT_FILE_TOOL_READABLE_ROOTS` | unset | `["/srv/shared/reference"]` | Extra roots for managed Read, Glob, and Grep while sandbox.mode is off. Access requires lexical and realpath containment; native sandbox roots remain authoritative when sandboxing is enabled. |
+| `tools.filesystem.writableRoots` | `string[]` | `MONO_AGENT_FILE_TOOL_WRITABLE_ROOTS` | unset | `["/srv/shared/output"]` | Extra roots for managed Write and Edit while sandbox.mode is off; writable roots are also readable. Access requires lexical and realpath containment; native sandbox roots remain authoritative when sandboxing is enabled. |
 | `tools.mcpCallMaxTotalTimeoutMs` | `integer` | `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | 2700000 | `2700000` | Configures mcpCallMaxTotalTimeoutMs for the tools section. |
 | `tools.mcpCallTimeoutMs` | `integer` | `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | 120000 | `120000` | Configures mcpCallTimeoutMs for the tools section. |
 | `tools.mcpConfigPath` | `string` | `MONO_AGENT_MCP_CONFIG_PATH` | unset | `example` | Configures mcpConfigPath for the tools section. |

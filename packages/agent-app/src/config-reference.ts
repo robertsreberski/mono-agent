@@ -224,7 +224,8 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     defaultLabel: "600000",
     defaultValue: 600_000,
     example: 600_000,
-    description: "Maximum wait for one AskUser interaction (one to five questions).",
+    nullable: true,
+    description: "Maximum wait for one AskUser interaction (one to five questions); set null to disable automatic expiry.",
   },
   {
     jsonPath: "interaction.progress.enabled",
@@ -479,6 +480,7 @@ export interface ConfigReferenceField {
   readonly example: SettingsJsonValue;
   readonly description: string;
   readonly secret?: boolean;
+  readonly nullable?: boolean;
 }
 
 export type ConfigReferenceType = "string" | "number" | "integer" | "boolean" | "string[]" | "object" | "array";
@@ -498,6 +500,7 @@ function referenceField(input: Omit<ConfigReferenceField, "defaultValue" | "secr
     defaultLabel: input.defaultLabel,
     example: input.example,
     description: input.description,
+    ...(input.nullable === true ? { nullable: true } : {}),
     ...(input.defaultValue === undefined ? {} : { defaultValue: input.defaultValue }),
     ...(input.secret === true ? { secret: true } : {}),
   };
@@ -1209,6 +1212,9 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
       schema.type = "string";
       break;
   }
+  if (field.nullable === true) {
+    schema.type = [schema.type, "null"];
+  }
   if (field.defaultValue !== undefined) {
     schema.default = field.defaultValue;
   }
@@ -1552,6 +1558,8 @@ function exampleFor(id: string): SettingsJsonValue {
     "traceability.sourceId": "my-agent",
     "traceability.sourceLabel": "My Agent",
     "tools.mcpRequestContextServers": ["transcribe"],
+    "tools.filesystem.readableRoots": ["/srv/shared/reference"],
+    "tools.filesystem.writableRoots": ["/srv/shared/output"],
     "tools.web.search.endpoint": "http://127.0.0.1:8088",
     providers: {
       "openai-codex": {},
@@ -1609,6 +1617,12 @@ function descriptionFor(id: string): string {
   }
   if (id === "tui.requestToolEnvironment.allowPathPrepend") {
     return "Allows an ACP request to prepend up to four absolute directories to process-tool PATH for one turn. The caller cannot replace PATH.";
+  }
+  if (id === "tools.filesystem.readableRoots") {
+    return "Extra roots for managed Read, Glob, and Grep while sandbox.mode is off. Access requires lexical and realpath containment; native sandbox roots remain authoritative when sandboxing is enabled.";
+  }
+  if (id === "tools.filesystem.writableRoots") {
+    return "Extra roots for managed Write and Edit while sandbox.mode is off; writable roots are also readable. Access requires lexical and realpath containment; native sandbox roots remain authoritative when sandboxing is enabled.";
   }
   if (id === "cron.operatorActions.enabled") {
     return "Allows API-key-authenticated, explicitly confirmed run-now and runtime enable/disable actions. Defaults off and never rewrites cron config sources.";

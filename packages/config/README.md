@@ -155,6 +155,28 @@ MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL=false
 
 `MONO_AGENT_LOCAL_PROVIDERS_JSON` can hold the full local-provider array. Env values win over JSON; empty env values are ignored. `MONO_AGENT_LOCAL_PROVIDER_API_KEY` and provider `apiKeyEnv` are passed only to the runtime path and are redacted from `redactMonoAgentConfig()`.
 
+### Additional file-tool roots
+
+For trusted host-process agents that keep `sandbox.mode` off, add narrow roots
+for the managed filesystem tools without changing `runtime.workspace`:
+
+```json
+{
+  "tools": {
+    "filesystem": {
+      "readableRoots": ["/srv/framework", "/srv/owned-worktrees"],
+      "writableRoots": ["/srv/owned-worktrees"]
+    }
+  }
+}
+```
+
+`Read`, `Glob`, and `Grep` accept readable or writable roots; `Write` and `Edit`
+require a writable root. These are file-tool capabilities rather than a process
+sandbox, so they do not constrain shell command contents. Additional roots use
+lexical and realpath containment to reject symlink escapes. A native sandbox's
+own roots remain authoritative when enabled.
+
 ### Local-first web tools
 
 The resolved `tools.web` block configures the managed Pi `WebSearch` and

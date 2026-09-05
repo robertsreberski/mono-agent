@@ -390,6 +390,37 @@ describe("adapter send tools MCP spec/env", () => {
     });
   });
 
+  it("forwards an unbounded AskUser wait through the child env without a synthetic deadline", async () => {
+    const configPath = await writeConfig(baseConfig());
+    const interaction = {
+      bridgeUrl: "http://127.0.0.1:43123",
+      bridgeToken: "bridge-token",
+      timeoutMs: null,
+    };
+    const extension = createAdapterSendToolsRuntimeExtension(
+      configPath,
+      dir,
+      ["AskUser"],
+      undefined,
+      interaction,
+    );
+    const result = await extension({
+      runId: "run-no-expiry",
+      request: { conversationId: "web:thread-one" },
+    });
+    const spec = result.runtimeOptions.mcpServers[ADAPTER_SEND_TOOLS_MCP_SERVER_NAME] as {
+      env: Record<string, string | undefined>;
+    };
+    expect(spec.env.MONO_AGENT_ASK_USER_TIMEOUT_MS).toBe("none");
+    expect(result.runtimeOptions.mcpCallNoTotalTimeoutTools).toEqual([
+      `${ADAPTER_SEND_TOOLS_MCP_SERVER_NAME}:AskUser`,
+    ]);
+    await expect(resolveAdapterSendToolsSettings(
+      { env: spec.env, cwd: dir, configPath },
+      { allowedTools: ["AskUser"] },
+    )).resolves.toMatchObject({ askUser: { timeoutMs: null } });
+  });
+
   it("forwards and revokes a run-scoped history capability only for send tools", async () => {
     const release = vi.fn();
     const issueDeliveryHistoryCapability = vi.fn(() => ({

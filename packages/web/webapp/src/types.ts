@@ -179,7 +179,7 @@ export interface AskSnapshot {
   readonly activeQuestionIndex: number;
   readonly status: "pending" | "answered" | "expired" | "cancelled";
   readonly createdAt: string;
-  readonly expiresAt: string;
+  readonly expiresAt: string | null;
 }
 
 export interface AskSubmissionResult {

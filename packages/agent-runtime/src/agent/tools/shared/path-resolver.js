@@ -7,8 +7,8 @@ import { resolveSandboxPolicy } from "./tool-context.js";
 // ToolContext is threaded (`ctx ?? readToolRuntime()`), so hosts that only call
 // the deep-path configureToolRuntime keep their historical behavior.
 function configured(ctx) {
-  const { workspace, repoRoot } = ctx ?? readToolRuntime();
-  return { workspace, repoRoot };
+  const { workspace, repoRoot, additionalReadRoots, additionalWriteRoots } = ctx ?? readToolRuntime();
+  return { workspace, repoRoot, additionalReadRoots, additionalWriteRoots };
 }
 
 export function workspaceRoot(workdir, ctx) {
@@ -50,8 +50,12 @@ function isPathAllowedFor(path, workdir, access, options) {
       && insideSandboxRoots(Array.isArray(field) ? field : [], r)
       && (access !== "write" || !sandboxDeniesWrite(policy, r, ctx));
   }
-  const { workspace, repoRoot } = configured(ctx);
-  return insideLegacyRoots([workdir, workspace, repoRoot, process.cwd(), "/tmp"], r);
+  const { workspace, repoRoot, additionalReadRoots, additionalWriteRoots } = configured(ctx);
+  const additionalRoots = access === "write"
+    ? additionalWriteRoots
+    : [...(additionalReadRoots ?? []), ...(additionalWriteRoots ?? [])];
+  return insideLegacyRoots([workdir, workspace, repoRoot, process.cwd(), "/tmp"], r)
+    || insideAdditionalRoots(Array.isArray(additionalRoots) ? additionalRoots : [], r);
 }
 
 function isPathLexicallyAllowedFor(path, workdir, access, options) {
@@ -64,8 +68,12 @@ function isPathLexicallyAllowedFor(path, workdir, access, options) {
       && insideLexicalRoots(Array.isArray(field) ? field : [], r)
       && (access !== "write" || !sandboxLexicallyDeniesWrite(policy, r, ctx));
   }
-  const { workspace, repoRoot } = configured(ctx);
-  return insideLegacyRoots([workdir, workspace, repoRoot, process.cwd(), "/tmp"], r);
+  const { workspace, repoRoot, additionalReadRoots, additionalWriteRoots } = configured(ctx);
+  const additionalRoots = access === "write"
+    ? additionalWriteRoots
+    : [...(additionalReadRoots ?? []), ...(additionalWriteRoots ?? [])];
+  return insideLegacyRoots([workdir, workspace, repoRoot, process.cwd(), "/tmp"], r)
+    || insideLexicalRoots(Array.isArray(additionalRoots) ? additionalRoots : [], r);
 }
 
 export function isWorkdirAllowed(workdir, options = {}) {
@@ -102,6 +110,17 @@ export function protectedRelativePaths(directory, options = {}) {
 // Sandbox roots also enforce realpath containment so a symlink inside an
 // allowed root cannot escape to a target outside the policy.
 function insideSandboxRoots(roots, target) {
+  const allowedRoots = normalizeRoots(roots);
+  const real = realTargetPath(target);
+  return allowedRoots.some((root) => isInsidePath(root, target))
+    && allowedRoots.some((root) => isInsidePath(root, real));
+}
+
+// Additional file-tool roots are an operator-authored capability boundary even
+// when process sandboxing is off. Unlike the legacy workspace allowance, keep
+// both lexical and real paths inside the configured set so an allowed symlink
+// cannot expose an unrelated path.
+function insideAdditionalRoots(roots, target) {
   const allowedRoots = normalizeRoots(roots);
   const real = realTargetPath(target);
   return allowedRoots.some((root) => isInsidePath(root, target))

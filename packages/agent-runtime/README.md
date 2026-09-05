@@ -554,6 +554,8 @@ createRuntime({
   // -- tool runtime context (process-level config for the tool kernel) --
   workspace,               // primary allowed root for path-based tools
   repoRoot,                // secondary allowed root
+  additionalReadRoots,     // extra realpath-contained file-tool read roots
+  additionalWriteRoots,    // extra realpath-contained file-tool write roots
   ripgrepPath,             // explicit path to `rg`; falls back to packaged binary, then PATH
   qaOutputDir,             // fallback dir for Playwright MCP filename routing
   sandboxPolicy,           // optional SandboxPolicy for tools and stdio MCP (enforced
@@ -699,7 +701,7 @@ by one lazily started Node.js REPL child per run. You select them via
 `allowedTools`. Tool implementations honor:
 
 - `cwd` (required for path-based tools)
-- The runtime context's `workspace` / `repoRoot` allow-list (paths outside both, plus `/tmp` and `process.cwd()`, are rejected)
+- The runtime context's `workspace` / `repoRoot` allow-list (paths outside both, plus `/tmp` and `process.cwd()`, are rejected), with optional `additionalReadRoots` / `additionalWriteRoots` for narrowly scoped managed file-tool access. Additional roots require both the requested path and its realpath to stay inside the configured roots, so a symlink cannot escape them.
 - Output truncation with optional artifact persistence (`{toolArtifactDir}/tool-output/{runId}/...` when `toolArtifactDir` is configured)
 
 The Pi-native tool context may structurally receive a host process-job

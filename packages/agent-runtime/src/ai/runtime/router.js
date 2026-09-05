@@ -89,13 +89,15 @@ import { instrumentLiveInputAppliedEvents } from "./live-input-events.js";
 
 const ATTEMPT_SCOPED_OPTION_KEYS = ["customProvider", "customModel", "modelCapabilities", "isPrivateProvider"];
 const ROUTER_TOOL_CONTEXT_KEYS = [
-  "workspace", "repoRoot", "ripgrepPath", "qaOutputDir", "sandboxPolicy", "sandboxEngine",
+  "workspace", "repoRoot", "additionalReadRoots", "additionalWriteRoots",
+  "ripgrepPath", "qaOutputDir", "sandboxPolicy", "sandboxEngine",
 ];
 const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "model", "effort", "messages", "abortSignal", "onEvent",
   "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
   "allowedTools", "disallowedTools", "permissionMode", "mcpServers", "mcpApps", "skills",
+  "mcpCallNoTotalTimeoutTools",
   "outputSchema", "liveInput", "toolEnvironment",
 ]);
 

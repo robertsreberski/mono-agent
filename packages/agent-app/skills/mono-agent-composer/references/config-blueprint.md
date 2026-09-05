@@ -203,7 +203,7 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
   // tools.mcpRequestContextServers names at least one opted project MCP server.
   "interaction": {
     "bridge": { "host": "127.0.0.1", "port": 0 },
-    "askUser": { "timeoutMs": 600000 },
+    "askUser": { "timeoutMs": 600000 }, // set null to disable automatic expiry
     "progress": { "enabled": true }
   },
 
