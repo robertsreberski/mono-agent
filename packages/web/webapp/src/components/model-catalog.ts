@@ -252,8 +252,9 @@ export const buildSelectorModels = ({
 
   // A thread override is server-owned and can outlive this tab's lazy catalog
   // cache. Never let the selector substitute the automatic row during that
-  // gap. The canonical reference is truthful; effort choices wait for exact
-  // model metadata instead of borrowing the global ladder.
+  // gap. The canonical reference is truthful, and the shared effort rule keeps
+  // the same compatibility ladder the store and server accept until exact
+  // model metadata can narrow it.
   if (
     selectedModel
     && !rows.some((row) => row.id === selectedModel)
@@ -263,7 +264,13 @@ export const buildSelectorModels = ({
       id: selectedModel,
       name: displayNameForReference(selectedModel) ?? selectedModel,
       description: selectedModel,
-      efforts: [],
+      efforts: buildEffortOptions(
+        agent,
+        defaultEffort,
+        modelOptions,
+        selectedModel,
+        findCatalogModel(catalogByProvider, selectedModel),
+      ),
       provider,
       providerLabel: agent.providers?.find((entry) => entry.id === provider)?.label ?? provider,
     });

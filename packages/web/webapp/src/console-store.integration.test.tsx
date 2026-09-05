@@ -1013,6 +1013,39 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.catalogByProvider.openai?.models[0]?.name).toBe("GPT X");
     });
 
+    it("retains a catalog-only model when its loaded provider page omits it", async () => {
+      const providerOnly = agent("alpha", {
+        label: "Alpha",
+        generation: "gen-1",
+        models: ["localx:one"],
+        defaultModel: "localx:one",
+        providers: [
+          { id: "localx", label: "Local X" },
+          { id: "openai", label: "OpenAI" },
+        ],
+      });
+      const selected = thread("alpha-thread", "alpha", {
+        runModel: "openai:gpt-x",
+        runEffort: "medium",
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([providerOnly], [selected]));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [selected] });
+      vi.mocked(api.thread).mockResolvedValue(detail(selected));
+      vi.mocked(api.agentModels).mockResolvedValue({ models: [], truncated: false });
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      await act(async () => { await store.current.ensureProviderCatalog("openai"); });
+
+      expect(store.current.catalogByProvider.openai).toMatchObject({
+        status: "loaded",
+        models: [],
+      });
+      expect(store.current.model).toBe("openai:gpt-x");
+      expect(store.current.effort).toBe("medium");
+      expect(store.current.effortOptions).toContain("medium");
+    });
+
     it("refetches a provider once the agent process behind it is a different one", async () => {
       // A source id outlives the process behind it. Keyed on the id alone the
       // tab kept offering the retired generation's models until it was

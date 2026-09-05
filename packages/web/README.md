@@ -138,10 +138,11 @@ Pointer/touch opening and model or effort changes do not focus the search input;
 keyboard opening retains search navigation. Local LM Studio and Ollama models
 confirmed as embedding-only by native metadata are omitted from chat choices.
 Unknown metadata preserves compatibility; model names are not used as a heuristic.
-A persisted catalog-only selection stays visible by its canonical reference while
-lazy provider metadata reloads, including its current persisted effort; effort
-controls wait for exact metadata. It then adopts the catalog display name and exact
-effort choices without reverting to the agent default. Exact choices come from
+A persisted catalog-only selection stays visible by its canonical reference when
+lazy provider metadata is absent, fails, or omits that model. Its current effort and
+the shared compatibility ladder accepted by the agent remain controllable until exact
+metadata supplies the catalog display name and a narrower advertised ladder, without
+reverting to the agent default. Exact choices come from
 the running agent's startup capability snapshot; when a model
 does not advertise exact levels, the console offers provider/config default
 only instead of the global effort ladder. Usage telemetry remains internal

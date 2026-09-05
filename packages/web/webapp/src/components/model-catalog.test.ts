@@ -247,14 +247,28 @@ describe("buildSelectorModels", () => {
       defaultEffort: "high",
       selectedModel,
     });
-    expect(pending.filter((row) => row.id === selectedModel)).toEqual([{
+    expect(pending.filter((row) => row.id === selectedModel)).toHaveLength(1);
+    expect(pending.find((row) => row.id === selectedModel)).toMatchObject({
       id: selectedModel,
       name: selectedModel,
       description: selectedModel,
-      efforts: [],
       provider: "anthropic",
       providerLabel: "Anthropic",
-    }]);
+    });
+    expect(pending.find((row) => row.id === selectedModel)?.efforts.map((option) => option.id))
+      .toEqual(["", ...GLOBAL_EFFORT_LEVELS]);
+
+    // A successful page can still omit a retired or truncated model. That is
+    // not a reason to hide controls the shared store/server rule still accepts.
+    const omitted = buildSelectorModels({
+      agent: advertised,
+      modelOptions: advertised.models ?? [],
+      defaultEffort: "high",
+      selectedModel,
+      catalogByProvider: { anthropic: [] },
+    });
+    expect(omitted.find((row) => row.id === selectedModel)?.efforts.map((option) => option.id))
+      .toEqual(["", ...GLOBAL_EFFORT_LEVELS]);
 
     const loaded = buildSelectorModels({
       agent: advertised,

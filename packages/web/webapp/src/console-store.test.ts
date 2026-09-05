@@ -242,6 +242,20 @@ describe("run setting isolation", () => {
     ).toEqual({ model: "anthropic:claude-sonnet-4.5", effort: "" });
   });
 
+  it("clears a model from an unadvertised provider when other providers exist", () => {
+    const source = agent("agent", {
+      models: ["current"],
+      providers: [{ id: "anthropic", label: "Anthropic" }],
+    });
+    expect(
+      validateRunPreference(
+        source,
+        { model: "mystery:retired", effort: "" },
+        source.providers?.map((provider) => provider.id),
+      ),
+    ).toEqual({ model: "", effort: "" });
+  });
+
   it("judges a catalog-only model's effort against the ladder its page advertised", () => {
     // The picker offers a catalog row the grades its `/v1/models` page named,
     // but validation never received that metadata: `modelOptions` covers only

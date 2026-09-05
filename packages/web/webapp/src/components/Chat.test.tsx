@@ -103,7 +103,7 @@ describe("ModelControls", () => {
     expect(store.setModel).toHaveBeenCalledWith(MODEL);
   });
 
-  it("keeps a catalog-only override visible while its lazy row loads", () => {
+  it("keeps a catalog-only override and its shared effort controls visible while its lazy row loads", async () => {
     const selectedModel = "anthropic:claude-fable-5";
     storeMock.current = {
       ...storeMock.current,
@@ -113,6 +113,7 @@ describe("ModelControls", () => {
       selectedAgent: agent("agent", {
         models: [MODEL],
         defaultModel: MODEL,
+        defaultEffort: "high",
         providers: [{ id: "anthropic", label: "Anthropic" }],
         modelOptions: {
           [MODEL]: { label: "GPT-5.5 Codex", reasoning: true, effortLevels: ["low", "high"] },
@@ -124,6 +125,17 @@ describe("ModelControls", () => {
     expect(trigger).toHaveTextContent(selectedModel);
     expect(trigger).toHaveTextContent("High");
     expect(trigger).not.toHaveTextContent("Default · GPT-5.5 Codex");
+
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
+    const effortGroup = within(dialog).getByRole("radiogroup", { name: "Reasoning effort" });
+    expect(within(effortGroup).getByRole("radio", { name: "Default · High" })).toBeVisible();
+    expect(within(effortGroup).getByRole("radio", { name: "Medium" })).toBeVisible();
+    expect(within(effortGroup).getByRole("radio", { name: "Ultra" })).toBeVisible();
+    fireEvent.click(within(effortGroup).getByRole("radio", { name: "Medium" }));
+    expect((storeMock.current as { setEffort: ReturnType<typeof vi.fn> }).setEffort)
+      .toHaveBeenCalledWith("medium");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
 
     storeMock.current = {
       ...storeMock.current,
