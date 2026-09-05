@@ -258,6 +258,21 @@ export interface WebToolCall {
   readonly executionMs?: number;
   /** Canonical durable-tool record metadata received on the live event. */
   readonly history?: SessionToolHistoryEventMetadata;
+  /**
+   * Set when the transcript carries only the head of `result`. A 20 KB `Exec`
+   * body is the single largest thing a conversation read transfers and almost
+   * none of it is ever looked at, so a browser read gets a preview and the
+   * whole body stays one request away at
+   * `/threads/:id/messages/:messageId/tool-calls/:toolCallId`. Never set on a
+   * `?full=1` read.
+   */
+  readonly resultTruncated?: boolean;
+  /** Character length of the untruncated `result` text, when it was truncated. */
+  readonly resultBytes?: number;
+  /** As {@link resultTruncated}, for the call's arguments. */
+  readonly argsTruncated?: boolean;
+  /** Character length of the untruncated `args` text, when it was truncated. */
+  readonly argsBytes?: number;
 }
 
 export type WebMessagePart =
@@ -285,6 +300,11 @@ export type WebMessagePart =
       readonly costUsd?: number;
       /** Metadata for the persisted parent `Agent` call; child internals omit it. */
       readonly history?: SessionToolHistoryEventMetadata;
+      /** See {@link WebToolCall.resultTruncated}; the delegation's report is truncated the same way. */
+      readonly resultTruncated?: boolean;
+      readonly resultBytes?: number;
+      readonly argsTruncated?: boolean;
+      readonly argsBytes?: number;
       readonly status: WebToolCallStatus;
       readonly calls: readonly WebToolCall[];
     }
@@ -303,7 +323,19 @@ export type WebMessagePart =
         readonly deliveryKeys: readonly string[];
       }[];
     }
-  | { readonly type: "telemetry"; readonly event: string; readonly data?: unknown }
+  /**
+   * One runtime/provider diagnostic. `data` is present only for the events the
+   * console actually renders or sums; everything else keeps its identity (and
+   * its position, which the transcript's index-based reads depend on) and drops
+   * the payload. `kind` names a stripped `runtime_telemetry`'s variant so the
+   * part still says what it was.
+   */
+  | {
+      readonly type: "telemetry";
+      readonly event: string;
+      readonly kind?: string;
+      readonly data?: unknown;
+    }
   | { readonly type: "error"; readonly code?: string; readonly message: string }
   | {
       readonly type: "attachment";
@@ -532,12 +564,33 @@ export interface WebPushSubscriptionStatus {
   readonly lastErrorCode?: string;
 }
 
+/**
+ * What a bootstrap should carry, when the console knows.
+ *
+ * A bootstrap used to carry every discovered agent's conversations -- one
+ * 200-row bucket per agent per archive state -- and the console then re-read
+ * the single bucket its sidebar shows. `sourceId` names the bucket it wants;
+ * an absent or unknown one falls back rather than failing, because the first
+ * request a fresh console makes has no selection to name yet.
+ */
+export interface WebBootstrapScope {
+  readonly sourceId?: string;
+  readonly archived?: boolean;
+  readonly limit?: number;
+}
+
 export interface WebBootstrap {
   readonly version: typeof WEB_API_VERSION;
   readonly console: WebConsoleIdentity;
   readonly push: WebPushBootstrap;
+  /** Every discovered agent, in full: the rail shows all of them at once. */
   readonly agents: readonly WebAgentSummary[];
+  /** One page of ONE (agent, archived) bucket -- the one `threadsSourceId` names. */
   readonly threads: readonly WebThread[];
+  /** The bucket `threads` came from, or `null` when there is no agent to open on. */
+  readonly threadsSourceId: string | null;
+  /** Keyset cursor for the next older page of that bucket, or `null` at its end. */
+  readonly threadsNextCursor: string | null;
   readonly currentThreadId?: string;
   readonly limits: {
     readonly maxFileBytes: number;
@@ -558,13 +611,42 @@ export type WebEventType =
   | "attachment.changed"
   | "push.pending";
 
+/**
+ * The payload of every `thread.changed`/`threads.changed` that names a
+ * conversation.
+ *
+ * The fresh summary travels WITH the event: one that only named a conversation
+ * cost every connected console a page of its bucket to find out what had
+ * changed about a row it was already holding. A removal has no summary left to
+ * carry, so it says so.
+ */
+export type WebThreadChangedPayload =
+  | { readonly thread: WebThread }
+  | { readonly threadId: string; readonly removed: true };
+
+/**
+ * What an `agents.changed` says about itself.
+ *
+ * A pin is a one-field write the writing tab already applied from the PATCH
+ * response, so it names the agent and the new state rather than telling every
+ * console to re-read the bootstrap, its skills and its cron. Discovery-driven
+ * invalidations carry nothing: an agent that appeared, went away, or advertises
+ * something different can have changed anything at all.
+ */
+export type WebAgentsChangedPayload =
+  | { readonly sourceId: string; readonly pinned: boolean }
+  | undefined;
+
 export interface WebEvent {
   readonly id: string;
   readonly version: typeof WEB_API_VERSION;
   readonly type: WebEventType;
   readonly at: string;
   readonly threadId?: string;
-  /** Event-specific detail. `agents.changed` omits this and invalidates the bootstrap snapshot. */
+  /**
+   * Event-specific detail. A payload-less `agents.changed` invalidates the
+   * bootstrap snapshot; see {@link WebAgentsChangedPayload}.
+   */
   readonly payload?: unknown;
 }
 

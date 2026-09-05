@@ -39,10 +39,12 @@ import {
   type PatchWebThreadInput,
   type PutWebAgentRunSettingsInput,
   type StartWebTurnInput,
+  type WebAgentsChangedPayload,
   type WebAgentSummary,
   type WebAgentProvider,
   type WebAttachment,
   type WebBootstrap,
+  type WebBootstrapScope,
   type WebChannelConfigView,
   type WebCronMutationResult,
   type WebCronOverview,
@@ -57,9 +59,11 @@ import {
   type WebThreadNotificationTriggerKind,
   type WebSkillRegistry,
   type WebThread,
+  type WebThreadChangedPayload,
   type WebThreadDetail,
   type WebThreadPage,
   type WebThreadSearchPage,
+  type WebToolCall,
   type SearchWebThreadsInput,
   type WebMessagePage,
   type WebModelPage,
@@ -90,6 +94,7 @@ import {
   cronChannelReadOnlyError,
   toWebAttachment,
   WebStore,
+  WEB_THREAD_PAGE_DEFAULT,
   notificationPushLogicalKey,
   type StoredAttachment,
   type StoredTurnExecution,
@@ -114,6 +119,194 @@ const REPLY_ACCESS_TTL_MS = 10 * 60 * 1_000;
  * `setReplyDownloadHeaders` already refuse to treat it as an image.
  */
 const REPLY_IMAGE_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+/**
+ * How much of a tool call's `result`/`args` a browser read carries.
+ *
+ * Measured on a real fleet transcript: a 4-message tool-heavy conversation is
+ * 231 KB, of which 211 KB is `tool-call` result bodies (single `Exec`/`ReadSkill`
+ * results run 14-21 KB). The rows are collapsed, so what the operator sees of
+ * one is its first screenful; the rest is a request away.
+ */
+const TOOL_PAYLOAD_PREVIEW_CHARS = 4_096;
+
+/**
+ * Telemetry whose `data` the console actually reads.
+ *
+ * `webapp/src/runtime.tsx` renders only `runtime_telemetry` of kind
+ * `context_compaction`/`assistant_message_boundary`/`context_usage` plus
+ * `cron_run`; `webapp/src/usage.ts` sums any part labelled `context_usage`,
+ * `context_compaction`, or containing `usage`/`cost`. Everything else --
+ * `provider_status`, `memory_recalled`, `status`, `run_config`, `cache_hit`,
+ * `capabilities_resolved`, ... -- is carried across the wire and dropped, which
+ * is ~10 KB a conversation.
+ */
+const TELEMETRY_DATA_ALLOWLIST: ReadonlySet<string> = new Set([
+  "usage_update",
+  "cron_run",
+  "context_usage",
+  "context_compaction",
+  "assistant_message_boundary",
+]);
+
+/**
+ * `?full=1`: serve the transcript exactly as recorded. The escape hatch for an
+ * operator (or a support read) who needs the payloads the console elides.
+ */
+export interface WebTranscriptShape {
+  readonly full?: boolean;
+}
+
+type WebTelemetryPart = Extract<WebMessagePart, { type: "telemetry" }>;
+type WebToolCallPart = Extract<WebMessagePart, { type: "tool-call" }>;
+type WebSubagentPart = Extract<WebMessagePart, { type: "subagent" }>;
+
+/**
+ * Whether a tool name IS AskUser, however the agent qualified it.
+ *
+ * An MCP server serves it as `mcp__<server>__ask_user`, a forwarding runtime as
+ * `some.namespace:AskUser`, and separators vary. Two places have to agree on
+ * this -- the frame observer that arms the interaction poller, and the shaper
+ * that must leave the card's question and answer alone -- so they read the same
+ * rule rather than two spellings of it. An exact `=== "AskUser"` here silently
+ * shaped the card's payload for every run that routes the tool through a server.
+ */
+function isAskUserToolName(toolName: string): boolean {
+  return toolNameLeaf(toolName).toLowerCase().replace(/[^a-z0-9]+/gu, "") === "askuser";
+}
+
+/** A `runtime_telemetry` event's variant, which the store stores inside `data`. */
+function telemetryKind(data: unknown): string | undefined {
+  if (data === null || typeof data !== "object" || Array.isArray(data)) return undefined;
+  const kind = (data as Record<string, unknown>).kind;
+  return typeof kind === "string" && kind.length > 0 ? kind : undefined;
+}
+
+/** The allowlist, or the `usage`/`cost` substring rule `usage.ts` applies. */
+function readsTelemetryLabel(label: string | undefined): boolean {
+  if (label === undefined) return false;
+  const normalized = label.toLowerCase();
+  return TELEMETRY_DATA_ALLOWLIST.has(normalized)
+    || normalized.includes("usage")
+    || normalized.includes("cost");
+}
+
+function keepsTelemetryData(part: WebTelemetryPart): boolean {
+  // `usage.ts` matches on the event name AND on a nested `kind`, so both are
+  // measured against the same rule -- a `runtime_telemetry{kind:"token_usage"}`
+  // counts towards the run's tokens exactly like a bare `usage_update`.
+  return readsTelemetryLabel(part.event) || readsTelemetryLabel(telemetryKind(part.data));
+}
+
+/**
+ * Keep the part, drop the payload the console never reads.
+ *
+ * Removing it outright would renumber every later part, and both the client's
+ * part conversion and the index-based transcript reads that follow this change
+ * depend on positions being stable. `kind` is surfaced whenever the event has
+ * one -- kept or stripped -- so its presence is never a back-channel for "the
+ * payload was dropped".
+ */
+function shapeTelemetryPart(part: WebTelemetryPart): WebTelemetryPart {
+  const kind = telemetryKind(part.data);
+  const keepsData = part.data === undefined || keepsTelemetryData(part);
+  if (keepsData && (kind === undefined || part.kind === kind)) return part;
+  return {
+    type: "telemetry",
+    event: part.event,
+    ...(kind === undefined ? {} : { kind }),
+    ...(keepsData ? { data: part.data } : {}),
+  };
+}
+
+/**
+ * The head of an oversized payload, or `undefined` when it is small enough (or
+ * cannot be serialized, in which case it is left exactly as stored).
+ */
+function payloadPreview(value: unknown): { readonly preview: unknown; readonly length: number } | undefined {
+  if (value === undefined) return undefined;
+  const text = typeof value === "string" ? value : jsonTextOf(value);
+  if (text === undefined || text.length <= TOOL_PAYLOAD_PREVIEW_CHARS) return undefined;
+  return { preview: text.slice(0, TOOL_PAYLOAD_PREVIEW_CHARS), length: text.length };
+}
+
+/** `undefined` for anything JSON cannot express, which is then left as stored. */
+function jsonTextOf(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function shapeToolCall(call: WebToolCall): WebToolCall {
+  // AskUser's arguments and answer ARE the card the console renders, and they
+  // are bounded at the emitter. `structuredResult` is never touched anywhere:
+  // it is the machine-readable outcome, bounded at the emitter too.
+  if (isAskUserToolName(call.toolName)) return call;
+  const args = shapedArgsObject(call.args) ?? payloadPreview(call.args);
+  const result = payloadPreview(call.result);
+  if (args === undefined && result === undefined) return call;
+  return {
+    ...call,
+    ...(args === undefined ? {} : { args: args.preview, argsTruncated: true, argsBytes: args.length }),
+    ...(result === undefined ? {} : { result: result.preview, resultTruncated: true, resultBytes: result.length }),
+  };
+}
+
+function shapeToolCallPart(part: WebToolCallPart): WebToolCallPart {
+  return { ...shapeToolCall(part), type: "tool-call" };
+}
+
+/**
+ * An oversized ARGUMENTS OBJECT with its string leaves cut back to fit, rather
+ * than replaced by the head of its JSON text.
+ *
+ * Arguments are not opaque the way a result is: the console reads named keys out
+ * of them -- `command`, `file_path`, a delegation's `prompt` -- for the row
+ * summary and the Task note, and the head of a JSON text is none of those. It is
+ * also what an operator scans, and a mid-object slice reads as garbage. Nothing
+ * is added or removed, so the object keeps its shape and every key keeps its
+ * place, and the longest string pays first.
+ *
+ * Termination is the bounded pass count, NOT an assumption that every slice
+ * shrinks the serialization: cutting between a surrogate pair leaves a lone
+ * surrogate that `JSON.stringify` writes as `\udXXX`, which can make one pass
+ * longer than the last. Anything still over budget after eight passes falls
+ * back to the whole-value head.
+ */
+function shapedArgsObject(args: unknown): { readonly preview: unknown; readonly length: number } | undefined {
+  if (args === null || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const original = jsonTextOf(args);
+  if (original === undefined || original.length <= TOOL_PAYLOAD_PREVIEW_CHARS) return undefined;
+  let shaped: Record<string, unknown> = { ...(args as Record<string, unknown>) };
+  for (let pass = 0; pass < 8; pass += 1) {
+    const text = jsonTextOf(shaped);
+    if (text === undefined) return undefined;
+    if (text.length <= TOOL_PAYLOAD_PREVIEW_CHARS) return { preview: shaped, length: original.length };
+    const longest = Object.entries(shaped)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 1)
+      .sort(([, left], [, right]) => right.length - left.length)[0];
+    if (longest === undefined) return undefined;
+    const [key, value] = longest;
+    const keep = Math.max(1, value.length - (text.length - TOOL_PAYLOAD_PREVIEW_CHARS));
+    shaped = { ...shaped, [key]: value.slice(0, keep) };
+  }
+  // Too many oversized leaves to fit: fall back to the whole-value head rather
+  // than serve an object that is still over budget.
+  return undefined;
+}
+
+function shapeSubagentPart(part: WebSubagentPart): WebSubagentPart {
+  const args = shapedArgsObject(part.args) ?? payloadPreview(part.args);
+  const result = payloadPreview(part.result);
+  return {
+    ...part,
+    ...(args === undefined ? {} : { args: args.preview, argsTruncated: true, argsBytes: args.length }),
+    ...(result === undefined ? {} : { result: result.preview, resultTruncated: true, resultBytes: result.length }),
+    calls: part.calls.map(shapeToolCall),
+  };
+}
 
 function formatQuotedTurn(quote: string, text: string): string {
   const blockquote = quote
@@ -399,13 +592,23 @@ export class WebService {
     }
   }
 
-  async bootstrap(): Promise<Omit<WebBootstrap, "console">> {
+  async bootstrap(scope: WebBootstrapScope = {}): Promise<Omit<WebBootstrap, "console">> {
     const currentThreadId = this.store.currentThreadId();
     const currentThread = currentThreadId === undefined ? undefined : this.store.getThread(currentThreadId);
     const discoveredCurrentThreadId = currentThread !== undefined
       && this.store.getAgent(currentThread.sourceId) !== undefined
       ? currentThreadId
       : undefined;
+    const agents = this.store.listAgents();
+    const threadsSourceId = this.bootstrapSourceId(scope.sourceId, currentThread, agents);
+    const archived = scope.archived ?? false;
+    const page = threadsSourceId === null
+      ? { threads: [] as readonly WebThread[] }
+      : this.store.listThreadsPage({
+        sourceId: threadsSourceId,
+        archived,
+        limit: scope.limit ?? WEB_THREAD_PAGE_DEFAULT,
+      });
     return {
       version: WEB_API_VERSION,
       push: {
@@ -413,8 +616,10 @@ export class WebService {
         keyFingerprint: this.pushIdentity.fingerprint,
         serviceWorkerVersion: WEB_PUSH_SERVICE_WORKER_VERSION,
       },
-      agents: this.store.listAgents(),
-      threads: this.store.listThreads(),
+      agents,
+      threads: page.threads,
+      threadsSourceId,
+      threadsNextCursor: page.nextCursor ?? null,
       ...(discoveredCurrentThreadId === undefined ? {} : { currentThreadId: discoveredCurrentThreadId }),
       limits: {
         maxFileBytes: DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
@@ -423,6 +628,31 @@ export class WebService {
         accept: DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
       },
     };
+  }
+
+  /**
+   * The one bucket a bootstrap answers with.
+   *
+   * An absent or unknown `sourceId` is the ordinary case, not an error: the
+   * first request a fresh console makes has no selection to name, and a
+   * console whose stored agent has since gone away must still get a console.
+   * The chain is the one the browser resolves its own selection with -- the
+   * agent of the conversation the console was last in, else the first agent
+   * that can answer, else the first agent at all.
+   */
+  private bootstrapSourceId(
+    requested: string | undefined,
+    currentThread: WebThread | undefined,
+    agents: readonly WebAgentSummary[],
+  ): string | null {
+    if (requested !== undefined && agents.some((agent) => agent.sourceId === requested)) return requested;
+    const current = currentThread === undefined
+      ? undefined
+      : agents.find((agent) => agent.sourceId === currentThread.sourceId);
+    return current?.sourceId
+      ?? agents.find((agent) => agent.status !== "offline")?.sourceId
+      ?? agents[0]?.sourceId
+      ?? null;
   }
 
   createThread(sourceId: string, input: Omit<CreateWebThreadInput, "sourceId"> = {}): WebThread {
@@ -441,14 +671,14 @@ export class WebService {
       input.model === undefined && inherited?.model !== undefined,
     );
     const thread = this.store.createThread(sourceId, input);
-    this.emit("threads.changed", thread.id, { thread });
+    this.emitThread("threads.changed", { thread });
     return thread;
   }
 
-  thread(id: string): WebThreadDetail {
+  thread(id: string, options: WebTranscriptShape = {}): WebThreadDetail {
     const detail = this.store.getThreadDetail(id);
     if (detail === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
-    return this.decorateThreadDetail(detail);
+    return this.decorateThreadDetail(detail, options);
   }
 
   threadsPage(input: {
@@ -468,9 +698,44 @@ export class WebService {
     return this.store.searchThreads(input);
   }
 
-  messagePage(threadId: string, input: { readonly limit?: number; readonly before?: string }): WebMessagePage {
-    const page = this.store.listMessagesPage(threadId, input);
-    return { ...page, messages: page.messages.map((message) => this.decorateMessage(message)) };
+  messagePage(
+    threadId: string,
+    input: { readonly limit?: number; readonly before?: string } & WebTranscriptShape,
+  ): WebMessagePage {
+    // The store pages; the shape is a view concern and has no business reaching it.
+    const { full, ...query } = input;
+    const page = this.store.listMessagesPage(threadId, query);
+    const shape: WebTranscriptShape = full === undefined ? {} : { full };
+    return { ...page, messages: page.messages.map((message) => this.shapeMessage(message, shape)) };
+  }
+
+  /**
+   * The untruncated payloads of ONE tool call, for a transcript that was served
+   * a preview of it.
+   *
+   * Addressed by (conversation, message, tool call) rather than by tool-call id
+   * alone: the id is not a capability, and a lookup that took it on its own
+   * would hand any caller any conversation's transcript.
+   */
+  toolCallPart(threadId: string, messageId: string, toolCallId: string): WebMessagePart {
+    const thread = this.store.getThread(threadId);
+    const message = this.store.getMessage(messageId);
+    if (thread === undefined || message === undefined || message.threadId !== thread.id) {
+      throw new WebConsoleError("tool_call_not_found", "The tool call is unavailable.", 404);
+    }
+    const owned = message.parts.find(
+      (part): part is WebToolCallPart | WebSubagentPart =>
+        (part.type === "tool-call" || part.type === "subagent") && part.toolCallId === toolCallId,
+    );
+    if (owned !== undefined) return owned;
+    for (const part of message.parts) {
+      if (part.type !== "subagent") continue;
+      const call = part.calls.find((candidate) => candidate.toolCallId === toolCallId);
+      // A subagent's child owns no part of its own, so it answers as the
+      // tool-call part it would have been outside the delegation.
+      if (call !== undefined) return { type: "tool-call", ...call };
+    }
+    throw new WebConsoleError("tool_call_not_found", "The tool call is unavailable.", 404);
   }
 
   /**
@@ -727,13 +992,13 @@ export class WebService {
       // state DB from writing between a bare read and a bare write.
       const result = this.store.patchThreadIfRunConfigUnset(id, patch);
       if (!result.applied) return result.thread;
-      this.emit("thread.changed", result.thread.id, { thread: result.thread });
-      this.emit("threads.changed", result.thread.id);
+      this.emitThread("thread.changed", { thread: result.thread });
+      this.emitThread("threads.changed", { thread: result.thread });
       return result.thread;
     }
     const thread = this.store.patchThread(id, patch);
-    this.emit("thread.changed", thread.id, { thread });
-    this.emit("threads.changed", thread.id);
+    this.emitThread("thread.changed", { thread });
+    this.emitThread("threads.changed", { thread });
     return thread;
   }
 
@@ -750,13 +1015,18 @@ export class WebService {
         count: result.orphanedFiles,
       });
     }
-    this.emit("thread.changed", resolved, { threadId: resolved, removed: true });
-    this.emit("threads.changed", resolved);
+    this.emitThread("thread.changed", { threadId: resolved, removed: true });
+    this.emitThread("threads.changed", { threadId: resolved, removed: true });
   }
 
   patchAgent(sourceId: string, patch: PatchWebAgentInput): WebAgentSummary {
     const agent = this.store.setAgentPinned(sourceId, patch.pinned);
-    this.emit("agents.changed");
+    // A pin says exactly what it changed. The payload-less form means "discovery
+    // saw something move", which costs every open console a bootstrap plus its
+    // skills and cron -- for one boolean the pinning tab already applied from
+    // this call's own response.
+    const payload: WebAgentsChangedPayload = { sourceId: agent.sourceId, pinned: agent.pinned === true };
+    this.emit("agents.changed", undefined, payload);
     return agent;
   }
 
@@ -832,7 +1102,7 @@ export class WebService {
       const stored = this.store.storedCronRuns(sourceId, jobId, input.limit);
       return stored.messages === undefined
         ? stored
-        : { ...stored, messages: stored.messages.map((message) => this.decorateMessage(message)) };
+        : { ...stored, messages: stored.messages.map((message) => this.shapeMessage(message)) };
     }
     const page = await connection.client.cronRuns(jobId, {
       limit: input.limit,
@@ -841,11 +1111,9 @@ export class WebService {
     });
     const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, page.runs);
     if (reconciled.changed) {
-      const threadId = this.store.cronThread(sourceId, jobId)?.id;
-      this.emit("thread.changed", threadId);
-      this.emit("threads.changed", threadId);
+      this.emitStoredThread(this.store.cronThread(sourceId, jobId)?.id, ["thread.changed", "threads.changed"]);
     }
-    return { ...page, messages: reconciled.messages.map((message) => this.decorateMessage(message)) };
+    return { ...page, messages: reconciled.messages.map((message) => this.shapeMessage(message)) };
   }
 
   async cronRun(sourceId: string, jobId: string, runId: string): Promise<WebMessage> {
@@ -857,10 +1125,9 @@ export class WebService {
       throw new WebConsoleError("invalid_operator_cron", "Cron detail did not reconcile a message.", 502);
     }
     if (reconciled.changed) {
-      this.emit("thread.changed", message.threadId, { messageId: message.id });
-      this.emit("threads.changed", message.threadId);
+      this.emitStoredThread(message.threadId, ["thread.changed", "threads.changed"]);
     }
-    return this.decorateMessage(message);
+    return this.shapeMessage(message);
   }
 
   async agentModels(sourceId: string, input: {
@@ -912,9 +1179,7 @@ export class WebService {
     if (result.kind === "completed") {
       const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, [result.value.run]);
       if (reconciled.changed) {
-        const threadId = this.store.cronThread(sourceId, jobId)?.id;
-        this.emit("thread.changed", threadId);
-        this.emit("threads.changed", threadId);
+        this.emitStoredThread(this.store.cronThread(sourceId, jobId)?.id, ["thread.changed", "threads.changed"]);
       }
     }
     return result;
@@ -941,8 +1206,7 @@ export class WebService {
     if (job === undefined) throw new WebConsoleError("invalid_operator_cron", "Updated cron job disappeared.", 502);
     if (synced.changed) {
       this.emit("cron.changed", job.threadId, { sourceId, jobId });
-      this.emit("thread.changed", job.threadId, { thread: this.store.getThread(job.threadId) });
-      this.emit("threads.changed", job.threadId);
+      this.emitStoredThread(job.threadId, ["thread.changed", "threads.changed"]);
     }
     return { ...result, value: { job } };
   }
@@ -982,7 +1246,9 @@ export class WebService {
       return { thread, duplicate: result.duplicate, delivery: result.receipt };
     }
     if (input.triggerKind === "job") {
-      const completed = this.store.upsertProcessJobCard({
+      // Destructured off: the card's message id is how this service addresses
+      // the invalidation, and it is not part of the delivery result on the wire.
+      const { messageId, ...completed } = this.store.upsertProcessJobCard({
         sourceId: input.sourceId,
         threadId: input.threadId,
         deliveryKey: input.deliveryKey,
@@ -990,13 +1256,17 @@ export class WebService {
         ...(input.text === undefined ? {} : { responseText: input.text }),
         ...(input.parts === undefined ? {} : { replyParts: input.parts }),
       });
-      const message = this.store.getThreadDetail(input.threadId)?.messages.find((candidate) =>
-        candidate.parts.some((part) => part.type === "process-job" && part.job.jobId === input.processJob.jobId));
+      // Addressed, not searched. Scanning a page of the conversation meant a job
+      // that finished behind thirty later messages emitted no invalidation at
+      // all, and its card sat at "running" until something else forced a read.
+      const message = this.store.getMessage(messageId);
       if (!completed.duplicate && message !== undefined) {
         this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
       }
-      this.emit("threads.changed", input.threadId, { thread: completed.thread });
-      this.emit("thread.changed", input.threadId, { thread: completed.thread });
+      // Read back rather than trusted: the shared notification result leaves the
+      // conversation optional, and an event that carries `undefined` is exactly
+      // the bare event this normalisation exists to remove.
+      this.emitStoredThread(input.threadId, ["threads.changed", "thread.changed"]);
       if (input.wakePrompt === undefined) return completed;
       if (this.connections.get(input.sourceId) === undefined) await this.refreshAgents();
       if (this.stopped) {
@@ -1071,7 +1341,7 @@ export class WebService {
     const started = this.store.beginTurn({ threadId, text, attachmentIds, ...(input.quote === undefined ? {} : { quote: input.quote }), ...(model === undefined ? {} : { model }), ...(effort === undefined ? {} : { effort }) });
     this.launchTurn(started, connection.client, operatorText);
     this.emit("turn.changed", threadId, { turn: started.thread.runState });
-    this.emit("threads.changed", threadId);
+    this.emitThread("threads.changed", { thread: started.thread });
     return { thread: started.thread, turn: started.thread.runState };
   }
 
@@ -1086,7 +1356,7 @@ export class WebService {
     const active = this.activeTurns.get(threadId);
     const reserved = this.store.reserveLiveInput(threadId, text);
     this.emit("message.changed", threadId, { messageId: reserved.message.id, updatedAt: reserved.message.updatedAt });
-    this.emit("threads.changed", threadId);
+    this.emitThread("threads.changed", { thread: reserved.thread });
 
     if (!reserved.offered || active === undefined || connection === undefined || !connection.info.supportsLiveInput) {
       const queued = reserved.offered ? this.store.queueLiveInput(reserved.input.id) ?? reserved.message : reserved.message;
@@ -1337,8 +1607,8 @@ export class WebService {
         },
       );
       this.emit("turn.changed", started.thread.id, { turn: detail.thread.runState });
-      this.emit("thread.changed", started.thread.id, { revision: detail.thread.revision });
-      this.emit("threads.changed", started.thread.id);
+      this.emitThread("thread.changed", { thread: detail.thread });
+      this.emitThread("threads.changed", { thread: detail.thread });
       this.announcePushEvent(`turn:${started.turnId}:terminal`);
       // Detached: the turn is already finished and reported, and keeping a copy
       // must neither delay nor fail it. The agent is still connected here, which
@@ -1361,8 +1631,8 @@ export class WebService {
         cancelled,
       });
       this.emit("turn.changed", started.thread.id, { turn: detail.thread.runState });
-      this.emit("thread.changed", started.thread.id, { revision: detail.thread.revision });
-      this.emit("threads.changed", started.thread.id);
+      this.emitThread("thread.changed", { thread: detail.thread });
+      this.emitThread("threads.changed", { thread: detail.thread });
       this.announcePushEvent(`turn:${started.turnId}:terminal`);
     } finally {
       releaseAttachmentBudget?.();
@@ -1430,7 +1700,7 @@ export class WebService {
         updatedAt: changedMessage.updatedAt,
       });
     }
-    this.emit("threads.changed", threadId);
+    this.emitStoredThread(threadId, ["threads.changed"]);
     if (queued && !this.stopped) await this.drainQueuedLiveInputs(threadId);
   }
 
@@ -1453,7 +1723,7 @@ export class WebService {
         updatedAt: started.thread.updatedAt,
       });
       this.emit("turn.changed", threadId, { turn: started.thread.runState });
-      this.emit("threads.changed", threadId);
+      this.emitThread("threads.changed", { thread: started.thread });
     } finally {
       this.drainingLiveInputThreads.delete(threadId);
     }
@@ -1577,7 +1847,7 @@ export class WebService {
         updatedAt: started.thread.updatedAt,
       });
       this.emit("turn.changed", input.threadId, { turn: started.thread.runState });
-      this.emit("threads.changed", input.threadId);
+      this.emitThread("threads.changed", { thread: started.thread });
       await completion;
       if (this.store.turnStatus(started.turnId) !== "complete") {
         return {
@@ -1758,7 +2028,7 @@ export class WebService {
         updatedAt: started.thread.updatedAt,
       });
       this.emit("turn.changed", input.threadId, { turn: started.thread.runState });
-      this.emit("threads.changed", input.threadId);
+      this.emitThread("threads.changed", { thread: started.thread });
       await completion;
       if (this.store.turnStatus(started.turnId) !== "complete") {
         return {
@@ -1834,8 +2104,8 @@ export class WebService {
       if (completed.tombstoned === true) return completed;
       throw new WebConsoleError("storage_corrupt", "A new notification completed without a conversation.", 500);
     }
-    this.emit("threads.changed", completed.thread.id, { thread: completed.thread });
-    this.emit("thread.changed", completed.thread.id, { thread: completed.thread });
+    this.emitThread("threads.changed", { thread: completed.thread });
+    this.emitThread("thread.changed", { thread: completed.thread });
     if (!completed.duplicate) {
       this.announcePushEvent(notificationPushLogicalKey(reservation.sourceId, reservation.deliveryKey));
     }
@@ -1997,6 +2267,37 @@ export class WebService {
     }
   }
 
+  /**
+   * A listing event that names a conversation AND describes it.
+   *
+   * The id comes off the payload, so the two can never disagree: an event that
+   * named one conversation while carrying another would have every console
+   * apply the wrong row.
+   */
+  private emitThread(type: "thread.changed" | "threads.changed", payload: WebThreadChangedPayload): void {
+    this.emit(type, "thread" in payload ? payload.thread.id : payload.threadId, payload);
+  }
+
+  /**
+   * The same, for a write whose caller kept no snapshot of what it produced --
+   * a cron reconcile, a live-input hand-off -- so the store is the only place
+   * the fresh summary can come from.
+   *
+   * A conversation that is no longer there leaves nothing to describe, and the
+   * bulk form is the only honest scope left for a listing that did change.
+   */
+  private emitStoredThread(
+    threadId: string | undefined,
+    types: readonly ("thread.changed" | "threads.changed")[],
+  ): void {
+    const thread = threadId === undefined ? undefined : this.store.getThread(threadId);
+    if (thread === undefined) {
+      this.emit("threads.changed");
+      return;
+    }
+    for (const type of types) this.emitThread(type, { thread });
+  }
+
   private emit(type: WebEventType, threadId?: string, payload?: unknown): void {
     if (this.stopped) return;
     const event = this.createEvent(type, threadId, payload);
@@ -2023,7 +2324,7 @@ export class WebService {
 
   private observeAskUserFrame(threadId: string, turnId: string, frame: AgentStreamWireFrame): void {
     if (this.stopped || frame.kind !== "event" || frame.event.type !== "tool_call_started"
-      || toolNameLeaf(frame.event.name).toLowerCase().replace(/[^a-z0-9]+/gu, "") !== "askuser") return;
+      || !isAskUserToolName(frame.event.name)) return;
     const key = `${threadId}\0${turnId}`;
     if (this.askWatches.has(key)) return;
     const controller = new AbortController();
@@ -2041,8 +2342,8 @@ export class WebService {
     try {
       const thread = this.store.applyAgentTitle(threadId, title);
       if (thread === undefined) return;
-      this.emit("thread.changed", threadId, { revision: thread.revision });
-      this.emit("threads.changed", threadId, { thread });
+      this.emitThread("thread.changed", { thread });
+      this.emitThread("threads.changed", { thread });
     } catch (error) {
       this.options.logger?.warn?.("Agent conversation-title update failed; the turn is continuing.", {
         threadId,
@@ -2467,18 +2768,31 @@ export class WebService {
     }
   }
 
-  private decorateThreadDetail(detail: WebThreadDetail): WebThreadDetail {
+  private decorateThreadDetail(detail: WebThreadDetail, options: WebTranscriptShape = {}): WebThreadDetail {
     // Backfill: messages that predate this feature, and any turn whose own
     // attempt failed or was interrupted. Idempotent and guarded, so repeated
     // reads of the same thread fetch each image at most once.
     void this.persistReplyImages(detail.thread.id, detail.messages);
-    return { ...detail, messages: detail.messages.map((message) => this.decorateMessage(message)) };
+    return { ...detail, messages: detail.messages.map((message) => this.shapeMessage(message, options)) };
   }
 
-  private decorateMessage(message: WebMessage): WebMessage {
+  /**
+   * The one boundary every browser-facing message crosses: it mints the
+   * short-lived reply capabilities, and it puts the transcript on a diet.
+   *
+   * Shaping lives HERE and never in the store. The store's parts feed the
+   * sidebar preview, the streamed-text split, and the transcript deltas that
+   * follow this change, all of which need the payloads whole and the indexes
+   * exactly as recorded.
+   */
+  private shapeMessage(message: WebMessage, options: WebTranscriptShape = {}): WebMessage {
     const parts = message.parts.map((part): WebMessagePart => {
-      if (part.type !== "attachment" && part.type !== "mcp_app") return part;
-      return this.decorateReplyPart(message, part);
+      if (part.type === "attachment" || part.type === "mcp_app") return this.decorateReplyPart(message, part);
+      if (options.full === true) return part;
+      if (part.type === "telemetry") return shapeTelemetryPart(part);
+      if (part.type === "tool-call") return shapeToolCallPart(part);
+      if (part.type === "subagent") return shapeSubagentPart(part);
+      return part;
     });
     return { ...message, parts };
   }

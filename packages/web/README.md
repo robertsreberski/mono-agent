@@ -455,8 +455,10 @@ WEB_THREAD_SEARCH_MIN_QUERY
 WebAgentRunSettings
 WebAgentStatus
 WebAgentSummary
+WebAgentsChangedPayload
 WebAttachment
 WebBootstrap
+WebBootstrapScope
 WebConsoleError
 WebConsoleIdentity
 WebEvent
@@ -483,6 +485,7 @@ WebStatePathOptions
 WebStatePaths
 WebTheme
 WebThread
+WebThreadChangedPayload
 WebThreadDetail
 WebThreadNotificationTriggerKind
 WebThreadSearchHit

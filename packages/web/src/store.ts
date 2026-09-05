@@ -464,7 +464,24 @@ export function escapeLikeTerm(raw: string): string {
 const WEB_STORAGE_SCHEMA_VERSION = 17;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
+/**
+ * What one page is when the caller does not say.
+ *
+ * A sidebar shows a handful of conversations and pages from there, so both the
+ * bootstrap's bucket and the thread-list route answer with this rather than the
+ * whole per-bucket cap.
+ */
+export const WEB_THREAD_PAGE_DEFAULT = 50;
 export const WEB_MESSAGE_PAGE_MAX = 100;
+/**
+ * What one page of a transcript is when the caller does not say.
+ *
+ * A conversation read used to answer with the whole cap, which on a tool-heavy
+ * thread is hundreds of kilobytes the viewport never shows. The console renders
+ * the tail and pages backwards from `messagesNextCursor`, so the default is the
+ * screenful rather than the ceiling.
+ */
+export const WEB_MESSAGE_PAGE_DEFAULT = 30;
 const MAX_ACTIVE_PUSH_SUBSCRIPTIONS = 32;
 const MAX_PENDING_PUSH_DELIVERIES_PER_SUBSCRIPTION = 200;
 const PUSH_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -557,6 +574,17 @@ export interface CompleteWebNotificationResult {
   readonly thread?: WebThread;
   readonly duplicate: boolean;
   readonly tombstoned?: true;
+}
+
+/**
+ * A process-job card upsert, plus the message it owns.
+ *
+ * The card's message id is what the service invalidates on, and the store is
+ * the only thing that knows it: looking for the card by scanning a page of the
+ * conversation loses every job that finished behind a page of later messages.
+ */
+export interface UpsertWebProcessJobCardResult extends CompleteWebNotificationResult {
+  readonly messageId: string;
 }
 
 export function cronChannelReadOnlyError(): WebConsoleError {
@@ -1567,7 +1595,7 @@ export class WebStore {
   }
 
   /** Append or update exactly one retained card for a web-origin process job. */
-  upsertProcessJobCard(input: UpsertWebProcessJobCardInput): CompleteWebNotificationResult {
+  upsertProcessJobCard(input: UpsertWebProcessJobCardInput): UpsertWebProcessJobCardResult {
     const projection = parseProcessJobProjection(input.processJob);
     const thread = this.requireThread(input.threadId);
     if (thread.sourceId !== input.sourceId) {
@@ -1626,7 +1654,7 @@ export class WebStore {
           .run(now, input.threadId);
         this.recordThreadRevision(input.threadId, "process_job_card_created", now);
       });
-      return { thread: this.requireThread(input.threadId), duplicate: false };
+      return { thread: this.requireThread(input.threadId), duplicate: false, messageId };
     }
 
     if (existing.thread_id !== input.threadId || existing.delivery_key !== input.deliveryKey) {
@@ -1679,7 +1707,7 @@ export class WebStore {
     if (existing.projection_sha256 === projectionSha256
       && responseText === (existing.response_text ?? undefined)
       && !replyPartsChanged) {
-      return { thread, duplicate: true };
+      return { thread, duplicate: true, messageId: existing.message_id };
     }
     this.transaction(() => {
       this.database.prepare(`
@@ -1699,7 +1727,7 @@ export class WebStore {
         .run(now, input.threadId);
       this.recordThreadRevision(input.threadId, "process_job_card_updated", now);
     });
-    return { thread: this.requireThread(input.threadId), duplicate: false };
+    return { thread: this.requireThread(input.threadId), duplicate: false, messageId: existing.message_id };
   }
 
   /** Durably claim one web process-job wake before touching the operator. */
@@ -2015,24 +2043,6 @@ export class WebStore {
     return this.requireThread(id);
   }
 
-  /** Bounded bootstrap: at most one 200-row bucket per (source_id, archived). */
-  listThreads(): WebThread[] {
-    const rows = this.database.prepare(threadSelectSql(`
-      WHERE a.discovered = 1 AND t.id IN (
-        SELECT id FROM (
-          SELECT id,
-                 ROW_NUMBER() OVER (
-                   PARTITION BY source_id, CASE WHEN archived_at IS NULL THEN 0 ELSE 1 END
-                   ORDER BY updated_at DESC, id DESC
-                 ) AS bucket_row
-          FROM threads
-        ) WHERE bucket_row <= ${String(WEB_THREAD_PAGE_MAX)}
-      )
-      ORDER BY t.updated_at DESC, t.id DESC
-    `)).all() as unknown as ThreadRow[];
-    return rows.map((row) => this.mapThread(row));
-  }
-
   listThreadsPage(input: {
     readonly sourceId: string;
     readonly archived: boolean;
@@ -2203,11 +2213,14 @@ export class WebStore {
     return row === undefined ? undefined : this.mapThread(row);
   }
 
-  getThreadDetail(id: string): WebThreadDetail | undefined {
+  getThreadDetail(
+    id: string,
+    options: { readonly limit?: number } = {},
+  ): WebThreadDetail | undefined {
     const resolved = this.resolveThreadId(id);
     const thread = this.getThread(resolved);
     if (thread === undefined) return undefined;
-    const page = this.listMessagesPage(resolved);
+    const page = this.listMessagesPage(resolved, { limit: options.limit ?? WEB_MESSAGE_PAGE_DEFAULT });
     return {
       thread,
       messages: page.messages,

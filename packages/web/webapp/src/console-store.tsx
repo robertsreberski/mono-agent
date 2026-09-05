@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { api, ApiError } from "./api";
+import { api, ApiError, THREAD_PAGE_LIMIT, type BootstrapScope } from "./api";
 import { recordServerTime } from "./server-clock";
 import { DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
@@ -16,12 +16,14 @@ import type {
   Bootstrap,
   CatalogModel,
   CronOverview,
+  MessagePart,
   RunState,
   SkillRegistryState,
   StartTurnInput,
   ThreadDetail,
   ThreadSummary,
   WebEvent,
+  WebMessage,
 } from "./types";
 import {
   effectiveModelForAgent,
@@ -95,6 +97,11 @@ interface ConsoleStoreValue {
   readonly loadOlderMessages: () => Promise<void>;
   readonly refreshCron: () => Promise<void>;
   readonly loadCronRunActivity: (runId: string) => Promise<void>;
+  /**
+   * Replace one truncated tool call in the open conversation with its whole
+   * body. Resolves to `true` when the transcript changed.
+   */
+  readonly loadFullToolCall: (toolCallId: string) => Promise<boolean>;
 }
 
 const ConsoleStore = createContext<ConsoleStoreValue | null>(null);
@@ -194,6 +201,43 @@ const asciiNoCase = (value: string): string =>
     String.fromCharCode(character.charCodeAt(0) + 32),
   );
 
+/**
+ * Whether a message is the one that owns a tool call -- as a part of its own,
+ * or as one of a delegation's children.
+ *
+ * The full-body route is addressed by (conversation, message, call) because a
+ * tool-call id is not a capability, so the console has to name the message it
+ * already holds the preview in.
+ */
+export const holdsToolCall = (message: WebMessage, toolCallId: string): boolean =>
+  message.parts.some((part) =>
+    (part.type === "tool-call" || part.type === "subagent")
+      && (part.toolCallId === toolCallId
+        || (part.type === "subagent"
+          && part.calls.some((call) => call.toolCallId === toolCallId))));
+
+/**
+ * Put an untruncated tool call back where its preview was, as NEW objects.
+ *
+ * assistant-ui caches its part conversions by object identity, so a transcript
+ * repaired in place goes on rendering the preview it already converted.
+ */
+export const mergeToolCallPart = (existing: MessagePart, full: MessagePart): MessagePart => {
+  if (full.type !== "tool-call" && full.type !== "subagent") return existing;
+  if (existing.type !== "tool-call" && existing.type !== "subagent") return existing;
+  if (existing.toolCallId === full.toolCallId) return full;
+  if (existing.type !== "subagent" || full.type !== "tool-call") return existing;
+  if (!existing.calls.some((call) => call.toolCallId === full.toolCallId)) return existing;
+  // A delegation's child owns no part of its own, so the route answers with the
+  // tool call it would have been and it goes back into the group.
+  const { type: _type, ...call } = full;
+  return {
+    ...existing,
+    calls: existing.calls.map((candidate) =>
+      candidate.toolCallId === full.toolCallId ? call : candidate),
+  };
+};
+
 export const sortAgentsPinnedFirst = (
   agents: readonly AgentSummary[],
 ): readonly AgentSummary[] => [...agents].sort((left, right) => {
@@ -276,24 +320,48 @@ export const resolveBootstrapSelection = (
   const currentAgent = next.agents.find((agent) => agent.sourceId === selectedAgentId);
   const agentId =
     currentAgent?.sourceId ??
+    // The bucket the SERVER opened on when this tab named none: it resolves the
+    // same chain, and adopting its answer is what keeps a first load to one
+    // request instead of a bootstrap plus the page for a different agent.
+    next.agents.find((agent) => agent.sourceId === next.threadsSourceId)?.sourceId ??
     next.agents.find((agent) => agent.status !== "offline")?.sourceId ??
     next.agents[0]?.sourceId ??
     null;
-  const currentThread = next.threads.find(
-    (thread) => thread.id === selectedThreadId && thread.sourceId === agentId,
-  );
-  const persistedThread = next.threads.find(
-    (thread) =>
-      thread.id === persistedThreadIds[agentId ?? ""] &&
-      thread.sourceId === agentId &&
-      !thread.archivedAt,
-  );
-  const thread =
-    currentThread ??
-    persistedThread ??
-    [...next.threads]
-      .filter((candidate) => candidate.sourceId === agentId && !candidate.archivedAt)
-      .sort(byMostRecent)[0];
+  // A bootstrap carries ONE page of ONE bucket now, so a conversation missing
+  // from `threads` is the ordinary case -- older than the page, or another
+  // agent's -- and no longer says anything about whether it still exists.
+  // Re-resolving for that alone moves the operator out of the conversation
+  // they were in, so an id this tab is ALREADY on is kept and the detail read
+  // the selection issues is what settles it: `loadThread` closes the
+  // conversation the server answers 404 for and moves off one it finds
+  // archived. An answer that DOES carry it and shows it unusable here --
+  // archived, or another agent's -- settles it right now instead.
+  if (currentAgent !== undefined && selectedThreadId !== null) {
+    // An archived conversation the operator is READING stays open; only one
+    // this answer says belongs to someone else is re-resolved.
+    const selected = next.threads.find((thread) => thread.id === selectedThreadId);
+    if (selected === undefined || selected.sourceId === agentId) {
+      return { agentId, threadId: selectedThreadId };
+    }
+  }
+  // The stored selection is per agent, so the agent this resolves to has one
+  // whether or not it is the agent the tab came in on.
+  const persistedId = agentId === null ? undefined : persistedThreadIds[agentId];
+  const persisted = persistedId === undefined
+    ? undefined
+    : next.threads.find((thread) => thread.id === persistedId);
+  if (persistedId !== undefined) {
+    if (persisted !== undefined && persisted.sourceId === agentId && !persisted.archivedAt) {
+      return { agentId, threadId: persistedId };
+    }
+    // Unlisted is "keep it" only for the agent the tab is already on. For an
+    // agent it is falling back TO, this page is the only evidence there is and
+    // an id it does not carry is not something to open blind.
+    if (persisted === undefined && currentAgent !== undefined) return { agentId, threadId: persistedId };
+  }
+  const thread = [...next.threads]
+    .filter((candidate) => candidate.sourceId === agentId && !candidate.archivedAt)
+    .sort(byMostRecent)[0];
   return { agentId, threadId: thread?.id ?? null };
 };
 
@@ -1171,6 +1239,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const threadsRef = useRef<readonly ThreadSummary[]>([]);
   /** The open conversation's own summary, which outlives its row in the listing. */
   const detailThreadRef = useRef<ThreadSummary | null>(null);
+  const detailRef = useRef<ThreadDetail | null>(null);
   /** See {@link UNLISTED_THREAD_MEMORY}. */
   const unlistedThreadsRef = useRef<Set<string>>(new Set());
   /** The conversations the next bucket revalidation is being asked about. */
@@ -1182,6 +1251,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   );
   /** Whether the bootstrap this component asked for on mount has answered. */
   const initialBootstrapRef = useRef<"pending" | "answered">("pending");
+  /** Whether this store is still mounted. See `scheduleRefresh`. */
+  const mountedRef = useRef(true);
+  /**
+   * A selection this store RESTORED rather than the operator making it.
+   *
+   * The stored id outlives the browser and one bucket page cannot confirm it,
+   * so an id the answer did not carry is opened on trust -- and the detail read
+   * is the only thing that can say the conversation was deleted or archived
+   * from another client since. What the OPERATOR opened -- a search hit, a push
+   * deep link, a sidebar row -- is their choice and is never second-guessed.
+   */
+  const restoredSelectionRef = useRef<string | null>(null);
   /** Set true by the first `ready`, so the next one is known to be a RECONNECT. */
   const streamOpenedRef = useRef(false);
   const hasBootstrapRef = useRef(false);
@@ -1200,6 +1281,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify(stored));
   }, [effortByContext, modelByContext]);
 
+  // SET on every mount, not just cleared on teardown: StrictMode runs this
+  // setup, its cleanup, and this setup again, and the ref survives all three.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   useEffect(() => {
     selectedThreadRef.current = selectedThreadId;
   }, [selectedThreadId]);
@@ -1216,7 +1304,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     showArchivedRef.current = showArchived;
   }, [showArchived]);
 
-  const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number) => {
+  const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number, archived: boolean) => {
+    const previouslySelected = selectedThreadRef.current;
     // A bootstrap is a wholesale replacement, so a deleted conversation it
     // still lists is re-added, selected, and routed to. It is also the single
     // most likely response to be in flight across a delete: `refreshNow` issues
@@ -1225,21 +1314,38 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       ...rawNext,
       threads: admitThreads(removedThreadsRef.current, rawNext.threads, issuedAt),
     };
-    // Recorded before the state lands, because the effect that would re-request
-    // these buckets runs on the commit this schedules. See `seededBucketsRef`.
-    for (const agent of next.agents) {
-      seededBucketsRef.current.add(threadBucketKey(agent.sourceId, false));
-      seededBucketsRef.current.add(threadBucketKey(agent.sourceId, true));
+    // REPLACED, not added to. A bootstrap answers with one bucket and the
+    // projection it lands in is a wholesale replacement, so every other bucket
+    // is gone from the sidebar -- and an "already seeded" entry left behind for
+    // one of them would leave that agent's sidebar empty with nothing to
+    // refill it. Recorded before the state lands, because the effect that would
+    // re-request this bucket runs on the commit this schedules.
+    const seeded = next.threadsSourceId === null
+      ? undefined
+      : threadBucketKey(next.threadsSourceId, archived);
+    seededBucketsRef.current = new Set(seeded === undefined ? [] : [seeded]);
+    // The page came with its own cursor, so "load more" works on a
+    // bootstrap-seeded bucket without a page request to learn one.
+    if (seeded !== undefined) {
+      setThreadCursorByBucket((current) => ({ ...current, [seeded]: next.threadsNextCursor }));
     }
     setBootstrap(next);
     hasBootstrapRef.current = true;
     setError(null);
     setLoading(false);
+    // A conversation this tab has TOMBSTONED is not a selection to keep,
+    // however this answer describes it: the operator asked for it to go, and
+    // the automatic re-resolution to a survivor is what a failed delete then
+    // owes them back. Anything else the answer merely did not list is kept.
+    const live = (threadId: string | null): string | null =>
+      threadId !== null && !removedThreadsRef.current.has(threadId) ? threadId : null;
     const baseSelection = resolveBootstrapSelection(
       next,
       selectedAgentRef.current,
-      selectedThreadRef.current,
-      readPersistedThreadIds(),
+      live(selectedThreadRef.current),
+      Object.fromEntries(
+        Object.entries(readPersistedThreadIds()).filter(([, threadId]) => live(threadId) !== null),
+      ),
     );
     const route = cronRouteSelection();
     const routeThread = route === undefined
@@ -1251,6 +1357,19 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const selection = routeThread === undefined
       ? baseSelection
       : { agentId: routeThread.sourceId, threadId: routeThread.id };
+    // Only a selection this answer CHANGED can be a restore, and only when the
+    // answer does not carry it. A bootstrap re-apply is routine -- one lands on
+    // every `agents.changed` -- and a conversation the operator opened from
+    // search or a push link is by definition absent from the active bucket, so
+    // re-arming for a selection that did not move ejected them out of it the
+    // moment their own read answered. A KEPT selection has already issued its
+    // read; whatever that read settles, it settles.
+    if (selection.threadId !== previouslySelected) {
+      restoredSelectionRef.current = selection.threadId !== null
+        && !next.threads.some((thread) => thread.id === selection.threadId)
+        ? selection.threadId
+        : null;
+    }
     selectedAgentRef.current = selection.agentId;
     selectedThreadRef.current = selection.threadId;
     setSelectedAgentId(selection.agentId);
@@ -1258,12 +1377,30 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (selection.agentId) {
       localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, selection.agentId);
       const selected = next.threads.find((thread) => thread.id === selection.threadId);
-      persistThreadId(
-        selection.agentId,
-        selected && !selected.archivedAt ? selected.id : null,
-      );
+      // Only what the answer ACTUALLY carries is evidence about the stored
+      // selection. One bucket page is not the whole bucket, so clearing it for
+      // a conversation this answer merely did not list would throw away the
+      // operator's place in a conversation that is still there.
+      if (selection.threadId === null) persistThreadId(selection.agentId, null);
+      else if (selected !== undefined) {
+        persistThreadId(selection.agentId, selected.archivedAt ? null : selected.id);
+      }
     }
   }, []);
+
+  /**
+   * The bucket a bootstrap should carry: the one this tab is showing.
+   *
+   * A bootstrap used to answer with every agent's conversations and the sidebar
+   * re-read the single bucket it shows anyway. An agent this tab has not
+   * resolved yet names none, and the server falls back the same way this store
+   * does.
+   */
+  const bootstrapScope = useCallback((): BootstrapScope => ({
+    ...(selectedAgentRef.current === null ? {} : { sourceId: selectedAgentRef.current }),
+    archived: showArchivedRef.current,
+    limit: THREAD_PAGE_LIMIT,
+  }), []);
 
   const loadBootstrap = useCallback(async () => {
     try {
@@ -1271,8 +1408,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // tombstone's lifetime is only an upper bound on late responses while
       // the responses themselves have one.
       const issuedAt = removedThreadsRef.current.epoch();
-      const next = await boundedRequest((signal) => api.bootstrap(signal), THREAD_READ_TIMEOUT_MS);
-      applyBootstrap(next, issuedAt);
+      const scope = bootstrapScope();
+      const next = await boundedRequest((signal) => api.bootstrap(signal, scope), THREAD_READ_TIMEOUT_MS);
+      applyBootstrap(next, issuedAt, scope.archived === true);
       setConnection("live");
     } catch (loadError) {
       setError(errorMessage(loadError));
@@ -1281,7 +1419,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     } finally {
       initialBootstrapRef.current = "answered";
     }
-  }, [applyBootstrap]);
+  }, [applyBootstrap, bootstrapScope]);
 
   useEffect(() => {
     void loadBootstrap();
@@ -1307,9 +1445,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    *   bootstrap-seeded window down to one page to do it. It keeps an existing
    *   cursor too: its page starts at the top of the bucket, so its own cursor
    *   would walk rows it has just refreshed rather than the older ones the
-   *   bucket is already pointing at. It DOES adopt one when the bucket has
-   *   none, which is how a bootstrap-seeded bucket -- the bootstrap carries no
-   *   cursor -- learns that there is anything older to page to at all.
+   *   bucket is already pointing at. It DOES adopt one when the bucket has no
+   *   cursor to page FROM -- absent, or `null` for "nothing older, as of the
+   *   answer that said so" -- which is how a bucket whose window has since
+   *   grown past one page learns that there is anything older to reach at all.
    */
   const loadThreadBucket = useCallback(async (
     sourceId: string,
@@ -1332,8 +1471,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         : current.threads;
       return { ...current, threads: mergeThreads(retained, admitted) };
     });
-    setThreadCursorByBucket((current) => mode === "merge"
-      && Object.prototype.hasOwnProperty.call(current, key)
+    setThreadCursorByBucket((current) => mode === "merge" && typeof current[key] === "string"
       ? current
       : { ...current, [key]: page.nextCursor ?? null });
     return admitted;
@@ -1351,10 +1489,77 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (selectedAgentId === null || loading || !hasBootstrap) return;
     // Already delivered by a bootstrap -- see `seededBucketsRef`.
     if (seededBucketsRef.current.has(threadBucketKey(selectedAgentId, showArchived))) return;
-    void loadThreadBucket(selectedAgentId, showArchived).catch((loadError: unknown) => {
+    void loadThreadBucket(selectedAgentId, showArchived).then((page) => {
+      // A bootstrap carries ONE bucket, so switching agents lands on rows this
+      // tab has never held: `selectAgent` resolves the conversation to open
+      // from what it holds and finds nothing, and this page is the first thing
+      // there is to resolve from. Only when nothing is selected -- an operator
+      // choice, a deep link and a restored selection all make this false, and
+      // none of them is this effect's to overrule -- and never on the archive
+      // shelf, which has never moved the selection.
+      if (showArchived
+        || selectedAgentRef.current !== selectedAgentId
+        || selectedThreadRef.current !== null) return;
+      const persistedId = readPersistedThreadIds()[selectedAgentId];
+      const next = page.find((item) => item.id === persistedId && !item.archivedAt)
+        ?? [...page].filter((item) => !item.archivedAt).sort(byMostRecent)[0];
+      if (next === undefined) return;
+      restoredSelectionRef.current = null;
+      selectedThreadRef.current = next.id;
+      setSelectedThreadId(next.id);
+      persistThreadId(selectedAgentId, next.id);
+      updateThreadRoute(next);
+    }).catch((loadError: unknown) => {
       setActionError(errorMessage(loadError));
     });
   }, [hasBootstrap, loadThreadBucket, loading, selectedAgentId, showArchived]);
+
+  /**
+   * The conversation on screen is gone: a read of it was answered "not found".
+   *
+   * The same repair the `thread.changed` removal arm makes for a conversation
+   * this tab holds no row for -- clear the selection, say so, and drop the
+   * stored id, which is what otherwise resolves the dead conversation again on
+   * every single load.
+   */
+  const closeMissingThread = useCallback((threadId: string) => {
+    selectedThreadRef.current = null;
+    setSelectedThreadId(null);
+    setDetail(null);
+    const sourceId = selectedAgentRef.current;
+    if (sourceId !== null && readPersistedThreadIds()[sourceId] === threadId) {
+      persistThreadId(sourceId, null);
+    }
+    setActionError("This conversation was deleted.");
+  }, []);
+
+  /**
+   * A restored conversation the server says is archived, while this tab is
+   * showing the active view.
+   *
+   * Archiving one HERE moves the selection to the next active row and repoints
+   * the stored id -- see `archiveThread` -- so one found archived is treated
+   * the same way rather than opened where the sidebar cannot list it and the
+   * archive toggle says nothing about it.
+   */
+  const leaveRestoredArchivedThread = useCallback((thread: ThreadSummary): boolean => {
+    // Only while this is still the conversation on screen. A read of a restored
+    // selection can answer long after the operator has created, archived,
+    // unarchived or simply opened something else, and a repair applied blind
+    // then moves them off what they are actually looking at.
+    if (selectedThreadRef.current !== thread.id) return false;
+    // Never the conversation being left, however stale the row holding it says
+    // it is -- the same exclusion `archiveThread` makes.
+    const replacement = [...threadsRef.current]
+      .filter((item) => item.sourceId === thread.sourceId && !item.archivedAt && item.id !== thread.id)
+      .sort(byMostRecent)[0];
+    selectedThreadRef.current = replacement?.id ?? null;
+    setSelectedThreadId(replacement?.id ?? null);
+    setDetail(null);
+    persistThreadId(thread.sourceId, replacement?.id ?? null);
+    updateThreadRoute(replacement, true);
+    return true;
+  }, []);
 
   const loadThread = useCallback(async (threadId: string, signal: AbortSignal) => {
     setDetailLoading(true);
@@ -1369,13 +1574,28 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // has seen about a conversation, and a failed delete has to hand that
       // back rather than a staler listing.
       if (!admitThread(removedThreadsRef.current, next.thread, issuedAt)) return;
+      // This read is what confirms a RESTORED selection -- nothing else does.
+      if (restoredSelectionRef.current === threadId) {
+        restoredSelectionRef.current = null;
+        if (next.thread.archivedAt !== null
+          && !showArchivedRef.current
+          && leaveRestoredArchivedThread(next.thread)) return;
+      }
       if (selectedThreadRef.current === threadId) setDetail(next);
     } catch (loadError) {
-      if (!signal.aborted) setActionError(errorMessage(loadError));
+      if (signal.aborted) return;
+      if (loadError instanceof ApiError
+        && loadError.status === 404
+        && selectedThreadRef.current === threadId) {
+        restoredSelectionRef.current = null;
+        closeMissingThread(threadId);
+        return;
+      }
+      setActionError(errorMessage(loadError));
     } finally {
       if (selectedThreadRef.current === threadId) setDetailLoading(false);
     }
-  }, []);
+  }, [closeMissingThread, leaveRestoredArchivedThread]);
 
   useEffect(() => {
     if (!selectedThreadId) {
@@ -1408,9 +1628,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     try {
       const issuedAt = removedThreadsRef.current.epoch();
       const selectedForRefresh = scope.detail ? selectedThreadRef.current : null;
+      const bucket = bootstrapScope();
       const [nextBootstrap, nextDetail] = await Promise.all([
         scope.bootstrap
-          ? boundedRequest((signal) => api.bootstrap(signal), THREAD_READ_TIMEOUT_MS)
+          ? boundedRequest((signal) => api.bootstrap(signal, bucket), THREAD_READ_TIMEOUT_MS)
           : Promise.resolve(null),
         selectedForRefresh
           ? boundedRequest(
@@ -1419,7 +1640,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             )
           : Promise.resolve(null),
       ]);
-      if (nextBootstrap !== null) applyBootstrap(nextBootstrap, issuedAt);
+      if (nextBootstrap !== null) applyBootstrap(nextBootstrap, issuedAt, bucket.archived === true);
       if (
         nextDetail
         && admitThread(removedThreadsRef.current, nextDetail.thread, issuedAt)
@@ -1440,9 +1661,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         scheduleRefreshRef.current({});
       }
     }
-  }, [applyBootstrap]);
+  }, [applyBootstrap, bootstrapScope]);
 
   const scheduleRefresh = useCallback((scope: Partial<RefreshScope>) => {
+    // A refresh that settles after the tree is gone re-queues through the
+    // scope above, and a torn-down console has no business putting another
+    // request on the wire. The stream effect's cleanup clears the timer that is
+    // pending AT teardown; this is the one that would be armed after it.
+    if (!mountedRef.current) return;
     refreshScopeRef.current = {
       bootstrap: refreshScopeRef.current.bootstrap || scope.bootstrap === true,
       detail: refreshScopeRef.current.detail || scope.detail === true,
@@ -1602,6 +1828,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         readonly threadId?: string;
         readonly removed?: boolean;
         readonly sourceId?: string;
+        readonly pinned?: boolean;
         readonly turn?: RunState;
       };
       const threadId = webEvent.threadId ?? payload.threadId;
@@ -1643,16 +1870,34 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           return;
         }
 
-        case "agents.changed":
-          // Carries no payload, and is emitted only when discovery actually saw
-          // a change: an agent appeared or went away, or one of them advertises
-          // something different. The provider catalog is keyed on the
-          // generation the bootstrap carries, so replacing the snapshot is what
-          // invalidates the model pages.
+        case "agents.changed": {
+          // A PIN names itself. Applying one boolean locally is the whole of
+          // what this event means, so it costs nothing -- the tab that pinned
+          // already applied the PATCH response and re-applies the same value.
+          const { sourceId, pinned } = payload;
+          if (sourceId !== undefined && pinned !== undefined) {
+            setBootstrap((current) => current === null
+              ? current
+              : {
+                  ...current,
+                  agents: sortAgentsPinnedFirst(
+                    current.agents.map((item) => item.sourceId === sourceId
+                      ? { ...item, pinned }
+                      : item),
+                  ),
+                });
+            return;
+          }
+          // Payload-less: emitted only when discovery actually saw a change --
+          // an agent appeared or went away, or one of them advertises something
+          // different. The provider catalog is keyed on the generation the
+          // bootstrap carries, so replacing the snapshot is what invalidates the
+          // model pages.
           loadAgents();
           setSkillRefreshToken((value) => value + 1);
           setCronRefreshToken((value) => value + 1);
           return;
+        }
 
         case "cron.changed":
           // Every agent's cron scheduler emits these; only the one being
@@ -1667,6 +1912,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             applyThreadUpdate(payload.thread, removedThreadsRef.current.epoch());
             return;
           }
+          // The removal is the `thread.changed` half's business: it holds the
+          // tombstone and the selection repair, and it arrives with this one.
+          // Read as a bare listing event, this bought a page of the bucket to
+          // go looking for a conversation the same event said was gone.
+          if (payload.removed === true) return;
           if (threadId !== undefined) {
             // A conversation this tab already lists needs nothing from the
             // listing: whatever changed about it arrives as its own
@@ -1693,6 +1943,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         case "thread.changed":
           if (payload.thread !== undefined) {
             applyThreadUpdate(payload.thread, removedThreadsRef.current.epoch());
+            // The summary IS the sidebar row and it is applied above, for every
+            // conversation, at no cost. The MESSAGES are not in it: a finished
+            // turn, a reconciled cron run and an appended notification all end
+            // in this event and nothing else says the transcript moved. Only
+            // the conversation on screen has anything to show for that.
+            if (threadId === selectedThreadRef.current) refreshSelectedThread();
             return;
           }
           if (payload.removed === true && threadId !== undefined) {
@@ -1849,6 +2105,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // Assigned during render, like `threadsRef`: a removal event has to be able
   // to name a conversation the listing has moved past.
   detailThreadRef.current = detail?.thread ?? null;
+  detailRef.current = detail;
   const visibleThreads = useMemo(
     () =>
       [...threads]
@@ -1992,6 +2249,56 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [selectedAgentId, selectedCronJobId, selectedCronThreadId]);
 
+  // Deliberately stable: this is handed to the transcript through a context, and
+  // a new identity on every streamed token would re-render every tool row for
+  // the whole of a running turn.
+  const loadFullToolCall = useCallback(async (toolCallId: string): Promise<boolean> => {
+    const current = detailRef.current;
+    if (current === null) return false;
+    const message = current.messages.find((candidate) => holdsToolCall(candidate, toolCallId));
+    if (message === undefined) return false;
+    // Bounded like every other read. Unbounded, a wedged transport left the
+    // row's notice on "Loading..." for good: nothing settles the promise it is
+    // waiting on, so it can neither report the failure nor offer the button
+    // again. See {@link THREAD_READ_TIMEOUT_MS}.
+    const part = await boundedRequest(
+      (signal) => api.toolCallPart(current.thread.id, message.id, toolCallId, signal),
+      THREAD_READ_TIMEOUT_MS,
+    );
+    // The round trip is not instant, and the operator can leave the conversation
+    // (or a refresh can evict the message) while it is in flight. Everything is
+    // decided against the freshest COMMITTED detail, before the updater and
+    // never inside it: a state updater is not guaranteed to run synchronously
+    // and StrictMode runs it twice, so a flag set in there reports scheduling
+    // rather than whether anything was replaced.
+    const latest = detailRef.current;
+    if (latest === null || latest.thread.id !== current.thread.id) return false;
+    const target = latest.messages.find((candidate) => candidate.id === message.id);
+    if (target === undefined) return false;
+    const merged = target.parts.map((existing) => mergeToolCallPart(existing, part));
+    if (merged.every((next, index) => next === target.parts[index])) return false;
+    // The MERGE runs inside the updater, against whatever React has committed by
+    // then. `detailRef` is assigned during render, so it is stale for the whole
+    // stretch between one async repair's `setDetail` and the re-render that
+    // follows: two calls repaired in the same message -- two clicks on a
+    // cluster, two subagent steps -- would each substitute a message built
+    // before the other landed, and the first repair would silently revert to its
+    // preview while both reported success. `mergeToolCallPart` is pure and
+    // idempotent, so StrictMode running this twice changes nothing.
+    setDetail((committed) => committed?.thread.id === latest.thread.id
+      ? {
+          ...committed,
+          messages: committed.messages.map((candidate) => candidate.id === message.id
+            // A NEW message object, and new part objects inside it: assistant-ui
+            // caches its conversions by object identity, so a transcript
+            // repaired in place goes on rendering the preview it converted.
+            ? { ...candidate, parts: candidate.parts.map((existing) => mergeToolCallPart(existing, part)) }
+            : candidate),
+        }
+      : committed);
+    return true;
+  }, []);
+
   useEffect(() => {
     void refreshCron();
   }, [cronRefreshToken, refreshCron]);
@@ -2053,6 +2360,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const selectAgent = useCallback(
     (sourceId: string) => {
       operatorSelectionRef.current += 1;
+      // Whatever this resolves to is the operator's, never a provisional
+      // restore. See `restoredSelectionRef`.
+      restoredSelectionRef.current = null;
       selectedAgentRef.current = sourceId;
       setSelectedAgentId(sourceId);
       localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, sourceId);
@@ -2066,7 +2376,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         .sort(byMostRecent)[0];
       selectedThreadRef.current = recent?.id ?? null;
       setSelectedThreadId(recent?.id ?? null);
-      persistThreadId(sourceId, recent?.id ?? null);
+      // Only a row this tab HOLDS is evidence. With one bucket per bootstrap,
+      // holding none for an agent means its bucket has not been fetched yet --
+      // not that the operator's last conversation there is gone -- and clearing
+      // the stored id here would throw away what the page is about to open on.
+      if (recent !== undefined) persistThreadId(sourceId, recent.id);
       updateThreadRoute(recent);
       setShowArchived(false);
       setActionError(null);
@@ -2101,6 +2415,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const selectThread = useCallback(
     (threadId: string) => {
       operatorSelectionRef.current += 1;
+      restoredSelectionRef.current = null;
       const thread = threads.find((candidate) => candidate.id === threadId);
       if (thread) {
         selectedAgentRef.current = thread.sourceId;
@@ -2187,6 +2502,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         return next;
       });
       operatorSelectionRef.current += 1;
+      // See `restoredSelectionRef`: what the operator opens is theirs, and a
+      // read still in flight for what they left has nothing to settle here.
+      restoredSelectionRef.current = null;
       selectedThreadRef.current = thread.id;
       setSelectedThreadId(thread.id);
       persistThreadId(selectedAgentId, thread.id);
@@ -2296,6 +2614,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         applyThreadUpdate(thread, issuedAt);
         if (selectedThreadRef.current === target.id || selectedThreadRef.current === threadId) {
           operatorSelectionRef.current += 1;
+          restoredSelectionRef.current = null;
           const replacement = visibleThreads.find((item) => item.id !== target.id);
           selectedThreadRef.current = replacement?.id ?? null;
           setSelectedThreadId(replacement?.id ?? null);
@@ -2320,6 +2639,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         api.patchThread(target.id, { archived: false }, signal));
       applyThreadUpdate(thread, issuedAt);
       operatorSelectionRef.current += 1;
+      restoredSelectionRef.current = null;
       selectedThreadRef.current = thread.id;
       setSelectedThreadId(thread.id);
       persistThreadId(thread.sourceId, thread.id);
@@ -3080,6 +3400,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loadOlderMessages,
       refreshCron,
       loadCronRunActivity,
+      loadFullToolCall,
     }),
     [
       actionError,
@@ -3110,6 +3431,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loadMoreThreads,
       loadOlderMessages,
       loadCronRunActivity,
+      loadFullToolCall,
       loading,
       hasRunOverride,
       model,
