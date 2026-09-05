@@ -1,5 +1,6 @@
 import type { RuntimeEventLike } from "@mono-agent/observability";
 import type { AgentLiveInputOffer, AgentLiveInputRequest } from "@mono-agent/agent-contracts";
+import { randomUUID } from "node:crypto";
 import {
   monoRuntimeSupportsSessionResume,
   type RuntimeResult,
@@ -400,6 +401,9 @@ export class MonoAgentHarness implements AgentHarness {
       }
 
       let resumeSessionId = providerHistoryTurn?.providerSessionId ?? sessionRecord?.providerSessionId;
+      let providerAttributionSessionId = !isolated && this.sessionsEnabled()
+        ? resumeSessionId ?? randomUUID()
+        : undefined;
       const confirmedWarmSession = sessionRecord !== undefined
         && sessionRecord.providerSessionId === resumeSessionId
         && (providerHistoryTurn === undefined
@@ -481,6 +485,7 @@ export class MonoAgentHarness implements AgentHarness {
           prepared.memory,
           runId,
           resumeSessionId,
+          providerAttributionSessionId,
           providerHistoryTurn === undefined ? undefined : this.options.piSessionsRoot,
           isolated,
           prepared.skillDisclosureEntries,
@@ -524,6 +529,7 @@ export class MonoAgentHarness implements AgentHarness {
           resumeSessionId,
         );
         resumeSessionId = undefined;
+        providerAttributionSessionId = randomUUID();
         coordinatedProviderAttemptEligibleForSync = false;
         prepared = await prepareHarnessContext(this.options, this.skillsCache, activeRequest, {
           historyMode: "prompt",
@@ -540,6 +546,7 @@ export class MonoAgentHarness implements AgentHarness {
           prepared.memory,
           runId,
           undefined,
+          providerAttributionSessionId,
           undefined,
           isolated,
           prepared.skillDisclosureEntries,
