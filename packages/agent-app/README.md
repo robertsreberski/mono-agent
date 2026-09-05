@@ -94,7 +94,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Resolve local-first WebSearch/WebFetch settings into every runtime run and
   report a separate bounded readiness section for loopback SearXNG plus the
   optional `agent-browser` renderer; the app never owns either companion's
-  lifecycle.
+  lifecycle. Opt-in `tools.web.coordination: "host"` injects the same private
+  admission and cooldown store into parent and subagent runs;
+  `mono-agent web-control status|reset` inspects or clears idle operational state.
 - Operate the machine-wide `@mono-agent/web` assistant-ui console through
   `mono-agent web`, including persisted curated host themes and hostname
   identity; on macOS pair its worker with one helper-only, stopped-writer log

@@ -79,6 +79,7 @@ describe("loadMonoAgentConfig", () => {
       mcpCallTimeoutMs: 150000,
       mcpCallMaxTotalTimeoutMs: 2700000,
       web: {
+        coordination: "process",
         search: { backend: "auto", codex: { model: "gpt-5.6-luna" } },
         fetch: { render: "never", browserCommand: "agent-browser" },
       },
@@ -104,6 +105,7 @@ describe("loadMonoAgentConfig", () => {
     expect(config.artifacts.retention).toEqual({ maxAgeDays: 365, maxCount: 50000, dryRun: false });
     expect(config.artifacts.memoryRetention).toEqual({ maxAgeDays: 7, maxCount: 5000, dryRun: false });
     expect(config.tools.web).toEqual({
+      coordination: "process",
       search: { backend: "auto", codex: { model: "gpt-5.6-luna" } },
       fetch: { render: "never", browserCommand: "agent-browser" },
     });
@@ -114,6 +116,7 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: {
         ...baseEnv,
+        MONO_AGENT_WEB_COORDINATION: "host",
         MONO_AGENT_WEB_SEARCH_BACKEND: "searxng",
         MONO_AGENT_WEB_SEARCH_ENDPOINT: "http://127.0.0.1:8088/",
         MONO_AGENT_WEB_SEARCH_CODEX_MODEL: "gpt-5.6-sol",
@@ -123,6 +126,7 @@ describe("loadMonoAgentConfig", () => {
     });
 
     expect(config.tools.web).toEqual({
+      coordination: "host",
       search: {
         backend: "searxng",
         endpoint: "http://127.0.0.1:8088",

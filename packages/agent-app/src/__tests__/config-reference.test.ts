@@ -89,6 +89,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "tools.continuationServers": "string[]",
   "tools.mcpCallTimeoutMs": "integer",
   "tools.mcpCallMaxTotalTimeoutMs": "integer",
+  "tools.web.coordination": "string",
   "tools.web.search.backend": "string",
   "tools.web.search.codex.model": "string",
   "tools.web.search.endpoint": "string",

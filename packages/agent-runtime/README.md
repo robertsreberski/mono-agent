@@ -717,12 +717,16 @@ contract package for this boundary.
 
 `WebSearch` uses a configured loopback SearXNG endpoint and/or deterministic
 public fallbacks that require no credentials. It canonicalizes and deduplicates
-results, then fuses multiple query rankings. `WebFetch` extracts HTML, JSON,
+results, trying supplied alternate queries only if the primary has no relevant
+results. Codex subscription search preserves a 10% allowance reserve. An optional
+host-injected coordinator shares admission and cooldowns across processes. `WebFetch` extracts HTML, JSON,
 feeds, PDFs, and text locally with
 bounded redirects, bodies, headers, and retries. Config can opt into isolated
 `agent-browser` rendering for sparse client-rendered HTML. One ephemeral
 controller per run deduplicates identical calls and closes every browser
-namespace at run end.
+namespace at run end. WebFetch `start_line` and `max_lines` reuse a bounded
+run-scoped document cache. Search and fetch use total deadlines of 60 and 45
+seconds respectively, with bounded transport cleanup after cancellation.
 
 Pi runs with selected skills also expose `ReadSkill`. It returns the complete
 skill instructions by default, including content beyond the former

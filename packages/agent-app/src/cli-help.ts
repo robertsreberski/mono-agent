@@ -331,6 +331,15 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
+    command: "web-control",
+    group: "Maintain",
+    short: "web-control status|reset",
+    summary: "Inspect or reset shared web request budgets and cooldowns.",
+    json: true,
+    signature: "mono-agent web-control [status|reset] [--json]",
+    lines: ["Owner-local operational state only. Reset refuses active request leases; it does not change provider quotas."],
+  },
+  {
     command: "monitors",
     group: "Maintain",
     short: "monitors list|get|cancel",
