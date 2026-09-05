@@ -10,6 +10,7 @@ import {
   processJobAdvances,
   processJobExitLabel,
   processJobStatus,
+  processJobSupersedes,
   processJobThreadId,
   processJobTiming,
 } from "./ProcessJob";
@@ -117,6 +118,40 @@ describe("processJobAdvances", () => {
     expect(processJobAdvances("running", "running")).toBe(false);
     expect(processJobAdvances("succeeded", "failed")).toBe(false);
     expect(processJobAdvances("cancelled", "running")).toBe(false);
+  });
+});
+
+describe("processJobSupersedes", () => {
+  const base = processJob();
+  const at = (state: ProcessJobState, startedAt: string | null) => processJob({
+    state,
+    exitCode: null,
+    durationMs: null,
+    timestamps: { ...base.timestamps, startedAt, completedAt: null },
+  });
+
+  it("follows the lifecycle rank across states", () => {
+    expect(processJobSupersedes(at("starting", null), at("running", "2026-07-17T10:00:01.000Z"))).toBe(true);
+    expect(processJobSupersedes(at("starting", null), base)).toBe(true);
+    expect(processJobSupersedes(at("running", "2026-07-17T10:00:01.000Z"), at("starting", null))).toBe(false);
+    expect(processJobSupersedes(base, processJob({ state: "failed" }))).toBe(false);
+  });
+
+  it("accepts the one same-state enrichment the row renders: a start stamp the job did not have", () => {
+    // The producer persists `starting`, then records the process start while
+    // still `starting`, and only then moves to `running`.
+    expect(processJobSupersedes(at("starting", null), at("starting", "2026-07-17T10:00:01.000Z"))).toBe(true);
+  });
+
+  it("rejects a same-state answer that adds nothing or would forget a known start", () => {
+    expect(processJobSupersedes(at("starting", null), at("starting", null))).toBe(false);
+    expect(processJobSupersedes(at("starting", "2026-07-17T10:00:01.000Z"), at("starting", null))).toBe(false);
+    expect(processJobSupersedes(
+      at("starting", "2026-07-17T10:00:01.000Z"),
+      at("starting", "2026-07-17T10:00:02.000Z"),
+    )).toBe(false);
+    expect(processJobSupersedes(at("running", "2026-07-17T10:00:01.000Z"), at("running", "2026-07-17T10:00:01.000Z"))).toBe(false);
+    expect(processJobSupersedes(at("queued", null), at("queued", null))).toBe(false);
   });
 });
 
@@ -260,6 +295,43 @@ describe("ProcessJobPart", () => {
       await Promise.resolve();
     });
     expect(threadJob).toHaveBeenCalledTimes(2);
+  });
+
+  it("takes the process start from a same-state starting answer and never forgets it again", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T10:00:17.000Z"));
+    const base = processJob();
+    const pending = { ...base.wake, state: "pending" as const, attempts: 0, lastAttemptAt: null };
+    const startingAt = (startedAt: string | null) => processJob({
+      state: "starting",
+      exitCode: null,
+      durationMs: null,
+      timestamps: { ...base.timestamps, startedAt, completedAt: null },
+      wake: pending,
+    });
+    const beforeAttestation = startingAt(null);
+    const afterAttestation = startingAt("2026-07-17T10:00:01.000Z");
+    const threadJob = vi.spyOn(api, "threadJob")
+      .mockResolvedValueOnce(afterAttestation)
+      // A slower answer read before the attestation: still `starting`, start unknown.
+      .mockResolvedValue(beforeAttestation);
+    render(part({ type: "process-job", job: beforeAttestation }));
+
+    const time = () => screen.getByRole("group", { name: "Exec background job starting" }).querySelector(".activity-row-time");
+    // Before the start is known the row counts from admission (10:00:00).
+    expect(time()).toHaveTextContent("starting · 17s");
+    await act(async () => { await Promise.resolve(); });
+    expect(threadJob).toHaveBeenCalledTimes(1);
+    // The same state with the start recorded corrects the window to the process start (10:00:01).
+    expect(time()).toHaveTextContent("starting · 16s");
+
+    // The next poll answers with the pre-attestation record: the known start must not go back to null.
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(2);
+    expect(time()).toHaveTextContent("starting · 17s");
   });
 
   it("settles the row when the in-flight poll answers with a terminal state after a store handoff", async () => {

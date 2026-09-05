@@ -42,6 +42,21 @@ const PROCESS_JOB_STATE_RANK: Readonly<Record<ProcessJobState, number>> = {
 export const processJobAdvances = (from: ProcessJobState, to: ProcessJobState): boolean =>
   PROCESS_JOB_STATE_RANK[to] > PROCESS_JOB_STATE_RANK[from];
 
+/**
+ * Whether a projection fetched by the poll should replace the one the row has.
+ * Rank decides across states. Within one nonterminal state the row renders a
+ * single field the producer fills without a transition: the process start,
+ * which the host records while the job is still `starting` and only then
+ * promotes to `running`. So a same-state answer counts exactly when it brings
+ * that start where none was known; one that adds nothing, or that would
+ * forget a start already known, is the slower answer and is left alone.
+ */
+export const processJobSupersedes = (current: ProcessJobProjection, next: ProcessJobProjection): boolean => {
+  if (processJobAdvances(current.state, next.state)) return true;
+  if (current.state !== next.state || TERMINAL_PROCESS_JOB_STATES.has(next.state)) return false;
+  return current.timestamps.startedAt === null && next.timestamps.startedAt !== null;
+};
+
 /** The retained web thread a job reports to, or nothing for an origin the console cannot poll. */
 export const processJobThreadId = (job: ProcessJobProjection): string | undefined => {
   const base = job.origin.conversationId.split("#", 1)[0];
@@ -152,10 +167,11 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
         // A poll answer counts only when it moves the job forward. The store can
         // hand the row a newer projection while a request is out: a slower
         // answer that is further back in the lifecycle must not drag the row
-        // back, one that says the same state changes nothing the row renders,
-        // and a terminal one is progress however the request and the store
-        // interleaved. Judged against the latest state, not the closure's.
-        setLive((current) => current === undefined || processJobAdvances(current.state, next.state) ? next : current);
+        // back, one that says the same state counts only for the start stamp
+        // it may bring, and a terminal one is progress however the request and
+        // the store interleaved. Judged against the latest state, not the
+        // closure's.
+        setLive((current) => current === undefined || processJobSupersedes(current, next) ? next : current);
         // Terminal always advances the nonterminal row this effect exists for,
         // so the answer that ends the loop is one the row has taken.
         if (TERMINAL_PROCESS_JOB_STATES.has(next.state)) return;
