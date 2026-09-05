@@ -102,6 +102,18 @@ const byMostRecent = (a: ThreadSummary, b: ThreadSummary) =>
 const threadBucketKey = (sourceId: string, archived: boolean): string =>
   `${sourceId}\0${archived ? "archived" : "active"}`;
 const cronChannelKey = (sourceId: string, jobId: string): string => `${sourceId}\0${jobId}`;
+/**
+ * "This conversation is not in THIS bucket" -- see {@link UNLISTED_THREAD_MEMORY}.
+ *
+ * Keyed by the bucket the answering page came from, never by the conversation
+ * alone. A page of agent A's bucket says nothing whatever about agent B's, and
+ * an answer recorded against the id alone silenced every later event for a
+ * conversation that had simply fallen outside A's window: switch to B, whose
+ * bucket the bootstrap already seeded so nothing refetches, and B's most
+ * recently active conversation would never appear.
+ */
+const unlistedThreadKey = (sourceId: string, archived: boolean, threadId: string): string =>
+  `${threadBucketKey(sourceId, archived)}\0${threadId}`;
 
 const mergeThreads = (
   current: readonly ThreadSummary[],
@@ -1470,12 +1482,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     [scheduleRefresh],
   );
 
-  const rememberUnlistedThread = useCallback((threadId: string) => {
+  const rememberUnlistedThread = useCallback((key: string) => {
     const remembered = unlistedThreadsRef.current;
     // Re-inserted so a repeat sighting counts as recent. Insertion order is
     // chronological, so the oldest entry is always the first one out.
-    remembered.delete(threadId);
-    remembered.add(threadId);
+    remembered.delete(key);
+    remembered.add(key);
     while (remembered.size > UNLISTED_THREAD_MEMORY) {
       const oldest = remembered.values().next().value;
       if (oldest === undefined) break;
@@ -1489,10 +1501,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * {@link THREAD_LIST_REVALIDATE_DEBOUNCE_MS} -- and a MERGE, so answering
    * one cannot truncate the sidebar the operator is looking at.
    *
-   * `threadId` is what the revalidation is being asked about. Anything it does
-   * not surface is not in this bucket -- most often because it belongs to
-   * another agent, which these events do not name -- and is remembered so the
-   * next event about it costs nothing. See {@link UNLISTED_THREAD_MEMORY}.
+   * `threadId` is what the revalidation is being asked about. Anything the page
+   * does not surface is not in THAT BUCKET -- most often because it belongs to
+   * another agent, which these events do not name -- and is remembered against
+   * the bucket that answered, so the next event about it costs nothing there
+   * and still costs a page everywhere else. See {@link UNLISTED_THREAD_MEMORY}
+   * and {@link unlistedThreadKey}.
    */
   const revalidateBucket = useCallback((threadId?: string) => {
     if (threadId !== undefined) pendingRevalidationRef.current.add(threadId);
@@ -1500,13 +1514,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     threadListTimerRef.current = window.setTimeout(() => {
       threadListTimerRef.current = null;
       const sourceId = selectedAgentRef.current;
+      const archived = showArchivedRef.current;
       const asked = [...pendingRevalidationRef.current];
       pendingRevalidationRef.current.clear();
       if (sourceId === null) return;
-      void loadThreadBucket(sourceId, showArchivedRef.current, undefined, "merge")
+      void loadThreadBucket(sourceId, archived, undefined, "merge")
         .then((surfaced) => {
           const listed = new Set(surfaced.map((thread) => thread.id));
-          for (const id of asked) if (!listed.has(id)) rememberUnlistedThread(id);
+          for (const id of asked) {
+            if (!listed.has(id)) rememberUnlistedThread(unlistedThreadKey(sourceId, archived, id));
+          }
         })
         .catch((loadError: unknown) => {
           setActionError(errorMessage(loadError));
@@ -1653,11 +1670,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             // listing: whatever changed about it arrives as its own
             // `thread.changed` or `turn.changed`.
             if (threadsRef.current.some((item) => item.id === threadId)) return;
-            // Asked about once already, and the page that answered did not
-            // carry it. These events name no agent, so every turn on a
-            // BACKGROUND agent emits two of them for a conversation this tab
-            // will never list; without this each one bought another page.
-            if (unlistedThreadsRef.current.has(threadId)) return;
+            // Asked about once already, and the page of THIS bucket that
+            // answered did not carry it. These events name no agent, so every
+            // turn on a BACKGROUND agent emits two of them for a conversation
+            // this tab will never list; without this each one bought another
+            // page. The bucket is part of the key -- see `unlistedThreadKey`.
+            const bucketSourceId = selectedAgentRef.current;
+            if (
+              bucketSourceId !== null
+              && unlistedThreadsRef.current.has(
+                unlistedThreadKey(bucketSourceId, showArchivedRef.current, threadId),
+              )
+            ) return;
             revalidateBucket(threadId);
             return;
           }

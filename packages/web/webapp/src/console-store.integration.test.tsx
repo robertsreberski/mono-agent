@@ -11,6 +11,7 @@ import {
   reconcileFailedDelete,
   REMOVED_THREAD_TTL_MS,
   RUN_PREFERENCES_STORAGE_KEY,
+  SELECTED_AGENT_STORAGE_KEY,
   THREAD_LIST_REVALIDATE_DEBOUNCE_MS,
   THREAD_READ_TIMEOUT_MS,
   THREAD_WRITE_TIMEOUT_MS,
@@ -2671,7 +2672,7 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.threads.map((item) => item.id)).toEqual(["alpha-thread"]);
     });
 
-    it("closes the open conversation when the server says it was deleted", async () => {
+    it("removes the selected listed conversation on a remote delete", async () => {
       seedTwoThreads();
       const store = await openedOnAlpha();
 
@@ -2745,9 +2746,15 @@ describe("ConsoleStoreProvider integration", () => {
     it("spends no page request on a bootstrap that failed", async () => {
       // There is no projection for a page to land in -- `loadThreadBucket`
       // no-ops without one -- so the request would be spent and discarded.
+      //
+      // The persisted agent is what makes this test reach that guard at all:
+      // without it `selectedAgentId` is null and the effect returns one clause
+      // earlier, which is a different reason and would pass either way.
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
       vi.mocked(api.bootstrap).mockRejectedValue(new Error("bootstrap unavailable"));
       const store = await renderStore();
       await waitFor(() => expect(store.current.error).toBe("bootstrap unavailable"));
+      expect(store.current.selectedAgentId).toBe("alpha");
       await quiet();
 
       expect(api.threads).not.toHaveBeenCalled();
@@ -2772,6 +2779,75 @@ describe("ConsoleStoreProvider integration", () => {
 
       expect(store.current.threads.find((item) => item.id === "alpha-thread")?.runState.status)
         .toBe("cancelled");
+    });
+
+    it("does not carry one bucket's unlisted answer over to another agent's", async () => {
+      // A page of agent A's bucket says nothing about agent B's. Remembered by
+      // id alone, a conversation that had simply fallen outside A's window
+      // silenced every later event for it -- and B's bucket is
+      // bootstrap-seeded, so nothing else would ever go and look.
+      const betaThread = thread("beta-thread", "beta");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [selected, other, betaThread],
+      ));
+      vi.mocked(api.thread).mockImplementation(async (threadId) =>
+        detail(threadId === "beta-thread" ? betaThread : selected, "hello"));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [selected, other] });
+      const store = await openedOnAlpha();
+
+      emit("threads.changed", { threadId: "outside-the-window" });
+      await quiet(THREAD_LIST_REVALIDATE_DEBOUNCE_MS + 200);
+      expect(api.threads).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(api.threads).mock.calls[0]?.[0]).toBe("alpha");
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectedAgentId).toBe("beta"));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+
+      emit("threads.changed", { threadId: "outside-the-window" });
+      await quiet(THREAD_LIST_REVALIDATE_DEBOUNCE_MS + 200);
+
+      expect(api.threads).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(api.threads).mock.calls[1]?.[0]).toBe("beta");
+    });
+
+    it("closes a conversation deleted while this tab was still fetching it by id", async () => {
+      // The other half of the removal arm: selected, and this tab holds no
+      // projection of it at all -- no row in the listing, and its detail read
+      // still on the wire. A push deep link opens a conversation exactly like
+      // this. There is nothing to name it with, so nothing to tombstone; what
+      // it must not do is leave a destroyed conversation on screen.
+      seedTwoThreads();
+      const store = await openedOnAlpha();
+      let answerOutside: ((error: Error) => void) | undefined;
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId !== "outside-thread") return detail(selected, "hello");
+        return await new Promise<never>((_resolve, reject) => { answerOutside = reject; });
+      });
+
+      act(() => { store.current.selectThread("outside-thread"); });
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("outside-thread"));
+      expect(store.current.detail).toBeNull();
+
+      emit("thread.changed", {
+        threadId: "outside-thread",
+        payload: { threadId: "outside-thread", removed: true },
+      });
+
+      await waitFor(() => expect(store.current.selectedThreadId).toBeNull());
+      expect(store.current.actionError).toBe("This conversation was deleted.");
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+
+      // The read the selection started is answered the way a server answers for
+      // a conversation it no longer has, and puts nothing back.
+      await act(async () => {
+        answerOutside?.(new ApiError("Conversation not found.", 404, "thread_not_found"));
+        await new Promise((resolve) => { setTimeout(resolve, 0); });
+      });
+      expect(store.current.detail).toBeNull();
+      expect([...store.current.threads].map((item) => item.id).sort())
+        .toEqual(["alpha-thread", "other-thread"]);
     });
   });
 });
