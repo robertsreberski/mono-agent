@@ -179,6 +179,36 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls[1]?.prompt).not.toContain(HISTORY_MARKER);
   });
 
+  it("keeps one opaque provider attribution id per continuous conversation epoch", async () => {
+    const identityPath = await identityFixture();
+    const fake = createSessionFakeRuntime(async (_prompt, options) => {
+      const attributionSessionId = options.providerAttributionSessionId;
+      if (attributionSessionId === undefined) {
+        throw new Error("expected provider attribution session id");
+      }
+      return {
+        text: "answer",
+        providerSessionId: attributionSessionId,
+      };
+    });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session });
+
+    await harness.run(request("telegram:42", "first"));
+    await harness.run(request("telegram:42", "second"));
+    await harness.run(request("slack:C1", "other conversation"));
+
+    const firstId = fake.calls[0]?.options.providerAttributionSessionId;
+    expect(firstId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+    expect(fake.calls[1]?.options.providerAttributionSessionId).toBe(firstId);
+    expect(fake.calls[1]?.options.sessionId).toBe(firstId);
+    expect(fake.calls[2]?.options.providerAttributionSessionId).not.toBe(firstId);
+    expect(firstId).not.toContain("telegram:42");
+
+    await harness.resetConversation?.("telegram:42");
+    await harness.run(request("telegram:42", "after reset"));
+    expect(fake.calls[3]?.options.providerAttributionSessionId).not.toBe(firstId);
+  });
+
   it("does not read history for an ordinary confirmed warm resume", async () => {
     const identityPath = await identityFixture();
     let loads = 0;
@@ -617,6 +647,7 @@ describe("AgentHarness continuous sessions", () => {
           piSessionsRoot: "/tmp/extension-root",
           sessionId: "extension-session",
           providerSessionId: "extension-provider",
+          providerAttributionSessionId: "extension-attribution",
         } as never,
       }),
     });
@@ -625,6 +656,7 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls[0]?.options.piSessionsRoot).toBeUndefined();
     expect(fake.calls[0]?.options.sessionId).toBeUndefined();
     expect(fake.calls[0]?.options.providerSessionId).toBeUndefined();
+    expect(fake.calls[0]?.options.providerAttributionSessionId).not.toBe("extension-attribution");
     expect(fake.calls[0]?.options.sessionKeepAlive).toBe(true);
 
     await harness.run(request("conv-custom-history", "again"));
@@ -775,6 +807,7 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls).toHaveLength(3);
     expect(fake.calls[1]?.options.sessionId).toBe("ps-next");
     expect(fake.calls[2]?.options.sessionId).toBeUndefined();
+    expect(fake.calls[2]?.options.providerAttributionSessionId).not.toBe("ps-next");
     expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
     expect(fake.disposedSessions).toContain("ps-next");
     expect(events).toContainEqual(expect.objectContaining({

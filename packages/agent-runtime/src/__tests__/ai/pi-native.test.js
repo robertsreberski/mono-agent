@@ -340,9 +340,9 @@ let fauxModels = null;
 // Register a faux provider into a fresh `Models` collection and hand its model
 // back. `modelDef` overrides merge onto the base faux model (e.g. `reasoning`,
 // `input`). The collection is stashed so `runOptions` can inject it.
-function setup(modelDef = {}) {
+function setup(modelDef = {}, provider = "faux") {
   faux = fauxProvider({
-    provider: "faux",
+    provider,
     models: [{ id: "faux-model", ...modelDef }],
     tokensPerSecond: undefined,
   });
@@ -363,7 +363,7 @@ afterEach(() => {
 
 function runOptions(model, overrides = {}) {
   return {
-    model: { provider: "faux", model: "faux-model", reference: "faux:faux-model" },
+    model: { provider: model.provider, model: model.id, reference: `${model.provider}:${model.id}` },
     piResolvedModel: model,
     piResolvedModels: fauxModels,
     effort: "none",
@@ -392,6 +392,64 @@ describe("pi-native AgentHarness bridge", () => {
 
     expect(result.error).toBe("Provider is not configured: openai-codex");
     expect(result.failureKind).toBe("provider_auth");
+  });
+
+  it("dispatches stable OpenCode headers and returns the attribution id as the fresh provider session", async () => {
+    const model = setup({ id: "deepseek-v4-pro" }, "opencode-go");
+    const dispatchedHeaders = [];
+    faux.setResponses([
+      (_context, options) => {
+        dispatchedHeaders.push(options?.headers);
+        return fauxAssistantMessage([fauxText("first")]);
+      },
+      (_context, options) => {
+        dispatchedHeaders.push(options?.headers);
+        return fauxAssistantMessage([fauxText("second")]);
+      },
+    ]);
+
+    const first = await generatePiNativeResponse("system", runOptions(model, {
+      providerAttributionSessionId: "conversation-epoch",
+      messages: [{ role: "user", content: "first" }],
+    }));
+    const second = await generatePiNativeResponse("system", runOptions(model, {
+      providerAttributionSessionId: "conversation-epoch",
+      messages: [{ role: "user", content: "second" }],
+    }));
+
+    expect(first.providerSessionId).toBe("conversation-epoch");
+    expect(second.providerSessionId).toBe("conversation-epoch");
+    expect(dispatchedHeaders).toEqual([
+      { "x-opencode-session": "conversation-epoch", "x-opencode-client": "mono-agent" },
+      { "x-opencode-session": "conversation-epoch", "x-opencode-client": "mono-agent" },
+    ]);
+  });
+
+  it("generates a fresh attributed provider session for each unkeyed direct OpenCode call", async () => {
+    const model = setup({ id: "deepseek-v4-pro" }, "opencode-go");
+    const dispatchedSessions = [];
+    faux.setResponses([
+      (_context, options) => {
+        dispatchedSessions.push(options?.headers?.["x-opencode-session"]);
+        return fauxAssistantMessage([fauxText("first")]);
+      },
+      (_context, options) => {
+        dispatchedSessions.push(options?.headers?.["x-opencode-session"]);
+        return fauxAssistantMessage([fauxText("second")]);
+      },
+    ]);
+
+    const first = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "first" }],
+    }));
+    const second = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "second" }],
+    }));
+
+    expect(dispatchedSessions[0]).toBe(first.providerSessionId);
+    expect(dispatchedSessions[1]).toBe(second.providerSessionId);
+    expect(dispatchedSessions[0]).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(dispatchedSessions[1]).not.toBe(dispatchedSessions[0]);
   });
 
   it("wires native max through the AgentHarness stream options when advertised", async () => {
@@ -1220,6 +1278,35 @@ describe("pi-native auto-compaction", () => {
     expect(summaryCalled).toBe(true);
     expect(result.capabilitiesUsed.context_compaction_applied).toBe(true);
     expect(result.diagnostics.context_compaction_proactive).toBe(true);
+  });
+
+  it("uses the same OpenCode session headers for compaction and the main turn", async () => {
+    const base = setup({ id: "deepseek-v4-pro" }, "opencode-go");
+    const windowed = { ...base, contextWindow: 4000 };
+    const dispatchedHeaders = [];
+    faux.setResponses([
+      (_context, options) => {
+        dispatchedHeaders.push(options?.headers);
+        return fauxAssistantMessage([fauxText("SUMMARY")]);
+      },
+      (_context, options) => {
+        dispatchedHeaders.push(options?.headers);
+        return fauxAssistantMessage([fauxText("done")]);
+      },
+    ]);
+
+    const result = await generatePiNativeResponse("system", runOptions(base, {
+      piResolvedModel: windowed,
+      providerAttributionSessionId: "compaction-epoch",
+      messages: bigHistory(60, 2000),
+    }));
+
+    expect(result.error).toBeNull();
+    expect(result.capabilitiesUsed.context_compaction_applied).toBe(true);
+    expect(dispatchedHeaders).toEqual([
+      { "x-opencode-session": "compaction-epoch", "x-opencode-client": "mono-agent" },
+      { "x-opencode-session": "compaction-epoch", "x-opencode-client": "mono-agent" },
+    ]);
   });
 
   it("reactively compacts and re-prompts once when a turn overflows", async () => {

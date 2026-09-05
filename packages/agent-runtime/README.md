@@ -47,6 +47,16 @@ if (result.error) throw new Error(result.error);
 console.log(result.text);
 ```
 
+Requests to Pi providers `opencode` and `opencode-go`, and to custom models whose
+exact URL hostname is `opencode.ai`, carry `x-opencode-client: mono-agent` and an
+`x-opencode-session` continuity value. The value is the raw internal provider
+session id, not a channel conversation id. It remains stable for a continuous
+conversation epoch, rotates on reset or invalidation, and is fresh per call when
+a direct caller supplies no session or attribution identity. Existing
+case-insensitive auth/model/request headers—including explicit `null`
+suppression—and caller header transforms take precedence. Other providers receive
+no `x-opencode-*` headers.
+
 `Glob` and `Grep` prefer the packaged `@vscode/ripgrep` binary on supported
 platforms. An explicit `ripgrepPath` wins, with `PATH` as the final fallback.
 

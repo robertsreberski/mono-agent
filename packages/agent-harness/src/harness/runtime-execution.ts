@@ -45,6 +45,7 @@ export async function runHarnessRuntime(
   memory: ContextBlockInput | undefined,
   runId: string,
   resumeSessionId: string | undefined,
+  providerAttributionSessionId: string | undefined,
   durablePiSessionsRoot: string | undefined,
   sessionIsolated: boolean,
   skillDisclosureEntries: readonly SkillIndexSummary[],
@@ -355,6 +356,7 @@ export async function runHarnessRuntime(
         // (runtime === options.runtime) are byte-for-byte unchanged.
         ...(sessionsEnabled && runtime === options.runtime
           ? {
+            ...(providerAttributionSessionId === undefined ? {} : { providerAttributionSessionId }),
             sessionKeepAlive: true,
             sessionIdleTimeoutMs: options.session?.idleTimeoutMs,
             sessionId: resumeSessionId,
