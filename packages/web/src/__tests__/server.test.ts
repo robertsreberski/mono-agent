@@ -1884,7 +1884,10 @@ describe("web HTTP server", () => {
     // its own agents/limits/push overhead -- a factor of about 1. The boundary
     // sits at 2 so both sides have most of a factor of margin, and a row growing
     // a field cannot trip it.
-    expect(everyBucket).toBeGreaterThan(50 * 1_024);
+    // Anti-vacuity, derived from the fixture rather than from a measured byte
+    // count: 180 conversation rows cannot serialise in under 200 bytes each,
+    // whatever a summary grows or loses.
+    expect(everyBucket).toBeGreaterThan(agents.length * 60 * 200);
     expect(scoped.body.length).toBeLessThan(everyBucket / 2);
   });
 
@@ -1996,10 +1999,12 @@ describe("web HTTP server", () => {
     // two writes above reach it as ONE hint rather than one per flush.
     expect(hinted.filter((event) => event.type === "message.delta")).toEqual([]);
     const hints = hinted.filter((event) => event.type === "message.changed");
-    // Bounded rather than counted: how many writes land inside one second is a
-    // property of the machine, but fewer frames than writes is the guarantee.
+    // Told about it, and never more often than the writes themselves. How many
+    // writes actually land inside one DELTA_HINT_INTERVAL_MS is a property of
+    // the machine, not of this code, so the limit itself is proven against a
+    // fake clock in the `web event dispatch` suite instead.
     expect(hints.length).toBeGreaterThanOrEqual(1);
-    expect(hints.length).toBeLessThan(deltas.length);
+    expect(hints.length).toBeLessThanOrEqual(deltas.length);
     expect(hints[0]?.payload).toEqual({ messageId: expect.any(String), updatedAt: expect.any(String) });
 
     // A delta for a conversation this console is NOT in is downgraded too.
@@ -2007,17 +2012,23 @@ describe("web HTTP server", () => {
     const elsewhere = await drainTurn(nextSubscribed);
     expect(elsewhere.filter((event) => event.type === "message.delta")).toEqual([]);
     const elsewhereHints = elsewhere.filter((event) => event.type === "message.changed");
-    expect(elsewhereHints).toHaveLength(1);
-    expect(elsewhereHints[0]?.threadId).toBe(otherId);
+    // Same reason: that this collapses to exactly one frame is the fake-clock
+    // suite's assertion, not a race this fixture should be running.
+    expect(elsewhereHints.length).toBeGreaterThanOrEqual(1);
+    expect(elsewhereHints.every((event) => event.threadId === otherId)).toBe(true);
 
     await Promise.all([subscribedReader.cancel(), unsubscribedReader.cancel()]);
   });
 
-  it("rejects an oversized conversation subscription rather than opening a stream", async () => {
+  it("rejects a conversation subscription that names nothing usable", async () => {
     const { baseUrl } = await start();
-    const refused = await fetch(`${baseUrl}/api/v1/events?thread=${"t".repeat(600)}`);
-    expect(refused.status).toBe(400);
-    expect(await json(refused)).toMatchObject({ error: { code: "invalid_subscription" } });
+    // Oversized, empty and blank alike: a console that asked for a conversation
+    // and silently got none would read as a delta stream that had stopped.
+    for (const query of [`thread=${"t".repeat(600)}`, "thread=", "thread=%20%20"]) {
+      const refused = await fetch(`${baseUrl}/api/v1/events?${query}`);
+      expect(refused.status).toBe(400);
+      expect(await json(refused)).toMatchObject({ error: { code: "invalid_subscription" } });
+    }
   });
 
   /**
@@ -2344,6 +2355,25 @@ describe("web event dispatch", () => {
     expect(stream.written).toHaveLength(3);
     expect(stream.written[2]?.type).toBe("message.changed");
     expect(stream.written[2]?.payload).toEqual({ messageId: "m1", updatedAt: AT });
+  });
+
+  it("bounds what one connection remembers, dropping the conversation it heard about longest ago", async () => {
+    // A burst wider than the bound inside a single tick would otherwise grow
+    // the map faster than the window can retire it, on a server that runs for
+    // weeks. Three hundred conversations at one instant, then the two ends.
+    const stream = harness();
+    for (let index = 0; index < 300; index += 1) {
+      stream.send(event("message.delta", `thread-${String(index)}`, delta(1)));
+    }
+    expect(stream.written).toHaveLength(300);
+
+    // The first 44 were evicted to hold the bound at 256, so the oldest is
+    // hinted about again even though its window has not passed...
+    stream.send(event("message.delta", "thread-0", delta(2)));
+    expect(stream.written).toHaveLength(301);
+    // ...while the most recent is still suppressed.
+    stream.send(event("message.delta", "thread-299", delta(2)));
+    expect(stream.written).toHaveLength(301);
   });
 
   it("closes a stream it cannot make sense of rather than dropping the frame", async () => {

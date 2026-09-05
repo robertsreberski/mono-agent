@@ -4197,6 +4197,42 @@ describe("transcript shaping", () => {
   ): readonly Extract<WebMessagePart, { type: "telemetry" }>[] =>
     parts.filter((part): part is Extract<WebMessagePart, { type: "telemetry" }> => part.type === "telemetry");
 
+  it("leaves a tool call that fits exactly as recorded", async () => {
+    // The diet is for oversized payloads only. A call under the budget must
+    // come back byte-identical and unflagged: the console reads
+    // `argsTruncated`/`resultTruncated` to decide whether to offer the repair
+    // read, so a flag on a whole payload is a button that fetches what the
+    // reader already has, and any rewriting at all would put a `set` op on the
+    // delta stream for a part that did not change.
+    const args = { command: "ls -la", cwd: "/tmp" };
+    const result = "total 0\ndrwxr-xr-x  2 robert  staff   64 Sep  6 10:00 .";
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => [
+          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "t", name: "Exec", arguments: args } }),
+          JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "t", content: result } }),
+          JSON.stringify({ kind: "finish", finalText: "done" }),
+          "",
+        ].join("\n"),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    const stored = service.store.getThreadDetail(thread.id)?.messages.at(-1)?.parts.find(
+      (part) => part.type === "tool-call",
+    );
+    const served = service.thread(thread.id).messages.at(-1)?.parts.find((part) => part.type === "tool-call");
+    expect(served).toEqual({ type: "tool-call", toolCallId: "t", toolName: "Exec", args, result, status: "complete" });
+    // Byte-identical, not merely equal: nothing was added, removed or reordered.
+    expect(JSON.stringify(served)).toBe(JSON.stringify(stored));
+    for (const flag of ["argsTruncated", "argsBytes", "resultTruncated", "resultBytes"]) {
+      expect(served).not.toHaveProperty(flag);
+    }
+    await service.stop();
+  });
+
   it("keeps telemetry data only for what the console renders, and moves no part", async () => {
     const service = await createService({ fetchImpl: operatorFetch({ turns: telemetryTurn }) });
     const thread = service.createThread("agent-one");

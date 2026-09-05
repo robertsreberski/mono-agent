@@ -73,15 +73,18 @@ const MAX_SSE_CLIENTS = 64;
  * conversation events already carry.
  */
 const DELTA_HINT_INTERVAL_MS = 1_000;
-/**
- * How many conversations one connection remembers having hinted about before it
- * drops the entries that can no longer suppress anything. Purely memory
- * hygiene: an entry older than {@link DELTA_HINT_INTERVAL_MS} never suppresses
- * a hint, so forgetting it changes nothing a console observes.
- */
-const MAX_THROTTLED_THREADS = 256;
 /** Bound on `?thread=`, matching the other bounded query strings. */
 const MAX_SUBSCRIPTION_LENGTH = 512;
+/**
+ * How many conversations one connection remembers having hinted about.
+ *
+ * A hard bound, evicting the least recently hinted: a burst wider than this
+ * inside one second would otherwise grow the map faster than the window can
+ * retire it. Evicting an entry that is still inside its window costs one extra
+ * hint for that conversation; an unbounded map on a server that runs for weeks
+ * costs the server.
+ */
+const MAX_THROTTLED_CONVERSATIONS = 256;
 const MAX_MCP_APP_BRIDGE_REQUEST_BYTES = 64 * 1024;
 /**
  * Content-addressed build output and write-once upload bytes never change under
@@ -1447,10 +1450,15 @@ export function createWebEventDispatch(options: {
     // Dropped, not queued: a hint says only that the message moved, so the one
     // that was suppressed is answered by the one that follows it.
     if (last !== undefined && at - last < DELTA_HINT_INTERVAL_MS) return true;
-    if (hintedAt.size > MAX_THROTTLED_THREADS) {
-      for (const [seen, seenAt] of hintedAt) if (at - seenAt >= DELTA_HINT_INTERVAL_MS) hintedAt.delete(seen);
-    }
+    // Delete before set, so insertion order IS recency order and the eviction
+    // below drops the conversation this connection heard about longest ago.
+    hintedAt.delete(key);
     hintedAt.set(key, at);
+    while (hintedAt.size > MAX_THROTTLED_CONVERSATIONS) {
+      const oldest = hintedAt.keys().next();
+      if (oldest.done === true) break;
+      hintedAt.delete(oldest.value);
+    }
     return hint(event, payload);
   };
 
@@ -1533,7 +1541,10 @@ function optionalSearchQuery(value: unknown, max: number): string {
  */
 function optionalThreadSubscription(value: unknown): string | undefined {
   if (value === undefined) return undefined;
-  if (typeof value !== "string" || value.length === 0 || value.length > MAX_SUBSCRIPTION_LENGTH) {
+  // Blank is refused rather than read as "no subscription": `?thread=` and
+  // `?thread=%20` are a console asking for a conversation and getting one it
+  // never named, which would look like the delta stream had simply stopped.
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > MAX_SUBSCRIPTION_LENGTH) {
     throw new WebConsoleError(
       "invalid_subscription",
       `thread must name one conversation, in at most ${String(MAX_SUBSCRIPTION_LENGTH)} characters.`,

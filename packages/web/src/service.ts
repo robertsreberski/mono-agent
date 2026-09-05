@@ -247,7 +247,7 @@ function shapeToolCall(call: WebToolCall): WebToolCall {
   // are bounded at the emitter. `structuredResult` is never touched anywhere:
   // it is the machine-readable outcome, bounded at the emitter too.
   if (isAskUserToolName(call.toolName)) return call;
-  const args = shapedArgsObject(call.args) ?? payloadPreview(call.args);
+  const args = shapedArgs(call.args);
   const result = payloadPreview(call.result);
   if (args === undefined && result === undefined) return call;
   return {
@@ -259,6 +259,24 @@ function shapeToolCall(call: WebToolCall): WebToolCall {
 
 function shapeToolCallPart(part: WebToolCallPart): WebToolCallPart {
   return { ...shapeToolCall(part), type: "tool-call" };
+}
+
+/**
+ * A tool call's arguments, cut to fit -- serialized ONCE.
+ *
+ * The size question and the two answers to it all read the same JSON text: the
+ * object shaper used to serialize to decide whether it had work, and the
+ * whole-value fallback then serialized the same value again to answer the same
+ * question. Every under-budget object args paid for both, on every transcript
+ * read and now on every streamed delta.
+ */
+function shapedArgs(args: unknown): { readonly preview: unknown; readonly length: number } | undefined {
+  if (args === undefined) return undefined;
+  const text = typeof args === "string" ? args : jsonTextOf(args);
+  // Under budget, or nothing JSON can express: left exactly as stored.
+  if (text === undefined || text.length <= TOOL_PAYLOAD_PREVIEW_CHARS) return undefined;
+  return shapedArgsObject(args, text)
+    ?? { preview: text.slice(0, TOOL_PAYLOAD_PREVIEW_CHARS), length: text.length };
 }
 
 /**
@@ -278,10 +296,11 @@ function shapeToolCallPart(part: WebToolCallPart): WebToolCallPart {
  * longer than the last. Anything still over budget after eight passes falls
  * back to the whole-value head.
  */
-function shapedArgsObject(args: unknown): { readonly preview: unknown; readonly length: number } | undefined {
+function shapedArgsObject(
+  args: unknown,
+  original: string,
+): { readonly preview: unknown; readonly length: number } | undefined {
   if (args === null || typeof args !== "object" || Array.isArray(args)) return undefined;
-  const original = jsonTextOf(args);
-  if (original === undefined || original.length <= TOOL_PAYLOAD_PREVIEW_CHARS) return undefined;
   let shaped: Record<string, unknown> = { ...(args as Record<string, unknown>) };
   for (let pass = 0; pass < 8; pass += 1) {
     const text = jsonTextOf(shaped);
@@ -301,7 +320,7 @@ function shapedArgsObject(args: unknown): { readonly preview: unknown; readonly 
 }
 
 function shapeSubagentPart(part: WebSubagentPart): WebSubagentPart {
-  const args = shapedArgsObject(part.args) ?? payloadPreview(part.args);
+  const args = shapedArgs(part.args);
   const result = payloadPreview(part.result);
   return {
     ...part,
