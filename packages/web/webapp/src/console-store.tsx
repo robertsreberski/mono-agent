@@ -16,6 +16,7 @@ import type {
   Bootstrap,
   CatalogModel,
   CronOverview,
+  RunState,
   SkillRegistryState,
   StartTurnInput,
   ThreadDetail,
@@ -437,6 +438,43 @@ export const boundedRequest = <T,>(
  * see a slow sidebar, not an error.
  */
 export const THREAD_READ_TIMEOUT_MS = 60_000;
+
+/**
+ * How long events are collected before one refresh answers all of them.
+ *
+ * A running turn emits several events per second, and a debounce is what makes
+ * a burst cost one request rather than one per event.
+ */
+export const REFRESH_DEBOUNCE_MS = 300;
+
+/**
+ * How long an event that names NO conversation is held before the selected
+ * bucket page is re-read.
+ *
+ * Deliberately longer than {@link REFRESH_DEBOUNCE_MS}: this is the least
+ * specific and most expensive thing an event can ask for, and it is reached
+ * only by the handful of server invalidations that carry neither a conversation
+ * nor a summary -- a bulk cron sync, or a conversation this tab has never seen.
+ * Everything a running turn emits names its conversation and never gets here.
+ */
+export const THREAD_LIST_REVALIDATE_DEBOUNCE_MS = 2_000;
+
+/**
+ * What one refresh has to re-read.
+ *
+ * Accumulated by every caller that asks for one and read once when the debounce
+ * fires, so an event that invalidated only the open conversation costs only the
+ * open conversation -- and two different asks inside one debounce window still
+ * cost one round trip each at most.
+ */
+interface RefreshScope {
+  /** The agent list, the thread listing, and the selection they resolve to. */
+  readonly bootstrap: boolean;
+  /** The selected conversation's messages. */
+  readonly detail: boolean;
+}
+
+const NOTHING_TO_REFRESH: RefreshScope = { bootstrap: false, detail: false };
 
 /**
  * How long a deleted conversation stays remembered. The tombstone exists to
@@ -1091,7 +1129,29 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const refreshTimerRef = useRef<number | null>(null);
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
-  const queueRefreshRef = useRef<() => void>(() => undefined);
+  const refreshScopeRef = useRef<RefreshScope>(NOTHING_TO_REFRESH);
+  const scheduleRefreshRef = useRef<(scope: Partial<RefreshScope>) => void>(() => undefined);
+  const threadListTimerRef = useRef<number | null>(null);
+  /**
+   * The (agent, archived) buckets a bootstrap has already delivered.
+   *
+   * A bootstrap carries every bucket the server has, so the page request the
+   * sidebar issued right after one fetched the same rows a second time -- on
+   * the first load, on every agent switch and on every archive toggle.
+   */
+  const seededBucketsRef = useRef<Set<string>>(new Set());
+  /** The current listing and selection, for the SSE handler to read at event time. */
+  const threadsRef = useRef<readonly ThreadSummary[]>([]);
+  const showArchivedRef = useRef(showArchived);
+  const selectedCronJobIdRef = useRef<string | undefined>(undefined);
+  const completeThreadRemovalRef = useRef<(thread: ThreadSummary, requestedId: string) => void>(
+    () => undefined,
+  );
+  /** Whether the bootstrap this component asked for on mount has answered. */
+  const initialBootstrapRef = useRef<"pending" | "answered">("pending");
+  /** Set true by the first `ready`, so the next one is known to be a RECONNECT. */
+  const streamOpenedRef = useRef(false);
+  const hasBootstrapRef = useRef(false);
 
   useEffect(() => {
     const keys = new Set([...Object.keys(modelByContext), ...Object.keys(effortByContext)]);
@@ -1119,6 +1179,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     skillRegistryStateRef.current = skillRegistryState;
   }, [skillRegistryState]);
 
+  useEffect(() => {
+    showArchivedRef.current = showArchived;
+  }, [showArchived]);
+
   const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number) => {
     // A bootstrap is a wholesale replacement, so a deleted conversation it
     // still lists is re-added, selected, and routed to. It is also the single
@@ -1128,7 +1192,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       ...rawNext,
       threads: admitThreads(removedThreadsRef.current, rawNext.threads, issuedAt),
     };
+    // Recorded before the state lands, because the effect that would re-request
+    // these buckets runs on the commit this schedules. See `seededBucketsRef`.
+    for (const agent of next.agents) {
+      seededBucketsRef.current.add(threadBucketKey(agent.sourceId, false));
+      seededBucketsRef.current.add(threadBucketKey(agent.sourceId, true));
+    }
     setBootstrap(next);
+    hasBootstrapRef.current = true;
     setError(null);
     setLoading(false);
     const baseSelection = resolveBootstrapSelection(
@@ -1174,6 +1245,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setError(errorMessage(loadError));
       setLoading(false);
       setConnection(navigator.onLine ? "reconnecting" : "offline");
+    } finally {
+      initialBootstrapRef.current = "answered";
     }
   }, [applyBootstrap]);
 
@@ -1214,11 +1287,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, []);
 
   useEffect(() => {
-    if (selectedAgentId === null) return;
+    // `loading` is still true until the first bootstrap has been applied or has
+    // failed; fetching before then races the answer that seeds this bucket.
+    if (selectedAgentId === null || loading) return;
+    // Already delivered by a bootstrap -- see `seededBucketsRef`. A bootstrap
+    // that FAILED seeds nothing, so this page request is still how the sidebar
+    // fills when the snapshot could not be read.
+    if (seededBucketsRef.current.has(threadBucketKey(selectedAgentId, showArchived))) return;
     void loadThreadBucket(selectedAgentId, showArchived).catch((loadError: unknown) => {
       setActionError(errorMessage(loadError));
     });
-  }, [loadThreadBucket, selectedAgentId, showArchived]);
+  }, [loadThreadBucket, loading, selectedAgentId, showArchived]);
 
   const loadThread = useCallback(async (threadId: string, signal: AbortSignal) => {
     setDetailLoading(true);
@@ -1253,17 +1332,29 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     return () => controller.abort();
   }, [loadThread, selectedThreadId]);
 
+  /**
+   * One refresh, fetching exactly what the events behind it invalidated.
+   *
+   * The scope is claimed and cleared before the first `await`, so an event that
+   * arrives while this runs accumulates a NEW scope rather than being answered
+   * by a request that went out before it.
+   */
   const refreshNow = useCallback(async () => {
     if (refreshInFlightRef.current) {
       refreshQueuedRef.current = true;
       return;
     }
+    const scope = refreshScopeRef.current;
+    if (!scope.bootstrap && !scope.detail) return;
+    refreshScopeRef.current = NOTHING_TO_REFRESH;
     refreshInFlightRef.current = true;
     try {
       const issuedAt = removedThreadsRef.current.epoch();
-      const selectedForRefresh = selectedThreadRef.current;
+      const selectedForRefresh = scope.detail ? selectedThreadRef.current : null;
       const [nextBootstrap, nextDetail] = await Promise.all([
-        boundedRequest((signal) => api.bootstrap(signal), THREAD_READ_TIMEOUT_MS),
+        scope.bootstrap
+          ? boundedRequest((signal) => api.bootstrap(signal), THREAD_READ_TIMEOUT_MS)
+          : Promise.resolve(null),
         selectedForRefresh
           ? boundedRequest(
               (signal) => api.thread(selectedForRefresh, signal),
@@ -1271,11 +1362,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             )
           : Promise.resolve(null),
       ]);
-      applyBootstrap(nextBootstrap, issuedAt);
+      if (nextBootstrap !== null) applyBootstrap(nextBootstrap, issuedAt);
       if (
         nextDetail
         && admitThread(removedThreadsRef.current, nextDetail.thread, issuedAt)
         && selectedThreadRef.current === nextDetail.thread.id
+      // Deliberately only the detail. The detail answer carries a summary of
+      // the same row the listing carries, and the two reads are not ordered
+      // against each other: merging it let a detail response overwrite a
+      // FRESHER listing row it had no way to compare itself to. The sidebar row
+      // is the listing's business, and `threads.changed` carries a new summary
+      // when the server has one.
       ) setDetail(nextDetail);
     } catch (refreshError) {
       setActionError(errorMessage(refreshError));
@@ -1283,12 +1380,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       refreshInFlightRef.current = false;
       if (refreshQueuedRef.current) {
         refreshQueuedRef.current = false;
-        queueRefreshRef.current();
+        scheduleRefreshRef.current({});
       }
     }
   }, [applyBootstrap]);
 
-  const queueRefresh = useCallback(() => {
+  const scheduleRefresh = useCallback((scope: Partial<RefreshScope>) => {
+    refreshScopeRef.current = {
+      bootstrap: refreshScopeRef.current.bootstrap || scope.bootstrap === true,
+      detail: refreshScopeRef.current.detail || scope.detail === true,
+    };
     if (refreshInFlightRef.current) {
       refreshQueuedRef.current = true;
       return;
@@ -1297,35 +1398,241 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     refreshTimerRef.current = window.setTimeout(() => {
       refreshTimerRef.current = null;
       void refreshNow();
-    }, 300);
+    }, REFRESH_DEBOUNCE_MS);
   }, [refreshNow]);
-  queueRefreshRef.current = queueRefresh;
+  // Assigned during render: `refreshNow` re-queues through this ref, and an
+  // effect would leave it pointing at the previous commit's closure.
+  scheduleRefreshRef.current = scheduleRefresh;
+
+  /**
+   * Everything this tab knows is stale: the listing, the selection it resolves
+   * to, and the open conversation. Reserved for the cases where the console
+   * genuinely cannot say what changed -- a reconnect, coming back online, a
+   * delete whose outcome could not be established.
+   */
+  const queueRefresh = useCallback(
+    () => { scheduleRefresh({ bootstrap: true, detail: true }); },
+    [scheduleRefresh],
+  );
+
+  /** Only the open conversation's messages. */
+  const refreshSelectedThread = useCallback(
+    () => { scheduleRefresh({ detail: true }); },
+    [scheduleRefresh],
+  );
+
+  /** Only the agent list and the listing that comes with it. */
+  const loadAgents = useCallback(
+    () => { scheduleRefresh({ bootstrap: true }); },
+    [scheduleRefresh],
+  );
+
+  /**
+   * Re-read the selected bucket page, for the events that name no conversation
+   * at all. Its own, slower debounce -- see
+   * {@link THREAD_LIST_REVALIDATE_DEBOUNCE_MS}.
+   */
+  const revalidateBucket = useCallback(() => {
+    if (threadListTimerRef.current !== null) return;
+    threadListTimerRef.current = window.setTimeout(() => {
+      threadListTimerRef.current = null;
+      const sourceId = selectedAgentRef.current;
+      if (sourceId === null) return;
+      void loadThreadBucket(sourceId, showArchivedRef.current).catch((loadError: unknown) => {
+        setActionError(errorMessage(loadError));
+      });
+    }, THREAD_LIST_REVALIDATE_DEBOUNCE_MS);
+  }, [loadThreadBucket]);
+
+  /**
+   * Apply the run state a `turn.changed` already carries.
+   *
+   * Patches rows that are already listed and the open conversation; it never
+   * inserts, so a tombstoned conversation cannot come back through it.
+   */
+  const patchRunState = useCallback((threadId: string, runState: RunState) => {
+    setBootstrap((current) => current === null
+      || !current.threads.some((item) => item.id === threadId)
+      ? current
+      : {
+          ...current,
+          threads: current.threads.map((item) =>
+            item.id === threadId ? { ...item, runState } : item),
+        });
+    setDetail((current) => current?.thread.id === threadId
+      ? { ...current, thread: { ...current.thread, runState } }
+      : current);
+  }, []);
+
+  const applyThreadUpdate = useCallback((nextThread: ThreadSummary, issuedAt: number) => {
+    // A response can outlive the conversation it describes: the migration's
+    // read, an optimistic rollback, any write already in flight when the
+    // operator deleted the thread. `mergeThreads` would re-add it, so the
+    // sidebar showed a conversation the server had already destroyed.
+    //
+    // `issuedAt` is the admission epoch the producing request went out under.
+    // A LOCAL decision -- an optimistic edit, a rollback, the repair a refused
+    // delete owes -- is being made now and quotes the current epoch.
+    if (!admitThread(removedThreadsRef.current, nextThread, issuedAt)) return;
+    setBootstrap((current) =>
+      current ? { ...current, threads: mergeThreads(current.threads, [nextThread]) } : current,
+    );
+    setDetail((current) =>
+      current?.thread.id === nextThread.id ? { ...current, thread: nextThread } : current,
+    );
+  }, []);
 
   useEffect(() => {
     const events = new EventSource("/api/v1/events");
+    /**
+     * The registry is refetched by the connection transition alone once the
+     * stream comes back (see the skills effect, which watches `connection`), so
+     * asking again on top of that made every reconnect issue two requests -- the
+     * first already on the wire by the time the second aborted it.
+     */
+    const selectedRegistryReady = (): boolean =>
+      skillRegistryStateRef.current.sourceId === selectedAgentRef.current
+      && skillRegistryStateRef.current.registry.status === "ready";
+
+    /**
+     * One event, one decision.
+     *
+     * Every event used to fall through to `queueRefresh()`, which re-read the
+     * whole bootstrap AND the whole open conversation -- for any type, for any
+     * agent, for any conversation, including ones this tab is not showing. A
+     * running turn emits several events a second, so watching one cost the
+     * entire projection over and over on whatever link the operator is on.
+     *
+     * Each event now names what it invalidated and nothing else is re-read.
+     * Anything the payload already carries is applied locally.
+     */
     const handleEvent = (event: Event) => {
-      let eventType: WebEvent["type"] | undefined;
+      let webEvent: WebEvent | undefined;
       try {
-        const webEvent = JSON.parse((event as MessageEvent<string>).data) as WebEvent;
-        if (webEvent.version !== 1) return;
-        recordServerTime(webEvent.at);
-        eventType = webEvent.type;
-        if (webEvent.type === "push.pending") {
-          window.dispatchEvent(new CustomEvent("mono-agent:push-pending", { detail: webEvent.payload }));
-          setConnection("live");
-          return;
-        }
+        const parsed = JSON.parse((event as MessageEvent<string>).data) as WebEvent;
+        if (parsed.version !== 1) return;
+        recordServerTime(parsed.at);
+        webEvent = parsed;
       } catch {
         // A ready ping without JSON still proves the stream is alive.
       }
       setConnection("live");
-      if (eventType === "ready" || eventType === "agents.changed") {
-        setSkillRefreshToken((value) => value + 1);
+      if (webEvent === undefined) return;
+      const payload = (webEvent.payload ?? {}) as {
+        readonly thread?: ThreadSummary;
+        readonly threadId?: string;
+        readonly removed?: boolean;
+        readonly sourceId?: string;
+        readonly turn?: RunState;
+      };
+      const threadId = webEvent.threadId ?? payload.threadId;
+      switch (webEvent.type) {
+        case "push.pending":
+          window.dispatchEvent(
+            new CustomEvent("mono-agent:push-pending", { detail: webEvent.payload }),
+          );
+          return;
+
+        case "ready": {
+          // Sent once per connection, and never as a keepalive.
+          //
+          // A RECONNECT may have missed anything at all, so it is the one event
+          // that still costs a full bootstrap and a read of the open
+          // conversation -- correctness over bytes, until a conditional GET
+          // makes both nearly free.
+          //
+          // The FIRST one is not that. It arrives beside the snapshot this
+          // component already asked for on mount, so answering it with another
+          // bootstrap doubled the cost of every page load. Only a mount load
+          // that answered with nothing is worth asking again for.
+          const reconnected = streamOpenedRef.current;
+          streamOpenedRef.current = true;
+          if (
+            reconnected
+            || (initialBootstrapRef.current === "answered" && !hasBootstrapRef.current)
+          ) queueRefresh();
+          if (!selectedRegistryReady()) setSkillRefreshToken((value) => value + 1);
+          // Only a cron channel reads the overview.
+          if (selectedCronJobIdRef.current !== undefined) {
+            setCronRefreshToken((value) => value + 1);
+          }
+          return;
+        }
+
+        case "agents.changed":
+          // Carries no payload, and is emitted only when discovery actually saw
+          // a change: an agent appeared or went away, or one of them advertises
+          // something different. The provider catalog is keyed on the
+          // generation the bootstrap carries, so replacing the snapshot is what
+          // invalidates the model pages.
+          loadAgents();
+          setSkillRefreshToken((value) => value + 1);
+          setCronRefreshToken((value) => value + 1);
+          return;
+
+        case "cron.changed":
+          // Every agent's cron scheduler emits these; only the one being
+          // watched has an overview on screen to update.
+          if (payload.sourceId !== selectedAgentRef.current) return;
+          setCronRefreshToken((value) => value + 1);
+          if (selectedCronJobIdRef.current !== undefined) refreshSelectedThread();
+          return;
+
+        case "threads.changed":
+          if (payload.thread !== undefined) {
+            applyThreadUpdate(payload.thread, removedThreadsRef.current.epoch());
+            return;
+          }
+          // A conversation this tab already lists needs nothing from the
+          // listing: whatever changed about it arrives as its own
+          // `thread.changed` or `turn.changed`.
+          if (threadId !== undefined && threadsRef.current.some((item) => item.id === threadId)) {
+            return;
+          }
+          revalidateBucket();
+          return;
+
+        case "thread.changed":
+          if (payload.thread !== undefined) {
+            applyThreadUpdate(payload.thread, removedThreadsRef.current.epoch());
+            return;
+          }
+          if (payload.removed === true && threadId !== undefined) {
+            // Removed by someone else -- another tab, another client, a purge.
+            // The local cleanup a confirmed delete performs is exactly what is
+            // owed here; a conversation this tab never had needs none of it.
+            const known = threadsRef.current.find((item) => item.id === threadId);
+            if (known !== undefined) completeThreadRemovalRef.current(known, threadId);
+            return;
+          }
+          // A revision bump or a message id, and no summary to apply: only the
+          // conversation on screen has anything to show for it.
+          if (threadId !== undefined && threadId === selectedThreadRef.current) {
+            refreshSelectedThread();
+          }
+          return;
+
+        case "message.changed":
+          if (threadId !== undefined && threadId === selectedThreadRef.current) {
+            refreshSelectedThread();
+          }
+          return;
+
+        case "turn.changed":
+          // The run state IS the payload, so there is nothing to go and ask
+          // for.
+          if (threadId === undefined || payload.turn === undefined) return;
+          patchRunState(threadId, payload.turn);
+          return;
+
+        case "attachment.changed":
+          // An attachment's state is shown through the message that owns it,
+          // and that message arrives with its own `message.changed`.
+          return;
+
+        default:
+          return;
       }
-      if (eventType === "ready" || eventType === "agents.changed" || eventType === "cron.changed") {
-        setCronRefreshToken((value) => value + 1);
-      }
-      queueRefresh();
     };
     const eventTypes: WebEvent["type"][] = [
       "ready",
@@ -1340,12 +1647,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     ];
     events.onopen = () => {
       setConnection("live");
-      setSkillRefreshToken((value) => value + 1);
+      if (!selectedRegistryReady()) setSkillRefreshToken((value) => value + 1);
     };
     events.onmessage = handleEvent;
     for (const type of eventTypes) events.addEventListener(type, handleEvent);
     events.onerror = () => setConnection(navigator.onLine ? "reconnecting" : "offline");
     const onOnline = () => {
+      // Nothing was observed while the link was down, so this is the other case
+      // where the console cannot say what changed.
       setConnection("reconnecting");
       setSkillRefreshToken((value) => value + 1);
       queueRefresh();
@@ -1359,14 +1668,25 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
       if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
+      if (threadListTimerRef.current !== null) window.clearTimeout(threadListTimerRef.current);
     };
-  }, [queueRefresh]);
+  }, [
+    applyThreadUpdate,
+    loadAgents,
+    patchRunState,
+    queueRefresh,
+    refreshSelectedThread,
+    revalidateBucket,
+  ]);
 
   const agents = useMemo(
     () => sortAgentsPinnedFirst(bootstrap?.agents ?? []),
     [bootstrap?.agents],
   );
   const threads = bootstrap?.threads ?? [];
+  // Assigned during render, like `catalogScopeRef` below: the SSE handler reads
+  // it when an event fires, and an effect would leave it a commit behind.
+  threadsRef.current = threads;
   const selectedAgent =
     agents.find((agent) => agent.sourceId === selectedAgentId) ?? null;
   // The catalog cache is per agent AND per agent PROCESS. A source id outlives
@@ -1376,7 +1696,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // reloaded, and `startTurn` rejected every turn that used one. The browser
   // had nothing generation-shaped to watch until `AgentSummary.generation`.
   const catalogScope = `${selectedAgentId ?? ""}\u0000${selectedAgent?.generation ?? ""}`;
-  // Assigned during render, like `queueRefreshRef` below: an in-flight page
+  // Assigned during render, like `scheduleRefreshRef` above: an in-flight page
   // walk has to compare against the CURRENT scope, and an effect would leave it
   // comparing against the previous one for a whole commit.
   catalogScopeRef.current = catalogScope;
@@ -1412,6 +1732,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     ? selectedThread.trigger.jobId
     : undefined;
   const selectedCronThreadId = selectedCronJobId === undefined ? undefined : selectedThread?.id;
+  selectedCronJobIdRef.current = selectedCronJobId;
   const selectedCronChannelKey = selectedAgentId === null || selectedCronJobId === undefined
     ? undefined
     : cronChannelKey(selectedAgentId, selectedCronJobId);
@@ -1486,38 +1807,27 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     setCronLoading(true);
     setCronError(null);
     try {
+      // The overview and, for a cron channel, its run page. Neither the bucket
+      // listing nor the open conversation is re-read here: this used to pull a
+      // whole 200-row page AND a full thread detail alongside the overview, on
+      // every `ready` and every `cron.changed` of every agent. The listing is
+      // the bootstrap's, and the conversation is refreshed by the event that
+      // actually changed it -- see the `cron.changed` arm of the event table.
       const overview = await api.cronOverview(sourceId);
       setCronOverview(overview);
-      await loadThreadBucket(sourceId, showArchived);
       if (jobId !== undefined) {
         const page = await api.cronRuns(sourceId, jobId);
         const channelKey = cronChannelKey(sourceId, jobId);
         setCronRunCursorByChannel((current) => Object.prototype.hasOwnProperty.call(current, channelKey)
           ? current
           : { ...current, [channelKey]: page.nextCursor ?? null });
-        const detailIssuedAt = removedThreadsRef.current.epoch();
-        const nextDetail = await boundedRequest(
-          (signal) => api.thread(selectedCronThreadId!, signal),
-          THREAD_READ_TIMEOUT_MS,
-        );
-        if (
-          selectedThreadRef.current === nextDetail.thread.id
-          && admitThread(removedThreadsRef.current, nextDetail.thread, detailIssuedAt)
-        ) setDetail(nextDetail);
       }
     } catch (cronError) {
       setCronError(errorMessage(cronError));
     } finally {
       setCronLoading(false);
     }
-  }, [
-    loadThreadBucket,
-    selectedAgent?.cron?.read,
-    selectedAgentId,
-    selectedCronJobId,
-    selectedCronThreadId,
-    showArchived,
-  ]);
+  }, [selectedAgent?.cron?.read, selectedAgentId, selectedCronJobId]);
 
   const loadCronRunActivity = useCallback(async (runId: string) => {
     const sourceId = selectedAgentId;
@@ -1642,12 +1952,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           }
         : current);
       setActionError(null);
-      queueRefresh();
+      // No refresh: the PATCH answered with the agent row it just wrote and it
+      // is applied above. Re-reading every agent and every conversation to
+      // learn one boolean this tab already holds is the whole cost that used to
+      // follow a pin.
     } catch (pinError) {
       setActionError(errorMessage(pinError));
       throw pinError;
     }
-  }, [queueRefresh]);
+  }, []);
 
   const selectThread = useCallback(
     (threadId: string) => {
@@ -1766,24 +2079,6 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     return fetched.thread;
   }, [detail, threads]);
 
-  const applyThreadUpdate = useCallback((nextThread: ThreadSummary, issuedAt: number) => {
-    // A response can outlive the conversation it describes: the migration's
-    // read, an optimistic rollback, any write already in flight when the
-    // operator deleted the thread. `mergeThreads` would re-add it, so the
-    // sidebar showed a conversation the server had already destroyed.
-    //
-    // `issuedAt` is the admission epoch the producing request went out under.
-    // A LOCAL decision -- an optimistic edit, a rollback, the repair a refused
-    // delete owes -- is being made now and quotes the current epoch.
-    if (!admitThread(removedThreadsRef.current, nextThread, issuedAt)) return;
-    setBootstrap((current) =>
-      current ? { ...current, threads: mergeThreads(current.threads, [nextThread]) } : current,
-    );
-    setDetail((current) =>
-      current?.thread.id === nextThread.id ? { ...current, thread: nextThread } : current,
-    );
-  }, []);
-
   const enqueueThreadWrite = useCallback(<T,>(
     threadId: string,
     run: (signal: AbortSignal) => Promise<T>,
@@ -1898,6 +2193,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
     setActionError(null);
   }, [visibleThreads]);
+  // Assigned during render: it changes with the visible listing, and putting it
+  // in the SSE effect's dependencies would tear down and reopen the event
+  // stream every time a conversation moved.
+  completeThreadRemovalRef.current = completeThreadRemoval;
 
   /**
    * The deletes this tab has on the wire, by the conversation they remove.
@@ -2474,13 +2773,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             : current,
         );
         setActionError(null);
-        queueRefresh();
+        // The POST already returned the conversation's new summary, applied
+        // above; only its messages have to be read back.
+        refreshSelectedThread();
       } catch (turnError) {
         setActionError(errorMessage(turnError));
         throw turnError;
       }
     },
-    [createThread, queueRefresh, selectedThread, settleThreadWrites],
+    [createThread, refreshSelectedThread, selectedThread, settleThreadWrites],
   );
 
   const cancelTurn = useCallback(async () => {
@@ -2490,12 +2791,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setDetail((current) =>
         current?.thread.id === result.thread.id ? { ...current, thread: result.thread } : current,
       );
-      queueRefresh();
+      refreshSelectedThread();
     } catch (cancelError) {
       setActionError(errorMessage(cancelError));
       throw cancelError;
     }
-  }, [queueRefresh, selectedThreadId]);
+  }, [refreshSelectedThread, selectedThreadId]);
 
   const sendLiveInput = useCallback(async (text: string) => {
     if (!selectedThreadId) throw new Error("Select a conversation before sending a follow-up.");
@@ -2512,12 +2813,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         };
       });
       setActionError(null);
-      queueRefresh();
+      refreshSelectedThread();
     } catch (liveInputError) {
       setActionError(errorMessage(liveInputError));
       throw liveInputError;
     }
-  }, [queueRefresh, selectedThreadId]);
+  }, [refreshSelectedThread, selectedThreadId]);
 
   const value = useMemo<ConsoleStoreValue>(
     () => ({
