@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add per-agent web-console defaults for the model and effort of new
+  conversations, with SQLite persistence, config/override source labels, and a
+  one-click revert to resolved config. Existing threads and non-web channels
+  remain unaffected.
 - Preserve no-expiry `AskUser` waits in web and remote-TUI turns by removing
   Undici's implicit five-minute inactivity deadline from long-lived operator
   streams. Host-wake delivery keeps its explicit ten-minute request bound.

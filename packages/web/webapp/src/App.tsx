@@ -13,6 +13,7 @@ import {
   writeAgentRailExpanded,
 } from "./agent-rail-layout";
 import { AgentRail, BrandMark, MobileAgentPicker } from "./components/AgentRail";
+import { AgentSettingsDialog } from "./components/AgentSettingsDialog";
 import { Chat } from "./components/Chat";
 import { Icon, type IconName } from "./components/Icon";
 import { ThreadSidebar } from "./components/ThreadSidebar";
@@ -117,6 +118,13 @@ function CommandPalette({ open, onClose }: { readonly open: boolean; readonly on
         icon: "new",
         disabled: !store.selectedAgent,
         run: () => void store.createThread().catch(() => undefined),
+      },
+      {
+        id: "agent-settings",
+        label: `Agent settings${store.selectedAgent ? ` · ${store.selectedAgent.label}` : ""}`,
+        icon: "settings",
+        disabled: !store.selectedAgent,
+        run: () => window.dispatchEvent(new CustomEvent("mono-agent:agent-settings")),
       },
       {
         id: "rename",
@@ -269,10 +277,12 @@ export function App() {
   const [agentDrawer, setAgentDrawer] = useState(false);
   const [threadDrawer, setThreadDrawer] = useState(false);
   const [palette, setPalette] = useState(false);
+  const [agentSettings, setAgentSettings] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [agentRailExpanded, setAgentRailExpanded] = useState(readAgentRailExpanded);
   const agentDrawerRef = useRef<HTMLDivElement>(null);
   const threadDrawerRef = useRef<HTMLDivElement>(null);
+  const agentSettingsRef = useRef<HTMLElement>(null);
   const appStyle = {
     "--agent-rail-width": `${agentRailWidth(agentRailExpanded)}px`,
   } as CSSProperties;
@@ -290,6 +300,7 @@ export function App() {
     setThreadDrawer(false);
   }, []);
   const closePalette = useCallback(() => setPalette(false), []);
+  const closeAgentSettings = useCallback(() => setAgentSettings(false), []);
   const togglePalette = useCallback(() => {
     closeDrawers();
     setPalette((current) => !current);
@@ -307,6 +318,7 @@ export function App() {
 
   useModalFocus(agentDrawer, agentDrawerRef, closeDrawers);
   useModalFocus(threadDrawer, threadDrawerRef, closeDrawers);
+  useModalFocus(agentSettings, agentSettingsRef, closeAgentSettings);
 
   useEffect(() => {
     const onCommand = () => togglePalette();
@@ -314,13 +326,20 @@ export function App() {
       const detail = (event as CustomEvent<{ message?: string }>).detail;
       if (detail?.message) setNotice(detail.message);
     };
+    const onAgentSettings = () => {
+      closeDrawers();
+      setPalette(false);
+      setAgentSettings(true);
+    };
     window.addEventListener("mono-agent:command", onCommand);
     window.addEventListener("mono-agent:notice", onNotice);
+    window.addEventListener("mono-agent:agent-settings", onAgentSettings);
     return () => {
       window.removeEventListener("mono-agent:command", onCommand);
       window.removeEventListener("mono-agent:notice", onNotice);
+      window.removeEventListener("mono-agent:agent-settings", onAgentSettings);
     };
-  }, [togglePalette]);
+  }, [closeDrawers, togglePalette]);
 
   useEffect(() => {
     if (!notice && !actionError) return;
@@ -425,6 +444,7 @@ export function App() {
       </div>
 
       <CommandPalette open={palette} onClose={closePalette} />
+      <AgentSettingsDialog open={agentSettings} onClose={closeAgentSettings} dialogRef={agentSettingsRef} />
       {(notice || actionError) && (
         <div className="toast" role="alert">
           <span>{notice ?? actionError}</span>

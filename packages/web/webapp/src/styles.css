@@ -401,6 +401,10 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .sidebar-header h1 { max-width: 205px; margin: 0; overflow: hidden; color: var(--text); font-size: 17px; font-weight: 680; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .new-thread-button { width: 38px; height: 38px; display: grid; place-items: center; flex: none; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-sm); cursor: pointer; }
 .new-thread-button:hover { color: var(--accent); border-color: var(--line-strong); }
+.sidebar-header-actions { display: flex; align-items: center; gap: 7px; }
+.agent-settings-button { width: 34px; height: 34px; display: grid; place-items: center; color: var(--text-muted); background: transparent; border: 0; border-radius: 9px; cursor: pointer; }
+.agent-settings-button:hover:not(:disabled) { color: var(--accent); background: var(--surface-hover); }
+.agent-settings-button:disabled, .new-thread-button:disabled { opacity: .45; cursor: default; }
 .thread-search { height: 38px; display: flex; align-items: center; gap: 8px; margin: 0 14px 10px; padding: 0 10px; color: var(--text-muted); background: var(--surface-subtle); border: 1px solid transparent; border-radius: 9px; }
 .thread-search:focus-within { color: var(--accent); background: var(--surface-raised); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
 .thread-search input { min-width: 0; height: 100%; flex: 1; padding: 0; color: var(--text); background: transparent; border: 0; outline: 0; font-size: 13px; }
@@ -898,6 +902,27 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 /* Command palette and toast */
 .dialog-layer { position: fixed; inset: 0; display: flex; align-items: flex-start; justify-content: center; padding: min(15vh, 130px) 16px 16px; background: rgba(7, 10, 8, 0.42); backdrop-filter: blur(6px); z-index: 100; }
 .command-palette { width: min(100%, 560px); overflow: hidden; color: var(--text); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 16px; box-shadow: var(--shadow-lg); }
+.agent-settings-dialog { width: min(100%, 570px); overflow: visible; color: var(--text); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 16px; box-shadow: var(--shadow-lg); }
+.agent-settings-dialog > header, .agent-settings-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 17px; }
+.agent-settings-dialog > header { border-bottom: 1px solid var(--line); }
+.agent-settings-dialog > header h2 { margin: 2px 0 0; font-size: 18px; }
+.agent-settings-dialog > footer { justify-content: flex-end; border-top: 1px solid var(--line); }
+.agent-settings-dialog .icon-button { width: 34px; height: 34px; display: grid; place-items: center; color: var(--text-muted); background: var(--surface-subtle); border-radius: 9px; cursor: pointer; }
+.agent-settings-body { display: grid; gap: 16px; padding: 18px; }
+.agent-settings-body h3 { margin: 0 0 5px; font-size: 14px; }
+.agent-settings-body p { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.agent-settings-body .model-selector__trigger { width: 100%; max-width: none; min-height: 42px; justify-content: space-between; border: 1px solid var(--line); border-radius: 10px; }
+.agent-settings-effective { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; }
+.agent-settings-effective > div { min-width: 0; padding: 10px 11px; background: var(--surface-subtle); border-radius: 9px; }
+.agent-settings-effective dt { color: var(--text-muted); font-size: 9px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
+.agent-settings-effective dd { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 7px; margin: 5px 0 0; }
+.agent-settings-effective dd span { overflow: hidden; font-family: var(--font-mono); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-settings-effective dd b { padding: 2px 5px; color: var(--accent); background: var(--accent-soft); border-radius: 5px; font-size: 8px; letter-spacing: .04em; text-transform: uppercase; }
+.agent-settings-config code { color: var(--text-soft); }
+.agent-settings-warning { color: var(--warning) !important; }
+.agent-settings-error { color: var(--danger) !important; }
+.agent-settings-dialog .secondary-button, .agent-settings-dialog .primary-button { min-height: 38px; display: inline-flex; align-items: center; gap: 6px; padding: 0 13px; border-radius: 9px; cursor: pointer; font-weight: 650; }
+.agent-settings-dialog .secondary-button { margin-right: auto; color: var(--accent); background: var(--accent-soft); }
 .palette-search { height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 14px; color: var(--text-muted); border-bottom: 1px solid var(--line); }
 .palette-search input { min-width: 0; flex: 1; height: 100%; color: var(--text); background: transparent; border: 0; outline: 0; font-size: 14px; }
 kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 20px; padding: 0 5px; color: var(--text-muted); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 5px; box-shadow: 0 1px 0 var(--line-strong); font-family: var(--font-mono); font-size: 9px; }

@@ -151,6 +151,19 @@ export interface ModelOption {
   readonly provider?: string;
 }
 
+export type RunSettingSource = "config" | "override";
+
+export interface AgentRunSettings {
+  readonly config: { readonly model?: string; readonly effort?: string };
+  readonly override: { readonly model?: string; readonly effort?: string } | null;
+  readonly effective: {
+    readonly model?: string;
+    readonly modelSource: RunSettingSource;
+    readonly effort?: string;
+    readonly effortSource: RunSettingSource;
+  };
+}
+
 export interface AskOption {
   readonly id: string;
   readonly label: string;
@@ -213,6 +226,7 @@ export interface AgentSummary {
   readonly defaultEffort?: string;
   readonly efforts?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, ModelOption>>;
+  readonly runSettings: AgentRunSettings;
   /**
    * Providers this agent supports, mirrored from `WebAgentSummary`. This is the
    * set the selector groups and filters by; `modelOptions` stays the configured

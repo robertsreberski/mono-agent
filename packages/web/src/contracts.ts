@@ -109,6 +109,26 @@ export interface WebModelOption {
   readonly contextWindow?: number;
 }
 
+export type WebRunSettingSource = "config" | "override";
+
+/** Config defaults, optional web-console overrides, and the effective values for new conversations. */
+export interface WebAgentRunSettings {
+  readonly config: {
+    readonly model?: string;
+    readonly effort?: string;
+  };
+  readonly override: {
+    readonly model?: string;
+    readonly effort?: string;
+  } | null;
+  readonly effective: {
+    readonly model?: string;
+    readonly modelSource: WebRunSettingSource;
+    readonly effort?: string;
+    readonly effortSource: WebRunSettingSource;
+  };
+}
+
 export interface WebAgentSummary {
   readonly sourceId: string;
   /**
@@ -137,6 +157,8 @@ export interface WebAgentSummary {
   readonly defaultEffort?: string;
   readonly efforts?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, WebModelOption>>;
+  /** Web-console-owned defaults copied into conversations created after they are saved. */
+  readonly runSettings: WebAgentRunSettings;
   /**
    * Providers this agent supports. `models`/`modelOptions` stay the configured
    * shortlist; this is what the selector groups and filters by, and what tells
@@ -630,6 +652,15 @@ export interface WebEvent {
 
 export interface CreateWebThreadInput {
   readonly sourceId: string;
+  /** Explicit draft choice; absent inherits the web default and null selects config. */
+  readonly model?: string | null;
+  /** Explicit draft choice; absent inherits the web default and null selects config. */
+  readonly effort?: string | null;
+}
+
+export interface PutWebAgentRunSettingsInput {
+  readonly model: string | null;
+  readonly effort: string | null;
 }
 
 export interface PatchWebAgentInput {

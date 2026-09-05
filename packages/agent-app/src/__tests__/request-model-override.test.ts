@@ -206,6 +206,30 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
     expect(result.runtimeOptions.effort).toBe("low");
   });
 
+  it("does not retain a web override across later channel or API requests", async () => {
+    const extension = createRequestModelOverrideRuntimeExtension({});
+    const web = await extension({ request: { metadata: {
+      web: { model: "anthropic:claude-opus-4-8", effort: "high" },
+    } } });
+    expect(web.runtimeOptions).toMatchObject({
+      model: expect.objectContaining({ provider: "anthropic", model: "claude-opus-4-8" }),
+      effort: "high",
+    });
+
+    for (const metadata of [
+      { telegram: {} },
+      { slack: {} },
+      { cron: {} },
+      { webhook: {} },
+      { tui: {} },
+      {},
+    ]) {
+      const next = await extension({ request: { metadata } });
+      expect(next.runtimeOptions).toEqual({});
+    }
+    expect((await extension({ request: {} })).runtimeOptions).toEqual({});
+  });
+
   it("applies a Telegram per-chat model + effort override", async () => {
     const result = await run({ telegram: { model: "anthropic:claude-opus-4-8", effort: "high" } });
     expect(result.runtimeOptions.model).toEqual(expect.objectContaining({

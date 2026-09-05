@@ -1,4 +1,4 @@
-import { act, render, waitFor } from "@testing-library/react";
+import { act, cleanup as cleanupDom, render, waitFor } from "@testing-library/react";
 import { StrictMode, useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, THREAD_PAGE_LIMIT } from "./api";
@@ -45,6 +45,8 @@ vi.mock("./api", async (importOriginal) => ({
     patchThread: vi.fn(),
     deleteThread: vi.fn(),
     patchAgent: vi.fn(),
+    setAgentRunDefaults: vi.fn(),
+    clearAgentRunDefaults: vi.fn(),
     agentSkills: vi.fn(),
     agentModels: vi.fn(),
     startTurn: vi.fn(),
@@ -183,6 +185,254 @@ describe("ConsoleStoreProvider integration", () => {
     const drift = Date.now() - serverNow();
     expect(drift).toBeGreaterThanOrEqual(3_000);
     expect(drift).toBeLessThan(3_500);
+  });
+
+  it("sends authored draft run choices atomically with thread creation", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    vi.mocked(api.createThread).mockResolvedValue(thread("created", "alpha", {
+      runModel: "provider/model",
+      runEffort: "high",
+    }));
+    const store = await renderStore();
+
+    act(() => {
+      store.current.setModel("provider/model");
+      store.current.setEffort("high");
+    });
+    await act(async () => { await store.current.createThread(); });
+
+    expect(api.createThread).toHaveBeenCalledWith(
+      "alpha",
+      { model: "provider/model", effort: "high" },
+      expect.any(AbortSignal),
+    );
+    expect(store.current.selectedThread).toMatchObject({
+      id: "created",
+      runModel: "provider/model",
+      runEffort: "high",
+    });
+  });
+
+  it("shows and snapshots blank-draft web defaults without sending redundant fields", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", {
+      models: ["provider/config", "provider/web"],
+      defaultModel: "provider/config",
+      defaultEffort: "medium",
+      modelOptions: {
+        "provider/config": { reasoning: true, effortLevels: ["medium", "high"] },
+        "provider/web": { reasoning: true, effortLevels: ["medium", "high"] },
+      },
+      runSettings: {
+        config: { model: "provider/config", effort: "medium" },
+        override: { model: "provider/web", effort: "high" },
+        effective: {
+          model: "provider/web",
+          modelSource: "override",
+          effort: "high",
+          effortSource: "override",
+        },
+      },
+    })], []));
+    vi.mocked(api.createThread).mockResolvedValue(thread("created", "alpha", {
+      runModel: "provider/web",
+      runEffort: "high",
+    }));
+    const store = await renderStore();
+
+    expect([store.current.effectiveModel, store.current.effectiveEffort])
+      .toEqual(["provider/web", "high"]);
+    await act(async () => { await store.current.createThread(); });
+
+    expect(api.createThread).toHaveBeenCalledWith("alpha", {}, expect.any(AbortSignal));
+    expect([store.current.selectedThread?.runModel, store.current.selectedThread?.runEffort])
+      .toEqual(["provider/web", "high"]);
+  });
+
+  it("preserves field-wise omission for compatible model-only and effort-only drafts", async () => {
+    const defaulted = agent("alpha", {
+      models: ["provider/config", "provider/web", "provider/other"],
+      defaultModel: "provider/config",
+      defaultEffort: "medium",
+      modelOptions: {
+        "provider/config": { reasoning: true, effortLevels: ["low", "medium", "high"] },
+        "provider/web": { reasoning: true, effortLevels: ["low", "medium", "high"] },
+        "provider/other": { reasoning: true, effortLevels: ["low", "high"] },
+      },
+      runSettings: {
+        config: { model: "provider/config", effort: "medium" },
+        override: { model: "provider/web", effort: "high" },
+        effective: {
+          model: "provider/web",
+          modelSource: "override",
+          effort: "high",
+          effortSource: "override",
+        },
+      },
+    });
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([defaulted], []));
+    vi.mocked(api.createThread).mockResolvedValueOnce(thread("model", "alpha", {
+      runModel: "provider/other",
+      runEffort: "high",
+    }));
+    let store = await renderStore();
+
+    act(() => store.current.setModel("provider/other"));
+    expect([store.current.effectiveModel, store.current.effectiveEffort])
+      .toEqual(["provider/other", "high"]);
+    await act(async () => { await store.current.createThread(); });
+    expect(api.createThread).toHaveBeenLastCalledWith(
+      "alpha",
+      { model: "provider/other" },
+      expect.any(AbortSignal),
+    );
+
+    cleanupDom();
+    localStorage.clear();
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    window.history.replaceState(null, "", "/");
+    vi.mocked(api.createThread).mockResolvedValueOnce(thread("effort", "alpha", {
+      runModel: "provider/web",
+      runEffort: "low",
+    }));
+    store = await renderStore();
+    act(() => store.current.setEffort("low"));
+    expect([store.current.effectiveModel, store.current.effectiveEffort])
+      .toEqual(["provider/web", "low"]);
+    await act(async () => { await store.current.createThread(); });
+    expect(api.createThread).toHaveBeenLastCalledWith(
+      "alpha",
+      { effort: "low" },
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("sends explicit null only for an authored reset or incompatible inherited effort", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", {
+      models: ["provider/config", "provider/web", "provider/low-only"],
+      defaultModel: "provider/config",
+      modelOptions: {
+        "provider/config": { reasoning: true, effortLevels: ["low", "high"] },
+        "provider/web": { reasoning: true, effortLevels: ["low", "high"] },
+        "provider/low-only": { reasoning: true, effortLevels: ["low"] },
+      },
+      runSettings: {
+        config: { model: "provider/config" },
+        override: { model: "provider/web", effort: "high" },
+        effective: {
+          model: "provider/web",
+          modelSource: "override",
+          effort: "high",
+          effortSource: "override",
+        },
+      },
+    })], []));
+    vi.mocked(api.createThread).mockResolvedValue(thread("created", "alpha", {
+      runModel: "provider/low-only",
+      runEffort: null,
+    }));
+    const store = await renderStore();
+
+    act(() => store.current.setModel("provider/low-only"));
+    await act(async () => { await store.current.createThread(); });
+    expect(api.createThread).toHaveBeenCalledWith(
+      "alpha",
+      { model: "provider/low-only", effort: null },
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("distinguishes an explicit blank draft field from web-default inheritance", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", {
+      models: ["provider/config", "provider/web"],
+      defaultModel: "provider/config",
+      defaultEffort: "medium",
+      modelOptions: {
+        "provider/config": { reasoning: true, effortLevels: ["medium", "high"] },
+        "provider/web": { reasoning: true, effortLevels: ["medium", "high"] },
+      },
+      runSettings: {
+        config: { model: "provider/config", effort: "medium" },
+        override: { model: "provider/web", effort: "high" },
+        effective: {
+          model: "provider/web",
+          modelSource: "override",
+          effort: "high",
+          effortSource: "override",
+        },
+      },
+    })], []));
+    vi.mocked(api.createThread).mockResolvedValue(thread("created", "alpha", {
+      runModel: null,
+      runEffort: "high",
+    }));
+    const store = await renderStore();
+
+    act(() => store.current.setModel(""));
+    expect([store.current.effectiveModel, store.current.effectiveEffort])
+      .toEqual(["provider/config", "high"]);
+    expect(store.current.hasRunOverride).toBe(true);
+    await act(async () => { await store.current.createThread(); });
+    expect(api.createThread).toHaveBeenCalledWith(
+      "alpha",
+      { model: null },
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("keeps an existing thread on its snapshot while web defaults change", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    const existing = thread("existing", "alpha", {
+      runModel: "provider/existing",
+      runEffort: "low",
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", {
+      models: ["provider/config", "provider/web", "provider/existing"],
+      defaultModel: "provider/config",
+      defaultEffort: "medium",
+      runSettings: {
+        config: { model: "provider/config", effort: "medium" },
+        override: { model: "provider/web", effort: "high" },
+        effective: {
+          model: "provider/web",
+          modelSource: "override",
+          effort: "high",
+          effortSource: "override",
+        },
+      },
+    })], [existing], existing.id));
+    vi.mocked(api.thread).mockResolvedValue({ thread: existing, messages: [] });
+    const store = await renderStore();
+
+    expect([store.current.effectiveModel, store.current.effectiveEffort])
+      .toEqual(["provider/existing", "low"]);
+  });
+
+  it("applies server-authoritative agent default save and revert responses", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    vi.mocked(api.setAgentRunDefaults).mockResolvedValue(agent("alpha", {
+      label: "Alpha",
+      runSettings: {
+        config: { model: "provider/model" },
+        override: { effort: "high" },
+        effective: {
+          model: "provider/model",
+          modelSource: "config",
+          effort: "high",
+          effortSource: "override",
+        },
+      },
+    }));
+    vi.mocked(api.clearAgentRunDefaults).mockResolvedValue(agent("alpha", { label: "Alpha" }));
+    const store = await renderStore();
+
+    await act(async () => { await store.current.setAgentRunDefaults(null, "high"); });
+    expect(store.current.selectedAgent?.runSettings.override).toEqual({ effort: "high" });
+    await act(async () => { await store.current.clearAgentRunDefaults(); });
+    expect(store.current.selectedAgent?.runSettings.override).toBeNull();
   });
 
   it("applies the returned pin state and moves the agent into the favorite group", async () => {

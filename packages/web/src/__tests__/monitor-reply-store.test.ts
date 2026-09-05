@@ -21,7 +21,9 @@ async function setup() {
   let now = new Date("2026-09-05T10:00:00Z");
   const store = await WebStore.open({ stateDir: join(root, "state"), clock: () => now });
   store.replaceAgents([{ sourceId: "agent-one", label: "Agent", status: "online", health: "running",
-    supportsAttachments: true, models: [], efforts: [], modelOptions: {}, updatedAt: now.toISOString() }]);
+    supportsAttachments: true, models: [], efforts: [], modelOptions: {},
+    runSettings: { config: {}, override: null, effective: { modelSource: "config", effortSource: "config" } },
+    updatedAt: now.toISOString() }]);
   store.registerWebPushSubscription({ endpoint: "https://push.example.test/opaque", p256dh: Buffer.concat([Buffer.from([4]), Buffer.alloc(64)]).toString("base64url"),
     auth: Buffer.alloc(16, 7).toString("base64url"), siteOrigin: "https://console.example.test", keyFingerprint: "test" });
   const thread = store.createThread("agent-one");

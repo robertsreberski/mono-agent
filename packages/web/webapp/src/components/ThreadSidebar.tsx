@@ -100,15 +100,30 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
           <span className="eyebrow">Conversations</span>
           <h1>{selectedAgent?.label ?? "No agent"}</h1>
         </div>
-        <ThreadListPrimitive.New
-          className="new-thread-button"
-          aria-label="New conversation"
-          title="New conversation (⌘⇧O)"
-          onClick={onSelect}
-          disabled={!selectedAgent}
-        >
-          <Icon name="new" size={18} />
-        </ThreadListPrimitive.New>
+        <div className="sidebar-header-actions">
+          <button
+            type="button"
+            className="agent-settings-button"
+            aria-label="Agent settings"
+            title="Agent settings"
+            disabled={!selectedAgent}
+            onClick={() => {
+              onSelect?.();
+              window.dispatchEvent(new CustomEvent("mono-agent:agent-settings"));
+            }}
+          >
+            <Icon name="settings" size={17} />
+          </button>
+          <ThreadListPrimitive.New
+            className="new-thread-button"
+            aria-label="New conversation"
+            title="New conversation (⌘⇧O)"
+            onClick={onSelect}
+            disabled={!selectedAgent}
+          >
+            <Icon name="new" size={18} />
+          </ThreadListPrimitive.New>
+        </div>
       </div>
       <label className="thread-search">
         <Icon name="search" size={16} />

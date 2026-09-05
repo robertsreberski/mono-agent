@@ -163,6 +163,54 @@ describe("turn overrides", () => {
   });
 });
 
+describe("agent run defaults", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("uses the encoded agent route for save and one-click revert", async () => {
+    const updated = agent("agent/one", {
+      runSettings: {
+        config: { model: "provider/model" },
+        override: { model: "provider/other", effort: "high" },
+        effective: {
+          model: "provider/other",
+          modelSource: "override",
+          effort: "high",
+          effortSource: "override",
+        },
+      },
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ agent: updated }))
+      .mockResolvedValueOnce(Response.json({ agent: agent("agent/one") }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.setAgentRunDefaults("agent/one", { model: "provider/other", effort: "high" });
+    await api.clearAgentRunDefaults("agent/one");
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/agents/agent%2Fone/run-defaults");
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      method: "PUT",
+      body: JSON.stringify({ model: "provider/other", effort: "high" }),
+    });
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/v1/agents/agent%2Fone/run-defaults");
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: "DELETE" });
+  });
+
+  it("sends authored draft fields atomically with thread creation", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ thread: {} }, { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.createThread("agent-one", { model: null, effort: "low" });
+
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ sourceId: "agent-one", model: null, effort: "low" }),
+    });
+  });
+});
+
 describe("process-job API", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
