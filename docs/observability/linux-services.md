@@ -35,9 +35,13 @@ healthy active service is left running; changed inputs require `restart`.
 Failed starts remove their unit; failed restarts attempt to restore the prior
 definition and running state. Failures are reported rather than claimed ready.
 `status` reports the supervisor state, PID, start time, boot enablement, and
-agent readiness. `logs` uses journald, whose retention policy controls disk use.
+agent readiness. Its JSON output retains the cross-platform
+`{ ok, instance, others }` envelope and adds the systemd backend fields; Linux
+does not enumerate other configs. `logs` uses journald, whose retention policy controls disk use.
 `stop` disables and removes only a recognized Mono unit, preserving agent data.
-Concurrent lifecycle mutations are serialized per unit.
+Owned marker metadata remains recognizable across unit-template updates, so
+`restart` can republish an older unit and `stop` can remove it safely. Concurrent
+lifecycle mutations are serialized per unit.
 
 Enable linger to start user services at boot and keep them running after logout:
 
@@ -49,7 +53,9 @@ loginctl show-user "$USER" --property=Linger
 Depending on host policy, enabling linger may require an administrator. Mono
 prints a hint when linger cannot be confirmed; it does not change login policy.
 A machine without systemd or a usable user bus can still use
-`mono-agent start --foreground` and `mono-agent web run`.
+`mono-agent start --foreground` and `mono-agent web run`. Bare
+`mono-agent web` and `mono-agent web status` fall back to the foreground-state
+view when the user manager is unavailable.
 
 ## Web console
 

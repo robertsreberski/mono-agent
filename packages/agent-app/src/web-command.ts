@@ -303,11 +303,21 @@ export async function runWebCommand(
   if ((deps.platform ?? process.platform) === "linux" && action !== "run" && action !== "reset") {
     if (action === undefined) stdout.write(renderWebHelp());
     const { runSystemdWebCommand } = await import("./systemd-command.js");
-    return await runSystemdWebCommand(options, {
-      ...deps.systemd,
-      ...(deps.homeDir === undefined ? {} : { homeDir: deps.homeDir }),
-      stdout, stderr,
-    });
+    const { isSystemdUserManagerUnavailable } = await import("./systemd.js");
+    try {
+      return await runSystemdWebCommand(options, {
+        ...deps.systemd,
+        ...(deps.homeDir === undefined ? {} : { homeDir: deps.homeDir }),
+        stdout, stderr,
+      });
+    } catch (error) {
+      if (!isSystemdUserManagerUnavailable(error) || (action !== undefined && action !== "status")) throw error;
+      if (action === undefined) {
+        await statusWeb(options, deps, false);
+        return 0;
+      }
+      return await statusWeb(options, deps, true);
+    }
   }
 
   if ((deps.platform ?? process.platform) === "linux" && action === "reset") {

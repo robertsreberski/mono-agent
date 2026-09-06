@@ -13,7 +13,7 @@ import type { ParsedCliArgs } from "./cli-args.js";
 import { ensureStartable } from "./cli-background-command.js";
 import { hasCompletedManagedStartup } from "./managed-startup.js";
 import {
-  inspectSystemd, readSystemdDefinition, startSystemd, stopSystemd, systemdLogs,
+  inspectSystemd, isSystemdUserManagerUnavailable, readSystemdDefinition, startSystemd, stopSystemd, systemdLogs,
   systemdUnitName, withSystemdLock, SYSTEMD_WEB_IDENTITY,
 } from "./systemd.js";
 import type { SystemdDefinition, SystemdDeps, SystemdService } from "./systemd.js";
@@ -35,10 +35,41 @@ function operationalEnvironment(env: Record<string, string | undefined>): Record
   return selected;
 }
 
-function report(identity: string, service: SystemdService, ready: boolean, json: boolean, deps: SystemdDeps): void {
+function statusFields(identity: string, service: SystemdService, ready: boolean) {
+  return { backend: "systemd-user", unit: systemdUnitName(identity), runtime: "dev (unmanaged)", ...service, ready } as const;
+}
+
+function report(identity: string, service: SystemdService, ready: boolean, deps: SystemdDeps): void {
+  const status = statusFields(identity, service, ready);
+  (deps.stdout ?? process.stdout).write(
+    `${status.unit}: ${service.activeState}/${service.subState}; PID ${service.pid}; ready ${ready ? "yes" : "no"}\nRuntime: dev (unmanaged)\nStarted: ${service.startedAt || "—"}; boot enabled: ${service.enabled ? "yes" : "no"}\n`,
+  );
+}
+
+function reportAgentJson(identity: string, installed: boolean, service: SystemdService, ready: boolean, deps: SystemdDeps): void {
   const status = { backend: "systemd-user", unit: systemdUnitName(identity), runtime: "dev (unmanaged)", ...service, ready };
-  (deps.stdout ?? process.stdout).write(json ? `${JSON.stringify(status)}\n`
-    : `${status.unit}: ${service.activeState}/${service.subState}; PID ${service.pid}; ready ${ready ? "yes" : "no"}\nRuntime: dev (unmanaged)\nStarted: ${service.startedAt || "—"}; boot enabled: ${service.enabled ? "yes" : "no"}\n`);
+  const present = installed || service.loadState !== "not-found";
+  (deps.stdout ?? process.stdout).write(`${JSON.stringify({
+    ok: ready,
+    instance: present ? {
+      pid: service.pid > 0 ? service.pid : null,
+      health: ready ? "running" : service.activeState === "failed" ? "crashed" : "stopped",
+      status: service.activeState,
+      configPath: identity,
+      startedAt: service.startedAt,
+    } : null,
+    others: [],
+    ...status,
+  })}\n`);
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 export async function runSystemdAgentCommand(
@@ -77,7 +108,8 @@ export async function runSystemdAgentCommand(
           stderr.write("Service state is available, but config/trace readiness could not be read. Inspect validate and logs.\n");
         }
       }
-      report(identity, service, healthy, args.json === true, deps);
+      if (args.json === true) reportAgentJson(identity, installed !== undefined, service, healthy, deps);
+      else report(identity, service, healthy, deps);
       return healthy ? 0 : 1;
     }
     const effective = { ...await loadDurableBackgroundEnvironment({ cwd, envFile, operationalEnvironment: environment }), ...environment };
@@ -99,12 +131,14 @@ export async function runSystemdAgentCommand(
       // The foreground singleton lease is the final guard; fail before installing a unit when a live trace is already present.
       const current = await inspectSystemd(identity, deps);
       const traces = await listTraceSources({ registryDir: target.registryDir, staleAfterMs: target.staleAfterMs });
-      if (traces.sources.some((source) => source.configPath === identity && source.health === "running" && source.pid !== current.pid)) {
+      const isAlive = deps.isAlive ?? processIsAlive;
+      if (traces.sources.some((source) => source.configPath === identity && source.health === "running"
+        && source.pid !== undefined && source.pid > 0 && source.pid !== current.pid && isAlive(source.pid))) {
         throw new Error("Another supervisor or foreground worker already runs this config. Stop it explicitly before installing a Mono systemd service.");
       }
       await startSystemd(definition, action === "restart", ready, deps);
     });
-    report(identity, await inspectSystemd(identity, deps), true, false, deps);
+    report(identity, await inspectSystemd(identity, deps), true, deps);
     return 0;
   } catch (error) {
     stderr.write(`Linux lifecycle: ${error instanceof Error ? error.message : String(error)}\n`);
@@ -146,7 +180,7 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
     if (action === "status") {
       const service = await inspectSystemd(identity, deps);
       const healthy = service.activeState === "active" && service.pid > 0 && await ready();
-      report(identity, service, healthy, false, deps);
+      report(identity, service, healthy, deps);
       stdout.write(`Web: ${url}\nTheme: ${theme}\nHTTPS routes: externally managed; inspect tailscale serve status.\n`);
       return options.positionals.length === 0 ? 0 : healthy ? 0 : 1;
     }
@@ -159,13 +193,14 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
       argv: workerArgv(["web", "run", "--host", host, "--port", String(port), "--theme", theme], environment) };
     await withSystemdLock(identity, deps, async () => {
       const service = await inspectSystemd(identity, deps);
-      const sameEndpoint = previousOption("--host") === host && Number(previousOption("--port")) === port;
-      if ((service.pid === 0 || !sameEndpoint) && await ready()) throw new Error("A web console already answers at this address. Stop its existing supervisor before installing this service.");
+      const ownedServiceMayAnswer = installed !== undefined && service.pid > 0 && Number(previousOption("--port")) === port;
+      if (!ownedServiceMayAnswer && await ready()) throw new Error("A web console already answers at this address. Stop its existing supervisor before installing this service.");
       await startSystemd(definition, action === "restart", ready, deps);
     });
     stdout.write(`Web ready: ${url}\nRuntime: dev (unmanaged); logs: mono-agent web logs\nHTTPS routes remain externally managed on Linux.\n`);
     return 0;
   } catch (error) {
+    if (action === "status" && isSystemdUserManagerUnavailable(error)) throw error;
     stderr.write(`Linux web lifecycle: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }

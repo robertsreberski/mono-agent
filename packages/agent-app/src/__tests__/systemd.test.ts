@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -85,6 +85,18 @@ describe("systemd user lifecycle", () => {
     expect(calls).toContainEqual(["systemctl", "--user", "disable", "--now", systemdUnitName(definition.identity)]);
   });
 
+  it("recognizes and refreshes an owned unit after its rendered template drifts", async () => {
+    const { definition, deps } = await fixture();
+    await startSystemd(definition, false, async () => true, deps);
+    const path = systemdUnitPath(definition.identity, deps);
+    const drifted = (await readFile(path, "utf8")).replace("RestartSec=5", "RestartSec=9");
+    await writeFile(path, drifted, { mode: 0o600 });
+
+    expect(await readSystemdDefinition(definition.identity, deps)).toEqual(definition);
+    await startSystemd(definition, true, async () => true, deps);
+    expect(await readFile(path, "utf8")).toBe(renderSystemdUnit(definition));
+  });
+
   it("serializes mutations of the same unit", async () => {
     const { definition, deps } = await fixture();
     await withSystemdLock(definition.identity, deps, async () => {
@@ -95,8 +107,12 @@ describe("systemd user lifecycle", () => {
   it("restores the previous definition and running service after failed restart readiness", async () => {
     const { definition, deps, calls } = await fixture();
     await startSystemd(definition, false, async () => true, deps);
+    const path = systemdUnitPath(definition.identity, deps);
+    const previousContents = (await readFile(path, "utf8")).replace("RestartSec=5", "RestartSec=9");
+    await writeFile(path, previousContents, { mode: 0o600 });
     await expect(startSystemd({ ...definition, argv: [...definition.argv, "--changed"] }, true, async () => false, deps)).rejects.toThrow("did not report ready");
     expect(await readSystemdDefinition(definition.identity, deps)).toEqual(definition);
+    expect(await readFile(path, "utf8")).toBe(previousContents);
     expect((await inspectSystemd(definition.identity, deps)).activeState).toBe("active");
     expect(calls).toContainEqual(["systemctl", "--user", "stop", systemdUnitName(definition.identity)]);
   });
@@ -106,6 +122,17 @@ describe("systemd user lifecycle", () => {
     await expect(startSystemd(definition, false, async () => false, deps)).rejects.toThrow("did not report ready");
     expect(await readSystemdDefinition(definition.identity, deps)).toBeUndefined();
     expect((await inspectSystemd(definition.identity, deps)).pid).toBe(0);
+  });
+
+  it("does not attempt rollback when fresh publication fails before writing a unit", async () => {
+    const { definition, deps, calls } = await fixture();
+    const configRoot = join(deps.homeDir!, ".config");
+    await mkdir(configRoot, { mode: 0o700 });
+    await chmod(configRoot, 0o777);
+
+    await expect(startSystemd(definition, false, async () => true, deps)).rejects.toThrow("unsafe service directory");
+    expect(calls.some((call) => call[2] === "disable")).toBe(false);
+    expect(await readSystemdDefinition(definition.identity, deps)).toBeUndefined();
   });
 
   it("refuses foreign and symlinked unit files without running mutations", async () => {
