@@ -548,7 +548,7 @@ async function startWebBackground(
       }
       if (options.name !== undefined) {
         stderr.write(ui.errorLine(
-          `mono-agent web is already managed by launchd; use \`mono-agent web restart --name ${options.name}\` to change its name.`,
+          `mono-agent web is already managed by launchd; use \`mono-agent web restart --name ${shellQuote(options.name)}\` to change its name.`,
         ));
         return 1;
       }
@@ -1238,6 +1238,11 @@ function invalidWebConsoleName(value: string): string | undefined {
     return `--name must be at most ${String(WEB_CONSOLE_NAME_MAX_CHARACTERS)} characters.`;
   }
   return undefined;
+}
+
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/u.test(value)) return value;
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 async function ensureWebDirectories(paths: WebPaths): Promise<void> {
