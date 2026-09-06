@@ -15,7 +15,8 @@ export interface ProviderAuthObservationTracker {
   get(providerId: string): ProviderObservation | undefined;
   /** Retain observations only for the agent's current bounded used-provider set. */
   retainProviders(providerIds: readonly string[]): void;
-  clearAuthFailure(providerId: string): void;
+  /** Invalidate proof for the replaced credential while retaining only unrelated availability evidence. */
+  credentialPersisted(providerId: string): void;
 }
 
 export function createProviderAuthObservationTracker(
@@ -87,11 +88,13 @@ export function createProviderAuthObservationTracker(
         if (!retained.has(providerId)) observations.delete(providerId);
       }
     },
-    clearAuthFailure(providerId) {
+    credentialPersisted(providerId) {
       const value = observations.get(providerId);
-      if (value?.failure?.kind !== "provider_auth") return;
-      if (value.verifiedAt === undefined) observations.delete(providerId);
-      else observations.set(providerId, { verifiedAt: value.verifiedAt });
+      if (value?.failure?.kind === "provider_unavailable") {
+        observations.set(providerId, { failure: value.failure });
+      } else {
+        observations.delete(providerId);
+      }
     },
   };
 }

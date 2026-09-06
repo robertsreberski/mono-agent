@@ -148,7 +148,7 @@ export function createProviderAuthOperator(options: CreateProviderAuthOperatorOp
         },
       }),
     }).then(() => {
-      options.observations.clearAuthFailure(input.providerId);
+      options.observations.credentialPersisted(input.providerId);
       terminal(session, "succeeded");
     }).catch((error: unknown) => {
       if (session.abort.signal.aborted) {

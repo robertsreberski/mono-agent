@@ -34,6 +34,64 @@ describe("provider auth operator", () => {
     await operator.stop();
   });
 
+  it("returns a replaced credential to not-verified until a later model request succeeds", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-provider-auth-verification-"));
+    tempDirs.push(dir);
+    const authPath = join(dir, "auth.json");
+    await writeFile(authPath, `${JSON.stringify({ "opencode-go": { type: "api_key", key: "old-key" } })}\n`, { mode: 0o600 });
+    let now = Date.parse("2026-09-06T12:00:00.000Z");
+    const observations = createProviderAuthObservationTracker(() => now);
+    observations.observe({
+      runId: "verified", conversationId: "web:1", status: "succeeded", durationMs: 1, eventCount: 0, artifactPaths: [],
+      model: "opencode-go:kimi-k2.6",
+    });
+    now += 1_000;
+    observations.observe({
+      runId: "auth-failed", conversationId: "web:1", status: "failed", durationMs: 1, eventCount: 0, artifactPaths: [],
+      model: "opencode-go:kimi-k2.6", failureKind: "provider_auth",
+    });
+    const operator = createProviderAuthOperator({
+      config: { ...config(), providers: { piAuthPath: authPath } } as unknown as MonoAgentConfig,
+      env: {}, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} }, observations,
+      login: (async (_provider: string, _type: string, interaction: { prompt(input: unknown): Promise<string> }) => ({
+        type: "api_key", key: await interaction.prompt({ type: "secret", message: "OpenCode API key" }),
+      })) as never,
+    });
+
+    expect((await operator.status()).providers[0]).toMatchObject({
+      state: "present",
+      verification: "verified_by_live_request",
+      verifiedAt: "2026-09-06T12:00:00.000Z",
+      lastFailure: { kind: "provider_auth" },
+    });
+    const started = await operator.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" });
+    await vi.waitFor(async () => expect((await operator.get(started.id))?.prompt?.id).toBeDefined());
+    await operator.submit(started.id, {
+      promptId: (await operator.get(started.id))!.prompt!.id,
+      value: "replacement-key",
+    });
+    await vi.waitFor(async () => expect((await operator.get(started.id))?.state).toBe("succeeded"));
+    expect((await operator.status()).providers[0]).toMatchObject({
+      state: "present",
+      verification: "not_verified",
+    });
+    expect((await operator.status()).providers[0]).not.toHaveProperty("verifiedAt");
+    expect((await operator.status()).providers[0]).not.toHaveProperty("lastFailure");
+    expect(JSON.parse(await readFile(authPath, "utf8"))).toEqual({
+      "opencode-go": { type: "api_key", key: "replacement-key" },
+    });
+    now += 1_000;
+    observations.observe({
+      runId: "replacement-verified", conversationId: "web:1", status: "succeeded", durationMs: 1, eventCount: 0, artifactPaths: [],
+      model: "opencode-go:kimi-k2.6",
+    });
+    expect((await operator.status()).providers[0]).toMatchObject({
+      verification: "verified_by_live_request",
+      verifiedAt: "2026-09-06T12:00:02.000Z",
+    });
+    await operator.stop();
+  });
+
   it("selects OpenAI's exact upstream device-code option and surfaces the device event", async () => {
     let selected: string | undefined;
     const operator = createProviderAuthOperator({
