@@ -628,6 +628,13 @@ describe("parseCliArgs", () => {
       positionals: ["start"],
       name: "Flockbox",
     });
+    expect(parseCliArgs(["web", "restart", "--name", "-"])).toMatchObject({
+      command: "web",
+      positionals: ["restart"],
+      name: "-",
+    });
+    expect(() => parseCliArgs(["web", "run", "--name", "bad\u2028name"])).toThrow(/one line/u);
+    expect(() => parseCliArgs(["web", "run", "--name", "bad\u202ename"])).toThrow(/one line/u);
     expect(() => parseCliArgs(["web", "status", "--name", "Flockbox"])).toThrow(/web start/u);
     expect(() => parseCliArgs(["status", "--name", "Flockbox"])).toThrow(/--name/u);
     expect(() => parseCliArgs(["web", "run", "--env-file", ".env"])).toThrow(/does not load/u);
@@ -687,6 +694,7 @@ describe("parseCliArgs", () => {
     const webHelp = helpTopicText("web");
     expect(webHelp).toContain("[--name <label>]");
     expect(webHelp).toContain("PWA, tab, and rail label");
+    expect(webHelp).toContain("--name -");
     expect(help).not.toContain("--fallback-effort");
     expect(help).not.toContain("--artifact-dir");
     expect(help).not.toContain("web reset --all --yes");

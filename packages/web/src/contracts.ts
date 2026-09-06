@@ -71,7 +71,7 @@ export const WEB_API_VERSION = 1 as const;
 export const WEB_THEMES = ["evergreen", "ocean", "plum", "terracotta"] as const;
 export type WebTheme = (typeof WEB_THEMES)[number];
 export const DEFAULT_WEB_THEME: WebTheme = "evergreen";
-/** Upper bound on the operator-chosen console label. Matches the CLI's shared `--name` cap. */
+/** Canonical upper bound on the operator-chosen console label. */
 export const WEB_CONSOLE_NAME_MAX_CHARACTERS = 80;
 
 export const WEB_MAX_FILES_PER_TURN = 10;

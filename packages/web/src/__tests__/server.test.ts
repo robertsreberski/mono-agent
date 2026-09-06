@@ -690,7 +690,7 @@ describe("web HTTP server", () => {
   });
 
   it("rejects console names the launcher and manifest cannot carry", async () => {
-    for (const name of ["   ", "bad\u0007name", "x".repeat(81)]) {
+    for (const name of ["   ", "bad\u0007name", "bad\u2028name", "bad\u202ename", "x".repeat(81)]) {
       await expect(start({ name })).rejects.toThrow(/console name/iu);
     }
   });

@@ -61,12 +61,15 @@ machine hostname is not what belongs on a phone home screen:
 
 ```bash
 mono-agent web start --name "Flockbox"
+# Later, restore the hostname-derived label:
+mono-agent web restart --name -
 ```
 
 The label is 1-80 characters on a single line. Like `--theme`, it is persisted
 in the managed service record and re-baked into the LaunchAgent arguments, so a
 later restart without `--name` retains it and `mono-agent web status` prints the
-effective value (or `- (machine hostname)` when unset). It is a machine-level
+effective value (or `— (machine hostname)` when unset). The documented `-`
+value is a reset sentinel rather than a literal label. It is a machine-level
 service flag: the web console deliberately reads no agent `--config` or
 `--env-file`. On Linux the same value is persisted into the systemd user
 unit's arguments instead of a LaunchAgent.

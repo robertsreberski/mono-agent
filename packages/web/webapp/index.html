@@ -12,7 +12,7 @@
       Deliberately NO `apple-mobile-web-app-title`. This document is served as a
       static file to every host, and that meta OVERRIDES the manifest's
       `short_name` on iOS -- which the service templates per host
-      (`short_name: identity.hostName`), so two installed consoles are
+      (`short_name: identity.displayName`), so two installed consoles are
       distinguishable on the same home screen. A constant here would name them
       both "mono-agent". iOS 16.4+ takes the name from the manifest.
 
