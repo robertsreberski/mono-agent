@@ -74,7 +74,7 @@ describe.skipIf(process.platform === "win32")("process job live output with the 
     const secret = "live-tail-secret-value";
     const script = [
       "process.stdout.write('phase-one\\n')",
-      "setTimeout(() => process.stderr.write(`token=${process.env.LIVE_TAIL_SECRET}\\n`), 450)",
+      "setTimeout(() => process.stderr.write(`known=${process.env.LIVE_TAIL_SECRET}\\ntoken=\\nnot-in-env\\n`), 450)",
       "setTimeout(() => process.stdout.write('phase-three\\n'), 900)",
       "setTimeout(() => {}, 1_300)",
     ].join(";");
@@ -109,8 +109,9 @@ describe.skipIf(process.platform === "win32")("process job live output with the 
 
     const second = await waitForProjection(service, started.jobId, (job) =>
       job.state === "running" && job.output.preview.includes("[REDACTED]"));
-    expect(second.output.preview).toContain("STDOUT:\nphase-one\nSTDERR:\ntoken=[REDACTED]");
+    expect(second.output.preview).toContain("STDOUT:\nphase-one\nSTDERR:\nknown=[REDACTED]\ntoken=\n[REDACTED]");
     expect(second.output.preview).not.toContain(secret);
+    expect(second.output.preview).not.toContain("not-in-env");
     expect(second.output.stderrBytes).toBeGreaterThan(0);
 
     const terminal = await waitForProjection(service, started.jobId, (job) => job.state === "succeeded");
@@ -118,6 +119,7 @@ describe.skipIf(process.platform === "win32")("process job live output with the 
     expect(terminal.output.preview).toContain("phase-three");
     expect(terminal.output.preview).toContain("[REDACTED]");
     expect(terminal.output.preview).not.toContain(secret);
+    expect(terminal.output.preview).not.toContain("not-in-env");
   }, 15_000);
 });
 

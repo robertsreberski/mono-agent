@@ -41,6 +41,35 @@ describe("StreamingProcessOutputRedactor", () => {
     expect(truncated.push("safe split-", 1)).toEqual([]);
     expect(truncated.finalize()).toEqual([{ text: "[REDACTED]", value: 1 }]);
   });
+
+  it.each([
+    "token=",
+    "deploy --password",
+    "Authorization: Bearer",
+  ])("redacts a credential value continued after %s", (prefix) => {
+    const redactor = new StreamingProcessOutputRedactor<number>([]);
+    const prefixOutput = redactor.push(prefix, 1);
+    expect(prefixOutput).toHaveLength(1);
+    expect(redactor.pendingCount).toBe(0);
+    expect(redactor.push("not-in-env", 2)).toEqual([
+      { text: "[REDACTED]", value: 2 },
+    ]);
+    expect(redactor.push("safe", 3)).toEqual([{ text: "safe", value: 3 }]);
+  });
+
+  it("redacts every non-empty line in a quoted credential continuation", () => {
+    const redactor = new StreamingProcessOutputRedactor<number>([]);
+    expect(redactor.push('client_secret="', 1)).toEqual([
+      { text: "client_secret=[REDACTED]", value: 1 },
+    ]);
+    expect(redactor.push("not-in-env", 2)).toEqual([
+      { text: "[REDACTED]", value: 2 },
+    ]);
+    expect(redactor.push("still-sensitive\"", 3)).toEqual([
+      { text: "[REDACTED]", value: 3 },
+    ]);
+    expect(redactor.push("safe", 4)).toEqual([{ text: "safe", value: 4 }]);
+  });
 });
 
 describe("ProcessJobOutputTail", () => {
@@ -66,6 +95,56 @@ describe("ProcessJobOutputTail", () => {
       truncated: false,
       preview: "STDOUT:\none\nSTDERR:\ntwo\nSTDOUT:\nthree",
     });
+  });
+
+  it("preserves first-fragment order when another stream completes first", () => {
+    vi.useFakeTimers();
+    const tail = new ProcessJobOutputTail({
+      previewChars: 2_000,
+      maxOutputBytes: 1_024,
+      secrets: [],
+      publishIntervalMs: 250,
+    });
+
+    tail.writeStdout(Buffer.from("first"));
+    tail.writeStderr(Buffer.from("second\n"));
+    tail.writeStdout(Buffer.from(" completes\nthird\n"));
+    vi.advanceTimersByTime(250);
+
+    expect(tail.snapshot()?.preview).toBe(
+      "STDOUT:\nfirst completes\nSTDERR:\nsecond\nSTDOUT:\nthird",
+    );
+  });
+
+  it("never publishes a credential value split from its label", () => {
+    vi.useFakeTimers();
+    const tail = new ProcessJobOutputTail({
+      previewChars: 2_000,
+      maxOutputBytes: 1_024,
+      secrets: [],
+      publishIntervalMs: 250,
+    });
+
+    tail.writeStdout(Buffer.from("token=\n"));
+    tail.writeStdout(Buffer.from("not-in-env\n"));
+    vi.advanceTimersByTime(250);
+
+    expect(tail.snapshot()?.preview).toBe("STDOUT:\ntoken=\n[REDACTED]");
+    expect(tail.snapshot()?.preview).not.toContain("not-in-env");
+  });
+
+  it("redacts a cross-line flag value when finalizing an unterminated line", () => {
+    const tail = new ProcessJobOutputTail({
+      previewChars: 2_000,
+      maxOutputBytes: 1_024,
+      secrets: [],
+    });
+
+    tail.writeStderr(Buffer.from("deploy --password=\nnot-in-env"));
+    const final = tail.finalize();
+
+    expect(final?.preview).toBe("STDERR:\ndeploy --password=\n[REDACTED]");
+    expect(final?.preview).not.toContain("not-in-env");
   });
 
   it("never publishes known secrets split across chunks, lines, or UTF-8 boundaries", () => {

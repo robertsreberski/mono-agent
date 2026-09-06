@@ -104,6 +104,7 @@ export class ProcessJobOutputTail {
             text: state.carry,
           });
           state.carry = "";
+          state.partialSequence = 0;
         }
       }
       const ready: Array<{ readonly text: string; readonly value: TailLine }> = [];
@@ -129,6 +130,8 @@ export class ProcessJobOutputTail {
     this.lines.length = 0;
     this.streams.stdout.carry = "";
     this.streams.stderr.carry = "";
+    this.streams.stdout.partialSequence = 0;
+    this.streams.stderr.partialSequence = 0;
     this.redactors.stdout.clear();
     this.redactors.stderr.clear();
   }
@@ -158,11 +161,18 @@ export class ProcessJobOutputTail {
     while (newline >= 0) {
       const text = state.carry.slice(0, newline).replace(/\r$/u, "");
       state.carry = state.carry.slice(newline + 1);
-      const line: TailLine = { sequence: ++this.sequence, stream, text };
+      const line: TailLine = {
+        sequence: state.partialSequence || ++this.sequence,
+        stream,
+        text,
+      };
+      state.partialSequence = 0;
       this.appendReady(this.redactors[stream].push(text, line));
       newline = state.carry.indexOf("\n");
     }
-    if (state.carry.length > 0) state.partialSequence = ++this.sequence;
+    if (state.carry.length > 0 && state.partialSequence === 0) {
+      state.partialSequence = ++this.sequence;
+    }
   }
 
   private appendReady(entries: readonly { readonly text: string; readonly value: TailLine }[]): void {
@@ -227,6 +237,8 @@ export class ProcessJobOutputTail {
     this.lines.length = 0;
     this.streams.stdout.carry = "";
     this.streams.stderr.carry = "";
+    this.streams.stdout.partialSequence = 0;
+    this.streams.stderr.partialSequence = 0;
     this.redactors.stdout.clear();
     this.redactors.stderr.clear();
     this.published = { stdoutBytes: 0, stderrBytes: 0, truncated: false, preview: "" };

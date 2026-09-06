@@ -106,6 +106,14 @@ interface QueuedProcessOutputLine<T> extends StreamingProcessOutputLine<T> {
   redact: boolean;
 }
 
+interface CredentialContinuation {
+  readonly quote?: "\"" | "'";
+}
+
+const CREDENTIAL_LABEL_CONTINUATION = /\b[A-Za-z0-9_.-]*(?:api[ _-]?key|secret[ _-]?access[ _-]?key|access[ _-]?key[ _-]?id|(?:access|auth|refresh|session|id|bearer)[ _-]?token|authorization|credential|private[ _-]?key|client[ _-]?secret|passphrase|password|passwd|secret|token|cookie|session[ _-]?id)[A-Za-z0-9_.-]*(?:["']?\s*[=:]\s*)(["']?)\s*$/iu;
+const CREDENTIAL_FLAG_CONTINUATION = /(?:^|\s)(?:--(?:password|passwd|pass|token|secret|api[-_]?key|auth)|-p)(?:=)?\s*(["']?)\s*$/iu;
+const HTTP_AUTH_CONTINUATION = /\b(?:Digest|Bearer|Basic|Token)\s*(["']?)\s*$/iu;
+
 /**
  * Stateful line redaction for output whose secrets may cross physical lines.
  *
@@ -115,6 +123,7 @@ interface QueuedProcessOutputLine<T> extends StreamingProcessOutputLine<T> {
 export class StreamingProcessOutputRedactor<T> {
   private readonly queue: Array<QueuedProcessOutputLine<T>> = [];
   private privateKeyOpen = false;
+  private credentialContinuation: CredentialContinuation | undefined;
 
   constructor(
     private readonly secrets: readonly string[],
@@ -127,10 +136,22 @@ export class StreamingProcessOutputRedactor<T> {
   }
 
   push(line: string, value: T, truncatedAtEnd = false): readonly StreamingProcessOutputLine<T>[] {
+    let redactWholeLine = false;
+    if (this.credentialContinuation !== undefined) {
+      if (line.trim().length > 0) {
+        redactWholeLine = true;
+        const quote = this.credentialContinuation.quote;
+        if (quote === undefined || line.includes(quote)) {
+          this.credentialContinuation = credentialContinuationForLine(line);
+        }
+      }
+    } else {
+      this.credentialContinuation = credentialContinuationForLine(line);
+    }
     const redacted = this.privateKeyOpen || isPrivateKeyBegin(line) || isPrivateKeyEnd(line)
       ? line
       : redactProcessOutputLine(line, this.secrets, truncatedAtEnd);
-    this.queue.push({ text: redacted, value, redact: false });
+    this.queue.push({ text: redacted, value, redact: redactWholeLine });
     return this.drain(false);
   }
 
@@ -141,6 +162,7 @@ export class StreamingProcessOutputRedactor<T> {
   clear(): void {
     this.queue.length = 0;
     this.privateKeyOpen = false;
+    this.credentialContinuation = undefined;
   }
 
   clone(): StreamingProcessOutputRedactor<T> {
@@ -150,6 +172,9 @@ export class StreamingProcessOutputRedactor<T> {
       this.holdCredentialPrefixes,
     );
     clone.privateKeyOpen = this.privateKeyOpen;
+    clone.credentialContinuation = this.credentialContinuation === undefined
+      ? undefined
+      : { ...this.credentialContinuation };
     clone.queue.push(...this.queue.map((entry) => ({ ...entry })));
     return clone;
   }
@@ -222,6 +247,27 @@ export class StreamingProcessOutputRedactor<T> {
       };
     });
   }
+}
+
+/**
+ * A physical newline is a valid separator in the whole-output credential
+ * rules. Remember only that a value is expected (and an optional quote), then
+ * redact complete continuation lines as they arrive. This keeps streaming at
+ * least as safe without retaining an attacker-controlled number of blank or
+ * quoted lines in memory.
+ */
+function credentialContinuationForLine(line: string): CredentialContinuation | undefined {
+  for (const pattern of [
+    CREDENTIAL_LABEL_CONTINUATION,
+    CREDENTIAL_FLAG_CONTINUATION,
+    HTTP_AUTH_CONTINUATION,
+  ]) {
+    const match = pattern.exec(line);
+    if (match === null) continue;
+    const quote = match[1];
+    return quote === "\"" || quote === "'" ? { quote } : {};
+  }
+  return undefined;
 }
 
 /**

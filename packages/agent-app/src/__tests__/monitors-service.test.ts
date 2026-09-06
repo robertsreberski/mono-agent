@@ -504,6 +504,19 @@ describe("monitors service", () => {
     expect(body).toContain("[REDACTED]");
   });
 
+  it("redacts a credential value split from its label across events", async () => {
+    const handle = await open();
+    const fake = fakeRequest();
+    await handle.controller(origin(), 0).start(fake.request);
+    fake.process().emit("token=\n");
+    fake.process().emit("not-in-env\n");
+    await waitForWakes(1);
+
+    const body = fenced(wakes[0]!.prompt);
+    expect(body).not.toContain("not-in-env");
+    expect(JSON.parse(body).events).toEqual(["token=", "[REDACTED]"]);
+  });
+
   it("neutralizes a fence forged inside monitored output", async () => {
     const handle = await open();
     const fake = fakeRequest();
