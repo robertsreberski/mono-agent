@@ -454,6 +454,7 @@ export class MonoAgentHarness implements AgentHarness {
           recorder,
           cancellationFailureKind(request.abortSignal),
           cancellationAccountReason,
+          context?.systemPrompt,
         );
       }
     };
@@ -638,9 +639,7 @@ export class MonoAgentHarness implements AgentHarness {
       let prepared = await prepareHarnessContext(this.options, this.skillsCache, activeRequest, {
         historyMode: confirmedWarmSession
           ? "omitted"
-          : providerHistoryTurn === undefined
-            ? "prompt"
-            : "messages",
+          : "messages",
         turnId: runId,
       }, emit);
       context = prepared.context;
@@ -708,7 +707,7 @@ export class MonoAgentHarness implements AgentHarness {
         providerAttributionSessionId = randomUUID();
         coordinatedProviderAttemptEligibleForSync = false;
         prepared = await prepareHarnessContext(this.options, this.skillsCache, activeRequest, {
-          historyMode: "prompt",
+          historyMode: "messages",
           turnId: runId,
         }, emit);
         context = prepared.context;
@@ -764,7 +763,7 @@ export class MonoAgentHarness implements AgentHarness {
         const cancellationReason = cancelledTurnReason(request.abortSignal.reason, failureKind);
         const summary = await commitRecorderFinish(recorder, {
           ...runtimeResult,
-          systemPrompt: context.prompt,
+          systemPrompt: context.systemPrompt,
           isolated,
           cancelled: true,
           failureKind,
@@ -796,7 +795,7 @@ export class MonoAgentHarness implements AgentHarness {
         );
         const summary = await recorder.finish({
           ...runtimeResult,
-          systemPrompt: context.prompt,
+          systemPrompt: context.systemPrompt,
           isolated,
           failureKind: failure.kind,
           error: failure.message,
@@ -806,7 +805,7 @@ export class MonoAgentHarness implements AgentHarness {
 
       const text = normalizeAssistantText(runtimeResult.text);
       if (text === undefined) {
-        const summary = await recorder.finish({ ...runtimeResult, systemPrompt: context.prompt, isolated });
+        const summary = await recorder.finish({ ...runtimeResult, systemPrompt: context.systemPrompt, isolated });
         // Empty turns are not appended to history, so a retained provider
         // session would diverge from the history store. Retire it instead;
         // the next message replays history into a fresh session.
@@ -826,7 +825,7 @@ export class MonoAgentHarness implements AgentHarness {
         };
       }
 
-      const successResult = { ...runtimeResult, systemPrompt: context.prompt, isolated };
+      const successResult = { ...runtimeResult, systemPrompt: context.systemPrompt, isolated };
       // Two-phase terminal lifecycle: preparation may yield, but is explicitly
       // non-terminal. It gives cancellation one final window before any durable
       // conversation state is committed and before `run_finished` is visible.
@@ -1085,8 +1084,9 @@ export class MonoAgentHarness implements AgentHarness {
           recorder,
           cancellationFailureKind(request.abortSignal),
           cancelledTurnReason(request.abortSignal.reason, cancellationFailureKind(request.abortSignal)),
+          context?.systemPrompt,
         )
-        : await safeRecorderFail(recorder, error);
+        : await safeRecorderFail(recorder, error, context?.systemPrompt);
       return {
         metadata: responseMetadata(runId, request, context, summary),
         failure,

@@ -534,7 +534,7 @@ describe("agent host composition helpers", () => {
         { append: async () => {} },
       );
       const recalledMessage = String(fake.calls[1]?.options.messages?.[0]?.content);
-      expect(recalledMessage).toBe("Logged answer");
+      expect(recalledMessage).toMatch(/<\/host_turn_context>\n\nLogged answer$/u);
       expect(fake.calls[1]?.prompt).not.toContain("## Memory (recalled)");
     } finally {
       await memory.close();
@@ -995,7 +995,7 @@ describe("agent host composition helpers", () => {
     const firstRuntime = createFakeRuntime(async () => ({ text: `answer-${++turn}` }));
     const firstHarness = await createConfiguredAgentHarness({ config: unlimitedConfig, runtime: firstRuntime.runtime });
 
-    for (let index = 1; index <= 7; index += 1) {
+    for (let index = 1; index <= 34; index += 1) {
       await firstHarness.run({
         conversationId: "conversation-restart",
         userMessage: `question-${index}`,
@@ -1015,8 +1015,12 @@ describe("agent host composition helpers", () => {
     });
 
     expect(restartedRuntime.calls[0]?.options.maxTurns).toBeUndefined();
-    expect(restartedRuntime.calls[0]?.prompt).toContain("question-1");
-    expect(restartedRuntime.calls[0]?.prompt).toContain("answer-1");
+    expect(JSON.stringify(restartedRuntime.calls[0]?.options.messages)).toContain("question-3");
+    expect(JSON.stringify(restartedRuntime.calls[0]?.options.messages)).toContain("answer-3");
+    // 34 completed two-message turns retain exactly the latest 32 turns;
+    // the new current turn is appended after those 64 canonical messages.
+    expect(restartedRuntime.calls[0]?.options.messages).toHaveLength(65);
+    expect(JSON.stringify(restartedRuntime.calls[0]?.options.messages)).not.toContain('question-2"');
     const historyEntries = await readdir(join(dir, ".mono-agent", "history"));
     expect(historyEntries.filter((name) => name.endsWith(".history.json"))).toHaveLength(1);
     expect(historyEntries).toContain(".locks");
@@ -1075,7 +1079,7 @@ describe("agent host composition helpers", () => {
       { append: async () => {} },
     );
 
-    const secondPrompt = restartedRuntime.calls[0]?.prompt ?? "";
+    const secondPrompt = restartedRuntime.calls[0]?.options.messages?.map((message) => message.content).join("\n") ?? "";
     expect(restartedRuntime.calls[0]?.options.sessionId).toBeUndefined();
     expect(restartedRuntime.calls[0]?.options.providerSessionId).toBeUndefined();
     expect(secondPrompt.split("FIRST_USER_REPLAY_MARKER")).toHaveLength(2);
@@ -1383,9 +1387,9 @@ describe("agent host composition helpers", () => {
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, ".mono-agent", "artifacts");
     await writeFile(identityPath, "You are Mono.", "utf8");
-    const fake = createFakeRuntime(async (prompt) => ({
-      text: prompt.includes("TELEGRAM_") ? "TELEGRAM_ANSWER" : "OPENAI_API_ANSWER",
-      providerSessionId: prompt.includes("TELEGRAM_") ? "telegram-provider-session" : "openai-api-provider-session",
+    const fake = createFakeRuntime(async (_prompt, options) => ({
+      text: String(options.messages.at(-1)?.content).includes("TELEGRAM_") ? "TELEGRAM_ANSWER" : "OPENAI_API_ANSWER",
+      providerSessionId: String(options.messages.at(-1)?.content).includes("TELEGRAM_") ? "telegram-provider-session" : "openai-api-provider-session",
     }));
     const base = monoConfig({ dir, identityPath, artifactDir });
     const harness = await createConfiguredAgentHarness({
@@ -1458,9 +1462,11 @@ describe("agent host composition helpers", () => {
       expect(call.options.providerSessionId).toBeUndefined();
       expect(call.options.sessionKeepAlive).toBeUndefined();
     }
-    expect(fake.calls[1]?.prompt).toContain("Conversation History");
-    expect(fake.calls[1]?.prompt).toContain("first question");
-    expect(fake.calls[1]?.prompt).toContain("answer-1");
+    expect(fake.calls[1]?.prompt).not.toContain("Conversation History");
+    expect(fake.calls[1]?.prompt).toBe(fake.calls[0]?.prompt);
+    expect(fake.calls[1]?.options.messages?.length).toBe(3);
+    expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain("first question");
+    expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain("answer-1");
   });
 
   it("keeps canonical fallback routes stateless even when every route supports resume", async () => {
@@ -1500,8 +1506,9 @@ describe("agent host composition helpers", () => {
       expect(call.options.providerSessionId).toBeUndefined();
       expect(call.options.sessionKeepAlive).toBeUndefined();
     }
-    expect(fake.calls[1]?.prompt).toContain("first");
-    expect(fake.calls[1]?.prompt).toContain("answer-1");
+    expect(fake.calls[1]?.prompt).toBe(fake.calls[0]?.prompt);
+    expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain("first");
+    expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain("answer-1");
   });
 
   it("never passes session keys in per-message mode", async () => {

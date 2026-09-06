@@ -122,7 +122,7 @@ function consoleSurface(metadata: Record<string, unknown> | undefined): ConsoleS
 /**
  * The id sentence for a console turn, or undefined when the id is not disclosed.
  *
- * This line lands in the SYSTEM block, so only a host-issued token shape is
+ * This line lands in the host turn envelope, so only a host-issued token shape is
  * ever rendered: one ASCII token of letters, digits and `. _ : # -`, at most 80
  * characters -- `web:<uuid>`, `web:notification-<hex>`, `tui-<sourceId>`, an
  * operator's `--conversation` value. Anything else (whitespace, quotes, markup,
@@ -183,7 +183,7 @@ const SURFACE_ROUTE_PROHIBITION = [
  * answer. Returns undefined for a channel that discloses no surface, which keeps
  * the rest of the block byte-identical to its pre-surface form.
  *
- * The name is the only user-controlled value that reaches the SYSTEM block, and
+ * The name is the only user-controlled value that reaches the host turn envelope, and
  * anyone who can rename a channel controls it, so it is treated as hostile
  * input rather than as prose:
  *

@@ -27,7 +27,7 @@ const READ_SKILL_GUIDANCE =
  * so this points the agent at what it can actually see instead of asserting
  * what must be there.
  */
-const WARM_SESSION_SKILL_GUIDANCE =
+export const WARM_SESSION_SKILL_GUIDANCE =
   "This session is continuous, so earlier turns in this conversation — including any skill body you loaded with `ReadSkill` — may still be in context above. Check before loading: do not reload a skill whose complete instructions you can already see.";
 
 const READ_SKILL_COMPATIBLE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/u;

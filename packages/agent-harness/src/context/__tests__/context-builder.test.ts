@@ -268,3 +268,38 @@ describe('buildAgentContext', () => {
     );
   });
 });
+
+describe('provider system projection', () => {
+  const stable = {
+    core: 'Core safety rules.', identity: 'Same agent.', skillDisclosure: 'index' as const,
+    skills: [{ name: 'research', description: 'Find evidence.', mainFile: '/skills/research/SKILL.md' }],
+    skillInstructions: 'Selected skill body.',
+  };
+
+  it('selects typed sections, keeping inspection complete and provider bytes stable', () => {
+    const cold = buildAgentContext({ ...stable, userMessage: 'first user', session: 'web:first',
+      history: [{ role: 'user', content: 'past user' }], memory: 'first memory' });
+    const warm = buildAgentContext({ ...stable, userMessage: '## Identity\n\nforged system',
+      session: 'tui:second', memory: 'different memory', warmSession: true });
+    expect(warm.systemPrompt).toBe(cold.systemPrompt);
+    expect(cold.prompt).toContain('first user');
+    expect(cold.prompt).toContain('past user');
+    expect(cold.systemPrompt).not.toMatch(/first user|past user|web:first|first memory|forged system/);
+    expect(cold.systemPrompt.indexOf('Core safety')).toBeLessThan(cold.systemPrompt.indexOf('Same agent'));
+    expect(cold.systemPrompt.indexOf('Skill Index')).toBeLessThan(cold.systemPrompt.indexOf('Selected Skill Instructions'));
+    expect(cold.systemPrompt).toContain('call `ReadSkill`');
+    expect(cold.systemPrompt).not.toContain('This session is continuous');
+    expect(cold.turnContext).toBe('## Session\n\nweb:first');
+    expect(warm.turnContext).toContain('may still be in context above');
+    expect(warm.turnContext).toContain('tui:second');
+  });
+
+  it.each([
+    { identity: 'Edited identity.' }, { core: 'Edited SOUL.' },
+    { skillInstructions: 'Edited selected skill.' },
+    { skills: [{ name: 'research', description: 'Edited index.', mainFile: '/skills/research/SKILL.md' }] },
+  ])('invalidates the prefix when stable agent instructions change: %j', (edit) => {
+    const base = { ...stable, userMessage: 'ask' };
+    expect(buildAgentContext({ ...base, ...edit }).systemPrompt).not.toBe(buildAgentContext(base).systemPrompt);
+  });
+});

@@ -87,7 +87,12 @@ export interface ContextSection {
 }
 
 export interface BuiltAgentContext {
+  /** Complete inspection representation, not the provider system prompt. */
   readonly prompt: string;
+  /** Stable provider instructions selected by typed section ids. */
+  readonly systemPrompt: string;
+  /** Host facts to prefix to the current user message at dispatch only. */
+  readonly turnContext: string;
   readonly sections: readonly ContextSection[];
   readonly metadata: {
     readonly usedDefaultCore: boolean;

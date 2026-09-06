@@ -94,11 +94,13 @@ export async function safeRecorderCancel(
   recorder: RunRecorder,
   failureKind: "cancelled" | "cancelled_user",
   cancellationReason?: RunCancellationReason,
+  systemPrompt?: string,
 ): Promise<RunSummary | undefined> {
   try {
     return await recorder.finish({
       cancelled: true,
       failureKind,
+      ...(systemPrompt === undefined ? {} : { systemPrompt }),
       ...(cancellationReason === undefined ? {} : { cancellationReason }),
     });
   } catch {
@@ -106,9 +108,22 @@ export async function safeRecorderCancel(
   }
 }
 
-export async function safeRecorderFail(recorder: RunRecorder, error: unknown): Promise<RunSummary | undefined> {
+export async function safeRecorderFail(recorder: RunRecorder, error: unknown, systemPrompt?: string): Promise<RunSummary | undefined> {
   try {
-    return await recorder.fail(error);
+    if (systemPrompt === undefined) return await recorder.fail(error);
+    // Once assembly succeeded, preserve the dispatched projection even when the
+    // provider throws. finish accepts explicit failures as well as successes.
+    // Match recorder.fail's existing classification and diagnostic shape.
+    const declaredKind = typeof error === "object" && error !== null && "failureKind" in error
+      ? (error as { readonly failureKind?: unknown }).failureKind : undefined;
+    const failureKind = typeof declaredKind === "string" && declaredKind.trim().length > 0
+      ? declaredKind : error instanceof Error && error.name.length > 0 ? error.name : "exception";
+    return await recorder.finish({
+      isError: true,
+      failureKind,
+      systemPrompt,
+      diagnostics: { error: error instanceof Error ? { name: error.name, message: error.message } : { message: String(error) } },
+    });
   } catch {
     return undefined;
   }

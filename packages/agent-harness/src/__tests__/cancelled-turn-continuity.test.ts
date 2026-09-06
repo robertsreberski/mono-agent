@@ -342,7 +342,7 @@ describe("cancelled turn natural continuity", () => {
     await expect(second).resolves.toMatchObject({ text: "continued" });
 
     expect(calls).toHaveLength(2);
-    const nextPrompt = calls[1]!.prompt;
+    const nextPrompt = calls[1]!.options.messages!.map((message) => message.content).join("\n");
     expect(nextPrompt).toContain("Inspect the config");
     expect(nextPrompt).toContain("I read the configuration; next I will validate it");
     expect(nextPrompt).toContain("distinctive-result-a");
