@@ -119,7 +119,7 @@ describe("resource entries", () => {
     expect(() => { stop(); }).not.toThrow();
   });
 
-  it("keeps estimating on a browser whose entries carry no transfer size", () => {
+  it("builds no observer where the entry prototype carries no transfer size", () => {
     // Safari before 16.4 ACCEPTS the resource entry type and reports no
     // `transferSize` on it. Reading `observe()` not throwing as "the browser is
     // measuring for us" silenced the estimate and counted zeroes in its place,
@@ -139,6 +139,24 @@ describe("resource entries", () => {
 
     expect(dataUsage().bytes).toBe(4_096 + 2_000);
     stop();
+  });
+
+  it("keeps estimating when the observer itself refuses to be built", () => {
+    // This runs at module scope, before the app is mounted. A constructor that
+    // throws must cost the console its meter, not its first paint.
+    vi.stubGlobal("PerformanceObserver", class {
+      constructor() { throw new Error("no observers here"); }
+    });
+    vi.stubGlobal("PerformanceResourceTiming", class {
+      get transferSize(): number { return 0; }
+    });
+
+    const stop = observeTransferredResources();
+
+    expect(dataUsage().measured).toBe(false);
+    recordTransferredBody(4_096);
+    expect(dataUsage().bytes).toBe(4_096);
+    expect(() => { stop(); }).not.toThrow();
   });
 
   it("says on the snapshot whether the browser is measuring or the console is guessing", () => {

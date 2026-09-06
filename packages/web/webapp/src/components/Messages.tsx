@@ -359,7 +359,11 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
   // store, but a loop that restarts because a reader's identity changed would
   // reset its own backoff -- and the loop already treats everything it consults
   // between rounds this way.
-  const transcriptMovedAtRef = useRef(transcriptMovedAt);
+  //
+  // Optional on purpose: knowing when the stream last spoke is a courtesy the
+  // loop can run without, and a transcript rendered by something that does not
+  // offer it must lose one optimisation, not its poll.
+  const transcriptMovedAtRef = useRef<((threadId: string) => number) | undefined>(transcriptMovedAt);
   transcriptMovedAtRef.current = transcriptMovedAt;
   const threadId = selectedThread?.id;
   const requestsRef = useRef(new Map<string, VersionedAskCardRequest>());
@@ -457,7 +461,8 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
         // round gives way to it -- and only one, so a stream that never stops
         // cannot starve the poll. The wait is repeated, not doubled: nothing was
         // asked, so nothing has earned a longer backoff.
-        if (asked > 0 && !gaveWay && Date.now() - transcriptMovedAtRef.current(threadId) < delayMs) {
+        const movedAt = transcriptMovedAtRef.current?.(threadId) ?? 0;
+        if (asked > 0 && !gaveWay && Date.now() - movedAt < delayMs) {
           gaveWay = true;
           await waitForAskPollDelay(delayMs, controller.signal);
           continue;

@@ -2284,7 +2284,26 @@ describe("the durable copy on a lean link", () => {
   });
 
   it("shows the console's own copy straight away on a full link", () => {
+    // With an observer, which is the branch production takes: a durable copy is
+    // not gated on the viewport either, because there is nothing to fetch.
+    stubIntersectionObserver();
     render(attachment(storedImagePart));
+
+    expect(screen.getByRole("img", { name: "cover.png" }))
+      .toHaveAttribute("src", storedImagePart.storedUrl);
+    expect(screen.queryByRole("button", { name: /^Load cover\.png/u })).toBeNull();
+  });
+
+  it("never takes back a picture the operator is already looking at", () => {
+    // Switching to Lean cannot un-spend bytes. A picture already on screen has
+    // been paid for -- and under PR 1's immutable headers a second view is a
+    // cache hit -- so re-pricing it as "Load cover.png, 2 KiB" would be a tap
+    // target that lies about its cost, and would take the picture away to do it.
+    stubIntersectionObserver();
+    render(attachment(storedImagePart));
+    expect(screen.getByRole("img", { name: "cover.png" })).toBeInTheDocument();
+
+    act(() => { writeDataModeSetting("lean"); });
 
     expect(screen.getByRole("img", { name: "cover.png" }))
       .toHaveAttribute("src", storedImagePart.storedUrl);

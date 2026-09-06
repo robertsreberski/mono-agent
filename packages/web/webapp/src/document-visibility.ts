@@ -1,16 +1,6 @@
 import { useSyncExternalStore } from "react";
 
 /**
- * Whether this tab is on screen.
- *
- * A poll is a promise to show the operator something new. A backgrounded tab
- * shows nobody anything, so a poll running there is pure spend — and on the
- * phone this console is installed on, a backgrounded tab is the normal state.
- *
- * Read through `useSyncExternalStore` rather than an effect so a component that
- * pauses on this cannot render one frame believing it is visible when it is not.
- */
-/**
  * One `visibilitychange` listener for the document, however many components ask.
  *
  * A transcript can hold dozens of pollers; registering a listener each would put
@@ -40,5 +30,15 @@ export const documentVisible = (): boolean => document.visibilityState !== "hidd
  */
 const alwaysVisible = (): boolean => true;
 
+/**
+ * Whether this tab is on screen.
+ *
+ * A poll is a promise to show the operator something new. A backgrounded tab
+ * shows nobody anything, so a poll running there is pure spend — and on the
+ * phone this console is installed on, a backgrounded tab is the normal state.
+ *
+ * Read through `useSyncExternalStore` rather than an effect so a component that
+ * pauses on this cannot render one frame believing it is visible when it is not.
+ */
 export const useDocumentVisible = (): boolean =>
   useSyncExternalStore(subscribe, documentVisible, alwaysVisible);

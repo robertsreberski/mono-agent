@@ -421,4 +421,21 @@ describe("what the store gives back on request", () => {
     expect(second).not.toBe(request);
     await expect(second).resolves.toBeInstanceOf(Blob);
   });
+
+  it("clears the slot in the same turn as the failure, not one microtask later", async () => {
+    // A viewer reacting to the rejection is scheduled BEFORE anything chained
+    // after the handler that produced it. Clearing the slot from a `.finally`
+    // therefore left one turn in which a fresh join adopted the request that had
+    // just failed -- and a picture that would have retried never asked again.
+    const key = replyImageKey("sha256:same-turn", 4);
+    const failing = joinReplyImageFetch(key, () => Promise.reject(new Error("dropped")));
+    let rejoined: Promise<Blob> | undefined;
+
+    await failing.catch(() => {
+      rejoined = joinReplyImageFetch(key, async () => new Blob(["abcd"]));
+    });
+
+    expect(rejoined).not.toBe(failing);
+    await expect(rejoined!).resolves.toBeInstanceOf(Blob);
+  });
 });

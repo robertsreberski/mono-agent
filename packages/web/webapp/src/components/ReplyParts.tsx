@@ -771,7 +771,21 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
     part?.integrityId,
     canMintAccess ? mintAccess : undefined,
   );
-  const gatedByTap = imageSource === "tap" && !imageWanted;
+  /**
+   * The identity whose durable copy has been put on screen.
+   *
+   * Two duties, and they are the same moment: it is when the bytes were spent,
+   * and it is why they are never asked for again. Switching to Lean cannot
+   * un-spend them -- and under PR 1's immutable headers a second view is a cache
+   * hit -- so re-pricing a picture already on screen as something to load would
+   * be a tap target that lies about its cost, and would take the picture away to
+   * offer it. Keyed on the identity, so a slot recycled to a different picture
+   * starts closed again.
+   */
+  const shownStoredRef = useRef<string | undefined>(undefined);
+  const gatedByTap = imageSource === "tap"
+    && !imageWanted
+    && shownStoredRef.current !== identity;
   const shownStored = gatedByTap ? undefined : storedImage;
   const shownImage = shownStored ?? (replyImage.status === "ready" ? replyImage.src : undefined);
 
@@ -783,11 +797,10 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
    * these immutably, so the browser's cache answers the next one for nothing and
    * a size the part declared cannot know that.
    */
-  const countedStoredRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (shownStored === undefined || part === undefined) return;
-    if (countedStoredRef.current === identity) return;
-    countedStoredRef.current = identity;
+    if (shownStoredRef.current === identity) return;
+    shownStoredRef.current = identity;
     recordTransferredBody(part.sizeBytes);
   }, [identity, part, shownStored]);
 

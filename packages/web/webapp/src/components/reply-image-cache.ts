@@ -260,7 +260,14 @@ export const joinReplyImageFetch = (
   promise.catch(() => undefined);
   inFlight.set(key, { controller, settle, promise, waiters: 1 });
   try {
-    start(controller.signal).then(succeed, fail).finally(() => { settle(); });
+    // The slot is cleared INSIDE each handler, before the outer promise settles.
+    // Chained after it, the clear lands one microtask later than the reaction a
+    // waiter attached to the failure -- and a viewer that reacts by asking again
+    // would adopt the request that had just failed instead of starting one.
+    start(controller.signal).then(
+      (blob) => { settle(); succeed(blob); },
+      (error: unknown) => { settle(); fail(error); },
+    );
   } catch (error) {
     settle();
     fail(error);
