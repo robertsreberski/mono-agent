@@ -88,13 +88,12 @@ At startup, mono-agent inspects the existing Tailscale Serve configuration. It p
 
 ## Provider authentication
 
-For a current protected agent, **Agent settings** includes a provider-authentication
-card for each provider used by the agent's effective primary, fallback, memory,
-and enabled static trigger routes. It reports `present`, `expired`, `missing`, or
-keyless `not applicable`, the safe credential source, expiry when available, and
-whether a real model request has verified the credential. A successful login
-refreshes the cards immediately but stays **not live-verified** until a provider
-request succeeds. Recent auth/unavailable failures are memory-only warnings.
+For a current protected agent, **Agent settings** includes one compact
+provider-authentication row for each provider used by the agent's effective
+primary, fallback, memory, and enabled static trigger routes. Each row shows
+`OK`, `Needs action`, or `Not applicable`; an **Authenticate** or
+**Re-authenticate** action appears only when that provider supports a recovery
+flow. A successful login refreshes the checklist immediately.
 
 One **Authenticate** or **Re-authenticate** action starts a short-lived session on
 the agent host. GitHub Copilot and OpenAI Codex show Pi's native device URL and

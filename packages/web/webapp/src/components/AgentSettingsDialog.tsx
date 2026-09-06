@@ -375,7 +375,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   if (agent.supportsProviderAuth !== true) {
     return (
       <section className="provider-auth-section">
-        <div><h3>Provider authentication</h3><p>This agent does not expose the protected provider-authentication capability.</p></div>
+        <div><h3>Provider authentication</h3><p className="provider-auth-unavailable">Not available on this agent.</p></div>
       </section>
     );
   }
@@ -434,26 +434,21 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
 
   return (
     <section className="provider-auth-section">
-      <div>
-        <h3>Provider authentication</h3>
-        <p>Pi credential status on the agent host. Detection is separate from verification by a live model request.</p>
-      </div>
+      <h3>Provider authentication</h3>
       {status === null && authError === null && <p aria-live="polite">Loading provider status…</p>}
       <div className="provider-auth-list">
         {status?.providers.map((provider) => {
           const actionable = provider.methods.length > 0
             && (provider.state === "missing" || provider.state === "expired" || provider.lastFailure?.kind === "provider_auth");
+          const presentation = providerAuthPresentation(provider);
           return (
             <article className="provider-auth-card" key={provider.providerId}>
               <div className="provider-auth-heading">
-                <div><b>{provider.label}</b><code>{provider.providerId}</code></div>
-                <span className={`provider-auth-state is-${provider.state}`}>{provider.state.replace("_", " ")}</span>
+                <b>{provider.label}</b>
+                <span className={"provider-auth-state " + presentation.className}>
+                  <span aria-hidden="true">{presentation.glyph}</span> {presentation.label}
+                </span>
               </div>
-              <p>{provider.state === "not_applicable" ? provider.unavailableReason ?? "No credential applies."
-                : `${provider.source === undefined ? "No credential detected" : `Credential detected from ${provider.source}`}; ${provider.verification === "verified_by_live_request" ? "verified by a live request" : "live verification pending"}.`}</p>
-              {provider.expiresAt !== undefined && <p>Expires {new Date(provider.expiresAt).toLocaleString()} · <code>{provider.expiresAt}</code></p>}
-              <p>Used by {provider.usages.map((usage) => `${usage.label} (${usage.model})`).join(", ")}.</p>
-              {provider.lastFailure !== undefined && <p className="agent-settings-warning">{provider.lastFailure.message} · {new Date(provider.lastFailure.observedAt).toLocaleString()}</p>}
               {actionable && (
                 <button type="button" className="secondary-button" disabled={busy || session !== null && !terminal(session.state)} onClick={() => openFlow(provider)}>
                   {provider.state === "missing" ? "Authenticate" : "Re-authenticate"}
@@ -465,23 +460,26 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
       </div>
       {selectedProvider !== null && session === null && selectedProvider.methods.length > 1 && (
         <div className="provider-auth-flow">
-          <h4>Choose how to authenticate {selectedProvider.label}</h4>
           {selectedProvider.methods.map((method) => (
-            <button key={`${method.authType}:${method.strategy}`} type="button" className="secondary-button" disabled={busy} onClick={() => void start(selectedProvider, method)}>
-              {method.label}{method.recommended ? " · recommended" : ""}
+            <button key={method.authType + ":" + method.strategy} type="button" className="secondary-button" disabled={busy} onClick={() => void start(selectedProvider, method)}>
+              {method.label}
             </button>
           ))}
         </div>
       )}
       {session !== null && (
         <div className="provider-auth-flow" aria-live="polite">
-          <div className="provider-auth-heading"><h4>{session.providerId}</h4><span>{session.state.replace("_", " ")}</span></div>
-          {session.authUrl !== undefined && <p>{session.authUrl.instructions} <a href={session.authUrl.url} target="_blank" rel="noopener noreferrer">Open authentication page</a></p>}
+          {session.authUrl !== undefined && (
+            <>
+              <p>{session.authUrl.instructions}</p>
+              <a href={session.authUrl.url} target="_blank" rel="noopener noreferrer">Open authentication page</a>
+            </>
+          )}
           {session.deviceCode !== undefined && (
-            <p>
-              Open <a href={session.deviceCode.verificationUri} target="_blank" rel="noopener noreferrer">the device page</a> and enter <code className="provider-device-code">{session.deviceCode.userCode}</code>.
-              {session.deviceCode.expiresAt !== undefined && <> Code expires {new Date(session.deviceCode.expiresAt).toLocaleString()}.</>}
-            </p>
+            <div className="provider-device-code-row">
+              <a href={session.deviceCode.verificationUri} target="_blank" rel="noopener noreferrer">Open device page</a>
+              <code className="provider-device-code">{session.deviceCode.userCode}</code>
+            </div>
           )}
           {session.progress !== undefined && <p>{session.progress}</p>}
           {session.prompt !== undefined && (
@@ -520,4 +518,18 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
 
 function terminal(state: ProviderAuthSessionSnapshot["state"]): boolean {
   return state === "succeeded" || state === "failed" || state === "cancelled";
+}
+
+function providerAuthPresentation(provider: ProviderAuthProviderStatus): {
+  readonly className: string;
+  readonly glyph: string;
+  readonly label: string;
+} {
+  if (provider.state === "not_applicable") {
+    return { className: "is-not-applicable", glyph: "–", label: "Not applicable" };
+  }
+  if (provider.state !== "present" || provider.lastFailure?.kind === "provider_auth") {
+    return { className: "is-needs-action", glyph: "⚠", label: "Needs action" };
+  }
+  return { className: "is-ok", glyph: "✓", label: "OK" };
 }
