@@ -1,7 +1,9 @@
 import type { DataMessagePartProps } from "@assistant-ui/react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
+import { currentDataMode } from "../data-mode";
+import { useDocumentVisible } from "../document-visibility";
 import type { ProcessJobProjection, ProcessJobState } from "../types";
 import { ActivityRow, type ActivityStatus } from "./ActivityRow";
 import { ActivityElapsed, type ActivityTiming } from "./assistant-ui/ActivityElapsed";
@@ -17,6 +19,15 @@ export const TERMINAL_PROCESS_JOB_STATES: ReadonlySet<ProcessJobState> = new Set
 ]);
 const PROCESS_JOB_POLL_INITIAL_MS = 1_000;
 const PROCESS_JOB_POLL_MAX_MS = 10_000;
+/**
+ * Half the rate on a metered link.
+ *
+ * A background job is not a stream: the card exists to say what state the job
+ * reached, and reaching it two seconds later costs the operator nothing but
+ * saves half the requests over the life of a long run.
+ */
+const LEAN_PROCESS_JOB_POLL_INITIAL_MS = 2_000;
+const LEAN_PROCESS_JOB_POLL_MAX_MS = 20_000;
 
 /**
  * Where a state sits in the job's lifecycle. The lifecycle only moves forward
@@ -56,6 +67,22 @@ export const processJobSupersedes = (current: ProcessJobProjection, next: Proces
   if (current.state !== next.state || TERMINAL_PROCESS_JOB_STATES.has(next.state)) return false;
   return current.timestamps.startedAt === null && next.timestamps.startedAt !== null;
 };
+
+/**
+ * What a projection would tell this card that it does not already know.
+ *
+ * The fields the row and its poll actually turn on: the lifecycle state, the
+ * process start (the one field a producer fills without a transition), how many
+ * wake attempts have been made, and the exit code. Two projections agreeing on
+ * these say the same thing however many times the transcript is rebuilt.
+ */
+const projectionSignature = (job: ProcessJobProjection | undefined): string =>
+  job === undefined ? "" : [
+    job.state,
+    job.timestamps.startedAt ?? "",
+    String(job.wake.attempts),
+    job.exitCode === null ? "" : String(job.exitCode),
+  ].join(" ");
 
 /** The retained web thread a job reports to, or nothing for an origin the console cannot poll. */
 export const processJobThreadId = (job: ProcessJobProjection): string | undefined => {
@@ -145,22 +172,57 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
   const payload = data as { readonly job?: ProcessJobProjection; readonly responseText?: unknown };
   const initial = payload.job;
   const [live, setLive] = useState(initial);
+  const visible = useDocumentVisible();
   const threadId = initial === undefined ? undefined : processJobThreadId(initial);
   const jobId = initial?.jobId;
   const terminal = live === undefined || TERMINAL_PROCESS_JOB_STATES.has(live.state);
+  /**
+   * When the store last handed this card a projection that SAID something new.
+   *
+   * By value, not by reference: every conversation read rebuilds the message and
+   * its parts, so the card is handed a fresh object carrying the same job about
+   * once a second during a turn. Reference equality read each of those as "the
+   * stream just answered" and suppressed every poll round for the length of the
+   * turn. Comparing the signature also means neither the first render nor
+   * StrictMode's repeated effect can be mistaken for an arrival.
+   */
+  const projectedRef = useRef({ signature: projectionSignature(initial), at: 0 });
 
   // The store's projection is authoritative and already monotonic (the web
   // server rejects a card update that moves backwards), so it always lands.
   useEffect(() => {
     setLive(initial);
+    const signature = projectionSignature(initial);
+    if (projectedRef.current.signature !== signature) {
+      projectedRef.current = { signature, at: Date.now() };
+    }
   }, [initial]);
 
   useEffect(() => {
-    if (terminal || threadId === undefined || jobId === undefined) return;
+    // A hidden tab has nobody to show a state change to. The card keeps what it
+    // holds and the loop resumes -- with an immediate read -- when the operator
+    // comes back, which is the only moment the answer is worth anything.
+    if (terminal || threadId === undefined || jobId === undefined || !visible) return;
     const controller = new AbortController();
     let timer: number | undefined;
-    let delayMs = PROCESS_JOB_POLL_INITIAL_MS;
-    const refresh = async () => {
+    const lean = currentDataMode() === "lean";
+    const initialDelayMs = lean ? LEAN_PROCESS_JOB_POLL_INITIAL_MS : PROCESS_JOB_POLL_INITIAL_MS;
+    const maxDelayMs = lean ? LEAN_PROCESS_JOB_POLL_MAX_MS : PROCESS_JOB_POLL_MAX_MS;
+    let delayMs = initialDelayMs;
+    const schedule = () => {
+      const waitedMs = delayMs;
+      timer = window.setTimeout(() => void refresh(waitedMs), waitedMs);
+      delayMs = Math.min(maxDelayMs, delayMs * 2);
+    };
+    /** `waitedMs` is the interval this round slept; 0 for the read that opens the loop. */
+    const refresh = async (waitedMs = 0) => {
+      // The stream answered inside the interval this round waited out. Re-armed
+      // at the same delay rather than the next one: nothing was asked, so
+      // nothing has earned a longer backoff.
+      if (waitedMs > 0 && Date.now() - projectedRef.current.at < waitedMs) {
+        timer = window.setTimeout(() => void refresh(waitedMs), waitedMs);
+        return;
+      }
       try {
         const next = await api.threadJob(threadId, jobId, controller.signal);
         if (controller.signal.aborted) return;
@@ -179,15 +241,14 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
         // The retained card remains authoritative while its owner is offline.
       }
       if (controller.signal.aborted) return;
-      timer = window.setTimeout(() => void refresh(), delayMs);
-      delayMs = Math.min(PROCESS_JOB_POLL_MAX_MS, delayMs * 2);
+      schedule();
     };
     void refresh();
     return () => {
       controller.abort();
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [jobId, terminal, threadId]);
+  }, [jobId, terminal, threadId, visible]);
 
   if (live === undefined) return null;
   const responseText = typeof payload.responseText === "string" && payload.responseText.trim().length > 0

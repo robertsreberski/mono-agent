@@ -437,8 +437,15 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .thread-search-count { flex: none; color: var(--text-muted); font-family: var(--font-mono); font-size: 8.5px; }
 .thread-search-truncated { margin: 10px 6px 0; color: var(--text-muted); font-size: 10.5px; line-height: 1.4; }
 .thread-list-empty { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; color: var(--text-muted); text-align: center; font-size: 12px; }
-.archive-toggle { min-height: 49px; display: flex; align-items: center; gap: 9px; margin: 0 10px max(8px, env(safe-area-inset-bottom)); padding: 0 11px; color: var(--text-muted); background: transparent; border-top: 1px solid var(--line); cursor: pointer; font-size: 12px; text-align: left; }
+.sidebar-footer { display: flex; flex-direction: column; }
+.archive-toggle { min-height: 49px; display: flex; align-items: center; gap: 9px; margin: 0 10px; padding: 0 11px; color: var(--text-muted); background: transparent; border-top: 1px solid var(--line); cursor: pointer; font-size: 12px; text-align: left; }
 .archive-toggle:hover, .archive-toggle.is-active { color: var(--text); }
+/* The session meter and the control that governs it, as one footer row. */
+.data-mode-indicator { min-height: 34px; display: flex; align-items: center; gap: 8px; margin: 0 10px max(8px, env(safe-area-inset-bottom)); padding: 0 11px; color: var(--text-muted); background: transparent; border-top: 1px solid var(--line); cursor: pointer; font-size: 11px; text-align: left; }
+.data-mode-indicator:hover { color: var(--text); }
+.data-mode-indicator.is-lean .data-mode-name { color: var(--accent); }
+.data-mode-name { font-weight: 600; }
+.data-mode-bytes { margin-left: auto; font-variant-numeric: tabular-nums; }
 .archive-count { min-width: 16px; margin-left: auto; color: var(--text-muted); font-family: var(--font-mono); font-size: 10px; text-align: right; }
 
 /* Chat shell */
@@ -967,6 +974,12 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .toast span { min-width: 0; flex: 1; }
 .toast button { width: 30px; height: 30px; display: grid; place-items: center; flex: none; color: #b8c0b9; background: transparent; border-radius: 7px; cursor: pointer; }
 .toast button:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+/* The Lean suggestion carries an action, so its button is a word, not a glyph. */
+.toast .toast-action { width: auto; min-height: 30px; padding: 0 11px; color: #f8faf6; background: rgba(255, 255, 255, 0.12); font-weight: 600; font-size: 12px; }
+.toast .toast-action:hover { background: rgba(255, 255, 255, 0.2); }
+/* Its own row: the Lean offer and an ordinary toast can be on screen together,
+   and one covering the other would hide whichever arrived first. */
+.toast.is-offer { bottom: calc(max(18px, env(safe-area-inset-bottom)) + 60px); }
 
 /* Activity rows. A single call, a `Read ×4` cluster, a thought, and a subagent
    delegation are one shape: identical rows are what make a long log scannable,
@@ -1056,6 +1069,14 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .image-row:empty { display: none; }
 .image-tile { height: 190px; aspect-ratio: 4 / 3; flex: none; min-width: 0; padding: 0; overflow: hidden; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
 .image-tile img { width: 100%; height: 100%; display: block; object-fit: cover; }
+/* A picture whose bytes are still coming — or which has not been asked for yet —
+   holds its own place in the strip rather than letting the row reflow under the
+   reader, and gives the viewport gate something to watch. */
+.image-tile.is-loading { cursor: default; animation: pulse 1.8s ease-in-out infinite; }
+/* Lean mode: the tile is the offer, and it says what taking it up costs. */
+.image-tile.is-tappable { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; color: var(--text-muted); font: inherit; }
+.image-tile.is-tappable .image-tile-load { font-weight: 600; font-size: 13px; color: var(--text); }
+.image-tile.is-tappable .image-tile-size { font-size: 12px; font-variant-numeric: tabular-nums; }
 /* Grouping keys off the declared media type, which cannot know whether the bytes
    will resolve. One that never does renders its file card instead: give it a
    line of its own rather than letting it stand in the strip. */

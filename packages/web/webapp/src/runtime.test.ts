@@ -103,6 +103,50 @@ describe("convertWebMessage", () => {
     ]);
   });
 
+  it("renders a sent image from the address the service stores its bytes at", () => {
+    const converted = convertWebMessage(
+      message({
+        attachments: [
+          // Exactly what the store answers with for an uploaded attachment.
+          attachment("image", {
+            name: "chart.png",
+            contentType: "image/png",
+            kind: "image",
+            contentUrl: "/api/v1/uploads/image/content",
+            uploaded: true,
+          }),
+        ],
+      }),
+    );
+
+    expect(converted.attachments?.[0]?.content).toEqual([
+      { type: "image", image: "/api/v1/uploads/image/content", filename: "chart.png" },
+    ]);
+  });
+
+  it("guards that address against anything else the payload might carry", () => {
+    // No path produces this today; the guard exists because the address is the
+    // browser's cache key for bytes marked immutable for a year, and a token or
+    // another origin reaching an <img src> would re-download them per response.
+    const converted = convertWebMessage(
+      message({
+        attachments: [
+          attachment("image", {
+            name: "chart.png",
+            contentType: "image/png",
+            kind: "image",
+            contentUrl: "https://cdn.example/chart.png?expires=1234567890&token=rotates",
+            uploaded: true,
+          }),
+        ],
+      }),
+    );
+
+    expect(converted.attachments?.[0]?.content).toEqual([
+      { type: "image", image: "/api/v1/uploads/image/content", filename: "chart.png" },
+    ]);
+  });
+
   it("preserves visible parts while keeping persisted telemetry out of assistant-ui content", () => {
     const converted = convertWebMessage(
       message({

@@ -9,6 +9,7 @@ import {
 } from "@assistant-ui/react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WebUploadAttachmentAdapter } from "./attachment-adapter";
+import { ReplyAccessProvider } from "./components/reply-access";
 import { ToolCallRepairProvider } from "./components/tool-call-repair";
 import { canSendInConsole, canUploadInConsole } from "./capabilities";
 import { clusterToolCalls } from "./activity-clustering";
@@ -88,14 +89,6 @@ const jsonObject = (value: unknown): JsonObject => {
   return value === undefined ? {} : { value: normalized };
 };
 
-const jsonText = (value: unknown): string => {
-  try {
-    return JSON.stringify(value ?? {}, null, 2);
-  } catch {
-    return "{}";
-  }
-};
-
 const isContextCompactionPart = (part: Extract<MessagePart, { type: "telemetry" }>): boolean => {
   if (part.event === "context_compaction") return true;
   let current = part.data;
@@ -168,7 +161,9 @@ const convertPart = (part: MessagePart): ConvertedPart | null => {
         toolCallId: part.toolCallId,
         toolName: part.toolName,
         args: jsonObject(part.args),
-        argsText: jsonText(part.args),
+        // No `argsText`: assistant-ui derives it from `args` when it is absent
+        // (`fromThreadMessageLike`), so supplying one only made the console hold
+        // a second, pretty-printed copy of every tool call's arguments.
         result: part.result,
         isError: part.status === "failed",
         // assistant-ui's tool-call part types no slot for our own per-call metadata,
@@ -211,9 +206,14 @@ const convertPart = (part: MessagePart): ConvertedPart | null => {
 };
 
 const completeAttachment = (attachment: WebAttachment): CompleteAttachment => {
-  const contentUrl =
-    attachment.contentUrl ??
-    `/api/v1/uploads/${encodeURIComponent(attachment.id)}/content`;
+  // A guard, not a correction: the store already answers with exactly this path
+  // for an uploaded attachment. It keeps the address a picture renders from out
+  // of the payload's reach, because that address is the browser's cache key for
+  // bytes the service marks immutable for a year — anything token-bearing or
+  // off-origin arriving in an <img src> would turn every projection of the
+  // message into a fresh download of bytes the browser already has.
+  const storedUrl = `/api/v1/uploads/${encodeURIComponent(attachment.id)}/content`;
+  const contentUrl = attachment.kind === "image" ? storedUrl : attachment.contentUrl ?? storedUrl;
   return {
     id: attachment.id,
     type: attachment.kind,
@@ -686,7 +686,11 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <ToolCallRepairProvider repair={store.loadFullToolCall}>{children}</ToolCallRepairProvider>
+      <ToolCallRepairProvider repair={store.loadFullToolCall}>
+        <ReplyAccessProvider refreshAttachment={store.refreshReplyAttachmentAccess}>
+          {children}
+        </ReplyAccessProvider>
+      </ToolCallRepairProvider>
     </AssistantRuntimeProvider>
   );
 }

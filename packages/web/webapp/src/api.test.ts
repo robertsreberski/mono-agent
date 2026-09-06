@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, NOT_MODIFIED, uploadContent, type ReplyAccessRefreshHandler } from "./api";
+import { dataUsage, resetDataUsage } from "./data-usage";
 import { agent, attachment, processJob } from "./test/fixtures";
 
 class FakeXMLHttpRequest {
@@ -756,5 +757,46 @@ describe("conditional conversation reads", () => {
       status: 404,
       code: "thread_not_found",
     });
+  });
+});
+
+describe("the session byte meter", () => {
+  beforeEach(() => {
+    resetDataUsage();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetDataUsage();
+  });
+
+  it("counts every read and every write against the session total", async () => {
+    const body = JSON.stringify({ thread: { id: "thread-one" } });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(body, {
+        headers: { "content-type": "application/json", "content-length": "48" },
+      }))
+      .mockResolvedValueOnce(Response.json({ thread: { id: "thread-one" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.thread("thread-one");
+    // Declared: that is what crossed the link, however long the JSON decodes to.
+    expect(dataUsage().bytes).toBe(48);
+
+    await api.patchThread("thread-one", { title: "renamed" });
+    // Undeclared: the decoded body is the honest floor rather than nothing.
+    expect(dataUsage().bytes).toBe(48 + new TextEncoder().encode(
+      JSON.stringify({ thread: { id: "thread-one" } }),
+    ).byteLength);
+  });
+
+  it("charges a conditional read that answered 304 nothing at all", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 304 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.threadIfChanged("thread-one", 'W/"abc"');
+
+    // The cheapest answer the server can give has to read as the cheapest one.
+    expect(dataUsage().bytes).toBe(0);
   });
 });

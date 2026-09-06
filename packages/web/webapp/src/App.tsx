@@ -18,6 +18,16 @@ import { Chat } from "./components/Chat";
 import { Icon, type IconName } from "./components/Icon";
 import { ThreadSidebar } from "./components/ThreadSidebar";
 import { useConsoleStore } from "./console-store";
+import {
+  cycleDataModeSetting,
+  dataModeLabel,
+  markLeanDataModeOffered,
+  shouldOfferLeanDataMode,
+  useDataMode,
+  useDataModeSetting,
+  writeDataModeSetting,
+} from "./data-mode";
+import { formatDataBytes, useDataUsage } from "./data-usage";
 import { applyConsolePresentation } from "./theme";
 
 interface PaletteAction {
@@ -95,19 +105,26 @@ function useModalFocus(
   }, [initialFocusRef, onClose, open, rootRef]);
 }
 
+/**
+ * The palette is closed almost all of the time, and while it is closed it has no
+ * business subscribing to anything or building a list nobody can see. A shell
+ * with no hooks of its own is what makes that early return legal.
+ */
 function CommandPalette({ open, onClose }: { readonly open: boolean; readonly onClose: () => void }) {
+  if (!open) return null;
+  return <OpenCommandPalette onClose={onClose} />;
+}
+
+function OpenCommandPalette({ onClose }: { readonly onClose: () => void }) {
   const store = useConsoleStore();
+  const dataModeSetting = useDataModeSetting();
+  const dataMode = useDataMode();
+  const dataUsage = useDataUsage();
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
 
-  useModalFocus(open, dialogRef, onClose, inputRef);
-
-  useEffect(() => {
-    if (open) {
-      setQuery("");
-    }
-  }, [open]);
+  useModalFocus(true, dialogRef, onClose, inputRef);
 
   const actions = useMemo<readonly PaletteAction[]>(
     () => [
@@ -166,6 +183,16 @@ function CommandPalette({ open, onClose }: { readonly open: boolean; readonly on
         },
       },
       {
+        id: "data-mode",
+        // The setting AND what it resolves to, because on the phone this
+        // console is installed on those two are never the same thing.
+        label: `Data: ${dataModeLabel(dataModeSetting, dataMode)}`,
+        // `~` where the console is estimating rather than reading a measurement.
+        hint: `${dataUsage.measured ? "" : "~"}${formatDataBytes(dataUsage.bytes)}`,
+        icon: "activity",
+        run: () => { cycleDataModeSetting(); },
+      },
+      {
         id: "clear-cache",
         label: "Clear cached data",
         icon: "trash",
@@ -195,12 +222,11 @@ function CommandPalette({ open, onClose }: { readonly open: boolean; readonly on
         run: () => store.selectAgent(agent.sourceId),
       })),
     ],
-    [store],
+    [dataMode, dataModeSetting, dataUsage.bytes, dataUsage.measured, store],
   );
   const normalized = query.trim().toLowerCase();
   const visible = actions.filter((action) => action.label.toLowerCase().includes(normalized));
 
-  if (!open) return null;
   return (
     <div className="dialog-layer" role="presentation" onMouseDown={onClose}>
       <section
@@ -300,6 +326,7 @@ export function App() {
   const [palette, setPalette] = useState(false);
   const [agentSettings, setAgentSettings] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [leanOffer, setLeanOffer] = useState(false);
   const [agentRailExpanded, setAgentRailExpanded] = useState(readAgentRailExpanded);
   const agentDrawerRef = useRef<HTMLDivElement>(null);
   const threadDrawerRef = useRef<HTMLDivElement>(null);
@@ -375,6 +402,15 @@ export function App() {
     if (!bootstrap) return;
     return applyConsolePresentation(bootstrap.console);
   }, [bootstrap]);
+
+  // A home-screen install whose browser cannot describe the network is the one
+  // case Auto cannot answer, so the console says so -- once, and only once,
+  // marked as offered before it is shown so a reload cannot nag.
+  useEffect(() => {
+    if (!shouldOfferLeanDataMode()) return;
+    markLeanDataModeOffered();
+    setLeanOffer(true);
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -480,6 +516,31 @@ export function App() {
           </span>
           <button type="button" className="console-error-retry" onClick={retry}>Try again</button>
           <button type="button" aria-label="Dismiss error" onClick={clearError}>
+            <Icon name="close" size={14} />
+          </button>
+        </div>
+      )}
+      {leanOffer && (
+        <div className="toast is-offer" role="status">
+          <span>
+            This browser can’t report the connection, so Auto stays on Full.
+            Lean loads pictures and apps only when you tap them.
+          </span>
+          <button
+            type="button"
+            className="toast-action"
+            onClick={() => {
+              writeDataModeSetting("lean");
+              setLeanOffer(false);
+            }}
+          >
+            Use Lean
+          </button>
+          <button
+            type="button"
+            aria-label="Dismiss data mode suggestion"
+            onClick={() => setLeanOffer(false)}
+          >
             <Icon name="close" size={14} />
           </button>
         </div>

@@ -6,11 +6,21 @@ import "fake-indexeddb/auto";
 import { act, cleanup as cleanupDom, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode, useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, NOT_MODIFIED, THREAD_PAGE_LIMIT } from "./api";
+import {
+  api,
+  ApiError,
+  LEAN_MESSAGE_PAGE_LIMIT,
+  LEAN_THREAD_PAGE_LIMIT,
+  MESSAGE_PAGE_LIMIT,
+  NOT_MODIFIED,
+  THREAD_PAGE_LIMIT,
+} from "./api";
+import { writeDataModeSetting } from "./data-mode";
 import { resetServerClock, serverNow } from "./server-clock";
 import {
   CATALOG_TTL_MS,
   ConsoleStoreProvider,
+  LEAN_DELTA_BATCH_MS,
   HYDRATION_DEADLINE_MS,
   PERSIST_DEBOUNCE_MS,
   cronChannelPath,
@@ -31,6 +41,14 @@ import type { RequestLanding } from "./console-store";
 import { canSendInConsole } from "./capabilities";
 import { agent, bootstrap, thread, uploadLimits } from "./test/fixtures";
 import type { ThreadCacheEntry } from "./thread-cache";
+import {
+  acquireReplyImageBlob,
+  clearReplyImageBlobs,
+  publishReplyImageBlob,
+  releaseReplyImageBlob,
+  replyImageKey,
+  retainedReplyImageBytes,
+} from "./components/reply-image-cache";
 import { createThreadPersistence } from "./thread-persistence";
 import type {
   AgentSkillRegistry,
@@ -2816,7 +2834,7 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.hasMoreThreads).toBe(true);
       vi.mocked(api.threads).mockResolvedValue({ threads: [olderAlpha] });
       await act(async () => { await store.current.loadMoreThreads(); });
-      expect(api.threads).toHaveBeenCalledWith("alpha", false, "cursor-1", expect.any(AbortSignal));
+      expect(api.threads).toHaveBeenCalledWith("alpha", false, "cursor-1", expect.any(AbortSignal), THREAD_PAGE_LIMIT);
       expect(store.current.visibleThreads.map((item) => item.id))
         .toEqual(["alpha-thread", "older-alpha"]);
     });
@@ -2832,7 +2850,7 @@ describe("ConsoleStoreProvider integration", () => {
       await quiet();
 
       expect(api.threads).toHaveBeenCalledTimes(1);
-      expect(api.threads).toHaveBeenCalledWith("beta", false, undefined, expect.any(AbortSignal));
+      expect(api.threads).toHaveBeenCalledWith("beta", false, undefined, expect.any(AbortSignal), THREAD_PAGE_LIMIT);
       // The page is what resolves the conversation to open: the bootstrap no
       // longer carries the other agents' rows for `selectAgent` to look in.
       expect(store.current.selectedThreadId).toBe("beta-thread");
@@ -3516,7 +3534,7 @@ describe("ConsoleStoreProvider integration", () => {
       await quiet(THREAD_LIST_REVALIDATE_DEBOUNCE_MS + 200);
 
       expect(api.threads).toHaveBeenCalledTimes(1);
-      expect(api.threads).toHaveBeenCalledWith("alpha", false, undefined, expect.any(AbortSignal));
+      expect(api.threads).toHaveBeenCalledWith("alpha", false, undefined, expect.any(AbortSignal), THREAD_PAGE_LIMIT);
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
     });
 
@@ -4030,6 +4048,63 @@ describe("ConsoleStoreProvider integration", () => {
       // The page it walked back to is still reachable from the cursor that
       // reached it, not from the one the window read carries.
       expect(store.current.hasOlderMessages).toBe(false);
+    });
+
+    it("asks for half a page of everything on a lean link", async () => {
+      writeDataModeSetting("lean");
+      const recent = streamed("recent", "recent", { createdAt: "2026-08-14T08:00:00.000Z" });
+      seedTwo([recent]);
+      vi.mocked(api.thread).mockImplementation(async () =>
+        ({ thread: alpha, messages: [recent], messagesNextCursor: "cursor-1" }));
+      vi.mocked(api.messages).mockResolvedValue({ messages: [] });
+      const store = await openedOnAlpha();
+
+      expect(api.bootstrap).toHaveBeenCalledWith(
+        expect.any(AbortSignal),
+        expect.objectContaining({ limit: LEAN_THREAD_PAGE_LIMIT }),
+      );
+      expect(LEAN_THREAD_PAGE_LIMIT).toBeLessThan(THREAD_PAGE_LIMIT);
+
+      act(() => { store.current.setShowArchived(true); });
+      await waitFor(() => { expect(api.threads).toHaveBeenCalled(); });
+      expect(vi.mocked(api.threads).mock.calls.at(-1)?.[4]).toBe(LEAN_THREAD_PAGE_LIMIT);
+
+      await act(async () => { await store.current.loadOlderMessages(); });
+      expect(vi.mocked(api.messages).mock.calls.at(-1)?.[3]).toBe(LEAN_MESSAGE_PAGE_LIMIT);
+      expect(LEAN_MESSAGE_PAGE_LIMIT).toBeLessThan(MESSAGE_PAGE_LIMIT);
+    });
+
+    it("applies a running turn's writes on one tick on a lean link, and a finish at once", async () => {
+      writeDataModeSetting("lean");
+      seedTwo([streamed("m1", "Hel")]);
+      const store = await openedOnAlpha();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        emitDelta(alpha.id, { ops: [{ op: "append", index: 0, delta: "l" }] });
+        emitDelta(alpha.id, { baseSeq: 2, seq: 3, ops: [{ op: "append", index: 0, delta: "o" }] });
+
+        // Both writes are in the cache; neither has been painted yet. A phone
+        // rendering every frame of a running turn spends battery, not bytes,
+        // and this is the one that costs battery.
+        expect(screen.getByTestId("message-m1").textContent).toBe("Hel");
+
+        await act(async () => { await vi.advanceTimersByTimeAsync(LEAN_DELTA_BATCH_MS); });
+        expect(screen.getByTestId("message-m1").textContent).toBe("Hello");
+
+        // The write that ENDS the turn is not batched: a finished answer that
+        // arrives a second late reads as a console that is still thinking.
+        emitDelta(alpha.id, {
+          baseSeq: 3,
+          seq: 4,
+          status: "complete",
+          ops: [{ op: "append", index: 0, delta: "!" }],
+        });
+        expect(screen.getByTestId("message-m1").textContent).toBe("Hello!");
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(1);
+      expect(store.current.detail?.messages.at(-1)?.status).toBe("complete");
     });
 
     it("applies a streamed write to the open transcript and asks for nothing", async () => {
@@ -5628,6 +5703,42 @@ describe("ConsoleStoreProvider integration", () => {
         .toEqual([beta.id]);
     });
 
+
+    it("gives back the pictures it is keeping for nobody, and none of the one on screen", async () => {
+      const revokeObjectURL = vi.fn();
+      const originalCreate = URL.createObjectURL;
+      const originalRevoke = URL.revokeObjectURL;
+      let issued = 0;
+      Object.defineProperty(URL, "createObjectURL", {
+        configurable: true,
+        value: () => `blob:cleared-${String(++issued)}`,
+      });
+      Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectURL });
+      try {
+        const store = openConsole();
+        await waitFor(() => expect(store.current.loading).toBe(false));
+
+        const onScreen = replyImageKey("sha256:on-screen", 4);
+        const kept = replyImageKey("sha256:kept", 4);
+        const shown = publishReplyImageBlob(onScreen, new Blob(["abcd"]));
+        publishReplyImageBlob(kept, new Blob(["abcd"]));
+        releaseReplyImageBlob(kept);
+
+        await act(async () => { await store.current.clearCachedData(); });
+
+        // Pictures the retention window is holding for nobody are cached data
+        // like any other, and were the one thing this action did not take off
+        // the device. The picture still on screen is not: revoking the URL an
+        // <img> is pointing at would blank it in front of the operator.
+        expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+        expect(retainedReplyImageBytes()).toBe(0);
+        expect(acquireReplyImageBlob(onScreen)).toBe(shown);
+      } finally {
+        clearReplyImageBlobs();
+        Object.defineProperty(URL, "createObjectURL", { configurable: true, value: originalCreate });
+        Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: originalRevoke });
+      }
+    });
 
     it("asks the server anyway when the device never answers", async () => {
       // An `indexedDB.open` that fires nothing at all -- no success, no error,
