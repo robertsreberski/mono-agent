@@ -442,7 +442,7 @@ export interface RuntimeRunOptions {
     readonly scope: string;
     acquire(request: { kind: "searxng" | "ollama" | "duckduckgo" | "startpage" | "codex" | "fetch"; key: string; deadlineMs: number; signal?: AbortSignal }): Promise<{
       readonly waitMs: number;
-      complete(outcome: { status: "ok" | "rate_limited" | "unavailable" | "cancelled"; retryAfterMs?: number; retryAtMs?: number }): Promise<void>;
+      complete(outcome: { status: "ok" | "rate_limited" | "unavailable" | "cancelled"; retryAfterMs?: number; retryAtMs?: number }): Promise<void | { retryAfterMs: number; retryAtMs: number }>;
     }>;
     readQuota(): Promise<{ checkedAt: number; value: unknown } | undefined>;
     writeQuota(value: unknown): Promise<void>;

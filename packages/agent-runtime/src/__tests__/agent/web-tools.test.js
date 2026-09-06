@@ -1681,6 +1681,129 @@ describe("run-scoped web controller and browser isolation", () => {
     expect(fetchImpl.mock.calls.length).toBe(callsAfterFirst);
   });
 
+  it("rebuilds fresh-run metadata for a cached Ollama rate-limit fallback", async () => {
+    const fetchImpl = vi.fn(async (url) => {
+      if (String(url).includes("ollama.com")) {
+        return new Response("limited", { status: 429, headers: { "retry-after": "2760" } });
+      }
+      return new Response(JSON.stringify({ results: [{
+        title: "Cached SearXNG fallback evidence",
+        url: "https://example.com/cached-fallback",
+        content: "Mono Agent cached fallback evidence",
+      }] }), { headers: { "content-type": "application/json" } });
+    });
+    const options = {
+      searchConfig: {
+        backend: "auto",
+        ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
+        searxng: { endpoint: "http://127.0.0.1:8088" },
+      },
+      fetchImpl,
+      codexSearch: vi.fn(),
+      ctx: runtimeContext(),
+    };
+    const producer = createWebToolController(options);
+    const produced = await producer.search({ query: "cached fallback truth" });
+    await producer.close();
+    const callsAfterProducer = fetchImpl.mock.calls.length;
+
+    const consumer = createWebToolController(options);
+    const cached = await consumer.search({ query: "cached fallback truth" });
+
+    expect(produced.outcome).toMatchObject({
+      cacheHit: false,
+      attemptedBackends: ["ollama", "searxng"],
+      fallbackUsed: true,
+      rateLimited: true,
+      requestsUsed: 2,
+    });
+    expect(cached.outcome).toMatchObject({
+      cacheHit: true,
+      backend: "searxng",
+      requestsThisCall: 0,
+      requestsUsed: 0,
+      requestsRemaining: 4,
+      attempts: 0,
+      durationMs: 0,
+      queueWaitMs: 0,
+      backendDurationMs: 0,
+      cooldownSkipCount: 0,
+      quotaSkipCount: 0,
+      attemptedBackends: [],
+      actualQueries: [],
+      providerAttempts: [],
+      failureMetadata: [],
+      providerFailureCount: 0,
+      rateLimited: false,
+      cooldownBackends: [],
+      fallbackUsed: false,
+      retryInRun: true,
+      nextAction: "fetch_existing_sources",
+    });
+    expect(cached.outcome).not.toHaveProperty("retryAfterMs");
+    expect(cached.outcome).not.toHaveProperty("retryAt");
+    expect(cached.outcome.bytes).toBe(Buffer.byteLength(cached.text, "utf8"));
+    expect(cached.text).toContain("[Search metadata: backend=searxng; attempted=none;");
+    expect(cached.text).toContain("fallback=none]");
+    expect(cached.text).not.toContain("ollama:rate_limited");
+    expect(cached.text).not.toContain("deferred for the remainder of this run");
+    expect(fetchImpl.mock.calls.length).toBe(callsAfterProducer);
+    await consumer.close();
+  });
+
+  it("does not make a fresh cache consumer inherit the producer's exhausted budget", async () => {
+    const fetchImpl = vi.fn(async (url) => {
+      const value = String(url);
+      if (value.includes("ollama.com") || value.startsWith("http://127.0.0.1")) {
+        return new Response("unavailable", { status: 503 });
+      }
+      return new Response('<div class="result"><a class="result__a" href="https://example.com/full-budget">Full-budget evidence</a></div>');
+    });
+    const codexSearch = vi.fn(async (_query, options) => {
+      options.claimRequest();
+      return { ok: false, backend: "codex", message: "Codex unavailable.", retryable: true };
+    });
+    const options = {
+      searchConfig: {
+        backend: "auto",
+        ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
+        searxng: { endpoint: "http://127.0.0.1:8088" },
+      },
+      fetchImpl,
+      codexSearch,
+      ctx: runtimeContext(),
+    };
+    const producer = createWebToolController(options);
+    const produced = await producer.search({ query: "producer full budget cache" });
+    await producer.close();
+    const callsAfterProducer = fetchImpl.mock.calls.length;
+
+    const consumer = createWebToolController(options);
+    const cached = await consumer.search({ query: "producer full budget cache" });
+
+    expect(produced.outcome).toMatchObject({ requestsUsed: 4, requestsRemaining: 0, retryInRun: false });
+    expect(cached.outcome).toMatchObject({
+      cacheHit: true,
+      requestsThisCall: 0,
+      requestsUsed: 0,
+      requestsRemaining: 4,
+      attempts: 0,
+      retryInRun: true,
+      nextAction: "fetch_existing_sources",
+      attemptedBackends: [],
+      actualQueries: [],
+      providerAttempts: [],
+      failureMetadata: [],
+      providerFailureCount: 0,
+      fallbackUsed: false,
+    });
+    expect(cached.text).toContain("[Search control: requests=0/4; remaining=4; Use WebFetch");
+    expect(cached.text).toContain("attempted=none");
+    expect(cached.outcome.bytes).toBe(Buffer.byteLength(cached.text, "utf8"));
+    expect(fetchImpl.mock.calls.length).toBe(callsAfterProducer);
+    await consumer.close();
+  });
+
   it("charges one provider request for an in-flight search and zero for followers and cache hits", async () => {
     let release;
     const gate = new Promise((resolvePromise) => { release = resolvePromise; });

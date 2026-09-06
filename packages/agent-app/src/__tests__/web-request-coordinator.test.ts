@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fork, type ChildProcess } from "node:child_process";
+import { performWebSearch } from "@mono-agent/agent-runtime/agent/tools/index.js";
 import { createHostWebRequestCoordinator } from "../web-request-coordinator.js";
 const roots: string[] = [];
 const children: ChildProcess[] = [];
@@ -51,6 +52,48 @@ describe("host web request coordinator", () => {
     expect(state).not.toContain('"query"');
     await coordinator.reset();
     expect(await sibling.readQuota()).toBeUndefined();
+  });
+  it("returns the exact persisted fallback cooldown to the rate-limited search", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "web-control-test-"))); roots.push(directory);
+    const now = Date.now();
+    const coordinator = createHostWebRequestCoordinator({ directory, now: () => now, spacingScale: 0 });
+    const fetchImpl = async () => new Response("limited", { status: 429 });
+    const result = await performWebSearch({ query: "host cooldown agreement" }, {
+      searchConfig: {
+        backend: "ollama",
+        ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
+      },
+      coordinator,
+      fetchImpl,
+      ctx: {
+        workspace: directory,
+        sandbox: {
+          mergePolicies: (_base: unknown, requested: unknown) => requested,
+          networkAllowsUrl: () => true,
+        },
+      },
+    });
+    const expectedRetryAtMs = now + 300_000;
+
+    expect(result.outcome).toMatchObject({
+      code: "rate_limited",
+      retryAfterMs: 300_000,
+      retryAt: new Date(expectedRetryAtMs).toISOString(),
+    });
+    expect(result.text).toContain("Provider retry after 300 seconds");
+    expect(result.text).toContain(`at ${new Date(expectedRetryAtMs).toISOString()}`);
+    expect(result.text).not.toContain("retry time is unknown");
+
+    const sibling = createHostWebRequestCoordinator({ directory, now: () => now, spacingScale: 0 });
+    await expect(sibling.acquire({
+      kind: "ollama",
+      key: "https://ollama.com",
+      deadlineMs: now + 10_000,
+    })).rejects.toMatchObject({
+      code: "rate_limited",
+      retryAfterMs: result.outcome.retryAfterMs,
+      retryAtMs: expectedRetryAtMs,
+    });
   });
   it("does not grant a waiting caller a slot after cancellation", async () => {
     const { coordinator } = await setup();

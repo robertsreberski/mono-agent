@@ -18,8 +18,15 @@ export async function coordinatedWebRequest(coordinator, kind, key, signal, exec
   try {
     signal?.throwIfAborted();
     const value = await execute();
-    await permit?.complete(signal?.aborted ? { status: "cancelled" } : classify(value));
-    return { ...value, coordinationWaitMs: permit?.waitMs ?? 0, backendDurationMs: Date.now() - started };
+    const completion = await permit?.complete(signal?.aborted ? { status: "cancelled" } : classify(value));
+    const persistedCooldown = value?.rateLimited ? completion : undefined;
+    return {
+      ...value,
+      ...(Number.isFinite(persistedCooldown?.retryAfterMs) ? { retryAfterMs: persistedCooldown.retryAfterMs } : {}),
+      ...(Number.isFinite(persistedCooldown?.retryAtMs) ? { retryAtMs: persistedCooldown.retryAtMs } : {}),
+      coordinationWaitMs: permit?.waitMs ?? 0,
+      backendDurationMs: Date.now() - started,
+    };
   } catch (error) {
     // A run-local budget refusal happens after admission but before a provider
     // request. Release the lease without teaching the shared host coordinator
