@@ -285,6 +285,46 @@ describe("createThreadPersistence", () => {
       .toEqual(["alpha-thread", "beta-thread"]);
   });
 
+  it("skips a flush whose connection was let go, rather than giving up on the device", async () => {
+    // A flush holding a connection that is being closed gets
+    // `InvalidStateError` back. That is a fact about THAT connection -- and
+    // StrictMode tears the provider down and sets it back up on the same
+    // instance -- so reading it as "this browser cannot store anything" would
+    // kill the device store for the rest of the session.
+    let opens = 0;
+    const factory = () => ({
+      open: () => {
+        opens += 1;
+        const request: Record<string, unknown> = {
+          result: {
+            close: () => undefined,
+            transaction: () => {
+              throw new DOMException("The database connection is closing.", "InvalidStateError");
+            },
+          },
+          onsuccess: null,
+          onerror: null,
+          onblocked: null,
+          onupgradeneeded: null,
+        };
+        setTimeout(() => (request.onsuccess as (() => void) | undefined)?.(), 5);
+        return request as unknown as IDBOpenDBRequest;
+      },
+    }) as unknown as IDBFactory;
+    const store = createThreadPersistence({ factory });
+
+    const flush = store.save({ entries: [entry("alpha-thread")] });
+    // While the open is still out, which is the only way to be holding a
+    // connection nobody owns any more.
+    store.close();
+    await expect(flush).resolves.toBeUndefined();
+
+    // Not disabled: the next call opens again rather than short-circuiting.
+    expect(opens).toBe(1);
+    await store.hydrate();
+    expect(opens).toBe(2);
+  });
+
   it("lets go of the database when another tab needs the version", async () => {
     const store = createThreadPersistence();
     await store.save({ entries: [entry("alpha-thread")] });

@@ -608,19 +608,34 @@ export const PERSIST_DEBOUNCE_MS = 1_000;
 export const HYDRATION_DEADLINE_MS = 1_500;
 
 /**
- * Wait for hydration, or for {@link HYDRATION_DEADLINE_MS}, whichever is first.
+ * Wait for hydration, or for {@link HYDRATION_DEADLINE_MS}, whichever is first,
+ * and say which happened.
  *
- * Never rejects and never leaves a timer behind. What it does NOT do is cancel
- * the hydration: a read that answers late is still a read that answered, and
- * the applier refuses it on its own terms.
+ * Never rejects and never leaves a timer behind. A hang is not the only way the
+ * device can hold the boot: anything the applier throws would reject the race,
+ * the caller's own catch would run, and the snapshot request would never be
+ * issued at all -- permanently, because the hydration promise is memoised and a
+ * retry re-awaits the same rejection. The network goes out either way.
+ *
+ * What it does NOT do is cancel the hydration: a read that answers late is
+ * still a read that answered, and the applier decides on its own terms whether
+ * it is still wanted.
  */
-export const withHydrationDeadline = async (hydration: Promise<void>): Promise<void> => {
+export const withHydrationDeadline = async (
+  hydration: Promise<void>,
+): Promise<"hydrated" | "deadline"> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await Promise.race([
-      hydration,
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, HYDRATION_DEADLINE_MS);
+    return await Promise.race([
+      hydration.then(
+        () => "hydrated" as const,
+        (hydrationError: unknown) => {
+          console.debug(`[mono-agent] restoring from the device failed: ${String(hydrationError)}`);
+          return "hydrated" as const;
+        },
+      ),
+      new Promise<"deadline">((resolve) => {
+        timer = setTimeout(() => resolve("deadline"), HYDRATION_DEADLINE_MS);
       }),
     ]);
   } finally {
@@ -1438,6 +1453,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const hydratedHostRef = useRef<string | null>(null);
   /** The one hydration, so every caller awaits the same read. */
   const hydrationRef = useRef<Promise<void> | null>(null);
+  /** Whether the boot has already given the device its one wait. */
+  const hydrationDeadlineSpentRef = useRef(false);
 
   /**
    * Every conversation this tab is keeping, not just the one on screen.
@@ -1520,7 +1537,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * console stayed offline behind a banner it could not clear.
    */
   const connectionRef = useRef<ConnectionState>("connecting");
-  /** {@link hasServerSnapshot}, for the handlers that run between commits. */
+  /**
+   * {@link hasServerSnapshot}, for the handlers that run between commits.
+   *
+   * ONE-WAY on purpose: a refresh that fails LATER leaves the console live
+   * behind the error banner, because demoting a console the server has answered
+   * -- and whose stream is up -- over one failed request would take the
+   * composer away from an operator who can still use it. The gate exists for
+   * the cold start, which is the case where the listing on screen has no server
+   * behind it at all.
+   */
   const hasServerSnapshotRef = useRef(false);
   /**
    * The last connection decision as it was MADE, before the snapshot gate
@@ -1738,13 +1764,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // here on can only delete rows this tab genuinely stopped holding.
       persistReadyRef.current = true;
       if (restored === null) return;
-      // TOO LATE. The boot did not wait past {@link HYDRATION_DEADLINE_MS} and
-      // has been answered since, so everything below would put a last-visit
-      // transcript over one the server just gave -- `restore` replaces the
-      // entry it names, and it always lands stale. The device is not a
-      // second opinion about live data; it is what there is before there is
-      // any.
-      if (initialBootstrapRef.current === "answered") return;
+      // TOO LATE: the SERVER has spoken. Everything below would put a
+      // last-visit transcript over one the server just gave -- `restore`
+      // replaces the entry it names, and it always lands stale. The device is
+      // not a second opinion about live data; it is what there is before there
+      // is any.
+      //
+      // Deliberately not "the boot has finished": that is also true when the
+      // boot FAILED, and a console with no server and a slow device is exactly
+      // the one that needs what this holds. Discarding it there left the
+      // operator on the fatal screen with everything this browser had sitting
+      // unread on the device.
+      if (hasServerSnapshotRef.current) return;
       hydratedHostRef.current = restored.host;
       const cache = threadCacheRef.current;
       for (const stored of restored.threads) {
@@ -1959,12 +1990,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const loadBootstrap = useCallback(async () => {
     try {
       // BEFORE the first request goes out -- but never for longer than
-      // {@link HYDRATION_DEADLINE_MS}. What this device kept is on screen while
-      // this read is on the wire, and the entries it restored are what make the
-      // conversation read that follows a conditional one; an `indexedDB.open`
-      // that never answers must not be able to hold the whole console at a
-      // spinner.
-      await withHydrationDeadline(hydrateFromDevice());
+      // {@link HYDRATION_DEADLINE_MS}, and never twice. What this device kept is
+      // on screen while this read is on the wire, and the entries it restored
+      // are what make the conversation read that follows a conditional one; an
+      // `indexedDB.open` that never answers must not be able to hold the whole
+      // console at a spinner, and `retry()` must not pay that wait again for a
+      // device that has already failed to answer once.
+      if (!hydrationDeadlineSpentRef.current) {
+        hydrationDeadlineSpentRef.current =
+          await withHydrationDeadline(hydrateFromDevice()) === "deadline";
+      }
       // Bounded like every other read. See `THREAD_READ_TIMEOUT_MS`: the
       // tombstone's lifetime is only an upper bound on late responses while
       // the responses themselves have one.

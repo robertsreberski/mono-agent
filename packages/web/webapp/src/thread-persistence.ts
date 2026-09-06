@@ -284,12 +284,30 @@ export const createThreadPersistence = (
   let disabled = false;
   let connection: Promise<IDBDatabase | null> | null = null;
   /**
+   * Bumped every time the connection is let go -- by `close()`, by another tab
+   * taking the version, by the browser closing it under us.
+   *
+   * An operation that started before one of those is holding a database that is
+   * gone, and the `InvalidStateError` it gets back is a fact about THAT
+   * connection, not about this browser's storage. Read at the start and checked
+   * in the catch, it is what tells the two apart -- without it, a StrictMode
+   * teardown (which reuses this same instance) could disable the device store
+   * for the rest of the session.
+   */
+  let generation = 0;
+  /**
    * What each conversation looked like when it was last written, BY IDENTITY.
    * The cache replaces an entry object whenever anything in it moves, so this
    * is what keeps a flush during a streaming turn to the one transcript that
    * actually changed rather than all eight.
    */
   const written = new Map<string, ThreadCacheEntry>();
+
+  /** The connection is gone; the next call opens a new one. */
+  const release = (): void => {
+    connection = null;
+    generation += 1;
+  };
 
   const disable = (reason: string): void => {
     if (disabled) return;
@@ -370,11 +388,11 @@ export const createThreadPersistence = (
         // written any more either.
         db.onversionchange = () => {
           db.close();
-          connection = null;
+          release();
           written.clear();
         };
         db.onclose = () => {
-          connection = null;
+          release();
           written.clear();
         };
         answer(db);
@@ -388,7 +406,7 @@ export const createThreadPersistence = (
       // Another connection is holding the version this open would replace.
       // Not a permanent failure: the next call opens again.
       request.onblocked = () => {
-        connection = null;
+        release();
         answer(null);
       };
     });
@@ -397,6 +415,7 @@ export const createThreadPersistence = (
 
   return {
     hydrate: async () => {
+      const held = generation;
       const db = await open();
       if (db === null) return null;
       try {
@@ -425,12 +444,16 @@ export const createThreadPersistence = (
           }),
         };
       } catch (readError) {
+        // The connection was let go while this was out. Nothing is known about
+        // the storage itself, so nothing is given up on.
+        if (held !== generation) return null;
         disable(`it could not be read (${String(readError)})`);
         return null;
       }
     },
 
     save: async (state) => {
+      const held = generation;
       const db = await open();
       if (db === null) return;
       // EVERYTHING below is inside the try, the row build included. Stripping a
@@ -489,6 +512,10 @@ export const createThreadPersistence = (
         written.clear();
         for (const [id, entry] of next) written.set(id, entry);
       } catch (writeError) {
+        // The connection was let go while this flush was in flight -- a
+        // teardown, or another tab taking the version. This flush is simply
+        // skipped; the next one opens again.
+        if (held !== generation) return;
         // A full quota, a database that went away, a value the browser refused
         // to clone. What is already stored stays stored -- it is a valid, older
         // copy, and every restored entry is read conditionally anyway -- and
@@ -505,12 +532,14 @@ export const createThreadPersistence = (
       const pending = connection;
       // Deliberately NOT `disable`, and `written` is deliberately kept: the
       // rows are still on disk and still exactly these entries. Only the
-      // connection goes.
-      connection = null;
+      // connection goes -- and the bump is what stops an operation that was
+      // holding it from reading its own failure as this browser's.
+      release();
       void pending?.then((db) => db?.close()).catch(() => undefined);
     },
 
     clearAll: async () => {
+      const held = generation;
       const db = await open();
       if (db === null) return;
       // BEFORE the transaction, not after it. A flush that starts while this
@@ -527,6 +556,7 @@ export const createThreadPersistence = (
         transaction.objectStore(META_STORE).clear();
         await settled(transaction);
       } catch (clearError) {
+        if (held !== generation) return;
         disable(`it could not be cleared (${String(clearError)})`);
       }
     },

@@ -5646,6 +5646,26 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.agents.map((item) => item.sourceId)).toEqual(["alpha", "beta"]);
     });
 
+    it("gives the device its one wait, and does not pay it again on retry", async () => {
+      vi.stubGlobal("indexedDB", deafIndexedDb());
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      vi.mocked(api.bootstrap).mockRejectedValue(new Error("The web console request failed."));
+
+      const store = openConsole();
+      await waitFor(
+        () => expect(vi.mocked(api.bootstrap)).toHaveBeenCalledTimes(1),
+        { timeout: HYDRATION_DEADLINE_MS + 3_000 },
+      );
+
+      // The device has already failed to answer once. Charging the operator
+      // another {@link HYDRATION_DEADLINE_MS} for every "Try again" would make
+      // the retry feel like the outage.
+      const askedAt = Date.now();
+      act(() => { store.current.retry(); });
+      await waitFor(() => expect(vi.mocked(api.bootstrap)).toHaveBeenCalledTimes(2));
+      expect(Date.now() - askedAt).toBeLessThan(HYDRATION_DEADLINE_MS);
+    });
+
     it("ignores what the device says once the server has answered", async () => {
       // The device's listing carries a conversation the server's does not, so
       // the two are told apart by what is on screen and not only by the
@@ -5689,6 +5709,44 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.detail?.messages.map((item) => item.id)).toEqual(["m2"]);
       expect(store.current.visibleThreads.map((item) => item.id)).toEqual([alpha.id]);
       expect(vi.mocked(api.threadIfChanged)).not.toHaveBeenCalled();
+    });
+
+    it("keeps the device's copy on screen when the snapshot fails and the device is slow", async () => {
+      // The case the deadline exists for, with no network behind it: a resumed
+      // WebKit page whose `indexedDB.open` is slow AND a server that is not
+      // there. The boot goes without the device, the fetch fails at once, and
+      // the hydration that lands afterwards is the ONLY thing this operator can
+      // be given -- so it must not be thrown away for having arrived late.
+      const ghost = thread("ghost-thread", "alpha", { updatedAt: "2026-07-17T08:00:00.000Z" });
+      await previousVisit({
+        entries: [entry(alpha, [kept("m1", "last visit")], 'W/"alpha-1"')],
+        listing: [alpha, ghost],
+        openedOn: alpha.id,
+      });
+      vi.stubGlobal("indexedDB", slowIndexedDb(HYDRATION_DEADLINE_MS + 700));
+      vi.mocked(api.bootstrap).mockRejectedValue(new Error("The web console request failed."));
+      vi.mocked(api.thread).mockRejectedValue(new Error("The web console request failed."));
+      vi.mocked(api.threadIfChanged).mockRejectedValue(new Error("The web console request failed."));
+
+      const store = openConsole();
+      // The snapshot is not even requested until the deadline expires.
+      await waitFor(
+        () => expect(store.current.error).not.toBeNull(),
+        { timeout: HYDRATION_DEADLINE_MS + 3_000 },
+      );
+      await waitFor(
+        () => expect(screen.queryByTestId("kept-m1")).not.toBeNull(),
+        { timeout: HYDRATION_DEADLINE_MS + 3_000 },
+      );
+
+      // `error` with no projection is the fatal screen, which is what this
+      // operator would otherwise have been given: a dead end, with everything
+      // this browser was holding sitting unread on the device.
+      expect(store.current.bootstrap).not.toBeNull();
+      expect(store.current.hasServerSnapshot).toBe(false);
+      expect(store.current.detail?.thread.id).toBe(alpha.id);
+      expect(store.current.visibleThreads.map((item) => item.id))
+        .toEqual([alpha.id, ghost.id]);
     });
 
     it("says so, and stays disconnected, when the snapshot fails behind what it restored", async () => {
