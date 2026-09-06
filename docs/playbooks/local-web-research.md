@@ -199,7 +199,9 @@ tools enabled and add their local-first settings:
     "web": {
       "coordination": "host",
       "search": {
-        "backend": "searxng",
+        "backend": "auto",
+        "maxRequestsPerRun": 4,
+        "ollama": { "baseUrl": "http://127.0.0.1:11434" },
         "searxng": { "endpoint": "http://127.0.0.1:8088" }
       },
       "fetch": {
@@ -309,6 +311,8 @@ Require the validation lines for the selected backend:
   endpoint also requires the successful SearXNG probe)
 - strict Ollama: **WebSearch backend: ollama.** and
   **Ollama Web Search JSON probe succeeded.**
+- auto with Ollama configured: **WebSearch backend: auto.**, the successful
+  Ollama and SearXNG probes, and **WebSearch request budget: 4 per logical run.**
 - every backend: **WebFetch browser rendering: never.**, or an `agent-browser`
   version at least 0.33.1 when rendering is enabled
 
@@ -331,7 +335,7 @@ fetch backends the tool results used.
 
 The run artifact should contain:
 
-- one or more `WebSearch` calls with ranked, canonical URLs;
+- one broad `WebSearch` call with ranked, canonical URLs and request-budget metadata;
 - one `WebFetch` result wrapped as untrusted web content;
 - bounded `tool_timing` metadata (`backend`, attempts, bytes, HTTP status,
   cache/render flags) without the query or URL;
@@ -343,9 +347,12 @@ interactions.
 
 ## Researcher instructions
 
-Start with one narrow query; supply alternates only for a plausible empty result.
-Fetch the strongest sources and request bounded line slices for long documents.
-Respect cooldown and quota errors instead of repeating the same request or
-spawning more search workers. Cite retrieved sources and check publication dates
-when freshness matters. Enable host coordination in every participating agent;
-an agent left in process mode does not join the shared budget.
+Start with one broad, high-yield query covering the decision's main constraints.
+Treat snippets as leads, then fetch the strongest sources and request bounded
+line slices for long documents. Supply alternates only for a material evidence
+gap. Never sleep, repeat the same search, or spawn another worker to evade a
+cooldown, quota, or run budget; continue from available evidence and state the
+limitation. Cite retrieved sources and check publication dates when freshness
+matters. Enable host coordination in every participating agent so cooldown and
+admission state are shared; the per-run request budget remains local to each
+logical runtime run.

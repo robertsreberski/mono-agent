@@ -1216,7 +1216,7 @@ describe("agent host composition helpers", () => {
           ...baseConfig.tools,
           web: {
             coordination: "host",
-            search: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434", trustPublicUrl: false } },
+            search: { backend: "ollama", maxRequestsPerRun: 4, ollama: { baseUrl: "http://127.0.0.1:11434", trustPublicUrl: false } },
             fetch: { render: "auto", browserCommand: "/opt/homebrew/bin/agent-browser" },
           },
         },
@@ -1233,6 +1233,7 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[0]?.options.webRequestCoordinator?.scope).toMatch(/^host:/u);
     expect(fake.calls[0]?.options.webSearchConfig).toEqual({
       backend: "ollama",
+      maxRequestsPerRun: 4,
       ollama: { baseUrl: "http://127.0.0.1:11434", trustPublicUrl: false },
     });
     expect(fake.calls[0]?.options.webFetchConfig).toEqual({
@@ -1261,7 +1262,7 @@ describe("agent host composition helpers", () => {
           allowedTools: [...(baseConfig.tools.allowedTools ?? []), "Agent"],
           web: {
             coordination: "host",
-            search: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434", trustPublicUrl: false } },
+            search: { backend: "ollama", maxRequestsPerRun: 4, ollama: { baseUrl: "http://127.0.0.1:11434", trustPublicUrl: false } },
             fetch: { render: "auto", browserCommand: "/opt/homebrew/bin/agent-browser" },
           },
         },
@@ -1297,6 +1298,7 @@ describe("agent host composition helpers", () => {
     expect(childCall?.options.webRequestCoordinator?.acquire).toBeTypeOf("function");
     expect(childCall?.options.webSearchConfig).toEqual({
       backend: "ollama",
+      maxRequestsPerRun: 4,
       ollama: { baseUrl: "http://127.0.0.1:11434", trustPublicUrl: false },
     });
     expect(childCall?.options.webFetchConfig).toEqual({

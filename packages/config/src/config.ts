@@ -257,6 +257,13 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const webSearchEndpoint = canonicalWebSearchEndpoint ?? legacyWebSearchEndpoint;
   const webSearchOllama = readOllamaWebSearchConfig(input.env, webSearchBackend);
   const webSearchCodexModel = readWebSearchCodexModel(input.env.MONO_AGENT_WEB_SEARCH_CODEX_MODEL);
+  const webSearchMaxRequestsPerRun = readInteger(
+    input.env.MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN,
+    "MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN",
+    4,
+    invalidEnv,
+    { min: 1, max: 20 },
+  );
   if (webSearchBackend === "searxng" && webSearchEndpoint === undefined) {
     throw new MonoAgentConfigError(
       "invalid_env",
@@ -307,6 +314,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
       coordination: readChoice(input.env.MONO_AGENT_WEB_COORDINATION, "MONO_AGENT_WEB_COORDINATION", ["process", "host"] as const, "process", invalidEnv),
       search: {
         backend: webSearchBackend,
+        maxRequestsPerRun: webSearchMaxRequestsPerRun,
         ...(webSearchEndpoint === undefined ? {} : { searxng: { endpoint: webSearchEndpoint } }),
         ...(webSearchOllama === undefined ? {} : { ollama: webSearchOllama }),
         codex: { model: webSearchCodexModel },
@@ -484,7 +492,7 @@ export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgen
     ollama: configuredOllamaSearch,
     codex: configuredCodexSearch,
     ...searchWithoutSecrets
-  } = configuredSearch ?? { backend: "auto" as const };
+  } = configuredSearch ?? { backend: "auto" as const, maxRequestsPerRun: 4 };
   const redacted: RedactedMonoAgentConfig = {
     ...(config.agent === undefined ? {} : { agent: { ...config.agent } }),
     runtime: { ...config.runtime },

@@ -136,6 +136,7 @@ export const CONFIG_ENV_KEYS = {
   "tools.mcpCallMaxTotalTimeoutMs": "MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS",
   "tools.web.coordination": "MONO_AGENT_WEB_COORDINATION",
   "tools.web.search.backend": "MONO_AGENT_WEB_SEARCH_BACKEND",
+  "tools.web.search.maxRequestsPerRun": "MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN",
   "tools.web.search.endpoint": "MONO_AGENT_WEB_SEARCH_ENDPOINT",
   "tools.web.search.searxng.endpoint": "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT",
   "tools.web.search.ollama.baseUrl": "MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL",
@@ -826,6 +827,14 @@ function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSect
         jsonPresent: json.tools?.web?.search?.backend !== undefined,
         jsonValue: json.tools?.web?.search?.backend,
         defaultValue: "auto",
+      }),
+      toField(env, {
+        id: "tools.web.search.maxRequestsPerRun",
+        label: "Web search requests per run",
+        value: String(tools.web?.search.maxRequestsPerRun ?? 4),
+        jsonPresent: json.tools?.web?.search?.maxRequestsPerRun !== undefined,
+        jsonValue: json.tools?.web?.search?.maxRequestsPerRun,
+        defaultValue: 4,
       }),
       toField(env, {
         id: "tools.web.search.searxng.endpoint",

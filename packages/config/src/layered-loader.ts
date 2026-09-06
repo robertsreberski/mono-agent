@@ -74,6 +74,7 @@ const JSON_RUNTIME_SOURCES: readonly {
   { env: "MONO_AGENT_FALLBACKS_JSON", path: "runtime.fallbacks", read: (json) => json.runtime?.fallbacks },
   { env: "MONO_AGENT_SUBAGENTS_JSON", path: "subagents", read: (json) => json.subagents },
   { env: "MONO_AGENT_WEB_SEARCH_BACKEND", path: "tools.web.search.backend", read: (json) => json.tools?.web?.search?.backend },
+  { env: "MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN", path: "tools.web.search.maxRequestsPerRun", read: (json) => json.tools?.web?.search?.maxRequestsPerRun },
   { env: "MONO_AGENT_WEB_SEARCH_ENDPOINT", path: "tools.web.search.endpoint", read: (json) => json.tools?.web?.search?.endpoint },
   { env: "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT", path: "tools.web.search.searxng.endpoint", read: (json) => json.tools?.web?.search?.searxng?.endpoint },
   { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL", path: "tools.web.search.ollama.baseUrl", read: (json) => json.tools?.web?.search?.ollama?.baseUrl },
@@ -1001,6 +1002,9 @@ export function layerJsonOntoEnv(
   }
   if (json.tools?.web?.search?.backend !== undefined) {
     fromJson.MONO_AGENT_WEB_SEARCH_BACKEND = json.tools.web.search.backend;
+  }
+  if (json.tools?.web?.search?.maxRequestsPerRun !== undefined) {
+    fromJson.MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN = String(json.tools.web.search.maxRequestsPerRun);
   }
   if (json.tools?.web?.search?.endpoint !== undefined) {
     fromJson.MONO_AGENT_WEB_SEARCH_ENDPOINT = json.tools.web.search.endpoint;

@@ -37,12 +37,18 @@ function toolResultOutcome(result) {
     charsetSource: "charset_source",
     extractionStage: "extraction_stage",
     renderReason: "render_reason",
+    retryAt: "retry_at",
+    nextAction: "next_action",
   };
   const numbers = {
     attempts: "attempts",
     queueWaitMs: "queue_wait_ms",
     backendDurationMs: "backend_duration_ms",
     retryAfterMs: "retry_after_ms",
+    maxRequestsPerRun: "max_requests_per_run",
+    requestsThisCall: "requests_this_call",
+    requestsUsed: "requests_used",
+    requestsRemaining: "requests_remaining",
     cooldownSkipCount: "cooldown_skip_count",
     quotaSkipCount: "quota_skip_count",
     bytes: "bytes",
@@ -59,6 +65,8 @@ function toolResultOutcome(result) {
     rendered: "rendered",
     renderFailed: "render_failed",
     browserRecommended: "browser_recommended",
+    retryInRun: "retry_in_run",
+    fallbackUsed: "fallback_used",
     hadDecodingReplacement: "had_decoding_replacement",
   };
   for (const [input, output] of Object.entries(strings)) {

@@ -1117,7 +1117,7 @@
               "additionalProperties": false,
               "properties": {
                 "backend": {
-                  "description": "WebSearch backend: auto preserves configured local SearXNG, then ChatGPT-subscription Codex search, then keyless fallbacks. searxng, ollama, codex, and keyless are strict; Ollama is never silently selected by auto.",
+                  "description": "WebSearch backend: auto uses explicitly configured Ollama, configured local SearXNG, ChatGPT-subscription Codex search, then keyless fallbacks. searxng, ollama, codex, and keyless are strict.",
                   "examples": [
                     "auto"
                   ],
@@ -1130,6 +1130,16 @@
                     "codex",
                     "keyless"
                   ]
+                },
+                "maxRequestsPerRun": {
+                  "description": "Hard ceiling from 1 to 20 on actual provider search requests in one logical runtime run; cache hits, coalesced followers, cooldown skips, and quota skips consume no request. Default 4.",
+                  "examples": [
+                    4
+                  ],
+                  "type": "integer",
+                  "default": 4,
+                  "minimum": 1,
+                  "maximum": 20
                 },
                 "endpoint": {
                   "description": "Compatibility alias for tools.web.search.searxng.endpoint and MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT. Existing configurations remain valid; new configurations should use the provider-specific block.",

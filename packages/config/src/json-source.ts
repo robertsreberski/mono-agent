@@ -236,6 +236,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly coordination?: "process" | "host";
       readonly search?: {
         readonly backend?: string;
+        readonly maxRequestsPerRun?: number;
         /** Compatibility alias for tools.web.search.searxng.endpoint. */
         readonly endpoint?: string;
         readonly searxng?: {

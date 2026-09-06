@@ -117,7 +117,7 @@ export function createHostWebRequestCoordinator(options: {
             bucket = state.buckets[key] = { nextAt: 0, cooldownUntil: 0, strikes: 0, failures: 0, leases: [] };
           }
           if (bucket.cooldownUntil > now()) throw Object.assign(new Error("Web backend is cooling down."), {
-            code: "rate_limited", retryAfterMs: bucket.cooldownUntil - now(),
+            code: "rate_limited", retryAfterMs: bucket.cooldownUntil - now(), retryAtMs: bucket.cooldownUntil,
           });
           // One half-open probe, even for normally concurrent fetches.
           const capacity = bucket.strikes > 0 || bucket.failures >= 2 ? 1 : max;
@@ -137,15 +137,21 @@ export function createHostWebRequestCoordinator(options: {
           waitMs: now() - started,
           async complete(outcome) {
             if (completed) return;
-            await transaction((state) => {
+            const cooldown = await transaction((state) => {
               const bucket = state.buckets[key];
               if (!bucket) throw unavailable();
               bucket.leases = bucket.leases.filter((lease) => lease.id !== admitted);
               if (outcome.status === "rate_limited") {
                 bucket.strikes += 1;
                 const base = kind === "fetch" ? 60_000 : 300_000;
-                const wait = outcome.retryAfterMs ?? Math.min(3_600_000, base * 2 ** Math.min(10, bucket.strikes - 1));
-                bucket.cooldownUntil = Math.max(bucket.cooldownUntil, now() + Math.max(0, wait));
+                const retryAt = outcome.retryAtMs
+                  ?? (outcome.retryAfterMs === undefined ? undefined : now() + Math.max(1_000, outcome.retryAfterMs));
+                const fallbackAt = now() + Math.min(3_600_000, base * 2 ** Math.min(10, bucket.strikes - 1));
+                bucket.cooldownUntil = Math.max(bucket.cooldownUntil, retryAt ?? fallbackAt);
+                return {
+                  retryAfterMs: Math.max(0, bucket.cooldownUntil - now()),
+                  retryAtMs: bucket.cooldownUntil,
+                };
               } else if (outcome.status === "unavailable") {
                 bucket.failures += 1;
                 if (bucket.failures >= 2) bucket.cooldownUntil = Math.max(bucket.cooldownUntil, now() + 60_000);
@@ -154,6 +160,7 @@ export function createHostWebRequestCoordinator(options: {
               }
             });
             completed = true;
+            return cooldown;
           },
         };
       }

@@ -188,6 +188,7 @@ The resolved `tools.web` block configures the managed Pi `WebSearch` and
     "web": {
       "search": {
         "backend": "auto",
+        "maxRequestsPerRun": 4,
         "searxng": { "endpoint": "http://127.0.0.1:8088" },
         "ollama": { "baseUrl": "http://127.0.0.1:11434" },
         "codex": { "model": "gpt-5.6-luna" }
@@ -202,8 +203,9 @@ The resolved `tools.web` block configures the managed Pi `WebSearch` and
 ```
 
 Search backend values are `auto`, strict `searxng`, strict `ollama`, strict
-`codex`, and `keyless`. Auto preserves local SearXNG, ChatGPT-subscription Codex
-search, then the keyless chain; it never silently selects Ollama. SearXNG
+`codex`, and `keyless`. Auto tries explicitly configured Ollama, configured
+local SearXNG, ChatGPT-subscription Codex search, then the keyless chain. Without
+an Ollama block, existing SearXNG/Codex/keyless behavior is unchanged. SearXNG
 endpoints are deliberately limited to unauthenticated loopback HTTP URLs. The
 legacy `search.endpoint` spelling remains a compatibility alias for
 `search.searxng.endpoint`. Ollama defaults to the loopback host; the exact
@@ -217,6 +219,7 @@ request.
 
 Environment overrides are
 `MONO_AGENT_WEB_SEARCH_BACKEND`,
+`MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN`,
 `MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` (with
 `MONO_AGENT_WEB_SEARCH_ENDPOINT` retained as an alias),
 `MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL`,

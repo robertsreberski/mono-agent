@@ -29,6 +29,8 @@ agents running under the same OS user, opt into host coordination:
       "coordination": "host",
       "search": {
         "backend": "auto",
+        "maxRequestsPerRun": 4,
+        "ollama": { "baseUrl": "http://127.0.0.1:11434" },
         "searxng": { "endpoint": "http://127.0.0.1:8088" },
         "codex": { "model": "gpt-5.6-luna" }
       },
@@ -41,7 +43,9 @@ agents running under the same OS user, opt into host coordination:
 }
 ```
 
-`tools.web.search.searxng.endpoint` is optional in `auto` mode. The legacy
+Both provider blocks are optional in `auto` mode. Ollama joins the chain only
+when its `ollama` block is present; mono-agent does not probe a default Ollama
+endpoint for existing `auto` users. The legacy
 `tools.web.search.endpoint` spelling remains a migration alias. When present, it must be
 an unauthenticated loopback `http://` URL; remote endpoints, URL credentials,
 queries, and fragments are rejected during config loading. The companion
@@ -58,6 +62,7 @@ Environment equivalents:
 | --- | --- | --- |
 | `tools.web.coordination` | `MONO_AGENT_WEB_COORDINATION` | `process` |
 | `tools.web.search.backend` | `MONO_AGENT_WEB_SEARCH_BACKEND` | `auto` |
+| `tools.web.search.maxRequestsPerRun` | `MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN` | `4` |
 | `tools.web.search.searxng.endpoint` | `MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` | unset |
 | legacy `tools.web.search.endpoint` | `MONO_AGENT_WEB_SEARCH_ENDPOINT` | unset |
 | `tools.web.search.ollama.baseUrl` | `MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL` | `http://127.0.0.1:11434` in strict Ollama mode |
@@ -73,9 +78,9 @@ Search backends have explicit behavior:
 
 | Backend | Behavior |
 | --- | --- |
-| `auto` | Try configured SearXNG first, then ChatGPT-subscription Codex search, then the keyless chain. A non-empty but irrelevant or out-of-domain result does not stop the chain. Without an endpoint, start with Codex. |
+| `auto` | Try explicitly configured Ollama, configured SearXNG, ChatGPT-subscription Codex search, then the keyless chain. A non-empty but irrelevant or out-of-domain result does not stop the chain. Providers without configuration are skipped; existing users without an Ollama block still start with SearXNG or Codex. |
 | `searxng` | Require the configured local endpoint and fail when it fails. No silent fallback. |
-| `ollama` | Require the configured Ollama Web Search origin and fail when it fails. Ollama is explicit-only and never participates in `auto`. |
+| `ollama` | Require the configured Ollama Web Search origin and fail when it fails. No fallback. |
 | `codex` | Require a ChatGPT-authenticated `codex` CLI whose app-server exposes web search and the configured model. No SearXNG/keyless fallback. |
 | `keyless` | Skip SearXNG and try DuckDuckGo HTML, then Startpage. |
 
@@ -118,6 +123,29 @@ stripped or relaxed. Results are normalized, tracking parameters are removed,
 duplicates are fused with reciprocal-rank fusion, and include/exclude domain
 filters plus a deterministic query-term/quoted-phrase relevance gate are
 enforced before a backend can end `auto` mode.
+
+Start research with one broad, high-yield query that covers the decision's main
+constraints. Treat snippets as leads and use `WebFetch` on the strongest
+returned URLs before searching again. Supply alternate queries only when a
+material evidence gap remains; do not split a topic into many narrow searches.
+
+`maxRequestsPerRun` is a hard integer limit from 1 through 20 on actual provider
+search requests in one logical runtime run. It defaults to 4 and is shared by
+runtime route retries. Each child agent and later run receives a fresh budget.
+Cache hits, in-flight followers, provider cooldown skips, and Codex quota skips
+consume zero requests. A local Ollama compatibility request to each of its two
+supported paths counts as two requests because both reach the provider. When
+the limit is exhausted, WebSearch deterministically returns
+`search_budget_exhausted`, `requestsUsed`, `requestsRemaining: 0`,
+`retryInRun: false`, and `nextAction: "use_available_evidence"` without sending
+another request.
+
+A provider that returns a rate limit is deferred for the rest of that run.
+`auto` advances immediately to the next eligible provider; named backends stay
+strict. The result reports `retryAfterMs` when known, an absolute `retryAt`, the
+provider disposition, and whether another search attempt in the run can help.
+Do not sleep, retry, or delegate to wait out a cooldown. Fetch URLs already
+returned, or answer from available evidence and state the limitation.
 
 ### ChatGPT-subscription Codex search
 
@@ -368,7 +396,8 @@ Search snippets, the actual search query, and fetched pages are always labelled
 untrusted. WebSearch output includes bounded backend/query/provenance metadata
 so fallback behavior is inspectable, while sanitized failures expose only a
 backend and stable category. Timing events retain only bounded operational
-fields such as status, error code, backend, attempt count, byte count,
+fields such as status, error code, backend, attempt count, request budget and
+remaining count, absolute retry time, next action, byte count,
 HTTP/exit status, timeout, rendered, cache-hit, truncation flags, queue wait,
 backend time, cooldown skips and quota skips; request
 headers and command arguments stay out of them. WebFetch additionally reports

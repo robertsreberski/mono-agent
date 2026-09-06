@@ -39,6 +39,7 @@ import { resolveRuntimeBrand } from "./runtime-brand.js";
 import { retireDurableNativeSession } from "./ai/providers/pi-native/session-lifecycle.js";
 import { instrumentLiveInputAppliedEvents } from "./ai/runtime/live-input-events.js";
 import { createToolLifecycleEventGate } from "./ai/tool-lifecycle.js";
+import { createWebSearchRunState } from "./agent/tools/web-search-state.js";
 
 /**
  * @typedef {import('./ai/types.js').AgentRuntimeHostOptions} AgentRuntimeHostOptions
@@ -177,6 +178,9 @@ export function createRuntime(host = {}) {
     ...(request.skills === undefined ? {} : { skills: request.skills }),
     ...(request.skillsRoot === undefined ? {} : { skillsRoot: request.skillsRoot }),
     ...(request.toolEnvironment === undefined ? {} : { toolEnvironment: request.toolEnvironment }),
+    ...(request.webSearchConfig === undefined ? {} : { webSearchConfig: request.webSearchConfig }),
+    ...(request.webRequestCoordinator === undefined ? {} : { webRequestCoordinator: request.webRequestCoordinator }),
+    ...(request.webFetchConfig === undefined ? {} : { webFetchConfig: request.webFetchConfig }),
     ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
     // A profile that pins effort — declared or authored at call time — means it
     // on this path too; dropping it would silently run the child at the
@@ -202,6 +206,7 @@ export function createRuntime(host = {}) {
      */
     async run(systemPrompt, options = {}) {
       if (!options.model) throw new Error("createRuntime.run requires options.model");
+      const webSearchState = createWebSearchRunState(options.webSearchConfig, options.webSearchState);
       const bridge = await resolveRuntimeBridge(options.model, {
         liveInput: !!options.liveInput,
       });
@@ -230,11 +235,20 @@ export function createRuntime(host = {}) {
       // defaultSubagentRun is what increments it for the child.
       const subagents = options.subagents === undefined
         ? undefined
-        : { ...options.subagents, run: options.subagents.run ?? defaultSubagentRun };
+        : {
+            ...options.subagents,
+            run: options.subagents.run ?? ((request) => defaultSubagentRun({
+              ...request,
+              ...(options.webSearchConfig === undefined ? {} : { webSearchConfig: options.webSearchConfig }),
+              ...(options.webRequestCoordinator === undefined ? {} : { webRequestCoordinator: options.webRequestCoordinator }),
+              ...(options.webFetchConfig === undefined ? {} : { webFetchConfig: options.webFetchConfig }),
+            })),
+          };
       try {
         return await bridge.execute(systemPrompt, {
           ...hostDefaults,
           ...options,
+          webSearchState,
           ...(subagents === undefined ? {} : { subagents }),
           // `...options` alone doesn't carry the `options.model` narrowing above
           // (spread reads the parameter's declared — Partial — type); re-assert

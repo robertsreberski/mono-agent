@@ -349,6 +349,36 @@ describe("createRuntime subagent seam", () => {
     expect(childOptions.liveInput).toBeUndefined();
   });
 
+  it("gives a child its own WebSearch budget while inheriting web configuration", async () => {
+    executeMock.mockResolvedValue({ text: "ok", events: [] });
+    const runtime = createRuntime();
+    const webSearchConfig = { backend: "keyless", maxRequestsPerRun: 2 };
+    const webFetchConfig = { render: "never", browserCommand: "agent-browser" };
+    const webRequestCoordinator = { scope: "test", acquire: vi.fn() };
+    await runtime.run("parent", {
+      model, subagents, webSearchConfig, webFetchConfig, webRequestCoordinator,
+    });
+
+    const parentOptions = executeMock.mock.calls[0][1];
+    const childRun = parentOptions.subagents.run;
+    executeMock.mockClear();
+    await childRun({
+      systemPrompt: "s",
+      prompt: "p",
+      definition: { name: "researcher", allowedTools: ["WebSearch", "WebFetch"] },
+      model,
+      maxTurns: 3,
+      depth: 1,
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    });
+
+    const childOptions = executeMock.mock.calls[0][1];
+    expect(childOptions).toMatchObject({ webSearchConfig, webFetchConfig, webRequestCoordinator });
+    expect(childOptions.webSearchState).not.toBe(parentOptions.webSearchState);
+    expect(childOptions.webSearchState).toMatchObject({ maxRequests: 2, requestsUsed: 0 });
+  });
+
   it("confines a child with the parent's sandbox policy", async () => {
     executeMock.mockResolvedValue({ text: "ok", events: [] });
     const runtime = createRuntime();
