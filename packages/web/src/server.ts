@@ -536,9 +536,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         access.expires,
         access.token,
         controller.signal,
-      ).then(async ({ part, response }) => {
+      ).then(async ({ part, response, remainingSeconds }) => {
         if (response.body === null) throw new WebConsoleError("reply_attachment_unavailable", "Attachment stream is unavailable.", 502);
-        setReplyDownloadHeaders(res, part);
+        setReplyDownloadHeaders(res, part, remainingSeconds);
         await pipeline(Readable.fromWeb(response.body as never), res);
       }), activeOperations).catch((error: unknown) => {
         if (res.headersSent) {
@@ -1120,6 +1120,8 @@ function replyAccessQuery(req: Request): { readonly expires: string; readonly to
 function setReplyDownloadHeaders(
   res: Response,
   part: Extract<WebMessagePart, { type: "attachment" }>,
+  /** Seconds this response's own capability is still good for. */
+  maxAgeSeconds: number,
 ): void {
   const risky = /^(?:text\/(?:html|javascript|xml)|application\/(?:javascript|xhtml\+xml|xml)|image\/svg\+xml)$/iu
     .test(part.mediaType);
@@ -1130,8 +1132,15 @@ function setReplyDownloadHeaders(
   res.setHeader("Accept-Ranges", "none");
   res.setHeader("Content-Disposition", contentDisposition(part.name, "attachment"));
   // The client refuses a part whose Content-Length disagrees with the declared
-  // size, so this response must reach it byte-for-byte.
-  res.setHeader("Cache-Control", "private, no-store, max-age=0, no-transform");
+  // size, so this response must reach it byte-for-byte -- hence `no-transform`.
+  //
+  // Cacheable for exactly as long as the signed key in the URL is: the mint
+  // quantises its expiry to a five-minute bucket, so the same picture asked for
+  // twice inside one bucket is the same URL and the browser answers the second
+  // read itself. `private`, because the URL is a capability and no shared cache
+  // may keep it; never past the key, because the response is only servable while
+  // the key is.
+  res.setHeader("Cache-Control", `private, max-age=${String(maxAgeSeconds)}, no-transform`);
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'");
   res.setHeader("Cross-Origin-Resource-Policy", "same-origin");

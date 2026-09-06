@@ -3327,6 +3327,85 @@ describe("WebService", () => {
     await second.stop();
   });
 
+  it("hands back the same attachment key for a five-minute bucket", async () => {
+    // A capability minted from `Date.now()` is a different URL on every read, so
+    // a message holding one attachment could never produce the same bytes twice
+    // -- the conversation's ETag changed once a second for the life of the
+    // running turn, and no console ever got a 304 on it. Quantising the expiry
+    // is what makes a read of an unchanged transcript answerable from a cache.
+    const integrityId = `sha256:${"d".repeat(64)}`;
+    // Deliberately NOT on a bucket boundary: the bucket has to come from the
+    // clock, not from a test that happened to start on a round number.
+    let clockMs = Date.parse("2026-08-14T12:01:30.000Z");
+    const service = await createService({
+      clock: () => new Date(clockMs),
+      fetchImpl: operatorFetch({
+        supportsReplyAttachments: true,
+        turns: () => `${JSON.stringify({
+          kind: "finish",
+          finalText: "Ready",
+          parts: [{
+            type: "attachment",
+            id: "bucket-file",
+            reference: { scheme: "mono-agent-artifact", id: "bucket-artifact" },
+            name: "chart.png",
+            mediaType: "image/png",
+            sizeBytes: 2,
+            integrityId,
+          }],
+        })}\n`,
+        onReplyArtifact() {
+          return new Response("ok", {
+            headers: { "content-length": "2", "x-mono-agent-integrity-id": integrityId },
+          });
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "chart it" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    const contentUrl = (): string => {
+      const message = service.thread(thread.id).messages.at(-1)!;
+      return message.parts.find((part) => part.type === "attachment")!.contentUrl!;
+    };
+    const message = service.thread(thread.id).messages.at(-1)!;
+    const first = contentUrl();
+
+    clockMs += 90_000;
+    expect(contentUrl()).toBe(first);
+    clockMs += 90_000;
+    expect(contentUrl()).toBe(first);
+
+    // Over the boundary at 12:05, so the key moves on -- and both keys open the
+    // file, because the older one is still inside its own ten minutes.
+    clockMs += 120_000;
+    const second = contentUrl();
+    expect(second).not.toBe(first);
+    for (const url of [first, second]) {
+      const parsed = new URL(url, "http://console.local");
+      await expect(service.replyAttachment(
+        thread.id,
+        message.id,
+        "bucket-file",
+        parsed.searchParams.get("expires")!,
+        parsed.searchParams.get("token")!,
+      )).resolves.toMatchObject({ part: { id: "bucket-file" } });
+    }
+
+    // Bucketing shortens the key's life; it never lengthens it. The first key
+    // was minted for 12:10 and is refused a minute after that.
+    clockMs = Date.parse("2026-08-14T12:11:00.000Z");
+    const stale = new URL(first, "http://console.local");
+    await expect(service.replyAttachment(
+      thread.id,
+      message.id,
+      "bucket-file",
+      stale.searchParams.get("expires")!,
+      stale.searchParams.get("token")!,
+    )).rejects.toMatchObject({ code: "reply_access_expired", status: 410 });
+    await service.stop();
+  });
+
   it("preserves streamed text when the finish frame carries an empty finalText", async () => {
     const service = await createService({
       fetchImpl: operatorFetch({ turns: () => [

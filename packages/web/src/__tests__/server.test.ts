@@ -1145,7 +1145,14 @@ describe("web HTTP server", () => {
     expect(download.headers.get("accept-ranges")).toBe("none");
     // The client rejects a reply attachment whose Content-Length disagrees with the
     // declared size, so this body must never be compressed away from its length.
-    expect(download.headers.get("cache-control")).toBe("private, no-store, max-age=0, no-transform");
+    // Cacheable for exactly as long as the key in its URL is good for: the URL
+    // is stable for a five-minute bucket now, so a picture the operator scrolls
+    // past twice is fetched once. `no-store` would have made that impossible.
+    const cacheControl = download.headers.get("cache-control") ?? "";
+    expect(cacheControl).toMatch(/^private, max-age=\d+, no-transform$/u);
+    const maxAge = Number(/max-age=(\d+)/u.exec(cacheControl)?.[1]);
+    expect(maxAge).toBeGreaterThan(0);
+    expect(maxAge).toBeLessThanOrEqual(10 * 60);
     expect(download.headers.get("content-length")).toBe(String(bytes.byteLength));
     expect(download.headers.get("content-encoding")).toBeNull();
     expect(Buffer.from(await download.arrayBuffer())).toEqual(bytes);

@@ -120,6 +120,18 @@ const MODEL_CATALOG_RESTORE_PAGE_SIZE = 100;
 const MODEL_CATALOG_RESTORE_PAGE_LIMIT = 5;
 const REPLY_ACCESS_TTL_MS = 10 * 60 * 1_000;
 /**
+ * How coarsely a reply capability's expiry is quantised.
+ *
+ * The expiry is part of the signed URL, so an expiry read off the wall clock
+ * made every projection of the same message a DIFFERENT transcript: the
+ * conversation's ETag moved once a second for the life of a running turn and no
+ * console could ever be answered with a 304, however little had changed. Rounded
+ * DOWN to the bucket the mint falls in, the URL is stable for the bucket and a
+ * key's life is between five and ten minutes -- shortened, never extended, so
+ * the validator's ceiling is untouched.
+ */
+const REPLY_ACCESS_BUCKET_MS = 5 * 60 * 1_000;
+/**
  * Raster types the console keeps its own copy of. `image/svg+xml` is absent on
  * purpose: it is active content, and both the inline gate in the browser and
  * `setReplyDownloadHeaders` already refuse to treat it as an image.
@@ -863,8 +875,10 @@ export class WebService {
   ): Promise<{
     readonly part: Extract<WebMessagePart, { type: "attachment" }>;
     readonly response: Response;
+    /** See {@link WebService.authorizeReplyPart}; the route's `max-age`. */
+    readonly remainingSeconds: number;
   }> {
-    const { thread, part } = this.authorizeReplyPart(
+    const { thread, part, remainingSeconds } = this.authorizeReplyPart(
       threadId,
       messageId,
       partId,
@@ -891,7 +905,7 @@ export class WebService {
       attachment,
       signal,
     );
-    return { part, response };
+    return { part, response, remainingSeconds };
   }
 
   async mcpAppResource(
@@ -3123,6 +3137,8 @@ export class WebService {
   ): {
     readonly thread: WebThread;
     readonly part: Extract<WebMessagePart, { type: T }>;
+    /** Whole seconds this capability is still good for. */
+    readonly remainingSeconds: number;
   } {
     const access = this.replyAccessTokenStatus(threadId, messageId, type, partId, expires, token);
     if (access === "invalid") {
@@ -3137,7 +3153,11 @@ export class WebService {
         410,
       );
     }
-    return { thread, part };
+    // Answered here rather than at the route, because the SERVICE owns the
+    // clock this expiry was signed against -- a route reading `Date.now()`
+    // against an injected clock reports a body that may already be cold.
+    const remainingMs = Number(expires) * 1_000 - this.currentDate().getTime();
+    return { thread, part, remainingSeconds: Math.max(0, Math.floor(remainingMs / 1_000)) };
   }
 
   private requireReplyPart<T extends "attachment" | "mcp_app">(
@@ -3321,7 +3341,10 @@ export class WebService {
     const retentionDeadline = part.expiresAt === undefined
       ? Number.POSITIVE_INFINITY
       : Date.parse(part.expiresAt);
-    const expiresAt = Math.min(now + REPLY_ACCESS_TTL_MS, retentionDeadline);
+    // From the bucket, not from this instant. A retention deadline that binds is
+    // already a fixed value and is left exactly as it is.
+    const bucketStart = Math.floor(now / REPLY_ACCESS_BUCKET_MS) * REPLY_ACCESS_BUCKET_MS;
+    const expiresAt = Math.min(bucketStart + REPLY_ACCESS_TTL_MS, retentionDeadline);
     if (!Number.isFinite(expiresAt) || expiresAt <= now) {
       return part.type === "attachment" ? { ...part, ...storedUrl } : part;
     }
