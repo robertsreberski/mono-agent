@@ -59,10 +59,12 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 - Accept exact-source/thread Monitor wakes through that private ingress, steer
   them into the active run or serialize one assistant-only follow-up, retain
   delivery identity plus a payload hash for fail-closed duplicate handling, and
-  group their secret-free projections into one compact Monitor activity row per
-  assistant run. Raw event text and delivery keys never reach the rendered row;
-  Monitor wakes have no browser-side stop control. For a verified Monitor wake,
-  a terminal no-op assistant message is suppressed while an earlier meaningful
+  group their secret-free projections into compact Monitor activity. The
+  browser presents adjacent activity-only follow-ups for the same watch as one
+  continuous Activity block; a visible reply or unrelated message ends that
+  block. Raw event text and delivery keys never reach the rendered row; Monitor
+  wakes have no browser-side stop control. For a verified Monitor wake, a
+  terminal no-op assistant message is suppressed while an earlier meaningful
   answer and rich content remain visible. Push delivery waits for an outstanding
   steering receipt and uses the normalized reply. Monitor callbacks use the
   independent owner credential derived from the advertised private state directory.
